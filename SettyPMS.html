@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" xmlns:mso="urn:schemas-microsoft-com:office:office" xmlns:msdt="uuid:C2F41010-65B3-11d1-A29F-00AA00C14882">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -21,14 +21,6 @@
     ::-webkit-scrollbar-track { background: #151929; }
     ::-webkit-scrollbar-thumb { background: #2d3452; border-radius: 3px; }
   </style>
-
-<!--[if gte mso 9]><xml>
-<mso:CustomDocumentProperties>
-<mso:_dlc_DocId msdt:dt="string">2RJXTAWEMNVQ-175631644-1716</mso:_dlc_DocId>
-<mso:_dlc_DocIdItemGuid msdt:dt="string">8c14d651-9315-488a-b455-a87720a3016e</mso:_dlc_DocIdItemGuid>
-<mso:_dlc_DocIdUrl msdt:dt="string">https://setty.sharepoint.com/sites/NYCProjects/_layouts/15/DocIdRedir.aspx?ID=2RJXTAWEMNVQ-175631644-1716, 2RJXTAWEMNVQ-175631644-1716</mso:_dlc_DocIdUrl>
-</mso:CustomDocumentProperties>
-</xml><![endif]-->
 </head>
 <body>
   <div id="root"></div>
@@ -274,7 +266,7 @@ async function getMsalApp() {
     auth: {
       clientId,
       authority: `https://login.microsoftonline.com/${TENANT_ID}`,
-      redirectUri: "https://setty.sharepoint.com/sites/NYCProjects/Shared%20Documents/SettyPMS.html",
+      redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
     },
     cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
   });
