@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 21:37 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 21:49 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -2300,15 +2300,56 @@ function ProjectionsView({ project }) {
   const overdueAmt = rows.filter(r => r.isOverdue).reduce((a, r) => a + r.remaining, 0);
   const next30Amt = rows.filter(r => r.isPending).reduce((a, r) => a + r.remaining, 0);
 
-  // Monthly cash flow — group fees by month of due date
+  // Monthly cash flow — distribute each phase fee proportionally across its duration
+  // Uses phase startDate/endDate from the schedule; falls back to milestone due date if missing
   const monthlyMap = {};
-  [...rows].filter(r => r.due).forEach(r => {
-    const key = r.dueDate.slice(0, 7); // "YYYY-MM"
+
+  function addToMonth(key, fee, invoiced, label) {
     if (!monthlyMap[key]) monthlyMap[key] = { month: key, fee: 0, invoiced: 0, milestones: [] };
-    monthlyMap[key].fee += r.fee;
-    monthlyMap[key].invoiced += r.invoiced;
-    monthlyMap[key].milestones.push(r.name);
+    monthlyMap[key].fee += fee;
+    monthlyMap[key].invoiced += invoiced;
+    if (label && !monthlyMap[key].milestones.includes(label)) monthlyMap[key].milestones.push(label);
+  }
+
+  // Build a map of phase code → phase for schedule lookup
+  const phaseSchedule = {};
+  (project.phases || []).forEach(ph => { if (ph.code) phaseSchedule[ph.code] = ph; });
+
+  rows.forEach(r => {
+    const ph = phaseSchedule[r.phase];
+    const sd = ph?.startDate ? new Date(ph.startDate + "T00:00:00") : null;
+    const ed = ph?.endDate   ? new Date(ph.endDate   + "T00:00:00") : null;
+
+    if (sd && ed && ed > sd) {
+      // Count how many months the phase spans (partial months count as full for distribution)
+      const startYM = sd.getFullYear() * 12 + sd.getMonth();
+      const endYM   = ed.getFullYear() * 12 + ed.getMonth();
+      const numMonths = endYM - startYM + 1;
+
+      // Total working days in phase for weighted distribution
+      // Simple approach: distribute by actual calendar days per month
+      const totalDays = (ed - sd) / 86400000 + 1;
+      for (let ym = startYM; ym <= endYM; ym++) {
+        const yr  = Math.floor(ym / 12);
+        const mo  = ym % 12;
+        const key = `${yr}-${String(mo + 1).padStart(2, "0")}`;
+
+        // Days of this phase that fall within this calendar month
+        const mStart = new Date(yr, mo, 1);
+        const mEnd   = new Date(yr, mo + 1, 0); // last day of month
+        const overlapStart = sd > mStart ? sd : mStart;
+        const overlapEnd   = ed < mEnd   ? ed : mEnd;
+        const overlapDays  = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
+        const fraction = overlapDays / totalDays;
+
+        addToMonth(key, r.fee * fraction, r.invoiced * fraction, r.name);
+      }
+    } else if (r.dueDate) {
+      // No phase schedule — fall back to due date
+      addToMonth(r.dueDate.slice(0, 7), r.fee, r.invoiced, r.name);
+    }
   });
+
   const monthlyCashFlow = Object.values(monthlyMap).sort((a, b) => a.month > b.month ? 1 : -1);
   const maxMonthFee = Math.max(...monthlyCashFlow.map(m => m.fee), 1);
 
