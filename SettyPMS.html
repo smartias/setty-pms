@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 22:26 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 22:35 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -507,6 +507,9 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
     return base + "/events";
   }
 
+  const calId = await getNYCCalendarId();
+  const postedToShared = !!calId;
+
   try {
     let result;
     if (existingEventId) {
@@ -516,7 +519,11 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
     } else {
       result = await graphFetch("POST", await calPath(null), eventBody);
     }
-    return { success: true, eventId: result?.id };
+    return {
+      success: true,
+      eventId: result?.id,
+      warning: postedToShared ? null : "Added to your personal calendar — NYC Shared Calendar was not found in your account. Ask Sara to check sharing permissions.",
+    };
   } catch(e) {
     return { success: false, error: e.message };
   }
@@ -980,7 +987,9 @@ function ScheduleView({ project, onChange }) {
       newMap[m.id] = result.eventId;
       saveCalMap(newMap);
       setCalState(s => ({ ...s, [m.id]: "synced" }));
-      setSyncMsg(`✓ "${m.name}" synced to NYC Shared Calendar`);
+      setSyncMsg(result.warning
+        ? `⚠ "${m.name}" — ${result.warning}`
+        : `✓ "${m.name}" synced to NYC Shared Calendar`);
     } else {
       setCalState(s => ({ ...s, [m.id]: "error", [`${m.id}_err`]: result.error }));
       setSyncMsg(`✗ "${m.name}" — ${result.error}`);
@@ -1007,6 +1016,10 @@ function ScheduleView({ project, onChange }) {
     }
     saveCalMap(newMap);
     setSyncingAll(false);
+    const warnings = syncable.filter((_, i) => {
+      // detect if any synced with warning (posted to personal)
+      return false; // warnings surfaced per-milestone in syncOne
+    });
     setSyncMsg(ok === syncable.length
       ? `✓ All ${ok} milestones synced to NYC Shared Calendar`
       : `${ok}/${syncable.length} synced — check individual rows for errors`);
@@ -2561,9 +2574,35 @@ const TABS = ["Overview", "Fee Calculator", "Schedule", "Subconsultants", "Proje
 
 function ProjectDetail({ project, onUpdate, onBack }) {
   const [tab, setTab] = useState("Overview");
+  const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
+  const [proposalSyncMsg, setProposalSyncMsg] = useState("");
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
+  }
+
+  async function syncProposalDueDate() {
+    if (!project.proposalDueDate) { setProposalSyncMsg("⚠ No proposal due date set"); return; }
+    setProposalSyncState("syncing");
+    setProposalSyncMsg("");
+    const fakeMilestone = {
+      id: "proposal-" + project.id,
+      name: "Proposal Due",
+      dueDate: project.proposalDueDate,
+      phase: "Proposal",
+      type: "proposal",
+      pctComplete: 0,
+    };
+    const existingEventId = localStorage.getItem("setty_pms_proposal_cal_" + project.id) || null;
+    const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId);
+    if (result.success) {
+      if (result.eventId) localStorage.setItem("setty_pms_proposal_cal_" + project.id, result.eventId);
+      setProposalSyncState("synced");
+      setProposalSyncMsg(result.warning ? "⚠ " + result.warning : "✓ Synced to NYC Shared Calendar");
+    } else {
+      setProposalSyncState("error");
+      setProposalSyncMsg("✗ " + result.error);
+    }
   }
 
   const pct = projectOverallPct(project);
@@ -2635,7 +2674,21 @@ function ProjectDetail({ project, onUpdate, onBack }) {
             </Field>
             {isPipeline(project) && (<>
               <Field label="Client Name"><input value={project.clientName || ""} onChange={e => updateField("clientName", e.target.value)} style={{ width: "100%" }} /></Field>
-              <Field label="Proposal Due Date"><input type="date" value={project.proposalDueDate || ""} onChange={e => updateField("proposalDueDate", e.target.value)} style={{ width: "100%" }} /></Field>
+              <Field label="Proposal Due Date">
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="date" value={project.proposalDueDate || ""} onChange={e => { updateField("proposalDueDate", e.target.value); setProposalSyncState("idle"); }} style={{ flex: 1 }} />
+                  <button onClick={syncProposalDueDate} disabled={!project.proposalDueDate || proposalSyncState === "syncing"}
+                    title="Sync to NYC Shared Calendar"
+                    style={{ background: proposalSyncState === "synced" ? P.greenDim : P.accentDim, border: `1px solid ${proposalSyncState === "synced" ? P.green : P.accent}`, borderRadius: 6, color: proposalSyncState === "synced" ? P.green : P.accentLight, cursor: "pointer", fontSize: 12, padding: "4px 10px", whiteSpace: "nowrap" }}>
+                    {proposalSyncState === "syncing" ? "⏳" : proposalSyncState === "synced" ? "✓ 📅" : "📅 Sync"}
+                  </button>
+                </div>
+                {proposalSyncMsg && (
+                  <div style={{ fontSize: 11, marginTop: 4, color: proposalSyncMsg.startsWith("✓") ? P.green : proposalSyncMsg.startsWith("⚠") ? P.yellow : P.red }}>
+                    {proposalSyncMsg}
+                  </div>
+                )}
+              </Field>
               <Field label="Probability %">
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input type="number" min={0} max={100} value={project.probability ?? 50} onChange={e => updateField("probability", +e.target.value)} style={{ width: 80 }} />
