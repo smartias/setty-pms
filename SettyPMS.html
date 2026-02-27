@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 23:06 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 23:21 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -674,7 +674,8 @@ function FeeCalculator({ project, onChange }) {
   const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const effectiveDiscs = getEffectiveDisciplines(project);
   const aeFee = calcAEFee(constructionCost, project);
-  const baseFee = calcSettyFee(constructionCost, project);
+  const calcedFee = calcSettyFee(constructionCost, project);
+  const baseFee = project.manualSettyFee > 0 ? project.manualSettyFee : calcedFee;
   const phases = project.phases || [];
   const phasedFees = buildPhaseFees(baseFee, phases);
   const defaultDiscs = DISCIPLINE_PERCENTAGES[project.projectType] || {};
@@ -837,10 +838,27 @@ function FeeCalculator({ project, onChange }) {
         <div><div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>CONSTRUCTION COST</div><div style={{ fontWeight: 700 }}>{fmt(constructionCost)}</div></div>
         <div><div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>AE FEE %</div><div style={{ fontWeight: 700 }}>{fmtPct(getFeePercent(constructionCost, project.projectType))}</div></div>
         <div><div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>TOTAL AE FEE</div><div style={{ fontWeight: 700 }}>{fmt(aeFee)}</div></div>
-        <div style={{ borderLeft: `2px solid ${P.accent}`, paddingLeft: 16 }}>
-          <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>SETTY FEE (MEP+FP)</div>
-          <div style={{ fontWeight: 700, color: P.green }}>{fmt(baseFee)}</div>
-          <div style={{ fontSize: 10, color: P.textDim, marginTop: 2 }}>{fmtPct(discTotal)} of AE fee</div>
+        <div style={{ borderLeft: `2px solid ${project.manualSettyFee > 0 ? P.yellow : P.accent}`, paddingLeft: 16 }}>
+          <div style={{ fontSize: 11, color: P.textDim, marginBottom: 6 }}>
+            SETTY FEE (MEP+FP)
+            {project.manualSettyFee > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: P.yellow, background: P.yellowDim, padding: "1px 6px", borderRadius: 8 }}>overridden</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+            <input
+              type="number" min="0" step="1000"
+              value={project.manualSettyFee || ""}
+              onChange={e => setField("manualSettyFee", +e.target.value)}
+              placeholder={fmt(calcedFee)}
+              style={{ width: 130, fontWeight: 700, fontSize: 14, color: project.manualSettyFee > 0 ? P.yellow : P.green, borderColor: project.manualSettyFee > 0 ? P.yellow : P.border }}
+            />
+            {project.manualSettyFee > 0 && (
+              <button onClick={() => setField("manualSettyFee", 0)}
+                style={{ background: "none", color: P.yellow, fontSize: 13, border: "none", cursor: "pointer" }} title="Reset to calculated fee">↺</button>
+            )}
+          </div>
+          <div style={{ fontSize: 10, color: P.textDim }}>
+            {project.manualSettyFee > 0 ? `Calc: ${fmt(calcedFee)}` : `${fmtPct(discTotal)} of AE fee`}
+          </div>
         </div>
       </div>
 
