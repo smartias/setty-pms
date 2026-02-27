@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 23:29 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 23:41 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -286,6 +286,14 @@ const GRAPH_SCOPES = [
   "Calendars.ReadWrite.Shared", // shared calendars — NO admin consent
   "User.Read",                // sign in — NO admin consent
 ];
+
+function getCurrentUser() {
+  try {
+    const accounts = app.getAllAccounts();
+    if (accounts.length > 0) return accounts[0].name || accounts[0].username || "Unknown";
+  } catch(e) {}
+  return "Unknown";
+}
 
 async function getToken(forceRefresh = false) {
   const app = await getMsalApp();
@@ -720,7 +728,31 @@ function FeeCalculator({ project, onChange }) {
     onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
   }
 
-  function finalizeSchedule() {
+  // finalizeSchedule replaced by doLock (which also captures audit entry)
+
+  const totalPhasePct = phases.filter(p => p.billable).reduce((a, p) => a + p.pct, 0);
+  const totalPhaseFee = phasedFees.filter(p => p.billable).reduce((a, p) => a + p.fee, 0);
+  const phaseFeeVar = totalPhaseFee - baseFee;
+  const phaseFeeOk = Math.abs(phaseFeeVar) < 0.5;
+  const discTotal = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0);
+  const hasOverrides = Object.keys(overrides).length > 0;
+  const [showLegend, setShowLegend] = useState(false);
+  const [showLockModal, setShowLockModal] = useState(false);
+  const [lockNote, setLockNote] = useState("");
+  const [showAudit, setShowAudit] = useState(false);
+  const auditLog = project.feeAuditLog || [];
+
+  function doLock() {
+    const entry = {
+      id: uid(),
+      action: "locked",
+      user: getCurrentUser(),
+      date: new Date().toISOString(),
+      note: lockNote.trim(),
+      settyFee: baseFee,
+      totalPhaseFee,
+      phases: phasedFees.filter(p => p.billable).map(p => ({ code: p.code, name: p.name, fee: p.fee })),
+    };
     const finalized = buildPhaseFees(baseFee, phases);
     const scheduled = buildSchedule(project.startDate, finalized);
     const existingNonBillable = (project.milestones || []).filter(m => m.type !== "billable");
@@ -728,13 +760,25 @@ function FeeCalculator({ project, onChange }) {
       id: uid(), type: "billable", phase: p.code, name: p.name, fee: p.fee,
       startDate: p.startDate, dueDate: p.endDate, pctComplete: 0, notes: "",
     }));
-    onChange({ ...project, phases: scheduled, feeScheduleFinalized: true, milestones: [...existingNonBillable, ...newBillable] });
+    onChange({ ...project, phases: scheduled, feeScheduleFinalized: true,
+      milestones: [...existingNonBillable, ...newBillable],
+      feeAuditLog: [...auditLog, entry] });
+    setShowLockModal(false);
+    setLockNote("");
   }
 
-  const totalPhasePct = phases.filter(p => p.billable).reduce((a, p) => a + p.pct, 0);
-  const discTotal = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0);
-  const hasOverrides = Object.keys(overrides).length > 0;
-  const [showLegend, setShowLegend] = useState(false);
+  function doUnlock() {
+    const entry = {
+      id: uid(),
+      action: "unlocked",
+      user: getCurrentUser(),
+      date: new Date().toISOString(),
+      note: lockNote.trim(),
+    };
+    onChange({ ...project, feeScheduleFinalized: false, feeAuditLog: [...auditLog, entry] });
+    setShowLockModal(false);
+    setLockNote("");
+  }
 
   const PROJECT_TYPE_LEGEND = [
     { type: "Type I", desc: "Simple, low-complexity building — single discipline, minimal coordination. Examples: storage facilities, simple warehouses, basic shell buildings." },
@@ -980,13 +1024,115 @@ function FeeCalculator({ project, onChange }) {
         </tbody>
       </table>
 
+      {/* Phase fee total check */}
+      {phasedFees.some(p => p.billable && p.manualFee > 0) && (
+        <div style={{ marginBottom: 12, padding: "10px 16px", borderRadius: 8,
+          background: phaseFeeOk ? P.greenDim : P.redDim,
+          border: `1px solid ${phaseFeeOk ? P.green : P.red}`,
+          display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ color: phaseFeeOk ? P.green : P.red, fontWeight: 600, fontSize: 13 }}>
+            {phaseFeeOk
+              ? "✓ Phase fees match Setty fee"
+              : `⚠ Phase fees total ${fmt(totalPhaseFee)} — ${phaseFeeVar > 0 ? "over" : "under"} by ${fmt(Math.abs(phaseFeeVar))}`}
+          </div>
+          {!phaseFeeOk && (
+            <button onClick={() => {
+              // Distribute the remainder proportionally across billable phases without a manual override
+              const nonManual = phases.filter(p => p.billable && !(p.manualFee > 0));
+              if (nonManual.length === 0) return;
+              const manualTotal = phases.filter(p => p.billable && p.manualFee > 0).reduce((a, p) => a + p.manualFee, 0);
+              const remainder = baseFee - manualTotal;
+              const pctTotal = nonManual.reduce((a, p) => a + p.pct, 0) || 1;
+              const newPhases = phases.map(p => {
+                if (!p.billable || p.manualFee > 0) return p;
+                return { ...p, manualFee: Math.round(remainder * (p.pct / pctTotal)) };
+              });
+              onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
+            }}
+              style={{ background: P.accent, border: "none", borderRadius: 6, color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 600, padding: "4px 12px" }}>
+              Auto-balance remaining phases
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Lock / Unlock */}
       {project.feeScheduleFinalized ? (
         <div style={{ background: P.greenDim, color: P.green, padding: "10px 16px", borderRadius: 8, fontWeight: 600, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           ✓ Fee Schedule Finalized & Locked
-          <Btn small variant="danger" onClick={() => onChange({ ...project, feeScheduleFinalized: false })}>Unlock & Edit</Btn>
+          <div style={{ display: "flex", gap: 8 }}>
+            {auditLog.length > 0 && <Btn small variant="ghost" onClick={() => setShowAudit(v => !v)}>📋 History ({auditLog.length})</Btn>}
+            <Btn small variant="danger" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}>Unlock & Edit</Btn>
+          </div>
         </div>
       ) : (
-        <Btn onClick={finalizeSchedule} variant="success">🔒 Finalize & Lock Fee Schedule → Populate Milestones</Btn>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <Btn onClick={() => { setShowLockModal("lock"); setLockNote(""); }} variant="success">🔒 Finalize & Lock Fee Schedule → Populate Milestones</Btn>
+          {auditLog.length > 0 && <Btn small variant="ghost" onClick={() => setShowAudit(v => !v)}>📋 History ({auditLog.length})</Btn>}
+        </div>
+      )}
+
+      {/* Audit log */}
+      {showAudit && auditLog.length > 0 && (
+        <div style={{ marginTop: 14, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>📋 Fee Schedule Audit Log</div>
+          <table>
+            <thead><tr><th>Action</th><th>User</th><th>Date</th><th>Setty Fee</th><th>Phase Total</th><th>Notes</th></tr></thead>
+            <tbody>
+              {[...auditLog].reverse().map(e => (
+                <tr key={e.id}>
+                  <td><span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : P.yellow, textTransform: "capitalize" }}>{e.action === "locked" ? "🔒 Locked" : "🔓 Unlocked"}</span></td>
+                  <td style={{ color: P.textMuted }}>{e.user}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.textDim }}>{new Date(e.date).toLocaleString()}</td>
+                  <td style={{ fontFamily: "JetBrains Mono" }}>{e.settyFee ? fmt(e.settyFee) : "—"}</td>
+                  <td style={{ fontFamily: "JetBrains Mono" }}>{e.totalPhaseFee ? fmt(e.totalPhaseFee) : "—"}</td>
+                  <td style={{ color: P.textMuted, fontSize: 12 }}>{e.note || <span style={{ color: P.textDim, fontStyle: "italic" }}>No notes</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Lock / Unlock modal */}
+      {showLockModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setShowLockModal(false); }}>
+          <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 14, padding: 28, width: 440, maxWidth: "90vw" }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>
+              {showLockModal === "lock" ? "🔒 Finalize & Lock Fee Schedule" : "🔓 Unlock Fee Schedule"}
+            </div>
+            <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 20 }}>
+              {showLockModal === "lock"
+                ? "This will lock the fee schedule and populate milestones. Add an optional note for the audit log."
+                : "This will unlock the fee schedule for editing. Add an optional note explaining why."}
+            </div>
+            {showLockModal === "lock" && !phaseFeeOk && phasedFees.some(p => p.billable && p.manualFee > 0) && (
+              <div style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, color: P.red, fontSize: 13 }}>
+                ⚠ Phase fees total {fmt(totalPhaseFee)}, Setty fee is {fmt(baseFee)} (difference: {fmt(Math.abs(phaseFeeVar))}). You can still lock, but review the discrepancy.
+              </div>
+            )}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 6, fontWeight: 600 }}>Notes <span style={{ fontWeight: 400 }}>(optional)</span></div>
+              <textarea value={lockNote} onChange={e => setLockNote(e.target.value)}
+                placeholder={showLockModal === "lock" ? "e.g. Approved by PM, revised per client negotiation..." : "e.g. Updating SD fee per amendment..."}
+                style={{ width: "100%", minHeight: 80, resize: "vertical", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, color: P.text, padding: "8px 12px", fontSize: 13 }} />
+            </div>
+            <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>
+              Will be logged as: <strong style={{ color: P.accentLight }}>{getCurrentUser()}</strong> · {new Date().toLocaleString()}
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowLockModal(false)}
+                style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 8, color: P.textMuted, cursor: "pointer", padding: "8px 18px", fontSize: 13 }}>
+                Cancel
+              </button>
+              <button onClick={showLockModal === "lock" ? doLock : doUnlock}
+                style={{ background: showLockModal === "lock" ? P.green : P.red, border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontWeight: 700, padding: "8px 20px", fontSize: 13 }}>
+                {showLockModal === "lock" ? "Lock Fee Schedule" : "Unlock Fee Schedule"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
