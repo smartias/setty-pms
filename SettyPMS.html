@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 23:01 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 23:06 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2808,10 +2808,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
         try { localStorage.setItem(calKey, JSON.stringify(newMap)); } catch(e) {}
       }
       setDashCalState(s => ({ ...s, [m.id]: "synced" }));
-      setDashSyncMsg(result.warning ? "⚠ " + result.warning : "✓ "" + m.name + "" synced to NYC Shared Calendar");
+      setDashSyncMsg(result.warning ? "⚠ " + result.warning : "✓ \"" + m.name + "\" synced to NYC Shared Calendar");
     } else {
       setDashCalState(s => ({ ...s, [m.id]: "error" }));
-      setDashSyncMsg("✗ "" + m.name + "" — " + result.error);
+      setDashSyncMsg("✗ \"" + m.name + "\" — " + result.error);
     }
   }
   // Build a quick lookup: projectId → project
