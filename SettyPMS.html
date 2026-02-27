@@ -1,16 +1,11 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 21:49 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 21:58 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Setty PMS</title>
   <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
-  <script>
-    if (typeof msal === 'undefined') {
-      document.write('<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"><\/script>');
-    }
-  </script>
+  <script>if (typeof msal === 'undefined') { document.write('<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"><\/script>'); }</script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -27,7 +22,6 @@
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useMemo } = React;
-
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
 
@@ -451,8 +445,8 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
   const eventBody = {
     subject,
     isAllDay: true,
-    start: { dateTime: `${milestone.dueDate}T00:00:00`, timeZone: "UTC" },
-    end:   { dateTime: `${milestone.dueDate}T00:00:00`, timeZone: "UTC" },
+    start: { date: milestone.dueDate },
+    end:   { date: (() => { const d = new Date(milestone.dueDate + "T00:00:00"); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })() },
     body: {
       contentType: "text",
       content: `Phase: ${milestone.phase || ""} | Type: ${milestone.type || "billable"} | Progress: ${milestone.pctComplete || 0}% | Project: ${projectName}${projectNumber ? " (#" + projectNumber + ")" : ""}`,
