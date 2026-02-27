@@ -1,11 +1,9 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 18:37 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 19:03 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-  <meta http-equiv="Pragma" content="no-cache" />
   <title>Setty PMS</title>
   <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
   <script>
@@ -88,6 +86,13 @@ const PROJECT_STATUSES = [
   "Not Started","In Progress","In for Review","On Hold","Top Priority",
   "In Construction Administration","Completed","Cancelled","Lost",
 ];
+
+// Pipeline statuses — projects not yet awarded, shown in Pipeline view only
+const PIPELINE_STATUSES = ["Proposal Due", "Proposal Submitted"];
+const AWARDED_STATUSES  = ["Not Started","In Progress","In for Review","On Hold","Top Priority","In Construction Administration","Completed","Cancelled","Lost"];
+
+function isPipeline(p) { return PIPELINE_STATUSES.includes(p.status); }
+function isAwarded(p)  { return !isPipeline(p); }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -207,7 +212,10 @@ function newProject(overrides = {}) {
     projectManager: "",
     deputyProjectManager: "",
     prime: "",
-    status: "Not Started",
+    status: "Proposal Due",
+    proposalDueDate: "",
+    probability: 50,
+    clientName: "",
     contractStatus: "Waiting for NTP/Contract",
     contractNotes: "",
     archived: false,
@@ -2442,16 +2450,29 @@ function ProjectDetail({ project, onUpdate, onBack }) {
             <Field label="Prime"><input value={project.prime || ""} onChange={e => updateField("prime", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="Project Manager"><input value={project.projectManager || ""} onChange={e => updateField("projectManager", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="Deputy Project Manager"><input value={project.deputyProjectManager || ""} onChange={e => updateField("deputyProjectManager", e.target.value)} style={{ width: "100%" }} /></Field>
-            <Field label="Contract Status">
-              <select value={project.contractStatus} onChange={e => updateField("contractStatus", e.target.value)} style={{ width: "100%" }}>
-                {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
-              </select>
-            </Field>
             <Field label="Project Status">
               <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ width: "100%" }}>
-                {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
+                <optgroup label="Pipeline">{PIPELINE_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
+                <optgroup label="Awarded">{PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
               </select>
             </Field>
+            {isPipeline(project) && (<>
+              <Field label="Client Name"><input value={project.clientName || ""} onChange={e => updateField("clientName", e.target.value)} style={{ width: "100%" }} /></Field>
+              <Field label="Proposal Due Date"><input type="date" value={project.proposalDueDate || ""} onChange={e => updateField("proposalDueDate", e.target.value)} style={{ width: "100%" }} /></Field>
+              <Field label="Probability %">
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="number" min={0} max={100} value={project.probability ?? 50} onChange={e => updateField("probability", +e.target.value)} style={{ width: 80 }} />
+                  <span style={{ color: P.textMuted }}>%</span>
+                </div>
+              </Field>
+            </>)}
+            {!isPipeline(project) && (
+              <Field label="Contract Status">
+                <select value={project.contractStatus} onChange={e => updateField("contractStatus", e.target.value)} style={{ width: "100%" }}>
+                  {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
+                </select>
+              </Field>
+            )}
           </div>
         )}
         {tab === "Fee Calculator" && <FeeCalculator project={project} onChange={onUpdate} />}
@@ -2508,7 +2529,7 @@ function ProjectCard({ project, onClick }) {
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
 function Dashboard({ projects, onNavigateToProject }) {
-  const active = projects.filter(p => !p.archived && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
+  const active = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
   // Build a quick lookup: projectId → project
   const projectMap = Object.fromEntries(active.map(p => [p.id, p]));
   const allMilestones = active.flatMap(p => (p.milestones || []).map(m => ({
@@ -2633,6 +2654,136 @@ function Dashboard({ projects, onNavigateToProject }) {
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
+
+
+// ─── PIPELINE DASHBOARD ───────────────────────────────────────────────────────
+function PipelineDashboard({ projects, onNavigateToProject, onAddProject }) {
+  const pipeline = projects.filter(p => !p.archived && isPipeline(p));
+  const now = new Date();
+
+  const totalValue = pipeline.reduce((a, p) => {
+    const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0);
+    return a + fee;
+  }, 0);
+
+  const weightedValue = pipeline.reduce((a, p) => {
+    const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0);
+    return a + fee * ((p.probability ?? 50) / 100);
+  }, 0);
+
+  const overdue = pipeline.filter(p => p.proposalDueDate && new Date(p.proposalDueDate) < now);
+  const dueSoon = pipeline.filter(p => {
+    if (!p.proposalDueDate) return false;
+    const d = new Date(p.proposalDueDate);
+    const in14 = new Date(); in14.setDate(in14.getDate() + 14);
+    return d >= now && d <= in14;
+  });
+
+  const byStatus = PIPELINE_STATUSES.map(s => ({
+    status: s, count: pipeline.filter(p => p.status === s).length,
+  }));
+
+  const sorted = [...pipeline].sort((a, b) => {
+    if (!a.proposalDueDate) return 1;
+    if (!b.proposalDueDate) return -1;
+    return a.proposalDueDate > b.proposalDueDate ? 1 : -1;
+  });
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Pipeline</div>
+          <div style={{ color: P.textMuted, fontSize: 13 }}>Proposals & projects pending award</div>
+        </div>
+        <Btn small onClick={onAddProject}>+ New Pipeline Project</Btn>
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 24 }}>
+        <KpiBox label="Pipeline Projects" val={pipeline.length} color={P.accent} />
+        <KpiBox label="Total Fee Value" val={fmt(totalValue)} color={P.accentLight} />
+        <KpiBox label="Weighted Value" val={fmt(weightedValue)} color={P.green} />
+        <KpiBox label="Proposals Overdue" val={overdue.length} color={overdue.length > 0 ? P.red : P.textMuted} />
+        <KpiBox label="Due in 14 Days" val={dueSoon.length} color={dueSoon.length > 0 ? P.yellow : P.textMuted} />
+      </div>
+
+      {/* Status pills */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
+        {byStatus.map(({ status, count }) => (
+          <div key={status} style={{ background: P.accentDim, borderRadius: 8, padding: "8px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: P.accentLight, fontWeight: 700, fontSize: 16 }}>{count}</span>
+            <span style={{ color: P.accentLight, fontSize: 12 }}>{status}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Pipeline table */}
+      <Card>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 16 }}>All Pipeline Projects</div>
+        {pipeline.length === 0 ? (
+          <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>
+            No pipeline projects. <button onClick={onAddProject} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer" }}>Add one</button>
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Client</th>
+                <th>PM</th>
+                <th>Status</th>
+                <th>Proposal Due</th>
+                <th>Probability</th>
+                <th>Fee Value</th>
+                <th>Weighted</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map(p => {
+                const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
+                const weighted = fee * ((p.probability ?? 50) / 100);
+                const isOverdue = p.proposalDueDate && new Date(p.proposalDueDate) < now;
+                const isSoon = p.proposalDueDate && !isOverdue && (() => { const d = new Date(p.proposalDueDate); const in14 = new Date(); in14.setDate(in14.getDate()+14); return d <= in14; })();
+                return (
+                  <tr key={p.id}>
+                    <td>
+                      <button onClick={() => onNavigateToProject(p.id)}
+                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontWeight: 600, fontSize: 13, padding: 0, textAlign: "left" }}>
+                        {p.name}
+                      </button>
+                      {p.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{p.projectNumber}</div>}
+                    </td>
+                    <td style={{ color: P.textMuted, fontSize: 13 }}>{p.clientName || "—"}</td>
+                    <td style={{ color: P.textMuted, fontSize: 13 }}>{p.projectManager || "—"}</td>
+                    <td>
+                      <span style={{ background: P.accentDim, color: P.accentLight, borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 600 }}>
+                        {p.status}
+                      </span>
+                    </td>
+                    <td style={{ color: isOverdue ? P.red : isSoon ? P.yellow : P.text, fontWeight: isOverdue || isSoon ? 600 : 400, fontSize: 13 }}>
+                      {p.proposalDueDate || "—"}
+                      {isOverdue && <span style={{ marginLeft: 4, fontSize: 10 }}>OVERDUE</span>}
+                      {isSoon && <span style={{ marginLeft: 4, fontSize: 10 }}>SOON</span>}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <ProgressBar pct={p.probability ?? 50} color={P.accent} />
+                        <span style={{ fontSize: 12, color: P.textMuted, minWidth: 30 }}>{p.probability ?? 50}%</span>
+                      </div>
+                    </td>
+                    <td style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13 }}>{fee > 0 ? fmt(fee) : "—"}</td>
+                    <td style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: P.green }}>{fee > 0 ? fmt(weighted) : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </Card>
+    </div>
+  );
+}
 
 // Save status indicator component
 function SaveBadge({ status, lastSaved, onRetry }) {
@@ -2759,7 +2910,9 @@ function App() {
   const displayedProjects = useMemo(() => {
     const archived = view === "archive";
     return projects.filter(p => {
+      if (view === "pipeline") return !p.archived && isPipeline(p);
       if (p.archived !== archived) return false;
+      if (!archived && !isAwarded(p)) return false; // awarded-only in list view
       if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.projectNumber || "").toLowerCase().includes(search.toLowerCase())) return false;
       if (filterPM !== "All" && p.projectManager !== filterPM) return false;
       if (filterStatus !== "All" && p.status !== filterStatus) return false;
@@ -2869,7 +3022,7 @@ function App() {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Projects", key: "list" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -2887,10 +3040,14 @@ function App() {
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
 
+      {view === "pipeline" && (
+        <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={() => { const p = newProject(); setProjects(prev => [p, ...prev]); setView(`project:${p.id}`); }} />
+      )}
+
       {(view === "list" || view === "archive") && (
         <div style={{ padding: "24px 32px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>{view === "archive" ? "Archived Projects" : "All Projects"}</div>
+            <div style={{ fontSize: 20, fontWeight: 800 }}>{view === "archive" ? "Archived Projects" : "Awarded Projects"}</div>
             <Btn small onClick={addProject}>+ New Project</Btn>
           </div>
           <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
@@ -2899,7 +3056,7 @@ function App() {
               {allPMs.map(pm => <option key={pm}>{pm}</option>)}
             </select>
             <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-              {["All", ...PROJECT_STATUSES].map(s => <option key={s}>{s}</option>)}
+              {["All", ...PIPELINE_STATUSES, ...PROJECT_STATUSES].map(s => <option key={s}>{s}</option>)}
             </select>
           </div>
           {displayedProjects.length === 0 ? (
