@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 22:35 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 23:01 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2758,8 +2758,62 @@ function ProjectCard({ project, onClick }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
-function Dashboard({ projects, onNavigateToProject }) {
+function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
   const active = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
+  const [dashCalState, setDashCalState] = useState({}); // { [milestoneId]: "syncing"|"synced"|"error" }
+  const [dashSyncMsg, setDashSyncMsg] = useState("");
+  const [showAddMilestone, setShowAddMilestone] = useState(false);
+  const [addMilSearch, setAddMilSearch] = useState("");
+  const [addMilProjectId, setAddMilProjectId] = useState("");
+  const [addMilForm, setAddMilForm] = useState({ name: "", dueDate: "", notes: "" });
+  const [addMilMsg, setAddMilMsg] = useState("");
+
+  function submitAddMilestone() {
+    if (!addMilProjectId) { setAddMilMsg("Please select a project."); return; }
+    if (!addMilForm.name.trim()) { setAddMilMsg("Please enter a milestone name."); return; }
+    const proj = projects.find(p => p.id === addMilProjectId);
+    if (!proj) return;
+    const newMilestone = {
+      id: "m_" + Date.now(),
+      type: "non-billable",
+      name: addMilForm.name.trim(),
+      dueDate: addMilForm.dueDate || "",
+      notes: addMilForm.notes || "",
+      pctComplete: 0,
+      phase: "",
+    };
+    onUpdateProject({ ...proj, milestones: [...(proj.milestones || []), newMilestone] });
+    setAddMilMsg("✓ Milestone added to " + proj.name);
+    setAddMilForm({ name: "", dueDate: "", notes: "" });
+    setAddMilProjectId("");
+    setAddMilSearch("");
+    setTimeout(() => { setShowAddMilestone(false); setAddMilMsg(""); }, 1200);
+  }
+
+  const filteredProjects = active.filter(p =>
+    p.name.toLowerCase().includes(addMilSearch.toLowerCase()) ||
+    (p.projectNumber || "").toLowerCase().includes(addMilSearch.toLowerCase())
+  );
+
+  async function syncMilestoneFromDash(m) {
+    if (!m.dueDate) { setDashSyncMsg("⚠ No due date on " + m.name); return; }
+    setDashCalState(s => ({ ...s, [m.id]: "syncing" }));
+    const calKey = "setty_pms_cal_" + m.projectId;
+    const calMap = (() => { try { return JSON.parse(localStorage.getItem(calKey) || "{}"); } catch(e) { return {}; } })();
+    const proj = projects.find(p => p.id === m.projectId);
+    const result = await createOrUpdateCalendarEvent(m, proj?.name || "Project", proj?.projectNumber, calMap[m.id]);
+    if (result.success) {
+      if (result.eventId) {
+        const newMap = { ...calMap, [m.id]: result.eventId };
+        try { localStorage.setItem(calKey, JSON.stringify(newMap)); } catch(e) {}
+      }
+      setDashCalState(s => ({ ...s, [m.id]: "synced" }));
+      setDashSyncMsg(result.warning ? "⚠ " + result.warning : "✓ "" + m.name + "" synced to NYC Shared Calendar");
+    } else {
+      setDashCalState(s => ({ ...s, [m.id]: "error" }));
+      setDashSyncMsg("✗ "" + m.name + "" — " + result.error);
+    }
+  }
   // Build a quick lookup: projectId → project
   const projectMap = Object.fromEntries(active.map(p => [p.id, p]));
   const allMilestones = active.flatMap(p => (p.milestones || []).map(m => ({
@@ -2782,8 +2836,98 @@ function Dashboard({ projects, onNavigateToProject }) {
 
   return (
     <div style={{ padding: "24px 32px" }}>
-      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Team Dashboard</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>Team Dashboard</div>
+        <button onClick={() => { setShowAddMilestone(true); setAddMilMsg(""); }}
+          style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 8, color: P.accentLight, cursor: "pointer", fontSize: 13, fontWeight: 600, padding: "8px 16px" }}>
+          + Non-Billable Milestone
+        </button>
+      </div>
       <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>Setty & Associates – Project Management System</div>
+
+      {/* Add Non-Billable Milestone Modal */}
+      {showAddMilestone && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setShowAddMilestone(false); }}>
+          <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 14, padding: 28, width: 480, maxWidth: "90vw" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>+ Non-Billable Milestone</div>
+              <button onClick={() => setShowAddMilestone(false)}
+                style={{ background: "none", border: "none", color: P.textMuted, cursor: "pointer", fontSize: 18, lineHeight: 1 }}>✕</button>
+            </div>
+
+            {/* Project search */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 6, fontWeight: 600 }}>Search Project</div>
+              <input
+                value={addMilSearch}
+                onChange={e => { setAddMilSearch(e.target.value); setAddMilProjectId(""); }}
+                placeholder="Type project name or number…"
+                autoFocus
+                style={{ width: "100%", marginBottom: 8 }} />
+              {addMilSearch && !addMilProjectId && (
+                <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, maxHeight: 180, overflowY: "auto" }}>
+                  {filteredProjects.length === 0
+                    ? <div style={{ padding: "10px 14px", color: P.textDim, fontSize: 13 }}>No projects found</div>
+                    : filteredProjects.map(p => (
+                      <div key={p.id}
+                        onClick={() => { setAddMilProjectId(p.id); setAddMilSearch(p.name + (p.projectNumber ? " [" + p.projectNumber + "]" : "")); }}
+                        style={{ padding: "10px 14px", cursor: "pointer", borderBottom: `1px solid ${P.border}`, fontSize: 13 }}
+                        onMouseEnter={e => e.currentTarget.style.background = P.cardHover}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <span style={{ fontWeight: 600, color: P.accentLight }}>{p.name}</span>
+                        {p.projectNumber && <span style={{ color: P.textMuted, marginLeft: 8, fontSize: 12 }}>[{p.projectNumber}]</span>}
+                        {p.projectManager && <span style={{ color: P.textDim, marginLeft: 8, fontSize: 11 }}>PM: {p.projectManager}</span>}
+                      </div>
+                    ))
+                  }
+                </div>
+              )}
+              {addMilProjectId && (
+                <div style={{ fontSize: 12, color: P.green, marginTop: 4 }}>✓ Project selected</div>
+              )}
+            </div>
+
+            {/* Milestone fields */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 6, fontWeight: 600 }}>Milestone Name *</div>
+              <input value={addMilForm.name} onChange={e => setAddMilForm(f => ({ ...f, name: e.target.value }))}
+                placeholder="e.g. City Submission, Internal Review…" style={{ width: "100%" }} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 6, fontWeight: 600 }}>Due Date</div>
+                <input type="date" value={addMilForm.dueDate} onChange={e => setAddMilForm(f => ({ ...f, dueDate: e.target.value }))} style={{ width: "100%" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 6, fontWeight: 600 }}>Notes</div>
+                <input value={addMilForm.notes} onChange={e => setAddMilForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="Optional…" style={{ width: "100%" }} />
+              </div>
+            </div>
+
+            {addMilMsg && (
+              <div style={{ fontSize: 13, marginBottom: 14, padding: "8px 12px", borderRadius: 6,
+                background: addMilMsg.startsWith("✓") ? P.greenDim : P.redDim,
+                color: addMilMsg.startsWith("✓") ? P.green : P.red,
+                border: `1px solid ${addMilMsg.startsWith("✓") ? P.green : P.red}` }}>
+                {addMilMsg}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowAddMilestone(false)}
+                style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 8, color: P.textMuted, cursor: "pointer", padding: "8px 18px", fontSize: 13 }}>
+                Cancel
+              </button>
+              <button onClick={submitAddMilestone}
+                style={{ background: P.accent, border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontWeight: 700, padding: "8px 20px", fontSize: 13 }}>
+                Add Milestone
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 24 }}>
         <KpiBox label="Active Projects" val={active.length} color={P.accent} />
@@ -2842,16 +2986,40 @@ function Dashboard({ projects, onNavigateToProject }) {
       </div>
 
       <Card>
-        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 16 }}>All Active Milestones</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>All Active Milestones</div>
+          {dashSyncMsg && (
+            <div style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6,
+              background: dashSyncMsg.startsWith("✓") ? P.greenDim : dashSyncMsg.startsWith("⚠") ? P.yellowDim : P.redDim,
+              color: dashSyncMsg.startsWith("✓") ? P.green : dashSyncMsg.startsWith("⚠") ? P.yellow : P.red,
+              border: `1px solid ${dashSyncMsg.startsWith("✓") ? P.green : dashSyncMsg.startsWith("⚠") ? P.yellow : P.red}`,
+              display: "flex", alignItems: "center", gap: 8 }}>
+              {dashSyncMsg}
+              <button onClick={() => setDashSyncMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 12 }}>✕</button>
+            </div>
+          )}
+        </div>
         <table>
           <thead>
-            <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Milestone Progress</th><th>Project Status</th></tr>
+            <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Progress</th><th>Notes</th><th>Project Status</th><th style={{width:44}}>📅</th></tr>
           </thead>
           <tbody>
             {allMilestones.sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
               const mst = milestoneStatus(m.pctComplete);
               const projStatus = m.projectStatus || "Not Started";
               const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
+              const isOverdue = m.dueDate && new Date(m.dueDate) < now && mst !== "Completed";
+
+              function updateMilestoneField(field, val) {
+                if (!onUpdateProject) return;
+                const proj = projects.find(p => p.id === m.projectId);
+                if (!proj) return;
+                const newMilestones = (proj.milestones || []).map(x =>
+                  x.id === m.id ? { ...x, [field]: val } : x
+                );
+                onUpdateProject({ ...proj, milestones: newMilestones });
+              }
+
               return (
                 <tr key={m.id}>
                   <td>
@@ -2863,16 +3031,44 @@ function Dashboard({ projects, onNavigateToProject }) {
                     </button>
                   </td>
                   <td style={{ color: P.textMuted }}>{m.pm || "—"}</td>
-                  <td>{m.name}</td>
+                  <td style={{ fontWeight: 500 }}>{m.name}</td>
                   <td><Badge color={m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
-                  <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: new Date(m.dueDate) < now && mst !== "Completed" ? P.red : P.text }}>{m.dueDate}</td>
-                  <td style={{ width: 120 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <td>
+                    <input type="date" value={m.dueDate || ""}
+                      onChange={e => updateMilestoneField("dueDate", e.target.value)}
+                      style={{ fontFamily: "JetBrains Mono", fontSize: 12, width: 130, borderColor: isOverdue ? P.red : P.border, color: isOverdue ? P.red : P.text }} />
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="number" min={0} max={100}
+                        value={m.pctComplete || 0}
+                        onChange={e => updateMilestoneField("pctComplete", +e.target.value)}
+                        style={{ width: 52, fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                      <span style={{ fontSize: 11, color: P.textDim }}>%</span>
                       <ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} />
-                      <span style={{ fontSize: 11, color: P.textDim, minWidth: 28 }}>{m.pctComplete || 0}%</span>
                     </div>
                   </td>
+                  <td>
+                    <input value={m.notes || ""} placeholder="Notes…"
+                      onChange={e => updateMilestoneField("notes", e.target.value)}
+                      style={{ width: 160, fontSize: 12 }} />
+                  </td>
                   <td><Badge color={projStatusColor} text={projStatus} /></td>
+                  <td>
+                    {m.dueDate && (
+                      <button onClick={() => syncMilestoneFromDash(m)}
+                        disabled={dashCalState[m.id] === "syncing"}
+                        title="Sync to NYC Shared Calendar"
+                        style={{
+                          background: dashCalState[m.id] === "synced" ? P.greenDim : P.accentDim,
+                          border: `1px solid ${dashCalState[m.id] === "synced" ? P.green : P.accent}`,
+                          borderRadius: 6, color: dashCalState[m.id] === "synced" ? P.green : P.accentLight,
+                          cursor: "pointer", fontSize: 11, padding: "3px 7px",
+                        }}>
+                        {dashCalState[m.id] === "syncing" ? "⏳" : dashCalState[m.id] === "synced" ? "✓ 📅" : "📅"}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
@@ -3267,7 +3463,7 @@ function App() {
 
       {loadErrorBanner}
 
-      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
 
       {view === "pipeline" && (
