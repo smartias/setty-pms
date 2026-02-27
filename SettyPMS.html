@@ -1,0 +1,2935 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:mso="urn:schemas-microsoft-com:office:office" xmlns:msdt="uuid:C2F41010-65B3-11d1-A29F-00AA00C14882">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Setty PMS</title>
+  <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
+  <script>
+    if (typeof msal === 'undefined') {
+      document.write('<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"><\/script>');
+    }
+  </script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d0f1a; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    #root { min-height: 100vh; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #151929; }
+    ::-webkit-scrollbar-thumb { background: #2d3452; border-radius: 3px; }
+  </style>
+
+<!--[if gte mso 9]><xml>
+<mso:CustomDocumentProperties>
+<mso:_dlc_DocId msdt:dt="string">2RJXTAWEMNVQ-175631644-1716</mso:_dlc_DocId>
+<mso:_dlc_DocIdItemGuid msdt:dt="string">8c14d651-9315-488a-b455-a87720a3016e</mso:_dlc_DocIdItemGuid>
+<mso:_dlc_DocIdUrl msdt:dt="string">https://setty.sharepoint.com/sites/NYCProjects/_layouts/15/DocIdRedir.aspx?ID=2RJXTAWEMNVQ-175631644-1716, 2RJXTAWEMNVQ-175631644-1716</mso:_dlc_DocIdUrl>
+</mso:CustomDocumentProperties>
+</xml><![endif]-->
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useMemo } = React;
+
+
+// ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
+
+const RS_MEANS_COST_PER_SF = {
+  "Office": 285, "Healthcare/Clinic": 420, "Laboratory": 580, "K-12 School": 260,
+  "University": 340, "Warehouse/Industrial": 120, "Retail": 175, "Multifamily": 210,
+  "Hotel": 295, "Museum/Cultural": 480, "Data Center": 650, "Recreation/Gym": 230,
+  "Parking Structure": 85, "Religious": 260, "Government": 310,
+};
+
+const PROJECT_TYPES = [
+  "Type I New Construction","Type I Renovation","Type II New Construction","Type II Renovation",
+  "Type III New Construction","Type III Renovation","Type IV New Construction","Type IV Renovation",
+  "Type V New Construction","Type V Renovation","Type VI New Construction","Type VI Renovation",
+];
+
+const DISCIPLINE_PERCENTAGES = {
+  "Type I New Construction":   { Mechanical:0.0725, Electrical:0.0825, "Fire Protection":0.0225, Plumbing:0.0275 },
+  "Type I Renovation":         { Mechanical:0.0725, Electrical:0.0825, "Fire Protection":0.0225, Plumbing:0.0275 },
+  "Type II New Construction":  { Mechanical:0.08,   Electrical:0.0875, "Fire Protection":0.025,  Plumbing:0.03   },
+  "Type II Renovation":        { Mechanical:0.08,   Electrical:0.0875, "Fire Protection":0.025,  Plumbing:0.03   },
+  "Type III New Construction": { Mechanical:0.0925, Electrical:0.0875, "Fire Protection":0.03,   Plumbing:0.03   },
+  "Type III Renovation":       { Mechanical:0.0925, Electrical:0.0875, "Fire Protection":0.03,   Plumbing:0.03   },
+  "Type IV New Construction":  { Mechanical:0.0975, Electrical:0.09,   "Fire Protection":0.0325, Plumbing:0.035  },
+  "Type IV Renovation":        { Mechanical:0.0975, Electrical:0.09,   "Fire Protection":0.0325, Plumbing:0.035  },
+  "Type V New Construction":   { Mechanical:0.125,  Electrical:0.0925, "Fire Protection":0.035,  Plumbing:0.0375 },
+  "Type V Renovation":         { Mechanical:0.125,  Electrical:0.0925, "Fire Protection":0.035,  Plumbing:0.0375 },
+  "Type VI New Construction":  { Mechanical:0.3,    Electrical:0.2,    "Fire Protection":0.1,    Plumbing:0.1    },
+  "Type VI Renovation":        { Mechanical:0.3,    Electrical:0.2,    "Fire Protection":0.1,    Plumbing:0.1    },
+};
+
+const FEE_PERCENT_TABLE = [
+  { min:0,       max:500000,   pct:{ "Type I New Construction":0.064,"Type I Renovation":0.08,"Type II New Construction":0.072,"Type II Renovation":0.09,"Type III New Construction":0.08,"Type III Renovation":0.1,"Type IV New Construction":0.088,"Type IV Renovation":0.11,"Type V New Construction":0.096,"Type V Renovation":0.12,"Type VI New Construction":0.09,"Type VI Renovation":0.112 }},
+  { min:500000,  max:1000000,  pct:{ "Type I New Construction":0.061,"Type I Renovation":0.076,"Type II New Construction":0.068,"Type II Renovation":0.086,"Type III New Construction":0.076,"Type III Renovation":0.095,"Type IV New Construction":0.084,"Type IV Renovation":0.105,"Type V New Construction":0.091,"Type V Renovation":0.114,"Type VI New Construction":0.085,"Type VI Renovation":0.106 }},
+  { min:1000000, max:2000000,  pct:{ "Type I New Construction":0.058,"Type I Renovation":0.073,"Type II New Construction":0.066,"Type II Renovation":0.082,"Type III New Construction":0.073,"Type III Renovation":0.091,"Type IV New Construction":0.08,"Type IV Renovation":0.1,"Type V New Construction":0.088,"Type V Renovation":0.11,"Type VI New Construction":0.082,"Type VI Renovation":0.102 }},
+  { min:2000000, max:5000000,  pct:{ "Type I New Construction":0.055,"Type I Renovation":0.069,"Type II New Construction":0.062,"Type II Renovation":0.078,"Type III New Construction":0.069,"Type III Renovation":0.087,"Type IV New Construction":0.076,"Type IV Renovation":0.095,"Type V New Construction":0.083,"Type V Renovation":0.104,"Type VI New Construction":0.078,"Type VI Renovation":0.097 }},
+  { min:5000000, max:Infinity, pct:{ "Type I New Construction":0.053,"Type I Renovation":0.066,"Type II New Construction":0.060,"Type II Renovation":0.075,"Type III New Construction":0.067,"Type III Renovation":0.083,"Type IV New Construction":0.073,"Type IV Renovation":0.092,"Type V New Construction":0.080,"Type V Renovation":0.100,"Type VI New Construction":0.075,"Type VI Renovation":0.094 }},
+];
+
+const DEFAULT_PHASES = [
+  { code:"SD", name:"Schematic Design",          pct:0.15, billable:true },
+  { code:"DD", name:"Design Development",         pct:0.25, billable:true },
+  { code:"CD", name:"Construction Documents",     pct:0.35, billable:true },
+  { code:"BS", name:"Bid Phase",                  pct:0.05, billable:true },
+  { code:"CA", name:"Construction Administration",pct:0.20, billable:true },
+];
+
+const PHASE_DURATIONS_WD = { SD:30, DD:52, CD:82, BS:11, CA:319 };
+
+const CONTRACT_STATUSES = [
+  "Waiting for NTP/Contract","Internal Review or Action Required",
+  "Comments sent to Client","Signed Contract out to Client","CARF","Fully Executed",
+];
+
+const PROJECT_STATUSES = [
+  "Not Started","In Progress","In for Review","On Hold","Top Priority",
+  "In Construction Administration","Completed","Cancelled","Lost",
+];
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+function uid() { return Math.random().toString(36).slice(2,10); }
+
+function addWorkDays(startDate, days) {
+  let d = new Date(startDate);
+  let count = 0;
+  while (count < days) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return d;
+}
+
+function fmt(n) {
+  if (n == null || isNaN(n)) return "$0";
+  return "$" + Math.round(n).toLocaleString();
+}
+
+function fmtPct(n) { return (n * 100).toFixed(1) + "%"; }
+
+function getFeePercent(constructionCost, projectType) {
+  const row = FEE_PERCENT_TABLE.find(r => constructionCost >= r.min && constructionCost < r.max)
+    || FEE_PERCENT_TABLE[FEE_PERCENT_TABLE.length - 1];
+  return row.pct[projectType] || 0.06;
+}
+
+function calcConstructionCost(sqft, category, manualCost, manualCostPerSF) {
+  if (manualCost && manualCost > 0) return manualCost;
+  const costPerSF = (manualCostPerSF && manualCostPerSF > 0) ? manualCostPerSF : (RS_MEANS_COST_PER_SF[category] || 300);
+  return sqft * costPerSF;
+}
+
+// Returns effective discipline percentages — overrides merged on top of defaults
+function getEffectiveDisciplines(project) {
+  const defaults = DISCIPLINE_PERCENTAGES[project.projectType] || {};
+  const overrides = project.disciplinePercentOverrides || {};
+  const result = {};
+  for (const disc of Object.keys(defaults)) {
+    result[disc] = overrides[disc] != null ? overrides[disc] : defaults[disc];
+  }
+  return result;
+}
+
+function calcAEFee(constructionCost, project) {
+  // Total AE fee = construction cost × fee percentage from table
+  const pct = getFeePercent(constructionCost, project.projectType);
+  return constructionCost * pct;
+}
+
+function calcSettyFee(constructionCost, project) {
+  // Setty fee = AE fee × sum of discipline percentages (each disc % is a share of AE fee)
+  const aeFee = calcAEFee(constructionCost, project);
+  const discs = getEffectiveDisciplines(project);
+  const settyShare = Object.values(discs).reduce((a, b) => a + b, 0);
+  return aeFee * settyShare;
+}
+
+function buildPhaseFees(settyFee, phases) {
+  const total = phases.filter(p => p.billable).reduce((a, p) => a + p.pct, 0);
+  return phases.map(p => ({
+    ...p,
+    fee: p.billable && total > 0 ? settyFee * (p.pct / total) : 0,
+  }));
+}
+
+function buildSchedule(startDate, phases) {
+  let cursor = new Date(startDate);
+  const GAP_DAYS = 10;
+  return phases.map(ph => {
+    if (!ph.billable || ph.fee === 0) return { ...ph, startDate: null, endDate: null };
+    const durationWD = PHASE_DURATIONS_WD[ph.code] || 30;
+    const sd = new Date(cursor);
+    const ed = addWorkDays(sd, durationWD);
+    cursor = addWorkDays(ed, GAP_DAYS);
+    return { ...ph, startDate: sd.toISOString().slice(0, 10), endDate: ed.toISOString().slice(0, 10) };
+  });
+}
+
+// Milestone status auto-derived from pctComplete
+function milestoneStatus(pct) {
+  if (!pct || pct === 0) return "Not Started";
+  if (pct >= 100) return "Completed";
+  return "In Progress";
+}
+
+// Phase pctComplete is derived from its billable milestones
+function getPhasePctFromMilestones(phase, milestones) {
+  const matching = milestones.filter(m => m.type === "billable" && m.phase === phase.code);
+  if (!matching.length) return phase.pctComplete || 0;
+  return Math.round(matching.reduce((a, m) => a + (m.pctComplete || 0), 0) / matching.length);
+}
+
+function projectOverallPct(project) {
+  if (!project.feeScheduleFinalized || !project.phases?.length) return 0;
+  const billable = project.phases.filter(p => p.billable && p.fee > 0);
+  if (!billable.length) return 0;
+  const milestones = project.milestones || [];
+  const totalFee = billable.reduce((a, p) => a + p.fee, 0);
+  const earned = billable.reduce((a, p) => {
+    const pct = getPhasePctFromMilestones(p, milestones);
+    return a + p.fee * pct / 100;
+  }, 0);
+  return totalFee > 0 ? Math.round(earned / totalFee * 100) : 0;
+}
+
+// ─── DEFAULT PROJECT TEMPLATE ─────────────────────────────────────────────────
+
+function newProject(overrides = {}) {
+  const id = uid();
+  return {
+    id,
+    name: "New Project",
+    projectNumber: "",
+    projectManager: "",
+    deputyProjectManager: "",
+    prime: "",
+    status: "Not Started",
+    contractStatus: "Waiting for NTP/Contract",
+    contractNotes: "",
+    archived: false,
+    buildingCategory: "Office",
+    squareFootage: 0,
+    manualConstructionCost: 0,
+    projectType: "Type II New Construction",
+    disciplinePercentOverrides: {},
+    phases: buildSchedule(new Date().toISOString().slice(0, 10), DEFAULT_PHASES.map(p => ({ ...p, id: uid(), pctComplete: 0 }))),
+    feeScheduleFinalized: false,
+    teamMembers: [
+      { id: uid(), name: "", role: "Project Manager", rate: 0 },
+      { id: uid(), name: "", role: "Deputy Project Manager", rate: 0 },
+    ],
+    milestones: [],
+    changeOrders: [],
+    invoices: [],
+    startDate: new Date().toISOString().slice(0, 10),
+    ...overrides,
+  };
+}
+
+// ─── MICROSOFT GRAPH / MSAL PERSISTENCE ──────────────────────────────────────
+// Data file: stored in the SIGNED-IN USER's OneDrive › Apps › SettyPMS › setty-pms-data.json
+// BUT: to share across team, one person hosts it and shares the folder.
+// The app uses a configurable "data file URL" — paste the Graph shareable link once.
+//
+// Permissions used (ALL delegated, NO admin consent required):
+//   Files.ReadWrite.All  — access SharePoint/OneDrive files the user can reach
+//   Calendars.ReadWrite.Shared — read/write shared calendars
+//   User.Read            — sign in
+//
+// Auth: MSAL.js popup — user signs in with their Setty M365 account.
+// No Claude API. No admin consent. No secrets hardcoded.
+
+const CAL_MAILBOX   = "sara.arias@setty.com";
+const GRAPH_BASE    = "https://graph.microsoft.com/v1.0";
+const TENANT_ID = "f374c024-71c2-48b6-8420-076fff97327c"; // Setty & Associates tenant
+// Folder in signed-in user's OneDrive where data file lives (first-run user creates this)
+const OD_FOLDER     = "SettyPMS";
+const OD_FILE       = "setty-pms-data.json";
+
+// ── MSAL instance ──
+let _msalApp = null;
+
+function getMsalClientId() {
+  return localStorage.getItem("setty_pms_client_id") || "";
+}
+
+// Stored drive item ID for the shared data file (set after first successful access)
+function getDataItemId() { return localStorage.getItem("setty_pms_item_id") || ""; }
+function setDataItemId(id) { localStorage.setItem("setty_pms_item_id", id); }
+
+async function getMsalApp() {
+  const clientId = getMsalClientId();
+  if (!clientId) throw new Error("NO_CLIENT_ID");
+  if (_msalApp) return _msalApp;
+  _msalApp = new msal.PublicClientApplication({
+    auth: {
+      clientId,
+      authority: `https://login.microsoftonline.com/${TENANT_ID}`,
+      redirectUri: "https://setty.sharepoint.com/sites/NYCProjects/Shared%20Documents/SettyPMS.html",
+    },
+    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
+  });
+  await _msalApp.initialize();
+  return _msalApp;
+}
+
+// Scopes — all delegated, none require admin consent
+const GRAPH_SCOPES = [
+  "Files.ReadWrite.All",      // access SharePoint/OneDrive files user can reach — NO admin consent
+  "Calendars.ReadWrite.Shared", // shared calendars — NO admin consent
+  "User.Read",                // sign in — NO admin consent
+];
+
+async function getToken(forceRefresh = false) {
+  const app = await getMsalApp();
+  const accounts = app.getAllAccounts();
+  if (accounts.length > 0 && !forceRefresh) {
+    try {
+      const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+      return r.accessToken;
+    } catch(e) { /* fall through to popup */ }
+  }
+  const r = await app.loginPopup({ scopes: GRAPH_SCOPES });
+  return r.accessToken;
+}
+
+async function graphFetch(method, path, body, token) {
+  const t = token || await getToken();
+  const isBytes = body instanceof Uint8Array;
+  const opts = {
+    method,
+    headers: {
+      Authorization: `Bearer ${t}`,
+      ...(body !== undefined ? { "Content-Type": isBytes ? "application/octet-stream" : "application/json" } : {}),
+    },
+    ...(body !== undefined ? { body: isBytes ? body : JSON.stringify(body) } : {}),
+  };
+  let resp = await fetch(`${GRAPH_BASE}${path}`, opts);
+  if (resp.status === 401) {
+    const fresh = await getToken(true);
+    opts.headers.Authorization = `Bearer ${fresh}`;
+    resp = await fetch(`${GRAPH_BASE}${path}`, opts);
+  }
+  if (resp.status === 204 || resp.status === 202) return null;
+  if (resp.status === 404) return null;
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Graph ${resp.status}: ${txt.slice(0, 300)}`);
+  }
+  return resp.json();
+}
+
+// ── File path helpers ──
+// Primary: signed-in user's OneDrive › SettyPMS › setty-pms-data.json
+// If a shared item ID is stored (from setup), use that drive item directly.
+// This means whoever runs setup first owns the file; everyone else accesses
+// it via the shared driveItem URL they paste in setup.
+
+function ownFilePath() {
+  return `/me/drive/root:/${OD_FOLDER}/${OD_FILE}`;
+}
+
+async function resolveFilePath() {
+  // If a share URL has been configured, decode and use the shared item
+  const shareUrl = localStorage.getItem("setty_pms_share_url") || "";
+  if (shareUrl) {
+    // Graph sharing URL encoding: base64url of "u!" + url
+    const encoded = btoa("u!" + shareUrl).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+    return `/shares/${encoded}/driveItem`;
+  }
+  // Fall back to own OneDrive (first-run / admin user)
+  return ownFilePath();
+}
+
+async function loadState() {
+  try {
+    const token = await getToken();
+    const filePath = await resolveFilePath();
+
+    // For own OneDrive path, append :/content; for shares, use /content sub-resource
+    const contentPath = filePath.includes("/shares/")
+      ? `${filePath}/content`
+      : `${filePath}:/content`;
+
+    const resp = await fetch(`${GRAPH_BASE}${contentPath}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (resp.status === 404) return null; // first run
+    if (!resp.ok) throw new Error(`Graph ${resp.status}`);
+    return await resp.json();
+  } catch(e) {
+    if (e.message === "NO_CLIENT_ID") throw e;
+    if (e.message?.includes("404")) return null;
+    console.warn("loadState:", e.message);
+    throw e;
+  }
+}
+
+async function saveState(state) {
+  const token = await getToken();
+  const payload = new TextEncoder().encode(
+    JSON.stringify({ ...state, _savedAt: new Date().toISOString(), _version: 3 }, null, 2)
+  );
+
+  const filePath = await resolveFilePath();
+  const contentPath = filePath.includes("/shares/")
+    ? `${filePath}/content`
+    : `${filePath}:/content`;
+
+  const resp = await fetch(`${GRAPH_BASE}${contentPath}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+    body: payload,
+  });
+  if (!resp.ok) {
+    const txt = await resp.text();
+    // If share path failed, try own file path (first run)
+    if (filePath.includes("/shares/")) {
+      const own = await fetch(`${GRAPH_BASE}${ownFilePath()}:/content`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+        body: payload,
+      });
+      if (!own.ok) throw new Error(`Save failed ${own.status}`);
+      return;
+    }
+    throw new Error(`Save failed ${resp.status}: ${txt.slice(0, 200)}`);
+  }
+}
+
+// ── Calendar helpers ──
+async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId) {
+  if (!milestone.dueDate) return { success: false, error: "No due date" };
+  const prefix = projectNumber ? `[${projectNumber}] ` : "";
+  const subject = `${prefix}${projectName} — ${milestone.name}`;
+  const eventBody = {
+    subject,
+    isAllDay: true,
+    start: { dateTime: `${milestone.dueDate}T00:00:00`, timeZone: "UTC" },
+    end:   { dateTime: `${milestone.dueDate}T00:00:00`, timeZone: "UTC" },
+    body: {
+      contentType: "text",
+      content: `Phase: ${milestone.phase || ""} | Type: ${milestone.type || "billable"} | Progress: ${milestone.pctComplete || 0}% | Project: ${projectName}${projectNumber ? " (#" + projectNumber + ")" : ""}`,
+    },
+    categories: ["Setty PMS"],
+  };
+  try {
+    let result;
+    if (existingEventId) {
+      result = await graphFetch("PATCH", `/users/${CAL_MAILBOX}/events/${existingEventId}`, eventBody);
+      if (!result) result = await graphFetch("POST", `/users/${CAL_MAILBOX}/events`, eventBody);
+    } else {
+      result = await graphFetch("POST", `/users/${CAL_MAILBOX}/events`, eventBody);
+    }
+    return { success: true, eventId: result?.id };
+  } catch(e) {
+    return { success: false, error: e.message };
+  }
+}
+
+// ─── PALETTE & STYLES ────────────────────────────────────────────────────────
+
+const P = {
+  bg: "#0f1117", card: "#1a1d2e", cardHover: "#1e2238", border: "#2a2d45",
+  accent: "#3b82f6", accentLight: "#60a5fa", accentDim: "#1e3a5f",
+  green: "#10b981", greenDim: "#064e3b", yellow: "#f59e0b", yellowDim: "#451a03",
+  red: "#ef4444", redDim: "#450a0a", purple: "#8b5cf6", purpleDim: "#2e1065",
+  text: "#e2e8f0", textMuted: "#94a3b8", textDim: "#64748b",
+};
+
+const STATUS_COLORS = {
+  "Not Started": { bg: P.border, text: P.textMuted },
+  "In Progress": { bg: P.accentDim, text: P.accentLight },
+  "In for Review": { bg: "#1e3a5f", text: "#7dd3fc" },
+  "On Hold": { bg: P.yellowDim, text: P.yellow },
+  "Top Priority": { bg: "#500724", text: "#fda4af" },
+  "In Construction Administration": { bg: P.greenDim, text: P.green },
+  "Completed": { bg: "#052e16", text: "#86efac" },
+  "Cancelled": { bg: "#27272a", text: "#a1a1aa" },
+  "Lost": { bg: "#1c1917", text: "#78716c" },
+};
+
+const MILESTONE_STATUS_COLORS = {
+  "Not Started": { bg: P.border, text: P.textMuted },
+  "In Progress": { bg: P.accentDim, text: P.accentLight },
+  "Completed": { bg: P.greenDim, text: P.green },
+};
+
+const CONTRACT_COLORS = {
+  "Waiting for NTP/Contract": { bg: "#1e3a5f", text: "#7dd3fc" },
+  "Internal Review or Action Required": { bg: "#500724", text: "#fda4af" },
+  "Comments sent to Client": { bg: P.yellowDim, text: P.yellow },
+  "Signed Contract out to Client": { bg: P.purpleDim, text: "#c4b5fd" },
+  "CARF": { bg: "#451a03", text: "#fcd34d" },
+  "Fully Executed": { bg: P.greenDim, text: P.green },
+};
+
+const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'DM Sans',sans-serif;background:${P.bg};color:${P.text};min-height:100vh;}
+  ::-webkit-scrollbar{width:6px;height:6px;}
+  ::-webkit-scrollbar-track{background:${P.bg};}
+  ::-webkit-scrollbar-thumb{background:${P.border};border-radius:3px;}
+  input,select,textarea{font-family:'DM Sans',sans-serif;background:${P.bg};border:1px solid ${P.border};color:${P.text};border-radius:6px;padding:6px 10px;font-size:13px;outline:none;transition:border-color .15s;}
+  input[type=date]{color-scheme:dark;}
+  input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(2) hue-rotate(190deg);cursor:pointer;opacity:0.8;}
+  input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1;}
+  input:focus,select:focus,textarea:focus{border-color:${P.accent};}
+  input::placeholder,textarea::placeholder{color:${P.textDim};}
+  button{font-family:'DM Sans',sans-serif;cursor:pointer;border:none;outline:none;transition:all .15s;}
+  table{border-collapse:collapse;width:100%;}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid ${P.border};font-size:13px;}
+  th{font-size:11px;font-weight:600;color:${P.textDim};text-transform:uppercase;letter-spacing:.05em;background:${P.card};}
+  tr:hover td{background:${P.cardHover};}
+`;
+
+// ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
+
+function Badge({ color, text }) {
+  const c = color || { bg: P.border, text: P.textMuted };
+  return (
+    <span style={{ background: c.bg, color: c.text, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>
+      {text}
+    </span>
+  );
+}
+
+function Btn({ onClick, children, variant = "primary", small, disabled, style: s = {} }) {
+  const styles = {
+    primary: { background: P.accent, color: "#fff" },
+    ghost: { background: "transparent", color: P.textMuted, border: `1px solid ${P.border}` },
+    danger: { background: P.redDim, color: P.red, border: `1px solid ${P.red}` },
+    success: { background: P.greenDim, color: P.green, border: `1px solid ${P.green}` },
+    warning: { background: P.yellowDim, color: P.yellow },
+    purple: { background: P.purpleDim, color: P.purple },
+  };
+  return (
+    <button onClick={onClick} disabled={disabled}
+      style={{ ...styles[variant], padding: small ? "4px 10px" : "7px 16px", borderRadius: 6, fontSize: small ? 11 : 13, fontWeight: 500, opacity: disabled ? 0.4 : 1, ...s }}>
+      {children}
+    </button>
+  );
+}
+
+function Card({ children, style: s = {} }) {
+  return <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20, ...s }}>{children}</div>;
+}
+
+function Field({ label, children, style: s = {} }) {
+  return (
+    <div style={{ marginBottom: 14, ...s }}>
+      <div style={{ fontSize: 11, color: P.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 5 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function ProgressBar({ pct, color = P.accent }) {
+  return (
+    <div style={{ background: P.border, borderRadius: 4, height: 6, overflow: "hidden" }}>
+      <div style={{ width: `${Math.min(100, pct || 0)}%`, background: color, height: "100%", borderRadius: 4, transition: "width .3s" }} />
+    </div>
+  );
+}
+
+function SectionTitle({ children, action }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <div style={{ fontWeight: 700, fontSize: 15 }}>{children}</div>
+      {action}
+    </div>
+  );
+}
+
+function KpiBox({ label, val, color, sub }) {
+  return (
+    <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: "14px 16px" }}>
+      <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color: color || P.text, fontFamily: "JetBrains Mono" }}>{val}</div>
+      {sub && <div style={{ fontSize: 11, color: P.textDim, marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, width: wide ? 860 : 560, maxHeight: "92vh", overflow: "auto", padding: 28 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{title}</div>
+          <button onClick={onClose} style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── FEE CALCULATOR ──────────────────────────────────────────────────────────
+
+function FeeCalculator({ project, onChange }) {
+  const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const effectiveDiscs = getEffectiveDisciplines(project);
+  const aeFee = calcAEFee(constructionCost, project);
+  const baseFee = calcSettyFee(constructionCost, project);
+  const phases = project.phases || [];
+  const phasedFees = buildPhaseFees(baseFee, phases);
+  const defaultDiscs = DISCIPLINE_PERCENTAGES[project.projectType] || {};
+  const overrides = project.disciplinePercentOverrides || {};
+
+  function setField(field, val) {
+    onChange({ ...project, [field]: val });
+  }
+
+  function setDisciplineOverride(disc, rawVal) {
+    // rawVal is already divided by 100 before calling this
+    const val = +rawVal;
+    const newOverrides = { ...overrides };
+    if (Math.abs(val - (defaultDiscs[disc] || 0)) < 0.000001) {
+      delete newOverrides[disc];
+    } else {
+      newOverrides[disc] = val;
+    }
+    onChange({ ...project, disciplinePercentOverrides: newOverrides });
+  }
+
+  function clearDisciplineOverrides() {
+    onChange({ ...project, disciplinePercentOverrides: {} });
+  }
+
+  function updatePhase(idx, updates) {
+    const newPhases = phases.map((p, i) => i === idx ? { ...p, ...updates } : p);
+    onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
+  }
+
+  function addPhase() {
+    const newPhases = [...phases, { id: uid(), code: `PH${phases.length + 1}`, name: "Custom Phase", pct: 0, billable: true, fee: 0, pctComplete: 0 }];
+    onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
+  }
+
+  function finalizeSchedule() {
+    const finalized = buildPhaseFees(baseFee, phases);
+    const scheduled = buildSchedule(project.startDate, finalized);
+    const existingNonBillable = (project.milestones || []).filter(m => m.type !== "billable");
+    const newBillable = scheduled.filter(p => p.billable && p.fee > 0).map(p => ({
+      id: uid(), type: "billable", phase: p.code, name: p.name, fee: p.fee,
+      startDate: p.startDate, dueDate: p.endDate, pctComplete: 0, notes: "",
+    }));
+    onChange({ ...project, phases: scheduled, feeScheduleFinalized: true, milestones: [...existingNonBillable, ...newBillable] });
+  }
+
+  const totalPhasePct = phases.filter(p => p.billable).reduce((a, p) => a + p.pct, 0);
+  const discTotal = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0);
+  const hasOverrides = Object.keys(overrides).length > 0;
+  const [showLegend, setShowLegend] = useState(false);
+
+  const PROJECT_TYPE_LEGEND = [
+    { type: "Type I", desc: "Simple, low-complexity building — single discipline, minimal coordination. Examples: storage facilities, simple warehouses, basic shell buildings." },
+    { type: "Type II", desc: "Standard commercial construction — moderate complexity, common MEP systems. Examples: offices, retail, standard schools, light industrial." },
+    { type: "Type III", desc: "Above-average complexity — specialized systems or multiple disciplines with coordination needs. Examples: mid-rise mixed-use, higher-ed classrooms, mid-complexity healthcare." },
+    { type: "Type IV", desc: "High complexity — multiple interacting systems, strict code requirements, or specialty environments. Examples: hospitals, research buildings, data centers, airports." },
+    { type: "Type V", desc: "Very high complexity — process-driven or mission-critical facilities with significant MEP intensity. Examples: pharmaceutical plants, advanced labs, clean rooms, cogen plants." },
+    { type: "Type VI", desc: "Maximum complexity — highly engineered, MEP-dominant projects. Examples: semiconductor fabs, nuclear facilities, advanced research centers, specialized industrial." },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+        <Field label="Project Type">
+          <select value={project.projectType} onChange={e => setField("projectType", e.target.value)} style={{ width: "100%" }}>
+            {PROJECT_TYPES.map(t => <option key={t}>{t}</option>)}
+          </select>
+          <button onClick={() => setShowLegend(v => !v)}
+            style={{ marginTop: 6, background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, display: "flex", alignItems: "center", gap: 4 }}>
+            <span>{showLegend ? "▾" : "▸"}</span> {showLegend ? "Hide" : "What do the types mean?"}
+          </button>
+        </Field>
+        <Field label="Building Category (RS Means)">
+          <select value={project.buildingCategory} onChange={e => setField("buildingCategory", e.target.value)} style={{ width: "100%" }}>
+            {Object.keys(RS_MEANS_COST_PER_SF).map(k => <option key={k}>{k}</option>)}
+          </select>
+        </Field>
+        <Field label="Square Footage">
+          <input type="number" value={project.squareFootage || ""} onChange={e => setField("squareFootage", +e.target.value)} placeholder="0" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Manual Construction Cost (overrides SF calc)">
+          <input type="number" value={project.manualConstructionCost || ""} onChange={e => setField("manualConstructionCost", +e.target.value)} placeholder="Leave 0 to use SF × Cost/SF" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Project Start Date">
+          <input type="date" value={project.startDate || ""} onChange={e => setField("startDate", e.target.value)} style={{ width: "100%" }} />
+        </Field>
+      </div>
+
+      {/* Project type legend */}
+      {showLegend && (
+        <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 18, marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 14, color: P.accentLight }}>📋 Project Construction Type Guide</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {PROJECT_TYPE_LEGEND.map(({ type, desc }) => {
+              const isNewSelected = project.projectType.startsWith(type) && project.projectType.includes("New");
+              const isRenSelected = project.projectType.startsWith(type) && project.projectType.includes("Renovation");
+              const isAnySelected = project.projectType.startsWith(type);
+              return (
+                <div key={type} style={{ background: isAnySelected ? P.accentDim : P.card, border: `1px solid ${isAnySelected ? P.accent : P.border}`, borderRadius: 8, padding: "10px 14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: isAnySelected ? P.accentLight : P.text }}>{type}</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => setField("projectType", type + " New Construction")}
+                        style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, cursor: "pointer", border: `1px solid ${isNewSelected ? P.accent : P.border}`, background: isNewSelected ? P.accent : "transparent", color: isNewSelected ? "#fff" : P.textMuted }}>
+                        New
+                      </button>
+                      <button onClick={() => setField("projectType", type + " Renovation")}
+                        style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, cursor: "pointer", border: `1px solid ${isRenSelected ? P.accent : P.border}`, background: isRenSelected ? P.accent : "transparent", color: isRenSelected ? "#fff" : P.textMuted }}>
+                        Reno
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: P.textMuted, lineHeight: 1.5 }}>{desc}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 12, fontSize: 11, color: P.textDim }}>
+            💡 Renovation projects carry higher fee percentages than New Construction of the same type due to complexity of working in existing conditions.
+          </div>
+        </div>
+      )}
+
+      {/* Summary bar */}
+      <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: "14px 18px", marginBottom: 24, display: "flex", gap: 32, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>RS MEANS COST/SF</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontWeight: 700, color: project.manualRSMeansCostPerSF > 0 ? P.yellow : P.text }}>
+              ${(project.manualRSMeansCostPerSF > 0 ? project.manualRSMeansCostPerSF : RS_MEANS_COST_PER_SF[project.buildingCategory] || 300).toLocaleString()}/sf
+            </span>
+            {project.manualRSMeansCostPerSF > 0 && (
+              <span style={{ fontSize: 11, color: P.yellow, background: P.yellowDim, padding: "2px 8px", borderRadius: 10 }}>Custom</span>
+            )}
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Override $/SF:</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input type="number" min="0" step="5"
+                value={project.manualRSMeansCostPerSF || ""}
+                onChange={e => setField("manualRSMeansCostPerSF", +e.target.value)}
+                placeholder={String(RS_MEANS_COST_PER_SF[project.buildingCategory] || 300)}
+                style={{ width: 90, borderColor: project.manualRSMeansCostPerSF > 0 ? P.yellow : P.border }}
+              />
+              {project.manualRSMeansCostPerSF > 0 && (
+                <button onClick={() => setField("manualRSMeansCostPerSF", 0)}
+                  style={{ background: "none", color: P.yellow, fontSize: 13, border: "none", cursor: "pointer" }} title="Reset to default">↺</button>
+              )}
+            </div>
+          </div>
+        </div>
+        <div><div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>CONSTRUCTION COST</div><div style={{ fontWeight: 700 }}>{fmt(constructionCost)}</div></div>
+        <div><div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>AE FEE %</div><div style={{ fontWeight: 700 }}>{fmtPct(getFeePercent(constructionCost, project.projectType))}</div></div>
+        <div><div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>TOTAL AE FEE</div><div style={{ fontWeight: 700 }}>{fmt(aeFee)}</div></div>
+        <div style={{ borderLeft: `2px solid ${P.accent}`, paddingLeft: 16 }}>
+          <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>SETTY FEE (MEP+FP)</div>
+          <div style={{ fontWeight: 700, color: P.green }}>{fmt(baseFee)}</div>
+          <div style={{ fontSize: 10, color: P.textDim, marginTop: 2 }}>{fmtPct(discTotal)} of AE fee</div>
+        </div>
+      </div>
+
+      {/* ── Discipline Fees with overrides ── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>
+          Discipline Fees
+          {hasOverrides && (
+            <span style={{ marginLeft: 8, fontSize: 11, color: P.yellow, background: P.yellowDim, padding: "2px 8px", borderRadius: 10 }}>
+              Custom overrides active
+            </span>
+          )}
+        </div>
+        {hasOverrides && <Btn small variant="ghost" onClick={clearDisciplineOverrides}>↺ Reset All to Defaults</Btn>}
+      </div>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
+        Edit the "Override %" column to adjust any discipline's share of the total fee. Click ↺ next to a row to revert it individually.
+      </div>
+      <table style={{ marginBottom: 24 }}>
+        <thead>
+          <tr>
+            <th>Discipline</th>
+            <th>Default % of AE Fee</th>
+            <th>Override % of AE Fee <span style={{ fontWeight: 400 }}>(edit to customize)</span></th>
+            <th>Fee Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Object.entries(defaultDiscs).map(([disc, defaultPct]) => {
+            const effective = effectiveDiscs[disc] ?? defaultPct;
+            const isOverridden = overrides[disc] != null;
+            const feeAmt = aeFee * effective; // each disc % applied directly to AE fee
+            return (
+              <tr key={disc}>
+                <td style={{ fontWeight: 500 }}>{disc}</td>
+                <td style={{ fontFamily: "JetBrains Mono", color: P.textDim }}>{(defaultPct * 100).toFixed(2)}%</td>
+                <td>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <input
+                      type="number" step="0.1" min="0" max="100"
+                      value={parseFloat((effective * 100).toFixed(2))}
+                      onChange={e => setDisciplineOverride(disc, +e.target.value / 100)}
+                      style={{ width: 85, fontFamily: "JetBrains Mono", borderColor: isOverridden ? P.yellow : P.border }}
+                    />
+                    {isOverridden ? (
+                      <button onClick={() => setDisciplineOverride(disc, defaultPct)}
+                        style={{ background: "none", color: P.yellow, fontSize: 13, border: "none", cursor: "pointer" }}
+                        title="Reset to default">↺</button>
+                    ) : (
+                      <span style={{ color: P.textDim, fontSize: 11 }}>default</span>
+                    )}
+                  </div>
+                </td>
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: isOverridden ? P.yellow : P.text }}>{fmt(feeAmt)}</td>
+              </tr>
+            );
+          })}
+          <tr style={{ background: P.bg }}>
+            <td colSpan={2} style={{ fontWeight: 700, color: P.textMuted }}>Total (sum of disciplines)</td>
+            <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700 }}>{(discTotal * 100).toFixed(2)}% of AE fee</td>
+            <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(baseFee)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      {/* ── Phase Fees ── */}
+      <SectionTitle action={<Btn small onClick={addPhase} variant="ghost">+ Add Phase</Btn>}>
+        Phase Fees{" "}
+        <span style={{ color: totalPhasePct > 1.001 ? P.red : Math.abs(totalPhasePct - 1) < 0.001 ? P.green : P.textMuted, fontSize: 11, fontWeight: 400 }}>
+          ({Math.round(totalPhasePct * 100)}% allocated{totalPhasePct > 1.001 ? " ⚠ over 100%" : Math.abs(totalPhasePct - 1) < 0.001 ? " ✓" : ""})
+        </span>
+      </SectionTitle>
+      <table style={{ marginBottom: 20 }}>
+        <thead><tr><th>Code</th><th>Phase Name</th><th>% of Setty Fee</th><th>Fee Amount</th><th>Billable</th><th></th></tr></thead>
+        <tbody>
+          {phasedFees.map((ph, idx) => (
+            <tr key={ph.id}>
+              <td><input value={ph.code} onChange={e => updatePhase(idx, { code: e.target.value })} style={{ width: 60 }} /></td>
+              <td><input value={ph.name} onChange={e => updatePhase(idx, { name: e.target.value })} style={{ width: 180 }} /></td>
+              <td>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input type="number" step="1" min="0" max="100"
+                    value={Math.round(ph.pct * 100)}
+                    onChange={e => updatePhase(idx, { pct: +e.target.value / 100 })}
+                    style={{ width: 60 }} />
+                  <span style={{ color: P.textMuted, fontSize: 12 }}>%</span>
+                </div>
+              </td>
+              <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(ph.fee)}</td>
+              <td><input type="checkbox" checked={!!ph.billable} onChange={e => updatePhase(idx, { billable: e.target.checked })} /></td>
+              <td><Btn small variant="danger" onClick={() => onChange({ ...project, phases: phases.filter((_, i) => i !== idx) })}>✕</Btn></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {project.feeScheduleFinalized ? (
+        <div style={{ background: P.greenDim, color: P.green, padding: "10px 16px", borderRadius: 8, fontWeight: 600, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          ✓ Fee Schedule Finalized & Locked
+          <Btn small variant="danger" onClick={() => onChange({ ...project, feeScheduleFinalized: false })}>Unlock & Edit</Btn>
+        </div>
+      ) : (
+        <Btn onClick={finalizeSchedule} variant="success">🔒 Finalize & Lock Fee Schedule → Populate Milestones</Btn>
+      )}
+    </div>
+  );
+}
+
+// ─── SCHEDULE VIEW ────────────────────────────────────────────────────────────
+
+function ScheduleView({ project, onChange }) {
+  const phases = project.phases || [];
+  const milestones = project.milestones || [];
+  const billablePhases = phases.filter(p => p.billable && p.fee > 0);
+
+  // Per-milestone calendar sync state (not persisted — session only)
+  const CAL_KEY = `setty_pms_cal_${project.id}`;
+  const [calMap, setCalMap] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(CAL_KEY) || "{}"); } catch(e) { return {}; }
+  });
+  const [calState, setCalState] = useState({}); // { [milestoneId]: "syncing"|"synced"|"error"|"stale" }
+  const [syncMsg, setSyncMsg] = useState("");
+  const [syncingAll, setSyncingAll] = useState(false);
+
+  function saveCalMap(map) {
+    try { localStorage.setItem(CAL_KEY, JSON.stringify(map)); } catch(e) {}
+    setCalMap(map);
+  }
+
+  async function syncOne(m) {
+    if (!m.dueDate) { setSyncMsg("⚠ No due date set on this milestone"); return; }
+    setCalState(s => ({ ...s, [m.id]: "syncing" }));
+    const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, calMap[m.id]);
+    const newMap = { ...calMap };
+    if (result.success) {
+      newMap[m.id] = result.eventId;
+      saveCalMap(newMap);
+      setCalState(s => ({ ...s, [m.id]: "synced" }));
+      setSyncMsg(`✓ "${m.name}" synced to NYC Shared Calendar`);
+    } else {
+      setCalState(s => ({ ...s, [m.id]: "error", [`${m.id}_err`]: result.error }));
+      setSyncMsg(`✗ "${m.name}" — ${result.error}`);
+    }
+  }
+
+  async function syncAll() {
+    setSyncingAll(true);
+    const syncable = milestones.filter(m => m.dueDate);
+    const newMap = { ...calMap };
+    let ok = 0;
+    for (let i = 0; i < syncable.length; i++) {
+      const m = syncable[i];
+      setSyncMsg(`Syncing ${i+1}/${syncable.length}…`);
+      setCalState(s => ({ ...s, [m.id]: "syncing" }));
+      const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, newMap[m.id]);
+      if (result.success) {
+        newMap[m.id] = result.eventId;
+        setCalState(s => ({ ...s, [m.id]: "synced" }));
+        ok++;
+      } else {
+        setCalState(s => ({ ...s, [m.id]: "error", [`${m.id}_err`]: result.error }));
+      }
+    }
+    saveCalMap(newMap);
+    setSyncingAll(false);
+    setSyncMsg(ok === syncable.length
+      ? `✓ All ${ok} milestones synced to NYC Shared Calendar`
+      : `${ok}/${syncable.length} synced — check individual rows for errors`);
+  }
+
+  function updateMilestone(id, field, val) {
+    const newMilestones = milestones.map(m => {
+      if (m.id !== id) return m;
+      const updated = { ...m, [field]: val };
+      if (field === "pctComplete") updated.status = milestoneStatus(+val);
+      return updated;
+    });
+    let newPhases = phases;
+    if (field === "dueDate") {
+      const m = milestones.find(x => x.id === id);
+      if (m && m.type === "billable")
+        newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
+      // Mark as stale if already synced
+      if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
+    }
+    onChange({ ...project, milestones: newMilestones, phases: newPhases });
+  }
+
+  function updatePhaseDate(phId, field, val) {
+    const newPhases = phases.map(p => p.id === phId ? { ...p, [field]: val } : p);
+    let newMilestones = milestones;
+    if (field === "endDate") {
+      const ph = phases.find(p => p.id === phId);
+      if (ph) {
+        newMilestones = milestones.map(m =>
+          m.type === "billable" && m.phase === ph.code ? { ...m, dueDate: val } : m
+        );
+        // Mark affected synced milestones as stale
+        const staleIds = milestones.filter(m => m.type === "billable" && m.phase === ph.code && calMap[m.id]).map(m => m.id);
+        if (staleIds.length) setCalState(s => { const n = {...s}; staleIds.forEach(id => n[id] = "stale"); return n; });
+      }
+    }
+    onChange({ ...project, phases: newPhases, milestones: newMilestones });
+  }
+
+  function addNonBillable() {
+    onChange({ ...project, milestones: [...milestones, {
+      id: uid(), type: "non-billable", phase: "NB", name: "Comment Response", fee: 0,
+      startDate: new Date().toISOString().slice(0, 10),
+      dueDate: new Date().toISOString().slice(0, 10),
+      pctComplete: 0, status: "Not Started", notes: "",
+    }]});
+  }
+
+  const syncableCount = milestones.filter(m => m.dueDate).length;
+  const syncedCount = Object.keys(calMap).filter(id => calState[id] !== "stale" && calState[id] !== "error").length;
+
+  function CalIcon({ m }) {
+    const st = calState[m.id];
+    const has = !!calMap[m.id];
+    if (st === "syncing") return <span style={{ color: P.accentLight, fontSize: 12 }}>⏳</span>;
+    if (st === "error") return <span title={calState[`${m.id}_err`] || "Error"} style={{ color: P.red, fontSize: 12, cursor: "help" }}>✗</span>;
+    if (st === "stale") return <span title="Date changed — re-sync" style={{ color: P.yellow, fontSize: 12, cursor: "help" }}>⚠</span>;
+    if (st === "synced" || has) return <span title="Synced to NYC Shared Calendar" style={{ color: P.green, fontSize: 12 }}>✓</span>;
+    return <span style={{ color: P.border, fontSize: 12 }}>–</span>;
+  }
+
+  return (
+    <div>
+      <SectionTitle>Project Schedule</SectionTitle>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 14 }}>
+        Phase % complete is automatically calculated from its associated Milestone below. Update the milestone % to track progress.
+      </div>
+      <table style={{ marginBottom: 28 }}>
+        <thead><tr><th>Phase</th><th>Start</th><th>End</th><th>% Complete</th><th>Progress</th></tr></thead>
+        <tbody>
+          {billablePhases.map(ph => {
+            const pct = getPhasePctFromMilestones(ph, milestones);
+            return (
+              <tr key={ph.id}>
+                <td style={{ fontWeight: 500 }}>{ph.name}</td>
+                <td><input type="date" value={ph.startDate || ""} onChange={e => updatePhaseDate(ph.id, "startDate", e.target.value)} /></td>
+                <td><input type="date" value={ph.endDate || ""} onChange={e => updatePhaseDate(ph.id, "endDate", e.target.value)} /></td>
+                <td><span style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: pct >= 100 ? P.green : pct > 0 ? P.accentLight : P.textDim }}>{pct}%</span></td>
+                <td style={{ width: 160 }}><ProgressBar pct={pct} color={pct >= 100 ? P.green : P.accent} /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {/* Milestones header with Sync All button */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>
+          Milestones & Deliverables
+          {syncedCount > 0 && <span style={{ marginLeft: 10, fontSize: 11, color: P.green, fontWeight: 400 }}>{syncedCount}/{syncableCount} in Outlook</span>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn small onClick={addNonBillable} variant="ghost">+ Add Non-Billable</Btn>
+          {syncableCount > 0 && (
+            <Btn small variant="primary" disabled={syncingAll} onClick={syncAll}>
+              {syncingAll ? syncMsg : "📅 Sync All to NYC Calendar"}
+            </Btn>
+          )}
+        </div>
+      </div>
+
+      {/* Sync status message */}
+      {syncMsg && !syncingAll && (
+        <div style={{
+          padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
+          background: syncMsg.startsWith("✓") ? P.greenDim : syncMsg.startsWith("✗") ? P.redDim : P.accentDim,
+          color: syncMsg.startsWith("✓") ? P.green : syncMsg.startsWith("✗") ? P.red : P.accentLight,
+          border: `1px solid ${syncMsg.startsWith("✓") ? P.green : syncMsg.startsWith("✗") ? P.red : P.accent}`,
+          display: "flex", justifyContent: "space-between",
+        }}>
+          <span>{syncMsg}</span>
+          <button onClick={() => setSyncMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+        </div>
+      )}
+
+      <table>
+        <thead>
+          <tr>
+            <th>Type</th><th>Name</th><th>Phase</th><th>Due Date</th>
+            <th>% Complete</th><th>Status</th><th>Notes</th>
+            <th title="Outlook calendar sync">📅</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {milestones.map(m => {
+            const autoStatus = milestoneStatus(m.pctComplete);
+            const statusColor = MILESTONE_STATUS_COLORS[autoStatus] || MILESTONE_STATUS_COLORS["Not Started"];
+            const typeColor = m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple };
+            return (
+              <tr key={m.id}>
+                <td><Badge color={typeColor} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
+                <td><input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} style={{ width: 190 }} /></td>
+                <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase}</td>
+                <td><input type="date" value={m.dueDate || ""} onChange={e => updateMilestone(m.id, "dueDate", e.target.value)} /></td>
+                <td>
+                  <input type="number" min={0} max={100} value={m.pctComplete || 0}
+                    onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value)} style={{ width: 55 }} />%
+                </td>
+                <td><Badge color={statusColor} text={autoStatus} /></td>
+                <td><input value={m.notes || ""} onChange={e => updateMilestone(m.id, "notes", e.target.value)} placeholder="Notes…" style={{ width: 140 }} /></td>
+                <td>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <CalIcon m={m} />
+                    {m.dueDate && (
+                      <button onClick={() => syncOne(m)} disabled={calState[m.id] === "syncing"}
+                        title="Sync this milestone to Outlook"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: P.accentLight, fontSize: 11, padding: "2px 4px" }}>
+                        ↑
+                      </button>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── INVOICE MODAL ────────────────────────────────────────────────────────────
+
+function InvoiceModal({ project, onClose, onSave }) {
+  const billableMilestones = (project.milestones || []).filter(m => m.type === "billable" && m.fee > 0);
+  const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0);
+  const team = project.teamMembers || [];
+
+  const [method, setMethod] = useState("pct");
+  const [invoiceNumber, setInvoiceNumber] = useState(
+    `INV-${String((project.invoices || []).length + 1).padStart(3, "0")}`
+  );
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [selectedMilestoneId, setSelectedMilestoneId] = useState(billableMilestones[0]?.id || "");
+  const [pctToInvoice, setPctToInvoice] = useState(100);
+  const [description, setDescription] = useState("");
+  const [hoursRows, setHoursRows] = useState(
+    team.map(tm => ({ memberId: tm.id, name: tm.name || tm.role, role: tm.role, rate: tm.rate || 0, hours: 0 }))
+  );
+
+  function updateHoursRow(idx, updates) {
+    setHoursRows(prev => prev.map((r, i) => i === idx ? { ...r, ...updates } : r));
+  }
+
+  const selectedMilestone = billableMilestones.find(m => m.id === selectedMilestoneId);
+  const milestoneFee = selectedMilestone?.fee || 0;
+  // Derive which phase this milestone belongs to for tracking
+  const milestonePhaseCode = selectedMilestone?.phase || "";
+  const milestonePhase = billablePhases.find(p => p.code === milestonePhaseCode);
+
+  const amountByPct = milestoneFee * (pctToInvoice / 100);
+  const amountByHours = hoursRows.reduce((a, r) => a + r.rate * r.hours, 0);
+  const invoiceAmount = method === "pct" ? amountByPct : amountByHours;
+
+  function handleSave() {
+    if (invoiceAmount <= 0) return;
+    const lineItems = method === "hours"
+      ? hoursRows.filter(r => r.hours > 0).map(r => ({ name: r.name, role: r.role, rate: r.rate, hours: r.hours, amount: r.rate * r.hours }))
+      : [{ name: `${pctToInvoice}% of ${selectedMilestone?.name || "Milestone"}`, amount: amountByPct }];
+
+    onSave({
+      id: uid(),
+      number: invoiceNumber,
+      date: invoiceDate,
+      phase: milestonePhaseCode,
+      phaseName: milestonePhase?.name || milestonePhaseCode,
+      milestoneId: selectedMilestoneId,
+      milestoneName: selectedMilestone?.name || "",
+      method,
+      description,
+      lineItems,
+      amount: invoiceAmount,
+      finalized: true,
+    });
+    onClose();
+  }
+
+  return (
+    <Modal title="Log Invoice" onClose={onClose} wide>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+        <Field label="Invoice Number">
+          <input value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} style={{ width: "100%" }} />
+        </Field>
+        <Field label="Invoice Date">
+          <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} style={{ width: "100%" }} />
+        </Field>
+        <Field label="Description (optional)" style={{ gridColumn: "1 / -1" }}>
+          <input value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Monthly draw, SD phase completion…" style={{ width: "100%" }} />
+        </Field>
+      </div>
+
+      {/* Method toggle */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        {[["pct", "% of Milestone Fee"], ["hours", "Hours × Rate"]].map(([val, label]) => (
+          <button key={val} onClick={() => setMethod(val)}
+            style={{ padding: "7px 18px", borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: "pointer", border: `1px solid ${method === val ? P.accent : P.border}`, background: method === val ? P.accentDim : P.bg, color: method === val ? P.accentLight : P.textMuted }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {method === "pct" && (
+        <Card style={{ marginBottom: 20 }}>
+          {billableMilestones.length === 0 ? (
+            <div style={{ color: P.textDim, fontSize: 13 }}>No billable milestones found. Finalize the fee schedule first to generate milestones.</div>
+          ) : (
+            <>
+              <Field label="Milestone">
+                <select value={selectedMilestoneId} onChange={e => setSelectedMilestoneId(e.target.value)} style={{ width: "100%" }}>
+                  {billableMilestones.map(m => (
+                    <option key={m.id} value={m.id}>{m.name} — Phase: {m.phase} — Fee: {fmt(m.fee)}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={`% of Milestone Fee to Invoice — Milestone total: ${fmt(milestoneFee)}`}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <input type="number" min={0} max={100} step={5} value={pctToInvoice}
+                    onChange={e => setPctToInvoice(+e.target.value)} style={{ width: 80 }} />
+                  <span style={{ color: P.textMuted }}>%</span>
+                  <span style={{ color: P.green, fontWeight: 700, fontFamily: "JetBrains Mono", fontSize: 18 }}>{fmt(amountByPct)}</span>
+                </div>
+              </Field>
+            </>
+          )}
+        </Card>
+      )}
+
+      {method === "hours" && (
+        <Card style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>
+            Rates are pre-filled from Team tab. Edit hours as needed.
+          </div>
+          <table>
+            <thead><tr><th>Team Member</th><th>Role</th><th>Rate ($/hr)</th><th>Hours</th><th>Amount</th></tr></thead>
+            <tbody>
+              {hoursRows.map((r, idx) => (
+                <tr key={r.memberId}>
+                  <td>{r.name || "—"}</td>
+                  <td style={{ color: P.textMuted, fontSize: 12 }}>{r.role}</td>
+                  <td>
+                    <input type="number" value={r.rate} onChange={e => updateHoursRow(idx, { rate: +e.target.value })} style={{ width: 80 }} />
+                  </td>
+                  <td>
+                    <input type="number" min={0} step={0.5} value={r.hours} onChange={e => updateHoursRow(idx, { hours: +e.target.value })} style={{ width: 70 }} />
+                  </td>
+                  <td style={{ fontFamily: "JetBrains Mono", color: r.hours > 0 ? P.green : P.textDim }}>{fmt(r.rate * r.hours)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
+      {/* Total */}
+      <div style={{ background: P.bg, borderRadius: 8, padding: "12px 16px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center", border: `1px solid ${P.border}` }}>
+        <div style={{ fontWeight: 600 }}>Invoice Total</div>
+        <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, fontSize: 22, color: P.green }}>{fmt(invoiceAmount)}</div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+        <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={handleSave} disabled={invoiceAmount <= 0}>✓ Finalize & Log Invoice</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── FINANCIALS VIEW ──────────────────────────────────────────────────────────
+
+function FinancialsView({ project, onChange }) {
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+
+  const phases = project.phases || [];
+  const billablePhases = phases.filter(p => p.billable && p.fee > 0);
+  const milestones = project.milestones || [];
+  const changeOrders = project.changeOrders || [];
+  const invoices = project.invoices || [];
+
+  const totalFee = billablePhases.reduce((a, p) => a + p.fee, 0);
+  const approvedCOTotal = changeOrders.filter(c => c.approved).reduce((a, c) => a + c.fee, 0);
+  const totalContract = totalFee + approvedCOTotal;
+
+  // Earned value: pct read from milestones (same as Schedule tab)
+  const earnedValue = billablePhases.reduce((a, p) => {
+    const pct = getPhasePctFromMilestones(p, milestones);
+    return a + p.fee * pct / 100;
+  }, 0);
+
+  const totalInvoiced = invoices.reduce((a, inv) => a + inv.amount, 0);
+  const openBalance = totalContract - totalInvoiced;
+
+  function saveInvoice(inv) {
+    onChange({ ...project, invoices: [...invoices, inv] });
+  }
+
+  function deleteInvoice(id) {
+    onChange({ ...project, invoices: invoices.filter(inv => inv.id !== id) });
+  }
+
+  return (
+    <div>
+      {/* 5-column KPI row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 28 }}>
+        <KpiBox label="Base Contract Fee" val={fmt(totalFee)} />
+        <KpiBox label="Approved COs" val={fmt(approvedCOTotal)} color={P.yellow} />
+        <KpiBox label="Total Contract Value" val={fmt(totalContract)} color={P.green} />
+        <KpiBox label="Earned Value" val={fmt(earnedValue)} color={P.accent} />
+        <KpiBox label="Total Invoiced" val={fmt(totalInvoiced)} color={P.purple}
+          sub={`Open balance: ${fmt(openBalance)}`} />
+      </div>
+
+      {/* Phase summary — pct is read-only from milestones */}
+      <SectionTitle>Phase Summary</SectionTitle>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>
+        % Complete is driven by milestones in the Schedule tab.
+      </div>
+      <table style={{ marginBottom: 30 }}>
+        <thead>
+          <tr>
+            <th>Phase</th><th>Fee</th><th>% Complete</th>
+            <th>Earned Value</th><th>Invoiced</th><th>Remaining</th>
+          </tr>
+        </thead>
+        <tbody>
+          {billablePhases.map(ph => {
+            const pct = getPhasePctFromMilestones(ph, milestones);
+            const earned = ph.fee * pct / 100;
+            const phaseInvoiced = invoices.filter(inv => inv.phase === ph.code).reduce((a, inv) => a + inv.amount, 0);
+            const remaining = ph.fee - phaseInvoiced;
+            return (
+              <tr key={ph.id}>
+                <td style={{ fontWeight: 500 }}>{ph.name}</td>
+                <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(ph.fee)}</td>
+                <td>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: "JetBrains Mono", fontWeight: 600, minWidth: 36, color: pct >= 100 ? P.green : pct > 0 ? P.accentLight : P.textDim }}>
+                      {pct}%
+                    </span>
+                    <div style={{ width: 80 }}><ProgressBar pct={pct} color={pct >= 100 ? P.green : P.accent} /></div>
+                  </div>
+                </td>
+                <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(earned)}</td>
+                <td style={{ fontFamily: "JetBrains Mono", color: phaseInvoiced > 0 ? P.purple : P.textDim }}>{fmt(phaseInvoiced)}</td>
+                <td style={{ fontFamily: "JetBrains Mono", color: remaining < 0 ? P.red : remaining === 0 ? P.textDim : P.text }}>
+                  {fmt(remaining)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {/* Invoice Log */}
+      <SectionTitle action={<Btn small onClick={() => setShowInvoiceModal(true)}>+ Log Invoice</Btn>}>
+        Invoice Log
+      </SectionTitle>
+
+      {invoices.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          No invoices logged yet. Click "+ Log Invoice" to add one.
+        </div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Invoice #</th><th>Date</th><th>Milestone / Phase</th><th>Method</th>
+              <th>Description</th><th>Amount</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {invoices.map(inv => (
+              <tr key={inv.id}>
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600 }}>{inv.number}</td>
+                <td style={{ color: P.textMuted }}>{inv.date}</td>
+                <td>
+                  <div style={{ fontWeight: 500 }}>{inv.milestoneName || inv.phaseName}</div>
+                  {inv.milestoneName && <div style={{ fontSize: 11, color: P.textDim }}>Phase: {inv.phaseName}</div>}
+                </td>
+                <td>
+                  <Badge
+                    color={inv.method === "hours" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }}
+                    text={inv.method === "hours" ? "Hours" : "% of Fee"}
+                  />
+                </td>
+                <td style={{ color: P.textMuted }}>{inv.description || "—"}</td>
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: P.green }}>{fmt(inv.amount)}</td>
+                <td><Badge color={{ bg: P.greenDim, text: P.green }} text="Finalized" /></td>
+                <td><Btn small variant="danger" onClick={() => deleteInvoice(inv.id)}>✕</Btn></td>
+              </tr>
+            ))}
+            <tr style={{ background: P.bg }}>
+              <td colSpan={5} style={{ fontWeight: 700, textAlign: "right", color: P.textMuted, paddingRight: 16 }}>
+                Total Invoiced
+              </td>
+              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple, fontSize: 15 }}>
+                {fmt(totalInvoiced)}
+              </td>
+              <td colSpan={2} />
+            </tr>
+          </tbody>
+        </table>
+      )}
+
+      {showInvoiceModal && (
+        <InvoiceModal project={project} onClose={() => setShowInvoiceModal(false)} onSave={saveInvoice} />
+      )}
+    </div>
+  );
+}
+
+// ─── CHANGE ORDERS ────────────────────────────────────────────────────────────
+
+function ChangeOrdersView({ project, onChange }) {
+  const cos = project.changeOrders || [];
+
+  function addCO() {
+    onChange({
+      ...project,
+      changeOrders: [...cos, {
+        id: uid(), number: `CO-${cos.length + 1}`, name: "", scope: "", fee: 0,
+        sentToClient: false, approved: false,
+        date: new Date().toISOString().slice(0, 10), notes: "",
+      }],
+    });
+  }
+
+  function updateCO(id, updates) {
+    const newCOs = cos.map(c => c.id === id ? { ...c, ...updates } : c);
+    const co = newCOs.find(c => c.id === id);
+    let milestones = project.milestones || [];
+
+    if (co?.approved) {
+      const existing = milestones.find(m => m.coId === id);
+      if (!existing) {
+        milestones = [...milestones, {
+          id: uid(), coId: id,
+          type: "billable",   // ← CO milestones are Billable
+          phase: "CO",
+          name: `CO: ${co.name || co.number}`,
+          fee: co.fee, startDate: co.date, dueDate: co.date,
+          pctComplete: 0, status: "Not Started", notes: co.notes || "",
+        }];
+      } else {
+        milestones = milestones.map(m =>
+          m.coId === id ? { ...m, name: `CO: ${co.name || co.number}`, fee: co.fee } : m
+        );
+      }
+    } else {
+      milestones = milestones.filter(m => m.coId !== id);
+    }
+
+    onChange({ ...project, changeOrders: newCOs, milestones });
+  }
+
+  const approvedTotal = cos.filter(c => c.approved).reduce((a, c) => a + c.fee, 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>Change Orders</div>
+          {cos.length > 0 && (
+            <div style={{ fontSize: 12, color: P.textDim, marginTop: 3 }}>
+              Approved total: <span style={{ color: P.green, fontWeight: 600, fontFamily: "JetBrains Mono" }}>{fmt(approvedTotal)}</span>
+            </div>
+          )}
+        </div>
+        <Btn small onClick={addCO}>+ Add Change Order</Btn>
+      </div>
+      {cos.length === 0 && (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          No change orders. Click "+ Add Change Order" to create one.
+        </div>
+      )}
+      {cos.length > 0 && (
+        <>
+          <table>
+            <thead><tr><th>#</th><th>Name</th><th>Scope</th><th>Fee</th><th>Sent?</th><th>Approved?</th><th>Date</th><th>Notes</th><th></th></tr></thead>
+            <tbody>
+              {cos.map(co => (
+                <tr key={co.id}>
+                  <td style={{ fontFamily: "JetBrains Mono" }}>{co.number}</td>
+                  <td><input value={co.name} onChange={e => updateCO(co.id, { name: e.target.value })} style={{ width: 130 }} /></td>
+                  <td><input value={co.scope} onChange={e => updateCO(co.id, { scope: e.target.value })} style={{ width: 150 }} /></td>
+                  <td><input type="number" value={co.fee} onChange={e => updateCO(co.id, { fee: +e.target.value })} style={{ width: 90 }} /></td>
+                  <td>
+                    <input type="checkbox" checked={!!co.sentToClient} onChange={e => updateCO(co.id, { sentToClient: e.target.checked })} />
+                    {co.sentToClient && <span style={{ color: P.yellow, fontSize: 11, marginLeft: 5 }}>Sent</span>}
+                  </td>
+                  <td>
+                    <input type="checkbox" checked={!!co.approved} onChange={e => updateCO(co.id, { approved: e.target.checked })} />
+                    {co.approved && <span style={{ color: P.green, fontSize: 11, marginLeft: 5 }}>✓ Approved</span>}
+                  </td>
+                  <td><input type="date" value={co.date} onChange={e => updateCO(co.id, { date: e.target.value })} /></td>
+                  <td><input value={co.notes || ""} onChange={e => updateCO(co.id, { notes: e.target.value })} style={{ width: 130 }} /></td>
+                  <td><Btn small variant="danger" onClick={() => onChange({ ...project, changeOrders: cos.filter(c => c.id !== co.id) })}>✕</Btn></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ marginTop: 12, fontSize: 12, color: P.textDim }}>
+            Approved COs generate a Billable milestone in the Schedule tab.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
+
+function ContractView({ project, onChange }) {
+  return (
+    <div>
+      <SectionTitle>Contract Status & Notes</SectionTitle>
+      <Field label="Contract Status">
+        <select value={project.contractStatus} onChange={e => onChange({ ...project, contractStatus: e.target.value })} style={{ width: 320 }}>
+          {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
+        </select>
+        <div style={{ marginTop: 8 }}>
+          <Badge color={CONTRACT_COLORS[project.contractStatus]} text={project.contractStatus} />
+        </div>
+      </Field>
+      <Field label="Contract Notes / History">
+        <textarea value={project.contractNotes || ""} onChange={e => onChange({ ...project, contractNotes: e.target.value })}
+          rows={6} style={{ width: "100%", resize: "vertical" }}
+          placeholder="Add notes about contract status, revisions, key dates…" />
+      </Field>
+    </div>
+  );
+}
+
+// ─── TEAM MEMBERS ─────────────────────────────────────────────────────────────
+
+function TeamView({ project, onChange }) {
+  const team = project.teamMembers || [];
+
+  function addMember() {
+    onChange({ ...project, teamMembers: [...team, { id: uid(), name: "", role: "Engineer", rate: 0 }] });
+  }
+
+  function updateMember(id, updates) {
+    onChange({ ...project, teamMembers: team.map(m => m.id === id ? { ...m, ...updates } : m) });
+  }
+
+  return (
+    <div>
+      <SectionTitle action={<Btn small onClick={addMember} variant="ghost">+ Add Team Member</Btn>}>
+        Team Members
+      </SectionTitle>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 14 }}>
+        Billing rates here are used to auto-fill the invoice calculator under the Financials tab.
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Role</th><th>Billing Rate ($/hr)</th><th></th></tr></thead>
+        <tbody>
+          {team.map(m => (
+            <tr key={m.id}>
+              <td><input value={m.name} onChange={e => updateMember(m.id, { name: e.target.value })} style={{ width: 200 }} /></td>
+              <td>
+                {m.role === "Project Manager" || m.role === "Deputy Project Manager"
+                  ? <Badge color={{ bg: P.accentDim, text: P.accentLight }} text={m.role} />
+                  : <input value={m.role} onChange={e => updateMember(m.id, { role: e.target.value })} style={{ width: 180 }} />
+                }
+              </td>
+              <td><input type="number" value={m.rate} onChange={e => updateMember(m.id, { rate: +e.target.value })} style={{ width: 100 }} /></td>
+              <td>
+                {m.role !== "Project Manager" && m.role !== "Deputy Project Manager"
+                  ? <Btn small variant="danger" onClick={() => onChange({ ...project, teamMembers: team.filter(x => x.id !== m.id) })}>✕</Btn>
+                  : null
+                }
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+
+// ─── CALENDAR HELPERS ─────────────────────────────────────────────────────────
+
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function getDaysInMonth(year, month) {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+function getFirstDayOfMonth(year, month) {
+  return new Date(year, month, 1).getDay();
+}
+
+// Parse "YYYY-MM-DD" safely without timezone shift
+function parseLocalDate(str) {
+  if (!str) return null;
+  const [y, m, d] = str.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function isSameDay(dateStr, year, month, day) {
+  const d = parseLocalDate(dateStr);
+  if (!d) return false;
+  return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
+}
+
+// ─── SINGLE-PROJECT CALENDAR ─────────────────────────────────────────────────
+
+function CalendarView({ project }) {
+  const today = new Date();
+  const [calYear, setCalYear] = useState(today.getFullYear());
+  const [calMonth, setCalMonth] = useState(today.getMonth());
+  const [selected, setSelected] = useState(null); // { day, milestones[] }
+
+  const milestones = project.milestones || [];
+
+  function prevMonth() {
+    if (calMonth === 0) { setCalYear(y => y - 1); setCalMonth(11); }
+    else setCalMonth(m => m - 1);
+    setSelected(null);
+  }
+  function nextMonth() {
+    if (calMonth === 11) { setCalYear(y => y + 1); setCalMonth(0); }
+    else setCalMonth(m => m + 1);
+    setSelected(null);
+  }
+  function goToday() { setCalYear(today.getFullYear()); setCalMonth(today.getMonth()); setSelected(null); }
+
+  const daysInMonth = getDaysInMonth(calYear, calMonth);
+  const firstDay = getFirstDayOfMonth(calYear, calMonth);
+  const cells = Array(firstDay).fill(null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1));
+  // pad to complete last row
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  function getMilestonesForDay(day) {
+    const dateStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+    return milestones.filter(m => m.dueDate === dateStr);
+  }
+
+  const isToday = (day) => day && today.getFullYear() === calYear && today.getMonth() === calMonth && today.getDate() === day;
+
+  // Phase bands — show colored bar spanning start→end dates
+  const phases = (project.phases || []).filter(p => p.billable && p.startDate && p.endDate);
+
+  function getPhaseColorForDay(day) {
+    if (!day) return null;
+    const dateStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+    const d = parseLocalDate(dateStr);
+    for (const ph of phases) {
+      const start = parseLocalDate(ph.startDate);
+      const end = parseLocalDate(ph.endDate);
+      if (d >= start && d <= end) return ph;
+    }
+    return null;
+  }
+
+  // Assign a distinct color per phase
+  const PHASE_COLORS = ["#1d4ed8","#0f766e","#7c3aed","#b45309","#be185d","#065f46"];
+  const phaseColorMap = {};
+  phases.forEach((ph, i) => { phaseColorMap[ph.code] = PHASE_COLORS[i % PHASE_COLORS.length]; });
+
+  const TYPE_COLORS = {
+    "billable": { dot: P.accentLight, label: "Billable" },
+    "non-billable": { dot: P.purple, label: "Non-Billable" },
+    "change-order": { dot: P.yellow, label: "Change Order" },
+  };
+
+  return (
+    <div>
+      {/* Nav */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
+        <Btn small variant="ghost" onClick={prevMonth}>‹ Prev</Btn>
+        <div style={{ fontWeight: 700, fontSize: 16, minWidth: 180, textAlign: "center" }}>
+          {MONTH_NAMES[calMonth]} {calYear}
+        </div>
+        <Btn small variant="ghost" onClick={nextMonth}>Next ›</Btn>
+        <Btn small variant="ghost" onClick={goToday}>Today</Btn>
+      </div>
+
+      {/* Phase legend */}
+      {phases.length > 0 && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          {phases.map(ph => (
+            <div key={ph.code} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <div style={{ width: 20, height: 6, borderRadius: 3, background: phaseColorMap[ph.code] }} />
+              <span style={{ color: P.textMuted }}>{ph.name}</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: P.accentLight }} />
+            <span style={{ color: P.textMuted }}>Billable</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: P.purple }} />
+            <span style={{ color: P.textMuted }}>Non-Billable</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: P.yellow }} />
+            <span style={{ color: P.textMuted }}>Change Order</span>
+          </div>
+        </div>
+      )}
+
+      {/* Calendar grid */}
+      <div style={{ border: `1px solid ${P.border}`, borderRadius: 10, overflow: "hidden" }}>
+        {/* Day headers */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: P.bg }}>
+          {DAY_NAMES.map(d => (
+            <div key={d} style={{ padding: "8px 0", textAlign: "center", fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em" }}>{d}</div>
+          ))}
+        </div>
+        {/* Weeks */}
+        {Array.from({ length: cells.length / 7 }, (_, wi) => (
+          <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }}>
+            {cells.slice(wi * 7, wi * 7 + 7).map((day, di) => {
+              const dayMilestones = day ? getMilestonesForDay(day) : [];
+              const phaseForDay = day ? getPhaseColorForDay(day) : null;
+              const isSelected = selected?.day === day;
+              const isTodayCell = isToday(day);
+              const dateStr = day ? `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}` : null;
+              const hasOverdue = dayMilestones.some(m => milestoneStatus(m.pctComplete) !== "Completed");
+              return (
+                <div key={di}
+                  onClick={() => day && setSelected(isSelected ? null : { day, milestones: dayMilestones, dateStr })}
+                  style={{
+                    minHeight: 80,
+                    borderTop: `1px solid ${P.border}`,
+                    borderRight: di < 6 ? `1px solid ${P.border}` : "none",
+                    padding: "6px 8px",
+                    background: isSelected ? P.accentDim : phaseForDay ? phaseColorMap[phaseForDay.code] + "18" : day ? P.card : P.bg,
+                    cursor: day ? "pointer" : "default",
+                    position: "relative",
+                    transition: "background .1s",
+                  }}
+                  onMouseEnter={e => { if (day) e.currentTarget.style.background = isSelected ? P.accentDim : P.cardHover; }}
+                  onMouseLeave={e => { if (day) e.currentTarget.style.background = isSelected ? P.accentDim : phaseForDay ? phaseColorMap[phaseForDay.code] + "18" : P.card; }}
+                >
+                  {day && (
+                    <>
+                      {/* Phase top bar */}
+                      {phaseForDay && (
+                        <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: phaseColorMap[phaseForDay.code], borderRadius: "2px 2px 0 0" }} />
+                      )}
+                      {/* Day number */}
+                      <div style={{
+                        fontSize: 13, fontWeight: isTodayCell ? 700 : 400,
+                        color: isTodayCell ? "#fff" : P.textMuted,
+                        background: isTodayCell ? P.accent : "transparent",
+                        width: 24, height: 24, borderRadius: "50%",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        marginBottom: 4,
+                      }}>{day}</div>
+                      {/* Milestone dots */}
+                      {dayMilestones.slice(0, 3).map(m => {
+                        const st = milestoneStatus(m.pctComplete);
+                        const dotColor = st === "Completed" ? P.green : m.type === "non-billable" ? P.purple : m.type === "change-order" ? P.yellow : P.accentLight;
+                        return (
+                          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
+                            <span style={{ fontSize: 10, color: P.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "calc(100% - 12px)" }}>{m.name}</span>
+                          </div>
+                        );
+                      })}
+                      {dayMilestones.length > 3 && (
+                        <div style={{ fontSize: 10, color: P.textDim }}>+{dayMilestones.length - 3} more</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {/* Day detail panel */}
+      {selected && (
+        <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
+            {MONTH_NAMES[calMonth]} {selected.day}, {calYear}
+            {selected.milestones.length === 0 && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>No milestones due</span>}
+          </div>
+          {selected.milestones.map(m => {
+            const st = milestoneStatus(m.pctComplete);
+            const stColor = MILESTONE_STATUS_COLORS[st] || MILESTONE_STATUS_COLORS["Not Started"];
+            const typeColor = m.type === "billable" ? { bg: P.accentDim, text: P.accentLight }
+              : m.type === "change-order" ? { bg: P.yellowDim, text: P.yellow }
+              : { bg: P.purpleDim, text: P.purple };
+            return (
+              <div key={m.id} style={{ padding: "10px 14px", marginBottom: 8, background: P.bg, borderRadius: 8, border: `1px solid ${P.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{m.name}</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Badge color={typeColor} text={m.type === "billable" ? "Billable" : m.type === "change-order" ? "Change Order" : "Non-Billable"} />
+                    <span style={{ fontSize: 12, color: P.textDim }}>Phase: {m.phase}</span>
+                    {m.fee > 0 && <span style={{ fontSize: 12, color: P.green, fontFamily: "JetBrains Mono" }}>{fmt(m.fee)}</span>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 80 }}><ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} /></div>
+                  <span style={{ fontSize: 12, fontFamily: "JetBrains Mono", color: P.textMuted, minWidth: 32 }}>{m.pctComplete || 0}%</span>
+                  <Badge color={stColor} text={st} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TEAM CALENDAR (all projects) ────────────────────────────────────────────
+
+function TeamCalendar({ projects, onNavigateToProject }) {
+  const today = new Date();
+  const [calYear, setCalYear] = useState(today.getFullYear());
+  const [calMonth, setCalMonth] = useState(today.getMonth());
+  const [selected, setSelected] = useState(null);
+  const [filterProject, setFilterProject] = useState("All");
+
+  const active = projects.filter(p => !p.archived);
+
+  // Assign a distinct color per project
+  const PROJECT_CAL_COLORS = ["#3b82f6","#10b981","#8b5cf6","#f59e0b","#ef4444","#06b6d4","#ec4899","#84cc16","#f97316","#6366f1"];
+  const projectColorMap = {};
+  active.forEach((p, i) => { projectColorMap[p.id] = PROJECT_CAL_COLORS[i % PROJECT_CAL_COLORS.length]; });
+
+  const allMilestones = active
+    .filter(p => filterProject === "All" || p.id === filterProject)
+    .flatMap(p => (p.milestones || []).map(m => ({ ...m, projectName: p.name, projectNumber: p.projectNumber || "", projectId: p.id, pm: p.projectManager })));
+
+  function prevMonth() {
+    if (calMonth === 0) { setCalYear(y => y - 1); setCalMonth(11); } else setCalMonth(m => m - 1);
+    setSelected(null);
+  }
+  function nextMonth() {
+    if (calMonth === 11) { setCalYear(y => y + 1); setCalMonth(0); } else setCalMonth(m => m + 1);
+    setSelected(null);
+  }
+  function goToday() { setCalYear(today.getFullYear()); setCalMonth(today.getMonth()); setSelected(null); }
+
+  const daysInMonth = getDaysInMonth(calYear, calMonth);
+  const firstDay = getFirstDayOfMonth(calYear, calMonth);
+  const cells = Array(firstDay).fill(null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1));
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  function getMilestonesForDay(day) {
+    const dateStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+    return allMilestones.filter(m => m.dueDate === dateStr);
+  }
+
+  const isToday = (day) => day && today.getFullYear() === calYear && today.getMonth() === calMonth && today.getDate() === day;
+
+  // Count milestones this month for the header
+  const monthStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}`;
+  const thisMonthCount = allMilestones.filter(m => (m.dueDate || "").startsWith(monthStr)).length;
+
+  // ── Outlook sync state ──
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | done | error
+  const [syncLog, setSyncLog] = useState([]); // [{name, status, message}]
+  const [syncedCount, setSyncedCount] = useState(0);
+  const [showSyncLog, setShowSyncLog] = useState(false);
+
+  // All milestones with a due date (across all projects, not just filtered view)
+  const allSyncableMilestones = active.flatMap(p =>
+    (p.milestones || [])
+      .filter(m => m.dueDate)
+      .map(m => ({ ...m, projectName: p.name, projectNumber: p.projectNumber || "", projectId: p.id }))
+  );
+
+  async function syncToOutlook() {
+    setSyncStatus("syncing");
+    setSyncLog([]);
+    setSyncedCount(0);
+
+    // Load previously synced event IDs from localStorage (per-browser cache of event IDs)
+    const syncMapKey = "setty_pms_cal_sync";
+    let syncMap = {};
+    try { syncMap = JSON.parse(localStorage.getItem(syncMapKey) || "{}"); } catch(e) {}
+
+    const log = [];
+    let successCount = 0;
+    const newSyncMap = { ...syncMap };
+
+    for (let i = 0; i < allSyncableMilestones.length; i++) {
+      const m = allSyncableMilestones[i];
+      const existingEventId = syncMap[m.id];
+      setSyncLog([...log, { name: `${m.projectName} — ${m.name}`, status: "pending" }]);
+
+      const result = await createOrUpdateCalendarEvent(m, m.projectName, m.projectNumber, existingEventId);
+
+      if (result.success) {
+        newSyncMap[m.id] = result.eventId;
+        log.push({ name: `${m.projectName} — ${m.name}`, status: "success", message: existingEventId ? "Updated" : "Created" });
+        successCount++;
+      } else {
+        log.push({ name: `${m.projectName} — ${m.name}`, status: "error", message: result.error });
+      }
+      setSyncLog([...log]);
+      setSyncedCount(successCount);
+    }
+
+    try { localStorage.setItem(syncMapKey, JSON.stringify(newSyncMap)); } catch(e) {}
+    setSyncStatus(log.some(l => l.status === "error") ? "done_with_errors" : "done");
+    setShowSyncLog(true);
+  }
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Team Calendar</div>
+          <div style={{ color: P.textMuted, fontSize: 13 }}>{thisMonthCount} milestone{thisMonthCount !== 1 ? "s" : ""} due in {MONTH_NAMES[calMonth]}</div>
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <select value={filterProject} onChange={e => setFilterProject(e.target.value)} style={{ width: 220 }}>
+            <option value="All">All Projects</option>
+            {active.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <Btn
+            variant={syncStatus === "done" ? "success" : syncStatus === "done_with_errors" ? "warning" : "primary"}
+            small
+            disabled={syncStatus === "syncing"}
+            onClick={syncToOutlook}
+          >
+            {syncStatus === "syncing"
+              ? `⏳ Syncing… ${syncLog.length}/${allSyncableMilestones.length}`
+              : syncStatus === "done"
+              ? `✓ Synced ${syncedCount} events`
+              : syncStatus === "done_with_errors"
+              ? `⚠ ${syncedCount} synced, errors`
+              : "📅 Sync to NYC Shared Calendar"}
+          </Btn>
+          {(syncStatus === "done" || syncStatus === "done_with_errors") && (
+            <Btn small variant="ghost" onClick={() => setShowSyncLog(v => !v)}>
+              {showSyncLog ? "Hide log" : "View log"}
+            </Btn>
+          )}
+        </div>
+      </div>
+
+      {/* Sync log */}
+      {showSyncLog && syncLog.length > 0 && (
+        <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 16, marginBottom: 20, maxHeight: 260, overflowY: "auto" }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Sync Log → NYC Shared Calendar (sara.arias@setty.com) — {syncedCount}/{allSyncableMilestones.length} events</div>
+          {syncLog.map((l, i) => (
+            <div key={i} style={{ padding: "5px 0", borderBottom: `1px solid ${P.border}`, fontSize: 12 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <span style={{ color: l.status === "success" ? P.green : P.red, minWidth: 16, marginTop: 1 }}>
+                  {l.status === "success" ? "✓" : "✗"}
+                </span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: P.text, fontWeight: 500 }}>{l.name}</div>
+                  {l.status === "error" && (
+                    <div style={{ color: P.red, fontSize: 11, marginTop: 2 }}>{l.message}</div>
+                  )}
+                  {l.status === "error" && l.debug && (
+                    <pre style={{ color: P.textDim, fontSize: 10, marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-all", background: "#0a0c14", padding: "6px 8px", borderRadius: 4, maxHeight: 120, overflowY: "auto" }}>{l.debug}</pre>
+                  )}
+                  {l.status === "success" && (
+                    <div style={{ color: P.green, fontSize: 11, marginTop: 2 }}>{l.message}</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Nav */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
+        <Btn small variant="ghost" onClick={prevMonth}>‹ Prev</Btn>
+        <div style={{ fontWeight: 700, fontSize: 16, minWidth: 180, textAlign: "center" }}>{MONTH_NAMES[calMonth]} {calYear}</div>
+        <Btn small variant="ghost" onClick={nextMonth}>Next ›</Btn>
+        <Btn small variant="ghost" onClick={goToday}>Today</Btn>
+      </div>
+
+      {/* Project color legend */}
+      {filterProject === "All" && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          {active.map(p => (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <div style={{ width: 10, height: 10, borderRadius: "50%", background: projectColorMap[p.id] }} />
+              <span style={{ color: P.textMuted }}>{p.name || "Unnamed"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Calendar grid */}
+      <div style={{ border: `1px solid ${P.border}`, borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: P.bg }}>
+          {DAY_NAMES.map(d => (
+            <div key={d} style={{ padding: "8px 0", textAlign: "center", fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em" }}>{d}</div>
+          ))}
+        </div>
+        {Array.from({ length: cells.length / 7 }, (_, wi) => (
+          <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }}>
+            {cells.slice(wi * 7, wi * 7 + 7).map((day, di) => {
+              const dayMilestones = day ? getMilestonesForDay(day) : [];
+              const isSelected = selected?.day === day;
+              const isTodayCell = isToday(day);
+              return (
+                <div key={di}
+                  onClick={() => day && setSelected(isSelected ? null : { day, milestones: dayMilestones })}
+                  style={{
+                    minHeight: 80,
+                    borderTop: `1px solid ${P.border}`,
+                    borderRight: di < 6 ? `1px solid ${P.border}` : "none",
+                    padding: "6px 8px",
+                    background: isSelected ? P.accentDim : day ? P.card : P.bg,
+                    cursor: day ? "pointer" : "default",
+                    transition: "background .1s",
+                  }}
+                  onMouseEnter={e => { if (day && !isSelected) e.currentTarget.style.background = P.cardHover; }}
+                  onMouseLeave={e => { if (day && !isSelected) e.currentTarget.style.background = P.card; }}
+                >
+                  {day && (
+                    <>
+                      <div style={{
+                        fontSize: 13, fontWeight: isTodayCell ? 700 : 400,
+                        color: isTodayCell ? "#fff" : P.textMuted,
+                        background: isTodayCell ? P.accent : "transparent",
+                        width: 24, height: 24, borderRadius: "50%",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        marginBottom: 4,
+                      }}>{day}</div>
+                      {dayMilestones.slice(0, 3).map(m => {
+                        const dotColor = projectColorMap[m.projectId] || P.accent;
+                        const st = milestoneStatus(m.pctComplete);
+                        return (
+                          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: st === "Completed" ? P.green : dotColor, flexShrink: 0 }} />
+                            <span style={{ fontSize: 10, color: P.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "calc(100% - 12px)" }}>{m.name}</span>
+                          </div>
+                        );
+                      })}
+                      {dayMilestones.length > 3 && (
+                        <div style={{ fontSize: 10, color: P.textDim }}>+{dayMilestones.length - 3} more</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {/* Day detail panel */}
+      {selected && (
+        <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
+            {MONTH_NAMES[calMonth]} {selected.day}, {calYear}
+            {selected.milestones.length === 0 && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>No milestones due</span>}
+          </div>
+          {selected.milestones.map(m => {
+            const st = milestoneStatus(m.pctComplete);
+            const stColor = MILESTONE_STATUS_COLORS[st] || MILESTONE_STATUS_COLORS["Not Started"];
+            const dotColor = projectColorMap[m.projectId] || P.accent;
+            const typeColor = m.type === "billable" ? { bg: P.accentDim, text: P.accentLight }
+              : m.type === "change-order" ? { bg: P.yellowDim, text: P.yellow }
+              : { bg: P.purpleDim, text: P.purple };
+            return (
+              <div key={m.id} style={{ padding: "10px 14px", marginBottom: 8, background: P.bg, borderRadius: 8, border: `1px solid ${P.border}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{m.name}</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <div style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor }} />
+                        <button onClick={() => onNavigateToProject(m.projectId)}
+                          style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
+                          {m.projectName}
+                        </button>
+                      </div>
+                      <Badge color={typeColor} text={m.type === "billable" ? "Billable" : m.type === "change-order" ? "Change Order" : "Non-Billable"} />
+                      <span style={{ fontSize: 12, color: P.textDim }}>Phase: {m.phase}</span>
+                      {m.fee > 0 && <span style={{ fontSize: 12, color: P.green, fontFamily: "JetBrains Mono" }}>{fmt(m.fee)}</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 80 }}><ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} /></div>
+                    <span style={{ fontSize: 12, fontFamily: "JetBrains Mono", color: P.textMuted, minWidth: 32 }}>{m.pctComplete || 0}%</span>
+                    <Badge color={stColor} text={st} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ─── SUBCONSULTANTS ───────────────────────────────────────────────────────────
+
+const SUB_DISCIPLINES = ["Civil", "Structural", "Geotechnical", "Landscape", "Facade/Curtainwall",
+  "Acoustics", "AV/IT", "Security", "Vertical Transport/Elevators", "Lighting Design",
+  "Commissioning", "LEED/Sustainability", "Kitchen/Food Service", "Medical Equipment", "Other"];
+
+function SubsView({ project, onChange }) {
+  const subs = project.subconsultants || [];
+  const phases = (project.phases || []).filter(p => p.billable && p.fee > 0);
+
+  function addSub() {
+    onChange({ ...project, subconsultants: [...subs, {
+      id: uid(), firm: "", discipline: "Civil", contact: "", phone: "", email: "",
+      contractStatus: "Not Started", fee: 0, notes: "",
+      phases: {}
+    }]});
+  }
+
+  function updateSub(id, updates) {
+    onChange({ ...project, subconsultants: subs.map(s => s.id === id ? { ...s, ...updates } : s) });
+  }
+
+  function updateSubPhase(subId, phaseCode, val) {
+    const sub = subs.find(s => s.id === subId);
+    if (!sub) return;
+    const newPhases = { ...sub.phases, [phaseCode]: val };
+    const newFee = Object.values(newPhases).reduce((a, b) => a + (+b || 0), 0);
+    updateSub(subId, { phases: newPhases, fee: newFee });
+  }
+
+  const totalSubFee = subs.reduce((a, s) => a + (+s.fee || 0), 0);
+  const settyFee = (project.phases || []).filter(p => p.billable).reduce((a, p) => a + (p.fee || 0), 0);
+  const totalProjectFee = settyFee + totalSubFee;
+
+  const SUB_CONTRACT_STATUSES = ["Not Started", "Requested", "Received", "In Review", "Executed"];
+  const SUB_CONTRACT_COLORS = {
+    "Not Started": { bg: P.border, text: P.textMuted },
+    "Requested": { bg: P.accentDim, text: P.accentLight },
+    "Received": { bg: P.purpleDim, text: P.purple },
+    "In Review": { bg: P.yellowDim, text: P.yellow },
+    "Executed": { bg: P.greenDim, text: P.green },
+  };
+
+  return (
+    <div>
+      <SectionTitle action={<Btn small onClick={addSub} variant="ghost">+ Add Sub</Btn>}>
+        Subconsultants
+      </SectionTitle>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>
+        Track sub fees per phase. Sub fees are additive to Setty's fee and shown in the total project cost.
+      </div>
+
+      {/* KPI bar */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
+        <KpiBox label="SETTY FEE" val={fmt(settyFee)} color={P.accentLight} />
+        <KpiBox label="TOTAL SUB FEES" val={fmt(totalSubFee)} color={P.purple} />
+        <KpiBox label="TOTAL PROJECT FEE" val={fmt(totalProjectFee)} color={P.green} />
+        <KpiBox label="SUBS" val={subs.length} />
+      </div>
+
+      {subs.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 40, color: P.textDim }}>
+          No subconsultants added yet. <button onClick={addSub} style={{ color: P.accentLight, background: "none", border: "none", cursor: "pointer" }}>Add one</button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {subs.map(sub => {
+            const stColor = SUB_CONTRACT_COLORS[sub.contractStatus] || SUB_CONTRACT_COLORS["Not Started"];
+            return (
+              <div key={sub.id} style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 18 }}>
+                {/* Header row */}
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1.5fr 1.5fr 1fr 1fr auto", gap: 12, alignItems: "end", marginBottom: 16 }}>
+                  <Field label="Firm Name" style={{ marginBottom: 0 }}>
+                    <input value={sub.firm} onChange={e => updateSub(sub.id, { firm: e.target.value })} placeholder="Firm name…" style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Discipline" style={{ marginBottom: 0 }}>
+                    <select value={sub.discipline} onChange={e => updateSub(sub.id, { discipline: e.target.value })} style={{ width: "100%" }}>
+                      {SUB_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Contact" style={{ marginBottom: 0 }}>
+                    <input value={sub.contact || ""} onChange={e => updateSub(sub.id, { contact: e.target.value })} placeholder="Contact name…" style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Email" style={{ marginBottom: 0 }}>
+                    <input value={sub.email || ""} onChange={e => updateSub(sub.id, { email: e.target.value })} placeholder="email@firm.com" style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Contract Status" style={{ marginBottom: 0 }}>
+                    <select value={sub.contractStatus} onChange={e => updateSub(sub.id, { contractStatus: e.target.value })} style={{ width: "100%", borderColor: stColor.text }}>
+                      {SUB_CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
+                    </select>
+                  </Field>
+                  <Btn small variant="danger" onClick={() => onChange({ ...project, subconsultants: subs.filter(s => s.id !== sub.id) })}>✕</Btn>
+                </div>
+
+                {/* Phase fee breakdown */}
+                {phases.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, color: P.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Fee by Phase</div>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      {phases.map(ph => (
+                        <div key={ph.code} style={{ minWidth: 100 }}>
+                          <div style={{ fontSize: 11, color: P.textMuted, marginBottom: 4 }}>{ph.code} — {ph.name}</div>
+                          <input type="number" min="0" step="1000"
+                            value={sub.phases?.[ph.code] || ""}
+                            onChange={e => updateSubPhase(sub.id, ph.code, +e.target.value)}
+                            placeholder="$0"
+                            style={{ width: "100%" }}
+                          />
+                        </div>
+                      ))}
+                      <div style={{ minWidth: 120, paddingBottom: 2 }}>
+                        <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>TOTAL SUB FEE</div>
+                        <div style={{ fontWeight: 700, color: P.purple, fontFamily: "JetBrains Mono", fontSize: 15 }}>{fmt(sub.fee || 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Notes */}
+                <div style={{ marginTop: 12 }}>
+                  <Field label="Notes" style={{ marginBottom: 0 }}>
+                    <input value={sub.notes || ""} onChange={e => updateSub(sub.id, { notes: e.target.value })} placeholder="Scope notes, special conditions…" style={{ width: "100%" }} />
+                  </Field>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Summary table */}
+      {subs.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <SectionTitle>Fee Summary</SectionTitle>
+          <table>
+            <thead><tr><th>Discipline</th><th>Firm</th><th>Contract</th><th>Total Fee</th></tr></thead>
+            <tbody>
+              {subs.map(sub => {
+                const stColor = SUB_CONTRACT_COLORS[sub.contractStatus] || SUB_CONTRACT_COLORS["Not Started"];
+                return (
+                  <tr key={sub.id}>
+                    <td>{sub.discipline}</td>
+                    <td>{sub.firm || <span style={{ color: P.textDim }}>Unnamed</span>}</td>
+                    <td><Badge color={stColor} text={sub.contractStatus} /></td>
+                    <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: P.purple }}>{fmt(sub.fee || 0)}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ background: P.bg }}>
+                <td colSpan={3} style={{ fontWeight: 700 }}>Total Subconsultant Fees</td>
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{fmt(totalSubFee)}</td>
+              </tr>
+              <tr style={{ background: P.bg }}>
+                <td colSpan={3} style={{ fontWeight: 700 }}>Setty Fee</td>
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{fmt(settyFee)}</td>
+              </tr>
+              <tr style={{ background: P.accentDim }}>
+                <td colSpan={3} style={{ fontWeight: 800 }}>Total Project Fee (Setty + Subs)</td>
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 800, color: P.green }}>{fmt(totalProjectFee)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── INVOICE PROJECTIONS ──────────────────────────────────────────────────────
+
+function ProjectionsView({ project }) {
+  const phases = (project.phases || []).filter(p => p.billable && p.fee > 0 && p.endDate);
+  const invoices = project.invoices || [];
+  const milestones = (project.milestones || []).filter(m => m.type === "billable" && m.fee > 0 && m.dueDate);
+  const today = new Date();
+
+  // Build projection rows from billable milestones
+  const rows = milestones.map(m => {
+    const invoiced = invoices
+      .filter(inv => inv.milestoneId === m.id)
+      .reduce((a, inv) => a + (inv.amount || 0), 0);
+    const remaining = (m.fee || 0) - invoiced;
+    const due = m.dueDate ? new Date(m.dueDate + "T00:00:00") : null;
+    const isOverdue = due && due < today && remaining > 0;
+    const isPending = due && due >= today && due <= new Date(today.getTime() + 30 * 86400000);
+    return { ...m, invoiced, remaining, due, isOverdue, isPending };
+  });
+
+  const totalFee = rows.reduce((a, r) => a + r.fee, 0);
+  const totalInvoiced = rows.reduce((a, r) => a + r.invoiced, 0);
+  const totalRemaining = rows.reduce((a, r) => a + r.remaining, 0);
+  const overdueAmt = rows.filter(r => r.isOverdue).reduce((a, r) => a + r.remaining, 0);
+  const next30Amt = rows.filter(r => r.isPending).reduce((a, r) => a + r.remaining, 0);
+
+  // Cumulative cash flow — sort by due date
+  const sorted = [...rows].filter(r => r.due).sort((a, b) => a.due - b.due);
+  let cumulative = 0;
+  const cashFlow = sorted.map(r => {
+    cumulative += r.fee;
+    return { ...r, cumulative };
+  });
+
+  // Group by phase for summary
+  const byPhase = {};
+  rows.forEach(r => {
+    if (!byPhase[r.phase]) byPhase[r.phase] = { phase: r.phase, fee: 0, invoiced: 0, remaining: 0 };
+    byPhase[r.phase].fee += r.fee;
+    byPhase[r.phase].invoiced += r.invoiced;
+    byPhase[r.phase].remaining += r.remaining;
+  });
+
+  function statusBadge(row) {
+    if (row.invoiced >= row.fee) return <Badge color={{ bg: P.greenDim, text: P.green }} text="Fully Invoiced" />;
+    if (row.isOverdue) return <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />;
+    if (row.isPending) return <Badge color={{ bg: P.yellowDim, text: P.yellow }} text="Due Soon" />;
+    if (row.invoiced > 0) return <Badge color={{ bg: P.accentDim, text: P.accentLight }} text="Partially Invoiced" />;
+    return <Badge color={{ bg: P.border, text: P.textMuted }} text="Pending" />;
+  }
+
+  return (
+    <div>
+      <SectionTitle>Invoice Projections</SectionTitle>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 20 }}>
+        Projected billing schedule based on milestone due dates. Amounts shown are remaining uninvoiced fees.
+      </div>
+
+      {/* KPI row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 28 }}>
+        <KpiBox label="TOTAL CONTRACT" val={fmt(totalFee)} color={P.text} />
+        <KpiBox label="INVOICED TO DATE" val={fmt(totalInvoiced)} color={P.green} sub={`${totalFee > 0 ? Math.round(totalInvoiced/totalFee*100) : 0}% of contract`} />
+        <KpiBox label="REMAINING" val={fmt(totalRemaining)} color={P.accentLight} />
+        <KpiBox label="OVERDUE" val={fmt(overdueAmt)} color={overdueAmt > 0 ? P.red : P.textDim} sub={overdueAmt > 0 ? "Needs immediate invoicing" : "None"} />
+      </div>
+
+      {/* Next 30 days callout */}
+      {next30Amt > 0 && (
+        <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: "12px 16px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontWeight: 700, color: P.yellow, marginBottom: 2 }}>⏰ {fmt(next30Amt)} due in the next 30 days</div>
+            <div style={{ fontSize: 12, color: P.textMuted }}>{rows.filter(r => r.isPending).length} milestone{rows.filter(r => r.isPending).length !== 1 ? "s" : ""} approaching</div>
+          </div>
+        </div>
+      )}
+
+      {/* Projection table */}
+      {rows.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 40, color: P.textDim }}>
+          No billable milestones with due dates found. Finalize the fee schedule in the Fee Calculator tab first.
+        </div>
+      ) : (
+        <>
+          <table style={{ marginBottom: 28 }}>
+            <thead>
+              <tr>
+                <th>Milestone</th><th>Phase</th><th>Due Date</th>
+                <th>Contract Amt</th><th>Invoiced</th><th>Remaining</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id} style={{ background: r.isOverdue ? "#1a0505" : undefined }}>
+                  <td style={{ fontWeight: 500 }}>{r.name}</td>
+                  <td style={{ color: P.textMuted, fontSize: 12 }}>{r.phase}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: r.isOverdue ? P.red : P.textMuted }}>
+                    {r.dueDate || "—"}
+                  </td>
+                  <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(r.fee)}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", color: r.invoiced > 0 ? P.green : P.textDim }}>
+                    {r.invoiced > 0 ? fmt(r.invoiced) : "—"}
+                  </td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: r.remaining <= 0 ? P.green : r.isOverdue ? P.red : P.text }}>
+                    {r.remaining <= 0 ? "✓ Paid" : fmt(r.remaining)}
+                  </td>
+                  <td>{statusBadge(r)}</td>
+                </tr>
+              ))}
+              <tr style={{ background: P.bg, fontWeight: 700 }}>
+                <td colSpan={3}>Total</td>
+                <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(totalFee)}</td>
+                <td style={{ fontFamily: "JetBrains Mono", color: P.green }}>{fmt(totalInvoiced)}</td>
+                <td style={{ fontFamily: "JetBrains Mono", color: P.accentLight }}>{fmt(totalRemaining)}</td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* Cumulative cash flow chart (simple bar visualization) */}
+          {cashFlow.length > 0 && (
+            <div>
+              <SectionTitle>Cumulative Cash Flow</SectionTitle>
+              <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
+                {cashFlow.map((r, i) => {
+                  const barPct = totalFee > 0 ? (r.cumulative / totalFee) * 100 : 0;
+                  const isInvoiced = r.invoiced >= r.fee;
+                  return (
+                    <div key={r.id} style={{ marginBottom: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 12 }}>
+                        <span style={{ color: P.text, fontWeight: 500 }}>{r.name}</span>
+                        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+                          <span style={{ color: P.textDim, fontFamily: "JetBrains Mono" }}>{r.dueDate || "No date"}</span>
+                          <span style={{ color: P.green, fontFamily: "JetBrains Mono", fontWeight: 600 }}>{fmt(r.cumulative)}</span>
+                          <span style={{ color: P.textDim, fontSize: 11 }}>cumulative</span>
+                        </div>
+                      </div>
+                      <div style={{ background: P.border, borderRadius: 4, height: 10, overflow: "hidden", position: "relative" }}>
+                        <div style={{ width: `${barPct}%`, height: "100%", borderRadius: 4, background: isInvoiced ? P.green : P.accent, transition: "width .3s" }} />
+                      </div>
+                    </div>
+                  );
+                })}
+                <div style={{ marginTop: 16, display: "flex", gap: 16, fontSize: 11, color: P.textDim }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ width: 12, height: 6, borderRadius: 2, background: P.accent }} /> Projected
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ width: 12, height: 6, borderRadius: 2, background: P.green }} /> Invoiced
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
+
+const TABS = ["Overview", "Fee Calculator", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Calendar"];
+
+function ProjectDetail({ project, onUpdate, onBack }) {
+  const [tab, setTab] = useState("Overview");
+
+  function updateField(field, val) {
+    onUpdate({ ...project, [field]: val });
+  }
+
+  const pct = projectOverallPct(project);
+  const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
+  const totalFee = (project.phases || []).filter(p => p.billable && p.fee > 0).reduce((a, p) => a + p.fee, 0);
+  const totalInvoiced = (project.invoices || []).reduce((a, inv) => a + inv.amount, 0);
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <button onClick={onBack} style={{ background: "none", color: P.textMuted, border: "none", cursor: "pointer", marginBottom: 16, fontSize: 13 }}>
+        ← Back to Dashboard
+      </button>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+            <input value={project.name} onChange={e => updateField("name", e.target.value)}
+              style={{ fontSize: 22, fontWeight: 700, background: "none", border: "none", color: P.text, borderBottom: `2px solid ${P.border}`, paddingBottom: 4, width: 440 }} />
+            <Badge color={statusColor} text={project.status} />
+          </div>
+          <div style={{ color: P.textMuted, fontSize: 13 }}>
+            {project.projectNumber}{project.projectManager ? ` · PM: ${project.projectManager}` : ""}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ fontSize: 13 }}>
+            {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
+          </select>
+          <Btn small variant={project.archived ? "success" : "ghost"} onClick={() => updateField("archived", !project.archived)}>
+            {project.archived ? "Unarchive" : "Archive"}
+          </Btn>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
+        <Card>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Overall Progress</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: P.accent }}>{pct}%</div>
+          </div>
+          <ProgressBar pct={pct} />
+        </Card>
+        <KpiBox label="Total Fee" val={fmt(totalFee)} color={P.green} />
+        <KpiBox label="Total Invoiced" val={fmt(totalInvoiced)} color={P.purple}
+          sub={`Open: ${fmt(totalFee - totalInvoiced)}`} />
+      </div>
+
+      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: `1px solid ${P.border}` }}>
+        {TABS.map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            style={{ padding: "8px 16px", background: "none", border: "none", color: tab === t ? P.accentLight : P.textMuted, borderBottom: tab === t ? `2px solid ${P.accentLight}` : "2px solid transparent", fontWeight: tab === t ? 600 : 400, fontSize: 13, cursor: "pointer", marginBottom: -1 }}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      <Card>
+        {tab === "Overview" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <Field label="Project Number"><input value={project.projectNumber || ""} onChange={e => updateField("projectNumber", e.target.value)} style={{ width: "100%" }} /></Field>
+            <Field label="Prime"><input value={project.prime || ""} onChange={e => updateField("prime", e.target.value)} style={{ width: "100%" }} /></Field>
+            <Field label="Project Manager"><input value={project.projectManager || ""} onChange={e => updateField("projectManager", e.target.value)} style={{ width: "100%" }} /></Field>
+            <Field label="Deputy Project Manager"><input value={project.deputyProjectManager || ""} onChange={e => updateField("deputyProjectManager", e.target.value)} style={{ width: "100%" }} /></Field>
+            <Field label="Contract Status">
+              <select value={project.contractStatus} onChange={e => updateField("contractStatus", e.target.value)} style={{ width: "100%" }}>
+                {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Project Status">
+              <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ width: "100%" }}>
+                {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+          </div>
+        )}
+        {tab === "Fee Calculator" && <FeeCalculator project={project} onChange={onUpdate} />}
+        {tab === "Schedule" && <ScheduleView project={project} onChange={onUpdate} />}
+        {tab === "Subconsultants" && <SubsView project={project} onChange={onUpdate} />}
+        {tab === "Projections" && <ProjectionsView project={project} />}
+        {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} />}
+        {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
+        {tab === "Contract" && <ContractView project={project} onChange={onUpdate} />}
+        {tab === "Team" && <TeamView project={project} onChange={onUpdate} />}
+        {tab === "Calendar" && <CalendarView project={project} />}
+      </Card>
+    </div>
+  );
+}
+
+// ─── PROJECT LIST CARD ────────────────────────────────────────────────────────
+
+function ProjectCard({ project, onClick }) {
+  const pct = projectOverallPct(project);
+  const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
+  const contractColor = CONTRACT_COLORS[project.contractStatus] || {};
+  const totalFee = (project.phases || []).filter(p => p.billable && p.fee > 0).reduce((a, p) => a + p.fee, 0);
+
+  return (
+    <div onClick={onClick}
+      style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 18, cursor: "pointer", transition: "all .15s" }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = P.accent; e.currentTarget.style.background = P.cardHover; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = P.border; e.currentTarget.style.background = P.card; }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 3 }}>{project.name}</div>
+          <div style={{ color: P.textDim, fontSize: 12 }}>{project.projectNumber}</div>
+        </div>
+        <Badge color={statusColor} text={project.status} />
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <Badge color={contractColor} text={project.contractStatus} />
+        {project.projectManager && <span style={{ fontSize: 11, color: P.textMuted }}>PM: {project.projectManager}</span>}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ fontSize: 12, color: P.textDim }}>Total Fee</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: P.green, fontFamily: "JetBrains Mono" }}>{fmt(totalFee)}</div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ fontSize: 12, color: P.textDim }}>Progress</div>
+        <div style={{ fontSize: 12, fontWeight: 600 }}>{pct}%</div>
+      </div>
+      <ProgressBar pct={pct} />
+    </div>
+  );
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+
+function Dashboard({ projects, onNavigateToProject }) {
+  const active = projects.filter(p => !p.archived && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
+  // Build a quick lookup: projectId → project
+  const projectMap = Object.fromEntries(active.map(p => [p.id, p]));
+  const allMilestones = active.flatMap(p => (p.milestones || []).map(m => ({
+    ...m,
+    projectName: p.name, projectId: p.id, pm: p.projectManager,
+    projectStatus: p.status,
+  })));
+  const now = new Date();
+  const in14 = new Date(); in14.setDate(in14.getDate() + 14);
+  const overdue = allMilestones.filter(m => m.dueDate && new Date(m.dueDate) < now && milestoneStatus(m.pctComplete) !== "Completed");
+  const upcoming = allMilestones.filter(m => { const d = new Date(m.dueDate); return d >= now && d <= in14 && milestoneStatus(m.pctComplete) !== "Completed"; });
+
+  const totalFee = active.reduce((a, p) => a + (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0), 0);
+  const totalInvoiced = active.reduce((a, p) => a + (p.invoices || []).reduce((b, inv) => b + inv.amount, 0), 0);
+
+  const byStatus = PROJECT_STATUSES.slice(0, 6).map(s => ({
+    status: s, count: active.filter(p => p.status === s).length,
+    color: STATUS_COLORS[s] || { bg: P.border, text: P.textMuted },
+  })).filter(x => x.count > 0);
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Team Dashboard</div>
+      <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>Setty & Associates – Project Management System</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 24 }}>
+        <KpiBox label="Active Projects" val={active.length} color={P.accent} />
+        <KpiBox label="Total Fee Value" val={fmt(totalFee)} color={P.green} />
+        <KpiBox label="Total Invoiced" val={fmt(totalInvoiced)} color={P.purple} />
+        <KpiBox label="Overdue Milestones" val={overdue.length} color={overdue.length > 0 ? P.red : P.textMuted} />
+        <KpiBox label="Due in 14 Days" val={upcoming.length} color={upcoming.length > 0 ? P.yellow : P.textMuted} />
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
+        {byStatus.map(({ status, count, color }) => (
+          <div key={status} style={{ background: color.bg, borderRadius: 8, padding: "8px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: color.text, fontWeight: 700, fontSize: 16 }}>{count}</span>
+            <span style={{ color: color.text, fontSize: 12 }}>{status}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 24 }}>
+        <Card>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: P.red }}>⚠ Overdue Milestones</div>
+          {overdue.length === 0
+            ? <div style={{ color: P.textDim, fontSize: 13 }}>None – great work!</div>
+            : overdue.slice(0, 6).map(m => (
+              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
+                <div style={{ fontSize: 12, color: P.textMuted }}>
+                  <button onClick={() => onNavigateToProject(m.projectId)}
+                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
+                    {m.projectName}
+                  </button>
+                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
+                </div>
+              </div>
+            ))
+          }
+        </Card>
+        <Card>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: P.yellow }}>📅 Due in 14 Days</div>
+          {upcoming.length === 0
+            ? <div style={{ color: P.textDim, fontSize: 13 }}>Nothing due soon.</div>
+            : upcoming.slice(0, 6).map(m => (
+              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
+                <div style={{ fontSize: 12, color: P.textMuted }}>
+                  <button onClick={() => onNavigateToProject(m.projectId)}
+                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
+                    {m.projectName}
+                  </button>
+                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
+                </div>
+              </div>
+            ))
+          }
+        </Card>
+      </div>
+
+      <Card>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 16 }}>All Active Milestones</div>
+        <table>
+          <thead>
+            <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Milestone Progress</th><th>Project Status</th></tr>
+          </thead>
+          <tbody>
+            {allMilestones.sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
+              const mst = milestoneStatus(m.pctComplete);
+              const projStatus = m.projectStatus || "Not Started";
+              const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
+              return (
+                <tr key={m.id}>
+                  <td>
+                    <button onClick={() => onNavigateToProject(m.projectId)}
+                      style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
+                      onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
+                      onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
+                      {m.projectName}
+                    </button>
+                  </td>
+                  <td style={{ color: P.textMuted }}>{m.pm || "—"}</td>
+                  <td>{m.name}</td>
+                  <td><Badge color={m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: new Date(m.dueDate) < now && mst !== "Completed" ? P.red : P.text }}>{m.dueDate}</td>
+                  <td style={{ width: 120 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} />
+                      <span style={{ fontSize: 11, color: P.textDim, minWidth: 28 }}>{m.pctComplete || 0}%</span>
+                    </div>
+                  </td>
+                  <td><Badge color={projStatusColor} text={projStatus} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+
+// Save status indicator component
+function SaveBadge({ status, lastSaved, onRetry }) {
+  const cfg = {
+    idle:    { color: P.textDim,    icon: "",   text: "" },
+    saving:  { color: P.accentLight,icon: "⏳", text: "Saving…" },
+    saved:   { color: P.green,      icon: "✓",  text: lastSaved ? `Saved ${lastSaved}` : "Saved" },
+    error:   { color: P.red,        icon: "✗",  text: "Save failed" },
+    loading: { color: P.accentLight,icon: "⏳", text: "Loading from SharePoint…" },
+  }[status] || { color: P.textDim, icon: "", text: "" };
+
+  if (!cfg.text) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: cfg.color }}>
+      <span>{cfg.icon}</span>
+      <span>{cfg.text}</span>
+      {status === "error" && onRetry && (
+        <button onClick={onRetry}
+          style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 11, textDecoration: "underline", padding: 0 }}>
+          Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [projects, setProjects] = useState([]);
+  const [view, setView] = useState("dashboard");
+  const [search, setSearch] = useState("");
+  const [filterPM, setFilterPM] = useState("All");
+  const [filterStatus, setFilterStatus] = useState("All");
+  const [appStatus, setAppStatus] = useState("loading"); // loading | idle | saving | saved | error
+  const [lastSaved, setLastSaved] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [pendingSave, setPendingSave] = useState(null); // debounce timer ref stored in state
+
+  const [clientId, setClientId] = useState(() => localStorage.getItem("setty_pms_client_id") || "");
+  const [clientIdInput, setClientIdInput] = useState(clientId);
+  const [shareUrl, setShareUrl] = useState(() => localStorage.getItem("setty_pms_share_url") || "");
+  const [shareUrlInput, setShareUrlInput] = useState(shareUrl);
+  const [showSetup, setShowSetup] = useState(!clientId);
+
+  // ── Initial load from SharePoint via Graph ──
+  useEffect(() => {
+    if (!clientId) return; // wait until client ID is configured
+    setAppStatus("loading");
+    loadState()
+      .then(s => {
+        if (s?.projects) setProjects(s.projects);
+        setAppStatus("idle");
+      })
+      .catch(e => {
+        console.error("Load failed:", e);
+        if (e.message === "NO_CLIENT_ID") { setShowSetup(true); setAppStatus("idle"); return; }
+        // Auth errors — prompt sign-in
+        if (e.message?.includes("401") || e.message?.includes("403") || e.message?.includes("interaction_required")) {
+          getToken(true).then(() => loadState()).then(s => {
+            if (s?.projects) setProjects(s.projects);
+            setAppStatus("idle");
+          }).catch(e2 => { setLoadError(e2.message); setAppStatus("error"); });
+          return;
+        }
+        setLoadError(e.message || "Could not load data from SharePoint");
+        setAppStatus("error");
+      });
+  }, [clientId]);
+
+  function saveClientId() {
+    const id = clientIdInput.trim();
+    if (!id) return;
+    localStorage.setItem("setty_pms_client_id", id);
+    const su = shareUrlInput.trim();
+    if (su) localStorage.setItem("setty_pms_share_url", su);
+    else localStorage.removeItem("setty_pms_share_url");
+    setClientId(id);
+    setShareUrl(su);
+    setShowSetup(false);
+  }
+
+  // ── Debounced auto-save — fires 2s after last change ──
+  useEffect(() => {
+    if (appStatus === "loading") return;
+    // Clear any pending save
+    if (pendingSave) clearTimeout(pendingSave);
+    const timer = setTimeout(() => {
+      performSave({ projects });
+    }, 2000);
+    setPendingSave(timer);
+    return () => clearTimeout(timer);
+  }, [projects]);
+
+  async function performSave(state) {
+    setAppStatus("saving");
+    try {
+      await saveState(state);
+      const now = new Date();
+      setLastSaved(`${now.getHours()}:${String(now.getMinutes()).padStart(2,"0")}`);
+      setAppStatus("saved");
+      // Return to idle after 3s
+      setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
+    } catch(e) {
+      console.error("Save failed:", e);
+      setAppStatus("error");
+    }
+  }
+
+  function manualRetry() {
+    performSave({ projects });
+  }
+
+  function updateProject(updated) {
+    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+  }
+
+  function addProject() {
+    const p = newProject();
+    setProjects(prev => [p, ...prev]);
+    setView(`project:${p.id}`);
+  }
+
+  const allPMs = useMemo(() => ["All", ...new Set(projects.map(p => p.projectManager).filter(Boolean))], [projects]);
+
+  const displayedProjects = useMemo(() => {
+    const archived = view === "archive";
+    return projects.filter(p => {
+      if (p.archived !== archived) return false;
+      if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.projectNumber || "").toLowerCase().includes(search.toLowerCase())) return false;
+      if (filterPM !== "All" && p.projectManager !== filterPM) return false;
+      if (filterStatus !== "All" && p.status !== filterStatus) return false;
+      return true;
+    });
+  }, [projects, view, search, filterPM, filterStatus]);
+
+  const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
+
+  // ── Setup screen (first run — needs Azure App Client ID) ──
+  if (showSetup) return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: P.bg, padding: 32 }}>
+      <style>{CSS}</style>
+      <div style={{ width: "100%", maxWidth: 520 }}>
+        <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em", marginBottom: 24 }}>
+          <span style={{ color: P.accent }}>SETTY</span>
+          <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
+        </div>
+        <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, padding: 28 }}>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>One-time setup</div>
+          <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
+            No admin consent required. Uses only standard Microsoft 365 permissions that every Setty employee already has.
+          </div>
+
+          {/* Step 1: Azure App Registration */}
+          <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 12, lineHeight: 1.9 }}>
+            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Step 1 — Azure App Registration (one person, 5 min)</div>
+            <div style={{ color: P.textMuted }}>
+              1. Go to <strong style={{ color: P.accentLight }}>portal.azure.com</strong> → Azure Active Directory → App registrations → New registration<br/>
+              2. Name: <strong style={{ color: P.text }}>Setty PMS</strong> · Supported accounts: <strong style={{ color: P.text }}>This org only</strong><br/>
+              3. Redirect URI: choose <strong style={{ color: P.text }}>Single-page application (SPA)</strong> → paste the OneDrive URL of this HTML file<br/>
+              4. API permissions → Add: <strong style={{ color: P.text }}>Files.ReadWrite.All · Calendars.ReadWrite.Shared · User.Read</strong><br/>
+              &nbsp;&nbsp;&nbsp;⚠ Do NOT add Sites.ReadWrite.All — the 3 above require no admin consent<br/>
+              5. Copy the <strong style={{ color: P.text }}>Application (client) ID</strong> from Overview and paste below
+            </div>
+          </div>
+
+          <Field label="Azure App Client ID">
+            <input value={clientIdInput} onChange={e => setClientIdInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && saveClientId()}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              style={{ width: "100%", fontFamily: "JetBrains Mono, monospace" }} />
+          </Field>
+
+          {/* Step 2: Shared data file */}
+          <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 16, margin: "16px 0", fontSize: 12, lineHeight: 1.9 }}>
+            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Step 2 — Shared data file (skip if you are the first user)</div>
+            <div style={{ color: P.textMuted }}>
+              The first person to set up the app creates the data file automatically in their OneDrive.<br/>
+              To share with the team:<br/>
+              1. Open OneDrive → find <strong style={{ color: P.text }}>SettyPMS/setty-pms-data.json</strong><br/>
+              2. Right-click → Share → Copy link (set to "People in Setty with the link can edit")<br/>
+              3. Paste that link below — all team members paste it when they set up their browser<br/>
+              <em style={{ color: P.textDim }}>Leave blank if you are the first user setting this up.</em>
+            </div>
+          </div>
+
+          <Field label="Shared data file link (optional — from OneDrive share)">
+            <input value={shareUrlInput} onChange={e => setShareUrlInput(e.target.value)}
+              placeholder="https://setty-my.sharepoint.com/:u:/p/..."
+              style={{ width: "100%" }} />
+          </Field>
+
+          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
+            <Btn onClick={saveClientId} disabled={!clientIdInput.trim()}>Save & Sign In with Microsoft</Btn>
+            {clientId && <Btn variant="ghost" onClick={() => setShowSetup(false)}>Cancel</Btn>}
+          </div>
+          {clientId && (
+            <div style={{ marginTop: 10, fontSize: 11, color: P.green }}>✓ Already configured — click Cancel to continue or update settings above</div>
+          )}
+        </div>
+
+        <div style={{ marginTop: 16, fontSize: 11, color: P.textDim, textAlign: "center" }}>
+          3 permissions · No admin consent · Data stays in your Microsoft 365 tenant
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── Loading screen ──
+  if (appStatus === "loading") return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: P.bg, gap: 16 }}>
+      <style>{CSS}</style>
+      <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em" }}>
+        <span style={{ color: P.accent }}>SETTY</span>
+        <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
+      </div>
+      <div style={{ color: P.textMuted, fontSize: 13 }}>⏳ Signing in to Microsoft & loading from SharePoint…</div>
+    </div>
+  );
+
+  // ── Load error screen — show app anyway with empty state ──
+  const loadErrorBanner = loadError ? (
+    <div style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 16px", margin: "16px 32px", fontSize: 12, color: P.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <span>⚠ Could not load from SharePoint: {loadError}. Working in offline mode — changes will not be shared with the team until save succeeds.</span>
+      <button onClick={() => setLoadError(null)} style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 16 }}>✕</button>
+    </div>
+  ) : null;
+
+  return (
+    <div style={{ minHeight: "100vh", background: P.bg }}>
+      <style>{CSS}</style>
+
+      {/* ── Nav bar ── */}
+      <div style={{ background: P.card, borderBottom: `1px solid ${P.border}`, padding: "0 32px", display: "flex", alignItems: "center", gap: 24, height: 54, position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-.02em" }}>
+          <span style={{ color: P.accent }}>SETTY</span>
+          <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
+        </div>
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Projects", key: "list" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+          <button key={key} onClick={() => setView(key)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
+            {label}
+          </button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} />
+        <button onClick={() => setShowSetup(true)} title="Settings / Azure setup"
+          style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, padding: "0 4px" }}>⚙</button>
+        <Btn small onClick={addProject}>+ New Project</Btn>
+      </div>
+
+      {loadErrorBanner}
+
+      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+
+      {(view === "list" || view === "archive") && (
+        <div style={{ padding: "24px 32px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div style={{ fontSize: 20, fontWeight: 800 }}>{view === "archive" ? "Archived Projects" : "All Projects"}</div>
+            <Btn small onClick={addProject}>+ New Project</Btn>
+          </div>
+          <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+            <input placeholder="Search by name or number…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 260 }} />
+            <select value={filterPM} onChange={e => setFilterPM(e.target.value)}>
+              {allPMs.map(pm => <option key={pm}>{pm}</option>)}
+            </select>
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+              {["All", ...PROJECT_STATUSES].map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          {displayedProjects.length === 0 ? (
+            <div style={{ color: P.textDim, textAlign: "center", padding: 60 }}>
+              No projects found.{" "}
+              <button onClick={addProject} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer" }}>Create one</button>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 16 }}>
+              {displayedProjects.map(p => <ProjectCard key={p.id} project={p} onClick={() => setView(`project:${p.id}`)} />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {viewingProject && (
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} />
+      )}
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+  </script>
+</body>
+</html>
