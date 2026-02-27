@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 22:01 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 22:08 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -302,25 +302,37 @@ async function getToken(forceRefresh = false) {
 async function graphFetch(method, path, body, token) {
   const t = token || await getToken();
   const isBytes = body instanceof Uint8Array;
-  const opts = {
+
+  const headers = { Authorization: "Bearer " + t };
+  let reqBody;
+  if (body !== undefined) {
+    if (isBytes) {
+      headers["Content-Type"] = "application/octet-stream";
+      reqBody = body;
+    } else {
+      headers["Content-Type"] = "application/json";
+      reqBody = JSON.stringify(body);
+    }
+  }
+
+  console.log("graphFetch", method, path, reqBody ? reqBody.slice(0, 200) : "(no body)");
+
+  const makeReq = (tok) => fetch(GRAPH_BASE + path, {
     method,
-    headers: {
-      Authorization: `Bearer ${t}`,
-      ...(body !== undefined ? { "Content-Type": isBytes ? "application/octet-stream" : "application/json" } : {}),
-    },
-    ...(body !== undefined ? { body: isBytes ? body : JSON.stringify(body) } : {}),
-  };
-  let resp = await fetch(`${GRAPH_BASE}${path}`, opts);
+    headers: { ...headers, Authorization: "Bearer " + tok },
+    ...(reqBody !== undefined ? { body: reqBody } : {}),
+  });
+
+  let resp = await makeReq(t);
   if (resp.status === 401) {
     const fresh = await getToken(true);
-    opts.headers.Authorization = `Bearer ${fresh}`;
-    resp = await fetch(`${GRAPH_BASE}${path}`, opts);
+    resp = await makeReq(fresh);
   }
   if (resp.status === 204 || resp.status === 202) return null;
   if (resp.status === 404) return null;
   if (!resp.ok) {
     const txt = await resp.text();
-    throw new Error(`Graph ${resp.status}: ${txt.slice(0, 300)}`);
+    throw new Error("Graph " + resp.status + ": " + txt.slice(0, 300));
   }
   return resp.json();
 }
@@ -467,13 +479,24 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
   // Log what we're sending for debugging
   console.log("Calendar event body:", JSON.stringify(eventBody));
 
+  // Try posting to the shared mailbox first; fall back to signed-in user's calendar
+  async function tryPost(mailbox) {
+    const base = mailbox ? "/users/" + mailbox : "/me";
+    if (existingEventId) {
+      const r = await graphFetch("PATCH", base + "/events/" + existingEventId, eventBody);
+      return r || await graphFetch("POST", base + "/events", eventBody);
+    }
+    return await graphFetch("POST", base + "/events", eventBody);
+  }
+
   try {
     let result;
-    if (existingEventId) {
-      result = await graphFetch("PATCH", "/users/" + CAL_MAILBOX + "/events/" + existingEventId, eventBody);
-      if (!result) result = await graphFetch("POST", "/users/" + CAL_MAILBOX + "/events", eventBody);
-    } else {
-      result = await graphFetch("POST", "/users/" + CAL_MAILBOX + "/events", eventBody);
+    try {
+      result = await tryPost(CAL_MAILBOX);
+    } catch(e) {
+      // If shared mailbox fails (permission), fall back to signed-in user's own calendar
+      console.warn("Shared mailbox failed, falling back to /me/events:", e.message);
+      result = await tryPost(null);
     }
     return { success: true, eventId: result?.id };
   } catch(e) {
