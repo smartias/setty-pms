@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 19:03 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 20:19 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -337,37 +337,72 @@ async function graphFetch(method, path, body, token) {
 // This means whoever runs setup first owns the file; everyone else accesses
 // it via the shared driveItem URL they paste in setup.
 
-function ownFilePath() {
-  return `/me/drive/root:/${OD_FOLDER}/${OD_FILE}`;
+// Encode a share URL into the Graph API sharing token format
+function encodeShareUrl(url) {
+  const encoded = btoa("u!" + url)
+    .replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  return encoded;
 }
 
-async function resolveFilePath() {
-  // If a share URL has been configured, decode and use the shared item
+// Own OneDrive path (used by first user / data owner)
+function ownFileUrl(token) {
+  return `${GRAPH_BASE}/me/drive/root:/${OD_FOLDER}/${OD_FILE}:/content`;
+}
+
+// Resolve the correct content URL for reading/writing the data file.
+// Strategy:
+//   1. If a share URL is configured, use Graph /shares endpoint to get the
+//      driveId + itemId of the shared file, then use those for content access.
+//      This avoids the broken /shares/{id}/driveItem/content PUT pattern.
+//   2. Fall back to the signed-in user's own OneDrive (first-run / owner).
+let _resolvedContentUrl = null; // cached after first resolve
+
+async function resolveContentUrl(token, forceRefresh = false) {
+  if (_resolvedContentUrl && !forceRefresh) return _resolvedContentUrl;
+
   const shareUrl = localStorage.getItem("setty_pms_share_url") || "";
-  if (shareUrl) {
-    // Graph sharing URL encoding: base64url of "u!" + url
-    const encoded = btoa("u!" + shareUrl).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-    return `/shares/${encoded}/driveItem`;
+  if (!shareUrl) {
+    _resolvedContentUrl = ownFileUrl(token);
+    return _resolvedContentUrl;
   }
-  // Fall back to own OneDrive (first-run / admin user)
-  return ownFilePath();
+
+  // Step 1: decode the share URL to get driveId + itemId
+  try {
+    const encoded = encodeShareUrl(shareUrl);
+    const metaResp = await fetch(`${GRAPH_BASE}/shares/${encoded}/driveItem`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (metaResp.ok) {
+      const meta = await metaResp.json();
+      const driveId = meta.parentReference?.driveId;
+      const itemId  = meta.id;
+      if (driveId && itemId) {
+        // Use drives/{driveId}/items/{itemId}/content — works for GET and PUT
+        _resolvedContentUrl = `${GRAPH_BASE}/drives/${driveId}/items/${itemId}/content`;
+        return _resolvedContentUrl;
+      }
+    }
+    console.warn("Could not resolve share URL via Graph, falling back to own drive");
+  } catch(e) {
+    console.warn("Share URL resolution failed:", e.message);
+  }
+
+  // Fallback
+  _resolvedContentUrl = ownFileUrl(token);
+  return _resolvedContentUrl;
 }
 
 async function loadState() {
   try {
     const token = await getToken();
-    const filePath = await resolveFilePath();
+    const url = await resolveContentUrl(token);
 
-    // For own OneDrive path, append :/content; for shares, use /content sub-resource
-    const contentPath = filePath.includes("/shares/")
-      ? `${filePath}/content`
-      : `${filePath}:/content`;
-
-    const resp = await fetch(`${GRAPH_BASE}${contentPath}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (resp.status === 404) return null; // first run
-    if (!resp.ok) throw new Error(`Graph ${resp.status}`);
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(`Graph ${resp.status}: ${txt.slice(0, 200)}`);
+    }
     return await resp.json();
   } catch(e) {
     if (e.message === "NO_CLIENT_ID") throw e;
@@ -383,27 +418,26 @@ async function saveState(state) {
     JSON.stringify({ ...state, _savedAt: new Date().toISOString(), _version: 3 }, null, 2)
   );
 
-  const filePath = await resolveFilePath();
-  const contentPath = filePath.includes("/shares/")
-    ? `${filePath}/content`
-    : `${filePath}:/content`;
-
-  const resp = await fetch(`${GRAPH_BASE}${contentPath}`, {
+  // Try resolved URL first
+  const url = await resolveContentUrl(token);
+  const resp = await fetch(url, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
     body: payload,
   });
+
   if (!resp.ok) {
     const txt = await resp.text();
-    // If share path failed, try own file path (first run)
-    if (filePath.includes("/shares/")) {
-      const own = await fetch(`${GRAPH_BASE}${ownFilePath()}:/content`, {
+    // If resolved URL failed, force re-resolve and retry once
+    _resolvedContentUrl = null;
+    const url2 = await resolveContentUrl(token, true);
+    if (url2 !== url) {
+      const resp2 = await fetch(url2, {
         method: "PUT",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
         body: payload,
       });
-      if (!own.ok) throw new Error(`Save failed ${own.status}`);
-      return;
+      if (resp2.ok) return;
     }
     throw new Error(`Save failed ${resp.status}: ${txt.slice(0, 200)}`);
   }
