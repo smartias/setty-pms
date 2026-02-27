@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 22:21 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 22:26 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -450,6 +450,35 @@ async function saveState(state) {
 }
 
 // ── Calendar helpers ──
+// Cache the NYC Shared Calendar ID so we only look it up once per session
+let _nycCalendarId = null;
+
+async function getNYCCalendarId() {
+  if (_nycCalendarId) return _nycCalendarId;
+  // Check localStorage cache first
+  const cached = localStorage.getItem("setty_pms_cal_id");
+  if (cached) { _nycCalendarId = cached; return _nycCalendarId; }
+  // Fetch all calendars for the signed-in user
+  try {
+    const data = await graphFetch("GET", "/me/calendars?$top=50");
+    const cals = data?.value || [];
+    console.log("Available calendars:", cals.map(c => c.name));
+    // Find NYC Shared Calendar by name (case-insensitive partial match)
+    const nyc = cals.find(c => c.name.toLowerCase().includes("nyc") || c.name.toLowerCase().includes("shared"));
+    if (nyc) {
+      _nycCalendarId = nyc.id;
+      localStorage.setItem("setty_pms_cal_id", nyc.id);
+      console.log("Found NYC calendar:", nyc.name, nyc.id);
+      return _nycCalendarId;
+    }
+    console.warn("NYC Shared Calendar not found — available:", cals.map(c => c.name).join(", "));
+    return null;
+  } catch(e) {
+    console.warn("Could not fetch calendars:", e.message);
+    return null;
+  }
+}
+
 async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId) {
   if (!milestone.dueDate) return { success: false, error: "No due date" };
 
@@ -458,44 +487,34 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
   endDateObj.setDate(endDateObj.getDate() + 1);
   const endDate = endDateObj.toISOString().slice(0, 10);
 
-  // Safe subject — avoid unicode dash issues
   const prefix = projectNumber ? "[" + projectNumber + "] " : "";
   const subject = prefix + projectName + " - " + milestone.name;
-
-  // Body content as plain string
-  const bodyContent = "Phase: " + (milestone.phase || "") +
-    " | Progress: " + (milestone.pctComplete || 0) + "%" +
-    " | Project: " + projectName +
-    (projectNumber ? " (#" + projectNumber + ")" : "");
 
   const eventBody = {
     subject: subject,
     isAllDay: true,
     start: { dateTime: milestone.dueDate + "T00:00:00", timeZone: "Eastern Standard Time" },
-    end:   { dateTime: endDate         + "T00:00:00", timeZone: "Eastern Standard Time" },
+    end:   { dateTime: endDate + "T00:00:00",           timeZone: "Eastern Standard Time" },
   };
 
-  // Log what we're sending for debugging
   console.log("Calendar event body:", JSON.stringify(eventBody));
 
-  // Try posting to the shared mailbox first; fall back to signed-in user's calendar
-  async function tryPost(mailbox) {
-    const base = mailbox ? "/users/" + mailbox : "/me";
-    if (existingEventId) {
-      const r = await graphFetch("PATCH", base + "/events/" + existingEventId, eventBody);
-      return r || await graphFetch("POST", base + "/events", eventBody);
-    }
-    return await graphFetch("POST", base + "/events", eventBody);
+  // Build the correct calendar path
+  async function calPath(eventId) {
+    const calId = await getNYCCalendarId();
+    const base = calId ? "/me/calendars/" + calId : "/me";
+    if (eventId) return base + "/events/" + eventId;
+    return base + "/events";
   }
 
   try {
     let result;
-    try {
-      result = await tryPost(CAL_MAILBOX);
-    } catch(e) {
-      // If shared mailbox fails (permission), fall back to signed-in user's own calendar
-      console.warn("Shared mailbox failed, falling back to /me/events:", e.message);
-      result = await tryPost(null);
+    if (existingEventId) {
+      const patchPath = await calPath(existingEventId);
+      result = await graphFetch("PATCH", patchPath, eventBody);
+      if (!result) result = await graphFetch("POST", await calPath(null), eventBody);
+    } else {
+      result = await graphFetch("POST", await calPath(null), eventBody);
     }
     return { success: true, eventId: result?.id };
   } catch(e) {
