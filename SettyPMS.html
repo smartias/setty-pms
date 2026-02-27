@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 21:58 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 22:01 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -440,26 +440,40 @@ async function saveState(state) {
 // ── Calendar helpers ──
 async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId) {
   if (!milestone.dueDate) return { success: false, error: "No due date" };
-  const prefix = projectNumber ? `[${projectNumber}] ` : "";
-  const subject = `${prefix}${projectName} — ${milestone.name}`;
+
+  // Compute end date (next day — Outlook all-day events use exclusive end)
+  const endDateObj = new Date(milestone.dueDate + "T12:00:00");
+  endDateObj.setDate(endDateObj.getDate() + 1);
+  const endDate = endDateObj.toISOString().slice(0, 10);
+
+  // Safe subject — avoid unicode dash issues
+  const prefix = projectNumber ? "[" + projectNumber + "] " : "";
+  const subject = prefix + projectName + " - " + milestone.name;
+
+  // Body content as plain string
+  const bodyContent = "Phase: " + (milestone.phase || "") +
+    " | Progress: " + (milestone.pctComplete || 0) + "%" +
+    " | Project: " + projectName +
+    (projectNumber ? " (#" + projectNumber + ")" : "");
+
   const eventBody = {
-    subject,
+    subject: subject,
     isAllDay: true,
     start: { date: milestone.dueDate },
-    end:   { date: (() => { const d = new Date(milestone.dueDate + "T00:00:00"); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })() },
-    body: {
-      contentType: "text",
-      content: `Phase: ${milestone.phase || ""} | Type: ${milestone.type || "billable"} | Progress: ${milestone.pctComplete || 0}% | Project: ${projectName}${projectNumber ? " (#" + projectNumber + ")" : ""}`,
-    },
-    categories: ["Setty PMS"],
+    end:   { date: endDate },
+    body:  { contentType: "HTML", content: bodyContent },
   };
+
+  // Log what we're sending for debugging
+  console.log("Calendar event body:", JSON.stringify(eventBody));
+
   try {
     let result;
     if (existingEventId) {
-      result = await graphFetch("PATCH", `/users/${CAL_MAILBOX}/events/${existingEventId}`, eventBody);
-      if (!result) result = await graphFetch("POST", `/users/${CAL_MAILBOX}/events`, eventBody);
+      result = await graphFetch("PATCH", "/users/" + CAL_MAILBOX + "/events/" + existingEventId, eventBody);
+      if (!result) result = await graphFetch("POST", "/users/" + CAL_MAILBOX + "/events", eventBody);
     } else {
-      result = await graphFetch("POST", `/users/${CAL_MAILBOX}/events`, eventBody);
+      result = await graphFetch("POST", "/users/" + CAL_MAILBOX + "/events", eventBody);
     }
     return { success: true, eventId: result?.id };
   } catch(e) {
