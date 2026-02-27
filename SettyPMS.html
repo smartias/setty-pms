@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 23:21 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 23:29 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -149,10 +149,11 @@ function calcSettyFee(constructionCost, project) {
 
 function buildPhaseFees(settyFee, phases) {
   const total = phases.filter(p => p.billable).reduce((a, p) => a + p.pct, 0);
-  return phases.map(p => ({
-    ...p,
-    fee: p.billable && total > 0 ? settyFee * (p.pct / total) : 0,
-  }));
+  return phases.map(p => {
+    const calcedFee = p.billable && total > 0 ? settyFee * (p.pct / total) : 0;
+    const fee = (p.billable && p.manualFee > 0) ? p.manualFee : calcedFee;
+    return { ...p, fee, calcedFee };
+  });
 }
 
 function buildSchedule(startDate, phases) {
@@ -955,7 +956,23 @@ function FeeCalculator({ project, onChange }) {
                   <span style={{ color: P.textMuted, fontSize: 12 }}>%</span>
                 </div>
               </td>
-              <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(ph.fee)}</td>
+              <td>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input type="number" min="0" step="500"
+                    value={ph.manualFee > 0 ? ph.manualFee : ""}
+                    onChange={e => updatePhase(idx, { manualFee: +e.target.value })}
+                    placeholder={fmt(ph.calcedFee ?? ph.fee)}
+                    style={{ width: 110, fontFamily: "JetBrains Mono", borderColor: ph.manualFee > 0 ? P.yellow : P.border, color: ph.manualFee > 0 ? P.yellow : P.text }}
+                  />
+                  {ph.manualFee > 0 && (
+                    <button onClick={() => updatePhase(idx, { manualFee: 0 })}
+                      style={{ background: "none", color: P.yellow, fontSize: 13, border: "none", cursor: "pointer" }} title="Reset to calculated">↺</button>
+                  )}
+                </div>
+                {ph.manualFee > 0 && (
+                  <div style={{ fontSize: 10, color: P.textDim, marginTop: 2 }}>Calc: {fmt(ph.calcedFee ?? 0)}</div>
+                )}
+              </td>
               <td><input type="checkbox" checked={!!ph.billable} onChange={e => updatePhase(idx, { billable: e.target.checked })} /></td>
               <td><Btn small variant="danger" onClick={() => onChange({ ...project, phases: phases.filter((_, i) => i !== idx) })}>✕</Btn></td>
             </tr>
