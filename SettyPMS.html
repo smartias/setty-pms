@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 20:19 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 21:37 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -649,6 +649,14 @@ function FeeCalculator({ project, onChange }) {
     onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
   }
 
+  function movePhase(idx, dir) {
+    const newPhases = [...phases];
+    const target = idx + dir;
+    if (target < 0 || target >= newPhases.length) return;
+    [newPhases[idx], newPhases[target]] = [newPhases[target], newPhases[idx]];
+    onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
+  }
+
   function addPhase() {
     const newPhases = [...phases, { id: uid(), code: `PH${phases.length + 1}`, name: "Custom Phase", pct: 0, billable: true, fee: 0, pctComplete: 0 }];
     onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
@@ -850,10 +858,18 @@ function FeeCalculator({ project, onChange }) {
         </span>
       </SectionTitle>
       <table style={{ marginBottom: 20 }}>
-        <thead><tr><th>Code</th><th>Phase Name</th><th>% of Setty Fee</th><th>Fee Amount</th><th>Billable</th><th></th></tr></thead>
+        <thead><tr><th style={{width:48}}>Order</th><th>Code</th><th>Phase Name</th><th>% of Setty Fee</th><th>Fee Amount</th><th>Billable</th><th></th></tr></thead>
         <tbody>
           {phasedFees.map((ph, idx) => (
             <tr key={ph.id}>
+              <td>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <button onClick={() => movePhase(idx, -1)} disabled={idx === 0}
+                    style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 3, color: idx === 0 ? P.textDim : P.accentLight, cursor: idx === 0 ? "default" : "pointer", fontSize: 10, padding: "1px 5px", lineHeight: 1 }}>▲</button>
+                  <button onClick={() => movePhase(idx, 1)} disabled={idx === phasedFees.length - 1}
+                    style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 3, color: idx === phasedFees.length - 1 ? P.textDim : P.accentLight, cursor: idx === phasedFees.length - 1 ? "default" : "pointer", fontSize: 10, padding: "1px 5px", lineHeight: 1 }}>▼</button>
+                </div>
+              </td>
               <td><input value={ph.code} onChange={e => updatePhase(idx, { code: e.target.value })} style={{ width: 60 }} /></td>
               <td><input value={ph.name} onChange={e => updatePhase(idx, { name: e.target.value })} style={{ width: 180 }} /></td>
               <td>
@@ -1067,7 +1083,12 @@ function ScheduleView({ project, onChange }) {
           </tr>
         </thead>
         <tbody>
-          {milestones.map(m => {
+          {[...milestones].sort((a, b) => {
+              if (!a.dueDate && !b.dueDate) return 0;
+              if (!a.dueDate) return 1;
+              if (!b.dueDate) return -1;
+              return a.dueDate > b.dueDate ? 1 : -1;
+            }).map(m => {
             const autoStatus = milestoneStatus(m.pctComplete);
             const statusColor = MILESTONE_STATUS_COLORS[autoStatus] || MILESTONE_STATUS_COLORS["Not Started"];
             const typeColor = m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple };
@@ -2279,13 +2300,17 @@ function ProjectionsView({ project }) {
   const overdueAmt = rows.filter(r => r.isOverdue).reduce((a, r) => a + r.remaining, 0);
   const next30Amt = rows.filter(r => r.isPending).reduce((a, r) => a + r.remaining, 0);
 
-  // Cumulative cash flow — sort by due date
-  const sorted = [...rows].filter(r => r.due).sort((a, b) => a.due - b.due);
-  let cumulative = 0;
-  const cashFlow = sorted.map(r => {
-    cumulative += r.fee;
-    return { ...r, cumulative };
+  // Monthly cash flow — group fees by month of due date
+  const monthlyMap = {};
+  [...rows].filter(r => r.due).forEach(r => {
+    const key = r.dueDate.slice(0, 7); // "YYYY-MM"
+    if (!monthlyMap[key]) monthlyMap[key] = { month: key, fee: 0, invoiced: 0, milestones: [] };
+    monthlyMap[key].fee += r.fee;
+    monthlyMap[key].invoiced += r.invoiced;
+    monthlyMap[key].milestones.push(r.name);
   });
+  const monthlyCashFlow = Object.values(monthlyMap).sort((a, b) => a.month > b.month ? 1 : -1);
+  const maxMonthFee = Math.max(...monthlyCashFlow.map(m => m.fee), 1);
 
   // Group by phase for summary
   const byPhase = {};
@@ -2371,31 +2396,59 @@ function ProjectionsView({ project }) {
             </tbody>
           </table>
 
-          {/* Cumulative cash flow chart (simple bar visualization) */}
-          {cashFlow.length > 0 && (
+          {/* Monthly cash flow bar chart */}
+          {monthlyCashFlow.length > 0 && (
             <div>
-              <SectionTitle>Cumulative Cash Flow</SectionTitle>
-              <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
-                {cashFlow.map((r, i) => {
-                  const barPct = totalFee > 0 ? (r.cumulative / totalFee) * 100 : 0;
-                  const isInvoiced = r.invoiced >= r.fee;
-                  return (
-                    <div key={r.id} style={{ marginBottom: 12 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 12 }}>
-                        <span style={{ color: P.text, fontWeight: 500 }}>{r.name}</span>
-                        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-                          <span style={{ color: P.textDim, fontFamily: "JetBrains Mono" }}>{r.dueDate || "No date"}</span>
-                          <span style={{ color: P.green, fontFamily: "JetBrains Mono", fontWeight: 600 }}>{fmt(r.cumulative)}</span>
-                          <span style={{ color: P.textDim, fontSize: 11 }}>cumulative</span>
-                        </div>
+              <SectionTitle>Monthly Cash Flow</SectionTitle>
+              <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>Fee expected per month based on milestone due dates</div>
+              <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: "20px 20px 8px" }}>
+                {/* Bar chart */}
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 160, marginBottom: 8 }}>
+                  {monthlyCashFlow.map(m => {
+                    const barH = Math.round((m.fee / maxMonthFee) * 140);
+                    const isFullyInvoiced = m.invoiced >= m.fee;
+                    const label = new Date(m.month + "-02").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+                    return (
+                      <div key={m.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}
+                        title={`${label}: ${fmt(m.fee)}
+${m.milestones.join(", ")}`}>
+                        <span style={{ fontSize: 10, color: P.accentLight, fontFamily: "JetBrains Mono", fontWeight: 600, whiteSpace: "nowrap" }}>
+                          {fmt(m.fee)}
+                        </span>
+                        <div style={{ width: "100%", height: barH, borderRadius: "4px 4px 0 0", background: isFullyInvoiced ? P.green : P.accent, minHeight: 4, transition: "height .3s" }} />
+                        <span style={{ fontSize: 10, color: P.textMuted, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", width: "100%", textOverflow: "ellipsis" }}>{label}</span>
                       </div>
-                      <div style={{ background: P.border, borderRadius: 4, height: 10, overflow: "hidden", position: "relative" }}>
-                        <div style={{ width: `${barPct}%`, height: "100%", borderRadius: 4, background: isInvoiced ? P.green : P.accent, transition: "width .3s" }} />
-                      </div>
-                    </div>
-                  );
-                })}
-                <div style={{ marginTop: 16, display: "flex", gap: 16, fontSize: 11, color: P.textDim }}>
+                    );
+                  })}
+                </div>
+                {/* Monthly breakdown table */}
+                <table style={{ marginTop: 12 }}>
+                  <thead>
+                    <tr><th>Month</th><th>Milestones</th><th>Expected Fee</th><th>Invoiced</th><th>Remaining</th></tr>
+                  </thead>
+                  <tbody>
+                    {monthlyCashFlow.map(m => {
+                      const label = new Date(m.month + "-02").toLocaleDateString("en-US", { month: "long", year: "numeric" });
+                      const remaining = m.fee - m.invoiced;
+                      return (
+                        <tr key={m.month}>
+                          <td style={{ fontWeight: 600 }}>{label}</td>
+                          <td style={{ fontSize: 12, color: P.textMuted }}>{m.milestones.join(", ")}</td>
+                          <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(m.fee)}</td>
+                          <td style={{ fontFamily: "JetBrains Mono", color: m.invoiced > 0 ? P.green : P.textDim }}>{m.invoiced > 0 ? fmt(m.invoiced) : "—"}</td>
+                          <td style={{ fontFamily: "JetBrains Mono", color: remaining <= 0 ? P.green : P.text }}>{remaining <= 0 ? "✓ Paid" : fmt(remaining)}</td>
+                        </tr>
+                      );
+                    })}
+                    <tr style={{ background: P.bg, fontWeight: 700 }}>
+                      <td>Total</td><td></td>
+                      <td style={{ fontFamily: "JetBrains Mono" }}>{fmt(totalFee)}</td>
+                      <td style={{ fontFamily: "JetBrains Mono", color: P.green }}>{fmt(totalInvoiced)}</td>
+                      <td style={{ fontFamily: "JetBrains Mono", color: P.accentLight }}>{fmt(totalRemaining)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div style={{ marginTop: 12, display: "flex", gap: 16, fontSize: 11, color: P.textDim }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <div style={{ width: 12, height: 6, borderRadius: 2, background: P.accent }} /> Projected
                   </div>
