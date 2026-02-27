@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 22:17 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-27 22:21 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -471,8 +471,8 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
   const eventBody = {
     subject: subject,
     isAllDay: true,
-    start: { date: milestone.dueDate, timeZone: "Eastern Standard Time" },
-    end:   { date: endDate,           timeZone: "Eastern Standard Time" },
+    start: { dateTime: milestone.dueDate + "T00:00:00", timeZone: "Eastern Standard Time" },
+    end:   { dateTime: endDate         + "T00:00:00", timeZone: "Eastern Standard Time" },
   };
 
   // Log what we're sending for debugging
