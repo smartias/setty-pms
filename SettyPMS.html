@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 00:50 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-28 00:53 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2505,8 +2505,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
                         color: cell.hrs === 0 ? P.textDim : st === "past" ? P.textDim : st === "current" ? P.green : P.text,
                         fontWeight: st === "current" ? 700 : 400 }}>
                         {cell.hrs > 0 ? (
-                          <div title={cell.byProject.map(x => `${x.name}: ${x.hrs}h`).join("
-")}>
+                          <div title={cell.byProject.map(x => x.name + ": " + x.hrs + "h").join(" | ")}>
                             <div>{cell.hrs} h</div>
                             {cell.byProject.length > 1 && (
                               <div style={{ fontSize: 9, color: P.textDim, lineHeight: 1.4 }}>
@@ -3417,8 +3416,7 @@ function ProjectionsView({ project }) {
                     const label = new Date(m.month + "-02").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
                     return (
                       <div key={m.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}
-                        title={`${label}: ${fmt(m.fee)}
-${m.milestones.join(", ")}`}>
+                        titletitle={label + ": " + fmt(m.fee) + " | " + m.milestones.join(", ")}>
                         <span style={{ fontSize: 10, color: P.accentLight, fontFamily: "JetBrains Mono", fontWeight: 600, whiteSpace: "nowrap" }}>
                           {fmt(m.fee)}
                         </span>
