@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 05:00 -->
+<!-- Setty PMS | Built: 2026-02-28 05:08 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -1291,18 +1291,23 @@ function ScheduleView({ project, onChange }) {
   const milestones = project.milestones || [];
   const billablePhases = phases.filter(p => p.billable && p.fee > 0);
 
-  // Per-milestone calendar sync state (not persisted — session only)
-  const CAL_KEY = `setty_pms_cal_${project.id}`;
-  const [calMap, setCalMap] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(CAL_KEY) || "{}"); } catch(e) { return {}; }
-  });
+  // Per-milestone calendar event IDs — stored in milestone.calendarEventId (OneDrive), not localStorage
   const [calState, setCalState] = useState({}); // { [milestoneId]: "syncing"|"synced"|"error"|"stale" }
   const [syncMsg, setSyncMsg] = useState("");
   const [syncingAll, setSyncingAll] = useState(false);
 
+  // calMap derived from milestone objects — single source of truth in project data
+  const calMap = Object.fromEntries(
+    (project.milestones || []).filter(m => m.calendarEventId).map(m => [m.id, m.calendarEventId])
+  );
+
   function saveCalMap(map) {
-    try { localStorage.setItem(CAL_KEY, JSON.stringify(map)); } catch(e) {}
-    setCalMap(map);
+    // Write eventIds back into the milestone objects and save via onChange
+    const newMilestones = (project.milestones || []).map(m => ({
+      ...m,
+      calendarEventId: map[m.id] || m.calendarEventId || null,
+    }));
+    onChange({ ...project, milestones: newMilestones });
   }
 
   async function syncOne(m) {
@@ -1366,6 +1371,7 @@ function ScheduleView({ project, onChange }) {
         newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
       // Mark as stale if already synced
       if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
+      // calMap is derived from milestone objects so it stays in sync automatically
     }
     onChange({ ...project, milestones: newMilestones, phases: newPhases });
   }
@@ -1410,7 +1416,7 @@ function ScheduleView({ project, onChange }) {
   }
 
   const syncableCount = milestones.filter(m => m.dueDate).length;
-  const syncedCount = Object.keys(calMap).filter(id => calState[id] !== "stale" && calState[id] !== "error").length;
+  const syncedCount = (project.milestones || []).filter(m => m.calendarEventId && calState[m.id] !== "stale" && calState[m.id] !== "error").length;
 
   function CalIcon({ m }) {
     const st = calState[m.id];
@@ -4623,24 +4629,22 @@ function TeamCalendar({ projects, onNavigateToProject }) {
     setSyncLog([]);
     setSyncedCount(0);
 
-    // Load previously synced event IDs from localStorage (per-browser cache of event IDs)
-    const syncMapKey = "setty_pms_cal_sync";
-    let syncMap = {};
-    try { syncMap = JSON.parse(localStorage.getItem(syncMapKey) || "{}"); } catch(e) {}
-
+    // Event IDs stored in milestone.calendarEventId (OneDrive) — no localStorage needed
     const log = [];
     let successCount = 0;
-    const newSyncMap = { ...syncMap };
+    // Track updates: { projectId -> { milestoneId -> eventId } }
+    const projectMilestoneUpdates = {};
 
     for (let i = 0; i < allSyncableMilestones.length; i++) {
       const m = allSyncableMilestones[i];
-      const existingEventId = syncMap[m.id];
+      const existingEventId = m.calendarEventId || null;
       setSyncLog([...log, { name: `${m.projectName} — ${m.name}`, status: "pending" }]);
 
       const result = await createOrUpdateCalendarEvent(m, m.projectName, m.projectNumber, existingEventId);
 
       if (result.success) {
-        newSyncMap[m.id] = result.eventId;
+        if (!projectMilestoneUpdates[m.projectId]) projectMilestoneUpdates[m.projectId] = {};
+        projectMilestoneUpdates[m.projectId][m.id] = result.eventId;
         log.push({ name: `${m.projectName} — ${m.name}`, status: "success", message: existingEventId ? "Updated" : "Created" });
         successCount++;
       } else {
@@ -4650,7 +4654,15 @@ function TeamCalendar({ projects, onNavigateToProject }) {
       setSyncedCount(successCount);
     }
 
-    try { localStorage.setItem(syncMapKey, JSON.stringify(newSyncMap)); } catch(e) {}
+    // Write eventIds back into project milestone objects via onUpdateProject
+    Object.entries(projectMilestoneUpdates).forEach(([projectId, milestoneUpdates]) => {
+      const proj = projects.find(p => p.id === projectId);
+      if (!proj) return;
+      const newMilestones = (proj.milestones || []).map(m =>
+        milestoneUpdates[m.id] ? { ...m, calendarEventId: milestoneUpdates[m.id] } : m
+      );
+      onUpdateProject({ ...proj, milestones: newMilestones });
+    });
     setSyncStatus(log.some(l => l.status === "error") ? "done_with_errors" : "done");
     setShowSyncLog(true);
   }
@@ -5275,10 +5287,10 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
       type: "proposal",
       pctComplete: 0,
     };
-    const existingEventId = localStorage.getItem("setty_pms_proposal_cal_" + project.id) || null;
+    const existingEventId = project.proposalCalendarEventId || null;
     const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId);
     if (result.success) {
-      if (result.eventId) localStorage.setItem("setty_pms_proposal_cal_" + project.id, result.eventId);
+      if (result.eventId) onUpdate({ ...project, proposalCalendarEventId: result.eventId });
       setProposalSyncState("synced");
       setProposalSyncMsg(result.warning ? "⚠ " + result.warning : "✓ Synced to NYC Shared Calendar");
     } else {
@@ -5299,10 +5311,10 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
       type: "contract",
       pctComplete: 0,
     };
-    const existingEventId = localStorage.getItem("setty_pms_contract_exp_cal_" + project.id) || null;
+    const existingEventId = project.contractExpCalendarEventId || null;
     const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId);
     if (result.success) {
-      if (result.eventId) localStorage.setItem("setty_pms_contract_exp_cal_" + project.id, result.eventId);
+      if (result.eventId) onUpdate({ ...project, contractExpCalendarEventId: result.eventId });
       setContractExpSyncState("synced");
       setContractExpSyncMsg(result.warning ? "⚠ " + result.warning : "✓ Synced to NYC Shared Calendar");
     } else {
@@ -5518,14 +5530,15 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
   async function syncMilestoneFromDash(m) {
     if (!m.dueDate) { setDashSyncMsg("⚠ No due date on " + m.name); return; }
     setDashCalState(s => ({ ...s, [m.id]: "syncing" }));
-    const calKey = "setty_pms_cal_" + m.projectId;
-    const calMap = (() => { try { return JSON.parse(localStorage.getItem(calKey) || "{}"); } catch(e) { return {}; } })();
     const proj = projects.find(p => p.id === m.projectId);
-    const result = await createOrUpdateCalendarEvent(m, proj?.name || "Project", proj?.projectNumber, calMap[m.id]);
+    const existingEventId = m.calendarEventId || null;
+    const result = await createOrUpdateCalendarEvent(m, proj?.name || "Project", proj?.projectNumber, existingEventId);
     if (result.success) {
-      if (result.eventId) {
-        const newMap = { ...calMap, [m.id]: result.eventId };
-        try { localStorage.setItem(calKey, JSON.stringify(newMap)); } catch(e) {}
+      if (result.eventId && proj) {
+        const newMilestones = (proj.milestones || []).map(ms =>
+          ms.id === m.id ? { ...ms, calendarEventId: result.eventId } : ms
+        );
+        onUpdateProject({ ...proj, milestones: newMilestones });
       }
       setDashCalState(s => ({ ...s, [m.id]: "synced" }));
       setDashSyncMsg(result.warning ? "⚠ " + result.warning : "✓ \"" + m.name + "\" synced to NYC Shared Calendar");
