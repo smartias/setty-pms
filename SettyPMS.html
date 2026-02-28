@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 01:02 -->
+<!-- Setty PMS | Built: 2026-02-28 01:17 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -781,6 +781,7 @@ function FeeCalculator({ project, onChange }) {
     }));
     onChange({ ...project, phases: scheduled, feeScheduleFinalized: true,
       milestones: [...existingNonBillable, ...newBillable],
+      lockedSettyFee: baseFee,
       feeAuditLog: [...auditLog, entry] });
     setShowLockModal(false);
     setLockNote("");
@@ -1834,15 +1835,71 @@ function printInvoice(inv, project) {
     ? `<th class="right">Hours</th><th class="right">Rate</th>`
     : "";
 
-  const remBalance = (project.manualSettyFee || 0) > 0
-    ? project.manualSettyFee - (project.invoices || []).filter(i => i.id !== inv.id).reduce((a, i) => a + i.amount, 0) - inv.amount
-    : null;
+  // ── Fee Schedule ──
+  // Use locked fee or best available
+  const auditLocked = (project.feeAuditLog || []).filter(e => e.action === "locked" && e.settyFee);
+  const auditFee = auditLocked.length > 0 ? auditLocked[auditLocked.length - 1].settyFee : 0;
+  const constructionCostInv = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const contractFee = project.lockedSettyFee || auditFee || (project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCostInv, project)) || 0;
+
+  // Approved COs add to contract value
+  const approvedCOs = (project.changeOrders || []).filter(c => c.approved);
+  const coTotal = approvedCOs.reduce((a, c) => a + (c.fee || 0), 0);
+  const totalContractFee = contractFee + coTotal;
+
+  // Billable phases from locked fee schedule
+  const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0);
+
+  // All invoices except the current one (already billed before this invoice)
+  const priorInvoices = (project.invoices || []).filter(i => i.id !== inv.id);
+  const totalPriorInvoiced = priorInvoices.reduce((a, i) => a + (i.amount || 0), 0);
+  const totalInvoicedToDate = totalPriorInvoiced + (inv.amount || 0);
+  const remainingBalance = totalContractFee - totalInvoicedToDate;
+
+  // Per-phase: fee, previously invoiced, this invoice amount (if same phase)
+  const feeScheduleRows = billablePhases.map(ph => {
+    const phaseFee = ph.fee || 0;
+    const phaseInvoiced = priorInvoices
+      .filter(i => i.phase === ph.code)
+      .reduce((a, i) => a + (i.amount || 0), 0);
+    const thisInvAmt = (inv.phase === ph.code) ? (inv.amount || 0) : 0;
+    const totalBilledThisPhase = phaseInvoiced + thisInvAmt;
+    const phaseBalance = phaseFee - totalBilledThisPhase;
+    const isCurrentPhase = inv.phase === ph.code;
+    return { ph, phaseFee, phaseInvoiced, thisInvAmt, totalBilledThisPhase, phaseBalance, isCurrentPhase };
+  });
+
+  // CO rows for fee schedule
+  const coRows = approvedCOs.map(co => {
+    const coInvoiced = priorInvoices
+      .filter(i => i.phase === "CO" && (project.milestones || []).find(m => m.coId === co.id && m.id === i.milestoneId))
+      .reduce((a, i) => a + (i.amount || 0), 0);
+    const coBalance = (co.fee || 0) - coInvoiced;
+    return { co, coInvoiced, coBalance };
+  });
+
+  const feeScheduleHtml = feeScheduleRows.map(r => `
+    <tr style="${r.isCurrentPhase ? "background:#eef4ff;font-weight:600;" : ""}">
+      <td>${r.ph.name}${r.isCurrentPhase ? ' <span style="background:#2F5496;color:#fff;font-size:7.5pt;padding:1px 6px;border-radius:8px;font-weight:600;vertical-align:middle;">THIS INVOICE</span>' : ""}</td>
+      <td class="right">$${Math.round(r.phaseFee).toLocaleString()}</td>
+      <td class="right">${r.phaseInvoiced > 0 ? "$" + Math.round(r.phaseInvoiced).toLocaleString() : "—"}</td>
+      <td class="right" style="${r.thisInvAmt > 0 ? "color:#1a56a0;font-weight:700;" : "color:#aaa;"}">${r.thisInvAmt > 0 ? "$" + Math.round(r.thisInvAmt).toLocaleString() : "—"}</td>
+      <td class="right" style="${r.phaseBalance < 0 ? "color:#c00000;" : r.phaseBalance === 0 ? "color:#1a7a34;" : ""}">${r.phaseBalance === 0 ? "✓ Paid" : "$" + Math.round(r.phaseBalance).toLocaleString()}</td>
+    </tr>`).join("") +
+    coRows.map(r => `
+    <tr style="background:#fff8f0;">
+      <td style="color:#44546A;font-style:italic;">↳ CO: ${r.co.name || r.co.number}</td>
+      <td class="right">$${Math.round(r.co.fee || 0).toLocaleString()}</td>
+      <td class="right">${r.coInvoiced > 0 ? "$" + Math.round(r.coInvoiced).toLocaleString() : "—"}</td>
+      <td class="right" style="color:#aaa;">—</td>
+      <td class="right" style="${r.coBalance < 0 ? "color:#c00000;" : r.coBalance === 0 ? "color:#1a7a34;" : ""}">${r.coBalance === 0 ? "✓ Paid" : "$" + Math.round(r.coBalance).toLocaleString()}</td>
+    </tr>`).join("");
 
   const html = `
     <div class="doc-header">
       <div>
         <div class="logo-text">SETTY</div>
-        <div class="logo-sub">& ASSOCIATES INTERNATIONAL, PLLC</div>
+        <div class="logo-sub">& ASSOCIATES, LTD, PC</div>
         <div style="margin-top:10px;font-size:8.5pt;color:#44546A;line-height:1.6;">
           Fairfax, VA (HQ) · Washington DC · New York · Baltimore<br>
           Atlanta · Philadelphia · Los Angeles · Tampa · India
@@ -1901,17 +1958,41 @@ function printInvoice(inv, project) {
       <div class="amount-inner">
         <div class="amount-label">AMOUNT DUE</div>
         <div class="amount-value">$${Math.round(inv.amount || 0).toLocaleString()}</div>
-        ${remBalance !== null ? `<div style="font-size:8pt;opacity:0.75;margin-top:4px;">Remaining contract balance: $${Math.round(Math.max(0, remBalance)).toLocaleString()}</div>` : ""}
       </div>
     </div>
 
-    <div style="margin-top:32px;font-size:8.5pt;color:#44546A;">
+    ${billablePhases.length > 0 ? `
+    <div class="section-heading" style="margin-top:28px;">Fee Schedule &amp; Billing Status</div>
+    <table class="line-items">
+      <thead>
+        <tr>
+          <th>Phase</th>
+          <th class="right">Phase Fee</th>
+          <th class="right">Prev. Billed</th>
+          <th class="right">This Invoice</th>
+          <th class="right">Balance</th>
+        </tr>
+      </thead>
+      <tbody>${feeScheduleHtml}</tbody>
+      <tfoot>
+        <tr>
+          <td><strong>Contract Total</strong>${coTotal > 0 ? `<div style="font-size:8pt;color:#44546A;font-weight:400;">Incl. ${approvedCOs.length} approved CO${approvedCOs.length !== 1 ? "s" : ""}</div>` : ""}</td>
+          <td class="right">$${Math.round(totalContractFee).toLocaleString()}</td>
+          <td class="right">$${Math.round(totalPriorInvoiced).toLocaleString()}</td>
+          <td class="right" style="color:#1a56a0;font-weight:700;">$${Math.round(inv.amount || 0).toLocaleString()}</td>
+          <td class="right" style="${remainingBalance < 0 ? "color:#c00000;" : remainingBalance === 0 ? "color:#1a7a34;" : "color:#1F3864;"}">$${Math.round(remainingBalance).toLocaleString()}</td>
+        </tr>
+      </tfoot>
+    </table>
+    ` : ""}
+
+    <div style="margin-top:20px;font-size:8.5pt;color:#44546A;">
       <strong>Billing Method:</strong> ${inv.method === "hours" ? "Time & Materials" : "Percentage of Fee"}
       &nbsp;&nbsp;·&nbsp;&nbsp;<strong>Status:</strong> <span class="badge badge-green">Finalized</span>
     </div>
 
     <div class="doc-footer">
-      <span>SETTY &amp; Associates International, PLLC</span>
+      <span>SETTY &amp; Associates, LTD, PC</span>
       <span>${inv.number} · ${fmtDate(inv.date)}</span>
       <span>Confidential</span>
     </div>
@@ -1923,14 +2004,18 @@ function printChangeOrder(co, project, allCOs) {
   const prevApproved = (allCOs || [])
     .filter(c => c.approved && c.id !== co.id)
     .reduce((a, c) => a + (c.fee || 0), 0);
-  const originalFee = project.manualSettyFee || 0;
+  // Use locked fee from fee schedule — prefer project.lockedSettyFee, fall back to last locked audit entry
+  const auditLocked = (project.feeAuditLog || []).filter(e => e.action === "locked" && e.settyFee);
+  const auditFee = auditLocked.length > 0 ? auditLocked[auditLocked.length - 1].settyFee : 0;
+  const constructionCostCO = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const originalFee = project.lockedSettyFee || auditFee || (project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCostCO, project)) || 0;
   const revisedFee = originalFee + prevApproved + (co.fee || 0);
 
   const html = `
     <div class="doc-header">
       <div>
         <div class="logo-text">SETTY</div>
-        <div class="logo-sub">& ASSOCIATES INTERNATIONAL, PLLC</div>
+        <div class="logo-sub">& ASSOCIATES, LTD, PC</div>
         <div style="margin-top:10px;font-size:8.5pt;color:#44546A;line-height:1.6;">
           Fairfax, VA (HQ) · Washington DC · New York · Baltimore<br>
           Atlanta · Philadelphia · Los Angeles · Tampa · India
@@ -2015,7 +2100,7 @@ function printChangeOrder(co, project, allCOs) {
         <tr>
           <td style="width:48%;padding:8px 0;vertical-align:bottom;">
             <div style="border-top:1px solid #000;padding-top:6px;color:#44546A;font-size:8.5pt;">
-              SETTY &amp; Associates International, PLLC<br>
+              SETTY &amp; Associates, LTD, PC<br>
               Authorized Signature &amp; Date
             </div>
           </td>
@@ -2036,7 +2121,7 @@ function printChangeOrder(co, project, allCOs) {
     </div>
 
     <div class="doc-footer">
-      <span>SETTY &amp; Associates International, PLLC</span>
+      <span>SETTY &amp; Associates, LTD, PC</span>
       <span>${co.number} · ${fmtDate(co.date)}</span>
       <span>Confidential</span>
     </div>
@@ -4193,7 +4278,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
           + Non-Billable Milestone
         </button>
       </div>
-      <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>Setty & Associates – Project Management System</div>
+      <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>Setty & Associates, LTD, PC – Project Management System</div>
 
       {/* Add Non-Billable Milestone Modal */}
       {showAddMilestone && (
