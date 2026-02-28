@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 05:37 -->
+<!-- Setty PMS | Built: 2026-02-28 05:40 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -5925,13 +5925,13 @@ function printScopeOfServices(project) {
       <div class="meta-block">
         <div class="meta-label">Project</div>
         <div class="meta-value">${project.name || "—"}</div>
-        ${(project.projectAddress || project.projectCity) ? \`<div class="meta-sub">\${project.projectAddress || ""}\${project.projectAddress && project.projectCity ? "<br>" : ""}\${[project.projectCity, project.projectState].filter(Boolean).join(", ")}</div>\` : ""}
+        ${(project.projectAddress || project.projectCity) ? '<div class="meta-sub">' + (project.projectAddress || "") + (project.projectAddress && project.projectCity ? "<br>" : "") + [project.projectCity, project.projectState].filter(Boolean).join(", ") + "</div>" : ""}
       </div>
       <div class="meta-block">
         <div class="meta-label">Client / Prime</div>
         <div class="meta-value">${project.prime || project.clientName || "—"}</div>
-        ${project.primeProjectNumber ? \`<div class="meta-sub">Prime #: \${project.primeProjectNumber}</div>\` : ""}
-        ${project.projectManager ? \`<div class="meta-sub">PM: \${project.projectManager}</div>\` : ""}
+        ${project.primeProjectNumber ? '<div class="meta-sub">Prime #: ' + project.primeProjectNumber + "</div>" : ""}
+        ${project.projectManager ? '<div class="meta-sub">PM: ' + project.projectManager + "</div>" : ""}
       </div>
     </div>
 
