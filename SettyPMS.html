@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 14:26 -->
+<!-- Setty PMS | Built: 2026-02-28 14:36 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -5323,7 +5323,7 @@ function ProjectionsView({ project }) {
 
 const TABS = ["Overview", "Fee Calculator", "Scope", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Calendar"];
 
-function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
+function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
@@ -5440,7 +5440,15 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
         {tab === "Overview" && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
             <Field label="Project Number"><input value={project.projectNumber || ""} onChange={e => updateField("projectNumber", e.target.value)} style={{ width: "100%" }} /></Field>
-            <Field label="Prime"><input value={project.prime || ""} onChange={e => updateField("prime", e.target.value)} style={{ width: "100%" }} /></Field>
+            <Field label="Prime">
+              <CompanyTypeahead
+                value={project.prime || ""}
+                onChange={val => updateField("prime", val)}
+                clients={clients}
+                filter="prime"
+                placeholder="Type to search primes / GCs…"
+              />
+            </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
 
             <Field label="Fee Type">
@@ -5464,7 +5472,15 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
               </select>
             </Field>
             {isPipeline(project) && (<>
-              <Field label="Client Name"><input value={project.clientName || ""} onChange={e => updateField("clientName", e.target.value)} style={{ width: "100%" }} /></Field>
+              <Field label="Client Name">
+                <CompanyTypeahead
+                  value={project.clientName || ""}
+                  onChange={val => updateField("clientName", val)}
+                  clients={clients}
+                  filter="client"
+                  placeholder="Type to search clients…"
+                />
+              </Field>
               <Field label="Proposal Due Date">
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input type="date" value={project.proposalDueDate || ""} onChange={e => { updateField("proposalDueDate", e.target.value); setProposalSyncState("idle"); }} style={{ flex: 1 }} />
@@ -6232,6 +6248,204 @@ function ScopeView({ project, onChange }) {
 }
 
 
+
+// ─── CLIENT & PRIME DIRECTORY ─────────────────────────────────────────────────
+
+function newClient(overrides) {
+  return {
+    id: uid(),
+    name: "",
+    type: "Client",       // "Client" | "Prime/GC" | "Both"
+    contactName: "",
+    contactEmail: "",
+    ...overrides,
+  };
+}
+
+function ClientDirectoryView({ clients, onUpdateClients }) {
+  const [editingId, setEditingId] = React.useState(null);
+  const [form, setForm] = React.useState(null);
+  const [search, setSearch] = React.useState("");
+
+  function startNew() { setForm(newClient()); setEditingId("__new__"); }
+  function startEdit(c) { setForm({ ...c }); setEditingId(c.id); }
+  function cancelEdit() { setEditingId(null); setForm(null); }
+
+  function saveForm() {
+    if (!form.name.trim()) return;
+    if (editingId === "__new__") {
+      onUpdateClients([...clients, form]);
+    } else {
+      onUpdateClients(clients.map(c => c.id === editingId ? form : c));
+    }
+    cancelEdit();
+  }
+
+  function deleteClient(id) {
+    if (!window.confirm("Remove this company from the directory?")) return;
+    onUpdateClients(clients.filter(c => c.id !== id));
+  }
+
+  const filtered = clients.filter(c =>
+    !search ||
+    c.name.toLowerCase().includes(search.toLowerCase()) ||
+    (c.contactName || "").toLowerCase().includes(search.toLowerCase()) ||
+    (c.contactEmail || "").toLowerCase().includes(search.toLowerCase()) ||
+    (c.type || "").toLowerCase().includes(search.toLowerCase())
+  );
+
+  const TYPE_COLORS = {
+    "Client":    { bg: P.accentDim, text: P.accentLight },
+    "Prime/GC":  { bg: P.purpleDim, text: P.purple },
+    "Both":      { bg: P.greenDim,  text: P.green },
+  };
+
+  if (editingId !== null) {
+    return (
+      <div style={{ padding: "24px 32px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+          <button onClick={cancelEdit} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 18 }}>←</button>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>{editingId === "__new__" ? "Add Company" : "Edit Company"}</div>
+        </div>
+        <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 28, maxWidth: 500 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <Field label="Company Name" style={{ gridColumn: "1 / -1" }}>
+              <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+                placeholder="e.g. Acme Construction" style={{ width: "100%" }} autoFocus />
+            </Field>
+            <Field label="Type" style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                {["Client", "Prime/GC", "Both"].map(t => {
+                  const on = form.type === t;
+                  const tc = TYPE_COLORS[t];
+                  return (
+                    <button key={t} onClick={() => setForm({ ...form, type: t })}
+                      style={{ padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        background: on ? tc.bg : "transparent", color: on ? tc.text : P.textDim,
+                        border: "1px solid " + (on ? tc.text : P.border) }}>
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 5 }}>Controls which typeahead fields this company appears in on projects.</div>
+            </Field>
+            <Field label="Primary Contact Name" style={{ gridColumn: "1 / -1" }}>
+              <input value={form.contactName || ""} onChange={e => setForm({ ...form, contactName: e.target.value })}
+                placeholder="e.g. John Doe" style={{ width: "100%" }} />
+            </Field>
+            <Field label="Primary Contact Email" style={{ gridColumn: "1 / -1" }}>
+              <input value={form.contactEmail || ""} onChange={e => setForm({ ...form, contactEmail: e.target.value })}
+                placeholder="e.g. john@acme.com" style={{ width: "100%" }} type="email" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+            <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add Company" : "Save Changes"}</Btn>
+            <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Client & Prime Directory</div>
+          <div style={{ fontSize: 13, color: P.textMuted }}>{clients.length} compan{clients.length !== 1 ? "ies" : "y"} · auto-suggest on project Overview tab</div>
+        </div>
+        <Btn onClick={startNew}>+ Add Company</Btn>
+      </div>
+
+      <input placeholder="Search by name, contact, or type…" value={search} onChange={e => setSearch(e.target.value)}
+        style={{ width: 300, marginBottom: 16 }} />
+
+      {filtered.length === 0 ? (
+        <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, padding: 40, textAlign: "center", color: P.textDim, fontSize: 13 }}>
+          {clients.length === 0
+            ? <><div style={{ fontSize: 32, marginBottom: 12 }}>🏢</div><div style={{ fontWeight: 600, marginBottom: 6 }}>No companies yet</div><div>Add your clients and prime contractors here — their names auto-suggest on projects.</div><div style={{ marginTop: 16 }}><Btn onClick={startNew}>+ Add First Company</Btn></div></>
+            : "No companies match your search."}
+        </div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>Type</th>
+              <th>Primary Contact</th>
+              <th>Email</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(c => {
+              const tc = TYPE_COLORS[c.type] || TYPE_COLORS["Client"];
+              return (
+                <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => startEdit(c)}>
+                  <td style={{ fontWeight: 600 }}>{c.name}</td>
+                  <td><Badge color={tc} text={c.type || "Client"} /></td>
+                  <td style={{ color: P.textMuted }}>{c.contactName || "—"}</td>
+                  <td style={{ color: P.textMuted, fontSize: 12 }}>{c.contactEmail || "—"}</td>
+                  <td onClick={e => e.stopPropagation()}>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Btn small variant="ghost" onClick={() => startEdit(c)}>Edit</Btn>
+                      <Btn small variant="danger" onClick={() => deleteClient(c.id)}>✕</Btn>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ─── COMPANY TYPEAHEAD ─────────────────────────────────────────────────────────
+function CompanyTypeahead({ value, onChange, clients, filter, placeholder }) {
+  const [open, setOpen] = React.useState(false);
+  const matches = React.useMemo(() => {
+    const q = (value || "").toLowerCase();
+    return (clients || [])
+      .filter(c => filter === "client" ? (c.type === "Client" || c.type === "Both") : (c.type === "Prime/GC" || c.type === "Both"))
+      .filter(c => !q || c.name.toLowerCase().includes(q) || (c.contactName || "").toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [clients, value, filter]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value || ""}
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder || "Type to search…"}
+        style={{ width: "100%" }}
+      />
+      {open && matches.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 240, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
+          {matches.map(c => (
+            <div key={c.id}
+              onMouseDown={() => { onChange(c.name); setOpen(false); }}
+              style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border }}
+              onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+              onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+              {(c.contactName || c.contactEmail) && (
+                <div style={{ fontSize: 11, color: P.textDim }}>
+                  {c.contactName || ""}{c.contactName && c.contactEmail ? " · " : ""}{c.contactEmail || ""}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── STAFF DIRECTORY ──────────────────────────────────────────────────────────
 
 function newStaffMember(overrides) {
@@ -6596,6 +6810,7 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [termContracts, setTermContracts] = useState([]);
   const [staff, setStaff] = useState([]);
+  const [clients, setClients] = useState([]);
   const [view, setView] = useState("dashboard");
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
@@ -6628,6 +6843,7 @@ function App() {
         if (s?.projects) setProjects(s.projects);
         if (s?.termContracts) setTermContracts(s.termContracts);
         if (s?.staff) setStaff(s.staff);
+        if (s?.clients) setClients(s.clients);
         setAppStatus("idle");
       })
       .catch(e => {
@@ -6639,6 +6855,7 @@ function App() {
             if (s?.projects) setProjects(s.projects);
             if (s?.termContracts) setTermContracts(s.termContracts);
             if (s?.staff) setStaff(s.staff);
+            if (s?.clients) setClients(s.clients);
             setAppStatus("idle");
           }).catch(e2 => { setLoadError(e2.message); setAppStatus("error"); });
           return;
@@ -6666,11 +6883,11 @@ function App() {
     // Clear any pending save
     if (pendingSave) clearTimeout(pendingSave);
     const timer = setTimeout(() => {
-      performSave({ projects, termContracts, staff });
+      performSave({ projects, termContracts, staff, clients });
     }, 2000);
     setPendingSave(timer);
     return () => clearTimeout(timer);
-  }, [projects, termContracts, staff]);
+  }, [projects, termContracts, staff, clients]);
 
   async function performSave(state) {
     setAppStatus("saving");
@@ -6688,13 +6905,13 @@ function App() {
   }
 
   function manualRetry() {
-    performSave({ projects, termContracts, staff });
+    performSave({ projects, termContracts, staff, clients });
   }
 
   // ── Data tools ──
 
   function exportBackup() {
-    const data = JSON.stringify({ projects, termContracts, staff, _exportedAt: new Date().toISOString(), _version: 3 }, null, 2);
+    const data = JSON.stringify({ projects, termContracts, staff, clients, _exportedAt: new Date().toISOString(), _version: 3 }, null, 2);
     const blob = new Blob([data], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -6725,8 +6942,9 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
         setProjects(parsed.projects);
         setTermContracts(parsed.termContracts || []);
         setStaff(parsed.staff || []);
+        setClients(parsed.clients || []);
         setImportMsg(`✓ Imported ${projCount} projects and ${tcCount} term contracts. Saving…`);
-        performSave({ projects: parsed.projects, termContracts: parsed.termContracts || [], staff: parsed.staff || [] });
+        performSave({ projects: parsed.projects, termContracts: parsed.termContracts || [], staff: parsed.staff || [], clients: parsed.clients || [] });
       } catch(err) {
         setImportMsg("✗ Could not parse file: " + err.message);
       }
@@ -6978,7 +7196,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Staff", key: "staff" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Staff", key: "staff" }, { label: "Clients", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -6996,6 +7214,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} />}
+      {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "termcontracts" && <TermContractsView termContracts={termContracts} projects={projects} onUpdateTermContracts={setTermContracts} onNavigateToProject={id => setView(`project:${id}`)} />}
@@ -7045,7 +7264,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} />
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} />
       )}
     </div>
   );
