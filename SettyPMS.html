@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 01:57 -->
+<!-- Setty PMS | Built: 2026-02-28 02:04 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -1902,7 +1902,7 @@ function printInvoice(inv, project) {
       <td class="right">$${Math.round(r.co.fee || 0).toLocaleString()}</td>
       <td class="right">${r.coInvoiced > 0 ? "$" + Math.round(r.coInvoiced).toLocaleString() : "—"}</td>
       <td class="right" style="color:#aaa;">—</td>
-      <td class="right" style="${r.coBalance < 0 ? "color:#c00000;" : r.coBalance === 0 ? "color:#1a7a34;" : ""}">${r.coBalance === 0 ? "✓ Paid" : "$" + Math.round(r.coBalance).toLocaleString()}</td>
+      <td class="right" style="${r.coBalance <= 0 ? "color:#1a56a0;" : ""}">${r.coBalance <= 0 ? "✓ Billed" : "$" + Math.round(r.coBalance).toLocaleString()}</td>
     </tr>`).join("");
 
   const html = `
