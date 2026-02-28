@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 03:34 -->
+<!-- Setty PMS | Built: 2026-02-28 03:41 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2634,6 +2634,13 @@ function ChangeOrdersView({ project, onChange }) {
   }
 
   function updateCO(id, updates) {
+    // Auto-stamp dateSent when sentToClient is first set to true
+    if (updates.sentToClient === true) {
+      const existing = cos.find(c => c.id === id);
+      if (existing && !existing.sentToClient && !updates.dateSent) {
+        updates = { ...updates, dateSent: localDateStr(new Date()) };
+      }
+    }
     const newCOs = cos.map(c => c.id === id ? { ...c, ...updates } : c);
     const co = newCOs.find(c => c.id === id);
     let milestones = project.milestones || [];
@@ -3427,6 +3434,190 @@ function TeamWBSView({ projects, onNavigateToProject }) {
   );
 }
 
+
+
+// ─── PENDING COs VIEW ─────────────────────────────────────────────────────────
+
+function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
+  const today = new Date();
+  const todayStr = localDateStr(today);
+
+  // Collect all unapproved COs across active non-archived projects
+  const pendingItems = [];
+  projects.filter(p => !p.archived).forEach(proj => {
+    (proj.changeOrders || []).forEach(co => {
+      if (!co.approved) {
+        const daysSent = co.dateSent
+          ? Math.floor((today - new Date(co.dateSent + "T00:00:00")) / 86400000)
+          : null;
+        pendingItems.push({
+          co, proj,
+          daysSent,
+          isUrgent: daysSent !== null && daysSent > 14,
+          isWaiting: co.sentToClient && !co.approved,
+        });
+      }
+    });
+  });
+
+  // Sort: sent-to-client (oldest first), then unsent
+  pendingItems.sort((a, b) => {
+    if (a.isWaiting && !b.isWaiting) return -1;
+    if (!a.isWaiting && b.isWaiting) return 1;
+    if (a.daysSent !== null && b.daysSent !== null) return b.daysSent - a.daysSent;
+    return (a.co.date || "") > (b.co.date || "") ? -1 : 1;
+  });
+
+  const totalPendingFee = pendingItems.reduce((a, i) => a + (i.co.fee || 0), 0);
+  const sentCount = pendingItems.filter(i => i.isWaiting).length;
+  const urgentCount = pendingItems.filter(i => i.isUrgent).length;
+  const draftCount = pendingItems.filter(i => !i.isWaiting).length;
+
+  function markSent(proj, coId) {
+    const updated = {
+      ...proj,
+      changeOrders: (proj.changeOrders || []).map(c =>
+        c.id === coId ? { ...c, sentToClient: true, dateSent: todayStr } : c
+      ),
+    };
+    onUpdateProject(updated);
+  }
+
+  function markApproved(proj, coId) {
+    const co = (proj.changeOrders || []).find(c => c.id === coId);
+    if (!co) return;
+    let milestones = proj.milestones || [];
+    const existing = milestones.find(m => m.coId === coId);
+    if (!existing) {
+      milestones = [...milestones, {
+        id: uid(), coId,
+        type: "billable", phase: "CO",
+        name: `CO: ${co.name || co.number}`,
+        fee: co.fee, startDate: co.date, dueDate: co.date,
+        pctComplete: 0, status: "Not Started", notes: co.notes || "",
+      }];
+    }
+    const updated = {
+      ...proj,
+      changeOrders: (proj.changeOrders || []).map(c =>
+        c.id === coId ? { ...c, approved: true } : c
+      ),
+      milestones,
+    };
+    onUpdateProject(updated);
+  }
+
+  if (pendingItems.length === 0) return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Pending Change Orders</div>
+      <div style={{ color: P.green, fontSize: 14, marginTop: 40, textAlign: "center", padding: "40px 0" }}>
+        ✓ No pending change orders — all COs are approved!
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Pending Change Orders</div>
+      <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>
+        Unapproved change orders requiring follow-up across all active projects.
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 28 }}>
+        <KpiBox label="Total Pending" val={pendingItems.length} sub="unapproved COs" />
+        <KpiBox label="Sent to Client" val={sentCount} color={P.yellow} sub="awaiting approval" />
+        <KpiBox label="Overdue Follow-up" val={urgentCount} color={urgentCount > 0 ? P.red : P.textDim} sub=">14 days since sent" />
+        <KpiBox label="Pending Fee Value" val={fmt(totalPendingFee)} color={P.purple} sub="not yet approved" />
+      </div>
+
+      {/* Sent to client — awaiting approval */}
+      {sentCount > 0 && (
+        <>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ background: P.yellowDim, color: P.yellow, padding: "2px 10px", borderRadius: 8, fontSize: 12 }}>Sent to Client — Awaiting Approval</span>
+            <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13 }}>{sentCount} CO{sentCount !== 1 ? "s" : ""}</span>
+          </div>
+          <table style={{ marginBottom: 28 }}>
+            <thead>
+              <tr>
+                <th>Project</th><th>CO #</th><th>Name</th><th>Fee</th>
+                <th>Date Sent</th><th>Days Out</th><th>Notes</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendingItems.filter(i => i.isWaiting).map(({ co, proj, daysSent, isUrgent }) => (
+                <tr key={co.id} style={{ background: isUrgent ? "#1a0a00" : "transparent" }}>
+                  <td>
+                    <button onClick={() => onNavigateToProject(proj.id)}
+                      style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 500, textAlign: "left" }}>
+                      {proj.projectNumber ? `[${proj.projectNumber}] ` : ""}{proj.name}
+                    </button>
+                  </td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontSize: 12 }}>{co.number}</td>
+                  <td style={{ fontWeight: 500 }}>{co.name || "—"}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", color: P.green }}>{fmt(co.fee || 0)}</td>
+                  <td style={{ color: P.textMuted, whiteSpace: "nowrap" }}>{co.dateSent || "—"}</td>
+                  <td>
+                    {daysSent !== null && (
+                      <span style={{ fontFamily: "JetBrains Mono", fontWeight: 600,
+                        color: isUrgent ? P.red : daysSent > 7 ? P.yellow : P.textMuted }}>
+                        {daysSent}d {isUrgent && "⚠"}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ color: P.textDim, fontSize: 12, maxWidth: 200 }}>{co.notes || "—"}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <Btn small variant="success" onClick={() => markApproved(proj, co.id)}>✓ Approve</Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {/* Draft / not yet sent */}
+      {draftCount > 0 && (
+        <>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ background: P.border, color: P.textMuted, padding: "2px 10px", borderRadius: 8, fontSize: 12 }}>Draft — Not Yet Sent</span>
+            <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13 }}>{draftCount} CO{draftCount !== 1 ? "s" : ""}</span>
+          </div>
+          <table style={{ marginBottom: 28 }}>
+            <thead>
+              <tr>
+                <th>Project</th><th>CO #</th><th>Name</th><th>Fee</th>
+                <th>Date Created</th><th>Scope</th><th>Notes</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendingItems.filter(i => !i.isWaiting).map(({ co, proj }) => (
+                <tr key={co.id}>
+                  <td>
+                    <button onClick={() => onNavigateToProject(proj.id)}
+                      style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 500, textAlign: "left" }}>
+                      {proj.projectNumber ? `[${proj.projectNumber}] ` : ""}{proj.name}
+                    </button>
+                  </td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontSize: 12 }}>{co.number}</td>
+                  <td style={{ fontWeight: 500 }}>{co.name || "—"}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", color: P.green }}>{fmt(co.fee || 0)}</td>
+                  <td style={{ color: P.textMuted, whiteSpace: "nowrap" }}>{co.date || "—"}</td>
+                  <td style={{ color: P.textDim, fontSize: 12, maxWidth: 180 }}>{co.scope ? co.scope.slice(0, 60) + (co.scope.length > 60 ? "…" : "") : "—"}</td>
+                  <td style={{ color: P.textDim, fontSize: 12, maxWidth: 150 }}>{co.notes || "—"}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <Btn small variant="ghost" onClick={() => markSent(proj, co.id)}>📤 Mark Sent</Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
 
 // ─── CASH FLOW VIEW (cross-project) ──────────────────────────────────────────
 
@@ -5666,7 +5857,7 @@ function App() {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -5685,6 +5876,7 @@ function App() {
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "pendingcos" && <PendingCOsView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
 
       {view === "pipeline" && (
         <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={() => { const p = newProject(); setProjects(prev => [p, ...prev]); setView(`project:${p.id}`); }} />
