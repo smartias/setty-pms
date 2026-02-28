@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 03:41 -->
+<!-- Setty PMS | Built: 2026-02-28 03:52 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -5655,8 +5655,10 @@ function App() {
   const [loadError, setLoadError] = useState(null);
   const [pendingSave, setPendingSave] = useState(null); // debounce timer ref stored in state
 
-  const [clientId, setClientId] = useState(() => localStorage.getItem("setty_pms_client_id") || "");
-  const [clientIdInput, setClientIdInput] = useState(clientId);
+  const DEFAULT_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301";
+  const DEFAULT_SHARE_URL = "https://setty-my.sharepoint.com/:u:/p/sara_arias/IQDOJZxvm4WIRJ-1e-F54tgzARaU7ONfuWtWWQ5SOY7LCr4?e=L3Ot9N";
+  const [clientId, setClientId] = useState(() => localStorage.getItem("setty_pms_client_id") || DEFAULT_CLIENT_ID);
+  const [clientIdInput, setClientIdInput] = useState(() => localStorage.getItem("setty_pms_client_id") || DEFAULT_CLIENT_ID);
   const [shareUrl, setShareUrl] = useState(() => localStorage.getItem("setty_pms_share_url") || "");
   const [shareUrlInput, setShareUrlInput] = useState(shareUrl);
   const [showSetup, setShowSetup] = useState(!clientId);
@@ -5769,19 +5771,17 @@ function App() {
         <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, padding: 28 }}>
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>One-time setup</div>
           <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
-            No admin consent required. Uses only standard Microsoft 365 permissions that every Setty employee already has.
+            Sign in with your Setty Microsoft 365 account to access shared project data. Everything is pre-configured — just sign in.
           </div>
 
           {/* Step 1: Azure App Registration */}
           <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 12, lineHeight: 1.9 }}>
-            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Step 1 — Azure App Registration (one person, 5 min)</div>
+            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Setup — Sign in with your Setty Microsoft 365 account</div>
             <div style={{ color: P.textMuted }}>
-              1. Go to <strong style={{ color: P.accentLight }}>portal.azure.com</strong> → Azure Active Directory → App registrations → New registration<br/>
-              2. Name: <strong style={{ color: P.text }}>Setty PMS</strong> · Supported accounts: <strong style={{ color: P.text }}>This org only</strong><br/>
-              3. Redirect URI: choose <strong style={{ color: P.text }}>Single-page application (SPA)</strong> → paste the OneDrive URL of this HTML file<br/>
-              4. API permissions → Add: <strong style={{ color: P.text }}>Files.ReadWrite.All · Calendars.ReadWrite.Shared · User.Read</strong><br/>
-              &nbsp;&nbsp;&nbsp;⚠ Do NOT add Sites.ReadWrite.All — the 3 above require no admin consent<br/>
-              5. Copy the <strong style={{ color: P.text }}>Application (client) ID</strong> from Overview and paste below
+              The Client ID and shared data file are pre-filled below.<br/>
+              Just click <strong style={{ color: P.text }}>Save &amp; Sign In with Microsoft</strong> and sign in with your <strong style={{ color: P.text }}>@setty.com</strong> account.<br/>
+              A Microsoft login popup will appear — use your normal Setty credentials.<br/>
+              <span style={{ color: P.green }}>✓ No admin setup required · Your data stays within Setty's Microsoft 365 tenant</span>
             </div>
           </div>
 
@@ -5794,14 +5794,11 @@ function App() {
 
           {/* Step 2: Shared data file */}
           <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 16, margin: "16px 0", fontSize: 12, lineHeight: 1.9 }}>
-            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Step 2 — Shared data file (skip if you are the first user)</div>
+            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Shared data file</div>
             <div style={{ color: P.textMuted }}>
-              The first person to set up the app creates the data file automatically in their OneDrive.<br/>
-              To share with the team:<br/>
-              1. Open OneDrive → find <strong style={{ color: P.text }}>SettyPMS/setty-pms-data.json</strong><br/>
-              2. Right-click → Share → Copy link (set to "People in Setty with the link can edit")<br/>
-              3. Paste that link below — all team members paste it when they set up their browser<br/>
-              <em style={{ color: P.textDim }}>Leave blank if you are the first user setting this up.</em>
+              This link points to the shared project data file in Sara's OneDrive — pre-filled below.<br/>
+              All team members read from and write to this same file.<br/>
+              <em style={{ color: P.textDim }}>Do not change this unless instructed by Sara.</em>
             </div>
           </div>
 
