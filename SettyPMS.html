@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 02:22 -->
+<!-- Setty PMS | Built: 2026-02-28 02:28 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -3872,22 +3872,46 @@ function printWeeklyDeliverables(projects) {
   const statusColor = s => s === "Complete" ? "#1a7a34" : s === "In Progress" ? "#b45309" : "#44546A";
   const statusBg    = s => s === "Complete" ? "#e6f4ea"  : s === "In Progress" ? "#fff3e0"  : "#f0f0f0";
 
-  const rows = items.length ? items.map((it, i) => `
-    <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
-      <td style="white-space:nowrap;font-weight:600;">${fmtD(it.dueDate)}</td>
-      <td style="font-weight:600;">${it.projectName}</td>
-      <td style="font-family:monospace;font-size:9pt;">${it.projectNumber}</td>
-      <td style="font-weight:500;">${it.milestoneName}</td>
-      <td style="color:#44546A;font-size:9pt;">${it.phase}</td>
-      <td>${it.pm}</td>
-      <td>
-        <span style="background:${statusBg(it.status)};color:${statusColor(it.status)};padding:2px 8px;border-radius:8px;font-size:8pt;font-weight:600;white-space:nowrap;">
-          ${it.status}${it.pct > 0 && it.pct < 100 ? " (" + it.pct + "%)" : ""}
-        </span>
-      </td>
-      <td style="color:#44546A;font-size:9pt;">${it.notes || "—"}</td>
-    </tr>`).join("") : `
-    <tr><td colspan="8" style="text-align:center;padding:24px;color:#44546A;font-style:italic;">No deliverables due this week.</td></tr>`;
+  // Group by day
+  const DAY_LABELS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const byDay = {};
+  items.forEach(it => {
+    if (!byDay[it.dueDate]) byDay[it.dueDate] = [];
+    byDay[it.dueDate].push(it);
+  });
+  const sortedDays = Object.keys(byDay).sort();
+
+  let rowIdx = 0;
+  const rows = items.length ? sortedDays.map(dateKey => {
+    const dayItems = byDay[dateKey];
+    const dow = new Date(dateKey + "T00:00:00").getDay();
+    const dayHeader = `
+      <tr>
+        <td colspan="8" style="background:#1F3864;color:#fff;font-weight:700;font-size:10pt;padding:8px 10px;letter-spacing:0.3px;">
+          ${DAY_LABELS[dow]} &mdash; ${fmtD(dateKey)}
+          <span style="font-weight:400;font-size:8.5pt;margin-left:12px;opacity:0.8;">${dayItems.length} deliverable${dayItems.length !== 1 ? "s" : ""}</span>
+        </td>
+      </tr>`;
+    const itemRows = dayItems.map(it => {
+      const bg = rowIdx++ % 2 === 0 ? "" : "background:#F8F8F8;";
+      return `
+      <tr style="${bg}">
+        <td style="font-weight:600;">${it.projectName}</td>
+        <td style="font-family:monospace;font-size:9pt;">${it.projectNumber}</td>
+        <td style="font-weight:500;">${it.milestoneName}</td>
+        <td style="color:#44546A;font-size:9pt;">${it.phase}</td>
+        <td>${it.pm}</td>
+        <td>
+          <span style="background:${statusBg(it.status)};color:${statusColor(it.status)};padding:2px 8px;border-radius:8px;font-size:8pt;font-weight:600;white-space:nowrap;">
+            ${it.status}${it.pct > 0 && it.pct < 100 ? " (" + it.pct + "%)" : ""}
+          </span>
+        </td>
+        <td style="color:#44546A;font-size:9pt;">${it.notes || "—"}</td>
+      </tr>`;
+    }).join("");
+    return dayHeader + itemRows;
+  }).join("") : `
+    <tr><td colspan="7" style="text-align:center;padding:24px;color:#44546A;font-style:italic;">No deliverables due this week.</td></tr>`;
 
   const html = `
     <div class="doc-header">
@@ -3914,7 +3938,6 @@ function printWeeklyDeliverables(projects) {
     <table class="line-items">
       <thead>
         <tr>
-          <th>Due Date</th>
           <th>Project</th>
           <th>Proj #</th>
           <th>Milestone</th>
