@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 00:36 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-28 00:50 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -1901,123 +1901,192 @@ function ContractView({ project, onChange }) {
 
 const WBS_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection"];
 const WBS_HOURLY_RATE = 170;
+const DISC_COLORS = {
+  "Mechanical":      { bg: "#1a2a3a", text: "#60b4ff" },
+  "Electrical":      { bg: "#2a1a3a", text: "#c084fc" },
+  "Plumbing":        { bg: "#1a3a2a", text: "#34d399" },
+  "Fire Protection": { bg: "#3a1a1a", text: "#f87171" },
+};
+
+// Get Monday of the week containing a date
+function weekMonday(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  const day = d.getDay(); // 0=Sun
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+function addCalDays(dateStr, n) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Count business days within [weekStart, weekStart+4] that overlap [phaseStart, phaseEnd]
+function bizDaysOverlap(weekStart, phaseStart, phaseEnd) {
+  let count = 0;
+  for (let i = 0; i < 5; i++) {
+    const d = addCalDays(weekStart, i);
+    if (d >= phaseStart && d <= phaseEnd) count++;
+  }
+  return count;
+}
 
 function TeamView({ project, onChange }) {
   const team = project.teamMembers || [];
   const [showWBS, setShowWBS] = useState(false);
 
   function addMember() {
-    onChange({ ...project, teamMembers: [...team, { id: uid(), name: "", role: "Engineer", discipline: "", rate: 0 }] });
+    onChange({ ...project, teamMembers: [...team, { id: uid(), name: "", role: "Engineer", disciplines: [], rate: 0 }] });
   }
 
   function updateMember(id, updates) {
     onChange({ ...project, teamMembers: team.map(m => m.id === id ? { ...m, ...updates } : m) });
   }
 
-  // ── WBS Calculations ──
-  const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
-  const settyFee = (() => {
-    if (project.manualSettyFee > 0) return project.manualSettyFee;
-    return calcSettyFee(constructionCost, project);
-  })();
-  const totalHours = Math.round(settyFee / WBS_HOURLY_RATE);
-  const pmHours    = Math.round(totalHours * 0.08);
-  const dpmHours   = Math.round(totalHours * 0.02);
-  const discHours  = totalHours - pmHours - dpmHours;
-  const effectiveDiscs = getEffectiveDisciplines(project);
-  const discTotal  = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0) || 1;
+  function toggleDisc(memberId, disc) {
+    const m = team.find(x => x.id === memberId);
+    if (!m) return;
+    const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+    const next = discs.includes(disc) ? discs.filter(d => d !== disc) : [...discs, disc];
+    updateMember(memberId, { disciplines: next, discipline: next[0] || "" });
+  }
 
-  // Hours per discipline (normalized to remaining after PM/DPM)
+  // ── Budget calculations ──
+  const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const settyFee = project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCost, project);
+  const totalHours  = Math.round(settyFee / WBS_HOURLY_RATE);
+  const pmHours     = Math.round(totalHours * 0.08);
+  const dpmHours    = Math.round(totalHours * 0.02);
+  const discHours   = totalHours - pmHours - dpmHours;
+  const effectiveDiscs = getEffectiveDisciplines(project);
+  const discTotal   = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0) || 1;
+
   const discBudgetHours = {};
   WBS_DISCIPLINES.forEach(d => {
-    const pct = (effectiveDiscs[d] || 0) / discTotal;
-    discBudgetHours[d] = Math.round(discHours * pct);
+    discBudgetHours[d] = Math.round(discHours * ((effectiveDiscs[d] || 0) / discTotal));
   });
 
-  // Billable phases with schedule
+  // ── Phase data ──
   const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0 && p.startDate && p.endDate);
   const totalFee = billablePhases.reduce((a, p) => a + (p.fee || 0), 0) || 1;
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
 
-  // Pre-compute per-phase schedule metrics once (shared across all rows)
-  const phaseMeta = billablePhases.map(ph => {
-    const sd = new Date(ph.startDate + "T00:00:00");
-    const ed = new Date(ph.endDate   + "T00:00:00");
-    const totalWD = Math.max(1, countWorkDays(ph.startDate, ph.endDate));
+  const phaseMeta = Object.fromEntries(billablePhases.map(ph => {
+    const totalWD    = Math.max(1, countWorkDays(ph.startDate, ph.endDate));
     const totalWeeks = Math.max(1, Math.round(totalWD / 5));
     const actualPct  = getPhasePctFromMilestones(ph, project.milestones || []);
+    const sd = new Date(ph.startDate + "T00:00:00");
+    const ed = new Date(ph.endDate   + "T00:00:00");
+    let status = today < sd ? "future" : today >= ed ? (actualPct >= 100 ? "complete" : "overdue") : "active";
+    const elapsed    = status === "active" ? countWorkDays(ph.startDate, todayStr) : (status === "future" ? 0 : totalWD);
+    const remainWD   = Math.max(0, totalWD - elapsed);
+    const remainWeeks = Math.max(1, Math.round(remainWD / 5));
+    return [ph.id, { totalWD, totalWeeks, actualPct, status, remainWD, remainWeeks }];
+  }));
 
-    let status = "future";
-    let remainWD = totalWD;
-    let remainWeeks = totalWeeks;
-    let elapsedPct = 0;
-
-    if (today >= ed) {
-      status = actualPct >= 100 ? "complete" : "overdue";
-      remainWD = 0; remainWeeks = 0; elapsedPct = 100;
-    } else if (today > sd) {
-      status = "active";
-      const elapsed = countWorkDays(ph.startDate, todayStr);
-      elapsedPct = Math.round((elapsed / totalWD) * 100);
-      remainWD = Math.max(0, totalWD - elapsed);
-      remainWeeks = Math.max(1, Math.round(remainWD / 5));
-    }
-
-    return { id: ph.id, totalWD, totalWeeks, actualPct, status, remainWD, remainWeeks, elapsedPct };
-  });
-  const phaseMetaById = Object.fromEntries(phaseMeta.map(m => [m.id, m]));
-
-  // Per-phase hour allocation for a given total budget — now schedule-aware
-  function phaseHours(budget) {
-    return billablePhases.map(ph => {
-      const meta   = phaseMetaById[ph.id];
-      const budgetHrs   = Math.round(budget * ((ph.fee || 0) / totalFee));
-      const earnedHrs   = Math.round(budgetHrs * (meta.actualPct / 100));
-      const remainHrs   = Math.max(0, budgetHrs - earnedHrs);
-      // Planned pace = budget hours spread evenly over total weeks
-      const plannedHrWk = meta.totalWeeks > 0 ? budgetHrs / meta.totalWeeks : 0;
-      // Required pace = remaining hours over remaining weeks
-      const reqHrWk     = meta.remainWeeks > 0 ? remainHrs / meta.remainWeeks : (remainHrs > 0 ? Infinity : 0);
-      const behindPace  = meta.status === "active" && reqHrWk > plannedHrWk * 1.15;
-      const severeBehind= meta.status === "active" && reqHrWk > plannedHrWk * 1.5;
-      return {
-        ...ph, ...meta,
-        hours: budgetHrs, earnedHrs, remainHrs,
-        plannedHrWk, reqHrWk, behindPace, severeBehind,
-      };
-    });
-  }
-
-  // Staff grouped by discipline
-  function staffForDisc(disc) {
-    return team.filter(m => m.discipline === disc);
-  }
+  // ── Build staff rows ──
+  // Each staff member gets a total budget = sum of their per-discipline allocations
+  // For multi-disc staff, hours are distributed proportionally then summed
+  const staffRows = [];
   const pm  = team.find(m => m.role === "Project Manager");
   const dpm = team.find(m => m.role === "Deputy Project Manager");
 
-  // All WBS rows: PM, DPM, then each disc member
-  const wbsRows = [];
-  if (pm)  wbsRows.push({ member: pm,  totalHours: pmHours,  phases: phaseHours(pmHours) });
-  if (dpm) wbsRows.push({ member: dpm, totalHours: dpmHours, phases: phaseHours(dpmHours) });
+  if (pm)  staffRows.push({ member: pm,  isPM: true,  role: "PM",  totalBudget: pmHours });
+  if (dpm) staffRows.push({ member: dpm, isPM: true,  role: "DPM", totalBudget: dpmHours });
+
+  // Non-PM staff: budget = sum across their disciplines, split equally among staff in that disc
+  const discStaffCount = {};
   WBS_DISCIPLINES.forEach(disc => {
-    const staff = staffForDisc(disc);
-    const budget = discBudgetHours[disc] || 0;
-    const perPerson = staff.length > 0 ? Math.round(budget / staff.length) : budget;
-    staff.forEach(m => {
-      wbsRows.push({ member: m, disc, totalHours: perPerson, phases: phaseHours(perPerson) });
+    discStaffCount[disc] = team.filter(m => {
+      const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+      return discs.includes(disc);
+    }).length || 1;
+  });
+
+  team.filter(m => m.role !== "Project Manager" && m.role !== "Deputy Project Manager").forEach(m => {
+    const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+    let totalBudget = 0;
+    const discBreakdown = {};
+    discs.forEach(d => {
+      const share = Math.round((discBudgetHours[d] || 0) / discStaffCount[d]);
+      discBreakdown[d] = share;
+      totalBudget += share;
     });
-    if (staff.length === 0) {
-      wbsRows.push({ member: null, disc, totalHours: budget, phases: phaseHours(budget), unassigned: true });
+    staffRows.push({ member: m, isPM: false, discs, discBreakdown, totalBudget });
+  });
+
+  // Unassigned disciplines (no staff assigned)
+  WBS_DISCIPLINES.forEach(disc => {
+    const assigned = team.filter(m => {
+      const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+      return discs.includes(disc) && m.role !== "Project Manager" && m.role !== "Deputy Project Manager";
+    });
+    if (assigned.length === 0) {
+      staffRows.push({ member: null, isPM: false, discs: [disc], discBreakdown: { [disc]: discBudgetHours[disc] || 0 }, totalBudget: discBudgetHours[disc] || 0, unassigned: true });
     }
   });
 
-  const discColors = {
-    "Mechanical":     { bg: "#1a2a3a", text: "#60b4ff" },
-    "Electrical":     { bg: "#2a1a3a", text: "#c084fc" },
-    "Plumbing":       { bg: "#1a3a2a", text: "#34d399" },
-    "Fire Protection":{ bg: "#3a1a1a", text: "#f87171" },
-  };
+  // ── Build weekly schedule ──
+  // Get all project weeks from first phase start to last phase end
+  const allWeeks = useMemo(() => {
+    if (billablePhases.length === 0) return [];
+    const starts = billablePhases.map(p => p.startDate).sort();
+    const ends   = billablePhases.map(p => p.endDate).sort();
+    let cur = weekMonday(starts[0]);
+    const last = weekMonday(ends[ends.length - 1]);
+    const weeks = [];
+    while (cur <= last) {
+      weeks.push(cur);
+      cur = addCalDays(cur, 7);
+    }
+    return weeks;
+  }, [billablePhases]);
+
+  // For each staff row × week: compute hours
+  // Hours per week = sum over phases of: (phase budget for this person) × (biz days overlap / phase total biz days)
+  function staffWeekHours(row, weekStart) {
+    if (!row.totalBudget) return { total: 0, byDisc: {}, byPhase: [] };
+    const byDisc = {};
+    let total = 0;
+    const byPhase = [];
+    billablePhases.forEach(ph => {
+      const meta = phaseMeta[ph.id];
+      const overlap = bizDaysOverlap(weekStart, ph.startDate, ph.endDate);
+      if (!overlap) return;
+      const phBudget = row.isPM
+        ? Math.round(row.totalBudget * ((ph.fee || 0) / totalFee))
+        : Object.entries(row.discBreakdown || {}).reduce((a, [d, hrs]) => {
+            return a + Math.round(hrs * ((ph.fee || 0) / totalFee));
+          }, 0);
+      const hrs = Math.round(phBudget * (overlap / meta.totalWD));
+      total += hrs;
+      byPhase.push({ ph, hrs, meta });
+      if (!row.isPM) {
+        Object.keys(row.discBreakdown || {}).forEach(d => {
+          const dHrs = Math.round(Math.round((row.discBreakdown[d] || 0) * ((ph.fee || 0) / totalFee)) * (overlap / meta.totalWD));
+          byDisc[d] = (byDisc[d] || 0) + dHrs;
+        });
+      }
+    });
+    return { total, byDisc, byPhase };
+  }
+
+  // Which phase(s) are active in a given week
+  function weekPhase(weekStart) {
+    const weekEnd = addCalDays(weekStart, 4);
+    return billablePhases.filter(ph => ph.startDate <= weekEnd && ph.endDate >= weekStart);
+  }
+
+  // Is this week in the past / current / future
+  function weekStatus(weekStart) {
+    const weekEnd = addCalDays(weekStart, 4);
+    if (weekEnd < todayStr) return "past";
+    if (weekStart <= todayStr) return "current";
+    return "future";
+  }
 
   return (
     <div>
@@ -2025,29 +2094,39 @@ function TeamView({ project, onChange }) {
         Team Members
       </SectionTitle>
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 14 }}>
-        Assign disciplines to generate a Work Breakdown Structure. Billing rates are used in the Financials tab.
+        Assign disciplines to generate a weekly Work Breakdown Structure. Staff can be assigned to multiple disciplines.
       </div>
       <table style={{ marginBottom: 24 }}>
-        <thead><tr><th>Name</th><th>Role / Title</th><th>Discipline</th><th>Billing Rate ($/hr)</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Role / Title</th><th>Disciplines</th><th>Billing Rate ($/hr)</th><th></th></tr></thead>
         <tbody>
           {team.map(m => {
             const isPM = m.role === "Project Manager" || m.role === "Deputy Project Manager";
+            const memberDiscs = m.disciplines || (m.discipline ? [m.discipline] : []);
             return (
               <tr key={m.id}>
                 <td><input value={m.name} onChange={e => updateMember(m.id, { name: e.target.value })} style={{ width: 180 }} /></td>
                 <td>
                   {isPM
                     ? <Badge color={{ bg: P.accentDim, text: P.accentLight }} text={m.role} />
-                    : <input value={m.role} onChange={e => updateMember(m.id, { role: e.target.value })} style={{ width: 160 }} placeholder="e.g. Engineer, Designer…" />
+                    : <input value={m.role} onChange={e => updateMember(m.id, { role: e.target.value })} style={{ width: 140 }} placeholder="e.g. Engineer…" />
                   }
                 </td>
                 <td>
-                  <select value={m.discipline || ""}
-                    onChange={e => updateMember(m.id, { discipline: e.target.value })}
-                    style={{ width: 160, borderColor: m.discipline ? (discColors[m.discipline]?.text || P.accent) : P.border }}>
-                    <option value="">— None —</option>
-                    {WBS_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
-                  </select>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {WBS_DISCIPLINES.map(d => {
+                      const on = memberDiscs.includes(d);
+                      const dc = DISC_COLORS[d];
+                      return (
+                        <button key={d} onClick={() => toggleDisc(m.id, d)}
+                          style={{ fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 8, cursor: "pointer",
+                            background: on ? dc.bg : "transparent",
+                            color: on ? dc.text : P.textDim,
+                            border: `1px solid ${on ? dc.text : P.border}` }}>
+                          {d}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </td>
                 <td><input type="number" value={m.rate} onChange={e => updateMember(m.id, { rate: +e.target.value })} style={{ width: 100 }} /></td>
                 <td>
@@ -2064,136 +2143,135 @@ function TeamView({ project, onChange }) {
 
       {/* ── WBS Section ── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <SectionTitle>Work Breakdown Structure</SectionTitle>
+        <SectionTitle>Weekly Work Breakdown Structure</SectionTitle>
         <Btn small variant="ghost" onClick={() => setShowWBS(v => !v)}>{showWBS ? "▲ Hide" : "▼ Show"} WBS</Btn>
       </div>
 
       {showWBS && (
         <div>
-          {/* Summary row */}
-          <div style={{ display: "flex", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
-            <div style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 8, padding: "10px 18px", minWidth: 140 }}>
-              <div style={{ fontSize: 11, color: P.textDim, marginBottom: 3 }}>SETTY FEE</div>
-              <div style={{ fontWeight: 700, color: P.accentLight, fontFamily: "JetBrains Mono" }}>{fmt(settyFee)}</div>
-            </div>
-            <div style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 8, padding: "10px 18px", minWidth: 140 }}>
-              <div style={{ fontSize: 11, color: P.textDim, marginBottom: 3 }}>TOTAL BUDGET HRS</div>
-              <div style={{ fontWeight: 700, color: P.accentLight, fontFamily: "JetBrains Mono" }}>{totalHours.toLocaleString()} hrs</div>
-              <div style={{ fontSize: 10, color: P.textDim }}>@ ${WBS_HOURLY_RATE}/hr</div>
-            </div>
-            <div style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 8, padding: "10px 18px", minWidth: 140 }}>
-              <div style={{ fontSize: 11, color: P.textDim, marginBottom: 3 }}>PM HOURS (8%)</div>
-              <div style={{ fontWeight: 700, color: P.accentLight, fontFamily: "JetBrains Mono" }}>{pmHours} hrs</div>
-            </div>
-            <div style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 8, padding: "10px 18px", minWidth: 140 }}>
-              <div style={{ fontSize: 11, color: P.textDim, marginBottom: 3 }}>DPM HOURS (2%)</div>
-              <div style={{ fontWeight: 700, color: P.accentLight, fontFamily: "JetBrains Mono" }}>{dpmHours} hrs</div>
-            </div>
-            {WBS_DISCIPLINES.map(d => (
-              <div key={d} style={{ background: discColors[d]?.bg || P.bg, border: `1px solid ${discColors[d]?.text || P.border}`, borderRadius: 8, padding: "10px 18px", minWidth: 140 }}>
-                <div style={{ fontSize: 11, color: P.textDim, marginBottom: 3 }}>{d.toUpperCase()}</div>
-                <div style={{ fontWeight: 700, color: discColors[d]?.text || P.text, fontFamily: "JetBrains Mono" }}>{discBudgetHours[d] || 0} hrs</div>
-                <div style={{ fontSize: 10, color: P.textDim }}>{((effectiveDiscs[d] || 0) / discTotal * 100).toFixed(1)}% of disc budget</div>
+          {/* Budget summary chips */}
+          <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+            {[
+              { label: "SETTY FEE", val: fmt(settyFee), sub: null, color: P.accent },
+              { label: "TOTAL HRS", val: totalHours + " hrs", sub: `@ $${WBS_HOURLY_RATE}/hr`, color: P.accent },
+              { label: "PM (8%)", val: pmHours + " hrs", sub: null, color: P.accentLight },
+              { label: "DPM (2%)", val: dpmHours + " hrs", sub: null, color: P.accentLight },
+            ].map(c => (
+              <div key={c.label} style={{ background: P.accentDim, border: `1px solid ${c.color}`, borderRadius: 8, padding: "10px 16px", minWidth: 120 }}>
+                <div style={{ fontSize: 10, color: P.textDim, marginBottom: 2 }}>{c.label}</div>
+                <div style={{ fontWeight: 700, color: c.color, fontFamily: "JetBrains Mono" }}>{c.val}</div>
+                {c.sub && <div style={{ fontSize: 10, color: P.textDim }}>{c.sub}</div>}
               </div>
             ))}
+            {WBS_DISCIPLINES.map(d => {
+              const dc = DISC_COLORS[d];
+              const cnt = discStaffCount[d];
+              return (
+                <div key={d} style={{ background: dc.bg, border: `1px solid ${dc.text}`, borderRadius: 8, padding: "10px 16px", minWidth: 120 }}>
+                  <div style={{ fontSize: 10, color: P.textDim, marginBottom: 2 }}>{d.toUpperCase()}</div>
+                  <div style={{ fontWeight: 700, color: dc.text, fontFamily: "JetBrains Mono" }}>{discBudgetHours[d] || 0} hrs</div>
+                  <div style={{ fontSize: 10, color: P.textDim }}>{cnt} staff · {Math.round((discBudgetHours[d] || 0) / cnt)}/ea</div>
+                </div>
+              );
+            })}
           </div>
 
           {billablePhases.length === 0 ? (
-            <div style={{ color: P.textDim, fontSize: 13, padding: "16px", background: P.bg, borderRadius: 8 }}>
-              ⚠ No billable phases with schedule dates found. Finalize the fee schedule first.
+            <div style={{ color: P.textDim, fontSize: 13, padding: 16, background: P.bg, borderRadius: 8 }}>
+              ⚠ No billable phases with schedule dates. Finalize the fee schedule first.
             </div>
           ) : (
             <div style={{ overflowX: "auto" }}>
               <table>
                 <thead>
                   <tr>
-                    <th style={{ minWidth: 140 }}>Staff</th>
-                    <th style={{ minWidth: 100 }}>Discipline</th>
-                    <th style={{ minWidth: 80 }}>Total Hrs</th>
-                    {billablePhases.map(ph => {
-                      const meta = phaseMetaById[ph.id];
-                      const statusColor = meta.status === "complete" ? P.green : meta.status === "overdue" ? P.red : meta.status === "active" ? P.accentLight : P.textDim;
-                      const statusLabel = meta.status === "complete" ? "✓ Complete" : meta.status === "overdue" ? "⚠ Overdue" : meta.status === "active" ? "In Progress" : "Not Started";
-                      return (
-                        <th key={ph.id} style={{ minWidth: 150, textAlign: "center", borderLeft: `2px solid ${statusColor}` }}>
-                          <div style={{ color: statusColor }}>{ph.name}</div>
-                          <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>{ph.startDate} – {ph.endDate}</div>
-                          <div style={{ fontSize: 10, fontWeight: 600, color: statusColor }}>{statusLabel}</div>
-                          <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>
-                            {meta.totalWeeks} wks total · {meta.remainWeeks} wks left · {meta.actualPct}% done
-                          </div>
-                        </th>
-                      );
-                    })}
+                    <th style={{ minWidth: 100, position: "sticky", left: 0, background: P.card, zIndex: 2 }}>Week Of</th>
+                    <th style={{ minWidth: 80 }}>Phase</th>
+                    {staffRows.map((row, i) => (
+                      <th key={i} style={{ minWidth: 90, textAlign: "center" }}>
+                        <div style={{ fontWeight: 700 }}>{row.unassigned ? "Unassigned" : (row.member?.name || "TBD")}</div>
+                        <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>
+                          {row.isPM ? row.role : (row.discs || []).map(d => (
+                            <span key={d} style={{ color: DISC_COLORS[d]?.text || P.textMuted, marginRight: 3, fontSize: 10 }}>{d.split(" ")[0]}</span>
+                          ))}
+                        </div>
+                        <div style={{ fontSize: 10, color: P.accentLight, fontWeight: 400 }}>{row.totalBudget} hrs total</div>
+                      </th>
+                    ))}
+                    <th style={{ minWidth: 80, textAlign: "center" }}>Team Total</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {wbsRows.map((row, i) => {
-                    const dc = row.disc ? (discColors[row.disc] || {}) : { bg: P.accentDim, text: P.accentLight };
+                  {allWeeks.map((weekStart, wi) => {
+                    const wkStatus = weekStatus(weekStart);
+                    const phases   = weekPhase(weekStart);
+                    const phaseLabel = phases.map(p => p.code || p.name.slice(0, 4)).join("/");
+                    const rowBg = wkStatus === "current" ? "#1a2500" : wkStatus === "past" ? P.bg : "transparent";
+                    const rowBorder = wkStatus === "current" ? `1px solid ${P.green}` : "none";
+                    let teamTotal = 0;
+                    const cellData = staffRows.map(row => {
+                      const { total, byDisc } = staffWeekHours(row, weekStart);
+                      teamTotal += total;
+                      return { total, byDisc };
+                    });
+                    if (teamTotal === 0 && wkStatus === "past") return null;
                     return (
-                      <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : P.bg }}>
-                        <td style={{ fontWeight: 600 }}>
-                          {row.unassigned
-                            ? <span style={{ color: P.textDim, fontStyle: "italic" }}>Unassigned</span>
-                            : <span>{row.member?.name || <span style={{ color: P.textDim, fontStyle: "italic" }}>TBD</span>}</span>
-                          }
+                      <tr key={weekStart} style={{ background: rowBg, outline: rowBorder }}>
+                        <td style={{ position: "sticky", left: 0, background: rowBg || P.card, fontFamily: "JetBrains Mono", fontSize: 12, fontWeight: wkStatus === "current" ? 700 : 400, color: wkStatus === "current" ? P.green : wkStatus === "past" ? P.textDim : P.text, zIndex: 1 }}>
+                          {weekStart}
+                          {wkStatus === "current" && <div style={{ fontSize: 10, color: P.green }}>← NOW</div>}
                         </td>
-                        <td>
-                          {row.disc
-                            ? <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 8, background: dc.bg, color: dc.text }}>{row.disc}</span>
-                            : <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 8, background: P.accentDim, color: P.accentLight }}>{row.member?.role || "PM"}</span>
-                          }
+                        <td style={{ fontSize: 11 }}>
+                          {phases.map(ph => {
+                            const meta = phaseMeta[ph.id];
+                            const sc = meta.status === "complete" ? P.green : meta.status === "overdue" ? P.red : meta.status === "active" ? P.accentLight : P.textMuted;
+                            return <div key={ph.id} style={{ color: sc, fontWeight: 600 }}>{ph.code || ph.name.slice(0,4)}</div>;
+                          })}
                         </td>
-                        <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{row.totalHours}</td>
-                        {row.phases.map(ph => {
-                          const paceColor = ph.severeBehind ? P.red : ph.behindPace ? P.yellow : ph.status === "complete" ? P.green : P.text;
-                          const paceLabel = ph.severeBehind ? "⚠ Increase pace" : ph.behindPace ? "↑ Pick up pace" : ph.status === "complete" ? "✓ Done" : ph.status === "overdue" && ph.remainHrs > 0 ? "⚠ Overdue" : "";
+                        {cellData.map((cell, ci) => {
+                          const row = staffRows[ci];
+                          // Check if this week is behind schedule for any active phase
+                          const activePhases = phases.filter(ph => phaseMeta[ph.id]?.status === "active");
+                          const isBehind = activePhases.some(ph => {
+                            const meta = phaseMeta[ph.id];
+                            const phBudget = row.isPM
+                              ? Math.round(row.totalBudget * ((ph.fee || 0) / totalFee))
+                              : Object.values(row.discBreakdown || {}).reduce((a, hrs) => a + Math.round(hrs * ((ph.fee || 0) / totalFee)), 0);
+                            const plannedWk = meta.totalWeeks > 0 ? phBudget / meta.totalWeeks : 0;
+                            return cell.total > 0 && cell.total > plannedWk * 1.2;
+                          });
                           return (
-                            <td key={ph.id} style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 12, borderLeft: `2px solid ${ph.severeBehind ? P.red : ph.behindPace ? P.yellow : P.border}`, background: ph.severeBehind ? P.redDim : ph.behindPace ? P.yellowDim : "transparent" }}>
-                              <div style={{ fontWeight: 700 }} title="Budget hours for this phase">{ph.hours} hrs</div>
-                              <div style={{ fontSize: 10, color: P.green }} title="Earned hours (budget × % complete)">✓ {ph.earnedHrs} earned</div>
-                              <div style={{ fontSize: 10, color: ph.remainHrs > 0 ? P.accentLight : P.textDim }} title="Remaining hours">⬜ {ph.remainHrs} left</div>
-                              {ph.status === "active" || ph.status === "overdue" ? (
-                                <div style={{ fontSize: 10, color: paceColor, fontWeight: 600, marginTop: 2 }}
-                                  title={`Planned: ${ph.plannedHrWk.toFixed(1)}/wk · Required: ${ph.reqHrWk === Infinity ? "∞" : ph.reqHrWk.toFixed(1)}/wk`}>
-                                  {ph.reqHrWk === Infinity ? "∞" : ph.reqHrWk.toFixed(1)} /wk req
+                            <td key={ci} style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 13,
+                              color: cell.total === 0 ? P.textDim : isBehind ? P.yellow : wkStatus === "past" ? P.textDim : P.text,
+                              fontWeight: wkStatus === "current" ? 700 : 400 }}>
+                              {cell.total > 0 ? (
+                                <div>
+                                  <div>{cell.total} h</div>
+                                  {Object.keys(cell.byDisc).length > 1 && (
+                                    <div style={{ fontSize: 9, color: P.textDim, lineHeight: 1.4 }}>
+                                      {Object.entries(cell.byDisc).map(([d, h]) => h > 0 ? (
+                                        <span key={d} style={{ color: DISC_COLORS[d]?.text, marginRight: 3 }}>{d.slice(0,1)}:{h}</span>
+                                      ) : null)}
+                                    </div>
+                                  )}
                                 </div>
-                              ) : ph.status === "future" ? (
-                                <div style={{ fontSize: 10, color: P.textDim }}>{ph.plannedHrWk.toFixed(1)} /wk plan</div>
-                              ) : null}
-                              {paceLabel ? <div style={{ fontSize: 10, color: paceColor, fontWeight: 600 }}>{paceLabel}</div> : null}
+                              ) : <span style={{ color: P.border }}>—</span>}
                             </td>
                           );
                         })}
+                        <td style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontWeight: 700, color: wkStatus === "current" ? P.green : wkStatus === "past" ? P.textDim : P.accentLight }}>
+                          {teamTotal > 0 ? teamTotal + " h" : <span style={{ color: P.border }}>—</span>}
+                        </td>
                       </tr>
                     );
                   })}
                   {/* Totals row */}
                   <tr style={{ borderTop: `2px solid ${P.border}`, background: P.bg }}>
                     <td colSpan={2} style={{ fontWeight: 700 }}>TOTAL</td>
-                    <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{totalHours}</td>
-                    {billablePhases.map(ph => {
-                      const meta = phaseMetaById[ph.id];
-                      const phTotal    = wbsRows.reduce((a, row) => { const m = row.phases.find(p => p.id === ph.id); return a + (m ? m.hours : 0); }, 0);
-                      const phEarned   = wbsRows.reduce((a, row) => { const m = row.phases.find(p => p.id === ph.id); return a + (m ? m.earnedHrs : 0); }, 0);
-                      const phRemain   = wbsRows.reduce((a, row) => { const m = row.phases.find(p => p.id === ph.id); return a + (m ? m.remainHrs : 0); }, 0);
-                      const phReqWk    = meta.remainWeeks > 0 ? phRemain / meta.remainWeeks : 0;
-                      const phPlanWk   = meta.totalWeeks  > 0 ? phTotal  / meta.totalWeeks  : 0;
-                      const behind     = meta.status === "active" && phReqWk > phPlanWk * 1.15;
-                      return (
-                        <td key={ph.id} style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green, borderLeft: `2px solid ${behind ? P.yellow : P.border}` }}>
-                          <div>{phTotal} hrs</div>
-                          <div style={{ fontSize: 10, color: P.green, fontWeight: 400 }}>✓ {phEarned} earned</div>
-                          <div style={{ fontSize: 10, color: P.accentLight, fontWeight: 400 }}>⬜ {phRemain} left</div>
-                          {(meta.status === "active" || meta.status === "overdue") && (
-                            <div style={{ fontSize: 10, color: behind ? P.yellow : P.textDim, fontWeight: behind ? 600 : 400 }}>
-                              {phReqWk.toFixed(1)} /wk req
-                            </div>
-                          )}
-                          {meta.status === "future" && <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>{phPlanWk.toFixed(1)} /wk plan</div>}
-                        </td>
-                      );
-                    })}
+                    {staffRows.map((row, i) => (
+                      <td key={i} style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{row.totalBudget} h</td>
+                    ))}
+                    <td style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{totalHours} h</td>
                   </tr>
                 </tbody>
               </table>
@@ -2205,6 +2283,276 @@ function TeamView({ project, onChange }) {
   );
 }
 
+
+// ─── TEAM WBS VIEW (cross-project) ───────────────────────────────────────────
+
+function TeamWBSView({ projects, onNavigateToProject }) {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+
+  // Only active awarded projects with team + phases
+  const activeProjects = projects.filter(p =>
+    !p.archived && isAwarded(p) &&
+    p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost" &&
+    (p.teamMembers || []).length > 0 &&
+    (p.phases || []).some(ph => ph.billable && ph.fee > 0 && ph.startDate && ph.endDate)
+  );
+
+  // Build a unified staff registry: key = name (lowercased) → { name, projects: [...] }
+  // Staff with same name across projects are merged into one column
+  const staffMap = {}; // normalizedName → { displayName, entries: [{ project, member, ... }] }
+
+  activeProjects.forEach(proj => {
+    const constructionCost = calcConstructionCost(proj.squareFootage, proj.buildingCategory, proj.manualConstructionCost, proj.manualRSMeansCostPerSF);
+    const settyFee    = proj.manualSettyFee > 0 ? proj.manualSettyFee : calcSettyFee(constructionCost, proj);
+    const totalHours  = Math.round(settyFee / WBS_HOURLY_RATE);
+    const pmHours     = Math.round(totalHours * 0.08);
+    const dpmHours    = Math.round(totalHours * 0.02);
+    const discHours   = totalHours - pmHours - dpmHours;
+    const effectiveDiscs = getEffectiveDisciplines(proj);
+    const discTotal   = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0) || 1;
+    const discBudget  = {};
+    WBS_DISCIPLINES.forEach(d => { discBudget[d] = Math.round(discHours * ((effectiveDiscs[d] || 0) / discTotal)); });
+
+    const billablePhases = (proj.phases || []).filter(p => p.billable && p.fee > 0 && p.startDate && p.endDate);
+    const totalFee = billablePhases.reduce((a, p) => a + (p.fee || 0), 0) || 1;
+
+    // Phase meta
+    const phaseMeta = {};
+    billablePhases.forEach(ph => {
+      const totalWD = Math.max(1, countWorkDays(ph.startDate, ph.endDate));
+      phaseMeta[ph.id] = { totalWD, fee: ph.fee || 0 };
+    });
+
+    // Disc staff count for splitting
+    const discStaffCount = {};
+    WBS_DISCIPLINES.forEach(disc => {
+      discStaffCount[disc] = Math.max(1, (proj.teamMembers || []).filter(m => {
+        const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+        return discs.includes(disc) && m.role !== "Project Manager" && m.role !== "Deputy Project Manager";
+      }).length);
+    });
+
+    (proj.teamMembers || []).forEach(m => {
+      const nameKey = (m.name || "TBD").toLowerCase().trim() || m.id;
+      const displayName = m.name || "TBD";
+      const isPM = m.role === "Project Manager" || m.role === "Deputy Project Manager";
+      let memberBudget = isPM
+        ? (m.role === "Project Manager" ? pmHours : dpmHours)
+        : (() => {
+          const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+          return discs.reduce((a, d) => a + Math.round((discBudget[d] || 0) / discStaffCount[d]), 0);
+        })();
+
+      if (!staffMap[nameKey]) staffMap[nameKey] = { displayName, entries: [] };
+      staffMap[nameKey].entries.push({
+        project: proj, member: m, isPM, memberBudget,
+        billablePhases, phaseMeta, totalFee,
+        discBreakdown: isPM ? {} : (() => {
+          const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+          const bd = {};
+          discs.forEach(d => { bd[d] = Math.round((discBudget[d] || 0) / discStaffCount[d]); });
+          return bd;
+        })(),
+      });
+    });
+  });
+
+  const staffCols = Object.values(staffMap);
+
+  // Compute weekly hours for a staff entry in a given week
+  function entryWeekHours(entry, weekStart) {
+    let total = 0;
+    entry.billablePhases.forEach(ph => {
+      const meta = entry.phaseMeta[ph.id];
+      const overlap = bizDaysOverlap(weekStart, ph.startDate, ph.endDate);
+      if (!overlap || !meta) return;
+      const phBudget = entry.isPM
+        ? Math.round(entry.memberBudget * ((ph.fee || 0) / entry.totalFee))
+        : Object.values(entry.discBreakdown).reduce((a, hrs) => a + Math.round(hrs * ((ph.fee || 0) / entry.totalFee)), 0);
+      total += Math.round(phBudget * (overlap / meta.totalWD));
+    });
+    return total;
+  }
+
+  // Determine all weeks across all active projects
+  const allWeeks = useMemo(() => {
+    const allStarts = activeProjects.flatMap(p => (p.phases || []).filter(ph => ph.billable && ph.startDate).map(ph => ph.startDate));
+    const allEnds   = activeProjects.flatMap(p => (p.phases || []).filter(ph => ph.billable && ph.endDate).map(ph => ph.endDate));
+    if (!allStarts.length) return [];
+    allStarts.sort(); allEnds.sort();
+    let cur  = weekMonday(allStarts[0]);
+    const last = weekMonday(allEnds[allEnds.length - 1]);
+    const weeks = [];
+    while (cur <= last) { weeks.push(cur); cur = addCalDays(cur, 7); }
+    return weeks;
+  }, [activeProjects]);
+
+  // Which projects are active in a given week
+  function weekProjects(weekStart) {
+    const weekEnd = addCalDays(weekStart, 4);
+    return activeProjects.filter(p =>
+      (p.phases || []).some(ph => ph.billable && ph.startDate && ph.endDate && ph.startDate <= weekEnd && ph.endDate >= weekStart)
+    );
+  }
+
+  function wkStatus(weekStart) {
+    const weekEnd = addCalDays(weekStart, 4);
+    if (weekEnd < todayStr) return "past";
+    if (weekStart <= todayStr) return "current";
+    return "future";
+  }
+
+  const [filterStaff, setFilterStaff] = useState("");
+
+  const visibleCols = staffCols.filter(col =>
+    !filterStaff || col.displayName.toLowerCase().includes(filterStaff.toLowerCase())
+  );
+
+  if (activeProjects.length === 0) return (
+    <div style={{ padding: "24px 32px", color: P.textDim }}>No active projects with team members and schedule data.</div>
+  );
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>Team WBS — All Projects</div>
+      </div>
+      <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 20 }}>
+        Weekly hours across {activeProjects.length} active project{activeProjects.length !== 1 ? "s" : ""}. Staff with matching names are merged into one column.
+      </div>
+
+      {/* Active projects legend */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+        {activeProjects.map(p => (
+          <button key={p.id} onClick={() => onNavigateToProject(p.id)}
+            style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12, color: P.accentLight, fontWeight: 600 }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = P.accent}
+            onMouseLeave={e => e.currentTarget.style.borderColor = P.border}>
+            {p.projectNumber ? `[${p.projectNumber}] ` : ""}{p.name}
+          </button>
+        ))}
+      </div>
+
+      {/* Staff filter */}
+      <div style={{ marginBottom: 16 }}>
+        <input value={filterStaff} onChange={e => setFilterStaff(e.target.value)}
+          placeholder="Filter by staff name…" style={{ width: 260 }} />
+      </div>
+
+      {allWeeks.length === 0 ? (
+        <div style={{ color: P.textDim }}>No scheduled phases found.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ minWidth: 110, position: "sticky", left: 0, background: P.card, zIndex: 2 }}>Week Of</th>
+                <th style={{ minWidth: 120 }}>Projects Active</th>
+                {visibleCols.map((col, i) => {
+                  const totalBudget = col.entries.reduce((a, e) => a + e.memberBudget, 0);
+                  const discs = [...new Set(col.entries.flatMap(e => Object.keys(e.discBreakdown)))];
+                  return (
+                    <th key={i} style={{ minWidth: 90, textAlign: "center" }}>
+                      <div style={{ fontWeight: 700 }}>{col.displayName}</div>
+                      <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>
+                        {col.entries.length} project{col.entries.length !== 1 ? "s" : ""}
+                      </div>
+                      <div style={{ fontSize: 10, fontWeight: 400, display: "flex", justifyContent: "center", gap: 3, flexWrap: "wrap", marginTop: 2 }}>
+                        {discs.map(d => <span key={d} style={{ color: DISC_COLORS[d]?.text || P.textMuted }}>{d.split(" ")[0]}</span>)}
+                      </div>
+                      <div style={{ fontSize: 10, color: P.accentLight, fontWeight: 400 }}>{totalBudget} hrs total</div>
+                    </th>
+                  );
+                })}
+                <th style={{ minWidth: 90, textAlign: "center" }}>Team Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {allWeeks.map(weekStart => {
+                const st = wkStatus(weekStart);
+                const activeProjsThisWeek = weekProjects(weekStart);
+                const rowBg = st === "current" ? "#1a2500" : st === "past" ? P.bg : "transparent";
+                let teamTotal = 0;
+                const cellHours = visibleCols.map(col => {
+                  const hrs = col.entries.reduce((a, entry) => a + entryWeekHours(entry, weekStart), 0);
+                  teamTotal += hrs;
+                  // per-project breakdown for tooltip
+                  const byProject = col.entries
+                    .map(e => ({ name: e.project.projectNumber || e.project.name.slice(0, 12), hrs: entryWeekHours(e, weekStart) }))
+                    .filter(x => x.hrs > 0);
+                  return { hrs, byProject };
+                });
+                if (teamTotal === 0 && st === "past") return null;
+                return (
+                  <tr key={weekStart} style={{ background: rowBg }}>
+                    <td style={{ position: "sticky", left: 0, background: rowBg || P.card, fontFamily: "JetBrains Mono", fontSize: 12,
+                      fontWeight: st === "current" ? 700 : 400,
+                      color: st === "current" ? P.green : st === "past" ? P.textDim : P.text, zIndex: 1 }}>
+                      {weekStart}
+                      {st === "current" && <div style={{ fontSize: 10, color: P.green }}>← NOW</div>}
+                    </td>
+                    <td style={{ fontSize: 11 }}>
+                      {activeProjsThisWeek.map(p => (
+                        <button key={p.id} onClick={() => onNavigateToProject(p.id)}
+                          style={{ display: "block", background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 11, padding: 0, textAlign: "left" }}>
+                          {p.projectNumber || p.name.slice(0, 14)}
+                        </button>
+                      ))}
+                    </td>
+                    {cellHours.map((cell, ci) => (
+                      <td key={ci} style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 13,
+                        color: cell.hrs === 0 ? P.textDim : st === "past" ? P.textDim : st === "current" ? P.green : P.text,
+                        fontWeight: st === "current" ? 700 : 400 }}>
+                        {cell.hrs > 0 ? (
+                          <div title={cell.byProject.map(x => `${x.name}: ${x.hrs}h`).join("
+")}>
+                            <div>{cell.hrs} h</div>
+                            {cell.byProject.length > 1 && (
+                              <div style={{ fontSize: 9, color: P.textDim, lineHeight: 1.4 }}>
+                                {cell.byProject.map(x => <div key={x.name}>{x.name}: {x.hrs}h</div>)}
+                              </div>
+                            )}
+                          </div>
+                        ) : <span style={{ color: P.border }}>—</span>}
+                      </td>
+                    ))}
+                    <td style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontWeight: 700,
+                      color: st === "current" ? P.green : st === "past" ? P.textDim : P.accentLight }}>
+                      {teamTotal > 0 ? teamTotal + " h" : <span style={{ color: P.border }}>—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+              {/* Totals row */}
+              <tr style={{ borderTop: `2px solid ${P.border}`, background: P.bg }}>
+                <td colSpan={2} style={{ fontWeight: 700 }}>TOTAL</td>
+                {visibleCols.map((col, i) => {
+                  const total = col.entries.reduce((a, e) => a + e.memberBudget, 0);
+                  return (
+                    <td key={i} style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>
+                      {total} h
+                      {col.entries.length > 1 && (
+                        <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>
+                          {col.entries.map(e => (
+                            <div key={e.project.id}>{e.project.projectNumber || e.project.name.slice(0,10)}: {e.memberBudget}h</div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
+                <td style={{ textAlign: "center", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>
+                  {visibleCols.reduce((a, col) => a + col.entries.reduce((b, e) => b + e.memberBudget, 0), 0)} h
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── CALENDAR HELPERS ─────────────────────────────────────────────────────────
 
@@ -4019,7 +4367,7 @@ function App() {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Team WBS", key: "teamwbs" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -4036,6 +4384,7 @@ function App() {
 
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
 
       {view === "pipeline" && (
         <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={() => { const p = newProject(); setProjects(prev => [p, ...prev]); setView(`project:${p.id}`); }} />
