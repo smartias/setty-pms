@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 03:52 -->
+<!-- Setty PMS | Built: 2026-02-28 04:05 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -5490,7 +5490,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
 
 
 // ─── PIPELINE DASHBOARD ───────────────────────────────────────────────────────
-function PipelineDashboard({ projects, onNavigateToProject, onAddProject }) {
+function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpdateProject }) {
   const pipeline = projects.filter(p => !p.archived && isPipeline(p));
   const now = new Date();
 
@@ -5521,6 +5521,18 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject }) {
     if (!b.proposalDueDate) return -1;
     return a.proposalDueDate > b.proposalDueDate ? 1 : -1;
   });
+
+  const [confirm, setConfirm] = useState(null); // { projectId, action: "award"|"lost" }
+
+  function handleAward(p) {
+    onUpdateProject({ ...p, status: "Not Started", archived: false });
+    setConfirm(null);
+  }
+
+  function handleLost(p) {
+    onUpdateProject({ ...p, status: "Lost", archived: true });
+    setConfirm(null);
+  }
 
   return (
     <div style={{ padding: "24px 32px" }}>
@@ -5570,6 +5582,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject }) {
                 <th>Probability</th>
                 <th>Fee Value</th>
                 <th>Weighted</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -5607,6 +5620,25 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject }) {
                     </td>
                     <td style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13 }}>{fee > 0 ? fmt(fee) : "—"}</td>
                     <td style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: P.green }}>{fee > 0 ? fmt(weighted) : "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {confirm?.projectId === p.id ? (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <span style={{ fontSize: 11, color: P.textMuted }}>
+                            {confirm.action === "award" ? "Mark as Awarded?" : "Mark as Lost & archive?"}
+                          </span>
+                          <Btn small variant={confirm.action === "award" ? "success" : "danger"}
+                            onClick={() => confirm.action === "award" ? handleAward(p) : handleLost(p)}>
+                            Confirm
+                          </Btn>
+                          <Btn small variant="ghost" onClick={() => setConfirm(null)}>Cancel</Btn>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <Btn small variant="success" onClick={() => setConfirm({ projectId: p.id, action: "award" })}>🏆 Award</Btn>
+                          <Btn small variant="danger" onClick={() => setConfirm({ projectId: p.id, action: "lost" })}>✗ Lost</Btn>
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -5876,7 +5908,7 @@ function App() {
       {view === "pendingcos" && <PendingCOsView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
 
       {view === "pipeline" && (
-        <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={() => { const p = newProject(); setProjects(prev => [p, ...prev]); setView(`project:${p.id}`); }} />
+        <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={() => { const p = newProject(); setProjects(prev => [p, ...prev]); setView(`project:${p.id}`); }} onUpdateProject={updateProject} />
       )}
 
       {(view === "list" || view === "archive") && (
