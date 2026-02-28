@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 05:57 -->
+<!-- Setty PMS | Built: 2026-02-28 14:26 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2870,12 +2870,25 @@ function bizDaysOverlap(weekStart, phaseStart, phaseEnd) {
   return count;
 }
 
-function TeamView({ project, onChange }) {
+function TeamView({ project, onChange, staff }) {
   const team = project.teamMembers || [];
   const [showWBS, setShowWBS] = useState(false);
+  const [typeaheadOpen, setTypeaheadOpen] = useState(null); // memberId with open dropdown
 
   function addMember() {
     onChange({ ...project, teamMembers: [...team, { id: uid(), name: "", role: "Engineer", disciplines: [], rate: 0 }] });
+  }
+
+  function pickFromDirectory(memberId, s) {
+    // Fill from staff directory entry — role, rate, disciplines from directory
+    updateMember(memberId, {
+      name: s.name,
+      role: s.role || "Engineer",
+      rate: s.rate || 0,
+      disciplines: s.disciplines || [],
+      email: s.email || "",
+    });
+    setTypeaheadOpen(null);
   }
 
   function updateMember(id, updates) {
@@ -3050,7 +3063,40 @@ function TeamView({ project, onChange }) {
             const memberDiscs = m.disciplines || (m.discipline ? [m.discipline] : []);
             return (
               <tr key={m.id}>
-                <td><input value={m.name} onChange={e => updateMember(m.id, { name: e.target.value })} style={{ width: 180 }} /></td>
+                <td style={{ position: "relative" }}>
+                  <input
+                    value={m.name}
+                    onChange={e => {
+                      updateMember(m.id, { name: e.target.value });
+                      setTypeaheadOpen(m.id);
+                    }}
+                    onFocus={() => setTypeaheadOpen(m.id)}
+                    onBlur={() => setTimeout(() => setTypeaheadOpen(null), 150)}
+                    style={{ width: 180 }}
+                    placeholder="Type to search staff…"
+                  />
+                  {typeaheadOpen === m.id && (() => {
+                    const q = (m.name || "").toLowerCase();
+                    const matches = (staff || []).filter(s =>
+                      !q || s.name.toLowerCase().includes(q) || (s.email || "").toLowerCase().includes(q)
+                    ).slice(0, 8);
+                    if (!matches.length) return null;
+                    return (
+                      <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: 240, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
+                        {matches.map(s => (
+                          <div key={s.id}
+                            onMouseDown={() => pickFromDirectory(m.id, s)}
+                            style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border }}
+                            onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+                            onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                            <div style={{ fontWeight: 600, fontSize: 13 }}>{s.name}</div>
+                            <div style={{ fontSize: 11, color: P.textDim }}>{s.role || ""}{s.email ? " · " + s.email : ""}</div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </td>
                 <td>
                   {isPM
                     ? <Badge color={{ bg: P.accentDim, text: P.accentLight }} text={m.role} />
@@ -5457,7 +5503,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
         {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} />}
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} />}
-        {tab === "Team" && <TeamView project={project} onChange={onUpdate} />}
+        {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} />}
       </Card>
@@ -6185,6 +6231,178 @@ function ScopeView({ project, onChange }) {
   );
 }
 
+
+// ─── STAFF DIRECTORY ──────────────────────────────────────────────────────────
+
+function newStaffMember(overrides) {
+  return {
+    id: uid(),
+    name: "",
+    email: "",
+    role: "Engineer",
+    rate: 0,
+    disciplines: [],
+    ...overrides,
+  };
+}
+
+function StaffDirectoryView({ staff, onUpdateStaff }) {
+  const [editingId, setEditingId] = React.useState(null); // null=list, "__new__"=new, id=editing
+  const [form, setForm] = React.useState(null);
+  const [search, setSearch] = React.useState("");
+
+  function startNew() {
+    setForm(newStaffMember());
+    setEditingId("__new__");
+  }
+
+  function startEdit(s) {
+    setForm({ ...s });
+    setEditingId(s.id);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setForm(null);
+  }
+
+  function saveForm() {
+    if (!form.name.trim()) return;
+    if (editingId === "__new__") {
+      onUpdateStaff([...staff, form]);
+    } else {
+      onUpdateStaff(staff.map(s => s.id === editingId ? form : s));
+    }
+    cancelEdit();
+  }
+
+  function deleteStaff(id) {
+    if (!window.confirm("Remove this staff member from the directory? They will remain on any projects they are already assigned to.")) return;
+    onUpdateStaff(staff.filter(s => s.id !== id));
+  }
+
+  function toggleDisc(disc) {
+    const discs = form.disciplines || [];
+    setForm({ ...form, disciplines: discs.includes(disc) ? discs.filter(d => d !== disc) : [...discs, disc] });
+  }
+
+  const filtered = staff.filter(s =>
+    !search || s.name.toLowerCase().includes(search.toLowerCase()) || (s.email || "").toLowerCase().includes(search.toLowerCase()) || (s.role || "").toLowerCase().includes(search.toLowerCase())
+  );
+
+  if (editingId !== null) {
+    return (
+      <div style={{ padding: "24px 32px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+          <button onClick={cancelEdit} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 18 }}>←</button>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>{editingId === "__new__" ? "Add Staff Member" : "Edit Staff Member"}</div>
+        </div>
+        <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 28, maxWidth: 540 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <Field label="Full Name" style={{ gridColumn: "1 / -1" }}>
+              <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+                placeholder="e.g. Jane Smith" style={{ width: "100%" }} autoFocus />
+            </Field>
+            <Field label="Email">
+              <input value={form.email || ""} onChange={e => setForm({ ...form, email: e.target.value })}
+                placeholder="e.g. jane@setty.com" style={{ width: "100%" }} type="email" />
+            </Field>
+            <Field label="Default Role / Title">
+              <input value={form.role || ""} onChange={e => setForm({ ...form, role: e.target.value })}
+                placeholder="e.g. Mechanical Engineer" style={{ width: "100%" }} />
+            </Field>
+            <Field label="Default Billing Rate ($/hr)" style={{ gridColumn: "1 / -1" }}>
+              <input type="number" value={form.rate || ""} onChange={e => setForm({ ...form, rate: +e.target.value })}
+                placeholder="0" style={{ width: 160 }} />
+            </Field>
+            <Field label="Default Disciplines" style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {["Mechanical", "Electrical", "Plumbing", "Fire Protection"].map(d => {
+                  const on = (form.disciplines || []).includes(d);
+                  const dc = { "Mechanical": { bg: "#1a2a3a", text: "#60b4ff" }, "Electrical": { bg: "#2a1a3a", text: "#c084fc" }, "Plumbing": { bg: "#1a3a2a", text: "#34d399" }, "Fire Protection": { bg: "#3a1a1a", text: "#f87171" } }[d];
+                  return (
+                    <button key={d} onClick={() => toggleDisc(d)}
+                      style={{ fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 8, cursor: "pointer",
+                        background: on ? dc.bg : "transparent", color: on ? dc.text : P.textDim,
+                        border: "1px solid " + (on ? dc.text : P.border) }}>
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>These defaults pre-fill when adding this person to a project team — editable per project.</div>
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+            <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add to Directory" : "Save Changes"}</Btn>
+            <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Staff Directory</div>
+          <div style={{ fontSize: 13, color: P.textMuted }}>{staff.length} staff member{staff.length !== 1 ? "s" : ""} · names auto-suggest when assigning to project teams</div>
+        </div>
+        <Btn onClick={startNew}>+ Add Staff Member</Btn>
+      </div>
+
+      <input placeholder="Search by name, email, or role…" value={search} onChange={e => setSearch(e.target.value)}
+        style={{ width: 300, marginBottom: 16 }} />
+
+      {filtered.length === 0 ? (
+        <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, padding: 40, textAlign: "center", color: P.textDim, fontSize: 13 }}>
+          {staff.length === 0
+            ? <><div style={{ fontSize: 32, marginBottom: 12 }}>👥</div><div style={{ fontWeight: 600, marginBottom: 6 }}>No staff yet</div><div>Add your team members here so their names, roles, and rates auto-fill when assigning to projects.</div><div style={{ marginTop: 16 }}><Btn onClick={startNew}>+ Add First Staff Member</Btn></div></>
+            : "No staff match your search."}
+        </div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Default Role</th>
+              <th>Rate</th>
+              <th>Disciplines</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(s => (
+              <tr key={s.id} style={{ cursor: "pointer" }} onClick={() => startEdit(s)}>
+                <td style={{ fontWeight: 600 }}>{s.name}</td>
+                <td style={{ color: P.textMuted, fontSize: 12 }}>{s.email || "—"}</td>
+                <td style={{ color: P.textMuted }}>{s.role || "—"}</td>
+                <td style={{ color: P.textMuted, fontFamily: "JetBrains Mono", fontSize: 12 }}>{s.rate ? "$" + s.rate + "/hr" : "—"}</td>
+                <td>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {(s.disciplines || []).map(d => {
+                      const dc = { "Mechanical": { bg: "#1a2a3a", text: "#60b4ff" }, "Electrical": { bg: "#2a1a3a", text: "#c084fc" }, "Plumbing": { bg: "#1a3a2a", text: "#34d399" }, "Fire Protection": { bg: "#3a1a1a", text: "#f87171" } }[d] || { bg: P.border, text: P.textMuted };
+                      return <span key={d} style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 6, background: dc.bg, color: dc.text }}>{d}</span>;
+                    })}
+                  </div>
+                </td>
+                <td onClick={e => e.stopPropagation()}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Btn small variant="ghost" onClick={() => startEdit(s)}>Edit</Btn>
+                    <Btn small variant="danger" onClick={() => deleteStaff(s.id)}>✕</Btn>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 
@@ -6377,6 +6595,7 @@ function SaveBadge({ status, lastSaved, onRetry }) {
 function App() {
   const [projects, setProjects] = useState([]);
   const [termContracts, setTermContracts] = useState([]);
+  const [staff, setStaff] = useState([]);
   const [view, setView] = useState("dashboard");
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
@@ -6408,6 +6627,7 @@ function App() {
       .then(s => {
         if (s?.projects) setProjects(s.projects);
         if (s?.termContracts) setTermContracts(s.termContracts);
+        if (s?.staff) setStaff(s.staff);
         setAppStatus("idle");
       })
       .catch(e => {
@@ -6418,6 +6638,7 @@ function App() {
           getToken(true).then(() => loadState()).then(s => {
             if (s?.projects) setProjects(s.projects);
             if (s?.termContracts) setTermContracts(s.termContracts);
+            if (s?.staff) setStaff(s.staff);
             setAppStatus("idle");
           }).catch(e2 => { setLoadError(e2.message); setAppStatus("error"); });
           return;
@@ -6445,11 +6666,11 @@ function App() {
     // Clear any pending save
     if (pendingSave) clearTimeout(pendingSave);
     const timer = setTimeout(() => {
-      performSave({ projects, termContracts });
+      performSave({ projects, termContracts, staff });
     }, 2000);
     setPendingSave(timer);
     return () => clearTimeout(timer);
-  }, [projects, termContracts]);
+  }, [projects, termContracts, staff]);
 
   async function performSave(state) {
     setAppStatus("saving");
@@ -6467,13 +6688,13 @@ function App() {
   }
 
   function manualRetry() {
-    performSave({ projects, termContracts });
+    performSave({ projects, termContracts, staff });
   }
 
   // ── Data tools ──
 
   function exportBackup() {
-    const data = JSON.stringify({ projects, termContracts, _exportedAt: new Date().toISOString(), _version: 3 }, null, 2);
+    const data = JSON.stringify({ projects, termContracts, staff, _exportedAt: new Date().toISOString(), _version: 3 }, null, 2);
     const blob = new Blob([data], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -6503,8 +6724,9 @@ function App() {
 This will REPLACE all current data. Make sure you have a backup first.`)) return;
         setProjects(parsed.projects);
         setTermContracts(parsed.termContracts || []);
+        setStaff(parsed.staff || []);
         setImportMsg(`✓ Imported ${projCount} projects and ${tcCount} term contracts. Saving…`);
-        performSave({ projects: parsed.projects, termContracts: parsed.termContracts || [] });
+        performSave({ projects: parsed.projects, termContracts: parsed.termContracts || [], staff: parsed.staff || [] });
       } catch(err) {
         setImportMsg("✗ Could not parse file: " + err.message);
       }
@@ -6756,7 +6978,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Staff", key: "staff" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -6773,6 +6995,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "termcontracts" && <TermContractsView termContracts={termContracts} projects={projects} onUpdateTermContracts={setTermContracts} onNavigateToProject={id => setView(`project:${id}`)} />}
