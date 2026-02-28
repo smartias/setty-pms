@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 05:40 -->
+<!-- Setty PMS | Built: 2026-02-28 05:48 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -258,6 +258,8 @@ function newProject(overrides = {}) {
     taskOrderTermContractId: "",
     taskOrderNumber: "",
     scopeContent: "",
+    scopeLocked: false,
+    scopeAuditLog: [],
     ...overrides,
   };
 }
@@ -5273,7 +5275,7 @@ function ProjectionsView({ project }) {
 
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Fee Calculator", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Scope", "Calendar"];
+const TABS = ["Overview", "Fee Calculator", "Scope", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Calendar"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
   const [tab, setTab] = useState("Overview");
@@ -5949,131 +5951,229 @@ function printScopeOfServices(project) {
 
 function ScopeView({ project, onChange }) {
   const editorRef = React.useRef(null);
-  const [wordCount, setWordCount] = React.useRef ? React.useRef(0) : { current: 0 };
   const [wc, setWc] = React.useState(0);
+  const [showLockModal, setShowLockModal] = React.useState(false); // "lock" | "unlock" | false
+  const [lockNote, setLockNote] = React.useState("");
+  const [showAudit, setShowAudit] = React.useState(false);
 
-  // Load saved content into editor on mount
+  const scopeLocked = project.scopeLocked || false;
+  const auditLog = project.scopeAuditLog || [];
+
   React.useEffect(() => {
-    if (editorRef.current && project.scopeContent !== undefined) {
-      if (editorRef.current.innerHTML !== project.scopeContent) {
-        editorRef.current.innerHTML = project.scopeContent || "";
-      }
-      updateWordCount();
+    if (editorRef.current) {
+      editorRef.current.innerHTML = project.scopeContent || "";
+      const text = editorRef.current.innerText || "";
+      setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
     }
   }, []);
 
-  function exec(cmd, val = null) {
-    document.execCommand(cmd, false, val);
-    editorRef.current?.focus();
-    handleInput();
+  function exec(cmd, val) {
+    if (scopeLocked) return;
+    document.execCommand(cmd, false, val || null);
+    if (editorRef.current) editorRef.current.focus();
+    saveContent();
   }
 
-  function handleInput() {
-    const html = editorRef.current?.innerHTML || "";
+  function saveContent() {
+    if (scopeLocked) return;
+    const html = editorRef.current ? editorRef.current.innerHTML : "";
+    const text = editorRef.current ? editorRef.current.innerText : "";
     onChange({ ...project, scopeContent: html });
-    // word count from text content
-    const text = editorRef.current?.innerText || "";
     setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
   }
 
-  function updateWordCount() {
-    const text = editorRef.current?.innerText || "";
-    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
+  function doLock() {
+    const entry = { id: uid(), action: "locked", user: getCurrentUser(), date: new Date().toISOString(), note: lockNote.trim() };
+    onChange({ ...project, scopeLocked: true, scopeAuditLog: [...auditLog, entry] });
+    setShowLockModal(false);
+    setLockNote("");
   }
 
-  const toolbarBtn = (label, cmd, val, title) => (
-    <button key={label} onMouseDown={e => { e.preventDefault(); exec(cmd, val); }}
-      title={title || label}
-      style={{ background: "none", border: `1px solid ${P.border}`, color: P.text, borderRadius: 4,
-        padding: "3px 8px", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
-        transition: "all .1s", minWidth: 28, textAlign: "center" }}
-      onMouseOver={e => e.currentTarget.style.background = P.accentDim}
-      onMouseOut={e => e.currentTarget.style.background = "none"}>
+  function doUnlock() {
+    const entry = { id: uid(), action: "unlocked", user: getCurrentUser(), date: new Date().toISOString(), note: lockNote.trim() };
+    onChange({ ...project, scopeLocked: false, scopeAuditLog: [...auditLog, entry] });
+    setShowLockModal(false);
+    setLockNote("");
+  }
+
+  const tbStyle = {
+    background: "none",
+    border: "1px solid " + P.border,
+    color: scopeLocked ? P.textDim : P.text,
+    borderRadius: 4,
+    padding: "3px 9px",
+    fontSize: 12,
+    cursor: scopeLocked ? "not-allowed" : "pointer",
+    fontFamily: "inherit",
+    minWidth: 30,
+    opacity: scopeLocked ? 0.4 : 1,
+  };
+
+  const TB = ({ label, cmd, val, title }) => (
+    <button onMouseDown={e => { e.preventDefault(); exec(cmd, val); }} title={title || label} style={tbStyle} disabled={scopeLocked}>
       {label}
     </button>
   );
 
+  const divider = <div style={{ width: 1, height: 20, background: P.border, margin: "0 2px" }} />;
+
+  const lastLocked = [...auditLog].reverse().find(e => e.action === "locked");
+
   return (
-    <div style={{ padding: "0 0 40px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+    <div style={{ paddingBottom: 40 }}>
+      {/* Header row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <div>
-          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>Scope of Services</div>
-          <div style={{ fontSize: 12, color: P.textDim }}>{wc} word{wc !== 1 ? "s" : ""} · formats alongside fee proposal</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 2 }}>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>Scope of Services</div>
+            {scopeLocked && (
+              <span style={{ fontSize: 11, fontWeight: 600, background: P.greenDim, color: P.green, border: "1px solid " + P.green, borderRadius: 8, padding: "2px 8px" }}>
+                🔒 Locked
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: P.textDim }}>
+            {wc} word{wc !== 1 ? "s" : ""}
+            {scopeLocked
+              ? " · scope is locked — unlock to edit"
+              : " · auto-saves as you type"}
+          </div>
         </div>
-        <Btn onClick={() => printScopeOfServices(project)}>🖨 Print Scope of Services</Btn>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {scopeLocked
+            ? <Btn variant="warning" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}>🔓 Unlock Scope</Btn>
+            : <Btn variant="success" onClick={() => { setShowLockModal("lock"); setLockNote(""); }}>🔒 Lock Scope</Btn>
+          }
+          <Btn onClick={() => printScopeOfServices(project)}>🖨 Print</Btn>
+        </div>
       </div>
 
+      {/* Lock status banner */}
+      {scopeLocked && lastLocked && (
+        <div style={{ background: P.greenDim, border: "1px solid " + P.green, borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 12 }}>
+          <span style={{ color: P.green, fontWeight: 600 }}>🔒 Scope locked</span>
+          <span style={{ color: P.textMuted, marginLeft: 8 }}>
+            by {lastLocked.user} on {fmtDate(lastLocked.date.slice(0, 10))}
+            {lastLocked.note ? " · " + lastLocked.note : ""}
+          </span>
+        </div>
+      )}
+
       {/* Toolbar */}
-      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", padding: "8px 10px", background: P.card, border: `1px solid ${P.border}`, borderBottom: "none", borderRadius: "8px 8px 0 0" }}>
-        {/* Headings */}
-        <select onMouseDown={e => e.stopPropagation()} onChange={e => { exec("formatBlock", e.target.value); e.target.value = "p"; }}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", padding: "8px 10px", background: P.card, border: "1px solid " + P.border, borderBottom: "none", borderRadius: "8px 8px 0 0", opacity: scopeLocked ? 0.5 : 1 }}>
+        <select
+          onChange={e => { exec("formatBlock", e.target.value); e.target.value = "p"; }}
           defaultValue="p"
-          style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: `1px solid ${P.border}`, background: P.bg, color: P.text, cursor: "pointer" }}>
+          disabled={scopeLocked}
+          style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: scopeLocked ? "not-allowed" : "pointer" }}>
           <option value="p">Paragraph</option>
           <option value="h1">Heading 1</option>
           <option value="h2">Heading 2</option>
           <option value="h3">Heading 3</option>
         </select>
-
-        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
-
-        {toolbarBtn("B", "bold", null, "Bold")}
-        {toolbarBtn("I", "italic", null, "Italic")}
-        {toolbarBtn("U", "underline", null, "Underline")}
-
-        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
-
-        {toolbarBtn("• List", "insertUnorderedList", null, "Bullet list")}
-        {toolbarBtn("1. List", "insertOrderedList", null, "Numbered list")}
-
-        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
-
-        {toolbarBtn("⇤", "outdent", null, "Decrease indent")}
-        {toolbarBtn("⇥", "indent", null, "Increase indent")}
-
-        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
-
-        {toolbarBtn("✕ Clear", "removeFormat", null, "Clear formatting")}
+        {divider}
+        <TB label="B" cmd="bold" title="Bold" />
+        <TB label="I" cmd="italic" title="Italic" />
+        <TB label="U" cmd="underline" title="Underline" />
+        {divider}
+        <TB label="• List" cmd="insertUnorderedList" title="Bullet list" />
+        <TB label="1. List" cmd="insertOrderedList" title="Numbered list" />
+        {divider}
+        <TB label="⇤" cmd="outdent" title="Decrease indent" />
+        <TB label="⇥" cmd="indent" title="Increase indent" />
+        {divider}
+        <TB label="✕ Clear" cmd="removeFormat" title="Clear formatting" />
       </div>
 
       {/* Editor */}
       <div
         ref={editorRef}
-        contentEditable
-        suppressContentEditableWarning
-        onInput={handleInput}
-        onKeyUp={updateWordCount}
+        contentEditable={scopeLocked ? "false" : "true"}
+        suppressContentEditableWarning={true}
+        onInput={saveContent}
         style={{
-          minHeight: 600,
+          minHeight: 520,
           padding: "20px 24px",
-          background: P.card,
-          border: `1px solid ${P.border}`,
+          background: scopeLocked ? P.bg : P.card,
+          border: "1px solid " + (scopeLocked ? P.green : P.border),
+          borderTop: "none",
           borderRadius: "0 0 8px 8px",
           outline: "none",
           fontSize: 13,
-          lineHeight: 1.7,
+          lineHeight: 1.75,
           color: P.text,
           overflowY: "auto",
+          cursor: scopeLocked ? "default" : "text",
         }}
       />
 
-      {/* Scope content style overrides for editor */}
-      <style>{`
-        [contenteditable] h1 { font-size: 16px; font-weight: 700; color: ${P.accentLight}; margin: 14px 0 6px; }
-        [contenteditable] h2 { font-size: 14px; font-weight: 700; color: ${P.accentLight}; margin: 12px 0 5px; }
-        [contenteditable] h3 { font-size: 13px; font-weight: 700; color: ${P.textMuted}; margin: 10px 0 4px; }
-        [contenteditable] ul { margin: 6px 0 8px 24px; }
-        [contenteditable] ol { margin: 6px 0 8px 24px; }
-        [contenteditable] li { margin-bottom: 3px; }
-        [contenteditable] p { margin-bottom: 6px; }
-        [contenteditable]:empty:before { content: "Start typing your scope of services here…\A\A Use headings to organize sections (e.g. Mechanical, Electrical, General Conditions).\A Use bullet lists for deliverables and exclusions."; white-space: pre; color: ${P.textDim}; pointer-events: none; }
-        [contenteditable]:focus { outline: none; border-color: ${P.accent}; }
-      `}</style>
-
       <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
-        💡 Tip: Use <strong>Heading 1</strong> for discipline sections (Mechanical, Electrical…), <strong>Heading 2</strong> for subsections, bullet lists for included/excluded services.
-        Content auto-saves as you type.
+        💡 Use <strong style={{ color: P.text }}>Heading 1</strong> for discipline sections, <strong style={{ color: P.text }}>Heading 2</strong> for subsections, bullet lists for deliverables and exclusions.
       </div>
+
+      {/* Audit log */}
+      {auditLog.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <button onClick={() => setShowAudit(v => !v)}
+            style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12, padding: 0 }}>
+            {showAudit ? "▲ Hide" : "▼ Show"} scope audit log ({auditLog.length} {auditLog.length === 1 ? "entry" : "entries"})
+          </button>
+          {showAudit && (
+            <table style={{ marginTop: 8, fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>User</th>
+                  <th>Date</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...auditLog].reverse().map(e => (
+                  <tr key={e.id}>
+                    <td>
+                      <span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : P.yellow }}>
+                        {e.action === "locked" ? "🔒 Locked" : "🔓 Unlocked"}
+                      </span>
+                    </td>
+                    <td style={{ color: P.textMuted }}>{e.user || "—"}</td>
+                    <td style={{ color: P.textMuted, whiteSpace: "nowrap" }}>{fmtDate(e.date.slice(0, 10))}</td>
+                    <td style={{ color: P.textMuted }}>{e.note || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* Lock/Unlock modal */}
+      {showLockModal && (
+        <Modal title={showLockModal === "lock" ? "🔒 Lock Scope of Services" : "🔓 Unlock Scope of Services"} onClose={() => setShowLockModal(false)}>
+          <div style={{ fontSize: 13, color: P.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+            {showLockModal === "lock"
+              ? "Locking the scope prevents further edits. You can unlock it at any time. Add an optional note for the audit log."
+              : "Unlocking allows the scope to be edited again. Add an optional note explaining why."}
+          </div>
+          <Field label="Note (optional)">
+            <textarea
+              value={lockNote}
+              onChange={e => setLockNote(e.target.value)}
+              rows={3}
+              style={{ width: "100%", resize: "vertical" }}
+              placeholder={showLockModal === "lock" ? "e.g. Approved by PM, issued to client..." : "e.g. Revising scope per amendment #2..."}
+            />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+            <button
+              onClick={showLockModal === "lock" ? doLock : doUnlock}
+              style={{ background: showLockModal === "lock" ? P.green : P.red, border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontWeight: 700, padding: "8px 20px", fontSize: 13 }}>
+              {showLockModal === "lock" ? "Lock Scope" : "Unlock Scope"}
+            </button>
+            <Btn variant="ghost" onClick={() => setShowLockModal(false)}>Cancel</Btn>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
