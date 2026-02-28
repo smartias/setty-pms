@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 04:05 -->
+<!-- Setty PMS | Built: 2026-02-28 04:14 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -237,6 +237,7 @@ function newProject(overrides = {}) {
     primeProjectNumber: "",
     contractNumber: "",
     contractDate: "",
+    contractExpirationDate: "",
     archived: false,
     buildingCategory: "Office",
     squareFootage: 0,
@@ -2757,6 +2758,24 @@ function ContractView({ project, onChange }) {
         <Field label="Contract Date">
           <input type="date" value={project.contractDate || ""} onChange={e => setField("contractDate", e.target.value)} style={{ width: "100%" }} />
         </Field>
+        <Field label="Contract Expiration Date">
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="date" value={project.contractExpirationDate || ""}
+              onChange={e => { setField("contractExpirationDate", e.target.value); setContractExpSyncState("idle"); setContractExpSyncMsg(""); }}
+              style={{ flex: 1 }} />
+            <button onClick={syncContractExpiration}
+              disabled={!project.contractExpirationDate || contractExpSyncState === "syncing"}
+              title="Add to NYC Shared Calendar"
+              style={{ background: contractExpSyncState === "synced" ? P.greenDim : P.accentDim, border: `1px solid ${contractExpSyncState === "synced" ? P.green : P.accent}`, borderRadius: 6, color: contractExpSyncState === "synced" ? P.green : P.accentLight, cursor: "pointer", fontSize: 12, padding: "4px 10px", whiteSpace: "nowrap" }}>
+              {contractExpSyncState === "syncing" ? "⏳" : contractExpSyncState === "synced" ? "✓ 📅" : "📅 Sync"}
+            </button>
+          </div>
+          {contractExpSyncMsg && (
+            <div style={{ fontSize: 11, marginTop: 4, color: contractExpSyncMsg.startsWith("✓") ? P.green : contractExpSyncMsg.startsWith("⚠") ? P.yellow : P.red }}>
+              {contractExpSyncMsg}
+            </div>
+          )}
+        </Field>
         <Field label="Prime's Project Number">
           <input value={project.primeProjectNumber || ""} onChange={e => setField("primeProjectNumber", e.target.value)}
             placeholder="Prime's internal project #" style={{ width: "100%" }} />
@@ -4965,6 +4984,8 @@ function ProjectDetail({ project, onUpdate, onBack }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
+  const [contractExpSyncState, setContractExpSyncState] = useState("idle");
+  const [contractExpSyncMsg, setContractExpSyncMsg] = useState("");
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
@@ -4991,6 +5012,30 @@ function ProjectDetail({ project, onUpdate, onBack }) {
     } else {
       setProposalSyncState("error");
       setProposalSyncMsg("✗ " + result.error);
+    }
+  }
+
+  async function syncContractExpiration() {
+    if (!project.contractExpirationDate) { setContractExpSyncMsg("⚠ No expiration date set"); return; }
+    setContractExpSyncState("syncing");
+    setContractExpSyncMsg("");
+    const fakeMilestone = {
+      id: "contract-exp-" + project.id,
+      name: "Contract Expiration",
+      dueDate: project.contractExpirationDate,
+      phase: "Contract",
+      type: "contract",
+      pctComplete: 0,
+    };
+    const existingEventId = localStorage.getItem("setty_pms_contract_exp_cal_" + project.id) || null;
+    const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId);
+    if (result.success) {
+      if (result.eventId) localStorage.setItem("setty_pms_contract_exp_cal_" + project.id, result.eventId);
+      setContractExpSyncState("synced");
+      setContractExpSyncMsg(result.warning ? "⚠ " + result.warning : "✓ Synced to NYC Shared Calendar");
+    } else {
+      setContractExpSyncState("error");
+      setContractExpSyncMsg("✗ " + result.error);
     }
   }
 
