@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 04:24 -->
+<!-- Setty PMS | Built: 2026-02-28 04:27 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2732,7 +2732,7 @@ function ChangeOrdersView({ project, onChange }) {
 
 // ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
 
-function ContractView({ project, onChange }) {
+function ContractView({ project, onChange, contractExpSyncState, contractExpSyncMsg, onSyncContractExp }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
   return (
     <div>
@@ -2764,9 +2764,9 @@ function ContractView({ project, onChange }) {
         <Field label="Contract Expiration Date">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input type="date" value={project.contractExpirationDate || ""}
-              onChange={e => { setField("contractExpirationDate", e.target.value); setContractExpSyncState("idle"); setContractExpSyncMsg(""); }}
+              onChange={e => { onChange({ ...project, contractExpirationDate: e.target.value }); }}
               style={{ flex: 1 }} />
-            <button onClick={syncContractExpiration}
+            <button onClick={onSyncContractExp}
               disabled={!project.contractExpirationDate || contractExpSyncState === "syncing"}
               title="Add to NYC Shared Calendar"
               style={{ background: contractExpSyncState === "synced" ? P.greenDim : P.accentDim, border: `1px solid ${contractExpSyncState === "synced" ? P.green : P.accent}`, borderRadius: 6, color: contractExpSyncState === "synced" ? P.green : P.accentLight, cursor: "pointer", fontSize: 12, padding: "4px 10px", whiteSpace: "nowrap" }}>
@@ -5420,7 +5420,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
         {tab === "Projections" && <ProjectionsView project={project} />}
         {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} />}
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
-        {tab === "Contract" && <ContractView project={project} onChange={onUpdate} />}
+        {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} />}
       </Card>
