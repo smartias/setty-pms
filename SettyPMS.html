@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 01:17 -->
+<!-- Setty PMS | Built: 2026-02-28 01:25 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2155,20 +2155,31 @@ function FinancialsView({ project, onChange }) {
     onChange({ ...project, invoices: [...invoices, inv] });
   }
 
+  function updateInvoice(id, updates) {
+    onChange({ ...project, invoices: invoices.map(inv => inv.id === id ? { ...inv, ...updates } : inv) });
+  }
+
   function deleteInvoice(id) {
     onChange({ ...project, invoices: invoices.filter(inv => inv.id !== id) });
   }
 
+  const totalPaid        = invoices.reduce((a, inv) => a + (inv.amountPaid || 0), 0);
+  const totalOutstanding = invoices.reduce((a, inv) => a + Math.max(0, inv.amount - (inv.amountPaid || 0)), 0);
+
   return (
     <div>
       {/* 5-column KPI row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 28 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 12, marginBottom: 28 }}>
         <KpiBox label="Base Contract Fee" val={fmt(totalFee)} />
         <KpiBox label="Approved COs" val={fmt(approvedCOTotal)} color={P.yellow} />
         <KpiBox label="Total Contract Value" val={fmt(totalContract)} color={P.green} />
         <KpiBox label="Earned Value" val={fmt(earnedValue)} color={P.accent} />
         <KpiBox label="Total Invoiced" val={fmt(totalInvoiced)} color={P.purple}
-          sub={`Open balance: ${fmt(openBalance)}`} />
+          sub={`Unbilled: ${fmt(openBalance)}`} />
+        <KpiBox label="Total Received" val={fmt(totalPaid)} color={P.green}
+          sub={totalInvoiced > 0 ? Math.round(totalPaid/totalInvoiced*100) + "% of invoiced" : ""} />
+        <KpiBox label="Outstanding" val={fmt(totalOutstanding)} color={totalOutstanding > 0 ? P.red : P.green}
+          sub={totalOutstanding > 0 ? "Awaiting payment" : "All paid"} />
       </div>
 
       {/* Phase summary — pct is read-only from milestones */}
@@ -2213,9 +2224,19 @@ function FinancialsView({ project, onChange }) {
       </table>
 
       {/* Invoice Log */}
-      <SectionTitle action={<Btn small onClick={() => setShowInvoiceModal(true)}>+ Log Invoice</Btn>}>
+      <SectionTitle action={
+        <div style={{ display: "flex", gap: 8 }}>
+          {invoices.length > 0 && <Btn small variant="ghost" onClick={() => printStatement(project)}>🖨 Statement</Btn>}
+          <Btn small onClick={() => setShowInvoiceModal(true)}>+ Log Invoice</Btn>
+        </div>
+      }>
         Invoice Log
       </SectionTitle>
+      {invoices.length > 0 && (
+        <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>
+          Enter amount paid and date received per invoice to track payment status.
+        </div>
+      )}
 
       {invoices.length === 0 ? (
         <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
@@ -2226,40 +2247,69 @@ function FinancialsView({ project, onChange }) {
           <thead>
             <tr>
               <th>Invoice #</th><th>Date</th><th>Milestone / Phase</th><th>Method</th>
-              <th>Description</th><th>Amount</th><th>Status</th><th></th>
+              <th>Description</th><th>Invoiced</th><th>Amt Paid</th><th>Date Paid</th><th>Balance</th><th>Status</th><th></th>
             </tr>
           </thead>
           <tbody>
-            {invoices.map(inv => (
-              <tr key={inv.id}>
-                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600 }}>{inv.number}</td>
-                <td style={{ color: P.textMuted }}>{inv.date}</td>
-                <td>
-                  <div style={{ fontWeight: 500 }}>{inv.milestoneName || inv.phaseName}</div>
-                  {inv.milestoneName && <div style={{ fontSize: 11, color: P.textDim }}>Phase: {inv.phaseName}</div>}
-                </td>
-                <td>
-                  <Badge
-                    color={inv.method === "hours" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }}
-                    text={inv.method === "hours" ? "Hours" : "% of Fee"}
-                  />
-                </td>
-                <td style={{ color: P.textMuted }}>{inv.description || "—"}</td>
-                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: P.green }}>{fmt(inv.amount)}</td>
-                <td><Badge color={{ bg: P.greenDim, text: P.green }} text="Finalized" /></td>
-                <td style={{ display: "flex", gap: 6 }}>
-                  <Btn small variant="ghost" onClick={() => printInvoice(inv, project)}>🖨 PDF</Btn>
-                  <Btn small variant="danger" onClick={() => deleteInvoice(inv.id)}>✕</Btn>
-                </td>
-              </tr>
-            ))}
-            <tr style={{ background: P.bg }}>
-              <td colSpan={5} style={{ fontWeight: 700, textAlign: "right", color: P.textMuted, paddingRight: 16 }}>
-                Total Invoiced
-              </td>
-              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple, fontSize: 15 }}>
-                {fmt(totalInvoiced)}
-              </td>
+            {invoices.map(inv => {
+              const paid = inv.amountPaid || 0;
+              const balance = inv.amount - paid;
+              const payStatus = paid >= inv.amount ? "paid" : paid > 0 ? "partial" : "unpaid";
+              const statusColor = payStatus === "paid"
+                ? { bg: P.greenDim, text: P.green }
+                : payStatus === "partial"
+                ? { bg: P.yellowDim, text: P.yellow }
+                : { bg: P.redDim, text: P.red };
+              const statusLabel = payStatus === "paid" ? "✓ Paid" : payStatus === "partial" ? "Partial" : "Unpaid";
+              return (
+                <tr key={inv.id}>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600 }}>{inv.number}</td>
+                  <td style={{ color: P.textMuted, whiteSpace: "nowrap" }}>{inv.date}</td>
+                  <td>
+                    <div style={{ fontWeight: 500 }}>{inv.milestoneName || inv.phaseName}</div>
+                    {inv.milestoneName && <div style={{ fontSize: 11, color: P.textDim }}>Phase: {inv.phaseName}</div>}
+                  </td>
+                  <td>
+                    <Badge
+                      color={inv.method === "hours" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }}
+                      text={inv.method === "hours" ? "Hours" : "% of Fee"}
+                    />
+                  </td>
+                  <td style={{ color: P.textMuted }}>{inv.description || "—"}</td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: P.green }}>{fmt(inv.amount)}</td>
+                  <td>
+                    <input type="number" min={0} max={inv.amount} step={1}
+                      value={inv.amountPaid || ""}
+                      placeholder="0"
+                      onChange={e => updateInvoice(inv.id, {
+                        amountPaid: +e.target.value,
+                        ...(+e.target.value >= inv.amount && !inv.datePaid ? { datePaid: new Date().toISOString().slice(0,10) } : {})
+                      })}
+                      style={{ width: 90, fontFamily: "JetBrains Mono", color: paid > 0 ? P.green : P.text }} />
+                  </td>
+                  <td>
+                    <input type="date" value={inv.datePaid || ""}
+                      onChange={e => updateInvoice(inv.id, { datePaid: e.target.value })}
+                      style={{ width: 130 }} />
+                  </td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600,
+                    color: balance <= 0 ? P.textDim : balance < inv.amount * 0.5 ? P.yellow : P.red }}>
+                    {balance > 0 ? fmt(balance) : <span style={{ color: P.green }}>—</span>}
+                  </td>
+                  <td><Badge color={statusColor} text={statusLabel} /></td>
+                  <td style={{ display: "flex", gap: 6, whiteSpace: "nowrap" }}>
+                    <Btn small variant="ghost" onClick={() => printInvoice(inv, project)}>🖨 PDF</Btn>
+                    <Btn small variant="danger" onClick={() => deleteInvoice(inv.id)}>✕</Btn>
+                  </td>
+                </tr>
+              );
+            })}
+            <tr style={{ background: P.bg, borderTop: `2px solid ${P.border}` }}>
+              <td colSpan={5} style={{ fontWeight: 700, textAlign: "right", color: P.textMuted, paddingRight: 16 }}>Totals</td>
+              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{fmt(totalInvoiced)}</td>
+              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(totalPaid)}</td>
+              <td />
+              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: totalOutstanding > 0 ? P.red : P.green }}>{fmt(totalOutstanding)}</td>
               <td colSpan={2} />
             </tr>
           </tbody>
@@ -2271,6 +2321,170 @@ function FinancialsView({ project, onChange }) {
       )}
     </div>
   );
+}
+
+// ─── PROJECT STATEMENT ───────────────────────────────────────────────────────
+
+function printStatement(project) {
+  const invoices = project.invoices || [];
+  const changeOrders = project.changeOrders || [];
+
+  const auditLocked = (project.feeAuditLog || []).filter(e => e.action === "locked" && e.settyFee);
+  const auditFee = auditLocked.length > 0 ? auditLocked[auditLocked.length - 1].settyFee : 0;
+  const constructionCostSt = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const contractFee = project.lockedSettyFee || auditFee || (project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCostSt, project)) || 0;
+  const approvedCOs = changeOrders.filter(c => c.approved);
+  const coTotal = approvedCOs.reduce((a, c) => a + (c.fee || 0), 0);
+  const totalContract = contractFee + coTotal;
+
+  const totalInvoiced = invoices.reduce((a, i) => a + (i.amount || 0), 0);
+  const totalPaid     = invoices.reduce((a, i) => a + (i.amountPaid || 0), 0);
+  const totalOutstanding = totalInvoiced - totalPaid;
+  const totalBalance  = totalContract - totalInvoiced;
+
+  const statusBadge = (inv) => {
+    const paid = inv.amountPaid || 0;
+    if (paid >= inv.amount) return '<span style="background:#e6f4ea;color:#1a7a34;padding:2px 8px;border-radius:8px;font-size:8pt;font-weight:600;">PAID</span>';
+    if (paid > 0) return '<span style="background:#fff3e0;color:#b45309;padding:2px 8px;border-radius:8px;font-size:8pt;font-weight:600;">PARTIAL</span>';
+    return '<span style="background:#fde8e8;color:#c00000;padding:2px 8px;border-radius:8px;font-size:8pt;font-weight:600;">UNPAID</span>';
+  };
+
+  const invRows = invoices.map((inv, idx) => {
+    const paid = inv.amountPaid || 0;
+    const balance = inv.amount - paid;
+    return `
+      <tr style="${idx % 2 === 1 ? "background:#F8F8F8;" : ""}">
+        <td style="font-family:monospace;font-weight:600;">${inv.number || "—"}</td>
+        <td>${fmtDate(inv.date)}</td>
+        <td>${inv.milestoneName || inv.phaseName || "—"}</td>
+        <td>${inv.description || "—"}</td>
+        <td class="right">$${Math.round(inv.amount).toLocaleString()}</td>
+        <td class="right" style="color:#1a7a34;">$${Math.round(paid).toLocaleString()}</td>
+        <td class="right" style="${balance > 0 ? "color:#c00000;font-weight:600;" : "color:#1a7a34;"}">${balance > 0 ? "$" + Math.round(balance).toLocaleString() : "—"}</td>
+        <td>${inv.datePaid ? fmtDate(inv.datePaid) : "—"}</td>
+        <td>${statusBadge(inv)}</td>
+      </tr>`;
+  }).join("");
+
+  const summaryCards = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px;">
+      <div style="border:1.5px solid #1F3864;border-radius:6px;padding:12px 16px;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Contract Value</div>
+        <div style="font-size:14pt;font-weight:700;color:#1F3864;font-family:monospace;">$${Math.round(totalContract).toLocaleString()}</div>
+        ${coTotal > 0 ? `<div style="font-size:8pt;color:#44546A;">Incl. ${approvedCOs.length} CO${approvedCOs.length !== 1 ? "s" : ""}: $${Math.round(coTotal).toLocaleString()}</div>` : ""}
+      </div>
+      <div style="border:1.5px solid #2F5496;border-radius:6px;padding:12px 16px;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Total Invoiced</div>
+        <div style="font-size:14pt;font-weight:700;color:#2F5496;font-family:monospace;">$${Math.round(totalInvoiced).toLocaleString()}</div>
+        <div style="font-size:8pt;color:#44546A;">${invoices.length} invoice${invoices.length !== 1 ? "s" : ""}</div>
+      </div>
+      <div style="border:1.5px solid #1a7a34;border-radius:6px;padding:12px 16px;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Total Received</div>
+        <div style="font-size:14pt;font-weight:700;color:#1a7a34;font-family:monospace;">$${Math.round(totalPaid).toLocaleString()}</div>
+        <div style="font-size:8pt;color:#44546A;">${Math.round(totalInvoiced > 0 ? totalPaid/totalInvoiced*100 : 0)}% of invoiced</div>
+      </div>
+      <div style="border:1.5px solid #c00000;border-radius:6px;padding:12px 16px;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Outstanding</div>
+        <div style="font-size:14pt;font-weight:700;color:${totalOutstanding > 0 ? "#c00000" : "#1a7a34"};font-family:monospace;">$${Math.round(totalOutstanding).toLocaleString()}</div>
+        <div style="font-size:8pt;color:#44546A;">Unbilled: $${Math.round(totalBalance).toLocaleString()}</div>
+      </div>
+    </div>`;
+
+  const html = `
+    <div class="doc-header">
+      <div>
+        <div class="logo-text">SETTY</div>
+        <div class="logo-sub">& ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:10px;font-size:8.5pt;color:#44546A;line-height:1.6;">
+          Fairfax, VA (HQ) · Washington DC · New York · Baltimore<br>
+          Atlanta · Philadelphia · Los Angeles · Tampa · India
+        </div>
+      </div>
+      <div class="doc-type-badge">
+        <div class="doc-type">STATEMENT</div>
+        <div class="doc-number">${project.projectNumber || project.name || "Project"}</div>
+        <div style="font-size:9pt;color:#44546A;margin-top:6px;">As of: ${fmtDate(new Date().toISOString().slice(0,10))}</div>
+      </div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-block">
+        <div class="meta-label">Project</div>
+        <div class="meta-value">${project.name || "—"}</div>
+        ${project.projectNumber ? `<div style="font-size:9pt;color:#44546A;">${project.projectNumber}</div>` : ""}
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Client / Prime</div>
+        <div class="meta-value">${project.prime || "—"}</div>
+        ${project.primeProjectNumber ? `<div style="font-size:9pt;color:#44546A;">Prime #: ${project.primeProjectNumber}</div>` : ""}
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Contract Number</div>
+        <div class="meta-value">${project.contractNumber || "—"}</div>
+        ${project.contractDate ? `<div style="font-size:9pt;color:#44546A;">Dated: ${fmtDate(project.contractDate)}</div>` : ""}
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Fee Type</div>
+        <div class="meta-value">${project.feeType || "Lump Sum"}</div>
+      </div>
+    </div>
+
+    ${summaryCards}
+
+    <div class="section-heading">Invoice Register</div>
+    <table class="line-items">
+      <thead>
+        <tr>
+          <th>Invoice #</th>
+          <th>Invoice Date</th>
+          <th>Milestone / Phase</th>
+          <th>Description</th>
+          <th class="right">Amount</th>
+          <th class="right">Paid</th>
+          <th class="right">Balance</th>
+          <th>Date Paid</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>${invRows.length ? invRows : `<tr><td colspan="9" style="text-align:center;color:#44546A;font-style:italic;padding:16px;">No invoices recorded</td></tr>`}</tbody>
+      <tfoot>
+        <tr>
+          <td colspan="4" style="text-align:right;font-weight:700;">Totals</td>
+          <td class="right">$${Math.round(totalInvoiced).toLocaleString()}</td>
+          <td class="right" style="color:#1a7a34;">$${Math.round(totalPaid).toLocaleString()}</td>
+          <td class="right" style="color:${totalOutstanding > 0 ? "#c00000" : "#1a7a34"};">$${Math.round(totalOutstanding).toLocaleString()}</td>
+          <td colspan="2"></td>
+        </tr>
+      </tfoot>
+    </table>
+
+    ${approvedCOs.length > 0 ? `
+    <div class="section-heading">Approved Change Orders</div>
+    <table class="line-items">
+      <thead><tr><th>#</th><th>Name</th><th>Date</th><th>Scope</th><th class="right">Fee</th></tr></thead>
+      <tbody>
+        ${approvedCOs.map((co, i) => `
+          <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
+            <td style="font-family:monospace;">${co.number}</td>
+            <td>${co.name || "—"}</td>
+            <td>${fmtDate(co.date)}</td>
+            <td>${co.scope || "—"}</td>
+            <td class="right">$${Math.round(co.fee || 0).toLocaleString()}</td>
+          </tr>`).join("")}
+      </tbody>
+      <tfoot>
+        <tr><td colspan="4" style="text-align:right;font-weight:700;">CO Total</td>
+        <td class="right">$${Math.round(coTotal).toLocaleString()}</td></tr>
+      </tfoot>
+    </table>` : ""}
+
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, LTD, PC</span>
+      <span>Statement · ${project.projectNumber || project.name || "Project"}</span>
+      <span>As of ${fmtDate(new Date().toISOString().slice(0,10))}</span>
+    </div>
+  `;
+  printDocument(html, "Statement — " + (project.name || "Project"));
 }
 
 // ─── CHANGE ORDERS ────────────────────────────────────────────────────────────
