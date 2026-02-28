@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 00:05 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-28 00:15 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -3470,6 +3470,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
+  const [filterContract, setFilterContract] = useState("All");
   const [appStatus, setAppStatus] = useState("loading"); // loading | idle | saving | saved | error
   const [lastSaved, setLastSaved] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -3570,9 +3571,10 @@ function App() {
       if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.projectNumber || "").toLowerCase().includes(search.toLowerCase())) return false;
       if (filterPM !== "All" && p.projectManager !== filterPM) return false;
       if (filterStatus !== "All" && p.status !== filterStatus) return false;
+      if (filterContract !== "All" && p.contractStatus !== filterContract) return false;
       return true;
     });
-  }, [projects, view, search, filterPM, filterStatus]);
+  }, [projects, view, search, filterPM, filterStatus, filterContract]);
 
   const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
 
@@ -3712,6 +3714,12 @@ function App() {
             <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
               {["All", ...PIPELINE_STATUSES, ...PROJECT_STATUSES].map(s => <option key={s}>{s}</option>)}
             </select>
+            {view === "list" && (
+              <select value={filterContract} onChange={e => setFilterContract(e.target.value)}>
+                <option value="All">All Contract Statuses</option>
+                {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            )}
           </div>
           {displayedProjects.length === 0 ? (
             <div style={{ color: P.textDim, textAlign: "center", padding: 60 }}>
