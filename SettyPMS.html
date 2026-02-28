@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 01:51 -->
+<!-- Setty PMS | Built: 2026-02-28 01:57 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -4032,39 +4032,42 @@ function ProjectionsView({ project }) {
   const phaseSchedule = {};
   (project.phases || []).forEach(ph => { if (ph.code) phaseSchedule[ph.code] = ph; });
 
+  // Distribute expected fees proportionally across phase duration months
   rows.forEach(r => {
     const ph = phaseSchedule[r.phase];
     const sd = ph?.startDate ? new Date(ph.startDate + "T00:00:00") : null;
     const ed = ph?.endDate   ? new Date(ph.endDate   + "T00:00:00") : null;
 
     if (sd && ed && ed > sd) {
-      // Count how many months the phase spans (partial months count as full for distribution)
+      const totalDays = (ed - sd) / 86400000 + 1;
       const startYM = sd.getFullYear() * 12 + sd.getMonth();
       const endYM   = ed.getFullYear() * 12 + ed.getMonth();
-      const numMonths = endYM - startYM + 1;
-
-      // Total working days in phase for weighted distribution
-      // Simple approach: distribute by actual calendar days per month
-      const totalDays = (ed - sd) / 86400000 + 1;
       for (let ym = startYM; ym <= endYM; ym++) {
         const yr  = Math.floor(ym / 12);
         const mo  = ym % 12;
         const key = `${yr}-${String(mo + 1).padStart(2, "0")}`;
-
-        // Days of this phase that fall within this calendar month
         const mStart = new Date(yr, mo, 1);
-        const mEnd   = new Date(yr, mo + 1, 0); // last day of month
+        const mEnd   = new Date(yr, mo + 1, 0);
         const overlapStart = sd > mStart ? sd : mStart;
         const overlapEnd   = ed < mEnd   ? ed : mEnd;
         const overlapDays  = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
         const fraction = overlapDays / totalDays;
-
-        addToMonth(key, r.fee * fraction, r.invoiced * fraction, r.name);
+        // Only distribute expected fee here — invoiced amounts are placed by actual invoice date below
+        addToMonth(key, r.fee * fraction, 0, r.name);
       }
     } else if (r.dueDate) {
-      // No phase schedule — fall back to due date
-      addToMonth(r.dueDate.slice(0, 7), r.fee, r.invoiced, r.name);
+      addToMonth(r.dueDate.slice(0, 7), r.fee, 0, r.name);
     }
+  });
+
+  // Place actual invoiced amounts in the month the invoice was issued
+  (project.invoices || []).forEach(inv => {
+    if (!inv.date || !inv.amount) return;
+    const key = inv.date.slice(0, 7);
+    if (!monthlyMap[key]) monthlyMap[key] = { month: key, fee: 0, invoiced: 0, milestones: [] };
+    monthlyMap[key].invoiced += inv.amount;
+    const label = inv.milestoneName || inv.phaseName;
+    if (label && !monthlyMap[key].milestones.includes(label)) monthlyMap[key].milestones.push(label);
   });
 
   const monthlyCashFlow = Object.values(monthlyMap).sort((a, b) => a.month > b.month ? 1 : -1);
