@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 14:36 -->
+<!-- Setty PMS | Built: 2026-02-28 14:54 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -708,6 +708,29 @@ function Modal({ title, onClose, children, wide }) {
   );
 }
 
+
+// ─── OUTLOOK DRAFT EMAIL ──────────────────────────────────────────────────────
+
+async function createOutlookDraft({ subject, bodyHtml, bodyText }) {
+  const token = await getToken();
+  const body = {
+    subject,
+    body: { contentType: "HTML", content: bodyHtml || bodyText || "" },
+    toRecipients: [],
+  };
+  const res = await fetch("https://graph.microsoft.com/v1.0/me/messages", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || "Failed to create draft");
+  }
+  const msg = await res.json();
+  return msg;
+}
+
 // ─── FEE CALCULATOR ──────────────────────────────────────────────────────────
 
 
@@ -1294,10 +1317,11 @@ function ScheduleView({ project, onChange }) {
   const milestones = project.milestones || [];
   const billablePhases = phases.filter(p => p.billable && p.fee > 0);
 
-  // Per-milestone calendar event IDs — stored in milestone.calendarEventId (OneDrive), not localStorage
-  const [calState, setCalState] = useState({}); // { [milestoneId]: "syncing"|"synced"|"error"|"stale" }
+  const [calState, setCalState] = useState({});
   const [syncMsg, setSyncMsg] = useState("");
   const [syncingAll, setSyncingAll] = useState(false);
+  const [emailStatus, setEmailStatus] = useState("idle"); // idle | sending | done | error
+  const [emailMsg, setEmailMsg] = useState("");
 
   // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
@@ -1421,6 +1445,95 @@ function ScheduleView({ project, onChange }) {
   const syncableCount = milestones.filter(m => m.dueDate).length;
   const syncedCount = (project.milestones || []).filter(m => m.calendarEventId && calState[m.id] !== "stale" && calState[m.id] !== "error").length;
 
+  async function emailSchedule() {
+    setEmailStatus("sending");
+    setEmailMsg("");
+    const sorted = [...milestones].sort((a, b) => {
+      if (!a.dueDate && !b.dueDate) return 0;
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      return a.dueDate > b.dueDate ? 1 : -1;
+    });
+
+    const phaseRows = billablePhases.map(ph => {
+      const pct = getPhasePctFromMilestones(ph, milestones);
+      return `<tr>
+        <td style="padding:8px 12px;font-weight:500;">${ph.name}</td>
+        <td style="padding:8px 12px;">${ph.startDate ? fmtDate(ph.startDate) : "—"}</td>
+        <td style="padding:8px 12px;">${ph.endDate ? fmtDate(ph.endDate) : "—"}</td>
+        <td style="padding:8px 12px;">${pct}%</td>
+      </tr>`;
+    }).join("");
+
+    const msRows = sorted.map(m => {
+      const statusColor = m.status === "Completed" ? "#16a34a" : m.status === "In Progress" ? "#2563eb" : "#6b7280";
+      return `<tr>
+        <td style="padding:8px 12px;">${m.name}</td>
+        <td style="padding:8px 12px;">${m.dueDate ? fmtDate(m.dueDate) : "—"}</td>
+        <td style="padding:8px 12px;"><span style="color:${statusColor};font-weight:600;">${m.status || "Not Started"}</span></td>
+        <td style="padding:8px 12px;">${m.pctComplete || 0}%</td>
+        <td style="padding:8px 12px;color:#6b7280;font-size:12px;">${m.notes || ""}</td>
+      </tr>`;
+    }).join("");
+
+    const bodyHtml = `
+<div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:800px;">
+  <div style="border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;">
+    <div>
+      <div style="font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1;">SETTY</div>
+      <div style="font-size:8px;color:#44546A;letter-spacing:1px;">&amp; ASSOCIATES, LTD, PC</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:16px;font-weight:700;color:#2F5496;">PROJECT SCHEDULE</div>
+      <div style="font-size:11px;color:#44546A;">${project.name || ""}${project.projectNumber ? " · " + project.projectNumber : ""}</div>
+      <div style="font-size:11px;color:#44546A;">${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div>
+    </div>
+  </div>
+
+  ${billablePhases.length > 0 ? `
+  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Phase Summary</div>
+  <table style="border-collapse:collapse;width:100%;margin-bottom:24px;font-size:13px;">
+    <thead><tr style="background:#F1F5F9;">
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Phase</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Start</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">End</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">% Complete</th>
+    </tr></thead>
+    <tbody>${phaseRows}</tbody>
+  </table>` : ""}
+
+  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Milestones &amp; Deliverables</div>
+  ${sorted.length === 0 ? '<p style="color:#6b7280;">No milestones scheduled.</p>' : `
+  <table style="border-collapse:collapse;width:100%;font-size:13px;">
+    <thead><tr style="background:#F1F5F9;">
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Milestone</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Due Date</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Status</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">% Complete</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Notes</th>
+    </tr></thead>
+    <tbody>${msRows}</tbody>
+  </table>`}
+
+  <div style="margin-top:28px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A;">
+    SETTY &amp; Associates, Ltd, PC &nbsp;·&nbsp; ${project.name || ""} &nbsp;·&nbsp; Schedule as of ${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}
+  </div>
+</div>`;
+
+    try {
+      await createOutlookDraft({
+        subject: `Project Schedule — ${project.name || "Project"}${project.projectNumber ? " (" + project.projectNumber + ")" : ""}`,
+        bodyHtml,
+      });
+      setEmailStatus("done");
+      setEmailMsg("✓ Draft created in your Outlook Drafts folder");
+      setTimeout(() => { setEmailStatus("idle"); setEmailMsg(""); }, 5000);
+    } catch(e) {
+      setEmailStatus("error");
+      setEmailMsg("✗ " + e.message);
+    }
+  }
+
   function CalIcon({ m }) {
     const st = calState[m.id];
     const has = !!calMap[m.id];
@@ -1524,6 +1637,10 @@ function ScheduleView({ project, onChange }) {
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <Btn small onClick={addNonBillable} variant="ghost">+ Add Non-Billable</Btn>
+          <Btn small variant="ghost" disabled={emailStatus === "sending"}
+            onClick={emailSchedule}>
+            {emailStatus === "sending" ? "⏳ Drafting…" : "✉ Email Schedule"}
+          </Btn>
           {syncableCount > 0 && (
             <Btn small variant="primary" disabled={syncingAll} onClick={syncAll}>
               {syncingAll ? syncMsg : "📅 Sync All to NYC Calendar"}
@@ -1531,6 +1648,16 @@ function ScheduleView({ project, onChange }) {
           )}
         </div>
       </div>
+      {emailMsg && (
+        <div style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
+          background: emailStatus === "done" ? P.greenDim : P.redDim,
+          color: emailStatus === "done" ? P.green : P.red,
+          border: "1px solid " + (emailStatus === "done" ? P.green : P.red),
+          display: "flex", justifyContent: "space-between" }}>
+          <span>{emailMsg}</span>
+          <button onClick={() => setEmailMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+        </div>
+      )}
 
       {/* Sync status message */}
       {syncMsg && !syncingAll && (
@@ -2274,6 +2401,8 @@ function printChangeOrder(co, project, allCOs) {
 
 function FinancialsView({ project, onChange }) {
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [emailStatus, setEmailStatus] = useState("idle");
+  const [emailMsg, setEmailMsg] = useState("");
 
   const phases = project.phases || [];
   const billablePhases = phases.filter(p => p.billable && p.fee > 0);
@@ -2308,6 +2437,94 @@ function FinancialsView({ project, onChange }) {
 
   const totalPaid        = invoices.reduce((a, inv) => a + (inv.amountPaid || 0), 0);
   const totalOutstanding = invoices.reduce((a, inv) => a + Math.max(0, inv.amount - (inv.amountPaid || 0)), 0);
+
+  async function emailInvoices() {
+    setEmailStatus("sending"); setEmailMsg("");
+    const invRows = invoices.map(inv => {
+      const paid = inv.amountPaid || 0;
+      const balance = inv.amount - paid;
+      const statusLabel = paid >= inv.amount ? "✓ Paid" : paid > 0 ? "Partial" : "Unpaid";
+      const statusColor = paid >= inv.amount ? "#16a34a" : paid > 0 ? "#ca8a04" : "#dc2626";
+      return `<tr>
+        <td style="padding:8px 12px;font-weight:600;font-family:monospace;">${inv.number}</td>
+        <td style="padding:8px 12px;">${inv.date ? fmtDate(inv.date) : "—"}</td>
+        <td style="padding:8px 12px;">${inv.milestoneName || inv.phaseName || "—"}</td>
+        <td style="padding:8px 12px;text-align:right;font-family:monospace;">${fmt(inv.amount)}</td>
+        <td style="padding:8px 12px;text-align:right;font-family:monospace;">${fmt(paid)}</td>
+        <td style="padding:8px 12px;text-align:right;font-family:monospace;color:${balance > 0 ? "#dc2626" : "#16a34a"};">${fmt(balance)}</td>
+        <td style="padding:8px 12px;"><span style="color:${statusColor};font-weight:600;">${statusLabel}</span></td>
+      </tr>`;
+    }).join("");
+
+    const bodyHtml = `
+<div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:800px;">
+  <div style="border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;">
+    <div>
+      <div style="font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1;">SETTY</div>
+      <div style="font-size:8px;color:#44546A;letter-spacing:1px;">&amp; ASSOCIATES, LTD, PC</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:16px;font-weight:700;color:#2F5496;">INVOICE STATEMENT</div>
+      <div style="font-size:11px;color:#44546A;">${project.name || ""}${project.projectNumber ? " · " + project.projectNumber : ""}</div>
+      <div style="font-size:11px;color:#44546A;">${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;">
+    <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:6px;padding:12px 16px;">
+      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;">Total Contract</div>
+      <div style="font-size:18px;font-weight:700;font-family:monospace;color:#1F3864;">${fmt(totalContract)}</div>
+    </div>
+    <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:6px;padding:12px 16px;">
+      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;">Total Invoiced</div>
+      <div style="font-size:18px;font-weight:700;font-family:monospace;color:#1F3864;">${fmt(totalInvoiced)}</div>
+    </div>
+    <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:6px;padding:12px 16px;">
+      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;">Outstanding</div>
+      <div style="font-size:18px;font-weight:700;font-family:monospace;color:${totalOutstanding > 0 ? "#dc2626" : "#16a34a"};">${fmt(totalOutstanding)}</div>
+    </div>
+  </div>
+
+  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Invoice Log</div>
+  ${invoices.length === 0 ? '<p style="color:#6b7280;">No invoices on record.</p>' : `
+  <table style="border-collapse:collapse;width:100%;font-size:13px;">
+    <thead><tr style="background:#F1F5F9;">
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Invoice #</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Date</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Milestone</th>
+      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Invoiced</th>
+      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Paid</th>
+      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Balance</th>
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Status</th>
+    </tr></thead>
+    <tbody>${invRows}</tbody>
+    <tfoot><tr style="background:#F1F5F9;font-weight:700;">
+      <td colspan="3" style="padding:8px 12px;">Totals</td>
+      <td style="padding:8px 12px;text-align:right;font-family:monospace;">${fmt(totalInvoiced)}</td>
+      <td style="padding:8px 12px;text-align:right;font-family:monospace;">${fmt(totalPaid)}</td>
+      <td style="padding:8px 12px;text-align:right;font-family:monospace;color:${totalOutstanding > 0 ? "#dc2626" : "#16a34a"};">${fmt(totalOutstanding)}</td>
+      <td></td>
+    </tr></tfoot>
+  </table>`}
+
+  <div style="margin-top:28px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A;">
+    SETTY &amp; Associates, Ltd, PC &nbsp;·&nbsp; ${project.name || ""} &nbsp;·&nbsp; Statement as of ${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}
+  </div>
+</div>`;
+
+    try {
+      await createOutlookDraft({
+        subject: `Invoice Statement — ${project.name || "Project"}${project.projectNumber ? " (" + project.projectNumber + ")" : ""}`,
+        bodyHtml,
+      });
+      setEmailStatus("done");
+      setEmailMsg("✓ Draft created in your Outlook Drafts folder");
+      setTimeout(() => { setEmailStatus("idle"); setEmailMsg(""); }, 5000);
+    } catch(e) {
+      setEmailStatus("error");
+      setEmailMsg("✗ " + e.message);
+    }
+  }
 
   return (
     <div>
@@ -2369,12 +2586,23 @@ function FinancialsView({ project, onChange }) {
       {/* Invoice Log */}
       <SectionTitle action={
         <div style={{ display: "flex", gap: 8 }}>
+          {invoices.length > 0 && <Btn small variant="ghost" disabled={emailStatus === "sending"} onClick={emailInvoices}>{emailStatus === "sending" ? "⏳ Drafting…" : "✉ Email Statement"}</Btn>}
           {invoices.length > 0 && <Btn small variant="ghost" onClick={() => printStatement(project)}>🖨 Statement</Btn>}
           <Btn small onClick={() => setShowInvoiceModal(true)}>+ Log Invoice</Btn>
         </div>
       }>
         Invoice Log
       </SectionTitle>
+      {emailMsg && (
+        <div style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
+          background: emailStatus === "done" ? P.greenDim : P.redDim,
+          color: emailStatus === "done" ? P.green : P.red,
+          border: "1px solid " + (emailStatus === "done" ? P.green : P.red),
+          display: "flex", justifyContent: "space-between" }}>
+          <span>{emailMsg}</span>
+          <button onClick={() => setEmailMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+        </div>
+      )}
       {invoices.length > 0 && (
         <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>
           Enter amount paid and date received per invoice to track payment status.
@@ -2634,6 +2862,13 @@ function printStatement(project) {
 
 function ChangeOrdersView({ project, onChange }) {
   const cos = project.changeOrders || [];
+  const [emailingId, setEmailingId] = React.useState(null); // coId currently drafting
+  const [emailMsgs, setEmailMsgs] = React.useState({}); // { [coId]: { status, msg } }
+
+  function setCoMsg(id, status, msg) {
+    setEmailMsgs(prev => ({ ...prev, [id]: { status, msg } }));
+    if (status === "done") setTimeout(() => setEmailMsgs(prev => { const n = {...prev}; delete n[id]; return n; }), 5000);
+  }
 
   function addCO() {
     onChange({
@@ -2683,6 +2918,97 @@ function ChangeOrdersView({ project, onChange }) {
 
   const approvedTotal = cos.filter(c => c.approved).reduce((a, c) => a + c.fee, 0);
 
+  async function emailCO(co) {
+    setEmailingId(co.id);
+    setCoMsg(co.id, "sending", "");
+    const statusLabel = co.approved ? "✓ Approved" : co.sentToClient ? "Sent to Client — Pending Approval" : "Pending";
+    const statusColor = co.approved ? "#16a34a" : co.sentToClient ? "#2563eb" : "#ca8a04";
+
+    const bodyHtml = `
+<div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px;">
+  <div style="border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;">
+    <div>
+      <div style="font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1;">SETTY</div>
+      <div style="font-size:8px;color:#44546A;letter-spacing:1px;">&amp; ASSOCIATES, LTD, PC</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:16px;font-weight:700;color:#2F5496;">CHANGE ORDER</div>
+      <div style="font-size:13px;font-weight:700;color:#1F3864;">${co.number}</div>
+      <div style="font-size:11px;color:#44546A;">${co.date ? fmtDate(co.date) : new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid #CBD5E1;border-radius:4px;margin-bottom:24px;overflow:hidden;">
+    <div style="padding:12px 16px;border-right:1px solid #CBD5E1;">
+      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Project</div>
+      <div style="font-size:13px;font-weight:600;color:#1F3864;">${project.name || "—"}</div>
+      ${project.projectNumber ? '<div style="font-size:11px;color:#44546A;">' + project.projectNumber + '</div>' : ""}
+    </div>
+    <div style="padding:12px 16px;">
+      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Client / Prime</div>
+      <div style="font-size:13px;font-weight:600;color:#1F3864;">${project.prime || project.clientName || "—"}</div>
+      ${project.primeProjectNumber ? '<div style="font-size:11px;color:#44546A;">Prime #: ' + project.primeProjectNumber + '</div>' : ""}
+    </div>
+  </div>
+
+  <div style="margin-bottom:20px;">
+    <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:12px;">${co.number} — ${co.name || "Change Order"}</div>
+    <table style="border-collapse:collapse;width:100%;font-size:13px;">
+      <tbody>
+        <tr style="border-bottom:1px solid #F1F5F9;">
+          <td style="padding:8px 12px;color:#44546A;width:160px;font-weight:600;">Description</td>
+          <td style="padding:8px 12px;">${co.name || "—"}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #F1F5F9;">
+          <td style="padding:8px 12px;color:#44546A;font-weight:600;">Scope of Change</td>
+          <td style="padding:8px 12px;">${co.scope || "—"}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #F1F5F9;">
+          <td style="padding:8px 12px;color:#44546A;font-weight:600;">Additional Fee</td>
+          <td style="padding:8px 12px;font-weight:700;font-size:15px;color:#1F3864;font-family:monospace;">${fmt(co.fee || 0)}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #F1F5F9;">
+          <td style="padding:8px 12px;color:#44546A;font-weight:600;">Date</td>
+          <td style="padding:8px 12px;">${co.date ? fmtDate(co.date) : "—"}</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px;color:#44546A;font-weight:600;">Status</td>
+          <td style="padding:8px 12px;"><span style="color:${statusColor};font-weight:700;">${statusLabel}</span></td>
+        </tr>
+        ${co.notes ? '<tr><td style="padding:8px 12px;color:#44546A;font-weight:600;">Notes</td><td style="padding:8px 12px;">' + co.notes + '</td></tr>' : ""}
+      </tbody>
+    </table>
+  </div>
+
+  <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:6px;padding:14px 16px;margin-bottom:24px;">
+    <div style="font-size:11px;color:#44546A;margin-bottom:6px;">Please review and sign below to indicate your approval of this change order.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:16px;">
+      <div>
+        <div style="border-top:1px solid #94A3B8;margin-top:32px;padding-top:6px;font-size:11px;color:#44546A;">Authorized Signature &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Date</div>
+      </div>
+      <div>
+        <div style="border-top:1px solid #94A3B8;margin-top:32px;padding-top:6px;font-size:11px;color:#44546A;">Printed Name &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Title</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:28px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A;">
+    SETTY &amp; Associates, Ltd, PC &nbsp;·&nbsp; ${project.name || ""} &nbsp;·&nbsp; ${co.number}
+  </div>
+</div>`;
+
+    try {
+      await createOutlookDraft({
+        subject: `Change Order ${co.number}${co.name ? " — " + co.name : ""} · ${project.name || "Project"}${project.projectNumber ? " (" + project.projectNumber + ")" : ""}`,
+        bodyHtml,
+      });
+      setCoMsg(co.id, "done", "✓ Draft in your Outlook Drafts folder");
+    } catch(e) {
+      setCoMsg(co.id, "error", "✗ " + e.message);
+    }
+    setEmailingId(null);
+  }
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -2704,10 +3030,13 @@ function ChangeOrdersView({ project, onChange }) {
       {cos.length > 0 && (
         <>
           <table>
-            <thead><tr><th>#</th><th>Name</th><th>Scope</th><th>Fee</th><th>Sent?</th><th>Approved?</th><th>Date</th><th>Notes</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Name</th><th>Scope</th><th>Fee</th><th>Sent?</th><th>Approved?</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
             <tbody>
-              {cos.map(co => (
-                <tr key={co.id}>
+              {cos.map(co => {
+                const em = emailMsgs[co.id];
+                return (
+                <React.Fragment key={co.id}>
+                <tr>
                   <td style={{ fontFamily: "JetBrains Mono" }}>{co.number}</td>
                   <td><input value={co.name} onChange={e => updateCO(co.id, { name: e.target.value })} style={{ width: 130 }} /></td>
                   <td><input value={co.scope} onChange={e => updateCO(co.id, { scope: e.target.value })} style={{ width: 150 }} /></td>
@@ -2722,12 +3051,26 @@ function ChangeOrdersView({ project, onChange }) {
                   </td>
                   <td><input type="date" value={co.date} onChange={e => updateCO(co.id, { date: e.target.value })} /></td>
                   <td><input value={co.notes || ""} onChange={e => updateCO(co.id, { notes: e.target.value })} style={{ width: 130 }} /></td>
-                  <td style={{ display: "flex", gap: 6 }}>
-                    <Btn small variant="ghost" onClick={() => printChangeOrder(co, project, cos)}>🖨 PDF</Btn>
-                    <Btn small variant="danger" onClick={() => onChange({ ...project, changeOrders: cos.filter(c => c.id !== co.id) })}>✕</Btn>
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Btn small variant="ghost" onClick={() => printChangeOrder(co, project, cos)}>🖨 PDF</Btn>
+                      <Btn small variant="ghost" disabled={emailingId === co.id} onClick={() => emailCO(co)}>
+                        {emailingId === co.id ? "⏳" : "✉ Send"}
+                      </Btn>
+                      <Btn small variant="danger" onClick={() => onChange({ ...project, changeOrders: cos.filter(c => c.id !== co.id) })}>✕</Btn>
+                    </div>
                   </td>
                 </tr>
-              ))}
+                {em && (
+                  <tr>
+                    <td colSpan={9} style={{ padding: "4px 12px" }}>
+                      <span style={{ fontSize: 11, color: em.status === "done" ? P.green : P.red, fontWeight: 500 }}>{em.msg}</span>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
           <div style={{ marginTop: 12, fontSize: 12, color: P.textDim }}>
