@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 05:14 -->
+<!-- Setty PMS | Built: 2026-02-28 05:37 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -257,6 +257,7 @@ function newProject(overrides = {}) {
     isTaskOrder: false,
     taskOrderTermContractId: "",
     taskOrderNumber: "",
+    scopeContent: "",
     ...overrides,
   };
 }
@@ -3040,7 +3041,7 @@ function TeamView({ project, onChange }) {
         Assign disciplines to generate a weekly Work Breakdown Structure. Staff can be assigned to multiple disciplines.
       </div>
       <table style={{ marginBottom: 24 }}>
-        <thead><tr><th>Name</th><th>Role / Title</th><th>Disciplines</th><th>Billing Rate ($/hr)</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Role / Title</th><th>QA/QC</th><th>Disciplines</th><th>Billing Rate ($/hr)</th><th></th></tr></thead>
         <tbody>
           {team.map(m => {
             const isPM = m.role === "Project Manager" || m.role === "Deputy Project Manager";
@@ -3054,9 +3055,19 @@ function TeamView({ project, onChange }) {
                     : <input value={m.role} onChange={e => updateMember(m.id, { role: e.target.value })} style={{ width: 140 }} placeholder="e.g. Engineer…" />
                   }
                 </td>
+                <td style={{ textAlign: "center" }}>
+                  {!isPM && (
+                    <label style={{ cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                      <input type="checkbox" checked={m.isQAQC || false}
+                        onChange={e => updateMember(m.id, { isQAQC: e.target.checked })}
+                        style={{ width: 15, height: 15, cursor: "pointer", accentColor: P.purple }} />
+                      {m.isQAQC && <span style={{ fontSize: 10, color: P.purple, fontWeight: 700 }}>QA/QC</span>}
+                    </label>
+                  )}
+                </td>
                 <td>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {WBS_DISCIPLINES.map(d => {
+                    {!m.isQAQC ? WBS_DISCIPLINES.map(d => {
                       const on = memberDiscs.includes(d);
                       const dc = DISC_COLORS[d];
                       return (
@@ -3068,7 +3079,7 @@ function TeamView({ project, onChange }) {
                           {d}
                         </button>
                       );
-                    })}
+                    }) : <span style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Not on WBS</span>}
                   </div>
                 </td>
                 <td><input type="number" value={m.rate} onChange={e => updateMember(m.id, { rate: +e.target.value })} style={{ width: 100 }} /></td>
@@ -5262,7 +5273,7 @@ function ProjectionsView({ project }) {
 
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Fee Calculator", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Calendar"];
+const TABS = ["Overview", "Fee Calculator", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Scope", "Calendar"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
   const [tab, setTab] = useState("Overview");
@@ -5445,6 +5456,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} />}
+        {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} />}
       </Card>
     </div>
@@ -5823,6 +5835,249 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
   );
 }
 
+
+// ─── SCOPE OF SERVICES VIEW ───────────────────────────────────────────────────
+
+function printScopeOfServices(project) {
+  const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
+  const win = window.open("", "_blank", "width=900,height=700");
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Scope of Services — ${project.name || "Project"}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 10.5pt;
+      color: #1a1a1a;
+      background: #fff;
+    }
+    .page {
+      width: 8.5in;
+      min-height: 11in;
+      margin: 0 auto;
+      padding: 1in;
+      background: #fff;
+    }
+    .doc-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 3px solid #1F3864;
+      padding-bottom: 16px;
+      margin-bottom: 28px;
+    }
+    .logo-text { font-size: 28pt; font-weight: 900; color: #C00000; letter-spacing: 2px; line-height: 1; }
+    .logo-sub { font-size: 7.5pt; color: #44546A; margin-top: 4px; letter-spacing: 1px; }
+    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #CBD5E1; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
+    .meta-block { padding: 12px 16px; }
+    .meta-block:first-child { border-right: 1px solid #CBD5E1; }
+    .meta-label { font-size: 7.5pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+    .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
+    .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+    /* Rich text content styles */
+    .scope-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
+    .scope-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
+    .scope-body h3 { font-size: 10.5pt; font-weight: 700; color: #44546A; margin: 14px 0 6px; }
+    .scope-body p { margin-bottom: 9px; line-height: 1.65; }
+    .scope-body ul { margin: 6px 0 10px 22px; }
+    .scope-body ol { margin: 6px 0 10px 22px; }
+    .scope-body li { margin-bottom: 4px; line-height: 1.6; }
+    .scope-body strong { font-weight: 700; }
+    .scope-body em { font-style: italic; }
+    .scope-body u { text-decoration: underline; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
+    @media print {
+      body { background: #fff; }
+      .print-btn { display: none; }
+      .page { padding: .75in; }
+    }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+  <div class="page">
+    <div class="doc-header">
+      <div>
+        <div class="logo-text">SETTY</div>
+        <div class="logo-sub">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:8px;font-size:8pt;color:#44546A;line-height:1.6;">
+          Fairfax, VA (HQ) · Washington DC · New York · Baltimore<br>
+          Atlanta · Philadelphia · Los Angeles · Tampa · India
+        </div>
+      </div>
+      <div>
+        <div class="doc-title">SCOPE OF SERVICES</div>
+        <div class="doc-sub">
+          ${project.name || "Project"}<br>
+          ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+        </div>
+      </div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-block">
+        <div class="meta-label">Project</div>
+        <div class="meta-value">${project.name || "—"}</div>
+        ${(project.projectAddress || project.projectCity) ? \`<div class="meta-sub">\${project.projectAddress || ""}\${project.projectAddress && project.projectCity ? "<br>" : ""}\${[project.projectCity, project.projectState].filter(Boolean).join(", ")}</div>\` : ""}
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Client / Prime</div>
+        <div class="meta-value">${project.prime || project.clientName || "—"}</div>
+        ${project.primeProjectNumber ? \`<div class="meta-sub">Prime #: \${project.primeProjectNumber}</div>\` : ""}
+        ${project.projectManager ? \`<div class="meta-sub">PM: \${project.projectManager}</div>\` : ""}
+      </div>
+    </div>
+
+    <div class="scope-body">${scopeHtml}</div>
+
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, Ltd, PC · Scope of Services</span>
+      <span>${project.name || ""} · ${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
+    </div>
+  </div>
+</body>
+</html>`);
+  win.document.close();
+}
+
+function ScopeView({ project, onChange }) {
+  const editorRef = React.useRef(null);
+  const [wordCount, setWordCount] = React.useRef ? React.useRef(0) : { current: 0 };
+  const [wc, setWc] = React.useState(0);
+
+  // Load saved content into editor on mount
+  React.useEffect(() => {
+    if (editorRef.current && project.scopeContent !== undefined) {
+      if (editorRef.current.innerHTML !== project.scopeContent) {
+        editorRef.current.innerHTML = project.scopeContent || "";
+      }
+      updateWordCount();
+    }
+  }, []);
+
+  function exec(cmd, val = null) {
+    document.execCommand(cmd, false, val);
+    editorRef.current?.focus();
+    handleInput();
+  }
+
+  function handleInput() {
+    const html = editorRef.current?.innerHTML || "";
+    onChange({ ...project, scopeContent: html });
+    // word count from text content
+    const text = editorRef.current?.innerText || "";
+    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
+  }
+
+  function updateWordCount() {
+    const text = editorRef.current?.innerText || "";
+    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
+  }
+
+  const toolbarBtn = (label, cmd, val, title) => (
+    <button key={label} onMouseDown={e => { e.preventDefault(); exec(cmd, val); }}
+      title={title || label}
+      style={{ background: "none", border: `1px solid ${P.border}`, color: P.text, borderRadius: 4,
+        padding: "3px 8px", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+        transition: "all .1s", minWidth: 28, textAlign: "center" }}
+      onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+      onMouseOut={e => e.currentTarget.style.background = "none"}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ padding: "0 0 40px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>Scope of Services</div>
+          <div style={{ fontSize: 12, color: P.textDim }}>{wc} word{wc !== 1 ? "s" : ""} · formats alongside fee proposal</div>
+        </div>
+        <Btn onClick={() => printScopeOfServices(project)}>🖨 Print Scope of Services</Btn>
+      </div>
+
+      {/* Toolbar */}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", padding: "8px 10px", background: P.card, border: `1px solid ${P.border}`, borderBottom: "none", borderRadius: "8px 8px 0 0" }}>
+        {/* Headings */}
+        <select onMouseDown={e => e.stopPropagation()} onChange={e => { exec("formatBlock", e.target.value); e.target.value = "p"; }}
+          defaultValue="p"
+          style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: `1px solid ${P.border}`, background: P.bg, color: P.text, cursor: "pointer" }}>
+          <option value="p">Paragraph</option>
+          <option value="h1">Heading 1</option>
+          <option value="h2">Heading 2</option>
+          <option value="h3">Heading 3</option>
+        </select>
+
+        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
+
+        {toolbarBtn("B", "bold", null, "Bold")}
+        {toolbarBtn("I", "italic", null, "Italic")}
+        {toolbarBtn("U", "underline", null, "Underline")}
+
+        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
+
+        {toolbarBtn("• List", "insertUnorderedList", null, "Bullet list")}
+        {toolbarBtn("1. List", "insertOrderedList", null, "Numbered list")}
+
+        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
+
+        {toolbarBtn("⇤", "outdent", null, "Decrease indent")}
+        {toolbarBtn("⇥", "indent", null, "Increase indent")}
+
+        <div style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
+
+        {toolbarBtn("✕ Clear", "removeFormat", null, "Clear formatting")}
+      </div>
+
+      {/* Editor */}
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={handleInput}
+        onKeyUp={updateWordCount}
+        style={{
+          minHeight: 600,
+          padding: "20px 24px",
+          background: P.card,
+          border: `1px solid ${P.border}`,
+          borderRadius: "0 0 8px 8px",
+          outline: "none",
+          fontSize: 13,
+          lineHeight: 1.7,
+          color: P.text,
+          overflowY: "auto",
+        }}
+      />
+
+      {/* Scope content style overrides for editor */}
+      <style>{`
+        [contenteditable] h1 { font-size: 16px; font-weight: 700; color: ${P.accentLight}; margin: 14px 0 6px; }
+        [contenteditable] h2 { font-size: 14px; font-weight: 700; color: ${P.accentLight}; margin: 12px 0 5px; }
+        [contenteditable] h3 { font-size: 13px; font-weight: 700; color: ${P.textMuted}; margin: 10px 0 4px; }
+        [contenteditable] ul { margin: 6px 0 8px 24px; }
+        [contenteditable] ol { margin: 6px 0 8px 24px; }
+        [contenteditable] li { margin-bottom: 3px; }
+        [contenteditable] p { margin-bottom: 6px; }
+        [contenteditable]:empty:before { content: "Start typing your scope of services here…\A\A Use headings to organize sections (e.g. Mechanical, Electrical, General Conditions).\A Use bullet lists for deliverables and exclusions."; white-space: pre; color: ${P.textDim}; pointer-events: none; }
+        [contenteditable]:focus { outline: none; border-color: ${P.accent}; }
+      `}</style>
+
+      <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
+        💡 Tip: Use <strong>Heading 1</strong> for discipline sections (Mechanical, Electrical…), <strong>Heading 2</strong> for subsections, bullet lists for included/excluded services.
+        Content auto-saves as you type.
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 
@@ -6018,6 +6273,7 @@ function App() {
   const [view, setView] = useState("dashboard");
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
+  const [filterQAQC, setFilterQAQC] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterContract, setFilterContract] = useState("All");
   const [appStatus, setAppStatus] = useState("loading"); // loading | idle | saving | saved | error
@@ -6191,6 +6447,11 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
   }
 
   const allPMs = useMemo(() => ["All", ...new Set(projects.map(p => p.projectManager).filter(Boolean))], [projects]);
+  const allQAQC = useMemo(() => {
+    const names = new Set();
+    projects.forEach(p => (p.teamMembers || []).forEach(m => { if (m.isQAQC && m.name) names.add(m.name); }));
+    return ["All", ...names];
+  }, [projects]);
 
   const displayedProjects = useMemo(() => {
     const archived = view === "archive";
@@ -6200,11 +6461,12 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
       if (!archived && !isAwarded(p)) return false; // awarded-only in list view
       if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.projectNumber || "").toLowerCase().includes(search.toLowerCase())) return false;
       if (filterPM !== "All" && p.projectManager !== filterPM) return false;
+      if (filterQAQC !== "All" && !(p.teamMembers || []).some(m => m.isQAQC && m.name === filterQAQC)) return false;
       if (filterStatus !== "All" && p.status !== filterStatus) return false;
       if (filterContract !== "All" && p.contractStatus !== filterContract) return false;
       return true;
     });
-  }, [projects, view, search, filterPM, filterStatus, filterContract]);
+  }, [projects, view, search, filterPM, filterQAQC, filterStatus, filterContract]);
 
   const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
 
@@ -6424,6 +6686,11 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
             <select value={filterPM} onChange={e => setFilterPM(e.target.value)}>
               {allPMs.map(pm => <option key={pm}>{pm}</option>)}
             </select>
+            {allQAQC.length > 1 && (
+              <select value={filterQAQC} onChange={e => setFilterQAQC(e.target.value)}>
+                {allQAQC.map(q => <option key={q}>{q === "All" ? "All QA/QC" : q}</option>)}
+              </select>
+            )}
             <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
               {["All", ...PIPELINE_STATUSES, ...PROJECT_STATUSES].map(s => <option key={s}>{s}</option>)}
             </select>
