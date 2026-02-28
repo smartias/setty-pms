@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 01:37 -->
+<!-- Setty PMS | Built: 2026-02-28 01:51 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -1326,17 +1326,24 @@ function ScheduleView({ project, onChange }) {
             let healthColor = P.textDim;
             let healthBg = "transparent";
             if (sd && ed && ed > sd) {
-              if (today < sd) {
-                expectedPct = 0;
-                healthLabel = "Not Started";
-                healthColor = P.textDim;
-              } else if (today >= ed) {
+              const todayLocal = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
+              if (today >= ed) {
+                // Past end date
                 expectedPct = 100;
                 healthLabel = pct >= 100 ? "✓ Complete" : "Overdue";
                 healthColor = pct >= 100 ? P.green : P.red;
                 healthBg    = pct >= 100 ? P.greenDim : P.redDim;
+              } else if (today < sd) {
+                // Before start date
+                expectedPct = 0;
+                if (pct > 0) {
+                  // Has progress even though not started — show ahead of schedule
+                  healthLabel = "Ahead"; healthColor = P.green; healthBg = P.greenDim;
+                } else {
+                  healthLabel = "Not Started"; healthColor = P.textDim;
+                }
               } else {
-                const todayLocal = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
+                // Active phase
                 const elapsed = countWorkDays(ph.startDate, todayLocal);
                 expectedPct = Math.round(Math.min(100, (elapsed / Math.max(durWD, 1)) * 100));
                 const gap = expectedPct - pct;
@@ -1887,7 +1894,7 @@ function printInvoice(inv, project) {
       <td class="right">$${Math.round(r.phaseFee).toLocaleString()}</td>
       <td class="right">${r.phaseInvoiced > 0 ? "$" + Math.round(r.phaseInvoiced).toLocaleString() : "—"}</td>
       <td class="right" style="${r.thisInvAmt > 0 ? "color:#1a56a0;font-weight:700;" : "color:#aaa;"}">${r.thisInvAmt > 0 ? "$" + Math.round(r.thisInvAmt).toLocaleString() : "—"}</td>
-      <td class="right" style="${r.phaseBalance < 0 ? "color:#c00000;" : r.phaseBalance === 0 ? "color:#1a7a34;" : ""}">${r.phaseBalance === 0 ? "✓ Paid" : "$" + Math.round(r.phaseBalance).toLocaleString()}</td>
+      <td class="right" style="${r.phaseBalance <= 0 ? "color:#1a56a0;" : ""}">${r.phaseBalance <= 0 ? "✓ Billed" : "$" + Math.round(r.phaseBalance).toLocaleString()}</td>
     </tr>`).join("") +
     coRows.map(r => `
     <tr style="background:#fff8f0;">
