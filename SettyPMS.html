@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 02:04 -->
+<!-- Setty PMS | Built: 2026-02-28 02:11 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -3129,16 +3129,18 @@ function TeamWBSView({ projects, onNavigateToProject }) {
 
   // Determine all weeks across all active projects
   const allWeeks = useMemo(() => {
-    const allStarts = activeProjects.flatMap(p => (p.phases || []).filter(ph => ph.billable && ph.startDate).map(ph => ph.startDate));
-    const allEnds   = activeProjects.flatMap(p => (p.phases || []).filter(ph => ph.billable && ph.endDate).map(ph => ph.endDate));
-    if (!allStarts.length) return [];
-    allStarts.sort(); allEnds.sort();
-    let cur  = weekMonday(allStarts[0]);
+    const allEnds = activeProjects.flatMap(p => (p.phases || []).filter(ph => ph.billable && ph.endDate).map(ph => ph.endDate));
+    if (!allEnds.length) return [];
+    allEnds.sort();
+    // Start from current week, go through last project end
+    let cur  = todayStr;
+    cur = weekMonday(cur);
     const last = weekMonday(allEnds[allEnds.length - 1]);
+    if (cur > last) return [];
     const weeks = [];
     while (cur <= last) { weeks.push(cur); cur = addCalDays(cur, 7); }
     return weeks;
-  }, [activeProjects]);
+  }, [activeProjects, todayStr]);
 
   // Which projects are active in a given week
   function weekProjects(weekStart) {
@@ -3301,6 +3303,295 @@ function TeamWBSView({ projects, onNavigateToProject }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ─── CASH FLOW VIEW (cross-project) ──────────────────────────────────────────
+
+function buildProjectCashFlow(project) {
+  // Returns { monthlyMap, totalFee, totalInvoiced, totalPaid, totalRemaining }
+  const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0);
+  const invoices = project.invoices || [];
+  const changeOrders = project.changeOrders || [];
+
+  const auditLocked = (project.feeAuditLog || []).filter(e => e.action === "locked" && e.settyFee);
+  const auditFee = auditLocked.length > 0 ? auditLocked[auditLocked.length - 1].settyFee : 0;
+  const constructionCostCF = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const baseFee = project.lockedSettyFee || auditFee || (project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCostCF, project)) || 0;
+  const approvedCOTotal = changeOrders.filter(c => c.approved).reduce((a, c) => a + (c.fee || 0), 0);
+  const totalFee = baseFee + approvedCOTotal;
+  const totalInvoiced = invoices.reduce((a, i) => a + (i.amount || 0), 0);
+  const totalPaid = invoices.reduce((a, i) => a + (i.amountPaid || 0), 0);
+  const totalRemaining = totalFee - totalInvoiced;
+
+  const monthlyMap = {};
+  function addMonth(key, fee, invoiced, paid, projectId) {
+    if (!monthlyMap[key]) monthlyMap[key] = { month: key, fee: 0, invoiced: 0, paid: 0, projects: [] };
+    monthlyMap[key].fee += fee;
+    monthlyMap[key].invoiced += invoiced;
+    monthlyMap[key].paid += paid;
+    if (!monthlyMap[key].projects.includes(projectId)) monthlyMap[key].projects.push(projectId);
+  }
+
+  // Distribute phase fees proportionally across months
+  billablePhases.forEach(ph => {
+    const sd = ph.startDate ? new Date(ph.startDate + "T00:00:00") : null;
+    const ed = ph.endDate   ? new Date(ph.endDate   + "T00:00:00") : null;
+    if (!sd || !ed || ed <= sd) return;
+    const totalDays = (ed - sd) / 86400000 + 1;
+    const startYM = sd.getFullYear() * 12 + sd.getMonth();
+    const endYM   = ed.getFullYear() * 12 + ed.getMonth();
+    for (let ym = startYM; ym <= endYM; ym++) {
+      const yr = Math.floor(ym / 12), mo = ym % 12;
+      const key = yr + "-" + String(mo + 1).padStart(2, "0");
+      const mStart = new Date(yr, mo, 1), mEnd = new Date(yr, mo + 1, 0);
+      const overlapStart = sd > mStart ? sd : mStart;
+      const overlapEnd   = ed < mEnd   ? ed : mEnd;
+      const overlapDays  = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
+      addMonth(key, ph.fee * (overlapDays / totalDays), 0, 0, project.id);
+    }
+  });
+
+  // Place invoiced & paid amounts in actual invoice month
+  invoices.forEach(inv => {
+    if (!inv.date || !inv.amount) return;
+    const key = inv.date.slice(0, 7);
+    if (!monthlyMap[key]) monthlyMap[key] = { month: key, fee: 0, invoiced: 0, paid: 0, projects: [] };
+    monthlyMap[key].invoiced += inv.amount;
+    monthlyMap[key].paid += inv.amountPaid || 0;
+    if (!monthlyMap[key].projects.includes(project.id)) monthlyMap[key].projects.push(project.id);
+  });
+
+  return { monthlyMap, totalFee, totalInvoiced, totalPaid, totalRemaining };
+}
+
+function CashFlowView({ projects, onNavigateToProject }) {
+  const today = new Date();
+  const todayStr = localDateStr(today);
+  const currentYM = todayStr.slice(0, 7);
+
+  const activeProjects = projects.filter(p =>
+    !p.archived && isAwarded(p) &&
+    p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost"
+  );
+
+  // Aggregate monthly data across all projects
+  const { combinedMap, projectTotals } = useMemo(() => {
+    const combinedMap = {};
+    const projectTotals = {};
+
+    activeProjects.forEach(proj => {
+      const { monthlyMap, totalFee, totalInvoiced, totalPaid, totalRemaining } = buildProjectCashFlow(proj);
+      projectTotals[proj.id] = { totalFee, totalInvoiced, totalPaid, totalRemaining, name: proj.name, projectNumber: proj.projectNumber };
+
+      Object.entries(monthlyMap).forEach(([key, val]) => {
+        if (!combinedMap[key]) combinedMap[key] = { month: key, fee: 0, invoiced: 0, paid: 0, projects: [] };
+        combinedMap[key].fee      += val.fee;
+        combinedMap[key].invoiced += val.invoiced;
+        combinedMap[key].paid     += val.paid;
+        val.projects.forEach(id => { if (!combinedMap[key].projects.includes(id)) combinedMap[key].projects.push(id); });
+      });
+    });
+
+    return { combinedMap, projectTotals };
+  }, [activeProjects]);
+
+  const months = Object.values(combinedMap).sort((a, b) => a.month > b.month ? 1 : -1);
+  // Start from current month
+  const visibleMonths = months.filter(m => m.month >= currentYM);
+
+  const grandTotalFee       = Object.values(projectTotals).reduce((a, p) => a + p.totalFee, 0);
+  const grandTotalInvoiced  = Object.values(projectTotals).reduce((a, p) => a + p.totalInvoiced, 0);
+  const grandTotalPaid      = Object.values(projectTotals).reduce((a, p) => a + p.totalPaid, 0);
+  const grandTotalRemaining = Object.values(projectTotals).reduce((a, p) => a + p.totalRemaining, 0);
+  const grandOutstanding    = grandTotalInvoiced - grandTotalPaid;
+
+  // Past invoiced (before current month) — already billed
+  const pastInvoiced = months.filter(m => m.month < currentYM).reduce((a, m) => a + m.invoiced, 0);
+
+  const maxFee = Math.max(...visibleMonths.map(m => m.fee), 1);
+  const [highlightProject, setHighlightProject] = useState(null);
+
+  // Per-project monthly breakdown for tooltip
+  function projectBreakdownForMonth(monthKey) {
+    return activeProjects
+      .map(proj => {
+        const { monthlyMap } = buildProjectCashFlow(proj);
+        const m = monthlyMap[monthKey];
+        return m ? { id: proj.id, name: proj.projectNumber || proj.name, fee: m.fee, invoiced: m.invoiced } : null;
+      })
+      .filter(Boolean)
+      .filter(x => x.fee > 0 || x.invoiced > 0);
+  }
+
+  if (activeProjects.length === 0) return (
+    <div style={{ padding: "24px 32px", color: P.textDim }}>No active awarded projects found.</div>
+  );
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Cash Flow — All Projects</div>
+      <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>
+        Combined fee projections and billing across {activeProjects.length} active project{activeProjects.length !== 1 ? "s" : ""}. Expected fee distributed by phase schedule; invoiced amounts shown by actual invoice date.
+      </div>
+
+      {/* KPI row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 28 }}>
+        <KpiBox label="Total Contract Value" val={fmt(grandTotalFee)} />
+        <KpiBox label="Total Invoiced" val={fmt(grandTotalInvoiced)} color={P.purple}
+          sub={grandTotalFee > 0 ? Math.round(grandTotalInvoiced / grandTotalFee * 100) + "% of contract" : ""} />
+        <KpiBox label="Total Received" val={fmt(grandTotalPaid)} color={P.green}
+          sub={grandTotalInvoiced > 0 ? Math.round(grandTotalPaid / grandTotalInvoiced * 100) + "% of invoiced" : ""} />
+        <KpiBox label="Outstanding" val={fmt(grandOutstanding)} color={grandOutstanding > 0 ? P.red : P.green}
+          sub={grandOutstanding > 0 ? "Invoiced, not received" : "All received"} />
+        <KpiBox label="Remaining to Bill" val={fmt(grandTotalRemaining)} color={P.accentLight}
+          sub={grandTotalFee > 0 ? Math.round(grandTotalRemaining / grandTotalFee * 100) + "% unbilled" : ""} />
+      </div>
+
+      {/* Bar chart */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ overflowX: "auto" }}>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 6, minWidth: visibleMonths.length * 56, height: 160, paddingBottom: 0 }}>
+            {visibleMonths.map(m => {
+              const barH = Math.round((m.fee / maxFee) * 130);
+              const invH = Math.round((m.invoiced / maxFee) * 130);
+              const isCurrent = m.month === currentYM;
+              return (
+                <div key={m.month} style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 50, flex: "0 0 50px" }}>
+                  <div style={{ fontSize: 9, color: P.accentLight, fontFamily: "JetBrains Mono", marginBottom: 2, whiteSpace: "nowrap" }}>
+                    {m.fee >= 1000 ? "$" + Math.round(m.fee / 1000) + "k" : m.fee > 0 ? fmt(m.fee) : ""}
+                  </div>
+                  <div style={{ position: "relative", width: "100%", display: "flex", alignItems: "flex-end", gap: 2, height: 130 }}>
+                    {/* Expected fee bar */}
+                    <div style={{ flex: 1, height: barH, background: isCurrent ? P.accent : P.accentDim, borderRadius: "3px 3px 0 0", minHeight: m.fee > 0 ? 2 : 0 }} />
+                    {/* Invoiced bar */}
+                    {m.invoiced > 0 && (
+                      <div style={{ flex: 1, height: invH, background: P.green, borderRadius: "3px 3px 0 0", opacity: 0.85, minHeight: 2 }} />
+                    )}
+                  </div>
+                  <div style={{ fontSize: 9, color: isCurrent ? P.accentLight : P.textDim, marginTop: 4, textAlign: "center", whiteSpace: "nowrap",
+                    fontWeight: isCurrent ? 700 : 400 }}>
+                    {new Date(m.month + "-15").toLocaleDateString("en-US", { month: "short", year: "2-digit" })}
+                    {isCurrent && <div style={{ fontSize: 8, color: P.green }}>NOW</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 11, color: P.textDim }}>
+          <span><span style={{ display: "inline-block", width: 10, height: 10, background: P.accentDim, borderRadius: 2, marginRight: 4 }} />Expected Fee</span>
+          <span><span style={{ display: "inline-block", width: 10, height: 10, background: P.green, borderRadius: 2, marginRight: 4, opacity: 0.85 }} />Invoiced</span>
+        </div>
+      </div>
+
+      {/* Monthly table — from current month forward */}
+      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>Monthly Breakdown</div>
+      <div style={{ overflowX: "auto", marginBottom: 32 }}>
+        <table>
+          <thead>
+            <tr>
+              <th style={{ minWidth: 110 }}>Month</th>
+              <th style={{ textAlign: "right" }}>Expected Fee</th>
+              <th style={{ textAlign: "right" }}>Invoiced</th>
+              <th style={{ textAlign: "right" }}>Received</th>
+              <th style={{ textAlign: "right" }}>Cumul. Expected</th>
+              <th style={{ textAlign: "right" }}>Cumul. Invoiced</th>
+              <th style={{ minWidth: 180 }}>Active Projects</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(() => {
+              let cumulFee = 0, cumulInv = 0;
+              // Add past invoiced to cumulative
+              cumulInv = pastInvoiced;
+              return visibleMonths.map(m => {
+                cumulFee += m.fee;
+                cumulInv += m.invoiced;
+                const isCurrent = m.month === currentYM;
+                const label = new Date(m.month + "-15").toLocaleDateString("en-US", { month: "long", year: "numeric" });
+                const breakdown = projectBreakdownForMonth(m.month);
+                return (
+                  <tr key={m.month} style={{ background: isCurrent ? "#1a2500" : "transparent" }}>
+                    <td style={{ fontWeight: isCurrent ? 700 : 400, color: isCurrent ? P.green : P.text, whiteSpace: "nowrap" }}>
+                      {label}{isCurrent && <span style={{ fontSize: 10, color: P.green, marginLeft: 6 }}>← NOW</span>}
+                    </td>
+                    <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: P.accentLight }}>{m.fee > 0 ? fmt(m.fee) : <span style={{ color: P.border }}>—</span>}</td>
+                    <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: m.invoiced > 0 ? P.green : P.textDim }}>{m.invoiced > 0 ? fmt(m.invoiced) : <span style={{ color: P.border }}>—</span>}</td>
+                    <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: m.paid > 0 ? P.green : P.textDim }}>{m.paid > 0 ? fmt(m.paid) : <span style={{ color: P.border }}>—</span>}</td>
+                    <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: P.textMuted }}>{fmt(cumulFee)}</td>
+                    <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: P.purple }}>{fmt(cumulInv)}</td>
+                    <td style={{ fontSize: 11 }}>
+                      {breakdown.map(b => (
+                        <button key={b.id} onClick={() => onNavigateToProject(b.id)}
+                          style={{ display: "block", background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "1px 0", textAlign: "left" }}>
+                          {b.name}: {fmt(b.fee)}
+                        </button>
+                      ))}
+                    </td>
+                  </tr>
+                );
+              });
+            })()}
+          </tbody>
+          <tfoot>
+            <tr style={{ borderTop: `2px solid ${P.border}`, background: P.bg }}>
+              <td style={{ fontWeight: 700 }}>TOTAL (from now)</td>
+              <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{fmt(visibleMonths.reduce((a, m) => a + m.fee, 0))}</td>
+              <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(visibleMonths.reduce((a, m) => a + m.invoiced, 0))}</td>
+              <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(visibleMonths.reduce((a, m) => a + m.paid, 0))}</td>
+              <td colSpan={3} />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      {/* Per-project summary table */}
+      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>Project Summary</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th style={{ textAlign: "right" }}>Contract Value</th>
+            <th style={{ textAlign: "right" }}>Invoiced</th>
+            <th style={{ textAlign: "right" }}>Received</th>
+            <th style={{ textAlign: "right" }}>Outstanding</th>
+            <th style={{ textAlign: "right" }}>Remaining to Bill</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Object.entries(projectTotals).map(([id, pt]) => {
+            const outstanding = pt.totalInvoiced - pt.totalPaid;
+            return (
+              <tr key={id}>
+                <td>
+                  <button onClick={() => onNavigateToProject(id)}
+                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, textAlign: "left", fontWeight: 500 }}>
+                    {pt.projectNumber ? `[${pt.projectNumber}] ` : ""}{pt.name}
+                  </button>
+                </td>
+                <td style={{ textAlign: "right", fontFamily: "JetBrains Mono" }}>{fmt(pt.totalFee)}</td>
+                <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: pt.totalInvoiced > 0 ? P.purple : P.textDim }}>{fmt(pt.totalInvoiced)}</td>
+                <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: pt.totalPaid > 0 ? P.green : P.textDim }}>{fmt(pt.totalPaid)}</td>
+                <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: outstanding > 0 ? P.red : P.textDim }}>{outstanding > 0 ? fmt(outstanding) : "—"}</td>
+                <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: pt.totalRemaining > 0 ? P.accentLight : P.textDim }}>{fmt(pt.totalRemaining)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr style={{ borderTop: `2px solid ${P.border}`, background: P.bg }}>
+            <td style={{ fontWeight: 700 }}>TOTAL</td>
+            <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700 }}>{fmt(grandTotalFee)}</td>
+            <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{fmt(grandTotalInvoiced)}</td>
+            <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(grandTotalPaid)}</td>
+            <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: grandOutstanding > 0 ? P.red : P.textDim }}>{fmt(grandOutstanding)}</td>
+            <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{fmt(grandTotalRemaining)}</td>
+          </tr>
+        </tfoot>
+      </table>
     </div>
   );
 }
@@ -5120,7 +5411,7 @@ function App() {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Team WBS", key: "teamwbs" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -5138,6 +5429,7 @@ function App() {
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
 
       {view === "pipeline" && (
         <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={() => { const p = newProject(); setProjects(prev => [p, ...prev]); setView(`project:${p.id}`); }} />
