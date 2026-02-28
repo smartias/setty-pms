@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 04:38 -->
+<!-- Setty PMS | Built: 2026-02-28 05:00 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -6012,6 +6012,10 @@ function App() {
   const [shareUrl, setShareUrl] = useState(() => localStorage.getItem("setty_pms_share_url") || "");
   const [shareUrlInput, setShareUrlInput] = useState(shareUrl);
   const [showSetup, setShowSetup] = useState(!clientId);
+  const [showDataTools, setShowDataTools] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
+  const [cleanupMsg, setCleanupMsg] = useState("");
+  const [cleanupPreview, setCleanupPreview] = useState(null); // list of projects to delete
 
   // ── Initial load from SharePoint via Graph ──
   useEffect(() => {
@@ -6081,6 +6085,79 @@ function App() {
 
   function manualRetry() {
     performSave({ projects, termContracts });
+  }
+
+  // ── Data tools ──
+
+  function exportBackup() {
+    const data = JSON.stringify({ projects, termContracts, _exportedAt: new Date().toISOString(), _version: 3 }, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `SettyPMS-backup-${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function handleImportFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportMsg("");
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed.projects || !Array.isArray(parsed.projects)) {
+          setImportMsg("✗ Invalid backup file — no projects array found.");
+          return;
+        }
+        const projCount = parsed.projects.length;
+        const tcCount = (parsed.termContracts || []).length;
+        if (!window.confirm(`Import ${projCount} project${projCount !== 1 ? "s" : ""} and ${tcCount} term contract${tcCount !== 1 ? "s" : ""} from backup?
+
+This will REPLACE all current data. Make sure you have a backup first.`)) return;
+        setProjects(parsed.projects);
+        setTermContracts(parsed.termContracts || []);
+        setImportMsg(`✓ Imported ${projCount} projects and ${tcCount} term contracts. Saving…`);
+        performSave({ projects: parsed.projects, termContracts: parsed.termContracts || [] });
+      } catch(err) {
+        setImportMsg("✗ Could not parse file: " + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  function previewCleanup(months) {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - months);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    const toDelete = projects.filter(p => {
+      if (!p.archived) return false;
+      // Use the last milestone date, last invoice date, or project start date as proxy for "last activity"
+      const dates = [
+        p.startDate,
+        ...(p.milestones || []).map(m => m.dueDate).filter(Boolean),
+        ...(p.invoices || []).map(i => i.date).filter(Boolean),
+        ...(p.phases || []).map(ph => ph.endDate).filter(Boolean),
+      ].filter(Boolean).sort();
+      const lastActivity = dates[dates.length - 1] || p.startDate || "2000-01-01";
+      return lastActivity < cutoffStr;
+    });
+    setCleanupPreview({ months, cutoffStr, toDelete });
+    setCleanupMsg("");
+  }
+
+  function confirmCleanup() {
+    if (!cleanupPreview) return;
+    const ids = new Set(cleanupPreview.toDelete.map(p => p.id));
+    const remaining = projects.filter(p => !ids.has(p.id));
+    setProjects(remaining);
+    setCleanupMsg(`✓ Permanently deleted ${cleanupPreview.toDelete.length} archived project${cleanupPreview.toDelete.length !== 1 ? "s" : ""}. Saving…`);
+    setCleanupPreview(null);
+    performSave({ projects: remaining, termContracts });
   }
 
   function updateProject(updated) {
@@ -6172,6 +6249,90 @@ function App() {
         <div style={{ marginTop: 16, fontSize: 11, color: P.textDim, textAlign: "center" }}>
           3 permissions · No admin consent · Data stays in your Microsoft 365 tenant
         </div>
+
+        {/* ── Data Tools ── */}
+        <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, overflow: "hidden" }}>
+          <button onClick={() => setShowDataTools(v => !v)}
+            style={{ width: "100%", background: "none", border: "none", color: P.text, cursor: "pointer", padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 600 }}>
+            <span>🗄 Data Backup & Cleanup</span>
+            <span style={{ color: P.textDim }}>{showDataTools ? "▲" : "▼"}</span>
+          </button>
+          {showDataTools && (
+            <div style={{ padding: "0 20px 20px", borderTop: `1px solid ${P.border}` }}>
+
+              {/* Export */}
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: P.accentLight }}>📥 Export Backup</div>
+                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
+                  Downloads all projects and term contracts as a <code>.json</code> file to your computer. Do this periodically — weekly or before major changes.
+                </div>
+                <Btn onClick={exportBackup}>Download Backup ({projects.length} projects)</Btn>
+              </div>
+
+              {/* Import */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${P.border}` }}>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: P.yellow }}>📤 Restore from Backup</div>
+                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
+                  ⚠ This replaces ALL current data with the backup file. Export a backup first.
+                </div>
+                <label style={{ display: "inline-block", background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, padding: "6px 14px", fontSize: 12, color: P.accentLight, cursor: "pointer" }}>
+                  Choose Backup File…
+                  <input type="file" accept=".json" onChange={handleImportFile} style={{ display: "none" }} />
+                </label>
+                {importMsg && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: importMsg.startsWith("✓") ? P.green : P.red }}>{importMsg}</div>
+                )}
+              </div>
+
+              {/* Archive Cleanup */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${P.border}` }}>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: P.red }}>🗑 Clean Up Old Archives</div>
+                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
+                  Permanently delete archived projects with no activity in the selected timeframe. Export a backup first.
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {[12, 24, 36].map(months => (
+                    <Btn key={months} small variant="ghost" onClick={() => previewCleanup(months)}>
+                      Older than {months === 12 ? "1 year" : months === 24 ? "2 years" : "3 years"}
+                    </Btn>
+                  ))}
+                </div>
+
+                {cleanupPreview && (
+                  <div style={{ marginTop: 12, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: cleanupPreview.toDelete.length > 0 ? P.red : P.green }}>
+                      {cleanupPreview.toDelete.length === 0
+                        ? `✓ No archived projects older than ${cleanupPreview.months === 12 ? "1 year" : cleanupPreview.months === 24 ? "2 years" : "3 years"} found.`
+                        : `${cleanupPreview.toDelete.length} project${cleanupPreview.toDelete.length !== 1 ? "s" : ""} would be permanently deleted:`
+                      }
+                    </div>
+                    {cleanupPreview.toDelete.length > 0 && (<>
+                      <div style={{ maxHeight: 160, overflowY: "auto", marginBottom: 12 }}>
+                        {cleanupPreview.toDelete.map(p => (
+                          <div key={p.id} style={{ fontSize: 11, color: P.textMuted, padding: "2px 0", borderBottom: `1px solid ${P.border}` }}>
+                            {p.projectNumber ? `[${p.projectNumber}] ` : ""}{p.name}
+                            {p.startDate ? <span style={{ color: P.textDim, marginLeft: 8 }}>Started {p.startDate}</span> : ""}
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Btn variant="danger" onClick={confirmCleanup}>
+                          Permanently Delete {cleanupPreview.toDelete.length} Project{cleanupPreview.toDelete.length !== 1 ? "s" : ""}
+                        </Btn>
+                        <Btn variant="ghost" onClick={() => setCleanupPreview(null)}>Cancel</Btn>
+                      </div>
+                    </>)}
+                  </div>
+                )}
+                {cleanupMsg && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: cleanupMsg.startsWith("✓") ? P.green : P.red }}>{cleanupMsg}</div>
+                )}
+              </div>
+
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   );
