@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 01:29 -->
+<!-- Setty PMS | Built: 2026-02-28 01:37 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -172,7 +172,7 @@ function buildPhaseFees(settyFee, phases) {
 }
 
 function buildSchedule(startDate, phases) {
-  let cursor = new Date(startDate);
+  let cursor = startDate ? new Date(startDate + "T00:00:00") : new Date();
   const GAP_DAYS = 10;
   return phases.map(ph => {
     if (!ph.billable || ph.fee === 0) return { ...ph, startDate: null, endDate: null };
@@ -180,7 +180,9 @@ function buildSchedule(startDate, phases) {
     const sd = new Date(cursor);
     const ed = addWorkDays(sd, durationWD);
     cursor = addWorkDays(ed, GAP_DAYS);
-    return { ...ph, startDate: sd.toISOString().slice(0, 10), endDate: ed.toISOString().slice(0, 10) };
+    const sdStr = sd.getFullYear() + "-" + String(sd.getMonth()+1).padStart(2,"0") + "-" + String(sd.getDate()).padStart(2,"0");
+    const edStr = ed.getFullYear() + "-" + String(ed.getMonth()+1).padStart(2,"0") + "-" + String(ed.getDate()).padStart(2,"0");
+    return { ...ph, startDate: sdStr, endDate: edStr };
   });
 }
 
@@ -1248,7 +1250,7 @@ function ScheduleView({ project, onChange }) {
     const ph = phases.find(p => p.id === phId);
     if (!ph || !ph.startDate) return;
     const newEnd = addWorkDays(new Date(ph.startDate + "T00:00:00"), Math.max(1, newDays));
-    const newEndStr = newEnd.toISOString().slice(0, 10);
+    const newEndStr = newEnd.getFullYear() + "-" + String(newEnd.getMonth()+1).padStart(2,"0") + "-" + String(newEnd.getDate()).padStart(2,"0");
     const newPhases = phases.map(p => p.id === phId ? { ...p, endDate: newEndStr } : p);
     let newMilestones = milestones;
     newMilestones = milestones.map(m =>
@@ -1334,7 +1336,8 @@ function ScheduleView({ project, onChange }) {
                 healthColor = pct >= 100 ? P.green : P.red;
                 healthBg    = pct >= 100 ? P.greenDim : P.redDim;
               } else {
-                const elapsed = countWorkDays(ph.startDate, today.toISOString().slice(0, 10));
+                const todayLocal = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
+                const elapsed = countWorkDays(ph.startDate, todayLocal);
                 expectedPct = Math.round(Math.min(100, (elapsed / Math.max(durWD, 1)) * 100));
                 const gap = expectedPct - pct;
                 if (gap <= 5) {
@@ -2647,18 +2650,22 @@ const DISC_COLORS = {
 };
 
 // Get Monday of the week containing a date
+function localDateStr(d) {
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+
 function weekMonday(dateStr) {
   const d = new Date(dateStr + "T00:00:00");
-  const day = d.getDay(); // 0=Sun
+  const day = d.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   d.setDate(d.getDate() + diff);
-  return d.toISOString().slice(0, 10);
+  return localDateStr(d);
 }
 
 function addCalDays(dateStr, n) {
   const d = new Date(dateStr + "T00:00:00");
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return localDateStr(d);
 }
 
 // Count business days within [weekStart, weekStart+4] that overlap [phaseStart, phaseEnd]
@@ -2710,7 +2717,7 @@ function TeamView({ project, onChange }) {
   const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0 && p.startDate && p.endDate);
   const totalFee = billablePhases.reduce((a, p) => a + (p.fee || 0), 0) || 1;
   const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
+  const todayStr = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
 
   const phaseMeta = Object.fromEntries(billablePhases.map(ph => {
     const totalWD    = Math.max(1, countWorkDays(ph.startDate, ph.endDate));
@@ -3026,7 +3033,7 @@ function TeamView({ project, onChange }) {
 
 function TeamWBSView({ projects, onNavigateToProject }) {
   const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
+  const todayStr = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
 
   // Only active awarded projects with team + phases
   const activeProjects = projects.filter(p =>
