@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 05:48 -->
+<!-- Setty PMS | Built: 2026-02-28 05:57 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -5850,6 +5850,13 @@ function printScopeOfServices(project) {
   <title>Scope of Services — ${project.name || "Project"}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    @page {
+      size: 8.5in 11in;
+      margin: 1.25in 1in 1.25in 1in;
+    }
+    @page :first {
+      margin-top: 0.5in;
+    }
     body {
       font-family: 'Segoe UI', system-ui, sans-serif;
       font-size: 10.5pt;
@@ -5860,7 +5867,7 @@ function printScopeOfServices(project) {
       width: 8.5in;
       min-height: 11in;
       margin: 0 auto;
-      padding: 1in;
+      padding: 0.5in 1in 1.25in 1in;
       background: #fff;
     }
     .doc-header {
@@ -5898,7 +5905,7 @@ function printScopeOfServices(project) {
     @media print {
       body { background: #fff; }
       .print-btn { display: none; }
-      .page { padding: .75in; }
+      .page { padding: 0; width: 100%; min-height: auto; }
     }
   </style>
 </head>
