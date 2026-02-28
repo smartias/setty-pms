@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 02:11 -->
+<!-- Setty PMS | Built: 2026-02-28 02:22 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -3830,6 +3830,112 @@ function CalendarView({ project }) {
 
 // ─── TEAM CALENDAR (all projects) ────────────────────────────────────────────
 
+
+function printWeeklyDeliverables(projects) {
+  const today = new Date();
+  const todayStr = localDateStr(today);
+  // Get Monday and Friday of current week
+  const day = today.getDay();
+  const diffMon = day === 0 ? -6 : 1 - day;
+  const monDate = new Date(today); monDate.setDate(today.getDate() + diffMon);
+  const friDate = new Date(monDate); friDate.setDate(monDate.getDate() + 4);
+  const weekStart = localDateStr(monDate);
+  const weekEnd   = localDateStr(friDate);
+
+  const fmtD = d => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  // Collect all milestones due this week across all active projects
+  const active = projects.filter(p => !p.archived);
+  const items = [];
+  active.forEach(proj => {
+    (proj.milestones || []).forEach(m => {
+      if (!m.dueDate) return;
+      if (m.dueDate >= weekStart && m.dueDate <= weekEnd) {
+        items.push({
+          dueDate: m.dueDate,
+          projectName: proj.name || "—",
+          projectNumber: proj.projectNumber || "—",
+          pm: proj.projectManager || "—",
+          milestoneName: m.name || "—",
+          phase: m.phaseName || m.phase || "—",
+          status: m.pctComplete >= 100 ? "Complete" : m.pctComplete > 0 ? "In Progress" : "Not Started",
+          pct: m.pctComplete || 0,
+          notes: m.notes || "",
+        });
+      }
+    });
+  });
+
+  // Sort by date then project
+  items.sort((a, b) => a.dueDate !== b.dueDate ? (a.dueDate > b.dueDate ? 1 : -1) : a.projectName.localeCompare(b.projectName));
+
+  const statusColor = s => s === "Complete" ? "#1a7a34" : s === "In Progress" ? "#b45309" : "#44546A";
+  const statusBg    = s => s === "Complete" ? "#e6f4ea"  : s === "In Progress" ? "#fff3e0"  : "#f0f0f0";
+
+  const rows = items.length ? items.map((it, i) => `
+    <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
+      <td style="white-space:nowrap;font-weight:600;">${fmtD(it.dueDate)}</td>
+      <td style="font-weight:600;">${it.projectName}</td>
+      <td style="font-family:monospace;font-size:9pt;">${it.projectNumber}</td>
+      <td style="font-weight:500;">${it.milestoneName}</td>
+      <td style="color:#44546A;font-size:9pt;">${it.phase}</td>
+      <td>${it.pm}</td>
+      <td>
+        <span style="background:${statusBg(it.status)};color:${statusColor(it.status)};padding:2px 8px;border-radius:8px;font-size:8pt;font-weight:600;white-space:nowrap;">
+          ${it.status}${it.pct > 0 && it.pct < 100 ? " (" + it.pct + "%)" : ""}
+        </span>
+      </td>
+      <td style="color:#44546A;font-size:9pt;">${it.notes || "—"}</td>
+    </tr>`).join("") : `
+    <tr><td colspan="8" style="text-align:center;padding:24px;color:#44546A;font-style:italic;">No deliverables due this week.</td></tr>`;
+
+  const html = `
+    <div class="doc-header">
+      <div>
+        <div class="logo-text">SETTY</div>
+        <div class="logo-sub">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:10px;font-size:8.5pt;color:#44546A;line-height:1.6;">
+          Fairfax, VA (HQ) · Washington DC · New York · Baltimore<br>
+          Atlanta · Philadelphia · Los Angeles · Tampa · India
+        </div>
+      </div>
+      <div class="doc-type-badge">
+        <div class="doc-type">WEEKLY DELIVERABLES</div>
+        <div class="doc-number">Week of ${fmtD(weekStart)}</div>
+        <div style="font-size:9pt;color:#44546A;margin-top:6px;">Through ${fmtD(weekEnd)}</div>
+      </div>
+    </div>
+
+    <div style="background:#f0f4ff;border-left:4px solid #2F5496;padding:10px 16px;border-radius:0 6px 6px 0;margin-bottom:20px;font-size:10pt;color:#1F3864;">
+      <strong>${items.length} deliverable${items.length !== 1 ? "s" : ""}</strong> due ${fmtD(weekStart)} – ${fmtD(weekEnd)}
+      · <span style="color:#44546A;">${[...new Set(items.map(i => i.projectNumber))].filter(n => n !== "—").join(", ") || "No active projects"}</span>
+    </div>
+
+    <table class="line-items">
+      <thead>
+        <tr>
+          <th>Due Date</th>
+          <th>Project</th>
+          <th>Proj #</th>
+          <th>Milestone</th>
+          <th>Phase</th>
+          <th>PM</th>
+          <th>Status</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, LTD, PC</span>
+      <span>Weekly Deliverables · Week of ${fmtD(weekStart)}</span>
+      <span>Printed ${fmtD(todayStr)}</span>
+    </div>
+  `;
+  printDocument(html, "Weekly Deliverables — " + fmtD(weekStart));
+}
+
 function TeamCalendar({ projects, onNavigateToProject }) {
   const today = new Date();
   const [calYear, setCalYear] = useState(today.getFullYear());
@@ -3936,6 +4042,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
             <option value="All">All Projects</option>
             {active.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
+          <Btn small variant="ghost" onClick={() => printWeeklyDeliverables(active)}>🖨 Weekly Report</Btn>
           <Btn
             variant={syncStatus === "done" ? "success" : syncStatus === "done_with_errors" ? "warning" : "primary"}
             small
