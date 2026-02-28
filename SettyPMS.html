@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 00:15 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-28 00:25 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -145,6 +145,21 @@ function calcSettyFee(constructionCost, project) {
   const discs = getEffectiveDisciplines(project);
   const settyShare = Object.values(discs).reduce((a, b) => a + b, 0);
   return aeFee * settyShare;
+}
+
+function countWorkDays(startDate, endDate) {
+  if (!startDate || !endDate) return 0;
+  let sd = new Date(startDate + "T00:00:00");
+  const ed = new Date(endDate + "T00:00:00");
+  if (ed <= sd) return 0;
+  let count = 0;
+  const d = new Date(sd);
+  while (d <= ed) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
 }
 
 function buildPhaseFees(settyFee, phases) {
@@ -1228,6 +1243,19 @@ function ScheduleView({ project, onChange }) {
     onChange({ ...project, milestones: newMilestones, phases: newPhases });
   }
 
+  function updatePhaseDuration(phId, newDays) {
+    const ph = phases.find(p => p.id === phId);
+    if (!ph || !ph.startDate) return;
+    const newEnd = addWorkDays(new Date(ph.startDate + "T00:00:00"), Math.max(1, newDays));
+    const newEndStr = newEnd.toISOString().slice(0, 10);
+    const newPhases = phases.map(p => p.id === phId ? { ...p, endDate: newEndStr } : p);
+    let newMilestones = milestones;
+    newMilestones = milestones.map(m =>
+      m.type === "billable" && m.phase === ph.code ? { ...m, dueDate: newEndStr } : m
+    );
+    onChange({ ...project, phases: newPhases, milestones: newMilestones });
+  }
+
   function updatePhaseDate(phId, field, val) {
     const newPhases = phases.map(p => p.id === phId ? { ...p, [field]: val } : p);
     let newMilestones = milestones;
@@ -1274,17 +1302,70 @@ function ScheduleView({ project, onChange }) {
         Phase % complete is automatically calculated from its associated Milestone below. Update the milestone % to track progress.
       </div>
       <table style={{ marginBottom: 28 }}>
-        <thead><tr><th>Phase</th><th>Start</th><th>End</th><th>% Complete</th><th>Progress</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Phase</th><th>Start</th><th>End</th>
+            <th title="Editable — changing recalculates end date">Duration (WD)</th>
+            <th>% Complete</th><th>Expected %</th><th>Schedule Health</th><th>Progress</th>
+          </tr>
+        </thead>
         <tbody>
           {billablePhases.map(ph => {
             const pct = getPhasePctFromMilestones(ph, milestones);
+            const durWD = countWorkDays(ph.startDate, ph.endDate);
+            const today = new Date();
+            const sd = ph.startDate ? new Date(ph.startDate + "T00:00:00") : null;
+            const ed = ph.endDate   ? new Date(ph.endDate   + "T00:00:00") : null;
+
+            // Expected % = how far today is through the phase by calendar time
+            let expectedPct = 0;
+            let healthLabel = "—";
+            let healthColor = P.textDim;
+            let healthBg = "transparent";
+            if (sd && ed && ed > sd) {
+              if (today < sd) {
+                expectedPct = 0;
+                healthLabel = "Not Started";
+                healthColor = P.textDim;
+              } else if (today >= ed) {
+                expectedPct = 100;
+                healthLabel = pct >= 100 ? "✓ Complete" : "Overdue";
+                healthColor = pct >= 100 ? P.green : P.red;
+                healthBg    = pct >= 100 ? P.greenDim : P.redDim;
+              } else {
+                const elapsed = countWorkDays(ph.startDate, today.toISOString().slice(0, 10));
+                expectedPct = Math.round(Math.min(100, (elapsed / Math.max(durWD, 1)) * 100));
+                const gap = expectedPct - pct;
+                if (gap <= 5) {
+                  healthLabel = "On Track"; healthColor = P.green; healthBg = P.greenDim;
+                } else if (gap <= 20) {
+                  healthLabel = `Behind ${gap}%`; healthColor = P.yellow; healthBg = P.yellowDim;
+                } else {
+                  healthLabel = `Behind ${gap}%`; healthColor = P.red; healthBg = P.redDim;
+                }
+              }
+            }
+
             return (
               <tr key={ph.id}>
                 <td style={{ fontWeight: 500 }}>{ph.name}</td>
                 <td><input type="date" value={ph.startDate || ""} onChange={e => updatePhaseDate(ph.id, "startDate", e.target.value)} /></td>
                 <td><input type="date" value={ph.endDate || ""} onChange={e => updatePhaseDate(ph.id, "endDate", e.target.value)} /></td>
+                <td>
+                  <input type="number" min={1} step={1}
+                    value={durWD || ""}
+                    onChange={e => updatePhaseDuration(ph.id, +e.target.value)}
+                    style={{ width: 64, fontFamily: "JetBrains Mono" }}
+                    title="Business days — changing this recalculates the end date" />
+                </td>
                 <td><span style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: pct >= 100 ? P.green : pct > 0 ? P.accentLight : P.textDim }}>{pct}%</span></td>
-                <td style={{ width: 160 }}><ProgressBar pct={pct} color={pct >= 100 ? P.green : P.accent} /></td>
+                <td><span style={{ fontFamily: "JetBrains Mono", color: P.textDim, fontSize: 12 }}>{expectedPct > 0 || (sd && today >= sd) ? expectedPct + "%" : "—"}</span></td>
+                <td>
+                  <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 8, background: healthBg, color: healthColor }}>
+                    {healthLabel}
+                  </span>
+                </td>
+                <td style={{ width: 140 }}><ProgressBar pct={pct} color={pct >= 100 ? P.green : P.accent} /></td>
               </tr>
             );
           })}
