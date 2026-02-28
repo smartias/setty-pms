@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 02:28 -->
+<!-- Setty PMS | Built: 2026-02-28 02:31 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -700,6 +700,229 @@ function Modal({ title, onClose, children, wide }) {
 
 // ─── FEE CALCULATOR ──────────────────────────────────────────────────────────
 
+
+function printFeeProposal(project) {
+  const constructionCostFP = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const aeFee = calcAEFee(constructionCostFP, project);
+  const calcedFee = calcSettyFee(constructionCostFP, project);
+  const baseFee = project.manualSettyFee > 0 ? project.manualSettyFee : calcedFee;
+  const phases = project.phases || [];
+  const phasedFees = buildPhaseFees(baseFee, phases);
+  const billablePhases = phasedFees.filter(p => p.billable && p.fee > 0);
+  const effectiveDiscs = getEffectiveDisciplines(project);
+  const feePercent = getFeePercent(constructionCostFP, project.projectType);
+  const discTotal = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0);
+  const changeOrders = (project.changeOrders || []).filter(c => c.approved);
+  const coTotal = changeOrders.reduce((a, c) => a + (c.fee || 0), 0);
+  const totalContractFee = baseFee + coTotal;
+
+  const costPerSF = (project.manualRSMeansCostPerSF && project.manualRSMeansCostPerSF > 0)
+    ? project.manualRSMeansCostPerSF
+    : (RS_MEANS_COST_PER_SF[project.buildingCategory] || 300);
+  const isManualCost = project.manualConstructionCost > 0;
+  const isManualFee  = project.manualSettyFee > 0;
+
+  const phaseRows = billablePhases.map((ph, i) => {
+    const pct = ph.pct || 0;
+    return `
+      <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
+        <td style="font-weight:500;">${ph.name}</td>
+        <td style="text-align:center;color:#44546A;">${Math.round(pct)}%</td>
+        <td style="text-align:right;font-family:monospace;font-weight:600;color:#1F3864;">$${Math.round(ph.fee).toLocaleString()}</td>
+        <td style="text-align:right;font-family:monospace;color:#44546A;">${ph.startDate ? fmtDate(ph.startDate) : "—"}</td>
+        <td style="text-align:right;font-family:monospace;color:#44546A;">${ph.endDate ? fmtDate(ph.endDate) : "—"}</td>
+      </tr>`;
+  }).join("");
+
+  const discRows = Object.entries(effectiveDiscs).map(([disc, pct], i) => {
+    const discFee = aeFee * pct;
+    return `
+      <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
+        <td style="font-weight:500;">${disc}</td>
+        <td style="text-align:center;color:#44546A;">${(pct * 100).toFixed(2)}%</td>
+        <td style="text-align:right;font-family:monospace;font-weight:600;color:#1F3864;">$${Math.round(discFee).toLocaleString()}</td>
+      </tr>`;
+  }).join("");
+
+  const coRows = changeOrders.length ? changeOrders.map((co, i) => `
+      <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
+        <td style="font-family:monospace;font-size:9pt;">${co.number}</td>
+        <td>${co.name || "—"}</td>
+        <td style="color:#44546A;font-size:9pt;">${co.scope ? co.scope.slice(0, 80) + (co.scope.length > 80 ? "…" : "") : "—"}</td>
+        <td style="text-align:right;font-family:monospace;font-weight:600;color:#1F3864;">$${Math.round(co.fee || 0).toLocaleString()}</td>
+      </tr>`).join("") : "";
+
+  const html = `
+    <div class="doc-header">
+      <div>
+        <div class="logo-text">SETTY</div>
+        <div class="logo-sub">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:10px;font-size:8.5pt;color:#44546A;line-height:1.6;">
+          Fairfax, VA (HQ) · Washington DC · New York · Baltimore<br>
+          Atlanta · Philadelphia · Los Angeles · Tampa · India
+        </div>
+      </div>
+      <div class="doc-type-badge">
+        <div class="doc-type">FEE PROPOSAL</div>
+        <div class="doc-number">${project.projectNumber || project.name || "Project"}</div>
+        <div style="font-size:9pt;color:#44546A;margin-top:6px;">${fmtDate(new Date().toISOString().slice(0,10))}</div>
+      </div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-block">
+        <div class="meta-label">Project</div>
+        <div class="meta-value">${project.name || "—"}</div>
+        ${project.projectNumber ? `<div style="font-size:9pt;color:#44546A;">${project.projectNumber}</div>` : ""}
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Client / Prime</div>
+        <div class="meta-value">${project.prime || project.clientName || "—"}</div>
+        ${project.primeProjectNumber ? `<div style="font-size:9pt;color:#44546A;">Prime #: ${project.primeProjectNumber}</div>` : ""}
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Project Manager</div>
+        <div class="meta-value">${project.projectManager || "—"}</div>
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Fee Type</div>
+        <div class="meta-value">${project.feeType || "Lump Sum"}</div>
+        ${project.startDate ? `<div style="font-size:9pt;color:#44546A;">Start: ${fmtDate(project.startDate)}</div>` : ""}
+      </div>
+    </div>
+
+    <!-- Project & Cost Parameters -->
+    <div class="section-heading">Project Parameters</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid #E7E6E6;border-radius:6px;overflow:hidden;margin-bottom:20px;font-size:9.5pt;">
+      <div style="padding:10px 14px;border-bottom:1px solid #E7E6E6;border-right:1px solid #E7E6E6;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:3px;">Project Type</div>
+        <div style="font-weight:600;color:#1F3864;">${project.projectType || "—"}</div>
+      </div>
+      <div style="padding:10px 14px;border-bottom:1px solid #E7E6E6;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:3px;">Building Category</div>
+        <div style="font-weight:600;color:#1F3864;">${project.buildingCategory || "—"}</div>
+      </div>
+      <div style="padding:10px 14px;border-bottom:1px solid #E7E6E6;border-right:1px solid #E7E6E6;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:3px;">Square Footage</div>
+        <div style="font-weight:600;color:#1F3864;">${project.squareFootage ? project.squareFootage.toLocaleString() + " SF" : "—"}</div>
+      </div>
+      <div style="padding:10px 14px;border-bottom:1px solid #E7E6E6;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:3px;">Cost / SF (RS Means)</div>
+        <div style="font-weight:600;color:#1F3864;">$${costPerSF.toLocaleString()}/SF${isManualCost ? "" : " (RS Means)"}</div>
+      </div>
+      <div style="padding:10px 14px;border-right:1px solid #E7E6E6;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:3px;">Estimated Construction Cost</div>
+        <div style="font-weight:600;color:#1F3864;">$${Math.round(constructionCostFP).toLocaleString()}${isManualCost ? " (manual)" : ""}</div>
+      </div>
+      <div style="padding:10px 14px;">
+        <div style="font-size:8pt;color:#44546A;font-weight:700;text-transform:uppercase;margin-bottom:3px;">AE Fee Percentage</div>
+        <div style="font-weight:600;color:#1F3864;">${(feePercent * 100).toFixed(1)}% of construction cost</div>
+      </div>
+    </div>
+
+    <!-- Discipline Breakdown -->
+    <div class="section-heading">Discipline Fee Breakdown</div>
+    <table class="line-items" style="margin-bottom:20px;">
+      <thead>
+        <tr>
+          <th>Discipline</th>
+          <th style="text-align:center;">% of AE Fee</th>
+          <th style="text-align:right;">SETTY Fee</th>
+        </tr>
+      </thead>
+      <tbody>${discRows}</tbody>
+      <tfoot>
+        <tr>
+          <td style="font-weight:700;">Total SETTY Services</td>
+          <td style="text-align:center;font-family:monospace;font-weight:700;">${(discTotal * 100).toFixed(2)}%</td>
+          <td style="text-align:right;font-family:monospace;font-weight:700;color:#1F3864;">$${Math.round(baseFee).toLocaleString()}${isManualFee ? " (manual override)" : ""}</td>
+        </tr>
+      </tfoot>
+    </table>
+
+    <!-- Phase Fee Schedule -->
+    <div class="section-heading">Fee Schedule by Phase</div>
+    <table class="line-items" style="margin-bottom:20px;">
+      <thead>
+        <tr>
+          <th>Phase</th>
+          <th style="text-align:center;">% of Fee</th>
+          <th style="text-align:right;">Phase Fee</th>
+          <th style="text-align:right;">Start</th>
+          <th style="text-align:right;">End</th>
+        </tr>
+      </thead>
+      <tbody>${phaseRows}</tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2" style="font-weight:700;text-align:right;">Base Contract Fee</td>
+          <td style="text-align:right;font-family:monospace;font-weight:700;color:#1F3864;">$${Math.round(baseFee).toLocaleString()}</td>
+          <td colspan="2"></td>
+        </tr>
+        ${changeOrders.length ? `
+        <tr style="background:#f5f5f5;">
+          <td colspan="2" style="text-align:right;color:#44546A;">Approved Change Orders (${changeOrders.length})</td>
+          <td style="text-align:right;font-family:monospace;color:#1F3864;">$${Math.round(coTotal).toLocaleString()}</td>
+          <td colspan="2"></td>
+        </tr>
+        <tr>
+          <td colspan="2" style="font-weight:700;text-align:right;">Total Contract Fee</td>
+          <td style="text-align:right;font-family:monospace;font-weight:700;color:#1F3864;font-size:11pt;">$${Math.round(totalContractFee).toLocaleString()}</td>
+          <td colspan="2"></td>
+        </tr>` : ""}
+      </tfoot>
+    </table>
+
+    ${changeOrders.length ? `
+    <div class="section-heading">Approved Change Orders</div>
+    <table class="line-items" style="margin-bottom:20px;">
+      <thead><tr><th>#</th><th>Name</th><th>Scope</th><th style="text-align:right;">Fee</th></tr></thead>
+      <tbody>${coRows}</tbody>
+      <tfoot>
+        <tr>
+          <td colspan="3" style="font-weight:700;text-align:right;">CO Total</td>
+          <td style="text-align:right;font-family:monospace;font-weight:700;color:#1F3864;">$${Math.round(coTotal).toLocaleString()}</td>
+        </tr>
+      </tfoot>
+    </table>` : ""}
+
+    <!-- Fee Summary Box -->
+    <div class="amount-box">
+      <div class="amount-inner" style="min-width:280px;">
+        <div style="font-size:8pt;letter-spacing:1px;text-transform:uppercase;opacity:0.8;margin-bottom:4px;">Total Contract Fee</div>
+        <div style="font-size:22pt;font-weight:800;font-family:monospace;letter-spacing:-0.5px;">$${Math.round(totalContractFee).toLocaleString()}</div>
+        <div style="font-size:8.5pt;opacity:0.75;margin-top:6px;">${project.feeType || "Lump Sum"} · ${project.projectType || ""}</div>
+      </div>
+    </div>
+
+    <div style="margin-top:28px;padding:14px 16px;border:1px solid #E7E6E6;border-radius:6px;font-size:8.5pt;color:#44546A;line-height:1.7;">
+      <strong style="color:#1F3864;">Notes &amp; Assumptions</strong><br>
+      This fee proposal is based on the project parameters listed above. Fees are calculated in accordance with SETTY &amp; Associates standard fee schedules.
+      Construction cost estimates are based on RS Means data unless otherwise indicated.
+      This proposal is valid for 90 days from the date of issuance.
+      ${project.feeScheduleFinalized ? '<br><span style="color:#1a7a34;font-weight:600;">✓ Fee schedule has been finalized and locked.</span>' : '<br><span style="color:#b45309;font-weight:600;">⚠ Fee schedule is pending finalization.</span>'}
+    </div>
+
+    <div style="margin-top:32px;display:grid;grid-template-columns:1fr 1fr;gap:40px;">
+      <div>
+        <div style="border-top:1.5px solid #1F3864;padding-top:6px;font-size:9pt;color:#1F3864;font-weight:600;">SETTY &amp; Associates, LTD, PC</div>
+        <div style="font-size:8.5pt;color:#44546A;margin-top:4px;">Authorized Signature &amp; Date</div>
+      </div>
+      <div>
+        <div style="border-top:1.5px solid #1F3864;padding-top:6px;font-size:9pt;color:#1F3864;font-weight:600;">${project.prime || project.clientName || "Client / Prime"}</div>
+        <div style="font-size:8.5pt;color:#44546A;margin-top:4px;">Accepted Signature &amp; Date</div>
+      </div>
+    </div>
+
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, LTD, PC</span>
+      <span>Fee Proposal · ${project.projectNumber || project.name || "Project"}</span>
+      <span>${fmtDate(new Date().toISOString().slice(0,10))}</span>
+    </div>
+  `;
+  printDocument(html, "Fee Proposal — " + (project.name || "Project"));
+}
+
 function FeeCalculator({ project, onChange }) {
   const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const effectiveDiscs = getEffectiveDisciplines(project);
@@ -1084,12 +1307,14 @@ function FeeCalculator({ project, onChange }) {
           ✓ Fee Schedule Finalized & Locked
           <div style={{ display: "flex", gap: 8 }}>
             {auditLog.length > 0 && <Btn small variant="ghost" onClick={() => setShowAudit(v => !v)}>📋 History ({auditLog.length})</Btn>}
+            <Btn small variant="ghost" onClick={() => printFeeProposal(project)}>🖨 Fee Proposal</Btn>
             <Btn small variant="danger" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}>Unlock & Edit</Btn>
           </div>
         </div>
       ) : (
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <Btn onClick={() => { setShowLockModal("lock"); setLockNote(""); }} variant="success">🔒 Finalize & Lock Fee Schedule → Populate Milestones</Btn>
+          <Btn small variant="ghost" onClick={() => printFeeProposal(project)}>🖨 Fee Proposal</Btn>
           {auditLog.length > 0 && <Btn small variant="ghost" onClick={() => setShowAudit(v => !v)}>📋 History ({auditLog.length})</Btn>}
         </div>
       )}
