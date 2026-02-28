@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-27 23:41 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
+<!-- Setty PMS | Built: 2026-02-28 00:05 | Redirect: https://smartias.github.io/setty-pms/SettyPMS.html -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -213,6 +213,10 @@ function newProject(overrides = {}) {
     clientName: "",
     contractStatus: "Waiting for NTP/Contract",
     contractNotes: "",
+    feeType: "Lump Sum",
+    primeProjectNumber: "",
+    contractNumber: "",
+    contractDate: "",
     archived: false,
     buildingCategory: "Office",
     squareFootage: 0,
@@ -1342,8 +1346,15 @@ function ScheduleView({ project, onChange }) {
                 <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase}</td>
                 <td><input type="date" value={m.dueDate || ""} onChange={e => updateMilestone(m.id, "dueDate", e.target.value)} /></td>
                 <td>
-                  <input type="number" min={0} max={100} value={m.pctComplete || 0}
-                    onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value)} style={{ width: 55 }} />%
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="number" min={0} max={100} value={m.pctComplete || 0}
+                      onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value)} style={{ width: 72 }} />
+                    <span style={{ color: P.textDim, fontSize: 12 }}>%</span>
+                    <input type="checkbox" checked={(m.pctComplete || 0) >= 100}
+                      onChange={e => updateMilestone(m.id, "pctComplete", e.target.checked ? 100 : 0)}
+                      title="Mark complete (100%)"
+                      style={{ width: 16, height: 16, cursor: "pointer", accentColor: P.green }} />
+                  </div>
                 </td>
                 <td><Badge color={statusColor} text={autoStatus} /></td>
                 <td><input value={m.notes || ""} onChange={e => updateMilestone(m.id, "notes", e.target.value)} placeholder="Notes…" style={{ width: 140 }} /></td>
@@ -1762,19 +1773,42 @@ function ChangeOrdersView({ project, onChange }) {
 // ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
 
 function ContractView({ project, onChange }) {
+  function setField(field, val) { onChange({ ...project, [field]: val }); }
   return (
     <div>
-      <SectionTitle>Contract Status & Notes</SectionTitle>
-      <Field label="Contract Status">
-        <select value={project.contractStatus} onChange={e => onChange({ ...project, contractStatus: e.target.value })} style={{ width: 320 }}>
-          {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
-        </select>
-        <div style={{ marginTop: 8 }}>
-          <Badge color={CONTRACT_COLORS[project.contractStatus]} text={project.contractStatus} />
-        </div>
-      </Field>
-      <Field label="Contract Notes / History">
-        <textarea value={project.contractNotes || ""} onChange={e => onChange({ ...project, contractNotes: e.target.value })}
+      <SectionTitle>Contract Details</SectionTitle>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+        <Field label="Contract Status">
+          <select value={project.contractStatus} onChange={e => setField("contractStatus", e.target.value)} style={{ width: "100%" }}>
+            {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
+          </select>
+          <div style={{ marginTop: 8 }}>
+            <Badge color={CONTRACT_COLORS[project.contractStatus]} text={project.contractStatus} />
+          </div>
+        </Field>
+        <Field label="Fee Type">
+          <select value={project.feeType || "Lump Sum"} onChange={e => setField("feeType", e.target.value)} style={{ width: "100%" }}>
+            <option>Lump Sum</option>
+            <option>Hourly</option>
+            <option>Hourly Not-to-Exceed</option>
+            <option>Unit Price</option>
+          </select>
+        </Field>
+        <Field label="Contract Number">
+          <input value={project.contractNumber || ""} onChange={e => setField("contractNumber", e.target.value)}
+            placeholder="e.g. C-2024-0042" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Contract Date">
+          <input type="date" value={project.contractDate || ""} onChange={e => setField("contractDate", e.target.value)} style={{ width: "100%" }} />
+        </Field>
+        <Field label="Prime's Project Number">
+          <input value={project.primeProjectNumber || ""} onChange={e => setField("primeProjectNumber", e.target.value)}
+            placeholder="Prime's internal project #" style={{ width: "100%" }} />
+        </Field>
+      </div>
+      <SectionTitle>Contract Notes / History</SectionTitle>
+      <Field label="">
+        <textarea value={project.contractNotes || ""} onChange={e => setField("contractNotes", e.target.value)}
           rows={6} style={{ width: "100%", resize: "vertical" }}
           placeholder="Add notes about contract status, revisions, key dates…" />
       </Field>
@@ -2845,6 +2879,15 @@ function ProjectDetail({ project, onUpdate, onBack }) {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
             <Field label="Project Number"><input value={project.projectNumber || ""} onChange={e => updateField("projectNumber", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="Prime"><input value={project.prime || ""} onChange={e => updateField("prime", e.target.value)} style={{ width: "100%" }} /></Field>
+            <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
+            <Field label="Fee Type">
+              <select value={project.feeType || "Lump Sum"} onChange={e => updateField("feeType", e.target.value)} style={{ width: "100%" }}>
+                <option>Lump Sum</option>
+                <option>Hourly</option>
+                <option>Hourly Not-to-Exceed</option>
+                <option>Unit Price</option>
+              </select>
+            </Field>
             <Field label="Project Manager"><input value={project.projectManager || ""} onChange={e => updateField("projectManager", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="Deputy Project Manager"><input value={project.deputyProjectManager || ""} onChange={e => updateField("deputyProjectManager", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="Project Status">
@@ -3185,7 +3228,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
             <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Progress</th><th>Notes</th><th>Project Status</th><th style={{width:44}}>📅</th></tr>
           </thead>
           <tbody>
-            {allMilestones.sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
+            {allMilestones.filter(m => !(m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
               const mst = milestoneStatus(m.pctComplete);
               const projStatus = m.projectStatus || "Not Started";
               const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
@@ -3224,8 +3267,12 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
                       <input type="number" min={0} max={100}
                         value={m.pctComplete || 0}
                         onChange={e => updateMilestoneField("pctComplete", +e.target.value)}
-                        style={{ width: 52, fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                        style={{ width: 72, fontFamily: "JetBrains Mono", fontSize: 12 }} />
                       <span style={{ fontSize: 11, color: P.textDim }}>%</span>
+                      <input type="checkbox" checked={(m.pctComplete || 0) >= 100}
+                        onChange={e => updateMilestoneField("pctComplete", e.target.checked ? 100 : 0)}
+                        title="Mark complete (100%)"
+                        style={{ width: 16, height: 16, cursor: "pointer", accentColor: P.green }} />
                       <ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} />
                     </div>
                   </td>
