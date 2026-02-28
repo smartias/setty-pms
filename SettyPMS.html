@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 04:14 -->
+<!-- Setty PMS | Built: 2026-02-28 04:24 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -254,6 +254,9 @@ function newProject(overrides = {}) {
     changeOrders: [],
     invoices: [],
     startDate: new Date().toISOString().slice(0, 10),
+    isTaskOrder: false,
+    taskOrderTermContractId: "",
+    taskOrderNumber: "",
     ...overrides,
   };
 }
@@ -3455,6 +3458,239 @@ function TeamWBSView({ projects, onNavigateToProject }) {
 
 
 
+
+// ─── TERM CONTRACTS VIEW ──────────────────────────────────────────────────────
+
+function newTermContract() {
+  return {
+    id: uid(),
+    name: "",
+    contractNumber: "",
+    client: "",
+    contractStatus: "Waiting for NTP/Contract",
+    startDate: "",
+    expirationDate: "",
+    ceilingValue: 0,
+    description: "",
+    notes: "",
+  };
+}
+
+function TermContractsView({ termContracts, projects, onUpdateTermContracts, onNavigateToProject }) {
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+
+  function startNew() {
+    const tc = newTermContract();
+    setForm(tc);
+    setEditingId("__new__");
+  }
+
+  function startEdit(tc) {
+    setForm({ ...tc });
+    setEditingId(tc.id);
+  }
+
+  function saveForm() {
+    if (editingId === "__new__") {
+      onUpdateTermContracts(prev => [...prev, form]);
+    } else {
+      onUpdateTermContracts(prev => prev.map(t => t.id === editingId ? form : t));
+    }
+    setEditingId(null);
+    setForm(null);
+  }
+
+  function deleteTC(id) {
+    onUpdateTermContracts(prev => prev.filter(t => t.id !== id));
+  }
+
+  function setF(field, val) {
+    setForm(f => ({ ...f, [field]: val }));
+  }
+
+  // For each term contract, find linked projects
+  function linkedProjects(tcId) {
+    return projects.filter(p => p.isTaskOrder && p.taskOrderTermContractId === tcId && !p.archived);
+  }
+
+  const today = new Date();
+
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Term Contracts</div>
+          <div style={{ color: P.textMuted, fontSize: 13 }}>Master agreements with associated task orders</div>
+        </div>
+        <Btn small onClick={startNew}>+ New Term Contract</Btn>
+      </div>
+
+      {termContracts.length === 0 && !form && (
+        <div style={{ color: P.textDim, textAlign: "center", padding: 60 }}>
+          No term contracts yet. <button onClick={startNew} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer" }}>Add one</button>
+        </div>
+      )}
+
+      {/* New / Edit form */}
+      {form && (
+        <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 12, padding: 24, marginBottom: 24 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 16, color: P.accentLight }}>
+            {editingId === "__new__" ? "New Term Contract" : "Edit Term Contract"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
+            <Field label="Contract Name / Title">
+              <input value={form.name} onChange={e => setF("name", e.target.value)} style={{ width: "100%" }} placeholder="e.g. IDIQ MEP Services 2024" />
+            </Field>
+            <Field label="Contract Number">
+              <input value={form.contractNumber} onChange={e => setF("contractNumber", e.target.value)} style={{ width: "100%" }} placeholder="e.g. TC-2024-001" />
+            </Field>
+            <Field label="Client / Agency">
+              <input value={form.client} onChange={e => setF("client", e.target.value)} style={{ width: "100%" }} />
+            </Field>
+            <Field label="Contract Status">
+              <select value={form.contractStatus} onChange={e => setF("contractStatus", e.target.value)} style={{ width: "100%" }}>
+                {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Start Date">
+              <input type="date" value={form.startDate} onChange={e => setF("startDate", e.target.value)} style={{ width: "100%" }} />
+            </Field>
+            <Field label="Expiration Date">
+              <input type="date" value={form.expirationDate} onChange={e => setF("expirationDate", e.target.value)} style={{ width: "100%" }} />
+            </Field>
+            <Field label="Ceiling Value (NTE)">
+              <input type="number" value={form.ceilingValue || ""} onChange={e => setF("ceilingValue", +e.target.value)} style={{ width: "100%" }} placeholder="0" />
+            </Field>
+            <Field label="Description">
+              <input value={form.description} onChange={e => setF("description", e.target.value)} style={{ width: "100%" }} placeholder="Brief scope description" />
+            </Field>
+          </div>
+          <Field label="Contract Notes / History">
+            <textarea value={form.notes} onChange={e => setF("notes", e.target.value)} rows={4} style={{ width: "100%", resize: "vertical" }} placeholder="Key dates, amendments, notes…" />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <Btn variant="success" onClick={saveForm}>Save Term Contract</Btn>
+            <Btn variant="ghost" onClick={() => { setEditingId(null); setForm(null); }}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Term contract cards */}
+      {termContracts.map(tc => {
+        const linked = linkedProjects(tc.id);
+        const isExpanded = expandedId === tc.id;
+        const isEditing = editingId === tc.id;
+        const expDate = tc.expirationDate ? new Date(tc.expirationDate + "T00:00:00") : null;
+        const daysToExp = expDate ? Math.ceil((expDate - today) / 86400000) : null;
+        const isExpired = daysToExp !== null && daysToExp < 0;
+        const isExpiringSoon = daysToExp !== null && daysToExp >= 0 && daysToExp <= 90;
+        const totalTOFee = linked.reduce((a, p) => {
+          return a + (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0);
+        }, 0);
+        const statusColor = CONTRACT_COLORS[tc.contractStatus] || { bg: P.border, text: P.textMuted };
+
+        if (isEditing) return null; // shown in edit form above
+
+        return (
+          <div key={tc.id} style={{ background: P.card, border: `1px solid ${isExpired ? P.red : isExpiringSoon ? P.yellow : P.border}`, borderRadius: 12, marginBottom: 16, overflow: "hidden" }}>
+            {/* Header row */}
+            <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 16, cursor: "pointer" }}
+              onClick={() => setExpandedId(isExpanded ? null : tc.id)}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>{tc.name || "Unnamed Contract"}</span>
+                  {tc.contractNumber && <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim }}>{tc.contractNumber}</span>}
+                  <Badge color={statusColor} text={tc.contractStatus} />
+                  {isExpired && <span style={{ background: "#3a0000", color: P.red, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 6 }}>EXPIRED</span>}
+                  {isExpiringSoon && !isExpired && <span style={{ background: "#2a1a00", color: P.yellow, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 6 }}>EXP IN {daysToExp}d</span>}
+                </div>
+                <div style={{ fontSize: 12, color: P.textMuted, marginTop: 4 }}>
+                  {tc.client && <span style={{ marginRight: 16 }}>{tc.client}</span>}
+                  {tc.expirationDate && <span style={{ marginRight: 16 }}>Expires: {tc.expirationDate}</span>}
+                  {tc.ceilingValue > 0 && <span style={{ marginRight: 16 }}>Ceiling: {fmt(tc.ceilingValue)}</span>}
+                  <span style={{ color: P.accentLight }}>{linked.length} task order{linked.length !== 1 ? "s" : ""}</span>
+                  {totalTOFee > 0 && <span style={{ marginLeft: 10, color: P.green }}>{fmt(totalTOFee)} awarded</span>}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <Btn small variant="ghost" onClick={e => { e.stopPropagation(); startEdit(tc); }}>✏ Edit</Btn>
+                <Btn small variant="danger" onClick={e => { e.stopPropagation(); if (window.confirm("Delete this term contract?")) deleteTC(tc.id); }}>✕</Btn>
+                <span style={{ color: P.textDim, fontSize: 12 }}>{isExpanded ? "▲" : "▼"}</span>
+              </div>
+            </div>
+
+            {/* Expanded detail */}
+            {isExpanded && (
+              <div style={{ borderTop: `1px solid ${P.border}`, padding: "16px 20px" }}>
+                {tc.description && (
+                  <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 12 }}>{tc.description}</div>
+                )}
+
+                {/* Task orders table */}
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: P.accentLight }}>Task Orders ({linked.length})</div>
+                {linked.length === 0 ? (
+                  <div style={{ color: P.textDim, fontSize: 12, marginBottom: 12 }}>No task orders linked to this contract yet. When creating a project, select "Task Order under Term Contract" and choose this contract.</div>
+                ) : (
+                  <table style={{ marginBottom: 16 }}>
+                    <thead>
+                      <tr>
+                        <th>Task Order</th>
+                        <th>TO #</th>
+                        <th>PM</th>
+                        <th>Status</th>
+                        <th style={{ textAlign: "right" }}>Fee</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {linked.map(p => {
+                        const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
+                        return (
+                          <tr key={p.id}>
+                            <td>
+                              <button onClick={() => onNavigateToProject(p.id)}
+                                style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 500 }}>
+                                {p.name}
+                              </button>
+                            </td>
+                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.textDim }}>{p.taskOrderNumber || p.projectNumber || "—"}</td>
+                            <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectManager || "—"}</td>
+                            <td><Badge color={STATUS_COLORS[p.status] || STATUS_COLORS["Not Started"]} text={p.status} /></td>
+                            <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: P.green }}>{fee > 0 ? fmt(fee) : "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td colSpan={4} style={{ fontWeight: 700, textAlign: "right" }}>Total TO Value</td>
+                        <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(totalTOFee)}</td>
+                      </tr>
+                      {tc.ceilingValue > 0 && (
+                        <tr>
+                          <td colSpan={4} style={{ textAlign: "right", color: P.textDim }}>Remaining Ceiling</td>
+                          <td style={{ textAlign: "right", fontFamily: "JetBrains Mono", color: totalTOFee > tc.ceilingValue ? P.red : P.accentLight }}>{fmt(tc.ceilingValue - totalTOFee)}</td>
+                        </tr>
+                      )}
+                    </tfoot>
+                  </table>
+                )}
+
+                {tc.notes && (
+                  <div style={{ background: P.bg, borderRadius: 8, padding: "10px 14px", fontSize: 12, color: P.textMuted, whiteSpace: "pre-wrap" }}>
+                    <span style={{ fontWeight: 600, color: P.text }}>Notes: </span>{tc.notes}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── PENDING COs VIEW ─────────────────────────────────────────────────────────
 
 function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
@@ -4980,7 +5216,7 @@ function ProjectionsView({ project }) {
 
 const TABS = ["Overview", "Fee Calculator", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Calendar"];
 
-function ProjectDetail({ project, onUpdate, onBack }) {
+function ProjectDetail({ project, onUpdate, onBack, termContracts }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
@@ -5099,6 +5335,31 @@ function ProjectDetail({ project, onUpdate, onBack }) {
             <Field label="Project Number"><input value={project.projectNumber || ""} onChange={e => updateField("projectNumber", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="Prime"><input value={project.prime || ""} onChange={e => updateField("prime", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
+            <Field label="Task Order Under Term Contract" style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
+                  <input type="checkbox" checked={project.isTaskOrder || false} onChange={e => updateField("isTaskOrder", e.target.checked)}
+                    style={{ width: 16, height: 16, cursor: "pointer" }} />
+                  This project is a Task Order under a Term Contract
+                </label>
+              </div>
+            </Field>
+            {project.isTaskOrder && (<>
+              <Field label="Term Contract">
+                <select value={project.taskOrderTermContractId || ""} onChange={e => updateField("taskOrderTermContractId", e.target.value)} style={{ width: "100%" }}>
+                  <option value="">— Select Term Contract —</option>
+                  {(termContracts || []).map(tc => (
+                    <option key={tc.id} value={tc.id}>{tc.name}{tc.contractNumber ? ` (${tc.contractNumber})` : ""}</option>
+                  ))}
+                </select>
+                {!termContracts?.length && (
+                  <div style={{ fontSize: 11, color: P.yellow, marginTop: 4 }}>No term contracts yet — add one in the Term Contracts tab first.</div>
+                )}
+              </Field>
+              <Field label="Task Order Number">
+                <input value={project.taskOrderNumber || ""} onChange={e => updateField("taskOrderNumber", e.target.value)} style={{ width: "100%" }} placeholder="e.g. TO-001" />
+              </Field>
+            </>)}
             <Field label="Fee Type">
               <select value={project.feeType || "Lump Sum"} onChange={e => updateField("feeType", e.target.value)} style={{ width: "100%" }}>
                 <option>Lump Sum</option>
@@ -5722,6 +5983,7 @@ function SaveBadge({ status, lastSaved, onRetry }) {
 
 function App() {
   const [projects, setProjects] = useState([]);
+  const [termContracts, setTermContracts] = useState([]);
   const [view, setView] = useState("dashboard");
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
@@ -5747,6 +6009,7 @@ function App() {
     loadState()
       .then(s => {
         if (s?.projects) setProjects(s.projects);
+        if (s?.termContracts) setTermContracts(s.termContracts);
         setAppStatus("idle");
       })
       .catch(e => {
@@ -5756,6 +6019,7 @@ function App() {
         if (e.message?.includes("401") || e.message?.includes("403") || e.message?.includes("interaction_required")) {
           getToken(true).then(() => loadState()).then(s => {
             if (s?.projects) setProjects(s.projects);
+            if (s?.termContracts) setTermContracts(s.termContracts);
             setAppStatus("idle");
           }).catch(e2 => { setLoadError(e2.message); setAppStatus("error"); });
           return;
@@ -5783,11 +6047,11 @@ function App() {
     // Clear any pending save
     if (pendingSave) clearTimeout(pendingSave);
     const timer = setTimeout(() => {
-      performSave({ projects });
+      performSave({ projects, termContracts });
     }, 2000);
     setPendingSave(timer);
     return () => clearTimeout(timer);
-  }, [projects]);
+  }, [projects, termContracts]);
 
   async function performSave(state) {
     setAppStatus("saving");
@@ -5805,7 +6069,7 @@ function App() {
   }
 
   function manualRetry() {
-    performSave({ projects });
+    performSave({ projects, termContracts });
   }
 
   function updateProject(updated) {
@@ -5931,7 +6195,7 @@ function App() {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -5950,6 +6214,7 @@ function App() {
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "termcontracts" && <TermContractsView termContracts={termContracts} projects={projects} onUpdateTermContracts={setTermContracts} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "pendingcos" && <PendingCOsView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
 
       {view === "pipeline" && (
@@ -5991,7 +6256,7 @@ function App() {
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} />
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} />
       )}
     </div>
   );
