@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 05:08 -->
+<!-- Setty PMS | Built: 2026-02-28 05:14 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -5792,19 +5792,26 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
                   </td>
                   <td><Badge color={projStatusColor} text={projStatus} /></td>
                   <td>
-                    {m.dueDate && (
-                      <button onClick={() => syncMilestoneFromDash(m)}
-                        disabled={dashCalState[m.id] === "syncing"}
-                        title="Sync to NYC Shared Calendar"
-                        style={{
-                          background: dashCalState[m.id] === "synced" ? P.greenDim : P.accentDim,
-                          border: `1px solid ${dashCalState[m.id] === "synced" ? P.green : P.accent}`,
-                          borderRadius: 6, color: dashCalState[m.id] === "synced" ? P.green : P.accentLight,
-                          cursor: "pointer", fontSize: 11, padding: "3px 7px",
-                        }}>
-                        {dashCalState[m.id] === "syncing" ? "⏳" : dashCalState[m.id] === "synced" ? "✓ 📅" : "📅"}
-                      </button>
-                    )}
+                    {m.dueDate && (() => {
+                      const sessionState = dashCalState[m.id];
+                      const isSynced = sessionState === "synced" || (!sessionState && !!m.calendarEventId);
+                      const isStale = sessionState === "stale";
+                      const isSyncing = sessionState === "syncing";
+                      const isError = sessionState === "error";
+                      const bg = isError ? P.redDim : isStale ? "#1a1400" : isSynced ? P.greenDim : P.accentDim;
+                      const border = isError ? P.red : isStale ? P.yellow : isSynced ? P.green : P.accent;
+                      const color = isError ? P.red : isStale ? P.yellow : isSynced ? P.green : P.accentLight;
+                      const label = isSyncing ? "⏳" : isError ? "✗ 📅" : isStale ? "⚠ 📅" : isSynced ? "✓ 📅" : "📅";
+                      const tip = isSyncing ? "Syncing…" : isError ? "Sync failed — click to retry" : isStale ? "Date changed — click to re-sync" : isSynced ? "Synced to NYC Shared Calendar — click to re-sync" : "Sync to NYC Shared Calendar";
+                      return (
+                        <button onClick={() => syncMilestoneFromDash(m)}
+                          disabled={isSyncing}
+                          title={tip}
+                          style={{ background: bg, border: `1px solid ${border}`, borderRadius: 6, color, cursor: "pointer", fontSize: 11, padding: "3px 7px" }}>
+                          {label}
+                        </button>
+                      );
+                    })()}
                   </td>
                 </tr>
               );
