@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 01:25 -->
+<!-- Setty PMS | Built: 2026-02-28 01:29 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -2293,8 +2293,8 @@ function FinancialsView({ project, onChange }) {
                       style={{ width: 130 }} />
                   </td>
                   <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600,
-                    color: balance <= 0 ? P.textDim : balance < inv.amount * 0.5 ? P.yellow : P.red }}>
-                    {balance > 0 ? fmt(balance) : <span style={{ color: P.green }}>—</span>}
+                    color: balance <= 0 ? P.green : balance < inv.amount * 0.5 ? P.yellow : P.red }}>
+                    {fmt(Math.max(0, balance))}
                   </td>
                   <td><Badge color={statusColor} text={statusLabel} /></td>
                   <td style={{ display: "flex", gap: 6, whiteSpace: "nowrap" }}>
