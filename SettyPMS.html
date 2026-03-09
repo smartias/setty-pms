@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 18:16 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 18:19 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7470,7 +7470,8 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     return a + fee * ((p.probability ?? 50) / 100);
   }, 0);
 
-  const overdue = pipeline.filter(p => p.proposalDueDate && new Date(p.proposalDueDate) < now);
+  const PAST_DUE_EXEMPT = ["Proposal Submitted", "Award", "Lost", "No Bid"];
+  const overdue = pipeline.filter(p => p.proposalDueDate && new Date(p.proposalDueDate) < now && !PAST_DUE_EXEMPT.includes(p.status));
   const dueSoon = pipeline.filter(p => {
     if (!p.proposalDueDate) return false;
     const d = new Date(p.proposalDueDate);
@@ -7555,7 +7556,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
               {sorted.map(p => {
                 const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
                 const weighted = fee * ((p.probability ?? 50) / 100);
-                const isOverdue = p.proposalDueDate && new Date(p.proposalDueDate) < now;
+                const isOverdue = p.proposalDueDate && new Date(p.proposalDueDate) < now && !PAST_DUE_EXEMPT.includes(p.status);
                 const isSoon = p.proposalDueDate && !isOverdue && (() => { const d = new Date(p.proposalDueDate); const in14 = new Date(); in14.setDate(in14.getDate()+14); return d <= in14; })();
                 return (
                   <tr key={p.id}>
