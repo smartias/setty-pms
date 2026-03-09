@@ -5939,7 +5939,7 @@ function ProjectionsView({ project }) {
 
 const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Calendar", "Contract", "Change Orders", "Subconsultants", "Financials", "Reimbursables", "Projections"];
 
-function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onAddStaff }) {
+function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
@@ -6073,7 +6073,14 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
 
             <Field label="Client POC">
-              <input value={project.clientContact || ""} onChange={e => updateField("clientContact", e.target.value)} style={{ width: "100%" }} placeholder="Contact name for proposals & correspondence" />
+              <ContactTypeahead
+                value={project.clientContact || ""}
+                onChange={val => updateField("clientContact", val)}
+                clients={clients}
+                companyName={project.prime || project.clientName || ""}
+                onUpdateClient={onUpdateClient}
+                placeholder="Search contacts for this client…"
+              />
             </Field>
 
             <Field label="Fee Type">
@@ -7702,6 +7709,113 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
   );
 }
 
+function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClient, placeholder }) {
+  const [open, setOpen] = React.useState(false);
+  const [showAdd, setShowAdd] = React.useState(false);
+  const [newName, setNewName] = React.useState("");
+  const [newTitle, setNewTitle] = React.useState("");
+  const [newEmail, setNewEmail] = React.useState("");
+
+  // Find the matching client company
+  const company = React.useMemo(() =>
+    (clients || []).find(c => c.name && companyName && c.name.toLowerCase() === companyName.toLowerCase()),
+  [clients, companyName]);
+
+  const contacts = company ? (company.contacts || []) : [];
+
+  const filtered = React.useMemo(() => {
+    const q = (value || "").toLowerCase();
+    return contacts.filter(ct => !q || ct.name.toLowerCase().includes(q) || (ct.title || "").toLowerCase().includes(q) || (ct.email || "").toLowerCase().includes(q));
+  }, [contacts, value]);
+
+  function selectContact(ct) {
+    onChange(ct.name);
+    setOpen(false);
+  }
+
+  function saveNewContact() {
+    if (!newName.trim()) return;
+    const ct = newContact({ name: newName.trim(), title: newTitle.trim(), email: newEmail.trim() });
+    if (company && onUpdateClient) {
+      onUpdateClient({ ...company, contacts: [...contacts, ct] });
+    }
+    onChange(ct.name);
+    setShowAdd(false);
+    setOpen(false);
+    setNewName(""); setNewTitle(""); setNewEmail("");
+  }
+
+  const noCompany = !companyName;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value || ""}
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => { setOpen(false); setShowAdd(false); }, 200)}
+        placeholder={noCompany ? "Set Client / Prime first…" : (placeholder || "Search contacts…")}
+        disabled={noCompany}
+        style={{ width: "100%", opacity: noCompany ? 0.5 : 1 }}
+      />
+      {open && !noCompany && (
+        <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 300, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 260, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
+          {filtered.length === 0 && !showAdd && (
+            <div style={{ padding: "8px 12px", fontSize: 12, color: P.textDim }}>
+              {contacts.length === 0 ? "No contacts on file for this company." : "No contacts match."}
+            </div>
+          )}
+          {filtered.map(ct => (
+            <div key={ct.id} onMouseDown={() => selectContact(ct)}
+              style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border }}
+              onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+              onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{ct.name}</div>
+              {(ct.title || ct.role) && <div style={{ fontSize: 11, color: P.textDim }}>{[ct.title, ct.role].filter(Boolean).join(" · ")}</div>}
+              {ct.email && <div style={{ fontSize: 11, color: P.textDim }}>{ct.email}</div>}
+            </div>
+          ))}
+          {!showAdd && (
+            <div onMouseDown={e => { e.preventDefault(); setShowAdd(true); setNewName(value || ""); }}
+              style={{ padding: "9px 12px", cursor: "pointer", background: P.accentDim, display: "flex", alignItems: "center", gap: 8,
+                borderTop: filtered.length > 0 ? "1px solid " + P.border : "none" }}
+              onMouseOver={e => e.currentTarget.style.opacity = ".8"}
+              onMouseOut={e => e.currentTarget.style.opacity = "1"}>
+              <span style={{ fontSize: 15, color: P.accentLight }}>+</span>
+              <div style={{ fontSize: 12, fontWeight: 700, color: P.accentLight }}>
+                {company ? `Add new contact to ${company.name}` : "Add contact"}
+              </div>
+            </div>
+          )}
+          {showAdd && (
+            <div style={{ padding: "12px 12px", background: P.bg, borderTop: "1px solid " + P.border }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>New contact{company ? ` — ${company.name}` : ""}</div>
+              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Full name *"
+                style={{ width: "100%", marginBottom: 6, fontSize: 12 }} autoFocus />
+              <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="Title / role"
+                style={{ width: "100%", marginBottom: 6, fontSize: 12 }} />
+              <input value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="Email"
+                style={{ width: "100%", marginBottom: 8, fontSize: 12 }} type="email" />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onMouseDown={e => { e.preventDefault(); saveNewContact(); }}
+                  disabled={!newName.trim()}
+                  style={{ flex: 1, background: P.accent, border: "none", borderRadius: 6, color: "#fff", cursor: newName.trim() ? "pointer" : "default",
+                    fontSize: 12, fontWeight: 700, padding: "5px 0", opacity: newName.trim() ? 1 : 0.5 }}>
+                  Add &amp; Select
+                </button>
+                <button onMouseDown={e => { e.preventDefault(); setShowAdd(false); }}
+                  style={{ background: "none", border: "1px solid " + P.border, borderRadius: 6, color: P.textMuted, cursor: "pointer", fontSize: 12, padding: "5px 10px" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAddClient }) {
   const [open, setOpen] = React.useState(false);
   const [showModal, setShowModal] = React.useState(false);
@@ -8637,7 +8751,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onAddStaff={s => setStaff(prev => [...prev, s])} />
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} />
       )}
     </div>
   );
