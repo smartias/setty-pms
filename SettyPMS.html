@@ -1,26 +1,26 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 19:43 -->
+<!-- Setty PMS | Built: 2026-03-09 20:19 -->
 <html lang="en">
 <head>
-  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Setty PMS</title>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #0d0f1a; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    #root { min-height: 100vh; }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #151929; }
-    ::-webkit-scrollbar-thumb { background: #2d3452; border-radius: 3px; }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0d0f1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    #root{min-height:100vh}
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-track{background:#151929}
+    ::-webkit-scrollbar-thumb{background:#2d3452;border-radius:3px}
   </style>
 </head>
 <body>
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
-    const { useState, useEffect, useMemo } = React;
+    const {useState,useEffect,useMemo}=React;
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
 
@@ -638,9 +638,11 @@ function SectionTitle({ children, action }) {
   );
 }
 
-function KpiBox({ label, val, color, sub }) {
+function KpiBox({ label, val, color, sub, onClick }) {
   return (
-    <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: "14px 16px" }}>
+    <div onClick={onClick} style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: "14px 16px", cursor: onClick ? "pointer" : "default", transition: "border-color .15s" }}
+      onMouseEnter={e => { if (onClick) e.currentTarget.style.borderColor = color || P.accent; }}
+      onMouseLeave={e => { if (onClick) e.currentTarget.style.borderColor = P.border; }}>
       <div style={{ fontSize: 11, color: P.textDim, marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 700, color: color || P.text, fontFamily: "JetBrains Mono" }}>{val}</div>
       {sub && <div style={{ fontSize: 11, color: P.textDim, marginTop: 3 }}>{sub}</div>}
@@ -3746,15 +3748,16 @@ function TeamWBSView({ projects, onNavigateToProject }) {
     const phaseMeta = {};
     billablePhases.forEach(ph => {
       const totalWD = Math.max(1, countWorkDays(ph.startDate, ph.endDate));
-      phaseMeta[ph.id] = { totalWD, fee: ph.fee || 0 };
+      const pct = getPhasePctFromMilestones(ph, proj.milestones || []);
+      phaseMeta[ph.id] = { totalWD, fee: ph.fee || 0, pctComplete: pct };
     });
 
-    // Disc staff count for splitting
+    // Disc staff count for splitting — include anyone with that discipline regardless of PM role
     const discStaffCount = {};
     WBS_DISCIPLINES.forEach(disc => {
       discStaffCount[disc] = Math.max(1, (proj.teamMembers || []).filter(m => {
         const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
-        return discs.includes(disc) && m.role !== "Project Manager" && m.role !== "Deputy Project Manager";
+        return discs.includes(disc);
       }).length);
     });
 
@@ -3762,23 +3765,26 @@ function TeamWBSView({ projects, onNavigateToProject }) {
       const nameKey = (m.name || "TBD").toLowerCase().trim() || m.id;
       const displayName = m.name || "TBD";
       const isPM = m.role === "Project Manager" || m.role === "Deputy Project Manager";
-      let memberBudget = isPM
-        ? (m.role === "Project Manager" ? pmHours : dpmHours)
-        : (() => {
-          const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
-          return discs.reduce((a, d) => a + Math.round((discBudget[d] || 0) / discStaffCount[d]), 0);
-        })();
+      const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
+      const hasDiscs = discs.length > 0;
+
+      // Build discipline breakdown (applies whether PM or not)
+      const discBreakdown = {};
+      if (hasDiscs) {
+        discs.forEach(d => { discBreakdown[d] = Math.round((discBudget[d] || 0) / discStaffCount[d]); });
+      }
+      const discHoursForMember = Object.values(discBreakdown).reduce((a, v) => a + v, 0);
+
+      // PM hours + any discipline hours they're also covering
+      const pmBase = isPM ? (m.role === "Project Manager" ? pmHours : dpmHours) : 0;
+      const memberBudget = pmBase + (hasDiscs ? discHoursForMember : 0);
 
       if (!staffMap[nameKey]) staffMap[nameKey] = { displayName, entries: [] };
       staffMap[nameKey].entries.push({
         project: proj, member: m, isPM, memberBudget,
         billablePhases, phaseMeta, totalFee,
-        discBreakdown: isPM ? {} : (() => {
-          const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
-          const bd = {};
-          discs.forEach(d => { bd[d] = Math.round((discBudget[d] || 0) / discStaffCount[d]); });
-          return bd;
-        })(),
+        pmHoursForEntry: pmBase,
+        discBreakdown,
       });
     });
   });
@@ -3792,10 +3798,15 @@ function TeamWBSView({ projects, onNavigateToProject }) {
       const meta = entry.phaseMeta[ph.id];
       const overlap = bizDaysOverlap(weekStart, ph.startDate, ph.endDate);
       if (!overlap || !meta) return;
-      const phBudget = entry.isPM
-        ? Math.round(entry.memberBudget * ((ph.fee || 0) / entry.totalFee))
-        : Object.values(entry.discBreakdown).reduce((a, hrs) => a + Math.round(hrs * ((ph.fee || 0) / entry.totalFee)), 0);
-      total += Math.round(phBudget * (overlap / meta.totalWD));
+      const phaseFrac = (ph.fee || 0) / entry.totalFee;
+      // Remaining work fraction — clamp 0–1
+      const remaining = Math.max(0, Math.min(1, 1 - (meta.pctComplete || 0) / 100));
+      const pmContrib = entry.pmHoursForEntry > 0
+        ? Math.round(entry.pmHoursForEntry * phaseFrac * remaining * (overlap / meta.totalWD))
+        : 0;
+      const discContrib = Object.values(entry.discBreakdown).reduce((a, hrs) =>
+        a + Math.round(hrs * phaseFrac * remaining * (overlap / meta.totalWD)), 0);
+      total += pmContrib + discContrib;
     });
     return total;
   }
@@ -3878,7 +3889,18 @@ function TeamWBSView({ projects, onNavigateToProject }) {
                 <th style={{ minWidth: 120 }}>Projects Active</th>
                 {visibleCols.map((col, i) => {
                   const totalBudget = col.entries.reduce((a, e) => a + e.memberBudget, 0);
+                  const totalRemaining = col.entries.reduce((a, e) => {
+                    return a + e.billablePhases.reduce((b, ph) => {
+                      const meta = e.phaseMeta[ph.id];
+                      if (!meta) return b;
+                      const remaining = Math.max(0, 1 - (meta.pctComplete || 0) / 100);
+                      const phaseFrac = (ph.fee || 0) / e.totalFee;
+                      return b + Math.round(e.memberBudget * phaseFrac * remaining);
+                    }, 0);
+                  }, 0);
                   const discs = [...new Set(col.entries.flatMap(e => Object.keys(e.discBreakdown)))];
+                  const isPMOnAny = col.entries.some(e => e.isPM);
+                  const hasPMAndDisc = col.entries.some(e => e.isPM && Object.keys(e.discBreakdown).length > 0);
                   return (
                     <th key={i} style={{ minWidth: 90, textAlign: "center" }}>
                       <div style={{ fontWeight: 700 }}>{col.displayName}</div>
@@ -3886,9 +3908,12 @@ function TeamWBSView({ projects, onNavigateToProject }) {
                         {col.entries.length} project{col.entries.length !== 1 ? "s" : ""}
                       </div>
                       <div style={{ fontSize: 10, fontWeight: 400, display: "flex", justifyContent: "center", gap: 3, flexWrap: "wrap", marginTop: 2 }}>
+                        {isPMOnAny && <span style={{ color: P.accentLight }}>PM</span>}
                         {discs.map(d => <span key={d} style={{ color: DISC_COLORS[d]?.text || P.textMuted }}>{d.split(" ")[0]}</span>)}
                       </div>
-                      <div style={{ fontSize: 10, color: P.accentLight, fontWeight: 400 }}>{totalBudget} hrs total</div>
+                      {hasPMAndDisc && <div style={{ fontSize: 9, color: P.yellow, fontWeight: 400 }}>PM + discipline</div>}
+                      <div style={{ fontSize: 10, color: P.accentLight, fontWeight: 400 }}>{totalRemaining} hrs remaining</div>
+                      {totalRemaining !== totalBudget && <div style={{ fontSize: 9, color: P.textDim, fontWeight: 400 }}>of {totalBudget} total</div>}
                     </th>
                   );
                 })}
@@ -6465,8 +6490,34 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const overdue = allMilestones.filter(m => m.dueDate && new Date(m.dueDate) < now && milestoneStatus(m.pctComplete) !== "Completed");
   const upcoming = allMilestones.filter(m => { const d = new Date(m.dueDate); return d >= now && d <= in14 && milestoneStatus(m.pctComplete) !== "Completed"; });
 
-  const totalFee = active.reduce((a, p) => a + (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0), 0);
-  const totalInvoiced = active.reduce((a, p) => a + (p.invoices || []).reduce((b, inv) => b + inv.amount, 0), 0);
+  // ── Financial KPIs ──
+  const nowDate = new Date();
+  const curYear  = nowDate.getFullYear();
+  const curYearStr = String(curYear);
+  const curMonthStr = curYear + "-" + String(nowDate.getMonth() + 1).padStart(2, "0");
+
+  const inConstructionProjects = active.filter(p => p.status === "In Construction Administration");
+
+  const backlog = active.reduce((a, p) => {
+    const { totalFee, totalInvoiced } = buildProjectCashFlow(p);
+    return a + Math.max(0, totalFee - totalInvoiced);
+  }, 0);
+
+  const currentYearTotal = active.reduce((a, p) => {
+    const { monthlyMap } = buildProjectCashFlow(p);
+    return a + Object.entries(monthlyMap)
+      .filter(([k]) => k.startsWith(curYearStr))
+      .reduce((b, [, v]) => b + Math.max(v.fee, v.invoiced), 0);
+  }, 0);
+
+  const currentMonthTotal = active.reduce((a, p) => {
+    const { monthlyMap } = buildProjectCashFlow(p);
+    const m = monthlyMap[curMonthStr];
+    if (!m) return a;
+    return a + Math.max(m.fee, m.invoiced);
+  }, 0);
+
+  const [showInConstruction, setShowInConstruction] = useState(false);
 
   const byStatus = PROJECT_STATUSES.slice(0, 6).map(s => ({
     status: s, count: active.filter(p => p.status === s).length,
@@ -6581,13 +6632,59 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 24 }}>
-        <KpiBox label="Active Projects" val={active.length} color={P.accent} />
-        <KpiBox label="Total Fee Value" val={fmt(totalFee)} color={P.green} />
-        <KpiBox label="Total Invoiced" val={fmt(totalInvoiced)} color={P.purple} />
-        <KpiBox label="Overdue Milestones" val={overdue.length} color={overdue.length > 0 ? P.red : P.textMuted} />
-        <KpiBox label="Due in 14 Days" val={upcoming.length} color={upcoming.length > 0 ? P.yellow : P.textMuted} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
+        <KpiBox label="In Construction" val={inConstructionProjects.length}
+          color={inConstructionProjects.length > 0 ? P.green : P.textMuted}
+          sub={inConstructionProjects.length > 0 ? "click to view projects" : "none active"}
+          onClick={() => setShowInConstruction(true)} />
+        <KpiBox label="Backlog" val={fmt(backlog)} color={P.accent}
+          sub="total uninvoiced" />
+        <KpiBox label={"Current Year (" + curYear + ")"}
+          val={fmt(currentYearTotal)} color={P.purple}
+          sub="projected + invoiced" />
+        <KpiBox label={"Current Month (" + curMonthStr + ")"}
+          val={fmt(currentMonthTotal)} color={P.yellow}
+          sub="projected + invoiced" />
       </div>
+
+      {/* In Construction modal */}
+      {showInConstruction && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setShowInConstruction(false); }}>
+          <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 720, maxWidth: "95vw", maxHeight: "85vh", overflow: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>In Construction Administration{dashPMFilter !== "All" ? " — " + dashPMFilter : ""}</div>
+              <button onClick={() => setShowInConstruction(false)}
+                style={{ background: "none", border: "none", color: P.textMuted, cursor: "pointer", fontSize: 20 }}>✕</button>
+            </div>
+            {inConstructionProjects.length === 0
+              ? <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>No projects currently in construction.</div>
+              : (
+                <table>
+                  <thead><tr><th>#</th><th>Project</th><th>Client</th><th>PM</th><th>Total Fee</th><th>Invoiced</th><th>Remaining</th></tr></thead>
+                  <tbody>
+                    {inConstructionProjects.map(p => {
+                      const { totalFee, totalInvoiced } = buildProjectCashFlow(p);
+                      const remaining = Math.max(0, totalFee - totalInvoiced);
+                      return (
+                        <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => { setShowInConstruction(false); onNavigateToProject(p.id); }}>
+                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectNumber || "—"}</td>
+                          <td style={{ fontWeight: 600, color: P.accentLight }}>{p.name}</td>
+                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.client || "—"}</td>
+                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectManager || "—"}</td>
+                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.green }}>{fmt(totalFee)}</td>
+                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.purple }}>{fmt(totalInvoiced)}</td>
+                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: remaining > 0 ? P.accent : P.textDim }}>{fmt(remaining)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )
+            }
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
         {byStatus.map(({ status, count, color }) => (
