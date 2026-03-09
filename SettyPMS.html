@@ -862,6 +862,24 @@ function FeeCalculator({ project, onChange }) {
   const phaseFeeVar = totalPhaseFee - baseFee;
   const phaseFeeOk = Math.abs(phaseFeeVar) < 0.5;
   const discTotal = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0);
+
+  // When Setty fee is overridden, distribute baseFee proportionally across disciplines
+  // using effective % as relative weights. Zero-pct disciplines get $0.
+  const discFeeMap = (() => {
+    const entries = Object.entries(effectiveDiscs);
+    if (project.manualSettyFee > 0 || discTotal === 0) {
+      // Proportional split of baseFee
+      const totalWeight = entries.reduce((a, [, v]) => a + v, 0);
+      if (totalWeight === 0) {
+        // All zeroed — split evenly
+        const even = baseFee / entries.length;
+        return Object.fromEntries(entries.map(([d]) => [d, even]));
+      }
+      return Object.fromEntries(entries.map(([d, v]) => [d, baseFee * (v / totalWeight)]));
+    }
+    // Default: each disc % applied to AE fee (original behaviour)
+    return Object.fromEntries(entries.map(([d, v]) => [d, aeFee * v]));
+  })();
   const hasOverrides = Object.keys(overrides).length > 0;
   const [showLegend, setShowLegend] = useState(false);
   const [showLockModal, setShowLockModal] = useState(false);
@@ -953,7 +971,7 @@ function FeeCalculator({ project, onChange }) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
               {Object.entries(defaultDiscs).map(([disc, defaultPct]) => {
                 const effective = effectiveDiscs[disc] ?? defaultPct;
-                const feeAmt = aeFee * effective;
+                const feeAmt = discFeeMap[disc] ?? 0;
                 const isOverridden = overrides[disc] != null;
                 return (
                   <div key={disc} style={{ background: P.card, border: `1px solid ${isOverridden ? P.yellow : P.border}`, borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -1152,7 +1170,7 @@ function FeeCalculator({ project, onChange }) {
             )}
           </div>
           <div style={{ fontSize: 10, color: P.textDim }}>
-            {project.manualSettyFee > 0 ? `Calc: ${fmt(calcedFee)}` : `${fmtPct(discTotal)} of AE fee`}
+            {project.manualSettyFee > 0 ? `Calc: ${fmt(calcedFee)} · disciplines will sum to this` : `${fmtPct(discTotal)} of AE fee`}
           </div>
         </div>
       </div>
@@ -1170,14 +1188,16 @@ function FeeCalculator({ project, onChange }) {
         {hasOverrides && <Btn small variant="ghost" onClick={clearDisciplineOverrides}>↺ Reset All to Defaults</Btn>}
       </div>
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
-        Edit the "Override %" column to adjust any discipline's share of the total fee. Click ↺ next to a row to revert it individually.
+        {project.manualSettyFee > 0
+          ? "Percentages are relative weights that sum to 100% of the Setty Fee. Setting a discipline to 0% removes it; the remaining fee redistributes automatically."
+          : "Edit the \"Override %\" column to adjust any discipline's share of the total fee. Click ↺ next to a row to revert it individually."}
       </div>
       <table style={{ marginBottom: 24 }}>
         <thead>
           <tr>
             <th>Discipline</th>
-            <th>Default % of AE Fee</th>
-            <th>Override % of AE Fee <span style={{ fontWeight: 400 }}>(edit to customize)</span></th>
+            <th>{project.manualSettyFee > 0 ? "Default % (weight)" : "Default % of AE Fee"}</th>
+            <th>{project.manualSettyFee > 0 ? <>Override % <span style={{ fontWeight: 400 }}>(relative weight of Setty Fee)</span></> : <>Override % of AE Fee <span style={{ fontWeight: 400 }}>(edit to customize)</span></>}</th>
             <th>Fee Amount</th>
           </tr>
         </thead>
@@ -1185,7 +1205,7 @@ function FeeCalculator({ project, onChange }) {
           {Object.entries(defaultDiscs).map(([disc, defaultPct]) => {
             const effective = effectiveDiscs[disc] ?? defaultPct;
             const isOverridden = overrides[disc] != null;
-            const feeAmt = aeFee * effective; // each disc % applied directly to AE fee
+            const feeAmt = discFeeMap[disc] ?? 0;
             return (
               <tr key={disc}>
                 <td style={{ fontWeight: 500 }}>{disc}</td>
@@ -1213,8 +1233,12 @@ function FeeCalculator({ project, onChange }) {
           })}
           <tr style={{ background: P.bg }}>
             <td colSpan={2} style={{ fontWeight: 700, color: P.textMuted }}>Total (sum of disciplines)</td>
-            <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700 }}>{(discTotal * 100).toFixed(2)}% of AE fee</td>
-            <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(baseFee)}</td>
+            <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700 }}>
+              {project.manualSettyFee > 0
+                ? <span style={{ color: P.green }}>= {fmt(baseFee)} Setty Fee</span>
+                : <>{(discTotal * 100).toFixed(2)}% of AE fee</>}
+            </td>
+            <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(Object.values(discFeeMap).reduce((a,b)=>a+b,0))}</td>
           </tr>
         </tbody>
       </table>
@@ -3042,10 +3066,83 @@ function printStatement(project) {
 
 // ─── CHANGE ORDERS ────────────────────────────────────────────────────────────
 
+function MiniRichEditor({ value, onChange, placeholder }) {
+  const editorRef = React.useRef(null);
+  const initialized = React.useRef(false);
+
+  React.useEffect(() => {
+    if (editorRef.current && !initialized.current) {
+      editorRef.current.innerHTML = value || "";
+      initialized.current = true;
+    }
+  }, []);
+
+  function exec(cmd, val) {
+    document.execCommand(cmd, false, val || null);
+    editorRef.current?.focus();
+    save();
+  }
+
+  function save() {
+    const html = editorRef.current ? editorRef.current.innerHTML : "";
+    onChange(html);
+  }
+
+  const tbBtn = (label, cmd, val, title) => (
+    <button key={label}
+      onMouseDown={e => { e.preventDefault(); exec(cmd, val); }}
+      title={title || label}
+      style={{ background: "none", border: "1px solid " + P.border, color: P.text, borderRadius: 4, padding: "2px 8px", fontSize: 12, cursor: "pointer", fontFamily: "inherit", minWidth: 28, lineHeight: 1.4 }}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ border: "1px solid " + P.accent, borderRadius: 8, overflow: "hidden", background: P.bg }}>
+      {/* Toolbar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", borderBottom: "1px solid " + P.border, flexWrap: "wrap", background: P.card }}>
+        {tbBtn("B", "bold", null, "Bold")}
+        {tbBtn("I", "italic", null, "Italic")}
+        {tbBtn("U", "underline", null, "Underline")}
+        <div style={{ width: 1, height: 18, background: P.border, margin: "0 2px" }} />
+        {tbBtn("• List", "insertUnorderedList", null, "Bullet list")}
+        {tbBtn("1. List", "insertOrderedList", null, "Numbered list")}
+        <div style={{ width: 1, height: 18, background: P.border, margin: "0 2px" }} />
+        {tbBtn("H3", "formatBlock", "h3", "Heading")}
+        {tbBtn("¶", "formatBlock", "p", "Paragraph")}
+        <div style={{ width: 1, height: 18, background: P.border, margin: "0 2px" }} />
+        <button onMouseDown={e => { e.preventDefault(); exec("removeFormat"); exec("formatBlock", "p"); }}
+          title="Clear formatting"
+          style={{ background: "none", border: "1px solid " + P.border, color: P.textDim, borderRadius: 4, padding: "2px 8px", fontSize: 11, cursor: "pointer" }}>
+          Clear
+        </button>
+      </div>
+      {/* Editor */}
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={save}
+        onBlur={save}
+        data-placeholder={placeholder || "Enter scope of change…"}
+        style={{ minHeight: 120, maxHeight: 320, overflowY: "auto", padding: "10px 14px", outline: "none", fontSize: 13, lineHeight: 1.65, color: P.text }}
+      />
+      <style>{`
+        [contenteditable]:empty:before { content: attr(data-placeholder); color: ${P.textDim}; pointer-events: none; }
+        [contenteditable] h3 { font-size: 13px; font-weight: 700; margin: 6px 0 3px; }
+        [contenteditable] p { margin: 0 0 6px; }
+        [contenteditable] ul, [contenteditable] ol { margin: 4px 0 6px 20px; }
+        [contenteditable] li { margin-bottom: 2px; }
+      `}</style>
+    </div>
+  );
+}
+
 function ChangeOrdersView({ project, onChange }) {
   const cos = project.changeOrders || [];
-  const [emailingId, setEmailingId] = React.useState(null); // coId currently drafting
-  const [emailMsgs, setEmailMsgs] = React.useState({}); // { [coId]: { status, msg } }
+  const [emailingId, setEmailingId] = React.useState(null);
+  const [emailMsgs, setEmailMsgs] = React.useState({});
+  const [expandedScope, setExpandedScope] = React.useState(null); // coId with open editor
 
   function setCoMsg(id, status, msg) {
     setEmailMsgs(prev => ({ ...prev, [id]: { status, msg } }));
@@ -3221,7 +3318,21 @@ function ChangeOrdersView({ project, onChange }) {
                 <tr>
                   <td style={{ fontFamily: "JetBrains Mono" }}>{co.number}</td>
                   <td><input value={co.name} onChange={e => updateCO(co.id, { name: e.target.value })} style={{ width: 130 }} /></td>
-                  <td><input value={co.scope} onChange={e => updateCO(co.id, { scope: e.target.value })} style={{ width: 150 }} /></td>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div
+                        style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, color: co.scope ? P.text : P.textDim }}
+                        dangerouslySetInnerHTML={{ __html: co.scope
+                          ? (co.scope.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) + (co.scope.replace(/<[^>]+>/g,"").length > 60 ? "…" : ""))
+                          : "No scope" }}
+                      />
+                      <button
+                        onClick={() => setExpandedScope(expandedScope === co.id ? null : co.id)}
+                        style={{ background: expandedScope === co.id ? P.accent : "none", border: "1px solid " + P.border, borderRadius: 5, color: expandedScope === co.id ? "#fff" : P.accentLight, cursor: "pointer", fontSize: 11, padding: "2px 8px", whiteSpace: "nowrap", flexShrink: 0 }}>
+                        {expandedScope === co.id ? "Close" : "Edit"}
+                      </button>
+                    </div>
+                  </td>
                   <td><input type="number" value={co.fee} onChange={e => updateCO(co.id, { fee: +e.target.value })} style={{ width: 90 }} /></td>
                   <td>
                     <input type="checkbox" checked={!!co.sentToClient} onChange={e => updateCO(co.id, { sentToClient: e.target.checked })} />
@@ -3247,6 +3358,22 @@ function ChangeOrdersView({ project, onChange }) {
                   <tr>
                     <td colSpan={9} style={{ padding: "4px 12px" }}>
                       <span style={{ fontSize: 11, color: em.status === "done" ? P.green : P.red, fontWeight: 500 }}>{em.msg}</span>
+                    </td>
+                  </tr>
+                )}
+                {expandedScope === co.id && (
+                  <tr>
+                    <td colSpan={9} style={{ padding: "0 8px 14px" }}>
+                      <div style={{ padding: "12px 0 0" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          Scope of Change — {co.number}{co.name ? ` · ${co.name}` : ""}
+                        </div>
+                        <MiniRichEditor
+                          value={co.scope || ""}
+                          onChange={html => updateCO(co.id, { scope: html })}
+                          placeholder="Describe the scope of this change order…"
+                        />
+                      </div>
                     </td>
                   </tr>
                 )}
