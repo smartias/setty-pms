@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-02-28 14:54 -->
+<!-- Setty PMS | Built: 2026-03-09 16:45 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -265,12 +265,11 @@ function newProject(overrides = {}) {
 }
 
 // ─── MICROSOFT GRAPH / MSAL PERSISTENCE ──────────────────────────────────────
-// Data file: stored in the SIGNED-IN USER's OneDrive › Apps › SettyPMS › setty-pms-data.json
+// Data: stored in Supabase (pms_data table, singleton row)
 // BUT: to share across team, one person hosts it and shares the folder.
 // The app uses a configurable "data file URL" — paste the Graph shareable link once.
 //
 // Permissions used (ALL delegated, NO admin consent required):
-//   Files.ReadWrite.All  — access SharePoint/OneDrive files the user can reach
 //   Calendars.ReadWrite.Shared — read/write shared calendars
 //   User.Read            — sign in
 //
@@ -280,9 +279,6 @@ function newProject(overrides = {}) {
 const CAL_MAILBOX   = "sara.arias@setty.com";
 const GRAPH_BASE    = "https://graph.microsoft.com/v1.0";
 const TENANT_ID = "f374c024-71c2-48b6-8420-076fff97327c"; // Setty & Associates tenant
-// Folder in signed-in user's OneDrive where data file lives (first-run user creates this)
-const OD_FOLDER     = "SettyPMS";
-const OD_FILE       = "setty-pms-data.json";
 
 // ── MSAL instance ──
 let _msalApp = null;
@@ -313,7 +309,6 @@ async function getMsalApp() {
 
 // Scopes — all delegated, none require admin consent
 const GRAPH_SCOPES = [
-  "Files.ReadWrite.All",      // access SharePoint/OneDrive files user can reach — NO admin consent
   "Calendars.ReadWrite.Shared", // shared calendars — NO admin consent
   "User.Read",                // sign in — NO admin consent
 ];
@@ -377,116 +372,55 @@ async function graphFetch(method, path, body, token) {
   return resp.json();
 }
 
-// ── File path helpers ──
-// Primary: signed-in user's OneDrive › SettyPMS › setty-pms-data.json
-// If a shared item ID is stored (from setup), use that drive item directly.
-// This means whoever runs setup first owns the file; everyone else accesses
-// it via the shared driveItem URL they paste in setup.
+// ─── SUPABASE STORAGE ────────────────────────────────────────────────────────
 
-// Encode a share URL into the Graph API sharing token format
-function encodeShareUrl(url) {
-  const encoded = btoa("u!" + url)
-    .replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-  return encoded;
-}
+const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 
-// Own OneDrive path (used by first user / data owner)
-function ownFileUrl(token) {
-  return `${GRAPH_BASE}/me/drive/root:/${OD_FOLDER}/${OD_FILE}:/content`;
-}
-
-// Resolve the correct content URL for reading/writing the data file.
-// Strategy:
-//   1. If a share URL is configured, use Graph /shares endpoint to get the
-//      driveId + itemId of the shared file, then use those for content access.
-//      This avoids the broken /shares/{id}/driveItem/content PUT pattern.
-//   2. Fall back to the signed-in user's own OneDrive (first-run / owner).
-let _resolvedContentUrl = null; // cached after first resolve
-
-async function resolveContentUrl(token, forceRefresh = false) {
-  if (_resolvedContentUrl && !forceRefresh) return _resolvedContentUrl;
-
-  const shareUrl = localStorage.getItem("setty_pms_share_url") || "";
-  if (!shareUrl) {
-    _resolvedContentUrl = ownFileUrl(token);
-    return _resolvedContentUrl;
+async function sbFetch(method, path, body) {
+  // Get a Microsoft access token and pass it to Supabase as a Bearer token
+  // so Supabase Auth can identify the user via the Azure AD JWT.
+  const msToken = await getToken();
+  const headers = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + msToken,
+    "Content-Type": "application/json",
+    "Prefer": method === "POST" ? "resolution=merge-duplicates,return=minimal" : "return=minimal",
+  };
+  const res = await fetch(SUPABASE_URL + path, {
+    method,
+    headers,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error("Supabase " + res.status + ": " + txt.slice(0, 300));
   }
-
-  // Step 1: decode the share URL to get driveId + itemId
-  try {
-    const encoded = encodeShareUrl(shareUrl);
-    const metaResp = await fetch(`${GRAPH_BASE}/shares/${encoded}/driveItem`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (metaResp.ok) {
-      const meta = await metaResp.json();
-      const driveId = meta.parentReference?.driveId;
-      const itemId  = meta.id;
-      if (driveId && itemId) {
-        // Use drives/{driveId}/items/{itemId}/content — works for GET and PUT
-        _resolvedContentUrl = `${GRAPH_BASE}/drives/${driveId}/items/${itemId}/content`;
-        return _resolvedContentUrl;
-      }
-    }
-    console.warn("Could not resolve share URL via Graph, falling back to own drive");
-  } catch(e) {
-    console.warn("Share URL resolution failed:", e.message);
-  }
-
-  // Fallback
-  _resolvedContentUrl = ownFileUrl(token);
-  return _resolvedContentUrl;
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
 async function loadState() {
-  try {
-    const token = await getToken();
-    const url = await resolveContentUrl(token);
-
-    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (resp.status === 404) return null;
-    if (!resp.ok) {
-      const txt = await resp.text();
-      throw new Error(`Graph ${resp.status}: ${txt.slice(0, 200)}`);
-    }
-    return await resp.json();
-  } catch(e) {
-    if (e.message === "NO_CLIENT_ID") throw e;
-    if (e.message?.includes("404")) return null;
-    console.warn("loadState:", e.message);
-    throw e;
-  }
+  const rows = await sbFetch("GET", "/rest/v1/pms_data?id=eq.singleton&select=projects,term_contracts,staff,clients");
+  if (!rows || rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    projects:      row.projects       || [],
+    termContracts: row.term_contracts || [],
+    staff:         row.staff          || [],
+    clients:       row.clients        || [],
+  };
 }
 
 async function saveState(state) {
-  const token = await getToken();
-  const payload = new TextEncoder().encode(
-    JSON.stringify({ ...state, _savedAt: new Date().toISOString(), _version: 3 }, null, 2)
-  );
-
-  // Try resolved URL first
-  const url = await resolveContentUrl(token);
-  const resp = await fetch(url, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
-    body: payload,
+  await sbFetch("POST", "/rest/v1/pms_data", {
+    id:             "singleton",
+    projects:       state.projects       || [],
+    term_contracts: state.termContracts  || [],
+    staff:          state.staff          || [],
+    clients:        state.clients        || [],
+    updated_at:     new Date().toISOString(),
   });
-
-  if (!resp.ok) {
-    const txt = await resp.text();
-    // If resolved URL failed, force re-resolve and retry once
-    _resolvedContentUrl = null;
-    const url2 = await resolveContentUrl(token, true);
-    if (url2 !== url) {
-      const resp2 = await fetch(url2, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
-        body: payload,
-      });
-      if (resp2.ok) return;
-    }
-    throw new Error(`Save failed ${resp.status}: ${txt.slice(0, 200)}`);
-  }
 }
 
 // ── Calendar helpers ──
@@ -5031,7 +4965,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
     setSyncLog([]);
     setSyncedCount(0);
 
-    // Event IDs stored in milestone.calendarEventId (OneDrive) — no localStorage needed
+    // Event IDs stored in milestone.calendarEventId (Supabase) — no localStorage needed
     const log = [];
     let successCount = 0;
     // Track updates: { projectId -> { milestoneId -> eventId } }
@@ -7131,7 +7065,7 @@ function SaveBadge({ status, lastSaved, onRetry }) {
     saving:  { color: P.accentLight,icon: "⏳", text: "Saving…" },
     saved:   { color: P.green,      icon: "✓",  text: lastSaved ? `Saved ${lastSaved}` : "Saved" },
     error:   { color: P.red,        icon: "✗",  text: "Save failed" },
-    loading: { color: P.accentLight,icon: "⏳", text: "Loading from SharePoint…" },
+    loading: { color: P.accentLight,icon: "⏳", text: "Loading…" },
   }[status] || { color: P.textDim, icon: "", text: "" };
 
   if (!cfg.text) return null;
@@ -7165,21 +7099,13 @@ function App() {
   const [loadError, setLoadError] = useState(null);
   const [pendingSave, setPendingSave] = useState(null); // debounce timer ref stored in state
 
-  const DEFAULT_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301";
-  const DEFAULT_SHARE_URL = "https://setty-my.sharepoint.com/:u:/p/sara_arias/IQDOJZxvm4WIRJ-1e-F54tgzARaU7ONfuWtWWQ5SOY7LCr4?e=L3Ot9N";
-  const [clientId, setClientId] = useState(() => localStorage.getItem("setty_pms_client_id") || DEFAULT_CLIENT_ID);
-  const [clientIdInput, setClientIdInput] = useState(() => localStorage.getItem("setty_pms_client_id") || DEFAULT_CLIENT_ID);
-  const [shareUrl, setShareUrl] = useState(() => localStorage.getItem("setty_pms_share_url") || "");
-  const [shareUrlInput, setShareUrlInput] = useState(shareUrl);
-  const [showSetup, setShowSetup] = useState(!clientId);
   const [showDataTools, setShowDataTools] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [cleanupMsg, setCleanupMsg] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState(null); // list of projects to delete
 
-  // ── Initial load from SharePoint via Graph ──
+  // ── Initial load from Supabase ──
   useEffect(() => {
-    if (!clientId) return; // wait until client ID is configured
     setAppStatus("loading");
     loadState()
       .then(s => {
@@ -7191,8 +7117,6 @@ function App() {
       })
       .catch(e => {
         console.error("Load failed:", e);
-        if (e.message === "NO_CLIENT_ID") { setShowSetup(true); setAppStatus("idle"); return; }
-        // Auth errors — prompt sign-in
         if (e.message?.includes("401") || e.message?.includes("403") || e.message?.includes("interaction_required")) {
           getToken(true).then(() => loadState()).then(s => {
             if (s?.projects) setProjects(s.projects);
@@ -7203,22 +7127,10 @@ function App() {
           }).catch(e2 => { setLoadError(e2.message); setAppStatus("error"); });
           return;
         }
-        setLoadError(e.message || "Could not load data from SharePoint");
+        setLoadError(e.message || "Could not load data");
         setAppStatus("error");
       });
-  }, [clientId]);
-
-  function saveClientId() {
-    const id = clientIdInput.trim();
-    if (!id) return;
-    localStorage.setItem("setty_pms_client_id", id);
-    const su = shareUrlInput.trim();
-    if (su) localStorage.setItem("setty_pms_share_url", su);
-    else localStorage.removeItem("setty_pms_share_url");
-    setClientId(id);
-    setShareUrl(su);
-    setShowSetup(false);
-  }
+  }, []);
 
   // ── Debounced auto-save — fires 2s after last change ──
   useEffect(() => {
@@ -7360,67 +7272,9 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
   const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
 
-  // ── Setup screen (first run — needs Azure App Client ID) ──
-  if (showSetup) return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: P.bg, padding: 32 }}>
-      <style>{CSS}</style>
-      <div style={{ width: "100%", maxWidth: 520 }}>
-        <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em", marginBottom: 24 }}>
-          <span style={{ color: P.accent }}>SETTY</span>
-          <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
-        </div>
-        <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, padding: 28 }}>
-          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>One-time setup</div>
-          <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
-            Sign in with your Setty Microsoft 365 account to access shared project data. Everything is pre-configured — just sign in.
-          </div>
-
-          {/* Step 1: Azure App Registration */}
-          <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 12, lineHeight: 1.9 }}>
-            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Setup — Sign in with your Setty Microsoft 365 account</div>
-            <div style={{ color: P.textMuted }}>
-              The Client ID and shared data file are pre-filled below.<br/>
-              Just click <strong style={{ color: P.text }}>Save &amp; Sign In with Microsoft</strong> and sign in with your <strong style={{ color: P.text }}>@setty.com</strong> account.<br/>
-              A Microsoft login popup will appear — use your normal Setty credentials.<br/>
-              <span style={{ color: P.green }}>✓ No admin setup required · Your data stays within Setty's Microsoft 365 tenant</span>
-            </div>
-          </div>
-
-          <Field label="Azure App Client ID">
-            <input value={clientIdInput} onChange={e => setClientIdInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && saveClientId()}
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              style={{ width: "100%", fontFamily: "JetBrains Mono, monospace" }} />
-          </Field>
-
-          {/* Step 2: Shared data file */}
-          <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 16, margin: "16px 0", fontSize: 12, lineHeight: 1.9 }}>
-            <div style={{ fontWeight: 700, color: P.accentLight, marginBottom: 8 }}>Shared data file</div>
-            <div style={{ color: P.textMuted }}>
-              This link points to the shared project data file in Sara's OneDrive — pre-filled below.<br/>
-              All team members read from and write to this same file.<br/>
-              <em style={{ color: P.textDim }}>Do not change this unless instructed by Sara.</em>
-            </div>
-          </div>
-
-          <Field label="Shared data file link (optional — from OneDrive share)">
-            <input value={shareUrlInput} onChange={e => setShareUrlInput(e.target.value)}
-              placeholder="https://setty-my.sharepoint.com/:u:/p/..."
-              style={{ width: "100%" }} />
-          </Field>
-
-          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-            <Btn onClick={saveClientId} disabled={!clientIdInput.trim()}>Save & Sign In with Microsoft</Btn>
-            {clientId && <Btn variant="ghost" onClick={() => setShowSetup(false)}>Cancel</Btn>}
-          </div>
-          {clientId && (
-            <div style={{ marginTop: 10, fontSize: 11, color: P.green }}>✓ Already configured — click Cancel to continue or update settings above</div>
-          )}
-        </div>
-
-        <div style={{ marginTop: 16, fontSize: 11, color: P.textDim, textAlign: "center" }}>
-          3 permissions · No admin consent · Data stays in your Microsoft 365 tenant
-        </div>
+  // ── No setup screen needed — Supabase config is baked in ──
+  if (false) return (
+    <div>
 
         {/* ── Data Tools ── */}
         <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, overflow: "hidden" }}>
@@ -7517,14 +7371,14 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
         <span style={{ color: P.accent }}>SETTY</span>
         <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
       </div>
-      <div style={{ color: P.textMuted, fontSize: 13 }}>⏳ Signing in to Microsoft & loading from SharePoint…</div>
+      <div style={{ color: P.textMuted, fontSize: 13 }}>⏳ Signing in to Microsoft & loading…</div>
     </div>
   );
 
   // ── Load error screen — show app anyway with empty state ──
   const loadErrorBanner = loadError ? (
     <div style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 16px", margin: "16px 32px", fontSize: 12, color: P.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-      <span>⚠ Could not load from SharePoint: {loadError}. Working in offline mode — changes will not be shared with the team until save succeeds.</span>
+      <span>⚠ Could not load data: {loadError}. Changes may not save until the issue is resolved.</span>
       <button onClick={() => setLoadError(null)} style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 16 }}>✕</button>
     </div>
   ) : null;
