@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 18:19 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 18:40 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -3234,10 +3234,11 @@ function bizDaysOverlap(weekStart, phaseStart, phaseEnd) {
   return count;
 }
 
-function TeamView({ project, onChange, staff }) {
+function TeamView({ project, onChange, staff, onAddStaff }) {
   const team = project.teamMembers || [];
   const [showWBS, setShowWBS] = useState(false);
   const [typeaheadOpen, setTypeaheadOpen] = useState(null); // memberId with open dropdown
+  const [staffModalFor, setStaffModalFor] = useState(null); // memberId to add staff for
 
   function addMember() {
     onChange({ ...project, teamMembers: [...team, { id: uid(), name: "", role: "Engineer", disciplines: [], rate: 0 }] });
@@ -3444,7 +3445,8 @@ function TeamView({ project, onChange, staff }) {
                     const matches = (staff || []).filter(s =>
                       !q || s.name.toLowerCase().includes(q) || (s.email || "").toLowerCase().includes(q)
                     ).slice(0, 8);
-                    if (!matches.length) return null;
+                    const showAdd = onAddStaff && q.length > 0;
+                    if (!matches.length && !showAdd) return null;
                     return (
                       <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: 240, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
                         {matches.map(s => (
@@ -3457,9 +3459,33 @@ function TeamView({ project, onChange, staff }) {
                             <div style={{ fontSize: 11, color: P.textDim }}>{s.role || ""}{s.email ? " · " + s.email : ""}</div>
                           </div>
                         ))}
+                        {showAdd && (
+                          <div onMouseDown={() => { setStaffModalFor(m.id); setTypeaheadOpen(null); }}
+                            style={{ padding: "9px 12px", cursor: "pointer", borderTop: matches.length > 0 ? "1px solid " + P.border : "none",
+                              background: P.accentDim, display: "flex", alignItems: "center", gap: 8 }}
+                            onMouseOver={e => e.currentTarget.style.opacity = ".8"}
+                            onMouseOut={e => e.currentTarget.style.opacity = "1"}>
+                            <span style={{ fontSize: 15, color: P.accentLight }}>+</span>
+                            <div>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: P.accentLight }}>Add "{m.name}" to directory</div>
+                              <div style={{ fontSize: 11, color: P.textDim }}>Create new staff member and select</div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
+                  {staffModalFor === m.id && (
+                    <QuickAddStaffModal
+                      prefill={m.name}
+                      onSave={s => {
+                        onAddStaff(s);
+                        pickFromDirectory(m.id, s);
+                        setStaffModalFor(null);
+                      }}
+                      onClose={() => setStaffModalFor(null)}
+                    />
+                  )}
                 </td>
                 <td>
                   {isPM
@@ -5717,7 +5743,7 @@ function ProjectionsView({ project }) {
 
 const TABS = ["Overview", "Fee Calculator", "Scope", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Notes", "Reimbursables", "Calendar"];
 
-function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient }) {
+function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
@@ -5915,7 +5941,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} />}
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} />}
-        {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} />}
+        {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
@@ -6841,14 +6867,14 @@ function ScopeView({ project, onChange }) {
         style={{
           minHeight: 520,
           padding: "20px 24px",
-          background: scopeLocked ? P.bg : P.card,
+          background: "#ffffff",
           border: "1px solid " + (scopeLocked ? P.green : P.border),
           borderTop: "none",
           borderRadius: "0 0 8px 8px",
           outline: "none",
           fontSize: 13,
           lineHeight: 1.75,
-          color: P.text,
+          color: "#1a1a1a",
           overflowY: "auto",
           cursor: scopeLocked ? "default" : "text",
         }}
@@ -6933,7 +6959,7 @@ function newContact(overrides) {
   return { id: uid(), name: "", title: "", role: "Owner", phone: "", email: "", lastContacted: "", notes: "", ...overrides };
 }
 
-const CONTACT_ROLES = ["Owner", "Architect", "Agency", "Inspector", "PM", "Legal", "Accounting", "Other"];
+const CONTACT_ROLES = ["Owner", "Owner's Representative", "Developer", "Architect", "Engineer", "Construction Manager", "GC", "Agency", "Inspector", "PM", "Legal", "Accounting", "Other"];
 
 function newClient(overrides) {
   return {
@@ -7282,6 +7308,47 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAdd
 }
 
 // ─── STAFF DIRECTORY ──────────────────────────────────────────────────────────
+
+function QuickAddStaffModal({ prefill, onSave, onClose }) {
+  const [form, setForm] = React.useState(newStaffMember({ name: prefill || "" }));
+
+  function save() {
+    if (!form.name.trim()) return;
+    onSave(form);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 440, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div style={{ fontSize: 17, fontWeight: 800 }}>Quick Add Staff Member</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20, lineHeight: 1 }}>x</button>
+        </div>
+        <Field label="Full Name">
+          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. Jane Smith" style={{ width: "100%" }} autoFocus />
+        </Field>
+        <Field label="Email">
+          <input type="email" value={form.email || ""} onChange={e => setForm({ ...form, email: e.target.value })}
+            placeholder="e.g. jane@setty.com" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Default Role / Title">
+          <input value={form.role || ""} onChange={e => setForm({ ...form, role: e.target.value })}
+            placeholder="e.g. Mechanical Engineer" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Billing Rate ($/hr)">
+          <input type="number" min="0" step="5" value={form.rate || ""} onChange={e => setForm({ ...form, rate: +e.target.value })}
+            placeholder="0" style={{ width: "100%" }} />
+        </Field>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={save} disabled={!form.name.trim()}>Add to Directory & Select</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function newStaffMember(overrides) {
   return {
@@ -7996,7 +8063,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} />
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onAddStaff={s => setStaff(prev => [...prev, s])} />
       )}
     </div>
   );
