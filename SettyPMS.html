@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 19:37 -->
+<!-- Setty PMS | Built: 2026-03-09 19:43 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -6084,38 +6084,12 @@ function NotesView({ project, onChange }) {
   );
   const actionItems = notes.filter(n => n.actionItem);
 
-  const [editingOneNote, setEditingOneNote] = useState(false);
-  const [oneNoteDraft, setOneNoteDraft] = useState(project.oneNoteUrl || "");
+  const [linkingNoteId, setLinkingNoteId] = useState(null); // note.id being linked
+  const [oneNoteLinkDraft, setOneNoteLinkDraft] = useState("");
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: P.text }}>Project Notes & Log</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {project.oneNoteUrl && !editingOneNote && (
-            <a href={project.oneNoteUrl} target="_blank" rel="noreferrer"
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#6630b5", border: "1px solid #9b59e8",
-                borderRadius: 6, color: "#d4b8ff", cursor: "pointer", fontSize: 12, fontWeight: 600, padding: "5px 12px", textDecoration: "none" }}>
-              📓 Open OneNote
-            </a>
-          )}
-          <button onClick={() => { setEditingOneNote(e => !e); setOneNoteDraft(project.oneNoteUrl || ""); }}
-            style={{ background: "none", border: "1px solid " + P.border, borderRadius: 6, color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px" }}>
-            {editingOneNote ? "Cancel" : project.oneNoteUrl ? "✎ Edit Link" : "📓 Link OneNote"}
-          </button>
-        </div>
-      </div>
-      {editingOneNote && (
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, marginTop: 8 }}>
-          <input value={oneNoteDraft} onChange={e => setOneNoteDraft(e.target.value)}
-            placeholder="Paste OneNote page URL…"
-            style={{ flex: 1, fontSize: 12 }} autoFocus />
-          <Btn small onClick={() => { onChange({ ...project, oneNoteUrl: oneNoteDraft.trim() }); setEditingOneNote(false); }}>Save</Btn>
-          {project.oneNoteUrl && (
-            <Btn small variant="danger" onClick={() => { onChange({ ...project, oneNoteUrl: "" }); setEditingOneNote(false); }}>Remove</Btn>
-          )}
-        </div>
-      )}
+      <SectionTitle>Project Notes &amp; Log</SectionTitle>
 
       {actionItems.length > 0 && (
         <div style={{ background: P.yellowDim, border: "1px solid " + P.yellow, borderRadius: 8, padding: 12, marginBottom: 20 }}>
@@ -6182,11 +6156,44 @@ function NotesView({ project, onChange }) {
                     <span style={{ fontSize: 11, color: P.textDim }}>{"\u00b7"} {new Date(note.createdAt).toLocaleString()}</span>
                     {edited && <span style={{ fontSize: 10, color: P.textDim, fontStyle: "italic" }}>(edited)</span>}
                   </div>
-                  <div style={{ display: "flex", gap: 6 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    {note.oneNoteUrl && (
+                      <a href={note.oneNoteUrl} target="_blank" rel="noreferrer"
+                        title="Open linked OneNote page"
+                        style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#3b1d6e", border: "1px solid #7c3aed",
+                          borderRadius: 5, color: "#c4b5fd", fontSize: 11, fontWeight: 600, padding: "3px 8px", textDecoration: "none" }}>
+                        📓 OneNote
+                      </a>
+                    )}
+                    <button onClick={() => { setLinkingNoteId(linkingNoteId === note.id ? null : note.id); setOneNoteLinkDraft(note.oneNoteUrl || ""); }}
+                      title={note.oneNoteUrl ? "Edit OneNote link" : "Link a OneNote page"}
+                      style={{ background: "none", border: "1px solid " + P.border, borderRadius: 5, color: P.textDim,
+                        cursor: "pointer", fontSize: 11, padding: "3px 7px" }}>
+                      {note.oneNoteUrl ? "✎" : "📓"}
+                    </button>
                     <Btn small variant="ghost" onClick={() => isEditing ? setEditingId(null) : startEdit(note)}>{isEditing ? "Cancel" : "Edit"}</Btn>
                     <Btn small variant="danger" onClick={() => deleteNote(note.id)}>{"x"}</Btn>
                   </div>
                 </div>
+                {linkingNoteId === note.id && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, padding: "8px 10px", background: P.bg, borderRadius: 6, border: "1px solid #7c3aed" }}>
+                    <span style={{ fontSize: 11, color: "#c4b5fd", whiteSpace: "nowrap" }}>📓 OneNote URL:</span>
+                    <input value={oneNoteLinkDraft} onChange={e => setOneNoteLinkDraft(e.target.value)}
+                      placeholder="Paste OneNote page link…"
+                      style={{ flex: 1, fontSize: 12 }} autoFocus
+                      onKeyDown={e => {
+                        if (e.key === "Enter") {
+                          onChange({ ...project, notes: (project.notes||[]).map(n => n.id === note.id ? { ...n, oneNoteUrl: oneNoteLinkDraft.trim() } : n) });
+                          setLinkingNoteId(null);
+                        }
+                        if (e.key === "Escape") setLinkingNoteId(null);
+                      }} />
+                    <Btn small onClick={() => { onChange({ ...project, notes: (project.notes||[]).map(n => n.id === note.id ? { ...n, oneNoteUrl: oneNoteLinkDraft.trim() } : n) }); setLinkingNoteId(null); }}>Save</Btn>
+                    {note.oneNoteUrl && (
+                      <Btn small variant="danger" onClick={() => { onChange({ ...project, notes: (project.notes||[]).map(n => n.id === note.id ? { ...n, oneNoteUrl: "" } : n) }); setLinkingNoteId(null); }}>Remove</Btn>
+                    )}
+                  </div>
+                )}
                 {isEditing ? (
                   <div>
                     <div style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
