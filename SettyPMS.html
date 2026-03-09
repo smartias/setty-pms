@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 18:51 -->
+<!-- Setty PMS | Built: 2026-03-09 19:37 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -260,6 +260,7 @@ function newProject(overrides = {}) {
     scopeLocked: false,
     scopeAuditLog: [],
     notes: [],
+    oneNoteUrl: "",
     reimbursableBudget: 0,
     reimbursables: [],
     ...overrides,
@@ -491,6 +492,32 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
       eventId: result?.id,
       warning: postedToShared ? null : "Added to your personal calendar — NYC Shared Calendar was not found in your account. Ask Sara to check sharing permissions.",
     };
+  } catch(e) {
+    return { success: false, error: e.message };
+  }
+}
+
+async function createNoteCalendarEvent(note, project) {
+  const today = new Date().toISOString().slice(0, 10);
+  const prefix = project.projectNumber ? "[" + project.projectNumber + "] " : "";
+  const catLabel = note.category !== "General" ? " [" + note.category + "]" : "";
+  const subject = prefix + (project.name || "Project") + " – Note" + catLabel;
+  const bodyPreview = note.body.length > 200 ? note.body.slice(0, 200) + "…" : note.body;
+
+  const eventBody = {
+    subject,
+    isAllDay: true,
+    start: { dateTime: today + "T00:00:00", timeZone: "Eastern Standard Time" },
+    end:   { dateTime: today + "T00:00:00", timeZone: "Eastern Standard Time" },
+    body:  { contentType: "text", content: bodyPreview + "\n\nLogged by: " + (note.author || "—") },
+    categories: ["Project Note"],
+  };
+
+  try {
+    const calId = await getNYCCalendarId();
+    const path = calId ? "/me/calendars/" + calId + "/events" : "/me/events";
+    const result = await graphFetch("POST", path, eventBody);
+    return { success: true, eventId: result?.id };
   } catch(e) {
     return { success: false, error: e.message };
   }
@@ -1620,7 +1647,11 @@ function ScheduleView({ project, onChange }) {
             return (
               <tr key={m.id}>
                 <td><Badge color={typeColor} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
-                <td><input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} style={{ width: 190 }} /></td>
+                <td>
+                  {m.type === "billable" && project.feeScheduleFinalized
+                    ? <span title="Unlock Fee Calculator to rename" style={{ fontSize: 13, color: P.textDim, display: "inline-flex", alignItems: "center", gap: 4 }}>🔒 {m.name}</span>
+                    : <input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} style={{ width: 190 }} />}
+                </td>
                 <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase}</td>
                 <td><input type="date" value={m.dueDate || ""} onChange={e => updateMilestone(m.id, "dueDate", e.target.value)} /></td>
                 <td>
@@ -1649,7 +1680,9 @@ function ScheduleView({ project, onChange }) {
                   </div>
                 </td>
                 <td>
-                  <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>
+                  {m.type === "billable" && project.feeScheduleFinalized
+                    ? <span title="Unlock Fee Calculator to delete" style={{ fontSize: 16, color: P.border, userSelect: "none", padding: "0 4px" }}>🔒</span>
+                    : <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>}
                 </td>
               </tr>
             );
@@ -4688,7 +4721,7 @@ function isSameDay(dateStr, year, month, day) {
 
 // ─── SINGLE-PROJECT CALENDAR ─────────────────────────────────────────────────
 
-function CalendarView({ project }) {
+function CalendarView({ project, onChange }) {
   const today = new Date();
   const [calYear, setCalYear] = useState(today.getFullYear());
   const [calMonth, setCalMonth] = useState(today.getMonth());
@@ -4745,6 +4778,7 @@ function CalendarView({ project }) {
     "billable": { dot: P.accentLight, label: "Billable" },
     "non-billable": { dot: P.purple, label: "Non-Billable" },
     "change-order": { dot: P.yellow, label: "Change Order" },
+    "note": { dot: P.green, label: "Note" },
   };
 
   return (
@@ -4780,6 +4814,10 @@ function CalendarView({ project }) {
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: P.yellow }} />
             <span style={{ color: P.textMuted }}>Change Order</span>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: P.green }} />
+            <span style={{ color: P.textMuted }}>Note</span>
+          </div>
         </div>
       )}
 
@@ -4803,7 +4841,7 @@ function CalendarView({ project }) {
               const hasOverdue = dayMilestones.some(m => milestoneStatus(m.pctComplete) !== "Completed");
               return (
                 <div key={di}
-                  onClick={() => day && setSelected(isSelected ? null : { day, milestones: dayMilestones, dateStr })}
+                  onClick={() => { if (!day) return; const dayNotes = milestones.filter(m => m.type === "note" && m.dueDate === dateStr); setSelected(isSelected ? null : { day, milestones: dayMilestones.filter(m => m.type !== "note"), notes: dayNotes, dateStr }); }}
                   style={{
                     minHeight: 80,
                     borderTop: `1px solid ${P.border}`,
@@ -4835,7 +4873,7 @@ function CalendarView({ project }) {
                       {/* Milestone dots */}
                       {dayMilestones.slice(0, 3).map(m => {
                         const st = milestoneStatus(m.pctComplete);
-                        const dotColor = st === "Completed" ? P.green : m.type === "non-billable" ? P.purple : m.type === "change-order" ? P.yellow : P.accentLight;
+                        const dotColor = m.type === "note" ? P.green : st === "Completed" ? P.green : m.type === "non-billable" ? P.purple : m.type === "change-order" ? P.yellow : P.accentLight;
                         return (
                           <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
                             <div style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
@@ -4860,7 +4898,7 @@ function CalendarView({ project }) {
         <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
             {MONTH_NAMES[calMonth]} {selected.day}, {calYear}
-            {selected.milestones.length === 0 && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>No milestones due</span>}
+            {selected.milestones.length === 0 && (!selected.notes || selected.notes.length === 0) && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>Nothing logged</span>}
           </div>
           {selected.milestones.map(m => {
             const st = milestoneStatus(m.pctComplete);
@@ -4886,6 +4924,33 @@ function CalendarView({ project }) {
               </div>
             );
           })}
+          {selected.notes && selected.notes.length > 0 && (
+            <div style={{ marginTop: selected.milestones.length > 0 ? 12 : 0 }}>
+              {selected.milestones.length > 0 && <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>Notes Logged</div>}
+              {selected.notes.map(n => (
+                <div key={n.id} style={{ padding: "10px 14px", marginBottom: 8, background: P.greenDim, borderRadius: 8, border: "1px solid " + P.green }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                    <Badge color={{ bg: P.greenDim, text: P.green }} text="Note" />
+                    {n.noteId && (() => {
+                      const fullNote = (project.notes||[]).find(x => x.id === n.noteId);
+                      if (fullNote) return <Badge color={{ bg: "#1e1b4b", text: "#a5b4fc" }} text={fullNote.category} />;
+                    })()}
+                    <span style={{ fontSize: 11, color: P.green }}>{n.author}</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: P.text, lineHeight: 1.5 }}>{n.notes}</div>
+                  {n.noteId && onChange && (
+                    <button onClick={() => {
+                      if (!window.confirm("Remove this note from the calendar?")) return;
+                      onChange({ ...project, milestones: (project.milestones||[]).filter(x => x.id !== n.id) });
+                      setSelected(null);
+                    }} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11, marginTop: 6, padding: 0 }}>
+                      Remove from calendar
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -5271,7 +5336,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
         <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
             {MONTH_NAMES[calMonth]} {selected.day}, {calYear}
-            {selected.milestones.length === 0 && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>No milestones due</span>}
+            {selected.milestones.length === 0 && (!selected.notes || selected.notes.length === 0) && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>Nothing logged</span>}
           </div>
           {selected.milestones.map(m => {
             const st = milestoneStatus(m.pctComplete);
@@ -5950,7 +6015,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
-        {tab === "Calendar" && <CalendarView project={project} />}
+        {tab === "Calendar" && <CalendarView project={project} onChange={onUpdate} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
       </Card>
@@ -5978,14 +6043,28 @@ function NotesView({ project, onChange }) {
   const [editDraft, setEditDraft] = useState({});
   const [filterCat, setFilterCat] = useState("All");
   const [search, setSearch] = useState("");
+  const [calStatus, setCalStatus] = useState(null); // null | "syncing" | "synced" | "error" | "noauth"
 
   function addNote() {
     if (!draft.body.trim()) return;
+    const today = new Date().toISOString().slice(0, 10);
     const entry = {
       id: uid(), body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
       author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
-    onChange({ ...project, notes: [entry, ...(project.notes || [])] });
+    // Add a calendar marker milestone for today
+    const calEntry = {
+      id: "note_" + entry.id,
+      type: "note",
+      name: (draft.category !== "General" ? "[" + draft.category + "] " : "") + draft.body.trim().slice(0, 60) + (draft.body.trim().length > 60 ? "…" : ""),
+      dueDate: today,
+      pctComplete: 100,
+      phase: "",
+      notes: draft.body.trim(),
+      noteId: entry.id,
+      author: entry.author,
+    };
+    onChange({ ...project, notes: [entry, ...(project.notes || [])], milestones: [...(project.milestones || []), calEntry] });
     setDraft({ body: "", category: "General", actionItem: false });
   }
 
@@ -6005,9 +6084,38 @@ function NotesView({ project, onChange }) {
   );
   const actionItems = notes.filter(n => n.actionItem);
 
+  const [editingOneNote, setEditingOneNote] = useState(false);
+  const [oneNoteDraft, setOneNoteDraft] = useState(project.oneNoteUrl || "");
+
   return (
     <div>
-      <SectionTitle>Project Notes & Log</SectionTitle>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: P.text }}>Project Notes & Log</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {project.oneNoteUrl && !editingOneNote && (
+            <a href={project.oneNoteUrl} target="_blank" rel="noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#6630b5", border: "1px solid #9b59e8",
+                borderRadius: 6, color: "#d4b8ff", cursor: "pointer", fontSize: 12, fontWeight: 600, padding: "5px 12px", textDecoration: "none" }}>
+              📓 Open OneNote
+            </a>
+          )}
+          <button onClick={() => { setEditingOneNote(e => !e); setOneNoteDraft(project.oneNoteUrl || ""); }}
+            style={{ background: "none", border: "1px solid " + P.border, borderRadius: 6, color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px" }}>
+            {editingOneNote ? "Cancel" : project.oneNoteUrl ? "✎ Edit Link" : "📓 Link OneNote"}
+          </button>
+        </div>
+      </div>
+      {editingOneNote && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, marginTop: 8 }}>
+          <input value={oneNoteDraft} onChange={e => setOneNoteDraft(e.target.value)}
+            placeholder="Paste OneNote page URL…"
+            style={{ flex: 1, fontSize: 12 }} autoFocus />
+          <Btn small onClick={() => { onChange({ ...project, oneNoteUrl: oneNoteDraft.trim() }); setEditingOneNote(false); }}>Save</Btn>
+          {project.oneNoteUrl && (
+            <Btn small variant="danger" onClick={() => { onChange({ ...project, oneNoteUrl: "" }); setEditingOneNote(false); }}>Remove</Btn>
+          )}
+        </div>
+      )}
 
       {actionItems.length > 0 && (
         <div style={{ background: P.yellowDim, border: "1px solid " + P.yellow, borderRadius: 8, padding: 12, marginBottom: 20 }}>
@@ -6038,7 +6146,7 @@ function NotesView({ project, onChange }) {
           style={{ width: "100%", minHeight: 80, background: P.bg, border: "1px solid " + P.border, borderRadius: 6,
             color: P.text, padding: 10, fontSize: 13, resize: "vertical", fontFamily: "inherit" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-          <span style={{ fontSize: 11, color: P.textDim }}>Ctrl+Enter to post</span>
+          <span style={{ fontSize: 11, color: P.textDim }}>Ctrl+Enter to post · automatically added to project calendar</span>
           <Btn onClick={addNote} disabled={!draft.body.trim()}>Post Note</Btn>
         </div>
       </div>
@@ -6280,6 +6388,7 @@ function ProjectCard({ project, onClick }) {
 function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
   const [dashPMFilter, setDashPMFilter] = useState("All");
+  const [milPMFilter, setMilPMFilter] = useState("All");
   const allPMs = useMemo(() => ["All", ...new Set(allActive.map(p => p.projectManager).filter(Boolean)).values()], [allActive]);
   const active = dashPMFilter === "All" ? allActive : allActive.filter(p => p.projectManager === dashPMFilter);
   const [dashCalState, setDashCalState] = useState({}); // { [milestoneId]: "syncing"|"synced"|"error" }
@@ -6522,8 +6631,23 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
       </div>
 
       <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>All Active Milestones</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>All Active Milestones</div>
+            {(() => {
+              const milPMs = ["All", ...new Set(allMilestones.map(m => m.pm).filter(Boolean))];
+              return milPMs.length > 1 ? (
+                <select value={milPMFilter} onChange={e => setMilPMFilter(e.target.value)}
+                  style={{ fontSize: 12, padding: "3px 8px", borderRadius: 6 }}>
+                  {milPMs.map(pm => <option key={pm}>{pm}</option>)}
+                </select>
+              ) : null;
+            })()}
+            {milPMFilter !== "All" && (
+              <button onClick={() => setMilPMFilter("All")}
+                style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12 }}>✕ Clear</button>
+            )}
+          </div>
           {dashSyncMsg && (
             <div style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6,
               background: dashSyncMsg.startsWith("✓") ? P.greenDim : dashSyncMsg.startsWith("⚠") ? P.yellowDim : P.redDim,
@@ -6540,7 +6664,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
             <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Progress</th><th>Notes</th><th>Project Status</th><th style={{width:44}}>📅</th></tr>
           </thead>
           <tbody>
-            {allMilestones.filter(m => !(m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
+            {allMilestones.filter(m => !(m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
               const mst = milestoneStatus(m.pctComplete);
               const projStatus = m.projectStatus || "Not Started";
               const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
@@ -7006,7 +7130,7 @@ function newClient(overrides) {
   };
 }
 
-function ClientDirectoryView({ clients, onUpdateClients }) {
+function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToProject }) {
   const [editingId, setEditingId] = React.useState(null);
   const [form, setForm] = React.useState(null);
   const [search, setSearch] = React.useState("");
@@ -7091,6 +7215,34 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
               <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
             </div>
           </div>
+          {/* Linked Projects */}
+          {(() => {
+            const linked = (projects||[]).filter(p => !p.archived && (p.client === form.name || p.prime === form.name));
+            if (linked.length === 0) return null;
+            return (
+              <div style={{ gridColumn: "1/-1", background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 24 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Linked Projects <span style={{ color: P.textDim, fontWeight: 400, fontSize: 12 }}>({linked.length})</span></div>
+                <table>
+                  <thead><tr><th>#</th><th>Project</th><th>Role</th><th>PM</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {linked.map(p => {
+                      const role = p.client === form.name && p.prime === form.name ? "Client + Prime" : p.client === form.name ? "Client" : "Prime/GC";
+                      const sc = STATUS_COLORS[p.status] || STATUS_COLORS["Not Started"];
+                      return (
+                        <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => onNavigateToProject(p.id)}>
+                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectNumber || "—"}</td>
+                          <td style={{ fontWeight: 600, color: P.accentLight }}>{p.name}</td>
+                          <td><Badge color={role === "Client" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }} text={role} /></td>
+                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectManager || "—"}</td>
+                          <td><Badge color={sc} text={p.status || "Not Started"} /></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
           {/* Contacts */}
           <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -7165,6 +7317,7 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
               <th>Type</th>
               <th>Contacts</th>
               <th>Primary Contact</th>
+              <th>Projects</th>
               <th></th>
             </tr>
           </thead>
@@ -7179,6 +7332,24 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
                   <td><Badge color={tc} text={c.type || "Client"} /></td>
                   <td style={{ color: P.textMuted }}>{contacts.length || "—"}</td>
                   <td style={{ color: P.textMuted, fontSize: 12 }}>{primary ? primary.name + (primary.role ? " · " + primary.role : "") : "—"}</td>
+                  <td style={{ fontSize: 12 }} onClick={e => e.stopPropagation()}>
+                    {(() => {
+                      const linked = (projects||[]).filter(p => !p.archived && (p.client === c.name || p.prime === c.name));
+                      return linked.length === 0
+                        ? <span style={{ color: P.textDim }}>—</span>
+                        : <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                            {linked.slice(0,3).map(p => (
+                              <button key={p.id} onClick={() => onNavigateToProject(p.id)}
+                                style={{ background: P.accentDim, border: "1px solid " + P.accent, borderRadius: 4,
+                                  color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "2px 7px", fontWeight: 600 }}
+                                title={p.name + (p.projectNumber ? " [" + p.projectNumber + "]" : "")}>
+                                {p.projectNumber || p.name.slice(0,12)}
+                              </button>
+                            ))}
+                            {linked.length > 3 && <span style={{ color: P.textDim, fontSize: 11, alignSelf: "center" }}>+{linked.length - 3} more</span>}
+                          </div>;
+                    })()}
+                  </td>
                   <td onClick={e => e.stopPropagation()}>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => startEdit(c)}>Edit</Btn>
@@ -8048,7 +8219,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} staff={staff} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} />}
-      {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} />}
+      {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "termcontracts" && <TermContractsView termContracts={termContracts} projects={projects} onUpdateTermContracts={setTermContracts} onNavigateToProject={id => setView(`project:${id}`)} clients={clients} onAddClient={c => setClients(prev => [...prev, c])} />}
