@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 17:27 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 18:16 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Setty PMS</title>
-  <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -1585,47 +1585,6 @@ function ScheduleView({ project, onChange }) {
           <button onClick={() => setEmailMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
         </div>
       )}
-      {scanMsg && (
-        <div style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
-          background: scanStatus === "error" ? P.redDim : P.accentDim,
-          color: scanStatus === "error" ? P.red : P.accentLight,
-          border: "1px solid " + (scanStatus === "error" ? P.red : P.accent) }}>
-          {scanMsg}
-        </div>
-      )}
-      {scanResults && scanResults.length > 0 && (
-        <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 10, padding: 16, marginBottom: 20 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12, color: P.accentLight }}>📬 Potential Payment Emails</div>
-          {scanResults.map(match => {
-            const unpaid = (project.invoices||[]).filter(inv => !inv.amountPaid || inv.amountPaid < inv.amount);
-            return (
-              <div key={match.emailId} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{match.subject}</div>
-                    <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>From: {match.from} · {match.received ? new Date(match.received).toLocaleDateString() : ""}</div>
-                    <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, fontStyle: "italic" }}>{(match.preview||"").slice(0,140)}…</div>
-                  </div>
-                  <button onClick={() => setScanResults(scanResults.filter(m => m.emailId !== match.emailId))}
-                    style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, marginLeft: 12 }}>✕</button>
-                </div>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 12, color: P.textDim }}>Apply to invoice:</span>
-                  {unpaid.map(inv => (
-                    <button key={inv.id} onClick={() => applyScanMatch(match, inv.id, inv.amount - (inv.amountPaid||0))}
-                      style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid " + (match.suggestedInvoice?.id === inv.id ? P.green : P.border),
-                        background: match.suggestedInvoice?.id === inv.id ? P.greenDim : P.card, color: match.suggestedInvoice?.id === inv.id ? P.green : P.textMuted, cursor: "pointer" }}>
-                      {inv.number} · {fmt(inv.amount - (inv.amountPaid||0))}
-                      {match.suggestedInvoice?.id === inv.id && " ✓"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* Sync status message */}
       {syncMsg && !syncingAll && (
         <div style={{
@@ -5758,7 +5717,7 @@ function ProjectionsView({ project }) {
 
 const TABS = ["Overview", "Fee Calculator", "Scope", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Notes", "Reimbursables", "Calendar"];
 
-function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff }) {
+function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
@@ -5882,6 +5841,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
                 clients={clients}
                 filter="prime"
                 placeholder="Type to search primes / GCs…"
+                onAddClient={onAddClient}
               />
             </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
@@ -5914,6 +5874,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
                   clients={clients}
                   filter="client"
                   placeholder="Type to search clients…"
+                  onAddClient={onAddClient}
                 />
               </Field>
               <Field label="Proposal Due Date">
@@ -7174,8 +7135,82 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
 }
 
 // ─── COMPANY TYPEAHEAD ─────────────────────────────────────────────────────────
-function CompanyTypeahead({ value, onChange, clients, filter, placeholder }) {
+function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
+  const typeLabel = filter === "client" ? "Client" : "Prime/GC";
+  const [form, setForm] = React.useState({ name: prefill || "", type: filter === "client" ? "Client" : "Prime/GC", contacts: [] });
+  const [contactName, setContactName] = React.useState("");
+  const [contactEmail, setContactEmail] = React.useState("");
+  const [contactRole, setContactRole] = React.useState("Owner");
+
+  function save() {
+    if (!form.name.trim()) return;
+    const company = newClient({
+      ...form,
+      contacts: contactName.trim() ? [newContact({ name: contactName.trim(), email: contactEmail.trim(), role: contactRole })] : [],
+    });
+    onSave(company);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 480, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div style={{ fontSize: 17, fontWeight: 800 }}>Quick Add {typeLabel}</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20, lineHeight: 1 }}>x</button>
+        </div>
+
+        <Field label="Company Name">
+          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+            placeholder={"e.g. Acme " + typeLabel} style={{ width: "100%" }} autoFocus />
+        </Field>
+
+        <Field label="Type">
+          <div style={{ display: "flex", gap: 8 }}>
+            {["Client", "Prime/GC", "Both"].map(t => {
+              const on = form.type === t;
+              const colors = { "Client": { bg: P.accentDim, text: P.accentLight }, "Prime/GC": { bg: P.purpleDim, text: P.purple }, "Both": { bg: P.greenDim, text: P.green } };
+              const tc = colors[t];
+              return (
+                <button key={t} onClick={() => setForm({ ...form, type: t })}
+                  style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                    background: on ? tc.bg : "transparent", color: on ? tc.text : P.textDim, border: "1px solid " + (on ? tc.text : P.border) }}>
+                  {t}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+
+        <div style={{ borderTop: "1px solid " + P.border, paddingTop: 16, marginTop: 4, marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 12 }}>Primary Contact (optional)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Name" style={{ marginBottom: 8 }}>
+              <input value={contactName} onChange={e => setContactName(e.target.value)} placeholder="Full name" style={{ width: "100%" }} />
+            </Field>
+            <Field label="Role" style={{ marginBottom: 8 }}>
+              <select value={contactRole} onChange={e => setContactRole(e.target.value)} style={{ width: "100%" }}>
+                {CONTACT_ROLES.map(r => <option key={r}>{r}</option>)}
+              </select>
+            </Field>
+            <Field label="Email" style={{ gridColumn: "1/-1", marginBottom: 0 }}>
+              <input type="email" value={contactEmail} onChange={e => setContactEmail(e.target.value)} placeholder="email@company.com" style={{ width: "100%" }} />
+            </Field>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={save} disabled={!form.name.trim()}>Add to Directory & Select</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAddClient }) {
   const [open, setOpen] = React.useState(false);
+  const [showModal, setShowModal] = React.useState(false);
   const matches = React.useMemo(() => {
     const q = (value || "").toLowerCase();
     return (clients || [])
@@ -7184,17 +7219,26 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder }) {
       .slice(0, 8);
   }, [clients, value, filter]);
 
+  const showAddNew = open && value && value.trim().length > 0 && onAddClient;
+
+  function handleAddSave(company) {
+    onAddClient(company);
+    onChange(company.name);
+    setShowModal(false);
+    setOpen(false);
+  }
+
   return (
     <div style={{ position: "relative" }}>
       <input
         value={value || ""}
         onChange={e => { onChange(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onBlur={() => setTimeout(() => setOpen(false), 200)}
         placeholder={placeholder || "Type to search…"}
         style={{ width: "100%" }}
       />
-      {open && matches.length > 0 && (
+      {open && (matches.length > 0 || showAddNew) && (
         <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 240, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
           {matches.map(c => (
             <div key={c.id}
@@ -7210,7 +7254,28 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder }) {
               )}
             </div>
           ))}
+          {showAddNew && (
+            <div onMouseDown={() => { setShowModal(true); setOpen(false); }}
+              style={{ padding: "9px 12px", cursor: "pointer", borderTop: matches.length > 0 ? "1px solid " + P.border : "none",
+                background: P.accentDim, display: "flex", alignItems: "center", gap: 8 }}
+              onMouseOver={e => e.currentTarget.style.opacity = ".8"}
+              onMouseOut={e => e.currentTarget.style.opacity = "1"}>
+              <span style={{ fontSize: 15, color: P.accentLight }}>+</span>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: P.accentLight }}>Add "{value}" to directory</div>
+                <div style={{ fontSize: 11, color: P.textDim }}>Create new {filter === "client" ? "client" : "prime/GC"} and select</div>
+              </div>
+            </div>
+          )}
         </div>
+      )}
+      {showModal && (
+        <QuickAddCompanyModal
+          filter={filter}
+          prefill={value}
+          onSave={handleAddSave}
+          onClose={() => setShowModal(false)}
+        />
       )}
     </div>
   );
@@ -7930,7 +7995,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} />
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} />
       )}
     </div>
   );
