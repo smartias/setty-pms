@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 18:40 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 18:43 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -6270,8 +6270,11 @@ function ProjectCard({ project, onClick }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
-function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
-  const active = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
+function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
+  const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
+  const [dashPMFilter, setDashPMFilter] = useState("All");
+  const allPMs = useMemo(() => ["All", ...new Set(allActive.map(p => p.projectManager).filter(Boolean)).values()], [allActive]);
+  const active = dashPMFilter === "All" ? allActive : allActive.filter(p => p.projectManager === dashPMFilter);
   const [dashCalState, setDashCalState] = useState({}); // { [milestoneId]: "syncing"|"synced"|"error" }
   const [dashSyncMsg, setDashSyncMsg] = useState("");
   const [showAddMilestone, setShowAddMilestone] = useState(false);
@@ -6356,7 +6359,20 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
           + Non-Billable Milestone
         </button>
       </div>
-      <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>Setty & Associates, LTD, PC – Project Management System</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
+        <div style={{ color: P.textMuted, fontSize: 13 }}>Setty & Associates, LTD, PC – Project Management System</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <span style={{ fontSize: 12, color: P.textDim }}>Filter by PM:</span>
+          <select value={dashPMFilter} onChange={e => setDashPMFilter(e.target.value)}
+            style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6 }}>
+            {allPMs.map(pm => <option key={pm}>{pm}</option>)}
+          </select>
+          {dashPMFilter !== "All" && (
+            <button onClick={() => setDashPMFilter("All")}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12 }}>✕ Clear</button>
+          )}
+        </div>
+      </div>
 
       {/* Add Non-Billable Milestone Modal */}
       {showAddMilestone && (
@@ -6532,6 +6548,11 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
                 );
                 onUpdateProject({ ...proj, milestones: newMilestones });
               }
+              function updateProjectStatus(newStatus) {
+                const proj = projects.find(p => p.id === m.projectId);
+                if (!proj) return;
+                onUpdateProject({ ...proj, status: newStatus });
+              }
 
               return (
                 <tr key={m.id}>
@@ -6570,7 +6591,14 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject }) {
                       onChange={e => updateMilestoneField("notes", e.target.value)}
                       style={{ width: 160, fontSize: 12 }} />
                   </td>
-                  <td><Badge color={projStatusColor} text={projStatus} /></td>
+                  <td>
+                    <select value={projStatus} onChange={e => updateProjectStatus(e.target.value)}
+                      style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6,
+                        background: projStatusColor.bg, color: projStatusColor.text,
+                        border: "1px solid " + projStatusColor.text, fontWeight: 600, cursor: "pointer" }}>
+                      {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
+                    </select>
+                  </td>
                   <td>
                     {m.dueDate && (() => {
                       const sessionState = dashCalState[m.id];
@@ -8010,7 +8038,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
       {loadErrorBanner}
 
-      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
+      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:\${id}`)} onUpdateProject={updateProject} staff={staff} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} />}
       {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} />}
