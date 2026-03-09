@@ -230,6 +230,7 @@ function newProject(overrides = {}) {
     proposalDueDate: "",
     probability: 50,
     clientName: "",
+    clientContact: "",
     contractStatus: "Waiting for NTP/Contract",
     contractNotes: "",
     feeType: "Lump Sum",
@@ -739,6 +740,7 @@ function printFeeProposal(project) {
       <div class="meta-block">
         <div class="meta-label">Client / Prime</div>
         <div class="meta-value">${project.prime || project.clientName || "—"}</div>
+        ${project.clientContact ? `<div style="font-size:9pt;color:#44546A;margin-top:3px;"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:7.5pt;">Attn:</span> ${project.clientContact}</div>` : ""}
         ${project.primeProjectNumber ? `<div style="font-size:9pt;color:#44546A;">Prime #: ${project.primeProjectNumber}</div>` : ""}
       </div>
     </div>
@@ -6070,6 +6072,10 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
 
+            <Field label="Client POC">
+              <input value={project.clientContact || ""} onChange={e => updateField("clientContact", e.target.value)} style={{ width: "100%" }} placeholder="Contact name for proposals & correspondence" />
+            </Field>
+
             <Field label="Fee Type">
               <select value={project.feeType || "Lump Sum"} onChange={e => updateField("feeType", e.target.value)} style={{ width: "100%" }}>
                 <option>Lump Sum</option>
@@ -7056,6 +7062,7 @@ function printScopeOfServices(project) {
       <div class="meta-block">
         <div class="meta-label">Client / Prime</div>
         <div class="meta-value">${project.prime || project.clientName || "—"}</div>
+        ${project.clientContact ? '<div class="meta-sub"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:7.5pt;">Attn:</span> ' + project.clientContact + "</div>" : ""}
         ${project.primeProjectNumber ? '<div class="meta-sub">Prime #: ' + project.primeProjectNumber + "</div>" : ""}
         ${project.projectManager ? '<div class="meta-sub">PM: ' + project.projectManager + "</div>" : ""}
       </div>
