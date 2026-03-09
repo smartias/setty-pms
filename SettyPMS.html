@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 16:45 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 17:00 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7272,96 +7272,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
   const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
 
-  // ── No setup screen needed — Supabase config is baked in ──
-  if (false) return (
-    <div>
 
-        {/* ── Data Tools ── */}
-        <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, overflow: "hidden" }}>
-          <button onClick={() => setShowDataTools(v => !v)}
-            style={{ width: "100%", background: "none", border: "none", color: P.text, cursor: "pointer", padding: "14px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 600 }}>
-            <span>🗄 Data Backup & Cleanup</span>
-            <span style={{ color: P.textDim }}>{showDataTools ? "▲" : "▼"}</span>
-          </button>
-          {showDataTools && (
-            <div style={{ padding: "0 20px 20px", borderTop: `1px solid ${P.border}` }}>
-
-              {/* Export */}
-              <div style={{ marginTop: 16 }}>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: P.accentLight }}>📥 Export Backup</div>
-                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
-                  Downloads all projects and term contracts as a <code>.json</code> file to your computer. Do this periodically — weekly or before major changes.
-                </div>
-                <Btn onClick={exportBackup}>Download Backup ({projects.length} projects)</Btn>
-              </div>
-
-              {/* Import */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${P.border}` }}>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: P.yellow }}>📤 Restore from Backup</div>
-                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
-                  ⚠ This replaces ALL current data with the backup file. Export a backup first.
-                </div>
-                <label style={{ display: "inline-block", background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, padding: "6px 14px", fontSize: 12, color: P.accentLight, cursor: "pointer" }}>
-                  Choose Backup File…
-                  <input type="file" accept=".json" onChange={handleImportFile} style={{ display: "none" }} />
-                </label>
-                {importMsg && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: importMsg.startsWith("✓") ? P.green : P.red }}>{importMsg}</div>
-                )}
-              </div>
-
-              {/* Archive Cleanup */}
-              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${P.border}` }}>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: P.red }}>🗑 Clean Up Old Archives</div>
-                <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
-                  Permanently delete archived projects with no activity in the selected timeframe. Export a backup first.
-                </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {[12, 24, 36].map(months => (
-                    <Btn key={months} small variant="ghost" onClick={() => previewCleanup(months)}>
-                      Older than {months === 12 ? "1 year" : months === 24 ? "2 years" : "3 years"}
-                    </Btn>
-                  ))}
-                </div>
-
-                {cleanupPreview && (
-                  <div style={{ marginTop: 12, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 14 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: cleanupPreview.toDelete.length > 0 ? P.red : P.green }}>
-                      {cleanupPreview.toDelete.length === 0
-                        ? `✓ No archived projects older than ${cleanupPreview.months === 12 ? "1 year" : cleanupPreview.months === 24 ? "2 years" : "3 years"} found.`
-                        : `${cleanupPreview.toDelete.length} project${cleanupPreview.toDelete.length !== 1 ? "s" : ""} would be permanently deleted:`
-                      }
-                    </div>
-                    {cleanupPreview.toDelete.length > 0 && (<>
-                      <div style={{ maxHeight: 160, overflowY: "auto", marginBottom: 12 }}>
-                        {cleanupPreview.toDelete.map(p => (
-                          <div key={p.id} style={{ fontSize: 11, color: P.textMuted, padding: "2px 0", borderBottom: `1px solid ${P.border}` }}>
-                            {p.projectNumber ? `[${p.projectNumber}] ` : ""}{p.name}
-                            {p.startDate ? <span style={{ color: P.textDim, marginLeft: 8 }}>Started {p.startDate}</span> : ""}
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <Btn variant="danger" onClick={confirmCleanup}>
-                          Permanently Delete {cleanupPreview.toDelete.length} Project{cleanupPreview.toDelete.length !== 1 ? "s" : ""}
-                        </Btn>
-                        <Btn variant="ghost" onClick={() => setCleanupPreview(null)}>Cancel</Btn>
-                      </div>
-                    </>)}
-                  </div>
-                )}
-                {cleanupMsg && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: cleanupMsg.startsWith("✓") ? P.green : P.red }}>{cleanupMsg}</div>
-                )}
-              </div>
-
-            </div>
-          )}
-        </div>
-
-      </div>
-    </div>
-  );
 
   // ── Loading screen ──
   if (appStatus === "loading") return (
