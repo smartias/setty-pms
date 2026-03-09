@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 17:00 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 17:03 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -283,21 +283,13 @@ const TENANT_ID = "f374c024-71c2-48b6-8420-076fff97327c"; // Setty & Associates 
 // ── MSAL instance ──
 let _msalApp = null;
 
-function getMsalClientId() {
-  return localStorage.getItem("setty_pms_client_id") || "";
-}
-
-// Stored drive item ID for the shared data file (set after first successful access)
-function getDataItemId() { return localStorage.getItem("setty_pms_item_id") || ""; }
-function setDataItemId(id) { localStorage.setItem("setty_pms_item_id", id); }
+const MSAL_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301";
 
 async function getMsalApp() {
-  const clientId = getMsalClientId();
-  if (!clientId) throw new Error("NO_CLIENT_ID");
   if (_msalApp) return _msalApp;
   _msalApp = new msal.PublicClientApplication({
     auth: {
-      clientId,
+      clientId: MSAL_CLIENT_ID,
       authority: `https://login.microsoftonline.com/${TENANT_ID}`,
       redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
     },
