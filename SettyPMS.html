@@ -4990,7 +4990,7 @@ function CalendarView({ project, onChange }) {
               const hasOverdue = dayMilestones.some(m => milestoneStatus(m.pctComplete) !== "Completed");
               return (
                 <div key={di}
-                  onClick={() => { if (!day) return; const dayNotes = milestones.filter(m => m.type === "note" && m.dueDate === dateStr); setSelected(isSelected ? null : { day, milestones: dayMilestones.filter(m => m.type !== "note"), notes: dayNotes, dateStr }); }}
+                  onClick={() => { if (!day) return; setSelected(isSelected ? null : { day, milestones: dayMilestones, dateStr }); }}
                   style={{
                     minHeight: 80,
                     borderTop: `1px solid ${P.border}`,
@@ -5022,7 +5022,7 @@ function CalendarView({ project, onChange }) {
                       {/* Milestone dots */}
                       {dayMilestones.slice(0, 3).map(m => {
                         const st = milestoneStatus(m.pctComplete);
-                        const dotColor = m.type === "note" ? P.green : st === "Completed" ? P.green : m.type === "non-billable" ? P.purple : m.type === "change-order" ? P.yellow : P.accentLight;
+                        const dotColor = st === "Completed" ? P.green : m.type === "non-billable" ? P.purple : m.type === "change-order" ? P.yellow : P.accentLight;
                         return (
                           <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
                             <div style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
@@ -5047,7 +5047,7 @@ function CalendarView({ project, onChange }) {
         <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
             {MONTH_NAMES[calMonth]} {selected.day}, {calYear}
-            {selected.milestones.length === 0 && (!selected.notes || selected.notes.length === 0) && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>Nothing logged</span>}
+            {selected.milestones.length === 0 && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>Nothing logged</span>}
           </div>
           {selected.milestones.map(m => {
             const st = milestoneStatus(m.pctComplete);
@@ -5073,33 +5073,6 @@ function CalendarView({ project, onChange }) {
               </div>
             );
           })}
-          {selected.notes && selected.notes.length > 0 && (
-            <div style={{ marginTop: selected.milestones.length > 0 ? 12 : 0 }}>
-              {selected.milestones.length > 0 && <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>Notes Logged</div>}
-              {selected.notes.map(n => (
-                <div key={n.id} style={{ padding: "10px 14px", marginBottom: 8, background: P.greenDim, borderRadius: 8, border: "1px solid " + P.green }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-                    <Badge color={{ bg: P.greenDim, text: P.green }} text="Note" />
-                    {n.noteId && (() => {
-                      const fullNote = (project.notes||[]).find(x => x.id === n.noteId);
-                      if (fullNote) return <Badge color={{ bg: "#1e1b4b", text: "#a5b4fc" }} text={fullNote.category} />;
-                    })()}
-                    <span style={{ fontSize: 11, color: P.green }}>{n.author}</span>
-                  </div>
-                  <div style={{ fontSize: 13, color: P.text, lineHeight: 1.5 }}>{n.notes}</div>
-                  {n.noteId && onChange && (
-                    <button onClick={() => {
-                      if (!window.confirm("Remove this note from the calendar?")) return;
-                      onChange({ ...project, milestones: (project.milestones||[]).filter(x => x.id !== n.id) });
-                      setSelected(null);
-                    }} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11, marginTop: 6, padding: 0 }}>
-                      Remove from calendar
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -5485,7 +5458,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
         <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
             {MONTH_NAMES[calMonth]} {selected.day}, {calYear}
-            {selected.milestones.length === 0 && (!selected.notes || selected.notes.length === 0) && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>Nothing logged</span>}
+            {selected.milestones.length === 0 && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>Nothing logged</span>}
           </div>
           {selected.milestones.map(m => {
             const st = milestoneStatus(m.pctComplete);
@@ -6200,24 +6173,11 @@ function NotesView({ project, onChange }) {
 
   function addNote() {
     if (!draft.body.trim()) return;
-    const today = new Date().toISOString().slice(0, 10);
     const entry = {
       id: uid(), body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
       author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
-    // Add a calendar marker milestone for today
-    const calEntry = {
-      id: "note_" + entry.id,
-      type: "note",
-      name: (draft.category !== "General" ? "[" + draft.category + "] " : "") + draft.body.trim().slice(0, 60) + (draft.body.trim().length > 60 ? "…" : ""),
-      dueDate: today,
-      pctComplete: 100,
-      phase: "",
-      notes: draft.body.trim(),
-      noteId: entry.id,
-      author: entry.author,
-    };
-    onChange({ ...project, notes: [entry, ...(project.notes || [])], milestones: [...(project.milestones || []), calEntry] });
+    onChange({ ...project, notes: [entry, ...(project.notes || [])] });
     setDraft({ body: "", category: "General", actionItem: false });
   }
 
@@ -6273,7 +6233,7 @@ function NotesView({ project, onChange }) {
           style={{ width: "100%", minHeight: 80, background: P.bg, border: "1px solid " + P.border, borderRadius: 6,
             color: P.text, padding: 10, fontSize: 13, resize: "vertical", fontFamily: "inherit" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-          <span style={{ fontSize: 11, color: P.textDim }}>Ctrl+Enter to post · automatically added to project calendar</span>
+          <span style={{ fontSize: 11, color: P.textDim }}>Ctrl+Enter to post</span>
           <Btn onClick={addNote} disabled={!draft.body.trim()}>Post Note</Btn>
         </div>
       </div>
