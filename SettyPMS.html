@@ -1,11 +1,10 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 17:10 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 17:27 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Setty PMS</title>
   <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
-  <script>if (typeof msal === 'undefined') { document.write('<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"><\/script>'); }</script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -260,6 +259,9 @@ function newProject(overrides = {}) {
     scopeContent: "",
     scopeLocked: false,
     scopeAuditLog: [],
+    notes: [],
+    reimbursableBudget: 0,
+    reimbursables: [],
     ...overrides,
   };
 }
@@ -301,13 +303,15 @@ async function getMsalApp() {
 
 // Scopes — all delegated, none require admin consent
 const GRAPH_SCOPES = [
-  "Calendars.ReadWrite.Shared", // shared calendars — NO admin consent
-  "User.Read",                // sign in — NO admin consent
+  "Calendars.ReadWrite.Shared", // shared calendars
+  "User.Read",                  // sign in
+  "Mail.ReadWrite",             // email drafts + inbox scanning
 ];
 
 function getCurrentUser() {
   try {
-    const accounts = app.getAllAccounts();
+    if (!_msalApp) return "Unknown";
+    const accounts = _msalApp.getAllAccounts();
     if (accounts.length > 0) return accounts[0].name || accounts[0].username || "Unknown";
   } catch(e) {}
   return "Unknown";
@@ -1581,6 +1585,46 @@ function ScheduleView({ project, onChange }) {
           <button onClick={() => setEmailMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
         </div>
       )}
+      {scanMsg && (
+        <div style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
+          background: scanStatus === "error" ? P.redDim : P.accentDim,
+          color: scanStatus === "error" ? P.red : P.accentLight,
+          border: "1px solid " + (scanStatus === "error" ? P.red : P.accent) }}>
+          {scanMsg}
+        </div>
+      )}
+      {scanResults && scanResults.length > 0 && (
+        <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12, color: P.accentLight }}>📬 Potential Payment Emails</div>
+          {scanResults.map(match => {
+            const unpaid = (project.invoices||[]).filter(inv => !inv.amountPaid || inv.amountPaid < inv.amount);
+            return (
+              <div key={match.emailId} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{match.subject}</div>
+                    <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>From: {match.from} · {match.received ? new Date(match.received).toLocaleDateString() : ""}</div>
+                    <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, fontStyle: "italic" }}>{(match.preview||"").slice(0,140)}…</div>
+                  </div>
+                  <button onClick={() => setScanResults(scanResults.filter(m => m.emailId !== match.emailId))}
+                    style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, marginLeft: 12 }}>✕</button>
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: P.textDim }}>Apply to invoice:</span>
+                  {unpaid.map(inv => (
+                    <button key={inv.id} onClick={() => applyScanMatch(match, inv.id, inv.amount - (inv.amountPaid||0))}
+                      style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid " + (match.suggestedInvoice?.id === inv.id ? P.green : P.border),
+                        background: match.suggestedInvoice?.id === inv.id ? P.greenDim : P.card, color: match.suggestedInvoice?.id === inv.id ? P.green : P.textMuted, cursor: "pointer" }}>
+                      {inv.number} · {fmt(inv.amount - (inv.amountPaid||0))}
+                      {match.suggestedInvoice?.id === inv.id && " ✓"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Sync status message */}
       {syncMsg && !syncingAll && (
@@ -2326,6 +2370,9 @@ function FinancialsView({ project, onChange }) {
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [emailStatus, setEmailStatus] = useState("idle");
   const [emailMsg, setEmailMsg] = useState("");
+  const [scanStatus, setScanStatus] = useState("idle"); // idle | scanning | done | error
+  const [scanResults, setScanResults] = useState(null); // array of matches
+  const [scanMsg, setScanMsg] = useState("");
 
   const phases = project.phases || [];
   const billablePhases = phases.filter(p => p.billable && p.fee > 0);
@@ -2449,6 +2496,53 @@ function FinancialsView({ project, onChange }) {
     }
   }
 
+  async function scanInboxForPayments() {
+    setScanStatus("scanning"); setScanMsg(""); setScanResults(null);
+    try {
+      const token = await getToken();
+      // Build search query — project number and invoice numbers as keywords
+      const invNums = (project.invoices||[]).filter(inv => !inv.amountPaid || inv.amountPaid < inv.amount).map(i => i.number).filter(Boolean);
+      const projectKeyword = project.projectNumber || project.name || "";
+      const paymentKeywords = ["payment received", "wire transfer", "ACH", "check", "remittance", "paid in full"];
+      const kw = [projectKeyword, ...invNums].filter(Boolean).join(" OR ");
+      const searchQ = encodeURIComponent(`"${kw}" AND (payment OR remittance OR wire OR check OR ACH)`);
+      const url = `https://graph.microsoft.com/v1.0/me/messages?$search="${kw}"&$top=25&$select=id,subject,from,receivedDateTime,bodyPreview`;
+      const res = await fetch(`https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=id,subject,from,receivedDateTime,bodyPreview&$filter=contains(subject,'${encodeURIComponent(projectKeyword)}')`, {
+        headers: { Authorization: "Bearer " + token }
+      });
+      if (!res.ok) throw new Error("Graph API " + res.status);
+      const data = await res.json();
+      const emails = data.value || [];
+      // Match emails to unpaid invoices
+      const unpaid = (project.invoices||[]).filter(inv => !inv.amountPaid || inv.amountPaid < inv.amount);
+      const matches = emails.filter(email => {
+        const txt = (email.subject + " " + email.bodyPreview).toLowerCase();
+        return paymentKeywords.some(kw2 => txt.includes(kw2.toLowerCase())) ||
+          unpaid.some(inv => inv.number && txt.includes(inv.number.toLowerCase()));
+      }).map(email => ({
+        emailId: email.id,
+        subject: email.subject,
+        from: email.from?.emailAddress?.name || email.from?.emailAddress?.address || "Unknown",
+        received: email.receivedDateTime,
+        preview: email.bodyPreview,
+        suggestedInvoice: unpaid.find(inv => inv.number && (email.subject + " " + email.bodyPreview).toLowerCase().includes(inv.number.toLowerCase())) || null,
+      }));
+      setScanResults(matches);
+      setScanStatus("done");
+      setScanMsg(matches.length > 0 ? `Found ${matches.length} potential payment email${matches.length > 1 ? "s" : ""} — review and confirm below.` : "No payment-related emails found matching this project.");
+    } catch(e) {
+      setScanStatus("error");
+      setScanMsg("✗ Scan failed: " + e.message);
+    }
+  }
+
+  function applyScanMatch(match, invoiceId, amount) {
+    onChange({ ...project, invoices: (project.invoices||[]).map(inv =>
+      inv.id === invoiceId ? { ...inv, amountPaid: amount, datePaid: match.received ? match.received.slice(0,10) : new Date().toISOString().slice(0,10) } : inv
+    )});
+    setScanResults(scanResults.filter(m => m.emailId !== match.emailId));
+  }
+
   return (
     <div>
       {/* 5-column KPI row */}
@@ -2511,6 +2605,11 @@ function FinancialsView({ project, onChange }) {
         <div style={{ display: "flex", gap: 8 }}>
           {invoices.length > 0 && <Btn small variant="ghost" disabled={emailStatus === "sending"} onClick={emailInvoices}>{emailStatus === "sending" ? "⏳ Drafting…" : "✉ Email Statement"}</Btn>}
           {invoices.length > 0 && <Btn small variant="ghost" onClick={() => printStatement(project)}>🖨 Statement</Btn>}
+          {invoices.some(inv => !inv.amountPaid || inv.amountPaid < inv.amount) && (
+            <Btn small variant="ghost" disabled={scanStatus === "scanning"} onClick={scanInboxForPayments}>
+              {scanStatus === "scanning" ? "⏳ Scanning…" : "📬 Scan Inbox"}
+            </Btn>
+          )}
           <Btn small onClick={() => setShowInvoiceModal(true)}>+ Log Invoice</Btn>
         </div>
       }>
@@ -2524,6 +2623,46 @@ function FinancialsView({ project, onChange }) {
           display: "flex", justifyContent: "space-between" }}>
           <span>{emailMsg}</span>
           <button onClick={() => setEmailMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+        </div>
+      )}
+      {scanMsg && (
+        <div style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
+          background: scanStatus === "error" ? P.redDim : P.accentDim,
+          color: scanStatus === "error" ? P.red : P.accentLight,
+          border: "1px solid " + (scanStatus === "error" ? P.red : P.accent) }}>
+          {scanMsg}
+        </div>
+      )}
+      {scanResults && scanResults.length > 0 && (
+        <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12, color: P.accentLight }}>📬 Potential Payment Emails</div>
+          {scanResults.map(match => {
+            const unpaid = (project.invoices||[]).filter(inv => !inv.amountPaid || inv.amountPaid < inv.amount);
+            return (
+              <div key={match.emailId} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{match.subject}</div>
+                    <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>From: {match.from} · {match.received ? new Date(match.received).toLocaleDateString() : ""}</div>
+                    <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, fontStyle: "italic" }}>{(match.preview||"").slice(0,140)}…</div>
+                  </div>
+                  <button onClick={() => setScanResults(scanResults.filter(m => m.emailId !== match.emailId))}
+                    style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, marginLeft: 12 }}>✕</button>
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: P.textDim }}>Apply to invoice:</span>
+                  {unpaid.map(inv => (
+                    <button key={inv.id} onClick={() => applyScanMatch(match, inv.id, inv.amount - (inv.amountPaid||0))}
+                      style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid " + (match.suggestedInvoice?.id === inv.id ? P.green : P.border),
+                        background: match.suggestedInvoice?.id === inv.id ? P.greenDim : P.card, color: match.suggestedInvoice?.id === inv.id ? P.green : P.textMuted, cursor: "pointer" }}>
+                      {inv.number} · {fmt(inv.amount - (inv.amountPaid||0))}
+                      {match.suggestedInvoice?.id === inv.id && " ✓"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
       {invoices.length > 0 && (
@@ -5197,7 +5336,8 @@ function SubsView({ project, onChange }) {
     onChange({ ...project, subconsultants: [...subs, {
       id: uid(), firm: "", discipline: "Civil", contact: "", phone: "", email: "",
       contractStatus: "Not Started", fee: 0, notes: "",
-      phases: {}
+      phases: {},
+      poAmount: 0, poDate: "", amountBilled: 0, amountPaid: 0,
     }]});
   }
 
@@ -5307,6 +5447,30 @@ function SubsView({ project, onChange }) {
                     <input value={sub.notes || ""} onChange={e => updateSub(sub.id, { notes: e.target.value })} placeholder="Scope notes, special conditions…" style={{ width: "100%" }} />
                   </Field>
                 </div>
+                {/* PO & Payment tracking */}
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid " + P.border }}>
+                  <div style={{ fontSize: 11, color: P.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 10 }}>PO & Payment Tracking</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, alignItems: "end" }}>
+                    <Field label="PO Amount" style={{ marginBottom: 0 }}>
+                      <input type="number" min="0" step="500" value={sub.poAmount || ""} onChange={e => updateSub(sub.id, { poAmount: +e.target.value })} placeholder="$0" style={{ width: "100%" }} />
+                    </Field>
+                    <Field label="PO Date" style={{ marginBottom: 0 }}>
+                      <input type="date" value={sub.poDate || ""} onChange={e => updateSub(sub.id, { poDate: e.target.value })} style={{ width: "100%" }} />
+                    </Field>
+                    <Field label="Amount Billed by Sub" style={{ marginBottom: 0 }}>
+                      <input type="number" min="0" step="100" value={sub.amountBilled || ""} onChange={e => updateSub(sub.id, { amountBilled: +e.target.value })} placeholder="$0" style={{ width: "100%" }} />
+                    </Field>
+                    <Field label="Amount Paid to Sub" style={{ marginBottom: 0 }}>
+                      <input type="number" min="0" step="100" value={sub.amountPaid || ""} onChange={e => updateSub(sub.id, { amountPaid: +e.target.value })} placeholder="$0" style={{ width: "100%" }} />
+                    </Field>
+                  </div>
+                  {(sub.poAmount > 0 || sub.amountBilled > 0) && (
+                    <div style={{ display: "flex", gap: 16, marginTop: 10 }}>
+                      {sub.poAmount > 0 && <span style={{ fontSize: 12, color: P.textDim }}>PO remaining: <span style={{ color: (sub.poAmount - (sub.amountBilled||0)) < 0 ? P.red : P.green, fontWeight: 600 }}>{fmt((sub.poAmount||0) - (sub.amountBilled||0))}</span></span>}
+                      {sub.amountBilled > 0 && <span style={{ fontSize: 12, color: P.textDim }}>Outstanding: <span style={{ color: P.yellow, fontWeight: 600 }}>{fmt((sub.amountBilled||0) - (sub.amountPaid||0))}</span></span>}
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -5318,16 +5482,21 @@ function SubsView({ project, onChange }) {
         <div style={{ marginTop: 24 }}>
           <SectionTitle>Fee Summary</SectionTitle>
           <table>
-            <thead><tr><th>Discipline</th><th>Firm</th><th>Contract</th><th>Total Fee</th></tr></thead>
+            <thead><tr><th>Discipline</th><th>Firm</th><th>Contract</th><th>Sub Fee</th><th>PO Amount</th><th>Billed</th><th>Paid</th><th>Outstanding</th></tr></thead>
             <tbody>
               {subs.map(sub => {
                 const stColor = SUB_CONTRACT_COLORS[sub.contractStatus] || SUB_CONTRACT_COLORS["Not Started"];
+                const outstanding = (sub.amountBilled||0) - (sub.amountPaid||0);
                 return (
                   <tr key={sub.id}>
                     <td>{sub.discipline}</td>
                     <td>{sub.firm || <span style={{ color: P.textDim }}>Unnamed</span>}</td>
                     <td><Badge color={stColor} text={sub.contractStatus} /></td>
                     <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: P.purple }}>{fmt(sub.fee || 0)}</td>
+                    <td style={{ fontFamily: "JetBrains Mono" }}>{sub.poAmount ? fmt(sub.poAmount) : "—"}</td>
+                    <td style={{ fontFamily: "JetBrains Mono" }}>{sub.amountBilled ? fmt(sub.amountBilled) : "—"}</td>
+                    <td style={{ fontFamily: "JetBrains Mono", color: P.green }}>{sub.amountPaid ? fmt(sub.amountPaid) : "—"}</td>
+                    <td style={{ fontFamily: "JetBrains Mono", color: outstanding > 0 ? P.yellow : P.textDim }}>{sub.amountBilled ? fmt(outstanding) : "—"}</td>
                   </tr>
                 );
               })}
@@ -5587,7 +5756,7 @@ function ProjectionsView({ project }) {
 
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Fee Calculator", "Scope", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Calendar"];
+const TABS = ["Overview", "Fee Calculator", "Scope", "Schedule", "Subconsultants", "Projections", "Financials", "Change Orders", "Contract", "Team", "Notes", "Reimbursables", "Calendar"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff }) {
   const [tab, setTab] = useState("Overview");
@@ -5788,7 +5957,289 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} />}
+        {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
+        {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
       </Card>
+    </div>
+  );
+}
+
+// ─── NOTES VIEW ──────────────────────────────────────────────────────────────
+
+const NOTE_CATEGORIES = ["Meeting", "Decision", "Client Communication", "Internal", "Issue", "Action Item", "General"];
+const NOTE_CAT_COLORS = {
+  "Meeting":              { bg: P.accentDim,  text: P.accentLight },
+  "Decision":             { bg: P.purpleDim,  text: P.purple },
+  "Client Communication": { bg: P.greenDim,   text: P.green },
+  "Internal":             { bg: P.border,     text: P.textMuted },
+  "Issue":                { bg: P.redDim,     text: P.red },
+  "Action Item":          { bg: P.yellowDim,  text: P.yellow },
+  "General":              { bg: P.border,     text: P.textDim },
+};
+
+function NotesView({ project, onChange }) {
+  const notes = (project.notes || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const [draft, setDraft] = useState({ body: "", category: "General", actionItem: false });
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState({});
+  const [filterCat, setFilterCat] = useState("All");
+  const [search, setSearch] = useState("");
+
+  function addNote() {
+    if (!draft.body.trim()) return;
+    const entry = {
+      id: uid(), body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
+      author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    onChange({ ...project, notes: [entry, ...(project.notes || [])] });
+    setDraft({ body: "", category: "General", actionItem: false });
+  }
+
+  function startEdit(note) { setEditingId(note.id); setEditDraft({ body: note.body, category: note.category, actionItem: note.actionItem }); }
+  function saveEdit(id) {
+    onChange({ ...project, notes: (project.notes||[]).map(n => n.id === id ? { ...n, ...editDraft, updatedAt: new Date().toISOString() } : n) });
+    setEditingId(null);
+  }
+  function deleteNote(id) {
+    if (!window.confirm("Delete this note?")) return;
+    onChange({ ...project, notes: (project.notes||[]).filter(n => n.id !== id) });
+  }
+
+  const filtered = notes.filter(n =>
+    (filterCat === "All" || n.category === filterCat) &&
+    (!search || n.body.toLowerCase().includes(search.toLowerCase()) || (n.author||"").toLowerCase().includes(search.toLowerCase()))
+  );
+  const actionItems = notes.filter(n => n.actionItem);
+
+  return (
+    <div>
+      <SectionTitle>Project Notes & Log</SectionTitle>
+
+      {actionItems.length > 0 && (
+        <div style={{ background: P.yellowDim, border: "1px solid " + P.yellow, borderRadius: 8, padding: 12, marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: P.yellow, marginBottom: 6 }}>ACTION ITEMS ({actionItems.length})</div>
+          {actionItems.map(n => (
+            <div key={n.id} style={{ fontSize: 12, color: P.text, marginBottom: 3 }}>
+              {"\u00b7"} {n.body.length > 120 ? n.body.slice(0, 120) + "\u2026" : n.body}
+              <span style={{ color: P.textDim, marginLeft: 8 }}>{"\u2014"} {n.author}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={draft.category} onChange={e => setDraft({ ...draft, category: e.target.value })} style={{ fontSize: 12 }}>
+            {NOTE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+          </select>
+          <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: P.yellow, cursor: "pointer" }}>
+            <input type="checkbox" checked={draft.actionItem} onChange={e => setDraft({ ...draft, actionItem: e.target.checked })} />
+            Action Item
+          </label>
+          <span style={{ fontSize: 11, color: P.textDim, marginLeft: "auto" }}>Posting as: {getCurrentUser()}</span>
+        </div>
+        <textarea value={draft.body} onChange={e => setDraft({ ...draft, body: e.target.value })}
+          placeholder="Add a note, meeting summary, decision, or action item..."
+          onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) addNote(); }}
+          style={{ width: "100%", minHeight: 80, background: P.bg, border: "1px solid " + P.border, borderRadius: 6,
+            color: P.text, padding: 10, fontSize: 13, resize: "vertical", fontFamily: "inherit" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+          <span style={{ fontSize: 11, color: P.textDim }}>Ctrl+Enter to post</span>
+          <Btn onClick={addNote} disabled={!draft.body.trim()}>Post Note</Btn>
+        </div>
+      </div>
+
+      {notes.length > 0 && (
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <input placeholder="Search notes..." value={search} onChange={e => setSearch(e.target.value)} style={{ width: 220, fontSize: 12 }} />
+          <select value={filterCat} onChange={e => setFilterCat(e.target.value)} style={{ fontSize: 12 }}>
+            <option value="All">All Categories</option>
+            {NOTE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+          </select>
+          <span style={{ fontSize: 11, color: P.textDim }}>{filtered.length} note{filtered.length !== 1 ? "s" : ""}</span>
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          {notes.length === 0 ? "No notes yet. Post the first one above." : "No notes match your filter."}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {filtered.map(note => {
+            const cc = NOTE_CAT_COLORS[note.category] || NOTE_CAT_COLORS["General"];
+            const isEditing = editingId === note.id;
+            const edited = note.updatedAt !== note.createdAt;
+            return (
+              <div key={note.id} style={{ background: P.card, border: "1px solid " + (note.actionItem ? P.yellow : P.border), borderRadius: 8, padding: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <Badge color={cc} text={note.category} />
+                    {note.actionItem && <Badge color={{ bg: P.yellowDim, text: P.yellow }} text="Action Item" />}
+                    <span style={{ fontSize: 11, color: P.textDim }}>{note.author}</span>
+                    <span style={{ fontSize: 11, color: P.textDim }}>{"\u00b7"} {new Date(note.createdAt).toLocaleString()}</span>
+                    {edited && <span style={{ fontSize: 10, color: P.textDim, fontStyle: "italic" }}>(edited)</span>}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Btn small variant="ghost" onClick={() => isEditing ? setEditingId(null) : startEdit(note)}>{isEditing ? "Cancel" : "Edit"}</Btn>
+                    <Btn small variant="danger" onClick={() => deleteNote(note.id)}>{"x"}</Btn>
+                  </div>
+                </div>
+                {isEditing ? (
+                  <div>
+                    <div style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
+                      <select value={editDraft.category} onChange={e => setEditDraft({ ...editDraft, category: e.target.value })} style={{ fontSize: 12 }}>
+                        {NOTE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                      </select>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: P.yellow, cursor: "pointer" }}>
+                        <input type="checkbox" checked={editDraft.actionItem} onChange={e => setEditDraft({ ...editDraft, actionItem: e.target.checked })} />
+                        Action Item
+                      </label>
+                    </div>
+                    <textarea value={editDraft.body} onChange={e => setEditDraft({ ...editDraft, body: e.target.value })}
+                      style={{ width: "100%", minHeight: 80, background: P.bg, border: "1px solid " + P.border, borderRadius: 6,
+                        color: P.text, padding: 10, fontSize: 13, resize: "vertical", fontFamily: "inherit" }} />
+                    <div style={{ marginTop: 8 }}>
+                      <Btn small onClick={() => saveEdit(note.id)} disabled={!editDraft.body.trim()}>Save</Btn>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 13, color: P.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{note.body}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── REIMBURSABLES VIEW ───────────────────────────────────────────────────────
+
+const REIMB_CATEGORIES = ["Printing / Reprographics", "Travel", "Filing Fees / Permits", "Postage / Courier", "Subconsultant Reimbursable", "Software / Licensing", "Other"];
+const REIMB_CAT_ICONS  = { "Printing / Reprographics": "\ud83d\udda8", "Travel": "\u2708", "Filing Fees / Permits": "\ud83d\udccb", "Postage / Courier": "\ud83d\udce6", "Subconsultant Reimbursable": "\ud83e\udd1d", "Software / Licensing": "\ud83d\udcbb", "Other": "\ud83d\udccf" };
+
+function ReimbursablesView({ project, onChange }) {
+  const reimbs = project.reimbursables || [];
+  const budget  = project.reimbursableBudget || 0;
+  const [form, setForm] = useState({ date: new Date().toISOString().slice(0,10), category: "Printing / Reprographics", description: "", amount: "", billable: true });
+
+  function addEntry() {
+    if (!form.amount || +form.amount <= 0) return;
+    const entry = { id: uid(), date: form.date, category: form.category, description: form.description.trim(), amount: +form.amount, billable: form.billable };
+    onChange({ ...project, reimbursables: [...reimbs, entry] });
+    setForm(f => ({ ...f, description: "", amount: "" }));
+  }
+  function deleteEntry(id) { onChange({ ...project, reimbursables: reimbs.filter(r => r.id !== id) }); }
+  function updateEntry(id, updates) { onChange({ ...project, reimbursables: reimbs.map(r => r.id === id ? { ...r, ...updates } : r) }); }
+
+  const totalSpent    = reimbs.reduce((a, r) => a + r.amount, 0);
+  const totalBillable = reimbs.filter(r => r.billable).reduce((a, r) => a + r.amount, 0);
+  const remaining     = budget - totalSpent;
+  const overBudget    = budget > 0 && remaining < 0;
+  const byCategory    = REIMB_CATEGORIES.map(cat => ({ cat, total: reimbs.filter(r => r.category === cat).reduce((a,r) => a+r.amount, 0) })).filter(x => x.total > 0);
+
+  return (
+    <div>
+      <SectionTitle>Reimbursable Expenses</SectionTitle>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
+        <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, padding: 14 }}>
+          <div style={{ fontSize: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Contract Budget</div>
+          <input type="number" min="0" step="500" value={budget || ""} placeholder="$0"
+            onChange={e => onChange({ ...project, reimbursableBudget: +e.target.value })}
+            style={{ fontFamily: "JetBrains Mono", fontSize: 18, fontWeight: 700, color: P.accentLight, background: "none", border: "none", width: "100%", padding: 0 }} />
+          <div style={{ fontSize: 10, color: P.textDim, marginTop: 2 }}>Click to set</div>
+        </div>
+        <KpiBox label="Total Spent" val={fmt(totalSpent)} color={overBudget ? P.red : P.text} sub={budget > 0 ? Math.round(totalSpent/budget*100) + "% of budget" : ""} />
+        <KpiBox label="Billable to Client" val={fmt(totalBillable)} color={P.green} sub={reimbs.filter(r=>r.billable).length + " billable entries"} />
+        <KpiBox label={overBudget ? "OVER BUDGET" : "Remaining"} val={fmt(Math.abs(remaining))} color={overBudget ? P.red : P.green} sub={overBudget ? "Exceeded budget" : ""} />
+      </div>
+
+      {budget > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: P.textDim, marginBottom: 4 }}>
+            <span>Budget utilization</span><span>{Math.round(Math.min(totalSpent / (budget||1), 1)*100)}%</span>
+          </div>
+          <div style={{ height: 8, background: P.border, borderRadius: 4, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: Math.min(totalSpent/(budget||1),1)*100+"%", background: overBudget ? P.red : P.green, borderRadius: 4 }} />
+          </div>
+        </div>
+      )}
+
+      <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, padding: 14, marginBottom: 20 }}>
+        <div style={{ fontWeight: 600, fontSize: 11, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 10 }}>Log Expense</div>
+        <div style={{ display: "grid", gridTemplateColumns: "130px 180px 1fr 100px 60px auto", gap: 10, alignItems: "end" }}>
+          <Field label="Date" style={{ marginBottom: 0 }}>
+            <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} style={{ width: "100%" }} />
+          </Field>
+          <Field label="Category" style={{ marginBottom: 0 }}>
+            <select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} style={{ width: "100%" }}>
+              {REIMB_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Description" style={{ marginBottom: 0 }}>
+            <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. HPR printing set for CD submission" style={{ width: "100%" }} />
+          </Field>
+          <Field label="Amount ($)" style={{ marginBottom: 0 }}>
+            <input type="number" min="0" step="1" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" style={{ width: "100%" }} />
+          </Field>
+          <Field label="Billable" style={{ marginBottom: 0, textAlign: "center" }}>
+            <div style={{ display: "flex", justifyContent: "center", paddingTop: 8 }}>
+              <input type="checkbox" checked={form.billable} onChange={e => setForm({ ...form, billable: e.target.checked })} style={{ width: 16, height: 16 }} />
+            </div>
+          </Field>
+          <div style={{ paddingBottom: 2 }}><Btn onClick={addEntry} disabled={!form.amount || +form.amount <= 0}>Add</Btn></div>
+        </div>
+      </div>
+
+      {byCategory.length > 0 && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 }}>
+          {byCategory.map(({ cat, total }) => (
+            <div key={cat} style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 8, padding: "8px 14px", fontSize: 12 }}>
+              <span style={{ color: P.textMuted }}>{cat}</span>
+              <span style={{ marginLeft: 10, fontFamily: "JetBrains Mono", fontWeight: 600, color: P.text }}>{fmt(total)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {reimbs.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>No expenses logged yet.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Billable</th><th></th></tr>
+          </thead>
+          <tbody>
+            {reimbs.slice().sort((a,b) => b.date.localeCompare(a.date)).map(r => (
+              <tr key={r.id}>
+                <td style={{ color: P.textMuted, fontSize: 12 }}>{r.date ? fmtDate(r.date) : "\u2014"}</td>
+                <td style={{ fontSize: 12 }}>{r.category}</td>
+                <td>
+                  <input value={r.description} onChange={e => updateEntry(r.id, { description: e.target.value })}
+                    style={{ background: "none", border: "none", color: P.text, width: "100%", fontSize: 13 }} />
+                </td>
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600 }}>
+                  <input type="number" value={r.amount} onChange={e => updateEntry(r.id, { amount: +e.target.value })}
+                    style={{ background: "none", border: "none", color: P.text, fontFamily: "JetBrains Mono", fontWeight: 600, width: 90 }} />
+                </td>
+                <td style={{ textAlign: "center" }}>
+                  <input type="checkbox" checked={r.billable} onChange={e => updateEntry(r.id, { billable: e.target.checked })} />
+                </td>
+                <td><Btn small variant="danger" onClick={() => deleteEntry(r.id)}>x</Btn></td>
+              </tr>
+            ))}
+            <tr style={{ background: P.bg, borderTop: "2px solid " + P.border }}>
+              <td colSpan={3} style={{ fontWeight: 700, textAlign: "right", color: P.textMuted, paddingRight: 16 }}>Totals</td>
+              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: overBudget ? P.red : P.text }}>{fmt(totalSpent)}</td>
+              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green, fontSize: 12, textAlign: "center" }}>{fmt(totalBillable)} billable</td>
+              <td />
+            </tr>
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -6517,13 +6968,18 @@ function ScopeView({ project, onChange }) {
 
 // ─── CLIENT & PRIME DIRECTORY ─────────────────────────────────────────────────
 
+function newContact(overrides) {
+  return { id: uid(), name: "", title: "", role: "Owner", phone: "", email: "", lastContacted: "", notes: "", ...overrides };
+}
+
+const CONTACT_ROLES = ["Owner", "Architect", "Agency", "Inspector", "PM", "Legal", "Accounting", "Other"];
+
 function newClient(overrides) {
   return {
     id: uid(),
     name: "",
-    type: "Client",       // "Client" | "Prime/GC" | "Both"
-    contactName: "",
-    contactEmail: "",
+    type: "Client",
+    contacts: [],
     ...overrides,
   };
 }
@@ -6555,8 +7011,7 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
   const filtered = clients.filter(c =>
     !search ||
     c.name.toLowerCase().includes(search.toLowerCase()) ||
-    (c.contactName || "").toLowerCase().includes(search.toLowerCase()) ||
-    (c.contactEmail || "").toLowerCase().includes(search.toLowerCase()) ||
+    (c.contacts||[]).some(ct => ct.name.toLowerCase().includes(search.toLowerCase()) || ct.email.toLowerCase().includes(search.toLowerCase())) ||
     (c.type || "").toLowerCase().includes(search.toLowerCase())
   );
 
@@ -6566,20 +7021,33 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
     "Both":      { bg: P.greenDim,  text: P.green },
   };
 
+  function addContact() {
+    setForm({ ...form, contacts: [...(form.contacts||[]), newContact()] });
+  }
+  function updateContact(cid, updates) {
+    setForm({ ...form, contacts: (form.contacts||[]).map(c => c.id === cid ? { ...c, ...updates } : c) });
+  }
+  function removeContact(cid) {
+    setForm({ ...form, contacts: (form.contacts||[]).filter(c => c.id !== cid) });
+  }
+
   if (editingId !== null) {
+    const contacts = form.contacts || [];
     return (
       <div style={{ padding: "24px 32px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
           <button onClick={cancelEdit} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 18 }}>←</button>
           <div style={{ fontSize: 20, fontWeight: 800 }}>{editingId === "__new__" ? "Add Company" : "Edit Company"}</div>
         </div>
-        <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 28, maxWidth: 500 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <Field label="Company Name" style={{ gridColumn: "1 / -1" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, maxWidth: 900 }}>
+          {/* Company info */}
+          <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 24 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 16 }}>Company Info</div>
+            <Field label="Company Name">
               <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
                 placeholder="e.g. Acme Construction" style={{ width: "100%" }} autoFocus />
             </Field>
-            <Field label="Type" style={{ gridColumn: "1 / -1" }}>
+            <Field label="Type">
               <div style={{ display: "flex", gap: 8 }}>
                 {["Client", "Prime/GC", "Both"].map(t => {
                   const on = form.type === t;
@@ -6596,18 +7064,52 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
               </div>
               <div style={{ fontSize: 11, color: P.textDim, marginTop: 5 }}>Controls which typeahead fields this company appears in on projects.</div>
             </Field>
-            <Field label="Primary Contact Name" style={{ gridColumn: "1 / -1" }}>
-              <input value={form.contactName || ""} onChange={e => setForm({ ...form, contactName: e.target.value })}
-                placeholder="e.g. John Doe" style={{ width: "100%" }} />
-            </Field>
-            <Field label="Primary Contact Email" style={{ gridColumn: "1 / -1" }}>
-              <input value={form.contactEmail || ""} onChange={e => setForm({ ...form, contactEmail: e.target.value })}
-                placeholder="e.g. john@acme.com" style={{ width: "100%" }} type="email" />
-            </Field>
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add Company" : "Save Changes"}</Btn>
+              <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
+            </div>
           </div>
-          <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-            <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add Company" : "Save Changes"}</Btn>
-            <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
+          {/* Contacts */}
+          <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Contacts <span style={{ color: P.textDim, fontWeight: 400, fontSize: 12 }}>({contacts.length})</span></div>
+              <Btn small variant="ghost" onClick={addContact}>+ Add Contact</Btn>
+            </div>
+            {contacts.length === 0 && (
+              <div style={{ color: P.textDim, fontSize: 13, textAlign: "center", padding: "20px 0" }}>No contacts yet.</div>
+            )}
+            {contacts.map((ct, i) => (
+              <div key={ct.id} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <Field label="Name" style={{ marginBottom: 8 }}>
+                    <input value={ct.name} onChange={e => updateContact(ct.id, { name: e.target.value })} placeholder="Full name" style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Title" style={{ marginBottom: 8 }}>
+                    <input value={ct.title||""} onChange={e => updateContact(ct.id, { title: e.target.value })} placeholder="e.g. Project Manager" style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Role" style={{ marginBottom: 8 }}>
+                    <select value={ct.role||"Other"} onChange={e => updateContact(ct.id, { role: e.target.value })} style={{ width: "100%" }}>
+                      {CONTACT_ROLES.map(r => <option key={r}>{r}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Last Contacted" style={{ marginBottom: 8 }}>
+                    <input type="date" value={ct.lastContacted||""} onChange={e => updateContact(ct.id, { lastContacted: e.target.value })} style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Email" style={{ marginBottom: 8 }}>
+                    <input type="email" value={ct.email||""} onChange={e => updateContact(ct.id, { email: e.target.value })} placeholder="email@firm.com" style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Phone" style={{ marginBottom: 8 }}>
+                    <input value={ct.phone||""} onChange={e => updateContact(ct.id, { phone: e.target.value })} placeholder="(212) 555-0100" style={{ width: "100%" }} />
+                  </Field>
+                  <Field label="Notes" style={{ gridColumn: "1/-1", marginBottom: 0 }}>
+                    <input value={ct.notes||""} onChange={e => updateContact(ct.id, { notes: e.target.value })} placeholder="Any notes…" style={{ width: "100%" }} />
+                  </Field>
+                </div>
+                <div style={{ textAlign: "right", marginTop: 8 }}>
+                  <Btn small variant="danger" onClick={() => removeContact(ct.id)}>Remove</Btn>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -6639,20 +7141,22 @@ function ClientDirectoryView({ clients, onUpdateClients }) {
             <tr>
               <th>Company</th>
               <th>Type</th>
+              <th>Contacts</th>
               <th>Primary Contact</th>
-              <th>Email</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {filtered.map(c => {
               const tc = TYPE_COLORS[c.type] || TYPE_COLORS["Client"];
+              const contacts = c.contacts || [];
+              const primary = contacts[0];
               return (
                 <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => startEdit(c)}>
                   <td style={{ fontWeight: 600 }}>{c.name}</td>
                   <td><Badge color={tc} text={c.type || "Client"} /></td>
-                  <td style={{ color: P.textMuted }}>{c.contactName || "—"}</td>
-                  <td style={{ color: P.textMuted, fontSize: 12 }}>{c.contactEmail || "—"}</td>
+                  <td style={{ color: P.textMuted }}>{contacts.length || "—"}</td>
+                  <td style={{ color: P.textMuted, fontSize: 12 }}>{primary ? primary.name + (primary.role ? " · " + primary.role : "") : "—"}</td>
                   <td onClick={e => e.stopPropagation()}>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => startEdit(c)}>Edit</Btn>
@@ -6676,7 +7180,7 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder }) {
     const q = (value || "").toLowerCase();
     return (clients || [])
       .filter(c => filter === "client" ? (c.type === "Client" || c.type === "Both") : (c.type === "Prime/GC" || c.type === "Both"))
-      .filter(c => !q || c.name.toLowerCase().includes(q) || (c.contactName || "").toLowerCase().includes(q))
+      .filter(c => !q || c.name.toLowerCase().includes(q) || (c.contacts||[]).some(ct => ct.name.toLowerCase().includes(q)))
       .slice(0, 8);
   }, [clients, value, filter]);
 
@@ -6699,9 +7203,9 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder }) {
               onMouseOver={e => e.currentTarget.style.background = P.accentDim}
               onMouseOut={e => e.currentTarget.style.background = "transparent"}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
-              {(c.contactName || c.contactEmail) && (
+              {(c.contacts||[]).length > 0 && (
                 <div style={{ fontSize: 11, color: P.textDim }}>
-                  {c.contactName || ""}{c.contactName && c.contactEmail ? " · " : ""}{c.contactEmail || ""}
+                  {c.contacts[0].name || ""}{c.contacts[0].name && c.contacts[0].role ? " · " + c.contacts[0].role : ""}
                 </div>
               )}
             </div>
@@ -7086,12 +7590,13 @@ function App() {
   const [appStatus, setAppStatus] = useState("loading"); // loading | idle | saving | saved | error
   const [lastSaved, setLastSaved] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  const [pendingSave, setPendingSave] = useState(null); // debounce timer ref stored in state
+  const pendingSave = React.useRef(null);   // bug 3 fix: timer ID in ref, not state
+  const isLoaded = React.useRef(false);     // bug 1 fix: guard against save-on-load
 
   const [showDataTools, setShowDataTools] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [cleanupMsg, setCleanupMsg] = useState("");
-  const [cleanupPreview, setCleanupPreview] = useState(null); // list of projects to delete
+  const [cleanupPreview, setCleanupPreview] = useState(null);
 
   // ── Initial load from Supabase ──
   useEffect(() => {
@@ -7102,6 +7607,7 @@ function App() {
         if (s?.termContracts) setTermContracts(s.termContracts);
         if (s?.staff) setStaff(s.staff);
         if (s?.clients) setClients(s.clients);
+        isLoaded.current = true; // bug 1 fix: mark load complete before setting idle
         setAppStatus("idle");
       })
       .catch(e => {
@@ -7112,6 +7618,7 @@ function App() {
             if (s?.termContracts) setTermContracts(s.termContracts);
             if (s?.staff) setStaff(s.staff);
             if (s?.clients) setClients(s.clients);
+            isLoaded.current = true;
             setAppStatus("idle");
           }).catch(e2 => { setLoadError(e2.message); setAppStatus("error"); });
           return;
@@ -7123,14 +7630,12 @@ function App() {
 
   // ── Debounced auto-save — fires 2s after last change ──
   useEffect(() => {
-    if (appStatus === "loading") return;
-    // Clear any pending save
-    if (pendingSave) clearTimeout(pendingSave);
-    const timer = setTimeout(() => {
+    if (!isLoaded.current) return; // bug 1 fix: don't save until initial load is done
+    if (pendingSave.current) clearTimeout(pendingSave.current); // bug 3 fix: use ref
+    pendingSave.current = setTimeout(() => {
       performSave({ projects, termContracts, staff, clients });
     }, 2000);
-    setPendingSave(timer);
-    return () => clearTimeout(timer);
+    return () => clearTimeout(pendingSave.current);
   }, [projects, termContracts, staff, clients]);
 
   async function performSave(state) {
@@ -7289,7 +7794,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
     setProjects(remaining);
     setCleanupMsg(`✓ Permanently deleted ${cleanupPreview.toDelete.length} archived project${cleanupPreview.toDelete.length !== 1 ? "s" : ""}. Saving…`);
     setCleanupPreview(null);
-    performSave({ projects: remaining, termContracts });
+    performSave({ projects: remaining, termContracts, staff, clients });
   }
 
   function updateProject(updated) {
@@ -7430,7 +7935,6 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
     </div>
   );
 }
-
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
