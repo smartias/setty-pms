@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 17:03 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 17:05 | Storage: Supabase -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -370,12 +370,9 @@ const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 
 async function sbFetch(method, path, body) {
-  // Get a Microsoft access token and pass it to Supabase as a Bearer token
-  // so Supabase Auth can identify the user via the Azure AD JWT.
-  const msToken = await getToken();
   const headers = {
     "apikey": SUPABASE_ANON_KEY,
-    "Authorization": "Bearer " + msToken,
+    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
     "Content-Type": "application/json",
     "Prefer": method === "POST" ? "resolution=merge-duplicates,return=minimal" : "return=minimal",
   };
