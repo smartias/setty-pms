@@ -6157,7 +6157,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
 
 // ─── NOTES VIEW ──────────────────────────────────────────────────────────────
 
-const NOTE_CATEGORIES = ["Meeting", "Decision", "Client Communication", "Internal", "Issue", "Action Item", "General"];
+const NOTE_CATEGORIES = ["Meeting", "Site Visit", "Decision", "Client Communication", "Internal", "Issue", "Action Item", "General"];
 const NOTE_CAT_COLORS = {
   "Meeting":              { bg: P.accentDim,  text: P.accentLight },
   "Decision":             { bg: P.purpleDim,  text: P.purple },
@@ -6165,31 +6165,55 @@ const NOTE_CAT_COLORS = {
   "Internal":             { bg: P.border,     text: P.textMuted },
   "Issue":                { bg: P.redDim,     text: P.red },
   "Action Item":          { bg: P.yellowDim,  text: P.yellow },
+  "Site Visit":           { bg: "#1a3020",    text: "#4ade80" },
   "General":              { bg: P.border,     text: P.textDim },
 };
 
 function NotesView({ project, onChange }) {
   const notes = (project.notes || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const [draft, setDraft] = useState({ body: "", category: "General", actionItem: false });
+  const [draft, setDraft] = useState({ body: "", category: "General", actionItem: false, visitDate: "" });
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState({});
   const [filterCat, setFilterCat] = useState("All");
   const [search, setSearch] = useState("");
-  const [calStatus, setCalStatus] = useState(null); // null | "syncing" | "synced" | "error" | "noauth"
+  const [calStatus, setCalStatus] = useState({}); // { [noteId]: "syncing"|"synced"|"error" }
+  const [calMsg, setCalMsg] = useState({});   // { [noteId]: message string }
+
+  async function syncSiteVisit(note) {
+    if (!note.visitDate) return;
+    setCalStatus(s => ({ ...s, [note.id]: "syncing" }));
+    const milestoneProxy = {
+      dueDate: note.visitDate,
+      name: "Site Visit" + (note.body ? " — " + note.body.slice(0, 60) + (note.body.length > 60 ? "…" : "") : ""),
+      calendarEventId: note.calendarEventId || null,
+    };
+    const result = await createOrUpdateCalendarEvent(milestoneProxy, project.name || "Project", project.projectNumber, note.calendarEventId || null);
+    if (result.success) {
+      if (result.eventId) {
+        onChange({ ...project, notes: (project.notes || []).map(n => n.id === note.id ? { ...n, calendarEventId: result.eventId } : n) });
+      }
+      setCalStatus(s => ({ ...s, [note.id]: "synced" }));
+      setCalMsg(s => ({ ...s, [note.id]: result.warning ? "⚠ " + result.warning : "✓ Synced to NYC Calendar" }));
+    } else {
+      setCalStatus(s => ({ ...s, [note.id]: "error" }));
+      setCalMsg(s => ({ ...s, [note.id]: "✗ " + result.error }));
+    }
+  }
 
   function addNote() {
     if (!draft.body.trim()) return;
     const entry = {
       id: uid(), body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
+      ...(draft.category === "Site Visit" && draft.visitDate ? { visitDate: draft.visitDate } : {}),
       author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
     onChange({ ...project, notes: [entry, ...(project.notes || [])] });
-    setDraft({ body: "", category: "General", actionItem: false });
+    setDraft({ body: "", category: "General", actionItem: false, visitDate: "" });
   }
 
-  function startEdit(note) { setEditingId(note.id); setEditDraft({ body: note.body, category: note.category, actionItem: note.actionItem }); }
+  function startEdit(note) { setEditingId(note.id); setEditDraft({ body: note.body, category: note.category, actionItem: note.actionItem, visitDate: note.visitDate || "" }); }
   function saveEdit(id) {
-    onChange({ ...project, notes: (project.notes||[]).map(n => n.id === id ? { ...n, ...editDraft, updatedAt: new Date().toISOString() } : n) });
+    onChange({ ...project, notes: (project.notes||[]).map(n => n.id === id ? { ...n, ...editDraft, ...(editDraft.category === "Site Visit" && editDraft.visitDate ? { visitDate: editDraft.visitDate } : { visitDate: undefined }) , updatedAt: new Date().toISOString() } : n) });
     setEditingId(null);
   }
   function deleteNote(id) {
@@ -6233,6 +6257,13 @@ function NotesView({ project, onChange }) {
           </label>
           <span style={{ fontSize: 11, color: P.textDim, marginLeft: "auto" }}>Posting as: {getCurrentUser()}</span>
         </div>
+        {draft.category === "Site Visit" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <label style={{ fontSize: 12, color: "#4ade80", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
+            <input type="date" value={draft.visitDate} onChange={e => setDraft({ ...draft, visitDate: e.target.value })}
+              style={{ fontSize: 12, width: 160, borderColor: "#4ade80" }} />
+          </div>
+        )}
         <textarea value={draft.body} onChange={e => setDraft({ ...draft, body: e.target.value })}
           placeholder="Add a note, meeting summary, decision, or action item..."
           onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) addNote(); }}
@@ -6313,6 +6344,31 @@ function NotesView({ project, onChange }) {
                     )}
                   </div>
                 )}
+                {note.category === "Site Visit" && note.visitDate && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>
+                        📅 Site Visit: {new Date(note.visitDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "long", day: "numeric", year: "numeric" })}
+                      </span>
+                      <button
+                        onClick={() => syncSiteVisit(note)}
+                        disabled={calStatus[note.id] === "syncing"}
+                        style={{
+                          fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 6, cursor: calStatus[note.id] === "syncing" ? "default" : "pointer",
+                          border: "1px solid " + (calStatus[note.id] === "synced" || note.calendarEventId ? "#4ade80" : P.accent),
+                          background: calStatus[note.id] === "synced" || note.calendarEventId ? "#1a3020" : P.accentDim,
+                          color: calStatus[note.id] === "synced" || note.calendarEventId ? "#4ade80" : P.accentLight,
+                        }}>
+                        {calStatus[note.id] === "syncing" ? "⏳ Syncing…" : calStatus[note.id] === "synced" || note.calendarEventId ? "✓ 📅 Synced" : "📅 Sync to NY Calendar"}
+                      </button>
+                      {calMsg[note.id] && (
+                        <span style={{ fontSize: 11, color: calMsg[note.id].startsWith("✓") ? "#4ade80" : calMsg[note.id].startsWith("⚠") ? P.yellow : P.red }}>
+                          {calMsg[note.id]}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {isEditing ? (
                   <div>
                     <div style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "center" }}>
@@ -6324,6 +6380,13 @@ function NotesView({ project, onChange }) {
                         Action Item
                       </label>
                     </div>
+                    {editDraft.category === "Site Visit" && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                        <label style={{ fontSize: 12, color: "#4ade80", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
+                        <input type="date" value={editDraft.visitDate || ""} onChange={e => setEditDraft({ ...editDraft, visitDate: e.target.value })}
+                          style={{ fontSize: 12, width: 160, borderColor: "#4ade80" }} />
+                      </div>
+                    )}
                     <textarea value={editDraft.body} onChange={e => setEditDraft({ ...editDraft, body: e.target.value })}
                       style={{ width: "100%", minHeight: 80, background: P.bg, border: "1px solid " + P.border, borderRadius: 6,
                         color: P.text, padding: 10, fontSize: 13, resize: "vertical", fontFamily: "inherit" }} />
