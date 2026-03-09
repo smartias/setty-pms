@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Setty PMS | Built: 2026-03-09 18:43 | Storage: Supabase -->
+<!-- Setty PMS | Built: 2026-03-09 18:46 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8038,7 +8038,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
       {loadErrorBanner}
 
-      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:\${id}`)} onUpdateProject={updateProject} staff={staff} />}
+      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} staff={staff} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} />}
       {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} />}
