@@ -6366,11 +6366,18 @@ function EmailsView({ project, onChange }) {
       const ccL   = ccIdx   >= 0 ? lines[ccIdx]   : "";
       const subjL = subjIdx >= 0 ? lines[subjIdx] : "";
 
-      // Body starts after the last recognized header line
+      // Body starts after the last recognized header line.
+      // For the first part (i===0), there are typically no headers — the whole thing is the body.
       const headerIndices = [fromIdx, sentIdx, toIdx, ccIdx, subjIdx].filter(n => n >= 0);
       const lastHeaderIdx = headerIndices.length > 0 ? Math.max(...headerIndices) : -1;
       const bodyLines = lastHeaderIdx >= 0 ? lines.slice(lastHeaderIdx + 1) : lines;
-      const body = bodyLines.join("\n").trim();
+
+      // Strip trailing signature from body: stop at "Regards," / "Best," / name+credential line
+      let rawBody = bodyLines.join("\n").trim();
+      const sigBreak = rawBody.search(/\n(Regards|Best|Thanks|Sincerely|Cheers),?\s*\n/i);
+      if (sigBreak > 20) rawBody = rawBody.slice(0, sigBreak).trim();
+
+      const body = cleanBodyText(rawBody);
 
       return buildMsg(
         fromL.replace(/^From:\s*/i, "").trim(),
@@ -6378,7 +6385,7 @@ function EmailsView({ project, onChange }) {
         toL.replace(/^To:\s*/i,   "").trim(),
         ccL.replace(/^Cc:\s*/i,   "").trim(),
         subjL.replace(/^Subject:\s*/i, "").trim(),
-        cleanBodyText(body),
+        body,
         i === 0
       );
     }).filter(p => p.body.length > 0 || p.from);
@@ -6441,12 +6448,6 @@ function EmailsView({ project, onChange }) {
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
     const allEmpty = chain && chain.every(m => !m.body);
-
-    // Debug — remove once working
-    React.useEffect(() => {
-      console.log("[EmailChain] raw body (first 400):", body?.slice(0, 400));
-      console.log("[EmailChain] parsed chain:", chain);
-    }, [body]);
 
     if (!chain || allEmpty) {
       return (
