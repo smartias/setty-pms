@@ -6366,21 +6366,11 @@ function EmailsView({ project, onChange }) {
       const ccL   = ccIdx   >= 0 ? lines[ccIdx]   : "";
       const subjL = subjIdx >= 0 ? lines[subjIdx] : "";
 
-      // Body starts after the last recognized header line.
-      // For the first part (i===0), there are typically no headers — the whole thing is the body.
+      // Body starts after the last recognized header line
       const headerIndices = [fromIdx, sentIdx, toIdx, ccIdx, subjIdx].filter(n => n >= 0);
       const lastHeaderIdx = headerIndices.length > 0 ? Math.max(...headerIndices) : -1;
       const bodyLines = lastHeaderIdx >= 0 ? lines.slice(lastHeaderIdx + 1) : lines;
-
-      // Strip trailing signature: only cut when "Regards/Best/Thanks" is followed by a name line
-      let rawBody = bodyLines.join("\n").trim();
-      const sigBreak = rawBody.search(/\n(Regards|Best regards|Best|Thanks|Sincerely|Cheers),?\s*\n\s*[A-Z][a-z]+ [A-Z][a-z]+/);
-      if (sigBreak > 20) rawBody = rawBody.slice(0, sigBreak).trim();
-
-      // Strip Setty signature block: "Name | Title\nemail\nP: ... C: ..."
-      rawBody = rawBody.replace(/\n[A-Z][a-z]+ [A-Z][a-z]+\s*\|\s*[^\n]+\n[a-z.\-]+@[a-z.\-]+(\.[a-z]+)+\n(P:|C:)[^\n]*/g, "").trim();
-
-      const body = cleanBodyText(rawBody);
+      const body = bodyLines.join("\n").trim();
 
       return buildMsg(
         fromL.replace(/^From:\s*/i, "").trim(),
@@ -6388,7 +6378,7 @@ function EmailsView({ project, onChange }) {
         toL.replace(/^To:\s*/i,   "").trim(),
         ccL.replace(/^Cc:\s*/i,   "").trim(),
         subjL.replace(/^Subject:\s*/i, "").trim(),
-        body,
+        cleanBodyText(body),
         i === 0
       );
     }).filter(p => p.body.length > 0 || p.from);
@@ -6400,16 +6390,11 @@ function EmailsView({ project, onChange }) {
       const sentM = part.match(/Sent:\s*(.+?)(?=\s*To:)/s);
       const toM   = part.match(/To:\s*(.+?)(?=\s*(?:Cc:|Subject:))/s);
       const ccM   = part.match(/Cc:\s*(.+?)(?=\s*Subject:)/s);
-      // Subject: capture everything up to a double-space or common body opener
-      const subjM = part.match(/Subject:\s*(.+?)(?=\s{2,}|\s+(?:RE:|FW:|Hi |Dear |Hello |CAUTION|[A-Z][a-z]{2,}\b))/s);
-
-      // Body: find position right after the last matched header field
-      const candidates = [fromM, sentM, toM, ccM, subjM]
-        .filter(Boolean)
-        .map(m => part.indexOf(m[0]) + m[0].length);
-      const bodyStart = candidates.length > 0 ? Math.max(...candidates) : 0;
-      const body = part.slice(bodyStart).trim();
-
+      const subjM = part.match(/Subject:\s*(.+?)(?=\n|\s{3,})/s);
+      // Body: strip everything up to and including the Subject line
+      const body = subjM
+        ? part.slice(part.indexOf(subjM[0]) + subjM[0].length).trim()
+        : part.replace(/^From:[\s\S]+?(?:\n\n|\s{4,})/, "").trim();
       return buildMsg(
         (fromM?.[1] || "").replace(/<[^>]+>/g,"").trim(),
         (sentM?.[1] || "").trim(),
@@ -6427,20 +6412,14 @@ function EmailsView({ project, onChange }) {
   }
 
   function cleanBodyText(text) {
-    if (!text) return "";
-    const reLegalFooter = new RegExp("This message is sent by[^.]{0,600}confidential\\.", "gi");
-    const rePhone = new RegExp("\\n[TP][.:]\\s*[\\+\\d][\\d\\s\\-().]{6,}\\n", "g");
-    const reEmailLine = new RegExp("\\nE\\.\\s*\\S+@\\S+\\n", "g");
-    const reUrl = new RegExp("\\nwww\\.\\S+\\n", "gi");
-    const reBlankLines = new RegExp("\\n{3,}", "g");
     return text
       .replace(/CAUTION:\s*External E-?mail[^\n]*/gi, "")
       .replace(/Book time to meet with me[^\n]*/gi, "")
-      .replace(reLegalFooter, "")
-      .replace(rePhone, "\n")
-      .replace(reEmailLine, "\n")
-      .replace(reUrl, "\n")
-      .replace(reBlankLines, "\n\n")
+      .replace(/This message is sent by[\s\S]{0,900}?confidential\.[^\n]*/gi, "")
+      .replace(/T\.\s*\+?[\d\s().+-]{7,}\n?/g, "")
+      .replace(/E\.\s*\S+@\S+\n?/g, "")
+      .replace(/www\.\S+\n?/gi, "")
+      .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
 
@@ -6450,6 +6429,8 @@ function EmailsView({ project, onChange }) {
 
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
+
+    // Debug: if chain exists but all bodies are empty, fall back to raw display
     const allEmpty = chain && chain.every(m => !m.body);
 
     if (!chain || allEmpty) {
@@ -6505,6 +6486,16 @@ function EmailsView({ project, onChange }) {
   }
 
   // Build search queries: name first, project number second, sender from client
+  // Extract meaningful keywords from a project name — drop short filler words,
+  // keep proper nouns and tokens likely to appear in email body text.
+  function nameKeywords(name) {
+    if (!name) return [];
+    const STOP = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","project","phase","building","renovation","design","services","engineering","facility","facilities"]);
+    return name.split(/[\s\-\/,]+/)
+      .map(w => w.replace(/[^a-zA-Z0-9]/g, ""))
+      .filter(w => w.length >= 4 && !STOP.has(w.toLowerCase()));
+  }
+
   async function doSearch() {
     setSearching(true);
     setSearchErr(null);
@@ -6512,21 +6503,24 @@ function EmailsView({ project, onChange }) {
     setSelected({});
     try {
       const token = await getToken();
-      const terms = [project.name, project.projectNumber].filter(Boolean);
-      const clientDomain = (() => {
-        // Try to extract domain from project prime/client name — crude but useful
-        const c = project.prime || project.clientName || "";
-        // Check if any saved contact has an email domain
-        return null; // extend later if client directory has emails
-      })();
+
+      // Build search queries:
+      // 1. Exact full project name (quoted) — highest precision
+      // 2. Project number (quoted) — if present
+      // 3. Key tokens from project name unquoted — catches partial matches in body
+      const queries = [];
+      if (project.name) queries.push(`"${project.name.trim()}"`);
+      if (project.projectNumber) queries.push(`"${project.projectNumber.trim()}"`);
+      const keywords = nameKeywords(project.name);
+      // Only add keyword search if we have 2+ meaningful tokens (avoids overly broad results)
+      if (keywords.length >= 2) queries.push(keywords.join(" "));
 
       let allMsgs = [];
       const seen = new Set();
 
-      for (const term of terms) {
-        if (!term || term.trim().length < 2) continue;
-        const q = encodeURIComponent(`"${term.trim()}"`);
-        const url = `/me/messages?$search=${q}&$top=25&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId`;
+      for (const q of queries) {
+        if (!q || q.trim().length < 2) continue;
+        const url = `/me/messages?$search=${encodeURIComponent(q)}&$top=25&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId`;
         const resp = await graphFetch("GET", url, undefined, token);
         if (resp && resp.value) {
           for (const m of resp.value) {
@@ -6606,7 +6600,6 @@ function EmailsView({ project, onChange }) {
   }
 
   async function fetchLiveBody(msgId) {
-    // Always try Graph first — stored bodyText may be flat (old format)
     if (liveBody[msgId]) { setExpanded(msgId); return; }
     setFetchingBody(msgId);
     try {
@@ -6614,15 +6607,9 @@ function EmailsView({ project, onChange }) {
       const data = await graphFetch("GET", `/me/messages/${msgId}?$select=body,hasAttachments`, undefined, token);
       if (data?.body?.content) {
         setLiveBody(prev => ({ ...prev, [msgId]: htmlToText(data.body.content) }));
-      } else {
-        // Graph returned no content — re-process stored flat text with line-break insertion
-        const stored = saved.find(e => e.msgId === msgId)?.bodyText || "";
-        setLiveBody(prev => ({ ...prev, [msgId]: stored }));
       }
     } catch(e) {
-      // Token/permission issue — fall back to stored body as-is
-      const stored = saved.find(e => e.msgId === msgId)?.bodyText || "";
-      setLiveBody(prev => ({ ...prev, [msgId]: stored }));
+      // fallback to stored body — already there
     } finally {
       setFetchingBody(null);
       setExpanded(msgId);
@@ -6713,9 +6700,15 @@ function EmailsView({ project, onChange }) {
                     <input type="checkbox" checked={isChecked} readOnly disabled={alreadySaved}
                       style={{ marginTop: 3, flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {m.subject || "(no subject)"}
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {project.name || project.projectNumber || ""}
+                            {project.name && project.projectNumber && <span style={{ fontWeight: 400, color: P.textDim, marginLeft: 6 }}>{project.projectNumber}</span>}
+                          </div>
+                          <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {m.subject || "(no subject)"}
+                          </div>
                         </div>
                         <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
                           {new Date(m.receivedDateTime).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
@@ -6775,7 +6768,13 @@ function EmailsView({ project, onChange }) {
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{email.subject}</div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {project.name || project.projectNumber || ""}
+                          {project.name && project.projectNumber && <span style={{ fontWeight: 400, color: P.textDim, marginLeft: 6 }}>{project.projectNumber}</span>}
+                        </div>
+                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{email.subject}</div>
+                      </div>
                       <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
                         {new Date(email.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                       </div>
