@@ -6327,6 +6327,7 @@ function EmailsView({ project, onChange, clients = [] }) {
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState(null);
   const [selected, setSelected] = useState({}); // { [msgId]: bool }
+  const [deepSearch, setDeepSearch] = useState(false); // true = search further back
 
   // View state
   const [expanded, setExpanded] = useState(null); // msgId of open email
@@ -6582,7 +6583,8 @@ function EmailsView({ project, onChange, clients = [] }) {
       .filter(w => w.length >= 4 && !GENERIC.has(w.toLowerCase()));
   }
 
-  async function doSearch() {
+  async function doSearch(deep = false) {
+    setDeepSearch(deep);
     setSearching(true);
     setSearchErr(null);
     setResults([]);
@@ -6603,7 +6605,8 @@ function EmailsView({ project, onChange, clients = [] }) {
 
       for (const q of queries) {
         if (!q || q.trim().length < 2) continue;
-        const url = `/me/messages?$search=${encodeURIComponent(q)}&$top=25&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId`;
+        const top = deep ? 500 : 150;
+        const url = `/me/messages?$search=${encodeURIComponent(q)}&$top=${top}&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId`;
         const resp = await graphFetch("GET", url, undefined, token);
         if (resp && resp.value) {
           for (const m of resp.value) {
@@ -6725,16 +6728,19 @@ function EmailsView({ project, onChange, clients = [] }) {
           <input
             value={query}
             onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && doSearch()}
+            onKeyDown={e => e.key === "Enter" && doSearch(false)}
             placeholder="Search term (project name or number)…"
             style={{ flex: 1, fontSize: 13 }}
           />
-          <Btn onClick={doSearch} disabled={searching || !query.trim()}>
-            {searching ? "⏳ Searching…" : "🔍 Search Outlook"}
+          <Btn onClick={() => doSearch(false)} disabled={searching || !query.trim()}>
+            {searching && !deepSearch ? "⏳ Searching…" : "🔍 Search"}
+          </Btn>
+          <Btn onClick={() => doSearch(true)} disabled={searching || !query.trim()} variant="ghost">
+            {searching && deepSearch ? "⏳ Searching older…" : "🕓 Search Older"}
           </Btn>
         </div>
         <div style={{ fontSize: 11, color: P.textDim }}>
-          Searches for emails matching the exact project name, project number, and emails from the client POC. Results show emails you have access to only.
+          Search returns up to 150 recent emails. Use "Search Older" to go further back (up to 500). Results show emails you have access to only.
         </div>
 
         {searchErr && (
@@ -6745,7 +6751,7 @@ function EmailsView({ project, onChange, clients = [] }) {
           <div style={{ marginTop: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontSize: 12, fontWeight: 600 }}>
-                {results.length} result{results.length !== 1 ? "s" : ""} — select to save
+                {results.length} result{results.length !== 1 ? "s" : ""} — select to save{deepSearch ? <span style={{ fontWeight: 400, color: P.textDim, marginLeft: 6 }}>(extended search)</span> : ""}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => setSelected(Object.fromEntries(results.map(m => [m.id, true])))}
