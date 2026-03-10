@@ -6340,63 +6340,64 @@ function EmailsView({ project, onChange }) {
   function parseEmailChain(text) {
     if (!text) return [];
 
-    // With structured text, Outlook headers appear as consecutive lines:
-    // "From: X\nSent: Y\nTo: Z\n[Cc: W\n]Subject: V"
-    // Split on that pattern
+    // Split on Outlook reply headers: "From: X\nSent: Y\nTo: Z"
     const parts = text.split(/(?=^From:\s*.+\nSent:\s*.+\nTo:\s*)/m).map(s => s.trim()).filter(Boolean);
 
     if (parts.length <= 1) {
-      // Fallback: try flat inline pattern (no newlines preserved)
+      // Fallback: flat text with no preserved newlines
       const DELIM = "\x00SPLIT\x00";
-      const tagged = text.replace(/(From:\s*[^\n]{3,}?\s+Sent:\s*[^\n]{5,}?\s+To:\s*)/g, DELIM + "$1");
+      const tagged = text.replace(/(From:\s*[^\n]{3,100}\s+Sent:\s*[^\n]{5,60}\s+To:\s*)/g, DELIM + "$1");
       const flatParts = tagged.split(DELIM).map(s => s.trim()).filter(Boolean);
       if (flatParts.length <= 1) return null;
       return parseFlatParts(flatParts);
     }
 
     return parts.map((part, i) => {
-      const lines = part.split("\n");
-      const fromM    = lines.find(l => /^From:/i.test(l.trim()));
-      const sentM    = lines.find(l => /^Sent:/i.test(l.trim()));
-      const toM      = lines.find(l => /^To:/i.test(l.trim()));
-      const ccM      = lines.find(l => /^Cc:/i.test(l.trim()));
-      const subjM    = lines.find(l => /^Subject:/i.test(l.trim()));
+      const lines = part.split("\n").map(l => l.trim());
+      const fromL = lines.find(l => /^From:/i.test(l));
+      const sentL = lines.find(l => /^Sent:/i.test(l));
+      const toL   = lines.find(l => /^To:/i.test(l));
+      const ccL   = lines.find(l => /^Cc:/i.test(l));
+      const subjL = lines.find(l => /^Subject:/i.test(l));
 
-      // Body starts after the last header line
-      const headerLineCount = [fromM,sentM,toM,ccM,subjM].filter(Boolean).length;
-      const headerEnd = lines.findIndex(l => /^Subject:/i.test(l.trim()));
-      const body = lines.slice(headerEnd + 1).join("\n").trim();
+      // Body = everything after Subject line (or all content if no Subject)
+      const subjIdx = lines.findIndex(l => /^Subject:/i.test(l));
+      const bodyLines = subjIdx >= 0 ? lines.slice(subjIdx + 1) : (fromL ? [] : lines);
+      const body = bodyLines.join("\n").trim();
 
       return buildMsg(
-        fromM?.replace(/^From:\s*/i,"").trim() || "",
-        sentM?.replace(/^Sent:\s*/i,"").trim() || "",
-        toM?.replace(/^To:\s*/i,"").trim() || "",
-        ccM?.replace(/^Cc:\s*/i,"").trim() || "",
-        subjM?.replace(/^Subject:\s*/i,"").trim() || "",
+        (fromL || "").replace(/^From:\s*/i, "").trim(),
+        (sentL || "").replace(/^Sent:\s*/i, "").trim(),
+        (toL   || "").replace(/^To:\s*/i,   "").trim(),
+        (ccL   || "").replace(/^Cc:\s*/i,   "").trim(),
+        (subjL || "").replace(/^Subject:\s*/i,"").trim(),
         cleanBodyText(body),
         i === 0
       );
-    }).filter(p => p.body.length > 3);
+    }).filter(p => p.body.length > 0 || p.from);
   }
 
   function parseFlatParts(parts) {
     return parts.map((part, i) => {
-      const fromM = part.match(/From:\s*(.+?)(?=Sent:)/s);
-      const sentM = part.match(/Sent:\s*(.+?)(?=To:)/s);
-      const toM   = part.match(/To:\s*(.+?)(?=Cc:|Subject:)/s);
-      const ccM   = part.match(/Cc:\s*(.+?)(?=Subject:)/s);
-      const subjM = part.match(/Subject:\s*(.+?)(?=\s{2,}|\s(?:Hi |Dear |Hello |CAUTION|\w{4,}\b))/s);
-      const body  = part.replace(/From:\s*[\s\S]+?Subject:\s*\S[^\n]*/s, "").trim();
+      const fromM = part.match(/From:\s*(.+?)(?=\s*Sent:)/s);
+      const sentM = part.match(/Sent:\s*(.+?)(?=\s*To:)/s);
+      const toM   = part.match(/To:\s*(.+?)(?=\s*(?:Cc:|Subject:))/s);
+      const ccM   = part.match(/Cc:\s*(.+?)(?=\s*Subject:)/s);
+      const subjM = part.match(/Subject:\s*(.+?)(?=\n|\s{3,})/s);
+      // Body: strip everything up to and including the Subject line
+      const body = subjM
+        ? part.slice(part.indexOf(subjM[0]) + subjM[0].length).trim()
+        : part.replace(/^From:[\s\S]+?(?:\n\n|\s{4,})/, "").trim();
       return buildMsg(
-        fromM?.[1]?.replace(/<[^>]+>/g,"").trim() || "",
-        sentM?.[1]?.trim() || "",
-        toM?.[1]?.trim() || "",
-        ccM?.[1]?.trim() || "",
-        subjM?.[1]?.trim() || "",
+        (fromM?.[1] || "").replace(/<[^>]+>/g,"").trim(),
+        (sentM?.[1] || "").trim(),
+        (toM?.[1]  || "").trim(),
+        (ccM?.[1]  || "").trim(),
+        (subjM?.[1]|| "").trim(),
         cleanBodyText(body),
         i === 0
       );
-    }).filter(p => p.body.length > 3);
+    }).filter(p => p.body.length > 0 || p.from);
   }
 
   function buildMsg(from, sent, to, cc, subject, body, isFirst) {
