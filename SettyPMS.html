@@ -6306,7 +6306,7 @@ function EmailsView({ project, onChange, clients = [] }) {
   // View state
   const [expanded, setExpanded] = useState(null); // msgId of open email
   const [fetchingBody, setFetchingBody] = useState(null);
-  const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string }
+  const [liveBody, setLiveBody] = useState({}); // { [msgId]: fetched+cleaned body text }
   const [filterSender, setFilterSender] = useState("All");
 
   // Strip HTML to plain text
@@ -6663,7 +6663,7 @@ function EmailsView({ project, onChange, clients = [] }) {
   }
 
   async function fetchLiveBody(msgId) {
-    if (liveBody[msgId] && expanded !== msgId) { setExpanded(msgId); return; }
+    if (liveBody[msgId]) { setExpanded(msgId); return; }
     setFetchingBody(msgId);
     try {
       const token = await getToken();
@@ -6765,10 +6765,6 @@ function EmailsView({ project, onChange, clients = [] }) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {project.name || project.projectNumber || ""}
-                            {project.name && project.projectNumber && <span style={{ fontWeight: 400, color: P.textDim, marginLeft: 6 }}>{project.projectNumber}</span>}
-                          </div>
                           <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {m.subject || "(no subject)"}
                           </div>
@@ -6816,7 +6812,9 @@ function EmailsView({ project, onChange, clients = [] }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
           {sortedSaved.map(email => {
             const isOpen = expanded === email.msgId;
+            // liveBody is always freshly fetched+cleaned; bodyText may be stale
             const body = liveBody[email.msgId] || "";
+            const fallbackBody = !liveBody[email.msgId] && !fetchingBody ? (email.bodyText || "") : "";
             const isFetching = fetchingBody === email.msgId;
             return (
               <div key={email.msgId}
@@ -6832,10 +6830,6 @@ function EmailsView({ project, onChange, clients = [] }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {project.name || project.projectNumber || ""}
-                          {project.name && project.projectNumber && <span style={{ fontWeight: 400, color: P.textDim, marginLeft: 6 }}>{project.projectNumber}</span>}
-                        </div>
                         <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{email.subject}</div>
                       </div>
                       <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
@@ -6874,8 +6868,8 @@ function EmailsView({ project, onChange, clients = [] }) {
                   <div style={{ borderTop: `1px solid ${P.border}`, padding: "14px 16px" }}>
                     {isFetching ? (
                       <div style={{ color: P.textDim, fontSize: 12 }}>⏳ Loading…</div>
-                    ) : body ? (
-                      <EmailChain body={body} />
+                    ) : (body || fallbackBody) ? (
+                      <EmailChain body={body || fallbackBody} />
                     ) : (
                       <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>
                     )}
