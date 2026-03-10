@@ -6315,7 +6315,7 @@ function EmailsView({ project, onChange, clients = [] }) {
 
     // Use a unique token for newlines — inserting literal \n before innerHTML
     // assignment doesn't work because the browser collapses them as whitespace.
-    const NL = "\x00NL\x00";
+    const NL = "~~NL~~";
 
     let cleaned = html
       .replace(/<!--[\s\S]*?-->/g, "")
@@ -6342,7 +6342,7 @@ function EmailsView({ project, onChange, clients = [] }) {
     let text = (d.innerText || d.textContent || "");
 
     // Replace tokens with real newlines
-    text = text.replace(/\x00NL\x00/g, "\n");
+    text = text.replace(/~~NL~~/g, "\n");
 
     // Collapse 3+ blank lines to 2
     text = text.replace(/\n{3,}/g, "\n\n").trim();
@@ -6383,20 +6383,21 @@ function EmailsView({ project, onChange, clients = [] }) {
       );
     }
 
-    // Normalize: inject newlines before reply header blocks so splitting works
-    // even when htmlToText collapses everything onto one line.
-    // Matches "From: Name <email>Sent:" or "From: Name <email>\nSent:" patterns
-    let normalized = body
-      .replace(/(?<=[^\n])(From:\s*[^\n]{3,120}(?:Sent|Date):\s*)/g, "\nFROM_SPLIT_$1")
-      .replace(/FROM_SPLIT_/g, "");
-
-    // Also split on "--- Original Message ---" separators
+    // Split on "--- Original Message ---" separators
     const SEP = /\n?(?:-{3,}|_{3,})\s*(?:Original Message|Forwarded message)\s*(?:-{3,}|_{3,})\n?/gi;
-    let parts = normalized.split(SEP).map(s => s.trim()).filter(Boolean);
+    let parts = body.split(SEP).map(s => s.trim()).filter(Boolean);
 
-    // Further split on "From: X\n?Sent:" blocks
+    // Split on reply header blocks: "From: X\nSent: Y\nTo: Z"
+    // Works on the already-newline-separated text from htmlToText
     if (parts.length <= 1) {
-      parts = normalized
+      parts = body
+        .split(/\n(?=From:\s+\S.{0,120}\n(?:Sent|Date):\s)/)
+        .map(s => s.trim()).filter(Boolean);
+    }
+
+    // Fallback: split on any "From: ..." line
+    if (parts.length <= 1) {
+      parts = body
         .split(/\n(?=From:\s+\S)/)
         .map(s => s.trim()).filter(Boolean);
     }
