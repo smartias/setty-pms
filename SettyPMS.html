@@ -3318,7 +3318,12 @@ function ChangeOrdersView({ project, onChange }) {
                 <React.Fragment key={co.id}>
                 <tr>
                   <td style={{ fontFamily: "JetBrains Mono" }}>{co.number}</td>
-                  <td><input value={co.name} onChange={e => updateCO(co.id, { name: e.target.value })} style={{ width: 130 }} /></td>
+                  <td>
+                    {co.approved
+                      ? <span style={{ fontSize: 13, fontWeight: 600, color: P.text }}>{co.name}</span>
+                      : <input value={co.name} onChange={e => updateCO(co.id, { name: e.target.value })} style={{ width: 130 }} />
+                    }
+                  </td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <div
@@ -3334,7 +3339,14 @@ function ChangeOrdersView({ project, onChange }) {
                       </button>
                     </div>
                   </td>
-                  <td><input type="number" value={co.fee} onChange={e => updateCO(co.id, { fee: +e.target.value })} style={{ width: 90 }} /></td>
+                  <td>
+                    {co.approved
+                      ? <span style={{ fontFamily: "JetBrains Mono", fontSize: 13, color: P.green, fontWeight: 600 }}>
+                          {(co.fee || 0).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                        </span>
+                      : <input type="number" value={co.fee} onChange={e => updateCO(co.id, { fee: +e.target.value })} style={{ width: 90 }} />
+                    }
+                  </td>
                   <td>
                     <input type="checkbox" checked={!!co.sentToClient} onChange={e => updateCO(co.id, { sentToClient: e.target.checked })} />
                     {co.sentToClient && <span style={{ color: P.yellow, fontSize: 11, marginLeft: 5 }}>Sent</span>}
@@ -3343,7 +3355,12 @@ function ChangeOrdersView({ project, onChange }) {
                     <input type="checkbox" checked={!!co.approved} onChange={e => updateCO(co.id, { approved: e.target.checked })} />
                     {co.approved && <span style={{ color: P.green, fontSize: 11, marginLeft: 5 }}>✓ Approved</span>}
                   </td>
-                  <td><input type="date" value={co.date} onChange={e => updateCO(co.id, { date: e.target.value })} /></td>
+                  <td>
+                    {co.approved
+                      ? <span style={{ fontSize: 12, color: P.textDim }}>{co.date}</span>
+                      : <input type="date" value={co.date} onChange={e => updateCO(co.id, { date: e.target.value })} />
+                    }
+                  </td>
                   <td><input value={co.notes || ""} onChange={e => updateCO(co.id, { notes: e.target.value })} style={{ width: 130 }} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
@@ -8489,7 +8506,9 @@ function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClien
         style={{ width: "100%", opacity: noCompany ? 0.5 : 1 }}
       />
       {open && !noCompany && (
-        <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 300, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 260, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
+        <div
+          onMouseDown={e => e.preventDefault()}
+          style={{ position: "absolute", top: "100%", left: 0, zIndex: 300, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 260, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
           {filtered.length === 0 && !showAdd && (
             <div style={{ padding: "8px 12px", fontSize: 12, color: P.textDim }}>
               {contacts.length === 0 ? "No contacts on file for this company." : "No contacts match."}
