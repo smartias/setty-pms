@@ -6575,7 +6575,8 @@ function EmailsView({ project, onChange, clients = [] }) {
       // Add distinctive keyword tokens — catches emails that reference part of the name
       // e.g. "Skyport Marina Garage Rehab" → search "Skyport" (drops generic nouns)
       const keywords = nameKeywords(project.name);
-      if (keywords.length > 0) queries.push(keywords.join(" "));
+      // Quote each keyword individually to avoid Graph syntax errors on leading digits/special chars
+      if (keywords.length > 0) queries.push(keywords.map(k => `"${k}"`).join(" "));
       // Note: Graph $search does not support KQL from: operator — skipped
 
       let allMsgs = [];
