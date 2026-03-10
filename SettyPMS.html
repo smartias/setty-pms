@@ -6297,7 +6297,15 @@ function EmailsView({ project, onChange, clients = [] }) {
   const saved = project.emails || [];
 
   // Search state
-  const [query, setQuery] = useState(project.name || project.projectNumber || "");
+  // Pre-populate with the first distinctive token from the project name, quoted.
+  // User can edit before searching — quoted = exact phrase, unquoted = loose match.
+  const defaultQuery = (() => {
+    const GENERIC = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","nyc","building","garage","marina","park","plaza","center","campus","tower","hall","house","complex","facility","site","annex","terminal","school","library","clinic","hospital","office","lab","phase","stage","area","zone","rehab","rehabilitation","renovation","restoration","upgrade","repair","replacement","construction","retrofit","design","engineering","services","mechanical","electrical","plumbing","fire","protection","systems","hvac","infrastructure","study","survey","report","plan","program","feasibility","analysis","review","inspection","management"]);
+    const tokens = (project.name || "").split(/[\s\-\/,()&]+/).map(w => w.replace(/[^a-zA-Z0-9]/g,"")).filter(w => w.length >= 3 && !GENERIC.has(w.toLowerCase()));
+    if (tokens.length > 0) return `"${tokens[0]}"`;
+    return project.name ? `"${project.name}"` : (project.projectNumber || "");
+  })();
+  const [query, setQuery] = useState(defaultQuery);
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState(null);
@@ -6565,19 +6573,13 @@ function EmailsView({ project, onChange, clients = [] }) {
     try {
       const token = await getToken();
 
-      // Build targeted search queries — precision over recall:
-      // 1. Exact full project name (quoted) — hits subject and body
-      // 2. Project number (quoted) — if present
-      // 3. from:<clientEmail> — emails from the client POC regardless of subject
-      const queries = [];
-      if (project.name) queries.push(`"${project.name.trim()}"`);
-      if (project.projectNumber) queries.push(`"${project.projectNumber.trim()}"`);
-      // Add distinctive keyword tokens — catches emails that reference part of the name
-      // e.g. "Skyport Marina Garage Rehab" → search "Skyport" (drops generic nouns)
-      const keywords = nameKeywords(project.name);
-      // Quote each keyword individually to avoid Graph syntax errors on leading digits/special chars
-      if (keywords.length > 0) queries.push(keywords.map(k => `"${k}"`).join(" "));
-      // Note: Graph $search does not support KQL from: operator — skipped
+      // Use whatever is in the search box — user controls the query.
+      // Quoted = exact phrase match; unquoted = loose keyword match.
+      const queries = [query.trim()].filter(Boolean);
+      // Always also search project number if present and not already in query
+      if (project.projectNumber && !query.includes(project.projectNumber)) {
+        queries.push(`"${project.projectNumber.trim()}"`);
+      }
 
       let allMsgs = [];
       const seen = new Set();
