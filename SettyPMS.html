@@ -6284,7 +6284,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} onChange={onUpdate} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
-        {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} />}
+        {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} clients={clients} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
       </Card>
     </div>
@@ -6293,7 +6293,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
 
 // ─── EMAILS VIEW ─────────────────────────────────────────────────────────────
 
-function EmailsView({ project, onChange }) {
+function EmailsView({ project, onChange, clients = [] }) {
   const saved = project.emails || [];
 
   // Search state
@@ -6491,15 +6491,52 @@ function EmailsView({ project, onChange }) {
     return (b/1048576).toFixed(1) + " MB";
   }
 
-  // Build search queries: name first, project number second, sender from client
-  // Extract meaningful keywords from a project name — drop short filler words,
-  // keep proper nouns and tokens likely to appear in email body text.
+  // Find client POC email(s) from the clients directory for this project
+  function getClientPOCEmails() {
+    const companyName = project.prime || project.clientName || "";
+    if (!companyName) return [];
+    const company = clients.find(c => c.name === companyName);
+    if (!company || !company.contacts) return [];
+    // clientContact is a name — find the matching contact's email
+    const pocName = project.clientContact || "";
+    if (pocName) {
+      const match = company.contacts.find(ct => ct.name === pocName);
+      if (match?.email) return [match.email];
+    }
+    // Fallback: return all contact emails for the company
+    return company.contacts.map(ct => ct.email).filter(Boolean);
+  }
+
+  // Extract distinctive proper-noun tokens from a project name.
+  // Drops generic architectural/engineering/construction nouns so searches
+  // stay tight. "Skyport Marina Garage Rehab" → ["Skyport"]
   function nameKeywords(name) {
     if (!name) return [];
-    const STOP = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","project","phase","building","renovation","design","services","engineering","facility","facilities"]);
-    return name.split(/[\s\-\/,]+/)
+    const GENERIC = new Set([
+      // articles / prepositions
+      "the","a","an","of","for","and","or","at","in","on","to","by","with","from",
+      // geography filler
+      "new","york","city","nyc","ny","nj","brooklyn","bronx","queens","manhattan","staten",
+      // building types
+      "building","garage","marina","park","plaza","center","centre","campus","tower",
+      "hall","house","home","complex","facility","facilities","site","annex","terminal",
+      "warehouse","depot","station","port","yard","pier","dock","basin","field","court",
+      "school","library","clinic","hospital","shelter","office","lab","laboratory",
+      // project phases / descriptors
+      "project","phase","stage","area","zone","section","unit","floor","level","roof",
+      "rehab","rehabilitation","renovation","restoration","upgrade","improvement",
+      "repair","replacement","construction","reconstruction","retrofit","modernization",
+      // MEP/engineering nouns
+      "design","engineering","services","mechanical","electrical","plumbing","fire",
+      "protection","systems","hvac","infrastructure","utility","utilities","assessment",
+      // client/procurement filler
+      "study","survey","report","plan","planning","program","programming","master",
+      "feasibility","analysis","review","inspection","audit","evaluation","management",
+    ]);
+    return name
+      .split(/[\s\-\/,()&]+/)
       .map(w => w.replace(/[^a-zA-Z0-9]/g, ""))
-      .filter(w => w.length >= 4 && !STOP.has(w.toLowerCase()));
+      .filter(w => w.length >= 4 && !GENERIC.has(w.toLowerCase()));
   }
 
   async function doSearch() {
@@ -6510,16 +6547,21 @@ function EmailsView({ project, onChange }) {
     try {
       const token = await getToken();
 
-      // Build search queries:
-      // 1. Exact full project name (quoted) — highest precision
+      // Build targeted search queries — precision over recall:
+      // 1. Exact full project name (quoted) — hits subject and body
       // 2. Project number (quoted) — if present
-      // 3. Key tokens from project name unquoted — catches partial matches in body
+      // 3. from:<clientEmail> — emails from the client POC regardless of subject
       const queries = [];
       if (project.name) queries.push(`"${project.name.trim()}"`);
       if (project.projectNumber) queries.push(`"${project.projectNumber.trim()}"`);
+      // Add distinctive keyword tokens — catches emails that reference part of the name
+      // e.g. "Skyport Marina Garage Rehab" → search "Skyport" (drops generic nouns)
       const keywords = nameKeywords(project.name);
-      // Only add keyword search if we have 2+ meaningful tokens (avoids overly broad results)
-      if (keywords.length >= 2) queries.push(keywords.join(" "));
+      if (keywords.length > 0) queries.push(keywords.join(" "));
+      const pocEmails = getClientPOCEmails();
+      for (const email of pocEmails) {
+        queries.push(`from:${email}`);
+      }
 
       let allMsgs = [];
       const seen = new Set();
@@ -6657,7 +6699,7 @@ function EmailsView({ project, onChange }) {
           </Btn>
         </div>
         <div style={{ fontSize: 11, color: P.textDim }}>
-          Searches your Outlook mailbox for emails matching the project name and number. Results show emails you have access to only.
+          Searches for emails matching the exact project name, project number, and emails from the client POC. Results show emails you have access to only.
         </div>
 
         {searchErr && (
