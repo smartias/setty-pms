@@ -6347,7 +6347,7 @@ function EmailsView({ project, onChange }) {
       for (const term of terms) {
         if (!term || term.trim().length < 2) continue;
         const q = encodeURIComponent(`"${term.trim()}"`);
-        const url = `/me/messages?$search=${q}&$top=25&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId&$orderby=receivedDateTime desc`;
+        const url = `/me/messages?$search=${q}&$top=25&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId`;
         const resp = await graphFetch("GET", url, undefined, token);
         if (resp && resp.value) {
           for (const m of resp.value) {
