@@ -6324,6 +6324,99 @@ function EmailsView({ project, onChange }) {
   }
 
   // Format bytes
+  function parseEmailChain(text) {
+    if (!text) return [];
+    // Split on "From: ... Sent: ... To: ... Subject:" headers that appear inline in chains
+    const splitter = /(?=From:\s.+\nSent:\s.+\nTo:\s)/gm;
+    const parts = text.split(splitter).map(s => s.trim()).filter(Boolean);
+    if (parts.length <= 1) return null; // not a chain, render as-is
+
+    return parts.map(part => {
+      const fromMatch   = part.match(/^From:\s*(.+)/m);
+      const sentMatch   = part.match(/^Sent:\s*(.+)/m);
+      const toMatch     = part.match(/^To:\s*(.+)/m);
+      const ccMatch     = part.match(/^Cc:\s*(.+)/m);
+      const subjMatch   = part.match(/^Subject:\s*(.+)/m);
+      // Body = everything after the last header line block
+      const headerBlock = /^(From|Sent|To|Cc|Subject):.+\n/gm;
+      let body = part;
+      let m;
+      let lastIdx = 0;
+      while ((m = headerBlock.exec(part)) !== null) lastIdx = m.index + m[0].length;
+      body = part.slice(lastIdx).trim();
+      // Strip legal footers (Perkins Eastman-style boilerplate)
+      body = body.replace(/This message is sent by[\s\S]{0,600}?confidential\.[^\n]*/gi, "").trim();
+      body = body.replace(/CAUTION:\s*External E-mail\s*/gi, "").trim();
+      // Strip signature dividers and booking links
+      body = body.replace(/Book time to meet with me\s*/gi, "").trim();
+      return {
+        from:    fromMatch?.[1]?.trim() || "",
+        sent:    sentMatch?.[1]?.trim() || "",
+        to:      toMatch?.[1]?.trim() || "",
+        cc:      ccMatch?.[1]?.trim() || "",
+        subject: subjMatch?.[1]?.trim() || "",
+        body,
+      };
+    });
+  }
+
+  function cleanBody(text) {
+    if (!text) return "";
+    return text
+      .replace(/CAUTION:\s*External E-mail\s*/gi, "")
+      .replace(/Book time to meet with me\s*/gi, "")
+      .replace(/This message is sent by[\s\S]{0,600}?confidential\.[^\n]*/gi, "")
+      .trim();
+  }
+
+  function EmailChain({ body }) {
+    const chain = parseEmailChain(body);
+    if (!chain) {
+      // Single message — just render cleaned text
+      return (
+        <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 500, overflowY: "auto" }}>
+          {cleanBody(body)}
+        </pre>
+      );
+    }
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 520, overflowY: "auto" }}>
+        {chain.map((msg, i) => {
+          const isFirst = i === 0;
+          // Extract sender name only (strip email address)
+          const senderName = msg.from.replace(/<[^>]+>/, "").trim() || msg.from;
+          const isSara = msg.from.toLowerCase().includes("setty");
+          return (
+            <div key={i} style={{
+              border: `1px solid ${isFirst ? P.accent : P.border}`,
+              borderRadius: 8,
+              overflow: "hidden",
+              background: isFirst ? P.bg : P.card,
+            }}>
+              {/* Message header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+                padding: "8px 12px", borderBottom: `1px solid ${P.border}`,
+                background: isFirst ? P.accentDim : "transparent" }}>
+                <div>
+                  <span style={{ fontWeight: 700, fontSize: 12, color: isSara ? P.accentLight : P.text }}>
+                    {senderName}
+                  </span>
+                  {msg.to && <span style={{ fontSize: 11, color: P.textDim, marginLeft: 8 }}>→ {msg.to.length > 60 ? msg.to.slice(0,60)+"…" : msg.to}</span>}
+                  {msg.cc && <div style={{ fontSize: 10, color: P.textDim, marginTop: 1 }}>CC: {msg.cc.length > 70 ? msg.cc.slice(0,70)+"…" : msg.cc}</div>}
+                </div>
+                <span style={{ fontSize: 11, color: P.textDim, flexShrink: 0, marginLeft: 12 }}>{msg.sent}</span>
+              </div>
+              {/* Body */}
+              <div style={{ padding: "10px 12px", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {msg.body || <span style={{ color: P.textDim, fontStyle: "italic" }}>No body content.</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function fmtBytes(b) {
     if (!b) return "";
     if (b < 1024) return b + " B";
@@ -6608,9 +6701,7 @@ function EmailsView({ project, onChange }) {
                     {isFetching ? (
                       <div style={{ color: P.textDim, fontSize: 12 }}>⏳ Loading…</div>
                     ) : body ? (
-                      <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 400, overflowY: "auto" }}>
-                        {body}
-                      </pre>
+                      <EmailChain body={body} />
                     ) : (
                       <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>
                     )}
