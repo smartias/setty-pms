@@ -6343,81 +6343,7 @@ function EmailsView({ project, onChange, clients = [] }) {
   }
 
   // Format bytes
-  function parseEmailChain(text) {
-    if (!text) return [];
-
-    // Split on Outlook reply headers: "From: X\nSent: Y\nTo: Z"
-    const parts = text.split(/(?=^From:\s*.+\nSent:\s*.+\nTo:\s*)/m).map(s => s.trim()).filter(Boolean);
-
-    if (parts.length <= 1) {
-      // Fallback: flat text with no preserved newlines
-      const DELIM = "\x00SPLIT\x00";
-      const tagged = text.replace(/(From:\s*[^\n]{3,100}\s+Sent:\s*[^\n]{5,60}\s+To:\s*)/g, DELIM + "$1");
-      const flatParts = tagged.split(DELIM).map(s => s.trim()).filter(Boolean);
-      if (flatParts.length <= 1) return null;
-      return parseFlatParts(flatParts);
-    }
-
-    return parts.map((part, i) => {
-      const lines = part.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-      const fromIdx = lines.findIndex(l => /^From:/i.test(l));
-      const sentIdx = lines.findIndex(l => /^Sent:/i.test(l));
-      const toIdx   = lines.findIndex(l => /^To:/i.test(l));
-      const ccIdx   = lines.findIndex(l => /^Cc:/i.test(l));
-      const subjIdx = lines.findIndex(l => /^Subject:/i.test(l));
-
-      const fromL = fromIdx >= 0 ? lines[fromIdx] : "";
-      const sentL = sentIdx >= 0 ? lines[sentIdx] : "";
-      const toL   = toIdx   >= 0 ? lines[toIdx]   : "";
-      const ccL   = ccIdx   >= 0 ? lines[ccIdx]   : "";
-      const subjL = subjIdx >= 0 ? lines[subjIdx] : "";
-
-      // Body starts after the last recognized header line
-      const headerIndices = [fromIdx, sentIdx, toIdx, ccIdx, subjIdx].filter(n => n >= 0);
-      const lastHeaderIdx = headerIndices.length > 0 ? Math.max(...headerIndices) : -1;
-      const bodyLines = lastHeaderIdx >= 0 ? lines.slice(lastHeaderIdx + 1) : lines;
-      const body = bodyLines.join("\n").trim();
-
-      return buildMsg(
-        fromL.replace(/^From:\s*/i, "").trim(),
-        sentL.replace(/^Sent:\s*/i, "").trim(),
-        toL.replace(/^To:\s*/i,   "").trim(),
-        ccL.replace(/^Cc:\s*/i,   "").trim(),
-        subjL.replace(/^Subject:\s*/i, "").trim(),
-        cleanBodyText(body),
-        i === 0
-      );
-    }).filter(p => p.body.length > 0 || p.from);
-  }
-
-  function parseFlatParts(parts) {
-    return parts.map((part, i) => {
-      const fromM = part.match(/From:\s*(.+?)(?=\s*Sent:)/s);
-      const sentM = part.match(/Sent:\s*(.+?)(?=\s*To:)/s);
-      const toM   = part.match(/To:\s*(.+?)(?=\s*(?:Cc:|Subject:))/s);
-      const ccM   = part.match(/Cc:\s*(.+?)(?=\s*Subject:)/s);
-      const subjM = part.match(/Subject:\s*(.+?)(?=\n|\s{3,})/s);
-      // Body: strip everything up to and including the Subject line
-      const body = subjM
-        ? part.slice(part.indexOf(subjM[0]) + subjM[0].length).trim()
-        : part.replace(/^From:[\s\S]+?(?:\n\n|\s{4,})/, "").trim();
-      return buildMsg(
-        (fromM?.[1] || "").replace(/<[^>]+>/g,"").trim(),
-        (sentM?.[1] || "").trim(),
-        (toM?.[1]  || "").trim(),
-        (ccM?.[1]  || "").trim(),
-        (subjM?.[1]|| "").trim(),
-        cleanBodyText(body),
-        i === 0
-      );
-    }).filter(p => p.body.length > 0 || p.from);
-  }
-
-  function buildMsg(from, sent, to, cc, subject, body, isFirst) {
-    return { from: from.replace(/<[^>]+>/g,"").trim(), sent, to, cc, subject, body, isFirst };
-  }
-
-  function cleanBodyText(text) {
+    function cleanBodyText(text) {
     return text
       .replace(/CAUTION:\s*External E-?mail[^\n]*/gi, "")
       .replace(/Book time to meet with me[^\n]*/gi, "")
@@ -6434,25 +6360,67 @@ function EmailsView({ project, onChange, clients = [] }) {
   }
 
   function EmailChain({ body }) {
-    const chain = parseEmailChain(body);
-
-    // Debug: if chain exists but all bodies are empty, fall back to raw display
-    const allEmpty = chain && chain.every(m => !m.body);
-
-    if (!chain || allEmpty) {
-      return (
-        <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 500, overflowY: "auto" }}>
-          {cleanBody(body)}
-        </pre>
-      );
+    if (!body || !body.trim()) {
+      return <div style={{ color: P.textDim, fontSize: 12, fontStyle: "italic" }}>No body content.</div>;
     }
+
+    // Split on Outlook reply header patterns — handles both newline-separated
+    // and run-together formats that survive HTML-to-text conversion
+    const REPLY_HEADER = /(?:^|
+)[\-_]{2,}.*?Original Message.*?[\-_]{2,}|(?:^|
+)(?:From|De)\s*:\s*.{3,80}\s*(?:
+|$)(?=(?:Sent|Date|To|Para)\s*:)/gi;
+
+    // Simple split on "_____ Original Message _____" or "From: X
+Sent: Y
+To: Z" blocks
+    const SEP = /
+?(?:-{3,}|_{3,})\s*(?:Original Message|Forwarded message)\s*(?:-{3,}|_{3,})
+?/gi;
+
+    let parts = body.split(SEP).map(s => s.trim()).filter(Boolean);
+
+    // If no separator found, try splitting on "From: X <...>
+Sent:" pattern
+    if (parts.length <= 1) {
+      parts = body.split(/
+(?=From:\s+\S.{2,80}
+(?:Sent|Date):\s)/).map(s => s.trim()).filter(Boolean);
+    }
+
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 520, overflowY: "auto" }}>
-        {chain.map((msg, i) => {
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 540, overflowY: "auto" }}>
+        {parts.map((part, i) => {
           const isFirst = i === 0;
-          // Extract sender name only (strip email address)
-          const senderName = msg.from.replace(/<[^>]+>/, "").trim() || msg.from;
-          const isSara = msg.from.toLowerCase().includes("setty");
+          // Extract From/Sent/To from header if present
+          const fromM  = part.match(/^From:\s*(.+)/im);
+          const sentM  = part.match(/^(?:Sent|Date):\s*(.+)/im);
+          const toM    = part.match(/^To:\s*(.+)/im);
+          const subjM  = part.match(/^Subject:\s*(.+)/im);
+
+          // Strip the header lines from body display
+          let bodyText = part;
+          if (fromM || sentM) {
+            bodyText = part
+              .replace(/^From:\s*.+
+?/im, "")
+              .replace(/^(?:Sent|Date):\s*.+
+?/im, "")
+              .replace(/^To:\s*.+
+?/im, "")
+              .replace(/^Cc:\s*.+
+?/im, "")
+              .replace(/^Subject:\s*.+
+?/im, "")
+              .trim();
+          }
+
+          bodyText = cleanBodyText(bodyText);
+
+          const senderRaw = fromM?.[1] || "";
+          const senderName = senderRaw.replace(/<[^>]+>/g, "").replace(/"/g, "").trim();
+          const isSara = senderRaw.toLowerCase().includes("setty");
+
           return (
             <div key={i} style={{
               border: `1px solid ${isFirst ? P.accent : P.border}`,
@@ -6460,22 +6428,38 @@ function EmailsView({ project, onChange, clients = [] }) {
               overflow: "hidden",
               background: isFirst ? P.bg : P.card,
             }}>
-              {/* Message header */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start",
-                padding: "8px 12px", borderBottom: `1px solid ${P.border}`,
-                background: isFirst ? P.accentDim : "transparent" }}>
-                <div>
-                  <span style={{ fontWeight: 700, fontSize: 12, color: isSara ? P.accentLight : P.text }}>
-                    {senderName}
-                  </span>
-                  {msg.to && <span style={{ fontSize: 11, color: P.textDim, marginLeft: 8 }}>→ {msg.to.length > 60 ? msg.to.slice(0,60)+"…" : msg.to}</span>}
-                  {msg.cc && <div style={{ fontSize: 10, color: P.textDim, marginTop: 1 }}>CC: {msg.cc.length > 70 ? msg.cc.slice(0,70)+"…" : msg.cc}</div>}
+              {(senderName || sentM || toM) && (
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+                  padding: "7px 12px", borderBottom: `1px solid ${P.border}`,
+                  background: isFirst ? P.accentDim : "transparent"
+                }}>
+                  <div>
+                    {senderName && (
+                      <span style={{ fontWeight: 700, fontSize: 12, color: isSara ? P.accentLight : P.text }}>
+                        {senderName}
+                      </span>
+                    )}
+                    {toM && (
+                      <span style={{ fontSize: 11, color: P.textDim, marginLeft: 8 }}>
+                        → {toM[1].length > 60 ? toM[1].slice(0,60)+"…" : toM[1]}
+                      </span>
+                    )}
+                    {subjM && (
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>
+                        {subjM[1]}
+                      </div>
+                    )}
+                  </div>
+                  {sentM && (
+                    <span style={{ fontSize: 11, color: P.textDim, flexShrink: 0, marginLeft: 12 }}>
+                      {sentM[1]}
+                    </span>
+                  )}
                 </div>
-                <span style={{ fontSize: 11, color: P.textDim, flexShrink: 0, marginLeft: 12 }}>{msg.sent}</span>
-              </div>
-              {/* Body */}
+              )}
               <div style={{ padding: "10px 12px", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                {msg.body || <span style={{ color: P.textDim, fontStyle: "italic" }}>No body content.</span>}
+                {bodyText || <span style={{ color: P.textDim, fontStyle: "italic" }}>No body content.</span>}
               </div>
             </div>
           );
@@ -6484,7 +6468,7 @@ function EmailsView({ project, onChange, clients = [] }) {
     );
   }
 
-  function fmtBytes(b) {
+    function fmtBytes(b) {
     if (!b) return "";
     if (b < 1024) return b + " B";
     if (b < 1048576) return (b/1024).toFixed(0) + " KB";
