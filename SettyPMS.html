@@ -6312,8 +6312,14 @@ function EmailsView({ project, onChange }) {
   // Strip HTML to plain text
   function htmlToText(html) {
     if (!html) return "";
+    // Strip Outlook injected CSS comment blocks (<!--  @font-face ... -->)
+    let cleaned = html.replace(/<!--[\s\S]*?-->/g, "");
+    // Strip <style> blocks
+    cleaned = cleaned.replace(/<style[\s\S]*?<\/style>/gi, "");
+    // Strip <head> blocks
+    cleaned = cleaned.replace(/<head[\s\S]*?<\/head>/gi, "");
     const d = document.createElement("div");
-    d.innerHTML = html;
+    d.innerHTML = cleaned;
     return (d.innerText || d.textContent || "").trim();
   }
 
