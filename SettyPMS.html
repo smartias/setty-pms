@@ -6558,10 +6558,7 @@ function EmailsView({ project, onChange, clients = [] }) {
       // e.g. "Skyport Marina Garage Rehab" → search "Skyport" (drops generic nouns)
       const keywords = nameKeywords(project.name);
       if (keywords.length > 0) queries.push(keywords.join(" "));
-      const pocEmails = getClientPOCEmails();
-      for (const email of pocEmails) {
-        queries.push(`from:${email}`);
-      }
+      // Note: Graph $search does not support KQL from: operator — skipped
 
       let allMsgs = [];
       const seen = new Set();
