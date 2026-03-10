@@ -6342,8 +6342,7 @@ function EmailsView({ project, onChange, clients = [] }) {
     return text;
   }
 
-  // Format bytes
-    function cleanBodyText(text) {
+  function cleanBodyText(text) {
     return text
       .replace(/CAUTION:\s*External E-?mail[^\n]*/gi, "")
       .replace(/Book time to meet with me[^\n]*/gi, "")
@@ -6364,57 +6363,44 @@ function EmailsView({ project, onChange, clients = [] }) {
       return <div style={{ color: P.textDim, fontSize: 12, fontStyle: "italic" }}>No body content.</div>;
     }
 
-    // Split on Outlook reply header patterns — handles both newline-separated
-    // and run-together formats that survive HTML-to-text conversion
-    const REPLY_HEADER = /(?:^|
-)[\-_]{2,}.*?Original Message.*?[\-_]{2,}|(?:^|
-)(?:From|De)\s*:\s*.{3,80}\s*(?:
-|$)(?=(?:Sent|Date|To|Para)\s*:)/gi;
-
-    // Simple split on "_____ Original Message _____" or "From: X
-Sent: Y
-To: Z" blocks
-    const SEP = /
-?(?:-{3,}|_{3,})\s*(?:Original Message|Forwarded message)\s*(?:-{3,}|_{3,})
-?/gi;
-
+    // Split on "--- Original Message ---" or "_____ Original Message _____"
+    const SEP = /\n?(?:-{3,}|_{3,})\s*(?:Original Message|Forwarded message)\s*(?:-{3,}|_{3,})\n?/gi;
     let parts = body.split(SEP).map(s => s.trim()).filter(Boolean);
 
-    // If no separator found, try splitting on "From: X <...>
-Sent:" pattern
+    // Fallback: split on "From: X\nSent:" reply headers
     if (parts.length <= 1) {
-      parts = body.split(/
-(?=From:\s+\S.{2,80}
-(?:Sent|Date):\s)/).map(s => s.trim()).filter(Boolean);
+      parts = body.split(/\n(?=From:\s+\S.{2,80}\n(?:Sent|Date):\s)/).map(s => s.trim()).filter(Boolean);
+    }
+
+    // Last resort: just show as plain text
+    if (parts.length <= 1) {
+      return (
+        <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text,
+          whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 500, overflowY: "auto" }}>
+          {cleanBodyText(body)}
+        </pre>
+      );
     }
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 540, overflowY: "auto" }}>
         {parts.map((part, i) => {
           const isFirst = i === 0;
-          // Extract From/Sent/To from header if present
-          const fromM  = part.match(/^From:\s*(.+)/im);
-          const sentM  = part.match(/^(?:Sent|Date):\s*(.+)/im);
-          const toM    = part.match(/^To:\s*(.+)/im);
-          const subjM  = part.match(/^Subject:\s*(.+)/im);
+          const fromM = part.match(/^From:\s*(.+)/im);
+          const sentM = part.match(/^(?:Sent|Date):\s*(.+)/im);
+          const toM   = part.match(/^To:\s*(.+)/im);
+          const subjM = part.match(/^Subject:\s*(.+)/im);
 
-          // Strip the header lines from body display
           let bodyText = part;
           if (fromM || sentM) {
             bodyText = part
-              .replace(/^From:\s*.+
-?/im, "")
-              .replace(/^(?:Sent|Date):\s*.+
-?/im, "")
-              .replace(/^To:\s*.+
-?/im, "")
-              .replace(/^Cc:\s*.+
-?/im, "")
-              .replace(/^Subject:\s*.+
-?/im, "")
+              .replace(/^From:\s*.+\n?/im, "")
+              .replace(/^(?:Sent|Date):\s*.+\n?/im, "")
+              .replace(/^To:\s*.+\n?/im, "")
+              .replace(/^Cc:\s*.+\n?/im, "")
+              .replace(/^Subject:\s*.+\n?/im, "")
               .trim();
           }
-
           bodyText = cleanBodyText(bodyText);
 
           const senderRaw = fromM?.[1] || "";
@@ -6424,8 +6410,7 @@ Sent:" pattern
           return (
             <div key={i} style={{
               border: `1px solid ${isFirst ? P.accent : P.border}`,
-              borderRadius: 8,
-              overflow: "hidden",
+              borderRadius: 8, overflow: "hidden",
               background: isFirst ? P.bg : P.card,
             }}>
               {(senderName || sentM || toM) && (
@@ -6442,13 +6427,11 @@ Sent:" pattern
                     )}
                     {toM && (
                       <span style={{ fontSize: 11, color: P.textDim, marginLeft: 8 }}>
-                        → {toM[1].length > 60 ? toM[1].slice(0,60)+"…" : toM[1]}
+                        {"\u2192 "}{toM[1].length > 60 ? toM[1].slice(0,60)+"\u2026" : toM[1]}
                       </span>
                     )}
                     {subjM && (
-                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>
-                        {subjM[1]}
-                      </div>
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>{subjM[1]}</div>
                     )}
                   </div>
                   {sentM && (
@@ -6468,7 +6451,7 @@ Sent:" pattern
     );
   }
 
-    function fmtBytes(b) {
+  function fmtBytes(b) {
     if (!b) return "";
     if (b < 1024) return b + " B";
     if (b < 1048576) return (b/1024).toFixed(0) + " KB";
