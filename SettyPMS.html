@@ -6363,6 +6363,19 @@ function EmailsView({ project, onChange, clients = [] }) {
       return <div style={{ color: P.textDim, fontSize: 12, fontStyle: "italic" }}>No body content.</div>;
     }
 
+    // DEBUG: show raw text so we can see what htmlToText is producing
+    const [showDebug, setShowDebug] = React.useState(false);
+    if (showDebug) {
+      return (
+        <div>
+          <button onClick={() => setShowDebug(false)} style={{ fontSize: 11, marginBottom: 8, background: P.accentDim, border: "none", color: P.accentLight, borderRadius: 4, padding: "2px 8px", cursor: "pointer" }}>Hide debug</button>
+          <pre style={{ fontSize: 10, color: P.textDim, whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 400, overflowY: "auto", background: "#000", padding: 8, borderRadius: 4 }}>
+            {JSON.stringify(body.slice(0, 2000))}
+          </pre>
+        </div>
+      );
+    }
+
     // Normalize: inject newlines before reply header blocks so splitting works
     // even when htmlToText collapses everything onto one line.
     // Matches "From: Name <email>Sent:" or "From: Name <email>\nSent:" patterns
@@ -6384,15 +6397,19 @@ function EmailsView({ project, onChange, clients = [] }) {
     // Last resort: just show as plain text
     if (parts.length <= 1) {
       return (
-        <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text,
-          whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 500, overflowY: "auto" }}>
-          {cleanBodyText(body)}
-        </pre>
+        <div>
+          <button onClick={() => setShowDebug(true)} style={{ fontSize: 10, marginBottom: 6, background: "none", border: `1px solid ${P.border}`, color: P.textDim, borderRadius: 4, padding: "1px 6px", cursor: "pointer" }}>debug raw</button>
+          <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text,
+            whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 500, overflowY: "auto" }}>
+            {cleanBodyText(body)}
+          </pre>
+        </div>
       );
     }
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 540, overflowY: "auto" }}>
+        <button onClick={() => setShowDebug(true)} style={{ alignSelf: "flex-end", fontSize: 10, background: "none", border: `1px solid ${P.border}`, color: P.textDim, borderRadius: 4, padding: "1px 6px", cursor: "pointer", marginBottom: 4 }}>debug raw</button>
         {parts.map((part, i) => {
           const isFirst = i === 0;
           const fromM = part.match(/^From:\s*(.+)/im);
