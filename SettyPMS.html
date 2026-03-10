@@ -6312,30 +6312,37 @@ function EmailsView({ project, onChange, clients = [] }) {
   // Strip HTML to plain text
   function htmlToText(html) {
     if (!html) return "";
+
+    // Use a unique token for newlines — inserting literal \n before innerHTML
+    // assignment doesn't work because the browser collapses them as whitespace.
+    const NL = "\x00NL\x00";
+
     let cleaned = html
       .replace(/<!--[\s\S]*?-->/g, "")
       .replace(/<style[\s\S]*?<\/style>/gi, "")
       .replace(/<head[\s\S]*?<\/head>/gi, "")
-      // Remove inline cid: images (Outlook embedded) — no text value
       .replace(/<img[^>]+src=["']cid:[^"']*["'][^>]*>/gi, "")
       .replace(/<img[^>]*>/gi, "")
       .replace(/<script[\s\S]*?<\/script>/gi, "")
       .replace(/<object[\s\S]*?<\/object>/gi, "");
 
-    // Insert newlines at block-level boundaries before stripping tags
+    // Inject NL tokens at block boundaries before innerHTML parsing
     cleaned = cleaned
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/p>/gi, "\n")
-      .replace(/<\/div>/gi, "\n")
-      .replace(/<\/tr>/gi, "\n")
-      .replace(/<\/li>/gi, "\n")
-      .replace(/<\/h[1-6]>/gi, "\n")
+      .replace(/<br\s*\/?>/gi, NL)
+      .replace(/<\/p>/gi, NL)
+      .replace(/<\/div>/gi, NL)
+      .replace(/<\/tr>/gi, NL)
+      .replace(/<\/li>/gi, NL)
+      .replace(/<\/h[1-6]>/gi, NL)
       .replace(/<\/td>/gi, "  ");
 
-    // Strip remaining tags
+    // Strip tags via DOM
     const d = document.createElement("div");
     d.innerHTML = cleaned;
     let text = (d.innerText || d.textContent || "");
+
+    // Replace tokens with real newlines
+    text = text.replace(/\x00NL\x00/g, "\n");
 
     // Collapse 3+ blank lines to 2
     text = text.replace(/\n{3,}/g, "\n\n").trim();
