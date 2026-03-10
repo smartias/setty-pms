@@ -6473,11 +6473,30 @@ function EmailsView({ project, onChange }) {
     setSelected(prev => ({ ...prev, [id]: !prev[id] }));
   }
 
-  function saveSelected() {
+  async function saveSelected() {
     const existingIds = new Set(saved.map(e => e.msgId));
-    const toAdd = results
-      .filter(m => selected[m.id] && !existingIds.has(m.id))
-      .map(m => ({
+    const toSave = results.filter(m => selected[m.id] && !existingIds.has(m.id));
+    const dupeCount = results.filter(m => selected[m.id] && existingIds.has(m.id)).length;
+
+    if (toSave.length === 0 && dupeCount > 0) {
+      alert(`${dupeCount} email${dupeCount > 1 ? "s" : ""} already saved.`);
+      return;
+    }
+
+    // Fetch attachment names for any email that has attachments
+    const token = await getToken();
+    const toAdd = await Promise.all(toSave.map(async m => {
+      let attachmentNames = [];
+      if (m.hasAttachments) {
+        try {
+          const res = await graphFetch("GET", `/me/messages/${m.id}/attachments?$select=name,size,contentType`, undefined, token);
+          attachmentNames = (res?.value || [])
+            .filter(a => !a.contentType?.startsWith("image/") || a.size > 10000) // skip tiny inline images
+            .map(a => a.name)
+            .filter(Boolean);
+        } catch(e) { /* non-fatal */ }
+      }
+      return {
         msgId: m.id,
         conversationId: m.conversationId || null,
         subject: m.subject || "(no subject)",
@@ -6488,16 +6507,12 @@ function EmailsView({ project, onChange }) {
         date: m.receivedDateTime,
         preview: m.bodyPreview || "",
         hasAttachments: !!m.hasAttachments,
+        attachmentNames,
         bodyText: htmlToText(m.body?.content || ""),
         savedAt: new Date().toISOString(),
         savedBy: getCurrentUser(),
-      }));
-
-    const dupeCount = results.filter(m => selected[m.id] && existingIds.has(m.id)).length;
-    if (toAdd.length === 0 && dupeCount > 0) {
-      alert(`${dupeCount} email${dupeCount > 1 ? "s" : ""} already saved.`);
-      return;
-    }
+      };
+    }));
 
     onChange({ ...project, emails: [...saved, ...toAdd] });
     setSelected({});
@@ -6687,8 +6702,18 @@ function EmailsView({ project, onChange }) {
                     )}
                     <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
                       {email.hasAttachments && (
-                        <span style={{ fontSize: 11, background: P.yellowDim, color: P.yellow, borderRadius: 4, padding: "1px 7px" }}>📎 Has attachments (not stored)</span>
-                      )}
+                      <div style={{ marginTop: 5 }}>
+                        {email.attachmentNames?.length > 0
+                          ? email.attachmentNames.map((name, i) => (
+                              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11,
+                                background: P.yellowDim, color: P.yellow, borderRadius: 4, padding: "1px 7px", marginRight: 4, marginBottom: 2 }}>
+                                📎 {name}
+                              </span>
+                            ))
+                          : <span style={{ fontSize: 11, background: P.yellowDim, color: P.yellow, borderRadius: 4, padding: "1px 7px" }}>📎 Has attachments (names unavailable)</span>
+                        }
+                      </div>
+                    )}
                       <span style={{ fontSize: 10, color: P.textDim }}>Saved {new Date(email.savedAt).toLocaleDateString()} by {email.savedBy}</span>
                     </div>
                   </div>
