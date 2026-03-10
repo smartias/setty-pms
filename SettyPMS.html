@@ -6353,24 +6353,31 @@ function EmailsView({ project, onChange }) {
     }
 
     return parts.map((part, i) => {
-      const lines = part.split("\n").map(l => l.trim());
-      const fromL = lines.find(l => /^From:/i.test(l));
-      const sentL = lines.find(l => /^Sent:/i.test(l));
-      const toL   = lines.find(l => /^To:/i.test(l));
-      const ccL   = lines.find(l => /^Cc:/i.test(l));
-      const subjL = lines.find(l => /^Subject:/i.test(l));
-
-      // Body = everything after Subject line (or all content if no Subject)
+      const lines = part.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+      const fromIdx = lines.findIndex(l => /^From:/i.test(l));
+      const sentIdx = lines.findIndex(l => /^Sent:/i.test(l));
+      const toIdx   = lines.findIndex(l => /^To:/i.test(l));
+      const ccIdx   = lines.findIndex(l => /^Cc:/i.test(l));
       const subjIdx = lines.findIndex(l => /^Subject:/i.test(l));
-      const bodyLines = subjIdx >= 0 ? lines.slice(subjIdx + 1) : (fromL ? [] : lines);
+
+      const fromL = fromIdx >= 0 ? lines[fromIdx] : "";
+      const sentL = sentIdx >= 0 ? lines[sentIdx] : "";
+      const toL   = toIdx   >= 0 ? lines[toIdx]   : "";
+      const ccL   = ccIdx   >= 0 ? lines[ccIdx]   : "";
+      const subjL = subjIdx >= 0 ? lines[subjIdx] : "";
+
+      // Body starts after the last recognized header line
+      const headerIndices = [fromIdx, sentIdx, toIdx, ccIdx, subjIdx].filter(n => n >= 0);
+      const lastHeaderIdx = headerIndices.length > 0 ? Math.max(...headerIndices) : -1;
+      const bodyLines = lastHeaderIdx >= 0 ? lines.slice(lastHeaderIdx + 1) : lines;
       const body = bodyLines.join("\n").trim();
 
       return buildMsg(
-        (fromL || "").replace(/^From:\s*/i, "").trim(),
-        (sentL || "").replace(/^Sent:\s*/i, "").trim(),
-        (toL   || "").replace(/^To:\s*/i,   "").trim(),
-        (ccL   || "").replace(/^Cc:\s*/i,   "").trim(),
-        (subjL || "").replace(/^Subject:\s*/i,"").trim(),
+        fromL.replace(/^From:\s*/i, "").trim(),
+        sentL.replace(/^Sent:\s*/i, "").trim(),
+        toL.replace(/^To:\s*/i,   "").trim(),
+        ccL.replace(/^Cc:\s*/i,   "").trim(),
+        subjL.replace(/^Subject:\s*/i, "").trim(),
         cleanBodyText(body),
         i === 0
       );
@@ -6422,8 +6429,11 @@ function EmailsView({ project, onChange }) {
 
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
-    if (!chain) {
-      // Single message — just render cleaned text
+
+    // Debug: if chain exists but all bodies are empty, fall back to raw display
+    const allEmpty = chain && chain.every(m => !m.body);
+
+    if (!chain || allEmpty) {
       return (
         <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 500, overflowY: "auto" }}>
           {cleanBody(body)}
