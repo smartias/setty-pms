@@ -6383,23 +6383,37 @@ function EmailsView({ project, onChange, clients = [] }) {
       );
     }
 
-    // Split on "--- Original Message ---" separators
-    const SEP = /\n?(?:-{3,}|_{3,})\s*(?:Original Message|Forwarded message)\s*(?:-{3,}|_{3,})\n?/gi;
-    let parts = body.split(SEP).map(s => s.trim()).filter(Boolean);
-
-    // Split on reply header blocks: "From: X\nSent: Y\nTo: Z"
-    // Works on the already-newline-separated text from htmlToText
-    if (parts.length <= 1) {
-      parts = body
-        .split(/\n(?=From:\s+\S.{0,120}\n(?:Sent|Date):\s)/)
-        .map(s => s.trim()).filter(Boolean);
+    // Split into reply segments by finding "From:" lines that start a reply header.
+    // Avoid regex \n which Babel may mishandle — split on lines then rejoin segments.
+    const lines = body.split("\n");
+    const segmentStarts = [0];
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      // A reply header starts with "From:" followed by a name/email
+      if (/^From:\s+\S/.test(line)) {
+        // Confirm it's a real reply header (next non-empty line is Sent: or Date: or To:)
+        const nextLine = lines.slice(i+1).find(l => l.trim().length > 0) || "";
+        if (/^(?:Sent|Date|To):\s/.test(nextLine.trim())) {
+          segmentStarts.push(i);
+        }
+      }
     }
+    // Also split on "--- Original Message ---"
+    for (let i = 0; i < lines.length; i++) {
+      if (/^[-_]{3,}\s*(?:Original Message|Forwarded message)\s*[-_]{3,}$/i.test(lines[i].trim())) {
+        if (!segmentStarts.includes(i)) segmentStarts.push(i);
+      }
+    }
+    segmentStarts.sort((a, b) => a - b);
 
-    // Fallback: split on any "From: ..." line
-    if (parts.length <= 1) {
-      parts = body
-        .split(/\n(?=From:\s+\S)/)
-        .map(s => s.trim()).filter(Boolean);
+    let parts;
+    if (segmentStarts.length > 1) {
+      parts = segmentStarts.map((start, idx) => {
+        const end = segmentStarts[idx + 1] || lines.length;
+        return lines.slice(start, end).join("\n").trim();
+      }).filter(Boolean);
+    } else {
+      parts = [body];
     }
 
     // Last resort: just show as plain text
