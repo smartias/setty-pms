@@ -6372,10 +6372,13 @@ function EmailsView({ project, onChange }) {
       const lastHeaderIdx = headerIndices.length > 0 ? Math.max(...headerIndices) : -1;
       const bodyLines = lastHeaderIdx >= 0 ? lines.slice(lastHeaderIdx + 1) : lines;
 
-      // Strip trailing signature from body: stop at "Regards," / "Best," / name+credential line
+      // Strip trailing signature: only cut when "Regards/Best/Thanks" is followed by a name line
       let rawBody = bodyLines.join("\n").trim();
-      const sigBreak = rawBody.search(/\n(Regards|Best|Thanks|Sincerely|Cheers),?\s*\n/i);
+      const sigBreak = rawBody.search(/\n(Regards|Best regards|Best|Thanks|Sincerely|Cheers),?\s*\n\s*[A-Z][a-z]+ [A-Z][a-z]+/);
       if (sigBreak > 20) rawBody = rawBody.slice(0, sigBreak).trim();
+
+      // Strip Setty signature block: "Name | Title\nemail\nP: ... C: ..."
+      rawBody = rawBody.replace(/\n[A-Z][a-z]+ [A-Z][a-z]+\s*\|\s*[^\n]+\n[a-z.\-]+@[a-z.\-]+(\.[a-z]+)+\n(P:|C:)[^\n]*/g, "").trim();
 
       const body = cleanBodyText(rawBody);
 
