@@ -6377,12 +6377,10 @@ function EmailsView({ project, onChange, clients = [] }) {
 
   function cleanBodyText(text) {
     return text
-      .replace(/CAUTION:\s*External E-?mail[^\n]*/gi, "")
-      .replace(/Book time to meet with me[^\n]*/gi, "")
-      .replace(/This message is sent by[\s\S]{0,900}?confidential\.[^\n]*/gi, "")
-      .replace(/T\.\s*\+?[\d\s().+-]{7,}\n?/g, "")
-      .replace(/E\.\s*\S+@\S+\n?/g, "")
-      .replace(/www\.\S+\n?/gi, "")
+      // Strip external email caution banners (whole line only)
+      .replace(/^CAUTION:.*External.*[\r\n]*/gim, "")
+      .replace(/^Book time to meet with me.*[\r\n]*/gim, "")
+      // Collapse excess blank lines
       .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
