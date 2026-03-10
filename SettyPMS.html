@@ -252,6 +252,7 @@ function newProject(overrides = {}) {
     ],
     milestones: [],
     changeOrders: [],
+    emails: [],
     invoices: [],
     startDate: new Date().toISOString().slice(0, 10),
     isTaskOrder: false,
@@ -6064,7 +6065,7 @@ function ProjectionsView({ project }) {
 
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Calendar", "Contract", "Change Orders", "Subconsultants", "Financials", "Reimbursables", "Projections"];
+const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Calendar", "Contract", "Change Orders", "Subconsultants", "Financials", "Reimbursables", "Projections"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
@@ -6283,8 +6284,342 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} onChange={onUpdate} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
+        {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
       </Card>
+    </div>
+  );
+}
+
+// ─── EMAILS VIEW ─────────────────────────────────────────────────────────────
+
+function EmailsView({ project, onChange }) {
+  const saved = project.emails || [];
+
+  // Search state
+  const [query, setQuery] = useState(project.name || project.projectNumber || "");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [searchErr, setSearchErr] = useState(null);
+  const [selected, setSelected] = useState({}); // { [msgId]: bool }
+
+  // View state
+  const [expanded, setExpanded] = useState(null); // msgId of open email
+  const [fetchingBody, setFetchingBody] = useState(null);
+  const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string }
+  const [filterSender, setFilterSender] = useState("All");
+
+  // Strip HTML to plain text
+  function htmlToText(html) {
+    if (!html) return "";
+    const d = document.createElement("div");
+    d.innerHTML = html;
+    return (d.innerText || d.textContent || "").trim();
+  }
+
+  // Format bytes
+  function fmtBytes(b) {
+    if (!b) return "";
+    if (b < 1024) return b + " B";
+    if (b < 1048576) return (b/1024).toFixed(0) + " KB";
+    return (b/1048576).toFixed(1) + " MB";
+  }
+
+  // Build search queries: name first, project number second, sender from client
+  async function doSearch() {
+    setSearching(true);
+    setSearchErr(null);
+    setResults([]);
+    setSelected({});
+    try {
+      const token = await getToken();
+      const terms = [project.name, project.projectNumber].filter(Boolean);
+      const clientDomain = (() => {
+        // Try to extract domain from project prime/client name — crude but useful
+        const c = project.prime || project.clientName || "";
+        // Check if any saved contact has an email domain
+        return null; // extend later if client directory has emails
+      })();
+
+      let allMsgs = [];
+      const seen = new Set();
+
+      for (const term of terms) {
+        if (!term || term.trim().length < 2) continue;
+        const q = encodeURIComponent(`"${term.trim()}"`);
+        const url = `/me/messages?$search=${q}&$top=25&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId&$orderby=receivedDateTime desc`;
+        const resp = await graphFetch("GET", url, undefined, token);
+        if (resp && resp.value) {
+          for (const m of resp.value) {
+            if (!seen.has(m.id)) {
+              seen.add(m.id);
+              allMsgs.push(m);
+            }
+          }
+        }
+      }
+
+      // Sort by date desc
+      allMsgs.sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime));
+      setResults(allMsgs);
+      if (allMsgs.length === 0) setSearchErr("No emails found. Try adjusting the search term.");
+    } catch(e) {
+      setSearchErr("Search failed: " + (e.message || "unknown error"));
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function toggleSelect(id) {
+    setSelected(prev => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function saveSelected() {
+    const existingIds = new Set(saved.map(e => e.msgId));
+    const toAdd = results
+      .filter(m => selected[m.id] && !existingIds.has(m.id))
+      .map(m => ({
+        msgId: m.id,
+        conversationId: m.conversationId || null,
+        subject: m.subject || "(no subject)",
+        from: m.from?.emailAddress?.name || m.from?.emailAddress?.address || "Unknown",
+        fromAddress: m.from?.emailAddress?.address || "",
+        to: (m.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", "),
+        cc: (m.ccRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", "),
+        date: m.receivedDateTime,
+        preview: m.bodyPreview || "",
+        hasAttachments: !!m.hasAttachments,
+        bodyText: htmlToText(m.body?.content || ""),
+        savedAt: new Date().toISOString(),
+        savedBy: getCurrentUser(),
+      }));
+
+    const dupeCount = results.filter(m => selected[m.id] && existingIds.has(m.id)).length;
+    if (toAdd.length === 0 && dupeCount > 0) {
+      alert(`${dupeCount} email${dupeCount > 1 ? "s" : ""} already saved.`);
+      return;
+    }
+
+    onChange({ ...project, emails: [...saved, ...toAdd] });
+    setSelected({});
+    setResults([]);
+    if (dupeCount > 0) alert(`${toAdd.length} saved. ${dupeCount} skipped (already on record).`);
+  }
+
+  function deleteEmail(msgId) {
+    onChange({ ...project, emails: saved.filter(e => e.msgId !== msgId) });
+    if (expanded === msgId) setExpanded(null);
+  }
+
+  async function fetchLiveBody(msgId) {
+    if (liveBody[msgId]) { setExpanded(msgId); return; }
+    setFetchingBody(msgId);
+    try {
+      const token = await getToken();
+      const data = await graphFetch("GET", `/me/messages/${msgId}?$select=body,hasAttachments`, undefined, token);
+      if (data?.body?.content) {
+        setLiveBody(prev => ({ ...prev, [msgId]: htmlToText(data.body.content) }));
+      }
+    } catch(e) {
+      // fallback to stored body — already there
+    } finally {
+      setFetchingBody(null);
+      setExpanded(msgId);
+    }
+  }
+
+  function toggleExpand(email) {
+    if (expanded === email.msgId) { setExpanded(null); return; }
+    fetchLiveBody(email.msgId);
+  }
+
+  // Unique senders for filter
+  const senders = useMemo(() => {
+    const s = new Set(saved.map(e => e.from));
+    return ["All", ...Array.from(s).sort()];
+  }, [saved]);
+
+  const filtered = filterSender === "All" ? saved : saved.filter(e => e.from === filterSender);
+  const sortedSaved = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+  const newCount = results.filter(m => selected[m.id] && !saved.find(e => e.msgId === m.id)).length;
+
+  return (
+    <div style={{ paddingBottom: 40 }}>
+      {/* ── Search panel ── */}
+      <SectionTitle>Search & Import Emails</SectionTitle>
+      <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 16, marginBottom: 28 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && doSearch()}
+            placeholder="Search term (project name or number)…"
+            style={{ flex: 1, fontSize: 13 }}
+          />
+          <Btn onClick={doSearch} disabled={searching || !query.trim()}>
+            {searching ? "⏳ Searching…" : "🔍 Search Outlook"}
+          </Btn>
+        </div>
+        <div style={{ fontSize: 11, color: P.textDim }}>
+          Searches your Outlook mailbox for emails matching the project name and number. Results show emails you have access to only.
+        </div>
+
+        {searchErr && (
+          <div style={{ marginTop: 10, fontSize: 12, color: P.red }}>{searchErr}</div>
+        )}
+
+        {results.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>
+                {results.length} result{results.length !== 1 ? "s" : ""} — select to save
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setSelected(Object.fromEntries(results.map(m => [m.id, true])))}
+                  style={{ background: "none", border: "none", color: P.accentLight, fontSize: 12, cursor: "pointer" }}>
+                  Select all
+                </button>
+                <button onClick={() => setSelected({})}
+                  style={{ background: "none", border: "none", color: P.textDim, fontSize: 12, cursor: "pointer" }}>
+                  Clear
+                </button>
+                {selectedCount > 0 && (
+                  <Btn small onClick={saveSelected}>
+                    Save {newCount > 0 ? newCount : selectedCount} to record
+                  </Btn>
+                )}
+              </div>
+            </div>
+            <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${P.border}`, borderRadius: 6 }}>
+              {results.map((m, i) => {
+                const alreadySaved = saved.some(e => e.msgId === m.id);
+                const isChecked = !!selected[m.id];
+                return (
+                  <div key={m.id}
+                    onClick={() => !alreadySaved && toggleSelect(m.id)}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px",
+                      borderBottom: i < results.length - 1 ? `1px solid ${P.border}` : "none",
+                      background: isChecked ? P.accentDim : alreadySaved ? P.greenDim : "transparent",
+                      cursor: alreadySaved ? "default" : "pointer",
+                      opacity: alreadySaved ? 0.7 : 1,
+                    }}
+                    onMouseOver={e => { if (!alreadySaved) e.currentTarget.style.background = isChecked ? P.accentDim : P.bg; }}
+                    onMouseOut={e => { e.currentTarget.style.background = isChecked ? P.accentDim : alreadySaved ? P.greenDim : "transparent"; }}
+                  >
+                    <input type="checkbox" checked={isChecked} readOnly disabled={alreadySaved}
+                      style={{ marginTop: 3, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {m.subject || "(no subject)"}
+                        </div>
+                        <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
+                          {new Date(m.receivedDateTime).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, color: P.textMuted, marginTop: 1 }}>
+                        From: {m.from?.emailAddress?.name || m.from?.emailAddress?.address || "Unknown"}
+                        {m.hasAttachments && <span style={{ marginLeft: 8, color: P.yellow, fontSize: 11 }}>📎 has attachments</span>}
+                        {alreadySaved && <span style={{ marginLeft: 8, color: P.green, fontSize: 11, fontWeight: 600 }}>✓ already saved</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: P.textDim, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {m.bodyPreview}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Saved emails ── */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <SectionTitle style={{ margin: 0 }}>
+          Saved Emails
+          <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: P.textDim }}>({saved.length})</span>
+        </SectionTitle>
+        {senders.length > 2 && (
+          <select value={filterSender} onChange={e => setFilterSender(e.target.value)}
+            style={{ fontSize: 12, padding: "3px 8px" }}>
+            {senders.map(s => <option key={s}>{s}</option>)}
+          </select>
+        )}
+      </div>
+
+      {sortedSaved.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          No emails saved yet. Use the search above to find and import emails from Outlook.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {sortedSaved.map(email => {
+            const isOpen = expanded === email.msgId;
+            const body = liveBody[email.msgId] || email.bodyText || "";
+            const isFetching = fetchingBody === email.msgId;
+            return (
+              <div key={email.msgId}
+                style={{ border: `1px solid ${isOpen ? P.accent : P.border}`, borderRadius: 8, overflow: "hidden",
+                  marginBottom: 4, background: isOpen ? P.bg : P.card }}>
+                {/* Header row */}
+                <div
+                  onClick={() => toggleExpand(email)}
+                  style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 14px", cursor: "pointer" }}
+                  onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+                  onMouseOut={e => e.currentTarget.style.background = "transparent"}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{email.subject}</div>
+                      <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
+                        {new Date(email.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: P.textMuted, marginTop: 2 }}>
+                      <span>From: <strong>{email.from}</strong></span>
+                      {email.to && <span style={{ marginLeft: 10 }}>To: {email.to.length > 60 ? email.to.slice(0, 60) + "…" : email.to}</span>}
+                    </div>
+                    {email.cc && (
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>CC: {email.cc.length > 80 ? email.cc.slice(0, 80) + "…" : email.cc}</div>
+                    )}
+                    <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                      {email.hasAttachments && (
+                        <span style={{ fontSize: 11, background: P.yellowDim, color: P.yellow, borderRadius: 4, padding: "1px 7px" }}>📎 Has attachments (not stored)</span>
+                      )}
+                      <span style={{ fontSize: 10, color: P.textDim }}>Saved {new Date(email.savedAt).toLocaleDateString()} by {email.savedBy}</span>
+                    </div>
+                  </div>
+                  <div style={{ flexShrink: 0, fontSize: 16, color: P.textDim, marginTop: 2 }}>{isOpen ? "▲" : "▼"}</div>
+                </div>
+
+                {/* Body */}
+                {isOpen && (
+                  <div style={{ borderTop: `1px solid ${P.border}`, padding: "14px 16px" }}>
+                    {isFetching ? (
+                      <div style={{ color: P.textDim, fontSize: 12 }}>⏳ Loading…</div>
+                    ) : body ? (
+                      <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, maxHeight: 400, overflowY: "auto" }}>
+                        {body}
+                      </pre>
+                    ) : (
+                      <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>
+                    )}
+                    <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
+                      <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this email from the project record?")) deleteEmail(email.msgId); }}>
+                        Remove
+                      </Btn>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
