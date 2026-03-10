@@ -6363,13 +6363,22 @@ function EmailsView({ project, onChange, clients = [] }) {
       return <div style={{ color: P.textDim, fontSize: 12, fontStyle: "italic" }}>No body content.</div>;
     }
 
-    // Split on "--- Original Message ---" or "_____ Original Message _____"
-    const SEP = /\n?(?:-{3,}|_{3,})\s*(?:Original Message|Forwarded message)\s*(?:-{3,}|_{3,})\n?/gi;
-    let parts = body.split(SEP).map(s => s.trim()).filter(Boolean);
+    // Normalize: inject newlines before reply header blocks so splitting works
+    // even when htmlToText collapses everything onto one line.
+    // Matches "From: Name <email>Sent:" or "From: Name <email>\nSent:" patterns
+    let normalized = body
+      .replace(/(?<=[^\n])(From:\s*[^\n]{3,120}(?:Sent|Date):\s*)/g, "\nFROM_SPLIT_$1")
+      .replace(/FROM_SPLIT_/g, "");
 
-    // Fallback: split on "From: X\nSent:" reply headers
+    // Also split on "--- Original Message ---" separators
+    const SEP = /\n?(?:-{3,}|_{3,})\s*(?:Original Message|Forwarded message)\s*(?:-{3,}|_{3,})\n?/gi;
+    let parts = normalized.split(SEP).map(s => s.trim()).filter(Boolean);
+
+    // Further split on "From: X\n?Sent:" blocks
     if (parts.length <= 1) {
-      parts = body.split(/\n(?=From:\s+\S.{2,80}\n(?:Sent|Date):\s)/).map(s => s.trim()).filter(Boolean);
+      parts = normalized
+        .split(/\n(?=From:\s+\S)/)
+        .map(s => s.trim()).filter(Boolean);
     }
 
     // Last resort: just show as plain text
@@ -6393,12 +6402,15 @@ function EmailsView({ project, onChange, clients = [] }) {
 
           let bodyText = part;
           if (fromM || sentM) {
+            // Strip all header lines (From/Sent/Date/To/Cc/Subject) however they appear
             bodyText = part
-              .replace(/^From:\s*.+\n?/im, "")
-              .replace(/^(?:Sent|Date):\s*.+\n?/im, "")
-              .replace(/^To:\s*.+\n?/im, "")
-              .replace(/^Cc:\s*.+\n?/im, "")
-              .replace(/^Subject:\s*.+\n?/im, "")
+              .replace(/^From:\s*[^\n]*/im, "")
+              .replace(/^(?:Sent|Date):\s*[^\n]*/im, "")
+              .replace(/^To:\s*[^\n]*/im, "")
+              .replace(/^Cc:\s*[^\n]*/im, "")
+              .replace(/^Bcc:\s*[^\n]*/im, "")
+              .replace(/^Subject:\s*[^\n]*/im, "")
+              .replace(/^\n+/, "")
               .trim();
           }
           bodyText = cleanBodyText(bodyText);
