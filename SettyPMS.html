@@ -6390,11 +6390,16 @@ function EmailsView({ project, onChange }) {
       const sentM = part.match(/Sent:\s*(.+?)(?=\s*To:)/s);
       const toM   = part.match(/To:\s*(.+?)(?=\s*(?:Cc:|Subject:))/s);
       const ccM   = part.match(/Cc:\s*(.+?)(?=\s*Subject:)/s);
-      const subjM = part.match(/Subject:\s*(.+?)(?=\n|\s{3,})/s);
-      // Body: strip everything up to and including the Subject line
-      const body = subjM
-        ? part.slice(part.indexOf(subjM[0]) + subjM[0].length).trim()
-        : part.replace(/^From:[\s\S]+?(?:\n\n|\s{4,})/, "").trim();
+      // Subject: capture everything up to a double-space or common body opener
+      const subjM = part.match(/Subject:\s*(.+?)(?=\s{2,}|\s+(?:RE:|FW:|Hi |Dear |Hello |CAUTION|[A-Z][a-z]{2,}\b))/s);
+
+      // Body: find position right after the last matched header field
+      const candidates = [fromM, sentM, toM, ccM, subjM]
+        .filter(Boolean)
+        .map(m => part.indexOf(m[0]) + m[0].length);
+      const bodyStart = candidates.length > 0 ? Math.max(...candidates) : 0;
+      const body = part.slice(bodyStart).trim();
+
       return buildMsg(
         (fromM?.[1] || "").replace(/<[^>]+>/g,"").trim(),
         (sentM?.[1] || "").trim(),
@@ -6412,14 +6417,20 @@ function EmailsView({ project, onChange }) {
   }
 
   function cleanBodyText(text) {
+    if (!text) return "";
+    const reLegalFooter = new RegExp("This message is sent by[^.]{0,600}confidential\\.", "gi");
+    const rePhone = new RegExp("\\n[TP][.:]\\s*[\\+\\d][\\d\\s\\-().]{6,}\\n", "g");
+    const reEmailLine = new RegExp("\\nE\\.\\s*\\S+@\\S+\\n", "g");
+    const reUrl = new RegExp("\\nwww\\.\\S+\\n", "gi");
+    const reBlankLines = new RegExp("\\n{3,}", "g");
     return text
       .replace(/CAUTION:\s*External E-?mail[^\n]*/gi, "")
       .replace(/Book time to meet with me[^\n]*/gi, "")
-      .replace(/This message is sent by[\s\S]{0,900}?confidential\.[^\n]*/gi, "")
-      .replace(/T\.\s*\+?[\d\s().+-]{7,}\n?/g, "")
-      .replace(/E\.\s*\S+@\S+\n?/g, "")
-      .replace(/www\.\S+\n?/gi, "")
-      .replace(/\n{3,}/g, "\n\n")
+      .replace(reLegalFooter, "")
+      .replace(rePhone, "\n")
+      .replace(reEmailLine, "\n")
+      .replace(reUrl, "\n")
+      .replace(reBlankLines, "\n\n")
       .trim();
   }
 
@@ -6429,9 +6440,13 @@ function EmailsView({ project, onChange }) {
 
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
-
-    // Debug: if chain exists but all bodies are empty, fall back to raw display
     const allEmpty = chain && chain.every(m => !m.body);
+
+    // Debug — remove once working
+    React.useEffect(() => {
+      console.log("[EmailChain] raw body (first 400):", body?.slice(0, 400));
+      console.log("[EmailChain] parsed chain:", chain);
+    }, [body]);
 
     if (!chain || allEmpty) {
       return (
@@ -6587,6 +6602,7 @@ function EmailsView({ project, onChange }) {
   }
 
   async function fetchLiveBody(msgId) {
+    // Always try Graph first — stored bodyText may be flat (old format)
     if (liveBody[msgId]) { setExpanded(msgId); return; }
     setFetchingBody(msgId);
     try {
@@ -6594,9 +6610,15 @@ function EmailsView({ project, onChange }) {
       const data = await graphFetch("GET", `/me/messages/${msgId}?$select=body,hasAttachments`, undefined, token);
       if (data?.body?.content) {
         setLiveBody(prev => ({ ...prev, [msgId]: htmlToText(data.body.content) }));
+      } else {
+        // Graph returned no content — re-process stored flat text with line-break insertion
+        const stored = saved.find(e => e.msgId === msgId)?.bodyText || "";
+        setLiveBody(prev => ({ ...prev, [msgId]: stored }));
       }
     } catch(e) {
-      // fallback to stored body — already there
+      // Token/permission issue — fall back to stored body as-is
+      const stored = saved.find(e => e.msgId === msgId)?.bodyText || "";
+      setLiveBody(prev => ({ ...prev, [msgId]: stored }));
     } finally {
       setFetchingBody(null);
       setExpanded(msgId);
