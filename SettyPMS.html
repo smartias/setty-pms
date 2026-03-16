@@ -240,6 +240,7 @@ function newProject(overrides = {}) {
     primeProjectNumber: "",
     contractNumber: "",
     contractDate: "",
+    contractFolderUrl: "",
     contractExpirationDate: "",
     archived: false,
     buildingCategory: "Office",
@@ -3486,6 +3487,25 @@ function ContractView({ project, onChange, contractExpSyncState, contractExpSync
         <Field label="Prime's Project Number">
           <input value={project.primeProjectNumber || ""} onChange={e => setField("primeProjectNumber", e.target.value)}
             placeholder="Prime's internal project #" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Contract Documents (SharePoint)" style={{ gridColumn: "1 / -1" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input value={project.contractFolderUrl || ""} onChange={e => setField("contractFolderUrl", e.target.value)}
+              placeholder="Paste SharePoint folder URL…" style={{ flex: 1 }} />
+            {project.contractFolderUrl && (
+              <a href={project.contractFolderUrl} target="_blank" rel="noreferrer"
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#0078d4", color: "#fff",
+                  borderRadius: 6, padding: "6px 14px", fontSize: 13, fontWeight: 600, textDecoration: "none",
+                  whiteSpace: "nowrap", border: "none", cursor: "pointer" }}>
+                📁 Open Folder
+              </a>
+            )}
+          </div>
+          {project.contractFolderUrl && (
+            <div style={{ fontSize: 11, color: P.textDim, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {project.contractFolderUrl}
+            </div>
+          )}
         </Field>
       </div>
       <SectionTitle>Task Order</SectionTitle>
