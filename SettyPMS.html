@@ -197,7 +197,7 @@ function milestoneStatus(pct) {
 
 // Phase pctComplete is derived from its billable milestones
 function getPhasePctFromMilestones(phase, milestones) {
-  const matching = milestones.filter(m => m.type === "billable" && m.phase === phase.code);
+  const matching = milestones.filter(m => m.type === "billable" && m.phase === phase.code && !m.cancelled);
   if (!matching.length) return phase.pctComplete || 0;
   return Math.round(matching.reduce((a, m) => a + (m.pctComplete || 0), 0) / matching.length);
 }
@@ -1644,6 +1644,107 @@ function calcInvoiceAmount(milestone, newPct, project) {
   return Math.max(0, earned - alreadyInvoiced);
 }
 
+function CancelMilestoneModal({ milestone, project, onConfirm, onClose }) {
+  const [reason, setReason] = React.useState("");
+  const [status, setStatus] = React.useState("idle"); // idle | sending | done | error
+  const [msg, setMsg] = React.useState("");
+  const alreadyInvoiced = (project.invoices || [])
+    .filter(inv => inv.milestoneId === milestone.id)
+    .reduce((a, inv) => a + (inv.amount || 0), 0);
+  const uninvoiced = Math.max(0, (milestone.fee || 0) - alreadyInvoiced);
+
+  async function confirm() {
+    setStatus("sending");
+    const cancelDate = new Date().toISOString().slice(0, 10);
+    const bodyHtml = "<div style='font-family:Segoe UI,system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:680px'>"
+      + "<div style='border-bottom:3px solid #C00000;padding-bottom:10px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:flex-end'>"
+        + "<div><div style='font-size:22px;font-weight:900;color:#C00000;letter-spacing:2px'>SETTY</div>"
+        + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+        + "<div style='text-align:right'><div style='font-size:14px;font-weight:700;color:#1F3864'>MILESTONE CANCELLATION</div>"
+        + "<div style='font-size:11px;color:#44546A'>" + fmtDate(cancelDate) + "</div></div></div>"
+      + "<div style='background:#FEF2F2;border:1px solid #FECACA;border-radius:6px;padding:12px 16px;margin-bottom:16px'>"
+        + "<div style='font-weight:700;color:#991B1B;margin-bottom:8px'>Milestone Cancelled</div>"
+        + "<table style='width:100%;font-size:13px;border-collapse:collapse'>"
+          + "<tr><td style='padding:4px 0;color:#44546A;width:140px'>Project</td><td style='font-weight:600'>" + (project.name || "—") + (project.projectNumber ? " (" + project.projectNumber + ")" : "") + "</td></tr>"
+          + "<tr><td style='padding:4px 0;color:#44546A'>Milestone</td><td style='font-weight:600'>" + milestone.name + "</td></tr>"
+          + "<tr><td style='padding:4px 0;color:#44546A'>Phase</td><td>" + (milestone.phase || "—") + "</td></tr>"
+          + "<tr><td style='padding:4px 0;color:#44546A'>Contract Fee</td><td style='font-family:monospace;font-weight:700'>" + fmt(milestone.fee || 0) + "</td></tr>"
+          + (alreadyInvoiced > 0 ? "<tr><td style='padding:4px 0;color:#44546A'>Already Invoiced</td><td style='font-family:monospace;color:#16a34a;font-weight:700'>" + fmt(alreadyInvoiced) + "</td></tr>" : "")
+          + "<tr><td style='padding:4px 0;color:#44546A'>Uninvoiced Amount</td><td style='font-family:monospace;font-weight:700;color:#991B1B'>" + fmt(uninvoiced) + " forfeited</td></tr>"
+        + "</table></div>"
+      + (reason.trim() ? "<div style='margin-bottom:16px'><div style='font-size:11px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px'>Reason</div><div style='padding:10px 14px;background:#F8FAFC;border:1px solid #CBD5E1;border-radius:4px'>" + reason.trim() + "</div></div>" : "")
+      + "<div style='margin-top:20px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A'>"
+        + "Cancelled by " + getCurrentUser() + " on " + fmtDate(cancelDate) + " &nbsp;·&nbsp; " + (project.name || "") + "</div></div>";
+    try {
+      await createOutlookDraft({
+        subject: "Milestone Cancelled \u2014 " + milestone.name + " \u00b7 " + (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : ""),
+        bodyHtml,
+      });
+      setStatus("done");
+      setMsg("\u2713 Draft created in Outlook Drafts");
+      setTimeout(() => {
+        onConfirm({ cancelled: true, cancelDate, cancelReason: reason.trim() });
+        onClose();
+      }, 1200);
+    } catch(e) {
+      setStatus("error");
+      setMsg("\u2717 " + e.message + " — cancelling anyway");
+      setTimeout(() => {
+        onConfirm({ cancelled: true, cancelDate, cancelReason: reason.trim() });
+        onClose();
+      }, 2000);
+    }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: P.card, border: `1px solid ${P.red}`, borderRadius: 14, padding: 28, width: 520, maxWidth: "95vw" }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: P.red, marginBottom: 6 }}>Cancel Milestone</div>
+        <div style={{ fontSize: 13, color: P.textMuted, marginBottom: 18, lineHeight: 1.6 }}>
+          This will remove <strong style={{ color: P.text }}>{milestone.name}</strong> from the schedule and backlog.
+          Any uninvoiced fee will be forfeited.
+        </div>
+        <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: "12px 16px", marginBottom: 18 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>Contract Fee</div>
+              <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700 }}>{fmt(milestone.fee || 0)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>Already Invoiced</div>
+              <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(alreadyInvoiced)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>Forfeited</div>
+              <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.red }}>{fmt(uninvoiced)}</div>
+            </div>
+          </div>
+        </div>
+        <Field label="Reason (optional — included in draft email)">
+          <textarea value={reason} onChange={e => setReason(e.target.value)}
+            placeholder="e.g. Scope removed by client, phase eliminated in VE…"
+            style={{ width: "100%", height: 72, resize: "vertical", fontSize: 13 }} />
+        </Field>
+        {msg && (
+          <div style={{ padding: "8px 12px", borderRadius: 6, marginBottom: 14, fontSize: 12,
+            background: status === "done" ? P.greenDim : P.redDim,
+            color: status === "done" ? P.green : P.red,
+            border: "1px solid " + (status === "done" ? P.green : P.red) }}>
+            {msg}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+          <Btn variant="ghost" onClick={onClose}>Keep Milestone</Btn>
+          <Btn variant="danger" disabled={status === "sending" || status === "done"} onClick={confirm}>
+            {status === "sending" ? "\u23F3 Creating draft\u2026" : "Cancel Milestone"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function ScheduleView({ project, onChange }) {
   const phases = project.phases || [];
   const milestones = project.milestones || [];
@@ -1655,6 +1756,7 @@ function ScheduleView({ project, onChange }) {
   const [emailStatus, setEmailStatus] = useState("idle"); // idle | sending | done | error
   const [emailMsg, setEmailMsg] = useState("");
   const [invoicePrompt, setInvoicePrompt] = useState(null); // {milestone, newPct, invoiceAmount}
+  const [cancelPrompt, setCancelPrompt] = useState(null); // milestone to cancel
 
   // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
@@ -2022,7 +2124,22 @@ function ScheduleView({ project, onChange }) {
           </tr>
         </thead>
         <tbody>
-          {[...milestones].sort((a, b) => {
+          {/* Cancelled milestones shown collapsed at bottom */}
+          {(milestones.filter(m => m.cancelled)).length > 0 && (
+            <tr>
+              <td colSpan={9} style={{ padding: "6px 0 2px", fontSize: 11, color: P.textDim, fontStyle: "italic", borderTop: `1px dashed ${P.border}` }}>
+                Cancelled ({milestones.filter(m => m.cancelled).length})
+                {milestones.filter(m => m.cancelled).map(m => (
+                  <span key={m.id} style={{ marginLeft: 10, background: P.redDim, color: P.red, borderRadius: 4, padding: "1px 7px", fontStyle: "normal" }}>
+                    {m.name} · {fmt(m.fee || 0)} · {m.cancelDate || ""}
+                    <button onClick={() => updateMilestone(m.id, "cancelled", false)}
+                      style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 11, marginLeft: 4 }} title="Restore milestone">↺</button>
+                  </span>
+                ))}
+              </td>
+            </tr>
+          )}
+          {[...milestones.filter(m => !m.cancelled)].sort((a, b) => {
               if (!a.dueDate && !b.dueDate) return 0;
               if (!a.dueDate) return 1;
               if (!b.dueDate) return -1;
@@ -2067,9 +2184,21 @@ function ScheduleView({ project, onChange }) {
                   </div>
                 </td>
                 <td>
-                  {m.type === "billable" && project.feeScheduleFinalized
-                    ? <span title="Unlock Fee Calculator to delete" style={{ fontSize: 16, color: P.border, userSelect: "none", padding: "0 4px" }}>🔒</span>
-                    : <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>}
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {m.type === "billable" && (
+                      <Btn small variant="danger"
+                        onClick={() => setCancelPrompt(m)}
+                        title="Cancel this milestone — removes from schedule and drafts team email">
+                        Cancel
+                      </Btn>
+                    )}
+                    {m.type !== "billable" && (
+                      <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>
+                    )}
+                    {m.type === "billable" && !project.feeScheduleFinalized && (
+                      <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>
+                    )}
+                  </div>
                 </td>
               </tr>
             );
@@ -2087,6 +2216,19 @@ function ScheduleView({ project, onChange }) {
         onClose={() => setInvoicePrompt(null)}
       />
     )}
+    {cancelPrompt && (
+      <CancelMilestoneModal
+        milestone={cancelPrompt}
+        project={project}
+        onConfirm={updates => {
+          const newMilestones = milestones.map(x =>
+            x.id === cancelPrompt.id ? { ...x, ...updates } : x
+          );
+          onChange({ ...project, milestones: newMilestones });
+        }}
+        onClose={() => setCancelPrompt(null)}
+      />
+    )}
     </>
   );
 }
@@ -2094,7 +2236,7 @@ function ScheduleView({ project, onChange }) {
 // ─── INVOICE MODAL ────────────────────────────────────────────────────────────
 
 function InvoiceModal({ project, onClose, onSave }) {
-  const billableMilestones = (project.milestones || []).filter(m => m.type === "billable" && m.fee > 0);
+  const billableMilestones = (project.milestones || []).filter(m => m.type === "billable" && m.fee > 0 && !m.cancelled);
   const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0);
   const team = project.teamMembers || [];
 
