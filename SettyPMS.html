@@ -3097,7 +3097,13 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
               return (
                 <tr key={inv.id}>
                   <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600 }}>{inv.number}</td>
-                  <td style={{ color: P.textMuted, whiteSpace: "nowrap" }}>{inv.date}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <input type="date" value={inv.date || ""}
+                      onChange={e => updateInvoice(inv.id, { date: e.target.value })}
+                      style={{ width: 130, color: P.textMuted, border: "1px solid transparent",
+                        background: "transparent", cursor: "pointer" }}
+                      title="Click to edit invoice date" />
+                  </td>
                   <td>
                     <div style={{ fontWeight: 500 }}>{inv.milestoneName || inv.phaseName}</div>
                     {inv.milestoneName && <div style={{ fontSize: 11, color: P.textDim }}>Phase: {inv.phaseName}</div>}
@@ -3406,10 +3412,13 @@ function ChangeOrdersView({ project, onChange }) {
   }
 
   function addCO() {
+    const newId = uid();
     onChange({
       ...project,
       changeOrders: [...cos, {
-        id: uid(), number: `CO-${cos.length + 1}`, name: "", scope: "", fee: 0,
+        id: newId, number: `CO-${cos.length + 1}`, name: "", scope: "",
+        fee: 0,  // derived: sum of milestones
+        milestones: [{ id: uid(), name: "", fee: 0, dueDate: new Date().toISOString().slice(0, 10) }],
         sentToClient: false, approved: false,
         date: new Date().toISOString().slice(0, 10), notes: "",
       }],
@@ -3429,21 +3438,22 @@ function ChangeOrdersView({ project, onChange }) {
     let milestones = project.milestones || [];
 
     if (co?.approved) {
-      const existing = milestones.find(m => m.coId === id);
-      if (!existing) {
-        milestones = [...milestones, {
-          id: uid(), coId: id,
-          type: "billable",   // ← CO milestones are Billable
-          phase: "CO",
-          name: `CO: ${co.name || co.number}`,
-          fee: co.fee, startDate: co.date, dueDate: co.date,
-          pctComplete: 0, status: "Not Started", notes: co.notes || "",
-        }];
-      } else {
-        milestones = milestones.map(m =>
-          m.coId === id ? { ...m, name: `CO: ${co.name || co.number}`, fee: co.fee } : m
-        );
-      }
+      // Remove old milestones for this CO
+      const existing = milestones.filter(m => m.coId === id);
+      const coMilestones = co.milestones && co.milestones.length > 0
+        ? co.milestones
+        : [{ id: uid(), name: co.name || co.number, fee: co.fee || 0, dueDate: co.date }];
+      // Build updated schedule milestones from CO milestones
+      const newSchedMilestones = coMilestones.map(cm => {
+        const existingM = existing.find(m => m.coMilestoneId === cm.id);
+        return existingM
+          ? { ...existingM, name: `CO: ${co.name || co.number} — ${cm.name || "Milestone"}`, fee: cm.fee || 0, dueDate: cm.dueDate || co.date }
+          : { id: uid(), coId: id, coMilestoneId: cm.id, type: "billable", phase: "CO",
+              name: `CO: ${co.name || co.number}${cm.name ? " — " + cm.name : ""}`,
+              fee: cm.fee || 0, startDate: co.date, dueDate: cm.dueDate || co.date,
+              pctComplete: 0, status: "Not Started", notes: co.notes || "" };
+      });
+      milestones = [...milestones.filter(m => m.coId !== id), ...newSchedMilestones];
     } else {
       milestones = milestones.filter(m => m.coId !== id);
     }
@@ -3451,7 +3461,10 @@ function ChangeOrdersView({ project, onChange }) {
     onChange({ ...project, changeOrders: newCOs, milestones });
   }
 
-  const approvedTotal = cos.filter(c => c.approved).reduce((a, c) => a + c.fee, 0);
+  const approvedTotal = cos.filter(c => c.approved).reduce((a, c) => {
+    if (c.milestones && c.milestones.length > 0) return a + c.milestones.reduce((s, m) => s + (+m.fee || 0), 0);
+    return a + (+c.fee || 0);
+  }, 0);
 
   async function emailCO(co) {
     setEmailingId(co.id);
@@ -3565,7 +3578,7 @@ function ChangeOrdersView({ project, onChange }) {
       {cos.length > 0 && (
         <>
           <table>
-            <thead><tr><th>#</th><th>Name</th><th>Scope</th><th>Fee</th><th>Sent?</th><th>Approved?</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
+            <thead><tr><th>#</th><th>Name</th><th>Scope</th><th>Milestones &amp; Fee</th><th>Sent?</th><th>Approved?</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
             <tbody>
               {cos.map(co => {
                 const em = emailMsgs[co.id];
@@ -3589,7 +3602,56 @@ function ChangeOrdersView({ project, onChange }) {
                       </button>
                     </div>
                   </td>
-                  <td><input type="number" value={co.fee} onChange={e => updateCO(co.id, { fee: +e.target.value })} style={{ width: 90 }} /></td>
+                  <td style={{ verticalAlign: "top", minWidth: 280 }}>
+                    {/* Multi-milestone list */}
+                    {(co.milestones || [{ id: "legacy", name: "", fee: co.fee || 0, dueDate: co.date }]).map((cm, mi) => {
+                      const cms = co.milestones || [{ id: "legacy", name: "", fee: co.fee || 0, dueDate: co.date }];
+                      return (
+                        <div key={cm.id} style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 4 }}>
+                          <input value={cm.name || ""} placeholder={`Milestone ${mi + 1}`}
+                            disabled={co.approved}
+                            onChange={e => {
+                              const next = cms.map((x, j) => j === mi ? { ...x, name: e.target.value } : x);
+                              updateCO(co.id, { milestones: next, fee: next.reduce((a, x) => a + (+x.fee || 0), 0) });
+                            }}
+                            style={{ width: 110, fontSize: 12, opacity: co.approved ? 0.7 : 1 }} />
+                          <input type="number" min="0" step="500" value={cm.fee || ""}
+                            placeholder="$"
+                            disabled={co.approved}
+                            onChange={e => {
+                              const next = cms.map((x, j) => j === mi ? { ...x, fee: +e.target.value } : x);
+                              updateCO(co.id, { milestones: next, fee: next.reduce((a, x) => a + (+x.fee || 0), 0) });
+                            }}
+                            style={{ width: 80, fontFamily: "JetBrains Mono", fontSize: 12, opacity: co.approved ? 0.7 : 1 }} />
+                          <input type="date" value={cm.dueDate || co.date || ""}
+                            disabled={co.approved}
+                            onChange={e => {
+                              const next = cms.map((x, j) => j === mi ? { ...x, dueDate: e.target.value } : x);
+                              updateCO(co.id, { milestones: next });
+                            }}
+                            style={{ width: 120, fontSize: 11, opacity: co.approved ? 0.7 : 1 }} />
+                          {!co.approved && cms.length > 1 && (
+                            <button onClick={() => {
+                              const next = cms.filter((_, j) => j !== mi);
+                              updateCO(co.id, { milestones: next, fee: next.reduce((a, x) => a + (+x.fee || 0), 0) });
+                            }} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: "0 2px" }}>✕</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {!co.approved && (
+                      <button onClick={() => {
+                        const cms = co.milestones || [];
+                        const next = [...cms, { id: uid(), name: "", fee: 0, dueDate: co.date || new Date().toISOString().slice(0,10) }];
+                        updateCO(co.id, { milestones: next });
+                      }} style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, fontWeight: 600, padding: "2px 0" }}>
+                        + milestone
+                      </button>
+                    )}
+                    <div style={{ fontSize: 11, color: P.textDim, marginTop: 4, fontFamily: "JetBrains Mono", fontWeight: 700 }}>
+                      Total: {fmt((co.milestones || []).reduce((a, m) => a + (+m.fee || 0), co.milestones ? 0 : (+co.fee || 0)))}
+                    </div>
+                  </td>
                   <td>
                     <input type="checkbox" checked={!!co.sentToClient} onChange={e => updateCO(co.id, { sentToClient: e.target.checked })} />
                     {co.sentToClient && <span style={{ color: P.yellow, fontSize: 11, marginLeft: 5 }}>Sent</span>}
