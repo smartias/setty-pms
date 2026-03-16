@@ -21,6 +21,7 @@
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
 
+
     const {useState,useEffect,useMemo}=React;
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
@@ -232,6 +233,7 @@ function newProject(overrides = {}) {
     probability: 50,
     clientName: "",
     clientContact: "",
+    projectContacts: { proposal: [], pm: [], contract: [], accounting: [] },
     contractStatus: "Waiting for NTP/Contract",
     contractNotes: "",
     feeType: "Lump Sum",
@@ -2541,7 +2543,7 @@ function printChangeOrder(co, project, allCOs) {
   printDocument(html, co.number + " — " + (project.name || "Project"));
 }
 
-function FinancialsView({ project, onChange }) {
+function FinancialsView({ project, onChange, clients, onUpdateClient }) {
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [emailStatus, setEmailStatus] = useState("idle");
   const [emailMsg, setEmailMsg] = useState("");
@@ -2776,6 +2778,16 @@ function FinancialsView({ project, onChange }) {
       </table>
 
       {/* Invoice Log */}
+      <SectionTitle>Accounting POC</SectionTitle>
+      <div style={{ marginBottom: 24 }}>
+        <POCSection
+          pocList={(project.projectContacts || {}).accounting || []}
+          onChange={val => onChange({ ...project, projectContacts: { ...(project.projectContacts || {}), accounting: val } })}
+          clients={clients}
+          companyName={project.prime || project.clientName || ""}
+          onUpdateClient={onUpdateClient}
+        />
+      </div>
       <SectionTitle action={
         <div style={{ display: "flex", gap: 8 }}>
           {invoices.length > 0 && <Btn small variant="ghost" disabled={emailStatus === "sending"} onClick={emailInvoices}>{emailStatus === "sending" ? "⏳ Drafting…" : "✉ Email Statement"}</Btn>}
@@ -3424,7 +3436,7 @@ function ChangeOrdersView({ project, onChange }) {
 
 // ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
 
-function ContractView({ project, onChange, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts }) {
+function ContractView({ project, onChange, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts, clients, onUpdateClient }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
   return (
     <div>
@@ -3503,6 +3515,16 @@ function ContractView({ project, onChange, contractExpSyncState, contractExpSync
           </Field>
         </>)}
       </div>
+      <SectionTitle>Contract POC</SectionTitle>
+      <Field label="Contract Contacts" style={{ marginBottom: 20 }}>
+        <POCSection
+          pocList={(project.projectContacts || {}).contract || []}
+          onChange={val => onChange({ ...project, projectContacts: { ...(project.projectContacts || {}), contract: val } })}
+          clients={clients}
+          companyName={project.prime || project.clientName || ""}
+          onUpdateClient={onUpdateClient}
+        />
+      </Field>
       <SectionTitle>Contract Notes / History</SectionTitle>
       <Field label="">
         <textarea value={project.contractNotes || ""} onChange={e => setField("contractNotes", e.target.value)}
@@ -5242,6 +5264,8 @@ function CalendarView({ project, onChange }) {
 // ─── TEAM CALENDAR (all projects) ────────────────────────────────────────────
 
 
+
+
 </script>
 <script type="text/babel" data-presets="react">
 
@@ -6233,14 +6257,22 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
 
-            <Field label="Client POC">
-              <ContactTypeahead
-                value={project.clientContact || ""}
-                onChange={val => updateField("clientContact", val)}
+            <Field label="PM / Project Contact" style={{ gridColumn: "1 / -1" }}>
+              <POCSection
+                pocList={(project.projectContacts || {}).pm || []}
+                onChange={val => updateField("projectContacts", { ...(project.projectContacts || {}), pm: val })}
                 clients={clients}
                 companyName={project.prime || project.clientName || ""}
                 onUpdateClient={onUpdateClient}
-                placeholder="Search contacts for this client…"
+              />
+            </Field>
+            <Field label="Proposal Contact" style={{ gridColumn: "1 / -1" }}>
+              <POCSection
+                pocList={(project.projectContacts || {}).proposal || []}
+                onChange={val => updateField("projectContacts", { ...(project.projectContacts || {}), proposal: val })}
+                clients={clients}
+                companyName={project.prime || project.clientName || ""}
+                onUpdateClient={onUpdateClient}
               />
             </Field>
 
@@ -6310,9 +6342,9 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Schedule" && <ScheduleView project={project} onChange={onUpdate} />}
         {tab === "Subconsultants" && <SubsView project={project} onChange={onUpdate} />}
         {tab === "Projections" && <ProjectionsView project={project} />}
-        {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} />}
+        {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
-        {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} />}
+        {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Calendar" && <CalendarView project={project} onChange={onUpdate} />}
@@ -8530,6 +8562,129 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
   );
 }
 
+function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClose }) {
+  const [name, setName] = React.useState("");
+  const [title, setTitle] = React.useState("");
+  const [email, setEmail] = React.useState("");
+  const [phone, setPhone] = React.useState("");
+  const company = (clients || []).find(c => c.name && companyName && c.name.toLowerCase() === companyName.toLowerCase());
+  const contacts = company ? (company.contacts || []) : [];
+  function save() {
+    if (!name.trim()) return;
+    const ct = newContact({ name: name.trim(), title: title.trim(), email: email.trim(), phone: phone.trim() });
+    if (company && onUpdateClient) {
+      onUpdateClient({ ...company, contacts: [...contacts, ct] });
+    }
+    onSelect({ id: ct.id, name: ct.name, title: ct.title || "", email: ct.email || "", phone: ct.phone || "" });
+    onClose();
+  }
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 12, padding: 24, width: 400, maxWidth: "90vw" }}>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 16, color: P.accentLight }}>
+          Add Contact{companyName ? " — " + companyName : ""}
+        </div>
+        <Field label="Full Name *">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Jane Smith"
+            style={{ width: "100%" }} autoFocus onKeyDown={e => e.key === "Enter" && save()} />
+        </Field>
+        <Field label="Title / Role">
+          <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Project Manager" style={{ width: "100%" }} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Email">
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="email@firm.com" style={{ width: "100%" }} />
+          </Field>
+          <Field label="Phone">
+            <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="(212) 555-0100" style={{ width: "100%" }} />
+          </Field>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <Btn onClick={save} disabled={!name.trim()}>Add &amp; Select</Btn>
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function POCSection({ pocList, onChange, clients, companyName, onUpdateClient }) {
+  const [showModal, setShowModal] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const [typeaheadOpen, setTypeaheadOpen] = React.useState(false);
+  const company = React.useMemo(() =>
+    (clients || []).find(c => c.name && companyName && c.name.toLowerCase() === companyName.toLowerCase()),
+  [clients, companyName]);
+  const dirContacts = company ? (company.contacts || []) : [];
+  const filtered = React.useMemo(() => {
+    const q = query.toLowerCase();
+    return dirContacts.filter(ct => !q || ct.name.toLowerCase().includes(q) || (ct.email || "").toLowerCase().includes(q)).slice(0, 8);
+  }, [dirContacts, query]);
+  function addFromDir(ct) {
+    if ((pocList || []).some(p => p.name === ct.name)) return;
+    onChange([...(pocList || []), { id: ct.id || uid(), name: ct.name, title: ct.title || "", email: ct.email || "", phone: ct.phone || "" }]);
+    setQuery(""); setTypeaheadOpen(false);
+  }
+  function addNew(ct) {
+    if ((pocList || []).some(p => p.name === ct.name)) return;
+    onChange([...(pocList || []), { ...ct, id: ct.id || uid() }]);
+  }
+  function remove(idx) { onChange((pocList || []).filter((_, i) => i !== idx)); }
+  return (
+    <div>
+      {(pocList || []).map((poc, i) => (
+        <div key={poc.id || i} style={{ display: "flex", alignItems: "flex-start", gap: 8, background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "8px 12px", marginBottom: 6 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{poc.name}</div>
+            {poc.title && <div style={{ fontSize: 11, color: P.textDim }}>{poc.title}</div>}
+            <div style={{ fontSize: 11, color: P.textDim, display: "flex", gap: 12, flexWrap: "wrap", marginTop: 2 }}>
+              {poc.email && <span>{poc.email}</span>}
+              {poc.phone && <span>{poc.phone}</span>}
+            </div>
+          </div>
+          <button onClick={() => remove(i)} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14, padding: "2px 4px" }}>✕</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ position: "relative", flex: 1 }}>
+          <input value={query}
+            onChange={e => { setQuery(e.target.value); setTypeaheadOpen(true); }}
+            onFocus={() => setTypeaheadOpen(true)}
+            onBlur={() => setTimeout(() => setTypeaheadOpen(false), 150)}
+            placeholder={companyName ? "Search " + companyName + " contacts…" : "Search contacts…"}
+            style={{ width: "100%", fontSize: 13 }} />
+          {typeaheadOpen && filtered.length > 0 && (
+            <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 400, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
+              {filtered.map(ct => (
+                <div key={ct.id} onMouseDown={() => addFromDir(ct)}
+                  style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border }}
+                  onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+                  onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{ct.name}</div>
+                  {(ct.title || ct.role) && <div style={{ fontSize: 11, color: P.textDim }}>{ct.title || ct.role}</div>}
+                  {ct.email && <div style={{ fontSize: 11, color: P.textDim }}>{ct.email}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <Btn small variant="ghost" onClick={() => setShowModal(true)}>+ Add POC</Btn>
+      </div>
+      {showModal && (
+        <AddContactModal
+          companyName={companyName}
+          clients={clients}
+          onUpdateClient={onUpdateClient}
+          onSelect={addNew}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+
 function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClient, placeholder }) {
   const [open, setOpen] = React.useState(false);
   const [showAdd, setShowAdd] = React.useState(false);
@@ -9581,6 +9736,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
   
+
 </script>
 </body>
 </html>
