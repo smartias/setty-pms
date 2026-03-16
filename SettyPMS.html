@@ -20,6 +20,7 @@
 <body>
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
+
     const {useState,useEffect,useMemo}=React;
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
@@ -1419,6 +1420,15 @@ function FeeCalculator({ project, onChange }) {
 
 // ─── SCHEDULE VIEW ────────────────────────────────────────────────────────────
 
+// Helper: calculate billable amount given new pct, milestone fee, and prior invoices
+function calcInvoiceAmount(milestone, newPct, project) {
+  const earned = Math.round((milestone.fee || 0) * newPct / 100);
+  const alreadyInvoiced = (project.invoices || [])
+    .filter(inv => inv.milestoneId === milestone.id)
+    .reduce((a, inv) => a + (inv.amount || 0), 0);
+  return Math.max(0, earned - alreadyInvoiced);
+}
+
 function ScheduleView({ project, onChange }) {
   const phases = project.phases || [];
   const milestones = project.milestones || [];
@@ -1429,9 +1439,7 @@ function ScheduleView({ project, onChange }) {
   const [syncingAll, setSyncingAll] = useState(false);
   const [emailStatus, setEmailStatus] = useState("idle"); // idle | sending | done | error
   const [emailMsg, setEmailMsg] = useState("");
-  const [invoicePrompt, setInvoicePrompt] = useState(null); // { milestone } | null
-  const [invoiceDraftStatus, setInvoiceDraftStatus] = useState("idle"); // idle | sending | done | error
-  const [invoiceDraftMsg, setInvoiceDraftMsg] = useState("");
+  const [invoicePrompt, setInvoicePrompt] = useState(null); // {milestone, newPct, invoiceAmount}
 
   // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
@@ -1511,12 +1519,11 @@ function ScheduleView({ project, onChange }) {
       // calMap is derived from milestone objects so it stays in sync automatically
     }
     onChange({ ...project, milestones: newMilestones, phases: newPhases });
-    // Invoice prompt: only when marking a billable milestone 100% complete
-    if (field === "pctComplete" && +val >= 100) {
+    if (field === "pctComplete" && +val > 0) {
       const m = milestones.find(x => x.id === id);
       if (m && m.type === "billable" && m.fee > 0) {
-        const alreadyInvoiced = (project.invoices || []).some(inv => inv.milestoneId === id);
-        if (!alreadyInvoiced) setInvoicePrompt({ milestone: m });
+        const amount = calcInvoiceAmount(m, +val, project);
+        if (amount > 0) setInvoicePrompt({ milestone: m, newPct: +val, invoiceAmount: amount });
       }
     }
   }
@@ -1855,109 +1862,16 @@ function ScheduleView({ project, onChange }) {
         </tbody>
       </table>
     </div>
-    {/* ── Invoice prompt modal ── */}
-    {invoicePrompt && (() => {
-      const m = invoicePrompt.milestone;
-      const invNumber = `INV-${String((project.invoices || []).length + 1).padStart(3, "0")}`;
-      const invDate = new Date().toISOString().slice(0, 10);
-
-      async function createDraftAndLog() {
-        setInvoiceDraftStatus("sending");
-        setInvoiceDraftMsg("");
-        const bodyHtml = `
-<div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px;">
-  <div style="border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;">
-    <div>
-      <div style="font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1;">SETTY</div>
-      <div style="font-size:8px;color:#44546A;letter-spacing:1px;">&amp; ASSOCIATES, LTD, PC</div>
-    </div>
-    <div style="text-align:right;">
-      <div style="font-size:16px;font-weight:700;color:#2F5496;">INVOICE</div>
-      <div style="font-size:13px;font-weight:700;color:#1F3864;">${invNumber}</div>
-      <div style="font-size:11px;color:#44546A;">${fmtDate(invDate)}</div>
-    </div>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid #CBD5E1;border-radius:4px;margin-bottom:20px;overflow:hidden;">
-    <div style="padding:12px 16px;border-right:1px solid #CBD5E1;">
-      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Project</div>
-      <div style="font-size:13px;font-weight:600;color:#1F3864;">${project.name || "—"}</div>
-      ${project.projectNumber ? `<div style="font-size:11px;color:#44546A;">${project.projectNumber}</div>` : ""}
-    </div>
-    <div style="padding:12px 16px;">
-      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Client / Prime</div>
-      <div style="font-size:13px;font-weight:600;color:#1F3864;">${project.prime || project.clientName || "—"}</div>
-      ${project.primeProjectNumber ? `<div style="font-size:11px;color:#44546A;">Prime #: ${project.primeProjectNumber}</div>` : ""}
-    </div>
-  </div>
-  <table style="border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px;">
-    <thead><tr style="background:#F1F5F9;">
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Phase / Milestone</th>
-      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;text-transform:uppercase;">Amount</th>
-    </tr></thead>
-    <tbody>
-      <tr>
-        <td style="padding:10px 12px;font-weight:500;">${m.name}</td>
-        <td style="padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;color:#1F3864;">$${Math.round(m.fee).toLocaleString()}</td>
-      </tr>
-    </tbody>
-    <tfoot><tr style="background:#F1F5F9;">
-      <td style="padding:10px 12px;font-weight:700;">Total Due</td>
-      <td style="padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;font-size:15px;color:#1F3864;">$${Math.round(m.fee).toLocaleString()}</td>
-    </tr></tfoot>
-  </table>
-  <div style="margin-top:24px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A;">
-    SETTY &amp; Associates, Ltd, PC &nbsp;·&nbsp; ${project.name || ""} &nbsp;·&nbsp; ${invNumber}
-  </div>
-</div>`;
-        try {
-          await createOutlookDraft({
-            subject: `Invoice ${invNumber} — ${m.name} · ${project.name || "Project"}${project.projectNumber ? " (" + project.projectNumber + ")" : ""}`,
-            bodyHtml,
-          });
-          const newInvoice = {
-            id: uid(), number: invNumber, date: invDate,
-            phase: m.phase, phaseName: m.name,
-            milestoneId: m.id, milestoneName: m.name,
-            method: "pct", description: m.name,
-            lineItems: [{ name: "100% of " + m.name, amount: m.fee }],
-            amount: m.fee, finalized: true,
-          };
-          onChange({ ...project, invoices: [...(project.invoices || []), newInvoice] });
-          setInvoiceDraftStatus("done");
-          setInvoiceDraftMsg("✓ Draft created in Outlook Drafts · invoice logged");
-          setTimeout(() => { setInvoicePrompt(null); setInvoiceDraftStatus("idle"); setInvoiceDraftMsg(""); }, 2500);
-        } catch(e) {
-          setInvoiceDraftStatus("error");
-          setInvoiceDraftMsg("✗ " + e.message);
-        }
-      }
-
-      return (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div style={{ background: P.card, border: `1px solid ${P.green}`, borderRadius: 14, padding: 28, width: 480, maxWidth: "95vw" }}>
-            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>🎉 Milestone Complete</div>
-            <div style={{ fontSize: 13, color: P.textMuted, marginBottom: 20, lineHeight: 1.6 }}>
-              <strong style={{ color: P.text }}>{m.name}</strong> is 100% complete with a fee of{" "}
-              <strong style={{ color: P.green, fontFamily: "JetBrains Mono" }}>{fmt(m.fee)}</strong>. Would you like to generate an invoice draft in Outlook?
-            </div>
-            {invoiceDraftMsg && (
-              <div style={{ padding: "8px 12px", borderRadius: 6, marginBottom: 16, fontSize: 12,
-                background: invoiceDraftStatus === "done" ? P.greenDim : P.redDim,
-                color: invoiceDraftStatus === "done" ? P.green : P.red,
-                border: "1px solid " + (invoiceDraftStatus === "done" ? P.green : P.red) }}>
-                {invoiceDraftMsg}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <Btn variant="ghost" onClick={() => { setInvoicePrompt(null); setInvoiceDraftStatus("idle"); setInvoiceDraftMsg(""); }}>Not Now</Btn>
-              <Btn variant="success" disabled={invoiceDraftStatus === "sending" || invoiceDraftStatus === "done"} onClick={createDraftAndLog}>
-                {invoiceDraftStatus === "sending" ? "⏳ Creating draft…" : "✉ Yes, Create Invoice Draft"}
-              </Btn>
-            </div>
-          </div>
-        </div>
-      );
-    })()}
+    {invoicePrompt && (
+      <InvoicePromptModal
+        milestone={invoicePrompt.milestone}
+        project={project}
+        newPct={invoicePrompt.newPct}
+        invoiceAmount={invoicePrompt.invoiceAmount}
+        onLogInvoice={inv => onChange({ ...project, invoices: [...(project.invoices || []), inv] })}
+        onClose={() => setInvoicePrompt(null)}
+      />
+    )}
     </>
   );
 }
@@ -5328,6 +5242,9 @@ function CalendarView({ project, onChange }) {
 // ─── TEAM CALENDAR (all projects) ────────────────────────────────────────────
 
 
+</script>
+<script type="text/babel" data-presets="react">
+
 function printWeeklyDeliverables(projects) {
   const today = new Date();
   const todayStr = localDateStr(today);
@@ -7340,6 +7257,129 @@ function ProjectCard({ project, onClick }) {
   );
 }
 
+// ─── INVOICE PROMPT MODAL ────────────────────────────────────────────────────
+function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogInvoice, onClose }) {
+  const [status, setStatus] = useState("idle");
+  const [msg, setMsg] = useState("");
+  const invNumber = "INV-" + String((project.invoices || []).length + 1).padStart(3, "0");
+  const invDate = new Date().toISOString().slice(0, 10);
+  const alreadyInvoiced = (project.invoices || [])
+    .filter(function(inv) { return inv.milestoneId === milestone.id; })
+    .reduce(function(a, inv) { return a + (inv.amount || 0); }, 0);
+  const lineDesc = newPct < 100
+    ? newPct + "% of " + milestone.name + " (" + fmt(milestone.fee) + " total)" + (alreadyInvoiced > 0 ? " less prev. invoiced " + fmt(alreadyInvoiced) : "")
+    : "100% of " + milestone.name;
+
+  function buildEmailHtml() {
+    var projNum = project.projectNumber ? "<div style='font-size:11px;color:#44546A'>" + project.projectNumber + "</div>" : "";
+    var primeNum = project.primeProjectNumber ? "<div style='font-size:11px;color:#44546A'>Prime #: " + project.primeProjectNumber + "</div>" : "";
+    var basisRow = alreadyInvoiced > 0
+      ? "<div style='background:#F8FAFC;border:1px solid #CBD5E1;border-radius:4px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#44546A'><strong>Billing basis:</strong> " + newPct + "% complete &nbsp;&middot;&nbsp; Milestone fee: " + fmt(milestone.fee) + " &nbsp;&middot;&nbsp; Prev. invoiced: " + fmt(alreadyInvoiced) + " &nbsp;&middot;&nbsp; This invoice: " + fmt(invoiceAmount) + "</div>"
+      : "";
+    return "<div style='font-family:Segoe UI,system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px'>"
+      + "<div style='border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between'>"
+        + "<div><div style='font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1'>SETTY</div>"
+        + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+        + "<div style='text-align:right'><div style='font-size:16px;font-weight:700;color:#2F5496'>INVOICE</div>"
+        + "<div style='font-size:13px;font-weight:700;color:#1F3864'>" + invNumber + "</div>"
+        + "<div style='font-size:11px;color:#44546A'>" + fmtDate(invDate) + "</div></div></div>"
+      + "<div style='display:grid;grid-template-columns:1fr 1fr;border:1px solid #CBD5E1;border-radius:4px;margin-bottom:20px;overflow:hidden'>"
+        + "<div style='padding:12px 16px;border-right:1px solid #CBD5E1'>"
+          + "<div style='font-size:10px;color:#44546A;text-transform:uppercase;margin-bottom:4px'>Project</div>"
+          + "<div style='font-size:13px;font-weight:600;color:#1F3864'>" + (project.name || "—") + "</div>" + projNum + "</div>"
+        + "<div style='padding:12px 16px'>"
+          + "<div style='font-size:10px;color:#44546A;text-transform:uppercase;margin-bottom:4px'>Client / Prime</div>"
+          + "<div style='font-size:13px;font-weight:600;color:#1F3864'>" + (project.prime || project.clientName || "—") + "</div>" + primeNum + "</div></div>"
+      + basisRow
+      + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px'>"
+        + "<thead><tr style='background:#F1F5F9'><th style='padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase'>Description</th>"
+        + "<th style='padding:8px 12px;text-align:right;font-size:11px;color:#44546A;text-transform:uppercase'>Amount</th></tr></thead>"
+        + "<tbody><tr><td style='padding:10px 12px;font-weight:500'>" + lineDesc + "</td>"
+        + "<td style='padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;color:#1F3864'>$" + Math.round(invoiceAmount).toLocaleString() + "</td></tr></tbody>"
+        + "<tfoot><tr style='background:#F1F5F9'><td style='padding:10px 12px;font-weight:700'>Total Due</td>"
+        + "<td style='padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;font-size:15px;color:#1F3864'>$" + Math.round(invoiceAmount).toLocaleString() + "</td></tr></tfoot></table>"
+      + "<div style='margin-top:24px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A'>"
+        + "SETTY &amp; Associates, Ltd, PC &nbsp;&middot;&nbsp; " + (project.name || "") + " &nbsp;&middot;&nbsp; " + invNumber + "</div></div>";
+  }
+
+  async function createDraftAndLog() {
+    setStatus("sending");
+    setMsg("");
+    try {
+      await createOutlookDraft({
+        subject: "Invoice " + invNumber + " \u2014 " + milestone.name + " (" + newPct + "%) \u00b7 " + (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : ""),
+        bodyHtml: buildEmailHtml(),
+      });
+      const newInvoice = {
+        id: uid(), number: invNumber, date: invDate,
+        phase: milestone.phase, phaseName: milestone.name,
+        milestoneId: milestone.id, milestoneName: milestone.name,
+        method: "pct", description: lineDesc,
+        lineItems: [{ name: lineDesc, amount: invoiceAmount }],
+        amount: invoiceAmount, finalized: true,
+      };
+      onLogInvoice(newInvoice);
+      setStatus("done");
+      setMsg("\u2713 Draft created in Outlook Drafts \u00b7 invoice logged");
+      setTimeout(() => onClose(), 2500);
+    } catch(e) {
+      setStatus("error");
+      setMsg("\u2717 " + e.message);
+    }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: P.card, border: `1px solid ${P.green}`, borderRadius: 14, padding: 28, width: 520, maxWidth: "95vw" }}>
+        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>
+          {newPct >= 100 ? "\uD83C\uDF89 Milestone Complete" : "\uD83D\uDCCA Progress Updated"}
+        </div>
+        <div style={{ fontSize: 13, color: P.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+          <strong style={{ color: P.text }}>{milestone.name}</strong>
+          {project.name ? <span style={{ color: P.textDim }}> &middot; {project.name}</span> : null}
+        </div>
+        <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: "12px 16px", marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: alreadyInvoiced > 0 ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>Milestone Fee</div>
+              <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700 }}>{fmt(milestone.fee)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>Earned at {newPct}%</div>
+              <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{fmt(Math.round(milestone.fee * newPct / 100))}</div>
+            </div>
+            {alreadyInvoiced > 0 && (
+              <div>
+                <div style={{ fontSize: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>Prev. Invoiced</div>
+                <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.yellow }}>{fmt(alreadyInvoiced)}</div>
+              </div>
+            )}
+          </div>
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${P.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: P.textMuted }}>Amount to invoice now:</span>
+            <span style={{ fontFamily: "JetBrains Mono", fontWeight: 800, fontSize: 18, color: P.green }}>{fmt(invoiceAmount)}</span>
+          </div>
+        </div>
+        {msg && (
+          <div style={{ padding: "8px 12px", borderRadius: 6, marginBottom: 16, fontSize: 12,
+            background: status === "done" ? P.greenDim : P.redDim,
+            color: status === "done" ? P.green : P.red,
+            border: "1px solid " + (status === "done" ? P.green : P.red) }}>
+            {msg}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <Btn variant="ghost" onClick={onClose}>Not Now</Btn>
+          <Btn variant="success" disabled={status === "sending" || status === "done"} onClick={createDraftAndLog}>
+            {status === "sending" ? "\u23F3 Creating draft\u2026" : "\u2709 Invoice " + fmt(invoiceAmount)}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
 function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
@@ -7355,6 +7395,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const [addMilProjectId, setAddMilProjectId] = useState("");
   const [addMilForm, setAddMilForm] = useState({ name: "", dueDate: "", notes: "" });
   const [addMilMsg, setAddMilMsg] = useState("");
+  const [dashInvoicePrompt, setDashInvoicePrompt] = useState(null);
 
   function submitAddMilestone() {
     if (!addMilProjectId) { setAddMilMsg("Please select a project."); return; }
@@ -7450,6 +7491,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   })).filter(x => x.count > 0);
 
   return (
+    <>
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
         <div style={{ fontSize: 22, fontWeight: 800 }}>Team Dashboard</div>
@@ -7707,6 +7749,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                   x.id === m.id ? { ...x, [field]: val } : x
                 );
                 onUpdateProject({ ...proj, milestones: newMilestones });
+                if (field === "pctComplete" && +val > 0 && m.type === "billable" && m.fee > 0) {
+                  const amount = calcInvoiceAmount(m, +val, proj);
+                  if (amount > 0) setDashInvoicePrompt({ milestone: m, project: proj, newPct: +val, invoiceAmount: amount });
+                }
               }
               function updateProjectStatus(newStatus) {
                 const proj = projects.find(p => p.id === m.projectId);
@@ -7788,6 +7834,20 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
         </table>
       </Card>
     </div>
+    {dashInvoicePrompt && (
+      <InvoicePromptModal
+        milestone={dashInvoicePrompt.milestone}
+        project={dashInvoicePrompt.project}
+        newPct={dashInvoicePrompt.newPct}
+        invoiceAmount={dashInvoicePrompt.invoiceAmount}
+        onLogInvoice={inv => {
+          const proj = dashInvoicePrompt.project;
+          onUpdateProject({ ...proj, invoices: [...(proj.invoices || []), inv] });
+        }}
+        onClose={() => setDashInvoicePrompt(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -9520,6 +9580,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
-  </script>
+  
+</script>
 </body>
 </html>
