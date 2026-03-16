@@ -22,6 +22,7 @@
   <script type="text/babel" data-presets="react">
 
 
+
     const {useState,useEffect,useMemo}=React;
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
@@ -242,6 +243,7 @@ function newProject(overrides = {}) {
     contractDate: "",
     contractFolderUrl: "",
     feeCalculatorSubs: [],
+    phaseSubFees: {},
     contractExpirationDate: "",
     archived: false,
     buildingCategory: "Office",
@@ -893,6 +895,27 @@ function FeeCalculator({ project, onChange }) {
     return a + (+s.flatFee || 0);
   }, 0);
   const totalProjectFee = baseFee + totalSubFee;
+  // Per-phase, per-sub fee: stored in project.phaseSubFees[phaseId][subId]
+  // Default (when not set) = subTotal * phase.pct
+  const phaseSubFees = project.phaseSubFees || {};
+
+  function getPhaseSubFee(phaseId, sub, phase) {
+    const stored = (phaseSubFees[phaseId] || {})[sub.id];
+    if (stored !== undefined) return +stored;
+    const subTotal = sub.method === "pct" ? Math.round(baseFee * (+sub.pct || 0) / 100) : (+sub.flatFee || 0);
+    return Math.round(subTotal * (phase.pct || 0));
+  }
+
+  function setPhaseSubFee(phaseId, subId, val) {
+    const newPSF = {
+      ...phaseSubFees,
+      [phaseId]: { ...(phaseSubFees[phaseId] || {}), [subId]: val === "" ? undefined : +val }
+    };
+    // Clean up undefined entries
+    if (newPSF[phaseId][subId] === undefined) delete newPSF[phaseId][subId];
+    onChange({ ...project, phaseSubFees: newPSF });
+  }
+
   const [showLegend, setShowLegend] = useState(false);
   const [showLockModal, setShowLockModal] = useState(false);
   const [lockNote, setLockNote] = useState("");
@@ -1377,7 +1400,23 @@ function FeeCalculator({ project, onChange }) {
         </span>
       </SectionTitle>
       <table style={{ marginBottom: 20 }}>
-        <thead><tr><th style={{width:48}}>Order</th><th>Code</th><th>Phase Name</th><th>% of Setty Fee</th><th>Fee Amount</th><th>Billable</th><th></th></tr></thead>
+        <thead>
+          <tr>
+            <th style={{width:48}}>Order</th>
+            <th>Code</th>
+            <th>Phase Name</th>
+            <th>% of Fee</th>
+            <th style={{ color: P.green }}>Setty Fee</th>
+            {calcSubs.map(s => (
+              <th key={s.id} style={{ color: P.purple, whiteSpace: "nowrap", maxWidth: 120 }}>
+                {s.name || "Sub"}
+              </th>
+            ))}
+            {calcSubs.length > 0 && <th style={{ color: P.accentLight }}>Phase Total</th>}
+            <th>Billable</th>
+            <th></th>
+          </tr>
+        </thead>
         <tbody>
           {phasedFees.map((ph, idx) => (
             <tr key={ph.id}>
@@ -1417,10 +1456,62 @@ function FeeCalculator({ project, onChange }) {
                   <div style={{ fontSize: 10, color: P.textDim, marginTop: 2 }}>Calc: {fmt(ph.calcedFee ?? 0)}</div>
                 )}
               </td>
+              {/* Sub fee columns */}
+              {calcSubs.map(s => {
+                const subFee = getPhaseSubFee(ph.id, s, ph);
+                const subTotal = s.method === "pct" ? Math.round(baseFee * (+s.pct || 0) / 100) : (+s.flatFee || 0);
+                const isOverridden = (phaseSubFees[ph.id] || {})[s.id] !== undefined;
+                return (
+                  <td key={s.id}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                      <input type="number" min="0" step="500"
+                        value={isOverridden ? (phaseSubFees[ph.id] || {})[s.id] : ""}
+                        placeholder={fmt(subFee)}
+                        onChange={e => setPhaseSubFee(ph.id, s.id, e.target.value)}
+                        style={{ width: 100, fontFamily: "JetBrains Mono", fontSize: 12,
+                          borderColor: isOverridden ? P.purple : P.border,
+                          color: isOverridden ? P.purple : P.text }}
+                      />
+                      {isOverridden && (
+                        <button onClick={() => setPhaseSubFee(ph.id, s.id, "")}
+                          style={{ background: "none", color: P.purple, fontSize: 12, border: "none", cursor: "pointer" }} title="Reset to proportional">↺</button>
+                      )}
+                    </div>
+                    {isOverridden && (
+                      <div style={{ fontSize: 10, color: P.textDim, marginTop: 2 }}>Default: {fmt(Math.round(subTotal * (ph.pct || 0)))}</div>
+                    )}
+                  </td>
+                );
+              })}
+              {calcSubs.length > 0 && (
+                <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>
+                  {fmt((ph.manualFee > 0 ? ph.manualFee : (ph.calcedFee ?? ph.fee)) + calcSubs.reduce((a, s) => a + getPhaseSubFee(ph.id, s, ph), 0))}
+                </td>
+              )}
               <td><input type="checkbox" checked={!!ph.billable} onChange={e => updatePhase(idx, { billable: e.target.checked })} /></td>
               <td><Btn small variant="danger" onClick={() => onChange({ ...project, phases: phases.filter((_, i) => i !== idx) })}>✕</Btn></td>
             </tr>
           ))}
+          {calcSubs.length > 0 && (
+            <tr style={{ background: P.bg, borderTop: `2px solid ${P.purple}` }}>
+              <td colSpan={5} style={{ fontWeight: 700 }}>Total Phase Fees (Setty)</td>
+              {calcSubs.map(s => {
+                const subPhaseTot = phasedFees.reduce((a, ph) => a + getPhaseSubFee(ph.id, s, ph), 0);
+                const subTotal = s.method === "pct" ? Math.round(baseFee * (+s.pct || 0) / 100) : (+s.flatFee || 0);
+                const diff = subPhaseTot - subTotal;
+                return (
+                  <td key={s.id} style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: Math.abs(diff) < 1 ? P.purple : P.red }}>
+                    {fmt(subPhaseTot)}
+                    {Math.abs(diff) >= 1 && <div style={{ fontSize: 10, color: P.red }}>≠ {fmt(subTotal)}</div>}
+                  </td>
+                );
+              })}
+              <td style={{ fontFamily: "JetBrains Mono", fontWeight: 800, color: P.accentLight }}>
+                {fmt(totalPhaseFee + calcSubs.reduce((a, s) => a + phasedFees.reduce((b, ph) => b + getPhaseSubFee(ph.id, s, ph), 0), 0))}
+              </td>
+              <td colSpan={2}></td>
+            </tr>
+          )}
         </tbody>
       </table>
 
@@ -1432,8 +1523,8 @@ function FeeCalculator({ project, onChange }) {
           display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ color: phaseFeeOk ? P.green : P.red, fontWeight: 600, fontSize: 13 }}>
             {phaseFeeOk
-              ? "✓ Phase fees match Setty fee"
-              : `⚠ Phase fees total ${fmt(totalPhaseFee)} — ${phaseFeeVar > 0 ? "over" : "under"} by ${fmt(Math.abs(phaseFeeVar))}`}
+              ? (calcSubs.length > 0 ? `✓ Setty phase fees match · Total Project Phase Total: ${fmt(totalPhaseFee + totalSubFee)}` : "✓ Phase fees match Setty fee")
+              : `⚠ Setty phase fees total ${fmt(totalPhaseFee)} — ${phaseFeeVar > 0 ? "over" : "under"} by ${fmt(Math.abs(phaseFeeVar))}`}
           </div>
           {!phaseFeeOk && (
             <button onClick={() => {
@@ -5403,6 +5494,8 @@ function CalendarView({ project, onChange }) {
 }
 
 // ─── TEAM CALENDAR (all projects) ────────────────────────────────────────────
+
+
 
 
 
@@ -9877,6 +9970,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
   
+
 
 </script>
 </body>
