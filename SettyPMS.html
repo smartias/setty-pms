@@ -241,6 +241,7 @@ function newProject(overrides = {}) {
     contractNumber: "",
     contractDate: "",
     contractFolderUrl: "",
+    feeCalculatorSubs: [],
     contractExpirationDate: "",
     archived: false,
     buildingCategory: "Office",
@@ -886,11 +887,18 @@ function FeeCalculator({ project, onChange }) {
     return Object.fromEntries(entries.map(([d, v]) => [d, aeFee * v]));
   })();
   const hasOverrides = Object.keys(overrides).length > 0;
+  const calcSubs = project.feeCalculatorSubs || [];
+  const totalSubFee = calcSubs.reduce((a, s) => {
+    if (s.method === "pct") return a + Math.round(baseFee * (+s.pct || 0) / 100);
+    return a + (+s.flatFee || 0);
+  }, 0);
+  const totalProjectFee = baseFee + totalSubFee;
   const [showLegend, setShowLegend] = useState(false);
   const [showLockModal, setShowLockModal] = useState(false);
   const [lockNote, setLockNote] = useState("");
   const [showAudit, setShowAudit] = useState(false);
   const auditLog = project.feeAuditLog || [];
+  const [showSubPanel, setShowSubPanel] = useState(false);
 
   function doLock() {
     const entry = {
@@ -1180,6 +1188,30 @@ function FeeCalculator({ project, onChange }) {
         </div>
       </div>
 
+      {/* ── Sub-consultant fee rollup (shown when subs exist) ── */}
+      {totalSubFee > 0 && (
+        <div style={{ background: P.bg, border: `1px solid ${P.purple}`, borderRadius: 8, padding: "10px 18px", marginBottom: 16,
+          display: "flex", alignItems: "center", gap: 32, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 11, color: P.textDim, marginBottom: 2 }}>SETTY FEE (MEP/FP)</div>
+            <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.green }}>{fmt(baseFee)}</div>
+          </div>
+          <div style={{ color: P.textDim, fontSize: 18 }}>+</div>
+          <div>
+            <div style={{ fontSize: 11, color: P.textDim, marginBottom: 2 }}>SUB-CONSULTANT FEES</div>
+            <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{fmt(totalSubFee)}</div>
+          </div>
+          <div style={{ color: P.textDim, fontSize: 18 }}>=</div>
+          <div style={{ borderLeft: `2px solid ${P.purple}`, paddingLeft: 16 }}>
+            <div style={{ fontSize: 11, color: P.purple, marginBottom: 2, fontWeight: 700 }}>TOTAL PROJECT FEE</div>
+            <div style={{ fontFamily: "JetBrains Mono", fontWeight: 800, fontSize: 18, color: P.purple }}>{fmt(totalProjectFee)}</div>
+          </div>
+          <div style={{ marginLeft: "auto", fontSize: 11, color: P.textDim, fontStyle: "italic" }}>
+            WBS hours calculated on Setty fee only
+          </div>
+        </div>
+      )}
+
       {/* ── Discipline Fees with overrides ── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 13 }}>
@@ -1190,7 +1222,12 @@ function FeeCalculator({ project, onChange }) {
             </span>
           )}
         </div>
-        {hasOverrides && <Btn small variant="ghost" onClick={clearDisciplineOverrides}>↺ Reset All to Defaults</Btn>}
+        <div style={{ display: "flex", gap: 8 }}>
+          {hasOverrides && <Btn small variant="ghost" onClick={clearDisciplineOverrides}>↺ Reset All to Defaults</Btn>}
+          <Btn small variant={showSubPanel ? "primary" : "ghost"} onClick={() => setShowSubPanel(v => !v)}>
+            {showSubPanel ? "✕ Hide Sub Fees" : (calcSubs.length > 0 ? `± Sub Fees (${calcSubs.length})` : "± Sub Fees")}
+          </Btn>
+        </div>
       </div>
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
         {project.manualSettyFee > 0
@@ -1247,6 +1284,90 @@ function FeeCalculator({ project, onChange }) {
           </tr>
         </tbody>
       </table>
+
+      {/* ── Sub-Consultant Fee Panel ── */}
+      {showSubPanel && (
+        <div style={{ background: P.bg, border: `1px solid ${P.purple}`, borderRadius: 10, padding: "16px 18px", marginBottom: 24 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: P.purple }}>Sub-Consultant Fees</div>
+            <div style={{ fontSize: 11, color: P.textDim }}>Not included in MEP/FP discipline fees or WBS hours</div>
+          </div>
+          {(calcSubs.length === 0) && (
+            <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12, fontStyle: "italic" }}>No sub-consultants added yet.</div>
+          )}
+          {calcSubs.length > 0 && (
+            <table style={{ marginBottom: 12, fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th>Sub-Consultant</th>
+                  <th>Method</th>
+                  <th>Value</th>
+                  <th>Fee</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {calcSubs.map((s, i) => {
+                  const fee = s.method === "pct" ? Math.round(baseFee * (+s.pct || 0) / 100) : (+s.flatFee || 0);
+                  return (
+                    <tr key={s.id || i}>
+                      <td style={{ fontWeight: 500 }}>
+                        <input value={s.name || ""} onChange={e => {
+                          const next = calcSubs.map((x, j) => j === i ? { ...x, name: e.target.value } : x);
+                          setField("feeCalculatorSubs", next);
+                        }} placeholder="e.g. Civil, Geotech…" style={{ width: 180 }} />
+                      </td>
+                      <td>
+                        <select value={s.method || "flat"} onChange={e => {
+                          const next = calcSubs.map((x, j) => j === i ? { ...x, method: e.target.value } : x);
+                          setField("feeCalculatorSubs", next);
+                        }} style={{ width: 110 }}>
+                          <option value="flat">Flat ($)</option>
+                          <option value="pct">% of Setty Fee</option>
+                        </select>
+                      </td>
+                      <td>
+                        {s.method === "pct" ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <input type="number" min="0" step="0.5" value={s.pct || ""} onChange={e => {
+                              const next = calcSubs.map((x, j) => j === i ? { ...x, pct: e.target.value } : x);
+                              setField("feeCalculatorSubs", next);
+                            }} placeholder="%" style={{ width: 70, fontFamily: "JetBrains Mono" }} />
+                            <span style={{ fontSize: 12, color: P.textDim }}>%</span>
+                          </div>
+                        ) : (
+                          <input type="number" min="0" step="500" value={s.flatFee || ""} onChange={e => {
+                            const next = calcSubs.map((x, j) => j === i ? { ...x, flatFee: e.target.value } : x);
+                            setField("feeCalculatorSubs", next);
+                          }} placeholder="$" style={{ width: 110, fontFamily: "JetBrains Mono" }} />
+                        )}
+                      </td>
+                      <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{fmt(fee)}</td>
+                      <td>
+                        <button onClick={() => setField("feeCalculatorSubs", calcSubs.filter((_, j) => j !== i))}
+                          style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14 }}>✕</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr style={{ background: P.card }}>
+                  <td colSpan={3} style={{ fontWeight: 700, color: P.textMuted }}>Total Sub-Consultant Fees</td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 800, color: P.purple }}>{fmt(totalSubFee)}</td>
+                  <td></td>
+                </tr>
+                <tr style={{ background: P.card }}>
+                  <td colSpan={3} style={{ fontWeight: 700 }}>Total Project Fee (Setty + Subs)</td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 800, color: P.green, fontSize: 15 }}>{fmt(totalProjectFee)}</td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+          <Btn small variant="ghost" onClick={() => setField("feeCalculatorSubs", [...calcSubs, { id: uid(), name: "", method: "flat", flatFee: "", pct: "" }])}>
+            + Add Sub-Consultant
+          </Btn>
+        </div>
+      )}
 
       {/* ── Phase Fees ── */}
       <SectionTitle action={<Btn small onClick={addPhase} variant="ghost">+ Add Phase</Btn>}>
