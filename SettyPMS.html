@@ -20,8 +20,9 @@
 <body>
   <div id="root"></div>
   <script type="text/babel" data-presets="react">
-
     const {useState,useEffect,useMemo}=React;
+
+// ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
 
 const RS_MEANS_COST_PER_SF = {
   "Office": 285, "Healthcare/Clinic": 420, "Laboratory": 580, "K-12 School": 260,
@@ -79,11 +80,14 @@ const PROJECT_STATUSES = [
   "In Construction Administration","Completed","Cancelled","Lost",
 ];
 
+// Pipeline statuses — projects not yet awarded, shown in Pipeline view only
 const PIPELINE_STATUSES = ["Proposal Due", "Proposal Submitted"];
 const AWARDED_STATUSES  = ["Not Started","In Progress","In for Review","On Hold","Top Priority","In Construction Administration","Completed","Cancelled","Lost"];
 
 function isPipeline(p) { return PIPELINE_STATUSES.includes(p.status); }
 function isAwarded(p)  { return !isPipeline(p); }
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function uid() { return Math.random().toString(36).slice(2,10); }
 
@@ -117,6 +121,7 @@ function calcConstructionCost(sqft, category, manualCost, manualCostPerSF) {
   return sqft * costPerSF;
 }
 
+// Returns effective discipline percentages — overrides merged on top of defaults
 function getEffectiveDisciplines(project) {
   const defaults = DISCIPLINE_PERCENTAGES[project.projectType] || {};
   const overrides = project.disciplinePercentOverrides || {};
@@ -128,11 +133,13 @@ function getEffectiveDisciplines(project) {
 }
 
 function calcAEFee(constructionCost, project) {
+  // Total AE fee = construction cost × fee percentage from table
   const pct = getFeePercent(constructionCost, project.projectType);
   return constructionCost * pct;
 }
 
 function calcSettyFee(constructionCost, project) {
+  // Setty fee = AE fee × sum of discipline percentages (each disc % is a share of AE fee)
   const aeFee = calcAEFee(constructionCost, project);
   const discs = getEffectiveDisciplines(project);
   const settyShare = Object.values(discs).reduce((a, b) => a + b, 0);
@@ -178,12 +185,14 @@ function buildSchedule(startDate, phases) {
   });
 }
 
+// Milestone status auto-derived from pctComplete
 function milestoneStatus(pct) {
   if (!pct || pct === 0) return "Not Started";
   if (pct >= 100) return "Completed";
   return "In Progress";
 }
 
+// Phase pctComplete is derived from its billable milestones
 function getPhasePctFromMilestones(phase, milestones) {
   const matching = milestones.filter(m => m.type === "billable" && m.phase === phase.code);
   if (!matching.length) return phase.pctComplete || 0;
@@ -202,6 +211,8 @@ function projectOverallPct(project) {
   }, 0);
   return totalFee > 0 ? Math.round(earned / totalFee * 100) : 0;
 }
+
+// ─── DEFAULT PROJECT TEMPLATE ─────────────────────────────────────────────────
 
 function newProject(overrides = {}) {
   const id = uid();
@@ -258,10 +269,23 @@ function newProject(overrides = {}) {
   };
 }
 
+// ─── MICROSOFT GRAPH / MSAL PERSISTENCE ──────────────────────────────────────
+// Data: stored in Supabase (pms_data table, singleton row)
+// BUT: to share across team, one person hosts it and shares the folder.
+// The app uses a configurable "data file URL" — paste the Graph shareable link once.
+//
+// Permissions used (ALL delegated, NO admin consent required):
+//   Calendars.ReadWrite.Shared — read/write shared calendars
+//   User.Read            — sign in
+//
+// Auth: MSAL.js popup — user signs in with their Setty M365 account.
+// No Claude API. No admin consent. No secrets hardcoded.
+
 const CAL_MAILBOX   = "sara.arias@setty.com";
 const GRAPH_BASE    = "https://graph.microsoft.com/v1.0";
 const TENANT_ID = "f374c024-71c2-48b6-8420-076fff97327c"; // Setty & Associates tenant
 
+// ── MSAL instance ──
 let _msalApp = null;
 
 const MSAL_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301";
@@ -280,6 +304,7 @@ async function getMsalApp() {
   return _msalApp;
 }
 
+// Scopes — all delegated, none require admin consent
 const GRAPH_SCOPES = [
   "Calendars.ReadWrite.Shared", // shared calendars
   "User.Read",                  // sign in
@@ -346,6 +371,8 @@ async function graphFetch(method, path, body, token) {
   return resp.json();
 }
 
+// ─── SUPABASE STORAGE ────────────────────────────────────────────────────────
+
 const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 
@@ -392,16 +419,21 @@ async function saveState(state) {
   });
 }
 
+// ── Calendar helpers ──
+// Cache the NYC Shared Calendar ID so we only look it up once per session
 let _nycCalendarId = null;
 
 async function getNYCCalendarId() {
   if (_nycCalendarId) return _nycCalendarId;
+  // Check localStorage cache first
   const cached = localStorage.getItem("setty_pms_cal_id");
   if (cached) { _nycCalendarId = cached; return _nycCalendarId; }
+  // Fetch all calendars for the signed-in user
   try {
     const data = await graphFetch("GET", "/me/calendars?$top=50");
     const cals = data?.value || [];
     console.log("Available calendars:", cals.map(c => c.name));
+    // Find NYC Shared Calendar by name (case-insensitive partial match)
     const nyc = cals.find(c => c.name.toLowerCase().includes("nyc") || c.name.toLowerCase().includes("shared"));
     if (nyc) {
       _nycCalendarId = nyc.id;
@@ -420,6 +452,7 @@ async function getNYCCalendarId() {
 async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId) {
   if (!milestone.dueDate) return { success: false, error: "No due date" };
 
+  // Compute end date (next day — Outlook all-day events use exclusive end)
   const endDateObj = new Date(milestone.dueDate + "T12:00:00");
   endDateObj.setDate(endDateObj.getDate() + 1);
   const endDate = endDateObj.toISOString().slice(0, 10);
@@ -436,6 +469,7 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
 
   console.log("Calendar event body:", JSON.stringify(eventBody));
 
+  // Build the correct calendar path
   async function calPath(eventId) {
     const calId = await getNYCCalendarId();
     const base = calId ? "/me/calendars/" + calId : "/me";
@@ -491,6 +525,8 @@ async function createNoteCalendarEvent(note, project) {
   }
 }
 
+// ─── PALETTE & STYLES ────────────────────────────────────────────────────────
+
 const P = {
   bg: "#0f1117", card: "#1a1d2e", cardHover: "#1e2238", border: "#2a2d45",
   accent: "#3b82f6", accentLight: "#60a5fa", accentDim: "#1e3a5f",
@@ -545,6 +581,8 @@ const CSS = `
   th{font-size:11px;font-weight:600;color:${P.textDim};text-transform:uppercase;letter-spacing:.05em;background:${P.card};}
   tr:hover td{background:${P.cardHover};}
 `;
+
+// ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
 
 function Badge({ color, text }) {
   const c = color || { bg: P.border, text: P.textMuted };
@@ -628,6 +666,9 @@ function Modal({ title, onClose, children, wide }) {
   );
 }
 
+
+// ─── OUTLOOK DRAFT EMAIL ──────────────────────────────────────────────────────
+
 async function createOutlookDraft({ subject, bodyHtml, bodyText }) {
   const token = await getToken();
   const body = {
@@ -647,6 +688,9 @@ async function createOutlookDraft({ subject, bodyHtml, bodyText }) {
   const msg = await res.json();
   return msg;
 }
+
+// ─── FEE CALCULATOR ──────────────────────────────────────────────────────────
+
 
 function printFeeProposal(project) {
   const constructionCostFP = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
@@ -762,6 +806,7 @@ function printFeeProposal(project) {
   printDocument(html, "Fee Proposal — " + (project.name || "Project"));
 }
 
+
 function FeeCalculator({ project, onChange }) {
   const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const effectiveDiscs = getEffectiveDisciplines(project);
@@ -778,6 +823,7 @@ function FeeCalculator({ project, onChange }) {
   }
 
   function setDisciplineOverride(disc, rawVal) {
+    // rawVal is already divided by 100 before calling this
     const val = +rawVal;
     const newOverrides = { ...overrides };
     if (Math.abs(val - (defaultDiscs[disc] || 0)) < 0.000001) {
@@ -810,22 +856,29 @@ function FeeCalculator({ project, onChange }) {
     onChange({ ...project, phases: buildSchedule(project.startDate, newPhases) });
   }
 
+  // finalizeSchedule replaced by doLock (which also captures audit entry)
+
   const totalPhasePct = phases.filter(p => p.billable).reduce((a, p) => a + p.pct, 0);
   const totalPhaseFee = phasedFees.filter(p => p.billable).reduce((a, p) => a + p.fee, 0);
   const phaseFeeVar = totalPhaseFee - baseFee;
   const phaseFeeOk = Math.abs(phaseFeeVar) < 0.5;
   const discTotal = Object.values(effectiveDiscs).reduce((a, b) => a + b, 0);
 
+  // When Setty fee is overridden, distribute baseFee proportionally across disciplines
+  // using effective % as relative weights. Zero-pct disciplines get $0.
   const discFeeMap = (() => {
     const entries = Object.entries(effectiveDiscs);
     if (project.manualSettyFee > 0 || discTotal === 0) {
+      // Proportional split of baseFee
       const totalWeight = entries.reduce((a, [, v]) => a + v, 0);
       if (totalWeight === 0) {
+        // All zeroed — split evenly
         const even = baseFee / entries.length;
         return Object.fromEntries(entries.map(([d]) => [d, even]));
       }
       return Object.fromEntries(entries.map(([d, v]) => [d, baseFee * (v / totalWeight)]));
     }
+    // Default: each disc % applied to AE fee (original behaviour)
     return Object.fromEntries(entries.map(([d, v]) => [d, aeFee * v]));
   })();
   const hasOverrides = Object.keys(overrides).length > 0;
@@ -886,6 +939,7 @@ function FeeCalculator({ project, onChange }) {
   return (
     <div>
       {project.feeScheduleFinalized ? (
+        // ── LOCKED READ-ONLY VIEW ──────────────────────────────────────────
         <div>
           {/* Locked banner + actions */}
           <div style={{ background: P.greenDim, border: `1px solid ${P.green}`, color: P.green, padding: "10px 16px", borderRadius: 8, fontWeight: 600, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
@@ -1004,6 +1058,7 @@ function FeeCalculator({ project, onChange }) {
           )}
         </div>
       ) : (
+      // ── UNLOCKED EDITABLE VIEW ─────────────────────────────────────────
       <div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
         <Field label="Project Type">
@@ -1257,6 +1312,7 @@ function FeeCalculator({ project, onChange }) {
           </div>
           {!phaseFeeOk && (
             <button onClick={() => {
+              // Distribute the remainder proportionally across billable phases without a manual override
               const nonManual = phases.filter(p => p.billable && !(p.manualFee > 0));
               if (nonManual.length === 0) return;
               const manualTotal = phases.filter(p => p.billable && p.manualFee > 0).reduce((a, p) => a + p.manualFee, 0);
@@ -1361,6 +1417,8 @@ function FeeCalculator({ project, onChange }) {
   );
 }
 
+// ─── SCHEDULE VIEW ────────────────────────────────────────────────────────────
+
 function ScheduleView({ project, onChange }) {
   const phases = project.phases || [];
   const milestones = project.milestones || [];
@@ -1371,12 +1429,17 @@ function ScheduleView({ project, onChange }) {
   const [syncingAll, setSyncingAll] = useState(false);
   const [emailStatus, setEmailStatus] = useState("idle"); // idle | sending | done | error
   const [emailMsg, setEmailMsg] = useState("");
+  const [invoicePrompt, setInvoicePrompt] = useState(null); // { milestone } | null
+  const [invoiceDraftStatus, setInvoiceDraftStatus] = useState("idle"); // idle | sending | done | error
+  const [invoiceDraftMsg, setInvoiceDraftMsg] = useState("");
 
+  // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
     (project.milestones || []).filter(m => m.calendarEventId).map(m => [m.id, m.calendarEventId])
   );
 
   function saveCalMap(map) {
+    // Write eventIds back into the milestone objects and save via onChange
     const newMilestones = (project.milestones || []).map(m => ({
       ...m,
       calendarEventId: map[m.id] || m.calendarEventId || null,
@@ -1423,6 +1486,7 @@ function ScheduleView({ project, onChange }) {
     saveCalMap(newMap);
     setSyncingAll(false);
     const warnings = syncable.filter((_, i) => {
+      // detect if any synced with warning (posted to personal)
       return false; // warnings surfaced per-milestone in syncOne
     });
     setSyncMsg(ok === syncable.length
@@ -1442,9 +1506,19 @@ function ScheduleView({ project, onChange }) {
       const m = milestones.find(x => x.id === id);
       if (m && m.type === "billable")
         newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
+      // Mark as stale if already synced
       if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
+      // calMap is derived from milestone objects so it stays in sync automatically
     }
     onChange({ ...project, milestones: newMilestones, phases: newPhases });
+    // Invoice prompt: only when marking a billable milestone 100% complete
+    if (field === "pctComplete" && +val >= 100) {
+      const m = milestones.find(x => x.id === id);
+      if (m && m.type === "billable" && m.fee > 0) {
+        const alreadyInvoiced = (project.invoices || []).some(inv => inv.milestoneId === id);
+        if (!alreadyInvoiced) setInvoicePrompt({ milestone: m });
+      }
+    }
   }
 
   function updatePhaseDuration(phId, newDays) {
@@ -1469,6 +1543,7 @@ function ScheduleView({ project, onChange }) {
         newMilestones = milestones.map(m =>
           m.type === "billable" && m.phase === ph.code ? { ...m, dueDate: val } : m
         );
+        // Mark affected synced milestones as stale
         const staleIds = milestones.filter(m => m.type === "billable" && m.phase === ph.code && calMap[m.id]).map(m => m.id);
         if (staleIds.length) setCalState(s => { const n = {...s}; staleIds.forEach(id => n[id] = "stale"); return n; });
       }
@@ -1588,6 +1663,7 @@ function ScheduleView({ project, onChange }) {
   }
 
   return (
+    <>
     <div>
       <SectionTitle>Project Schedule</SectionTitle>
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 14 }}>
@@ -1609,6 +1685,7 @@ function ScheduleView({ project, onChange }) {
             const sd = ph.startDate ? new Date(ph.startDate + "T00:00:00") : null;
             const ed = ph.endDate   ? new Date(ph.endDate   + "T00:00:00") : null;
 
+            // Expected % = how far today is through the phase by calendar time
             let expectedPct = 0;
             let healthLabel = "—";
             let healthColor = P.textDim;
@@ -1616,18 +1693,22 @@ function ScheduleView({ project, onChange }) {
             if (sd && ed && ed > sd) {
               const todayLocal = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
               if (today >= ed) {
+                // Past end date
                 expectedPct = 100;
                 healthLabel = pct >= 100 ? "✓ Complete" : "Overdue";
                 healthColor = pct >= 100 ? P.green : P.red;
                 healthBg    = pct >= 100 ? P.greenDim : P.redDim;
               } else if (today < sd) {
+                // Before start date
                 expectedPct = 0;
                 if (pct > 0) {
+                  // Has progress even though not started — show ahead of schedule
                   healthLabel = "Ahead"; healthColor = P.green; healthBg = P.greenDim;
                 } else {
                   healthLabel = "Not Started"; healthColor = P.textDim;
                 }
               } else {
+                // Active phase
                 const elapsed = countWorkDays(ph.startDate, todayLocal);
                 expectedPct = Math.round(Math.min(100, (elapsed / Math.max(durWD, 1)) * 100));
                 const gap = expectedPct - pct;
@@ -1774,8 +1855,114 @@ function ScheduleView({ project, onChange }) {
         </tbody>
       </table>
     </div>
+    {/* ── Invoice prompt modal ── */}
+    {invoicePrompt && (() => {
+      const m = invoicePrompt.milestone;
+      const invNumber = `INV-${String((project.invoices || []).length + 1).padStart(3, "0")}`;
+      const invDate = new Date().toISOString().slice(0, 10);
+
+      async function createDraftAndLog() {
+        setInvoiceDraftStatus("sending");
+        setInvoiceDraftMsg("");
+        const bodyHtml = `
+<div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px;">
+  <div style="border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;">
+    <div>
+      <div style="font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1;">SETTY</div>
+      <div style="font-size:8px;color:#44546A;letter-spacing:1px;">&amp; ASSOCIATES, LTD, PC</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:16px;font-weight:700;color:#2F5496;">INVOICE</div>
+      <div style="font-size:13px;font-weight:700;color:#1F3864;">${invNumber}</div>
+      <div style="font-size:11px;color:#44546A;">${fmtDate(invDate)}</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid #CBD5E1;border-radius:4px;margin-bottom:20px;overflow:hidden;">
+    <div style="padding:12px 16px;border-right:1px solid #CBD5E1;">
+      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Project</div>
+      <div style="font-size:13px;font-weight:600;color:#1F3864;">${project.name || "—"}</div>
+      ${project.projectNumber ? `<div style="font-size:11px;color:#44546A;">${project.projectNumber}</div>` : ""}
+    </div>
+    <div style="padding:12px 16px;">
+      <div style="font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Client / Prime</div>
+      <div style="font-size:13px;font-weight:600;color:#1F3864;">${project.prime || project.clientName || "—"}</div>
+      ${project.primeProjectNumber ? `<div style="font-size:11px;color:#44546A;">Prime #: ${project.primeProjectNumber}</div>` : ""}
+    </div>
+  </div>
+  <table style="border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px;">
+    <thead><tr style="background:#F1F5F9;">
+      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Phase / Milestone</th>
+      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;text-transform:uppercase;">Amount</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td style="padding:10px 12px;font-weight:500;">${m.name}</td>
+        <td style="padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;color:#1F3864;">$${Math.round(m.fee).toLocaleString()}</td>
+      </tr>
+    </tbody>
+    <tfoot><tr style="background:#F1F5F9;">
+      <td style="padding:10px 12px;font-weight:700;">Total Due</td>
+      <td style="padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;font-size:15px;color:#1F3864;">$${Math.round(m.fee).toLocaleString()}</td>
+    </tr></tfoot>
+  </table>
+  <div style="margin-top:24px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A;">
+    SETTY &amp; Associates, Ltd, PC &nbsp;·&nbsp; ${project.name || ""} &nbsp;·&nbsp; ${invNumber}
+  </div>
+</div>`;
+        try {
+          await createOutlookDraft({
+            subject: `Invoice ${invNumber} — ${m.name} · ${project.name || "Project"}${project.projectNumber ? " (" + project.projectNumber + ")" : ""}`,
+            bodyHtml,
+          });
+          const newInvoice = {
+            id: uid(), number: invNumber, date: invDate,
+            phase: m.phase, phaseName: m.name,
+            milestoneId: m.id, milestoneName: m.name,
+            method: "pct", description: m.name,
+            lineItems: [{ name: "100% of " + m.name, amount: m.fee }],
+            amount: m.fee, finalized: true,
+          };
+          onChange({ ...project, invoices: [...(project.invoices || []), newInvoice] });
+          setInvoiceDraftStatus("done");
+          setInvoiceDraftMsg("✓ Draft created in Outlook Drafts · invoice logged");
+          setTimeout(() => { setInvoicePrompt(null); setInvoiceDraftStatus("idle"); setInvoiceDraftMsg(""); }, 2500);
+        } catch(e) {
+          setInvoiceDraftStatus("error");
+          setInvoiceDraftMsg("✗ " + e.message);
+        }
+      }
+
+      return (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: P.card, border: `1px solid ${P.green}`, borderRadius: 14, padding: 28, width: 480, maxWidth: "95vw" }}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>🎉 Milestone Complete</div>
+            <div style={{ fontSize: 13, color: P.textMuted, marginBottom: 20, lineHeight: 1.6 }}>
+              <strong style={{ color: P.text }}>{m.name}</strong> is 100% complete with a fee of{" "}
+              <strong style={{ color: P.green, fontFamily: "JetBrains Mono" }}>{fmt(m.fee)}</strong>. Would you like to generate an invoice draft in Outlook?
+            </div>
+            {invoiceDraftMsg && (
+              <div style={{ padding: "8px 12px", borderRadius: 6, marginBottom: 16, fontSize: 12,
+                background: invoiceDraftStatus === "done" ? P.greenDim : P.redDim,
+                color: invoiceDraftStatus === "done" ? P.green : P.red,
+                border: "1px solid " + (invoiceDraftStatus === "done" ? P.green : P.red) }}>
+                {invoiceDraftMsg}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="ghost" onClick={() => { setInvoicePrompt(null); setInvoiceDraftStatus("idle"); setInvoiceDraftMsg(""); }}>Not Now</Btn>
+              <Btn variant="success" disabled={invoiceDraftStatus === "sending" || invoiceDraftStatus === "done"} onClick={createDraftAndLog}>
+                {invoiceDraftStatus === "sending" ? "⏳ Creating draft…" : "✉ Yes, Create Invoice Draft"}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
+    </>
   );
 }
+
+// ─── INVOICE MODAL ────────────────────────────────────────────────────────────
 
 function InvoiceModal({ project, onClose, onSave }) {
   const billableMilestones = (project.milestones || []).filter(m => m.type === "billable" && m.fee > 0);
@@ -1800,6 +1987,7 @@ function InvoiceModal({ project, onClose, onSave }) {
 
   const selectedMilestone = billableMilestones.find(m => m.id === selectedMilestoneId);
   const milestoneFee = selectedMilestone?.fee || 0;
+  // Derive which phase this milestone belongs to for tracking
   const milestonePhaseCode = selectedMilestone?.phase || "";
   const milestonePhase = billablePhases.find(p => p.code === milestonePhaseCode);
 
@@ -1919,6 +2107,11 @@ function InvoiceModal({ project, onClose, onSave }) {
     </Modal>
   );
 }
+
+// ─── FINANCIALS VIEW ──────────────────────────────────────────────────────────
+
+
+// ─── PDF PRINT HELPERS ────────────────────────────────────────────────────────
 
 function fmtDate(str) {
   if (!str) return "";
@@ -2140,22 +2333,28 @@ function printInvoice(inv, project) {
     ? `<th class="right">Hours</th><th class="right">Rate</th>`
     : "";
 
+  // ── Fee Schedule ──
+  // Use locked fee or best available
   const auditLocked = (project.feeAuditLog || []).filter(e => e.action === "locked" && e.settyFee);
   const auditFee = auditLocked.length > 0 ? auditLocked[auditLocked.length - 1].settyFee : 0;
   const constructionCostInv = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const contractFee = project.lockedSettyFee || auditFee || (project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCostInv, project)) || 0;
 
+  // Approved COs add to contract value
   const approvedCOs = (project.changeOrders || []).filter(c => c.approved);
   const coTotal = approvedCOs.reduce((a, c) => a + (c.fee || 0), 0);
   const totalContractFee = contractFee + coTotal;
 
+  // Billable phases from locked fee schedule
   const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0);
 
+  // All invoices except the current one (already billed before this invoice)
   const priorInvoices = (project.invoices || []).filter(i => i.id !== inv.id);
   const totalPriorInvoiced = priorInvoices.reduce((a, i) => a + (i.amount || 0), 0);
   const totalInvoicedToDate = totalPriorInvoiced + (inv.amount || 0);
   const remainingBalance = totalContractFee - totalInvoicedToDate;
 
+  // Per-phase: fee, previously invoiced, this invoice amount (if same phase)
   const feeScheduleRows = billablePhases.map(ph => {
     const phaseFee = ph.fee || 0;
     const phaseInvoiced = priorInvoices
@@ -2168,6 +2367,7 @@ function printInvoice(inv, project) {
     return { ph, phaseFee, phaseInvoiced, thisInvAmt, totalBilledThisPhase, phaseBalance, isCurrentPhase };
   });
 
+  // CO rows for fee schedule
   const coRows = approvedCOs.map(co => {
     const coInvoiced = priorInvoices
       .filter(i => i.phase === "CO" && (project.milestones || []).find(m => m.coId === co.id && m.id === i.milestoneId))
@@ -2302,6 +2502,7 @@ function printChangeOrder(co, project, allCOs) {
   const prevApproved = (allCOs || [])
     .filter(c => c.approved && c.id !== co.id)
     .reduce((a, c) => a + (c.fee || 0), 0);
+  // Use locked fee from fee schedule — prefer project.lockedSettyFee, fall back to last locked audit entry
   const auditLocked = (project.feeAuditLog || []).filter(e => e.action === "locked" && e.settyFee);
   const auditFee = auditLocked.length > 0 ? auditLocked[auditLocked.length - 1].settyFee : 0;
   const constructionCostCO = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
@@ -2444,6 +2645,7 @@ function FinancialsView({ project, onChange }) {
   const approvedCOTotal = changeOrders.filter(c => c.approved).reduce((a, c) => a + c.fee, 0);
   const totalContract = totalFee + approvedCOTotal;
 
+  // Earned value: pct read from milestones (same as Schedule tab)
   const earnedValue = billablePhases.reduce((a, p) => {
     const pct = getPhasePctFromMilestones(p, milestones);
     return a + p.fee * pct / 100;
@@ -2559,6 +2761,7 @@ function FinancialsView({ project, onChange }) {
     setScanStatus("scanning"); setScanMsg(""); setScanResults(null);
     try {
       const token = await getToken();
+      // Build search query — project number and invoice numbers as keywords
       const invNums = (project.invoices||[]).filter(inv => !inv.amountPaid || inv.amountPaid < inv.amount).map(i => i.number).filter(Boolean);
       const projectKeyword = project.projectNumber || project.name || "";
       const paymentKeywords = ["payment received", "wire transfer", "ACH", "check", "remittance", "paid in full"];
@@ -2571,6 +2774,7 @@ function FinancialsView({ project, onChange }) {
       if (!res.ok) throw new Error("Graph API " + res.status);
       const data = await res.json();
       const emails = data.value || [];
+      // Match emails to unpaid invoices
       const unpaid = (project.invoices||[]).filter(inv => !inv.amountPaid || inv.amountPaid < inv.amount);
       const matches = emails.filter(email => {
         const txt = (email.subject + " " + email.bodyPreview).toLowerCase();
@@ -2813,6 +3017,8 @@ function FinancialsView({ project, onChange }) {
   );
 }
 
+// ─── PROJECT STATEMENT ───────────────────────────────────────────────────────
+
 function printStatement(project) {
   const invoices = project.invoices || [];
   const changeOrders = project.changeOrders || [];
@@ -2975,6 +3181,8 @@ function printStatement(project) {
   printDocument(html, "Statement — " + (project.name || "Project"));
 }
 
+// ─── CHANGE ORDERS ────────────────────────────────────────────────────────────
+
 function MiniRichEditor({ value, onChange, placeholder }) {
   const editorRef = React.useRef(null);
   const initialized = React.useRef(false);
@@ -3070,6 +3278,7 @@ function ChangeOrdersView({ project, onChange }) {
   }
 
   function updateCO(id, updates) {
+    // Auto-stamp dateSent when sentToClient is first set to true
     if (updates.sentToClient === true) {
       const existing = cos.find(c => c.id === id);
       if (existing && !existing.sentToClient && !updates.dateSent) {
@@ -3225,10 +3434,7 @@ function ChangeOrdersView({ project, onChange }) {
                 <React.Fragment key={co.id}>
                 <tr>
                   <td style={{ fontFamily: "JetBrains Mono" }}>{co.number}</td>
-                  <td>{co.approved
-                    ? <span style={{ fontWeight: 700, fontSize: 13 }}>{co.name}</span>
-                    : <input value={co.name} onChange={e => updateCO(co.id, { name: e.target.value })} style={{ width: 130 }} />}
-                  </td>
+                  <td><input value={co.name} onChange={e => updateCO(co.id, { name: e.target.value })} style={{ width: 130 }} /></td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <div
@@ -3244,10 +3450,7 @@ function ChangeOrdersView({ project, onChange }) {
                       </button>
                     </div>
                   </td>
-                  <td>{co.approved
-                    ? <span style={{ fontWeight: 700, color: P.green, fontFamily: "monospace" }}>{(co.fee || 0).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}</span>
-                    : <input type="number" value={co.fee} onChange={e => updateCO(co.id, { fee: +e.target.value })} style={{ width: 90 }} />}
-                  </td>
+                  <td><input type="number" value={co.fee} onChange={e => updateCO(co.id, { fee: +e.target.value })} style={{ width: 90 }} /></td>
                   <td>
                     <input type="checkbox" checked={!!co.sentToClient} onChange={e => updateCO(co.id, { sentToClient: e.target.checked })} />
                     {co.sentToClient && <span style={{ color: P.yellow, fontSize: 11, marginLeft: 5 }}>Sent</span>}
@@ -3256,10 +3459,7 @@ function ChangeOrdersView({ project, onChange }) {
                     <input type="checkbox" checked={!!co.approved} onChange={e => updateCO(co.id, { approved: e.target.checked })} />
                     {co.approved && <span style={{ color: P.green, fontSize: 11, marginLeft: 5 }}>✓ Approved</span>}
                   </td>
-                  <td>{co.approved
-                    ? <span style={{ fontSize: 12, color: P.textDim }}>{co.date}</span>
-                    : <input type="date" value={co.date} onChange={e => updateCO(co.id, { date: e.target.value })} />}
-                  </td>
+                  <td><input type="date" value={co.date} onChange={e => updateCO(co.id, { date: e.target.value })} /></td>
                   <td><input value={co.notes || ""} onChange={e => updateCO(co.id, { notes: e.target.value })} style={{ width: 130 }} /></td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
@@ -3307,6 +3507,8 @@ function ChangeOrdersView({ project, onChange }) {
     </div>
   );
 }
+
+// ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
 
 function ContractView({ project, onChange, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
@@ -3397,6 +3599,8 @@ function ContractView({ project, onChange, contractExpSyncState, contractExpSync
   );
 }
 
+// ─── TEAM MEMBERS ─────────────────────────────────────────────────────────────
+
 const WBS_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection"];
 const WBS_HOURLY_RATE = 170;
 const DISC_COLORS = {
@@ -3406,6 +3610,7 @@ const DISC_COLORS = {
   "Fire Protection": { bg: "#3a1a1a", text: "#f87171" },
 };
 
+// Get Monday of the week containing a date
 function localDateStr(d) {
   return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
 }
@@ -3424,6 +3629,7 @@ function addCalDays(dateStr, n) {
   return localDateStr(d);
 }
 
+// Count business days within [weekStart, weekStart+4] that overlap [phaseStart, phaseEnd]
 function bizDaysOverlap(weekStart, phaseStart, phaseEnd) {
   let count = 0;
   for (let i = 0; i < 5; i++) {
@@ -3444,6 +3650,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
   }
 
   function pickFromDirectory(memberId, s) {
+    // Fill from staff directory entry — role, rate, disciplines from directory
     updateMember(memberId, {
       name: s.name,
       role: s.role || "Engineer",
@@ -3456,6 +3663,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
 
   function updateMember(id, updates) {
     const newTeam = team.map(m => m.id === id ? { ...m, ...updates } : m);
+    // Keep projectManager / deputyProjectManager in sync with team name fields
     const pmMember  = newTeam.find(m => m.role === "Project Manager");
     const dpmMember = newTeam.find(m => m.role === "Deputy Project Manager");
     onChange({
@@ -3474,6 +3682,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     updateMember(memberId, { disciplines: next, discipline: next[0] || "" });
   }
 
+  // ── Budget calculations ──
   const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const settyFee = project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCost, project);
   const totalHours  = Math.round(settyFee / WBS_HOURLY_RATE);
@@ -3488,6 +3697,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     discBudgetHours[d] = Math.round(discHours * ((effectiveDiscs[d] || 0) / discTotal));
   });
 
+  // ── Phase data ──
   const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0 && p.startDate && p.endDate);
   const totalFee = billablePhases.reduce((a, p) => a + (p.fee || 0), 0) || 1;
   const today = new Date();
@@ -3506,6 +3716,9 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     return [ph.id, { totalWD, totalWeeks, actualPct, status, remainWD, remainWeeks }];
   }));
 
+  // ── Build staff rows ──
+  // Each staff member gets a total budget = sum of their per-discipline allocations
+  // For multi-disc staff, hours are distributed proportionally then summed
   const staffRows = [];
   const pm  = team.find(m => m.role === "Project Manager");
   const dpm = team.find(m => m.role === "Deputy Project Manager");
@@ -3513,6 +3726,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
   if (pm)  staffRows.push({ member: pm,  isPM: true,  role: "PM",  totalBudget: pmHours });
   if (dpm) staffRows.push({ member: dpm, isPM: true,  role: "DPM", totalBudget: dpmHours });
 
+  // Non-PM staff: budget = sum across their disciplines, split equally among staff in that disc
   const discStaffCount = {};
   WBS_DISCIPLINES.forEach(disc => {
     discStaffCount[disc] = team.filter(m => {
@@ -3533,6 +3747,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     staffRows.push({ member: m, isPM: false, discs, discBreakdown, totalBudget });
   });
 
+  // Unassigned disciplines (no staff assigned)
   WBS_DISCIPLINES.forEach(disc => {
     const assigned = team.filter(m => {
       const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
@@ -3543,6 +3758,8 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     }
   });
 
+  // ── Build weekly schedule ──
+  // Get all project weeks from first phase start to last phase end
   const allWeeks = useMemo(() => {
     if (billablePhases.length === 0) return [];
     const starts = billablePhases.map(p => p.startDate).sort();
@@ -3557,6 +3774,8 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     return weeks;
   }, [billablePhases]);
 
+  // For each staff row × week: compute hours
+  // Hours per week = sum over phases of: (phase budget for this person) × (biz days overlap / phase total biz days)
   function staffWeekHours(row, weekStart) {
     if (!row.totalBudget) return { total: 0, byDisc: {}, byPhase: [] };
     const byDisc = {};
@@ -3584,11 +3803,13 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     return { total, byDisc, byPhase };
   }
 
+  // Which phase(s) are active in a given week
   function weekPhase(weekStart) {
     const weekEnd = addCalDays(weekStart, 4);
     return billablePhases.filter(ph => ph.startDate <= weekEnd && ph.endDate >= weekStart);
   }
 
+  // Is this week in the past / current / future
   function weekStatus(weekStart) {
     const weekEnd = addCalDays(weekStart, 4);
     if (weekEnd < todayStr) return "past";
@@ -3806,6 +4027,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
                         </td>
                         {cellData.map((cell, ci) => {
                           const row = staffRows[ci];
+                          // Check if this week is behind schedule for any active phase
                           const activePhases = phases.filter(ph => phaseMeta[ph.id]?.status === "active");
                           const isBehind = activePhases.some(ph => {
                             const meta = phaseMeta[ph.id];
@@ -3858,10 +4080,14 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
   );
 }
 
+
+// ─── TEAM WBS VIEW (cross-project) ───────────────────────────────────────────
+
 function TeamWBSView({ projects, onNavigateToProject }) {
   const today = new Date();
   const todayStr = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
 
+  // Only active awarded projects with team + phases
   const activeProjects = projects.filter(p =>
     !p.archived && isAwarded(p) &&
     p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost" &&
@@ -3869,6 +4095,8 @@ function TeamWBSView({ projects, onNavigateToProject }) {
     (p.phases || []).some(ph => ph.billable && ph.fee > 0 && ph.startDate && ph.endDate)
   );
 
+  // Build a unified staff registry: key = name (lowercased) → { name, projects: [...] }
+  // Staff with same name across projects are merged into one column
   const staffMap = {}; // normalizedName → { displayName, entries: [{ project, member, ... }] }
 
   activeProjects.forEach(proj => {
@@ -3886,6 +4114,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
     const billablePhases = (proj.phases || []).filter(p => p.billable && p.fee > 0 && p.startDate && p.endDate);
     const totalFee = billablePhases.reduce((a, p) => a + (p.fee || 0), 0) || 1;
 
+    // Phase meta
     const phaseMeta = {};
     billablePhases.forEach(ph => {
       const totalWD = Math.max(1, countWorkDays(ph.startDate, ph.endDate));
@@ -3893,6 +4122,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
       phaseMeta[ph.id] = { totalWD, fee: ph.fee || 0, pctComplete: pct };
     });
 
+    // Disc staff count for splitting — include anyone with that discipline regardless of PM role
     const discStaffCount = {};
     WBS_DISCIPLINES.forEach(disc => {
       discStaffCount[disc] = Math.max(1, (proj.teamMembers || []).filter(m => {
@@ -3908,12 +4138,14 @@ function TeamWBSView({ projects, onNavigateToProject }) {
       const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
       const hasDiscs = discs.length > 0;
 
+      // Build discipline breakdown (applies whether PM or not)
       const discBreakdown = {};
       if (hasDiscs) {
         discs.forEach(d => { discBreakdown[d] = Math.round((discBudget[d] || 0) / discStaffCount[d]); });
       }
       const discHoursForMember = Object.values(discBreakdown).reduce((a, v) => a + v, 0);
 
+      // PM hours + any discipline hours they're also covering
       const pmBase = isPM ? (m.role === "Project Manager" ? pmHours : dpmHours) : 0;
       const memberBudget = pmBase + (hasDiscs ? discHoursForMember : 0);
 
@@ -3929,6 +4161,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
 
   const staffCols = Object.values(staffMap);
 
+  // Compute weekly hours for a staff entry in a given week
   function entryWeekHours(entry, weekStart) {
     let total = 0;
     entry.billablePhases.forEach(ph => {
@@ -3936,6 +4169,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
       const overlap = bizDaysOverlap(weekStart, ph.startDate, ph.endDate);
       if (!overlap || !meta) return;
       const phaseFrac = (ph.fee || 0) / entry.totalFee;
+      // Remaining work fraction — clamp 0–1
       const remaining = Math.max(0, Math.min(1, 1 - (meta.pctComplete || 0) / 100));
       const pmContrib = entry.pmHoursForEntry > 0
         ? Math.round(entry.pmHoursForEntry * phaseFrac * remaining * (overlap / meta.totalWD))
@@ -3947,10 +4181,12 @@ function TeamWBSView({ projects, onNavigateToProject }) {
     return total;
   }
 
+  // Determine all weeks across all active projects
   const allWeeks = useMemo(() => {
     const allEnds = activeProjects.flatMap(p => (p.phases || []).filter(ph => ph.billable && ph.endDate).map(ph => ph.endDate));
     if (!allEnds.length) return [];
     allEnds.sort();
+    // Start from current week, go through last project end
     let cur  = todayStr;
     cur = weekMonday(cur);
     const last = weekMonday(allEnds[allEnds.length - 1]);
@@ -3960,6 +4196,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
     return weeks;
   }, [activeProjects, todayStr]);
 
+  // Which projects are active in a given week
   function weekProjects(weekStart) {
     const weekEnd = addCalDays(weekStart, 4);
     return activeProjects.filter(p =>
@@ -4062,6 +4299,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
                 const cellHours = visibleCols.map(col => {
                   const hrs = col.entries.reduce((a, entry) => a + entryWeekHours(entry, weekStart), 0);
                   teamTotal += hrs;
+                  // per-project breakdown for tooltip
                   const byProject = col.entries
                     .map(e => ({ name: e.project.projectNumber || e.project.name.slice(0, 12), hrs: entryWeekHours(e, weekStart) }))
                     .filter(x => x.hrs > 0);
@@ -4137,6 +4375,11 @@ function TeamWBSView({ projects, onNavigateToProject }) {
   );
 }
 
+
+
+
+// ─── TERM CONTRACTS VIEW ──────────────────────────────────────────────────────
+
 function newTermContract() {
   return {
     id: uid(),
@@ -4186,6 +4429,7 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
     setForm(f => ({ ...f, [field]: val }));
   }
 
+  // For each term contract, find linked projects
   function linkedProjects(tcId) {
     return projects.filter(p => p.isTaskOrder && p.taskOrderTermContractId === tcId && !p.archived);
   }
@@ -4373,10 +4617,13 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
   );
 }
 
+// ─── PENDING COs VIEW ─────────────────────────────────────────────────────────
+
 function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
   const today = new Date();
   const todayStr = localDateStr(today);
 
+  // Collect all unapproved COs across active non-archived projects
   const pendingItems = [];
   projects.filter(p => !p.archived).forEach(proj => {
     (proj.changeOrders || []).forEach(co => {
@@ -4394,6 +4641,7 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
     });
   });
 
+  // Sort: sent-to-client (oldest first), then unsent
   pendingItems.sort((a, b) => {
     if (a.isWaiting && !b.isWaiting) return -1;
     if (!a.isWaiting && b.isWaiting) return 1;
@@ -4552,7 +4800,10 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
   );
 }
 
+// ─── CASH FLOW VIEW (cross-project) ──────────────────────────────────────────
+
 function buildProjectCashFlow(project) {
+  // Returns { monthlyMap, totalFee, totalInvoiced, totalPaid, totalRemaining }
   const billablePhases = (project.phases || []).filter(p => p.billable && p.fee > 0);
   const invoices = project.invoices || [];
   const changeOrders = project.changeOrders || [];
@@ -4576,6 +4827,7 @@ function buildProjectCashFlow(project) {
     if (!monthlyMap[key].projects.includes(projectId)) monthlyMap[key].projects.push(projectId);
   }
 
+  // Distribute phase fees proportionally across months
   billablePhases.forEach(ph => {
     const sd = ph.startDate ? new Date(ph.startDate + "T00:00:00") : null;
     const ed = ph.endDate   ? new Date(ph.endDate   + "T00:00:00") : null;
@@ -4594,6 +4846,7 @@ function buildProjectCashFlow(project) {
     }
   });
 
+  // Place invoiced & paid amounts in actual invoice month
   invoices.forEach(inv => {
     if (!inv.date || !inv.amount) return;
     const key = inv.date.slice(0, 7);
@@ -4616,6 +4869,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
     p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost"
   );
 
+  // Aggregate monthly data across all projects
   const { combinedMap, projectTotals } = useMemo(() => {
     const combinedMap = {};
     const projectTotals = {};
@@ -4637,6 +4891,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
   }, [activeProjects]);
 
   const months = Object.values(combinedMap).sort((a, b) => a.month > b.month ? 1 : -1);
+  // Start from current month
   const visibleMonths = months.filter(m => m.month >= currentYM);
 
   const grandTotalFee       = Object.values(projectTotals).reduce((a, p) => a + p.totalFee, 0);
@@ -4645,11 +4900,13 @@ function CashFlowView({ projects, onNavigateToProject }) {
   const grandTotalRemaining = Object.values(projectTotals).reduce((a, p) => a + p.totalRemaining, 0);
   const grandOutstanding    = grandTotalInvoiced - grandTotalPaid;
 
+  // Past invoiced (before current month) — already billed
   const pastInvoiced = months.filter(m => m.month < currentYM).reduce((a, m) => a + m.invoiced, 0);
 
   const maxFee = Math.max(...visibleMonths.map(m => m.fee), 1);
   const [highlightProject, setHighlightProject] = useState(null);
 
+  // Per-project monthly breakdown for tooltip
   function projectBreakdownForMonth(monthKey) {
     return activeProjects
       .map(proj => {
@@ -4740,6 +4997,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
           <tbody>
             {(() => {
               let cumulFee = 0, cumulInv = 0;
+              // Add past invoiced to cumulative
               cumulInv = pastInvoiced;
               return visibleMonths.map(m => {
                 cumulFee += m.fee;
@@ -4830,6 +5088,8 @@ function CashFlowView({ projects, onNavigateToProject }) {
   );
 }
 
+// ─── CALENDAR HELPERS ─────────────────────────────────────────────────────────
+
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
@@ -4841,6 +5101,7 @@ function getFirstDayOfMonth(year, month) {
   return new Date(year, month, 1).getDay();
 }
 
+// Parse "YYYY-MM-DD" safely without timezone shift
 function parseLocalDate(str) {
   if (!str) return null;
   const [y, m, d] = str.split("-").map(Number);
@@ -4852,6 +5113,8 @@ function isSameDay(dateStr, year, month, day) {
   if (!d) return false;
   return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
 }
+
+// ─── SINGLE-PROJECT CALENDAR ─────────────────────────────────────────────────
 
 function CalendarView({ project, onChange }) {
   const today = new Date();
@@ -4876,6 +5139,7 @@ function CalendarView({ project, onChange }) {
   const daysInMonth = getDaysInMonth(calYear, calMonth);
   const firstDay = getFirstDayOfMonth(calYear, calMonth);
   const cells = Array(firstDay).fill(null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1));
+  // pad to complete last row
   while (cells.length % 7 !== 0) cells.push(null);
 
   function getMilestonesForDay(day) {
@@ -4885,6 +5149,7 @@ function CalendarView({ project, onChange }) {
 
   const isToday = (day) => day && today.getFullYear() === calYear && today.getMonth() === calMonth && today.getDate() === day;
 
+  // Phase bands — show colored bar spanning start→end dates
   const phases = (project.phases || []).filter(p => p.billable && p.startDate && p.endDate);
 
   function getPhaseColorForDay(day) {
@@ -4899,6 +5164,7 @@ function CalendarView({ project, onChange }) {
     return null;
   }
 
+  // Assign a distinct color per phase
   const PHASE_COLORS = ["#1d4ed8","#0f766e","#7c3aed","#b45309","#be185d","#065f46"];
   const phaseColorMap = {};
   phases.forEach((ph, i) => { phaseColorMap[ph.code] = PHASE_COLORS[i % PHASE_COLORS.length]; });
@@ -5059,9 +5325,13 @@ function CalendarView({ project, onChange }) {
   );
 }
 
+// ─── TEAM CALENDAR (all projects) ────────────────────────────────────────────
+
+
 function printWeeklyDeliverables(projects) {
   const today = new Date();
   const todayStr = localDateStr(today);
+  // Get Monday and Friday of current week
   const day = today.getDay();
   const diffMon = day === 0 ? -6 : 1 - day;
   const monDate = new Date(today); monDate.setDate(today.getDate() + diffMon);
@@ -5071,6 +5341,7 @@ function printWeeklyDeliverables(projects) {
 
   const fmtD = d => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
+  // Collect all milestones due this week across all active projects
   const active = projects.filter(p => !p.archived);
   const items = [];
   active.forEach(proj => {
@@ -5092,11 +5363,13 @@ function printWeeklyDeliverables(projects) {
     });
   });
 
+  // Sort by date then project
   items.sort((a, b) => a.dueDate !== b.dueDate ? (a.dueDate > b.dueDate ? 1 : -1) : a.projectName.localeCompare(b.projectName));
 
   const statusColor = s => s === "Complete" ? "#1a7a34" : s === "In Progress" ? "#b45309" : "#44546A";
   const statusBg    = s => s === "Complete" ? "#e6f4ea"  : s === "In Progress" ? "#fff3e0"  : "#f0f0f0";
 
+  // Group by day
   const DAY_LABELS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
   const byDay = {};
   items.forEach(it => {
@@ -5192,6 +5465,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
 
   const active = projects.filter(p => !p.archived);
 
+  // Assign a distinct color per project
   const PROJECT_CAL_COLORS = ["#3b82f6","#10b981","#8b5cf6","#f59e0b","#ef4444","#06b6d4","#ec4899","#84cc16","#f97316","#6366f1"];
   const projectColorMap = {};
   active.forEach((p, i) => { projectColorMap[p.id] = PROJECT_CAL_COLORS[i % PROJECT_CAL_COLORS.length]; });
@@ -5222,14 +5496,17 @@ function TeamCalendar({ projects, onNavigateToProject }) {
 
   const isToday = (day) => day && today.getFullYear() === calYear && today.getMonth() === calMonth && today.getDate() === day;
 
+  // Count milestones this month for the header
   const monthStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}`;
   const thisMonthCount = allMilestones.filter(m => (m.dueDate || "").startsWith(monthStr)).length;
 
+  // ── Outlook sync state ──
   const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | done | error
   const [syncLog, setSyncLog] = useState([]); // [{name, status, message}]
   const [syncedCount, setSyncedCount] = useState(0);
   const [showSyncLog, setShowSyncLog] = useState(false);
 
+  // All milestones with a due date (across all projects, not just filtered view)
   const allSyncableMilestones = active.flatMap(p =>
     (p.milestones || [])
       .filter(m => m.dueDate)
@@ -5241,8 +5518,10 @@ function TeamCalendar({ projects, onNavigateToProject }) {
     setSyncLog([]);
     setSyncedCount(0);
 
+    // Event IDs stored in milestone.calendarEventId (Supabase) — no localStorage needed
     const log = [];
     let successCount = 0;
+    // Track updates: { projectId -> { milestoneId -> eventId } }
     const projectMilestoneUpdates = {};
 
     for (let i = 0; i < allSyncableMilestones.length; i++) {
@@ -5264,6 +5543,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
       setSyncedCount(successCount);
     }
 
+    // Write eventIds back into project milestone objects via onUpdateProject
     Object.entries(projectMilestoneUpdates).forEach(([projectId, milestoneUpdates]) => {
       const proj = projects.find(p => p.id === projectId);
       if (!proj) return;
@@ -5466,6 +5746,9 @@ function TeamCalendar({ projects, onNavigateToProject }) {
   );
 }
 
+
+// ─── SUBCONSULTANTS ───────────────────────────────────────────────────────────
+
 const SUB_DISCIPLINES = ["Civil", "Structural", "Geotechnical", "Landscape", "Facade/Curtainwall",
   "Acoustics", "AV/IT", "Security", "Vertical Transport/Elevators", "Lighting Design",
   "Commissioning", "LEED/Sustainability", "Kitchen/Food Service", "Medical Equipment", "Other"];
@@ -5662,12 +5945,15 @@ function SubsView({ project, onChange }) {
   );
 }
 
+// ─── INVOICE PROJECTIONS ──────────────────────────────────────────────────────
+
 function ProjectionsView({ project }) {
   const phases = (project.phases || []).filter(p => p.billable && p.fee > 0 && p.endDate);
   const invoices = project.invoices || [];
   const milestones = (project.milestones || []).filter(m => m.type === "billable" && m.fee > 0 && m.dueDate);
   const today = new Date();
 
+  // Build projection rows from billable milestones
   const rows = milestones.map(m => {
     const invoiced = invoices
       .filter(inv => inv.milestoneId === m.id)
@@ -5685,6 +5971,8 @@ function ProjectionsView({ project }) {
   const overdueAmt = rows.filter(r => r.isOverdue).reduce((a, r) => a + r.remaining, 0);
   const next30Amt = rows.filter(r => r.isPending).reduce((a, r) => a + r.remaining, 0);
 
+  // Monthly cash flow — distribute each phase fee proportionally across its duration
+  // Uses phase startDate/endDate from the schedule; falls back to milestone due date if missing
   const monthlyMap = {};
 
   function addToMonth(key, fee, invoiced, label) {
@@ -5694,9 +5982,11 @@ function ProjectionsView({ project }) {
     if (label && !monthlyMap[key].milestones.includes(label)) monthlyMap[key].milestones.push(label);
   }
 
+  // Build a map of phase code → phase for schedule lookup
   const phaseSchedule = {};
   (project.phases || []).forEach(ph => { if (ph.code) phaseSchedule[ph.code] = ph; });
 
+  // Distribute expected fees proportionally across phase duration months
   rows.forEach(r => {
     const ph = phaseSchedule[r.phase];
     const sd = ph?.startDate ? new Date(ph.startDate + "T00:00:00") : null;
@@ -5716,6 +6006,7 @@ function ProjectionsView({ project }) {
         const overlapEnd   = ed < mEnd   ? ed : mEnd;
         const overlapDays  = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
         const fraction = overlapDays / totalDays;
+        // Only distribute expected fee here — invoiced amounts are placed by actual invoice date below
         addToMonth(key, r.fee * fraction, 0, r.name);
       }
     } else if (r.dueDate) {
@@ -5723,6 +6014,7 @@ function ProjectionsView({ project }) {
     }
   });
 
+  // Place actual invoiced amounts in the month the invoice was issued
   (project.invoices || []).forEach(inv => {
     if (!inv.date || !inv.amount) return;
     const key = inv.date.slice(0, 7);
@@ -5735,6 +6027,7 @@ function ProjectionsView({ project }) {
   const monthlyCashFlow = Object.values(monthlyMap).sort((a, b) => a.month > b.month ? 1 : -1);
   const maxMonthFee = Math.max(...monthlyCashFlow.map(m => m.fee), 1);
 
+  // Group by phase for summary
   const byPhase = {};
   rows.forEach(r => {
     if (!byPhase[r.phase]) byPhase[r.phase] = { phase: r.phase, fee: 0, invoiced: 0, remaining: 0 };
@@ -5885,6 +6178,8 @@ function ProjectionsView({ project }) {
     </div>
   );
 }
+
+// ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
 const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Calendar", "Contract", "Change Orders", "Subconsultants", "Financials", "Reimbursables", "Projections"];
 
@@ -6112,61 +6407,60 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
   );
 }
 
+// ─── EMAILS VIEW ─────────────────────────────────────────────────────────────
+
 function EmailsView({ project, onChange }) {
   const saved = project.emails || [];
 
+  // Search state
   const [query, setQuery] = useState(project.name || project.projectNumber || "");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState(null);
   const [selected, setSelected] = useState({}); // { [msgId]: bool }
 
+  // View state
   const [expanded, setExpanded] = useState(null); // msgId of open email
   const [fetchingBody, setFetchingBody] = useState(null);
   const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string }
   const [filterSender, setFilterSender] = useState("All");
 
+  // Strip HTML to plain text
   function htmlToText(html) {
     if (!html) return "";
-    const NL = "~~NL~~";
     let cleaned = html
       .replace(/<!--[\s\S]*?-->/g, "")
       .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<head[\s\S]*?<\/head>/gi, "")
-      .replace(/<img[^>]+src=['"]cid:[^'"]*['"][^>]*>/gi, "")
-      .replace(/<img[^>]*>/gi, "")
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<object[\s\S]*?<\/object>/gi, "");
+      .replace(/<head[\s\S]*?<\/head>/gi, "");
 
+    // Insert newlines at block-level boundaries before stripping tags
     cleaned = cleaned
-      .replace(/<br\s*\/?>/gi, NL)
-      .replace(/<\/p>/gi, NL)
-      .replace(/<\/div>/gi, NL)
-      .replace(/<\/tr>/gi, NL)
-      .replace(/<\/li>/gi, NL)
-      .replace(/<\/h[1-6]>/gi, NL)
-      .replace(/<\/td>/gi, "  ");
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n")
+      .replace(/<\/div>/gi, "\n")
+      .replace(/<\/tr>/gi, "\n")
+      .replace(/<\/li>/gi, "\n")
+      .replace(/<\/h[1-6]>/gi, "\n");
 
+    // Strip remaining tags
     const d = document.createElement("div");
     d.innerHTML = cleaned;
     let text = (d.innerText || d.textContent || "");
-    text = text.replace(/~~NL~~/g, "\n");
-    text = text
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, "\"");
+
+    // Collapse 3+ blank lines to 2
     text = text.replace(/\n{3,}/g, "\n\n").trim();
     return text;
   }
 
+  // Format bytes
   function parseEmailChain(text) {
     if (!text) return [];
 
+    // Split on Outlook reply headers: "From: X\nSent: Y\nTo: Z"
     const parts = text.split(/(?=^From:\s*.+\nSent:\s*.+\nTo:\s*)/m).map(s => s.trim()).filter(Boolean);
 
     if (parts.length <= 1) {
+      // Fallback: flat text with no preserved newlines
       const DELIM = "\x00SPLIT\x00";
       const tagged = text.replace(/(From:\s*[^\n]{3,100}\s+Sent:\s*[^\n]{5,60}\s+To:\s*)/g, DELIM + "$1");
       const flatParts = tagged.split(DELIM).map(s => s.trim()).filter(Boolean);
@@ -6188,6 +6482,7 @@ function EmailsView({ project, onChange }) {
       const ccL   = ccIdx   >= 0 ? lines[ccIdx]   : "";
       const subjL = subjIdx >= 0 ? lines[subjIdx] : "";
 
+      // Body starts after the last recognized header line
       const headerIndices = [fromIdx, sentIdx, toIdx, ccIdx, subjIdx].filter(n => n >= 0);
       const lastHeaderIdx = headerIndices.length > 0 ? Math.max(...headerIndices) : -1;
       const bodyLines = lastHeaderIdx >= 0 ? lines.slice(lastHeaderIdx + 1) : lines;
@@ -6212,6 +6507,7 @@ function EmailsView({ project, onChange }) {
       const toM   = part.match(/To:\s*(.+?)(?=\s*(?:Cc:|Subject:))/s);
       const ccM   = part.match(/Cc:\s*(.+?)(?=\s*Subject:)/s);
       const subjM = part.match(/Subject:\s*(.+?)(?=\n|\s{3,})/s);
+      // Body: strip everything up to and including the Subject line
       const body = subjM
         ? part.slice(part.indexOf(subjM[0]) + subjM[0].length).trim()
         : part.replace(/^From:[\s\S]+?(?:\n\n|\s{4,})/, "").trim();
@@ -6250,6 +6546,7 @@ function EmailsView({ project, onChange }) {
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
 
+    // Debug: if chain exists but all bodies are empty, fall back to raw display
     const allEmpty = chain && chain.every(m => !m.body);
 
     if (!chain || allEmpty) {
@@ -6263,6 +6560,7 @@ function EmailsView({ project, onChange }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 520, overflowY: "auto" }}>
         {chain.map((msg, i) => {
           const isFirst = i === 0;
+          // Extract sender name only (strip email address)
           const senderName = msg.from.replace(/<[^>]+>/, "").trim() || msg.from;
           const isSara = msg.from.toLowerCase().includes("setty");
           return (
@@ -6303,43 +6601,44 @@ function EmailsView({ project, onChange }) {
     return (b/1048576).toFixed(1) + " MB";
   }
 
-  function nameKeywords(name) {
-    if (!name) return [];
-    const STOP = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","project","phase","building","renovation","design","services","engineering","facility","facilities"]);
-    return name.split(/[\s\-\/,]+/)
-      .map(w => w.replace(/[^a-zA-Z0-9]/g, ""))
-      .filter(w => w.length >= 4 && !STOP.has(w.toLowerCase()));
-  }
-
-  async function doSearch(deep = false) {
+  // Build search queries: name first, project number second, sender from client
+  async function doSearch() {
     setSearching(true);
     setSearchErr(null);
     setResults([]);
     setSelected({});
     try {
       const token = await getToken();
-      const top = deep ? 500 : 150;
-      const queries = [];
-      if (project.name) queries.push(`"${project.name.trim()}"`);
-      if (project.projectNumber) queries.push(`"${project.projectNumber.trim()}"`);
+      const terms = [project.name, project.projectNumber].filter(Boolean);
+      const clientDomain = (() => {
+        // Try to extract domain from project prime/client name — crude but useful
+        const c = project.prime || project.clientName || "";
+        // Check if any saved contact has an email domain
+        return null; // extend later if client directory has emails
+      })();
 
       let allMsgs = [];
       const seen = new Set();
 
-      for (const q of queries) {
-        if (!q || q.trim().length < 2) continue;
-        const url = `/me/messages?$search=${encodeURIComponent(q)}&$top=${top}&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId`;
+      for (const term of terms) {
+        if (!term || term.trim().length < 2) continue;
+        const q = encodeURIComponent(`"${term.trim()}"`);
+        const url = `/me/messages?$search=${q}&$top=25&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,hasAttachments,body,conversationId`;
         const resp = await graphFetch("GET", url, undefined, token);
         if (resp && resp.value) {
           for (const m of resp.value) {
-            if (!seen.has(m.id)) { seen.add(m.id); allMsgs.push(m); }
+            if (!seen.has(m.id)) {
+              seen.add(m.id);
+              allMsgs.push(m);
+            }
           }
         }
       }
 
+      // Sort by date desc
       allMsgs.sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime));
       setResults(allMsgs);
-      if (allMsgs.length === 0) setSearchErr("No emails found." + (deep ? "" : " Try \"Search Older\" for extended results."));
+      if (allMsgs.length === 0) setSearchErr("No emails found. Try adjusting the search term.");
     } catch(e) {
       setSearchErr("Search failed: " + (e.message || "unknown error"));
     } finally {
@@ -6361,6 +6660,7 @@ function EmailsView({ project, onChange }) {
       return;
     }
 
+    // Fetch attachment names for any email that has attachments
     const token = await getToken();
     const toAdd = await Promise.all(toSave.map(async m => {
       let attachmentNames = [];
@@ -6412,6 +6712,7 @@ function EmailsView({ project, onChange }) {
         setLiveBody(prev => ({ ...prev, [msgId]: htmlToText(data.body.content) }));
       }
     } catch(e) {
+      // fallback to stored body — already there
     } finally {
       setFetchingBody(null);
       setExpanded(msgId);
@@ -6423,6 +6724,7 @@ function EmailsView({ project, onChange }) {
     fetchLiveBody(email.msgId);
   }
 
+  // Unique senders for filter
   const senders = useMemo(() => {
     const s = new Set(saved.map(e => e.from));
     return ["All", ...Array.from(s).sort()];
@@ -6443,19 +6745,16 @@ function EmailsView({ project, onChange }) {
           <input
             value={query}
             onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && doSearch(false)}
+            onKeyDown={e => e.key === "Enter" && doSearch()}
             placeholder="Search term (project name or number)…"
             style={{ flex: 1, fontSize: 13 }}
           />
-          <Btn onClick={() => doSearch(false)} disabled={searching || !query.trim()}>
-            {searching ? "⏳ Searching…" : "🔍 Search"}
-          </Btn>
-          <Btn variant="ghost" onClick={() => doSearch(true)} disabled={searching || !query.trim()} title="Search up to 500 results">
-            🕓 Search Older
+          <Btn onClick={doSearch} disabled={searching || !query.trim()}>
+            {searching ? "⏳ Searching…" : "🔍 Search Outlook"}
           </Btn>
         </div>
         <div style={{ fontSize: 11, color: P.textDim }}>
-          Searches Outlook by project name and number. Use "Search Older" for extended results.
+          Searches your Outlook mailbox for emails matching the project name and number. Results show emails you have access to only.
         </div>
 
         {searchErr && (
@@ -6624,6 +6923,8 @@ function EmailsView({ project, onChange }) {
   );
 }
 
+// ─── NOTES VIEW ──────────────────────────────────────────────────────────────
+
 const NOTE_CATEGORIES = ["Meeting", "Site Visit", "Decision", "Client Communication", "Internal", "Issue", "Action Item", "General"];
 const NOTE_CAT_COLORS = {
   "Meeting":              { bg: P.accentDim,  text: P.accentLight },
@@ -6635,173 +6936,6 @@ const NOTE_CAT_COLORS = {
   "Site Visit":           { bg: "#1a3020",    text: "#4ade80" },
   "General":              { bg: P.border,     text: P.textDim },
 };
-
-function CalendarImportPanel({ project, onImport }) {
-  const [open, setOpen] = React.useState(false);
-  const [searching, setSearching] = React.useState(false);
-  const [events, setEvents] = React.useState([]);
-  const [searchErr, setSearchErr] = React.useState(null);
-  const [selected, setSelected] = React.useState({});
-  const [noteType, setNoteType] = React.useState({});
-  const [importing, setImporting] = React.useState(false);
-
-  const defaultKeyword = React.useMemo(() => {
-    const GENERIC = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","nyc","building","garage","marina","park","plaza","center","campus","tower","hall","house","complex","facility","site","phase","rehab","rehabilitation","renovation","restoration","design","engineering","services","systems","study","survey","report","plan","program","management"]);
-    const tokens = (project.name || "").split(/[\s\-\/,()&]+/).map(w => w.replace(/[^a-zA-Z0-9]/g,"")).filter(w => w.length >= 3 && !GENERIC.has(w.toLowerCase()));
-    return tokens.length > 0 ? tokens[0] : (project.name || "");
-  }, [project.name]);
-
-  const [query, setQuery] = React.useState(defaultKeyword);
-
-  async function searchCalendars() {
-    setSearching(true); setSearchErr(null); setEvents([]); setSelected({});
-    try {
-      const token = await getToken();
-      const allEvents = []; const seen = new Set(); const calIds = [null];
-      try {
-        const calData = await graphFetch("GET", "/me/calendars?$top=50", undefined, token);
-        (calData?.value || []).filter(c => c.name === "NYC Shared Calendar").forEach(c => calIds.push(c.id));
-      } catch(e) {}
-      const q = query.trim();
-      if (!q) { setSearchErr("Enter a search term."); setSearching(false); return; }
-      const start = new Date(); start.setFullYear(start.getFullYear() - 2);
-      const end = new Date(); end.setFullYear(end.getFullYear() + 1);
-      for (const calId of calIds) {
-        const base = calId ? "/me/calendars/" + calId : "/me";
-        const url = base + "/calendarView?startDateTime=" + start.toISOString() + "&endDateTime=" + end.toISOString() + "&$top=100&$select=id,subject,start,end,attendees,bodyPreview,organizer,location&$filter=contains(subject,'" + encodeURIComponent(q.replace(/"/g,"")) + "')";
-        try {
-          const resp = await graphFetch("GET", url, undefined, token);
-          for (const ev of (resp?.value || [])) {
-            if (!seen.has(ev.id)) { seen.add(ev.id); allEvents.push({ ...ev, _calId: calId }); }
-          }
-        } catch(e) {}
-      }
-      allEvents.sort((a, b) => new Date(b.start?.dateTime || b.start?.date) - new Date(a.start?.dateTime || a.start?.date));
-      setEvents(allEvents);
-      if (allEvents.length === 0) setSearchErr("No events found. Try adjusting the search term.");
-    } catch(e) { setSearchErr("Search failed: " + (e.message || "unknown error")); }
-    finally { setSearching(false); }
-  }
-
-  function fmtEventDate(ev) {
-    const dt = ev.start?.dateTime || ev.start?.date; if (!dt) return "";
-    const d = new Date(dt);
-    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) +
-      (ev.start?.dateTime ? " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "");
-  }
-  function fmtAttendees(ev) {
-    const atts = (ev.attendees || []).map(a => a.emailAddress?.name || a.emailAddress?.address || "").filter(Boolean);
-    if (atts.length === 0) return "";
-    return atts.length <= 4 ? atts.join(", ") : atts.slice(0,4).join(", ") + " +" + (atts.length-4) + " more";
-  }
-  function buildNoteBody(ev) {
-    const lines = [ev.subject || "(No title)", "Date: " + fmtEventDate(ev)];
-    if (ev.location?.displayName) lines.push("Location: " + ev.location.displayName);
-    const atts = fmtAttendees(ev); if (atts) lines.push("Attendees: " + atts);
-    if (ev.bodyPreview?.trim()) lines.push("\n" + ev.bodyPreview.trim().slice(0,300));
-    return lines.join("\n");
-  }
-  function toggleSelect(id) {
-    setSelected(prev => ({ ...prev, [id]: !prev[id] }));
-    if (!noteType[id]) setNoteType(prev => ({ ...prev, [id]: "Meeting" }));
-  }
-  function importSelected() {
-    setImporting(true);
-    const notes = events.filter(ev => selected[ev.id]).map(ev => ({
-      id: uid(), body: buildNoteBody(ev), category: noteType[ev.id] || "Meeting",
-      actionItem: false,
-      visitDate: noteType[ev.id] === "Site Visit" ? (ev.start?.dateTime || ev.start?.date || "").slice(0,10) : undefined,
-      author: getCurrentUser(), createdAt: ev.start?.dateTime || ev.start?.date || new Date().toISOString(),
-      updatedAt: new Date().toISOString(), importedFromCalendar: true,
-    }));
-    onImport(notes); setSelected({}); setEvents([]); setOpen(false); setImporting(false);
-  }
-
-  const selectedCount = Object.values(selected).filter(Boolean).length;
-
-  if (!open) return (
-    <div style={{ marginBottom: 20 }}>
-      <Btn variant="ghost" onClick={() => setOpen(true)}>Import from Calendar</Btn>
-    </div>
-  );
-
-  return (
-    <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 10, padding: 16, marginBottom: 20 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontWeight: 700, fontSize: 13, color: P.accentLight }}>Import Events as Notes</div>
-        <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16 }}>&#x2715;</button>
-      </div>
-      <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
-        Searches personal calendar and NYC Shared Calendar (2 years back, 1 year forward).
-      </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <input value={query} onChange={e => setQuery(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && searchCalendars()}
-          placeholder="Search term..." style={{ flex: 1, fontSize: 13 }} />
-        <Btn onClick={searchCalendars} disabled={searching || !query.trim()}>
-          {searching ? "Searching..." : "Search Calendars"}
-        </Btn>
-      </div>
-      {searchErr && <div style={{ fontSize: 12, color: P.red, marginTop: 6 }}>{searchErr}</div>}
-      {events.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600 }}>{events.length} event{events.length !== 1 ? "s" : ""} found</div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button onClick={() => setSelected(Object.fromEntries(events.map(ev => [ev.id, true])))}
-                style={{ background: "none", border: "none", color: P.accentLight, fontSize: 12, cursor: "pointer" }}>Select all</button>
-              <button onClick={() => setSelected({})}
-                style={{ background: "none", border: "none", color: P.textDim, fontSize: 12, cursor: "pointer" }}>Clear</button>
-              {selectedCount > 0 && (
-                <Btn small onClick={importSelected} disabled={importing}>
-                  Import {selectedCount} as note{selectedCount !== 1 ? "s" : ""}
-                </Btn>
-              )}
-            </div>
-          </div>
-          <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid " + P.border, borderRadius: 6 }}>
-            {events.map((ev, i) => {
-              const isChecked = !!selected[ev.id];
-              const isShared = !!ev._calId;
-              return (
-                <div key={ev.id} onClick={() => toggleSelect(ev.id)} style={{
-                  display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px",
-                  borderBottom: i < events.length - 1 ? "1px solid " + P.border : "none",
-                  background: isChecked ? P.accentDim : "transparent", cursor: "pointer",
-                }}>
-                  <input type="checkbox" checked={isChecked} readOnly style={{ marginTop: 3, flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {ev.subject || "(No title)"}
-                      </div>
-                      <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>{fmtEventDate(ev)}</div>
-                    </div>
-                    <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
-                      {isShared && <span style={{ color: P.accentLight, marginRight: 8, fontWeight: 600 }}>Shared</span>}
-                      {ev.organizer?.emailAddress?.name && <span>Organizer: {ev.organizer.emailAddress.name}</span>}
-                      {fmtAttendees(ev) && <span style={{ marginLeft: 8 }}>{fmtAttendees(ev)}</span>}
-                    </div>
-                    {ev.bodyPreview && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ev.bodyPreview}</div>}
-                    {isChecked && (
-                      <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }} onClick={e => e.stopPropagation()}>
-                        <span style={{ fontSize: 11, color: P.textDim }}>Log as:</span>
-                        <select value={noteType[ev.id] || "Meeting"} onChange={e => setNoteType(prev => ({ ...prev, [ev.id]: e.target.value }))}
-                          style={{ fontSize: 11, padding: "2px 6px" }}>
-                          {NOTE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function NotesView({ project, onChange }) {
   const notes = (project.notes || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -6908,10 +7042,6 @@ function NotesView({ project, onChange }) {
           <Btn onClick={addNote} disabled={!draft.body.trim()}>Post Note</Btn>
         </div>
       </div>
-
-      <CalendarImportPanel project={project} onImport={notesToAdd => {
-        onChange({ ...project, notes: [...notesToAdd, ...(project.notes || [])] });
-      }} />
 
       {notes.length > 0 && (
         <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
@@ -7044,6 +7174,8 @@ function NotesView({ project, onChange }) {
   );
 }
 
+// ─── REIMBURSABLES VIEW ───────────────────────────────────────────────────────
+
 const REIMB_CATEGORIES = ["Printing / Reprographics", "Travel", "Filing Fees / Permits", "Postage / Courier", "Subconsultant Reimbursable", "Software / Licensing", "Other"];
 const REIMB_CAT_ICONS  = { "Printing / Reprographics": "\ud83d\udda8", "Travel": "\u2708", "Filing Fees / Permits": "\ud83d\udccb", "Postage / Courier": "\ud83d\udce6", "Subconsultant Reimbursable": "\ud83e\udd1d", "Software / Licensing": "\ud83d\udcbb", "Other": "\ud83d\udccf" };
 
@@ -7171,6 +7303,8 @@ function ReimbursablesView({ project, onChange }) {
   );
 }
 
+// ─── PROJECT LIST CARD ────────────────────────────────────────────────────────
+
 function ProjectCard({ project, onClick }) {
   const pct = projectOverallPct(project);
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
@@ -7205,6 +7339,8 @@ function ProjectCard({ project, onClick }) {
     </div>
   );
 }
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
 function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
@@ -7267,6 +7403,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
       setDashSyncMsg("✗ \"" + m.name + "\" — " + result.error);
     }
   }
+  // Build a quick lookup: projectId → project
   const projectMap = Object.fromEntries(active.map(p => [p.id, p]));
   const allMilestones = active.flatMap(p => (p.milestones || []).map(m => ({
     ...m,
@@ -7278,6 +7415,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const overdue = allMilestones.filter(m => m.dueDate && new Date(m.dueDate) < now && milestoneStatus(m.pctComplete) !== "Completed");
   const upcoming = allMilestones.filter(m => { const d = new Date(m.dueDate); return d >= now && d <= in14 && milestoneStatus(m.pctComplete) !== "Completed"; });
 
+  // ── Financial KPIs ──
   const nowDate = new Date();
   const curYear  = nowDate.getFullYear();
   const curYearStr = String(curYear);
@@ -7653,6 +7791,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   );
 }
 
+
+// ─── SCOPE OF SERVICES VIEW ───────────────────────────────────────────────────
+
 function printScopeOfServices(project) {
   const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
   const win = window.open("", "_blank", "width=900,height=700");
@@ -7999,6 +8140,10 @@ function ScopeView({ project, onChange }) {
   );
 }
 
+
+
+// ─── CLIENT & PRIME DIRECTORY ─────────────────────────────────────────────────
+
 function newContact(overrides) {
   return { id: uid(), name: "", title: "", role: "Owner", phone: "", email: "", lastContacted: "", notes: "", ...overrides };
 }
@@ -8251,6 +8396,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
   );
 }
 
+// ─── COMPANY TYPEAHEAD ─────────────────────────────────────────────────────────
 function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
   const typeLabel = filter === "client" ? "Client" : "Prime/GC";
   const [form, setForm] = React.useState({ name: prefill || "", type: filter === "client" ? "Client" : "Prime/GC", contacts: [] });
@@ -8331,6 +8477,7 @@ function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClien
   const [newTitle, setNewTitle] = React.useState("");
   const [newEmail, setNewEmail] = React.useState("");
 
+  // Find the matching client company
   const company = React.useMemo(() =>
     (clients || []).find(c => c.name && companyName && c.name.toLowerCase() === companyName.toLowerCase()),
   [clients, companyName]);
@@ -8503,6 +8650,8 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAdd
   );
 }
 
+// ─── STAFF DIRECTORY ──────────────────────────────────────────────────────────
+
 function QuickAddStaffModal({ prefill, onSave, onClose }) {
   const [form, setForm] = React.useState(newStaffMember({ name: prefill || "" }));
 
@@ -8562,6 +8711,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   const [search, setSearch] = React.useState("");
   const [expandedStaff, setExpandedStaff] = React.useState({});
 
+  // Build lookup: staffName → upcoming milestones across all active projects
   const activeProjects = React.useMemo(() =>
     projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled"),
   [projects]);
@@ -8579,6 +8729,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
           .forEach(ms => map[key].push({ ms, project: p, role: m.role, disciplines: m.disciplines }));
       });
     });
+    // Sort each list by dueDate ascending
     Object.values(map).forEach(arr => arr.sort((a, b) => a.ms.dueDate.localeCompare(b.ms.dueDate)));
     return map;
   }, [activeProjects]);
@@ -8817,6 +8968,10 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   );
 }
 
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+
+
+// ─── PIPELINE DASHBOARD ───────────────────────────────────────────────────────
 function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpdateProject }) {
   const pipeline = projects.filter(p => !p.archived && isPipeline(p));
   const now = new Date();
@@ -8978,6 +9133,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
   );
 }
 
+// Save status indicator component
 function SaveBadge({ status, lastSaved, onRetry }) {
   const cfg = {
     idle:    { color: P.textDim,    icon: "",   text: "" },
@@ -9024,6 +9180,7 @@ function App() {
   const [cleanupMsg, setCleanupMsg] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState(null);
 
+  // ── Initial load from Supabase ──
   useEffect(() => {
     setAppStatus("loading");
     loadState()
@@ -9053,6 +9210,7 @@ function App() {
       });
   }, []);
 
+  // ── Debounced auto-save — fires 2s after last change ──
   useEffect(() => {
     if (!isLoaded.current) return; // bug 1 fix: don't save until initial load is done
     if (pendingSave.current) clearTimeout(pendingSave.current); // bug 3 fix: use ref
@@ -9069,6 +9227,7 @@ function App() {
       const now = new Date();
       setLastSaved(`${now.getHours()}:${String(now.getMinutes()).padStart(2,"0")}`);
       setAppStatus("saved");
+      // Return to idle after 3s
       setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
     } catch(e) {
       console.error("Save failed:", e);
@@ -9079,6 +9238,8 @@ function App() {
   function manualRetry() {
     performSave({ projects, termContracts, staff, clients });
   }
+
+  // ── Data tools ──
 
   function exportBackup() {
     const data = JSON.stringify({ projects, termContracts, staff, clients, _exportedAt: new Date().toISOString(), _version: 3 }, null, 2);
@@ -9194,6 +9355,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
     const cutoffStr = cutoff.toISOString().slice(0, 10);
     const toDelete = projects.filter(p => {
       if (!p.archived) return false;
+      // Use the last milestone date, last invoice date, or project start date as proxy for "last activity"
       const dates = [
         p.startDate,
         ...(p.milestones || []).map(m => m.dueDate).filter(Boolean),
@@ -9251,6 +9413,9 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
   const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
 
+
+
+  // ── Loading screen ──
   if (appStatus === "loading") return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: P.bg, gap: 16 }}>
       <style>{CSS}</style>
@@ -9262,6 +9427,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
     </div>
   );
 
+  // ── Load error screen — show app anyway with empty state ──
   const loadErrorBanner = loadError ? (
     <div style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 16px", margin: "16px 32px", fontSize: 12, color: P.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
       <span>⚠ Could not load data: {loadError}. Changes may not save until the issue is resolved.</span>
@@ -9354,7 +9520,6 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
-
-</script>
+  </script>
 </body>
 </html>
