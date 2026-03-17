@@ -250,6 +250,7 @@ function newProject(overrides = {}) {
     contractNumber: "",
     contractDate: "",
     contractFolderUrl: "",
+    projectFolderUrl: "",
     feeCalculatorSubs: [],
     phaseSubFees: {},
     contractExpirationDate: "",
@@ -324,6 +325,8 @@ const GRAPH_SCOPES = [
   "Calendars.ReadWrite.Shared", // shared calendars
   "User.Read",                  // sign in
   "Mail.ReadWrite",             // email drafts + inbox scanning
+  "Files.ReadWrite",            // SharePoint / OneDrive folder creation
+  "Sites.ReadWrite.All",        // SharePoint site access
 ];
 
 function getCurrentUser() {
@@ -683,6 +686,59 @@ function Modal({ title, onClose, children, wide }) {
 
 
 // ─── OUTLOOK DRAFT EMAIL ──────────────────────────────────────────────────────
+
+// ── SharePoint folder creation ────────────────────────────────────────────────
+const SP_HOST       = "setty.sharepoint.com";
+const SP_SITE_PATH  = "/sites/NYCProjects";
+const SP_LIBRARY    = "Project Document Library";
+
+// Cache resolved IDs so we only look them up once per session
+let _spSiteId  = null;
+let _spDriveId = null;
+
+async function resolveSpIds() {
+  if (_spSiteId && _spDriveId) return { siteId: _spSiteId, driveId: _spDriveId };
+  // Resolve site
+  const siteData = await graphFetch("GET", "/sites/" + SP_HOST + ":" + SP_SITE_PATH);
+  _spSiteId = siteData.id;
+  // Resolve the named document library drive
+  const drivesData = await graphFetch("GET", "/sites/" + _spSiteId + "/drives");
+  const drive = (drivesData.value || []).find(d =>
+    d.name === SP_LIBRARY || d.name.toLowerCase() === SP_LIBRARY.toLowerCase()
+  );
+  if (!drive) throw new Error('Library not found: ' + SP_LIBRARY + '. Check SP_LIBRARY constant.');
+  _spDriveId = drive.id;
+  return { siteId: _spSiteId, driveId: _spDriveId };
+}
+
+async function createSharePointFolder(project) {
+  const num  = (project.projectNumber || "").trim();
+  const name = (project.name || "Unnamed Project").trim();
+  if (!num && !name) throw new Error("Project must have a number or name before creating a folder.");
+  const folderName = num ? num + " - " + name : name;
+
+  const { siteId, driveId } = await resolveSpIds();
+
+  // Check if folder already exists to avoid duplicate
+  let existing = null;
+  try {
+    existing = await graphFetch("GET",
+      "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName)
+    );
+  } catch(e) { /* 404 = doesn't exist yet, which is fine */ }
+
+  if (existing && existing.id) {
+    return existing.webUrl;
+  }
+
+  // Create the folder
+  const result = await graphFetch("POST",
+    "/drives/" + driveId + "/root/children",
+    { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "rename" }
+  );
+  return result.webUrl;
+}
+
 
 async function createOutlookDraft({ subject, bodyHtml, bodyText }) {
   const token = await getToken();
@@ -6752,6 +6808,10 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
 
+            <Field label="Project Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
+              <SharePointFolderField project={project} onUpdate={updateField} />
+            </Field>
+
             <Field label="PM / Project Contact" style={{ gridColumn: "1 / -1" }}>
               <POCSection
                 pocList={(project.projectContacts || {}).pm || []}
@@ -9056,6 +9116,79 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
     </div>
   );
 }
+
+function SharePointFolderField({ project, onUpdate }) {
+  const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
+  const [msg, setMsg] = React.useState("");
+
+  const url = project.projectFolderUrl || "";
+  const hasFolder = !!url;
+
+  async function create() {
+    if (!project.projectNumber && !project.name) {
+      setMsg("Add a project number or name first.");
+      setStatus("error");
+      return;
+    }
+    setStatus("creating");
+    setMsg("");
+    try {
+      const folderUrl = await createSharePointFolder(project);
+      onUpdate("projectFolderUrl", folderUrl);
+      setStatus("done");
+      setMsg("\u2713 Folder created");
+    } catch(e) {
+      setStatus("error");
+      setMsg("\u2717 " + e.message);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {hasFolder ? (
+          <>
+            <input value={url} readOnly
+              style={{ flex: 1, color: P.textMuted, fontSize: 12, background: "transparent", borderColor: P.border, cursor: "default" }} />
+            <a href={url} target="_blank" rel="noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6,
+                background: "#0078d4", color: "#fff", borderRadius: 6,
+                padding: "6px 14px", fontSize: 13, fontWeight: 600,
+                textDecoration: "none", whiteSpace: "nowrap" }}>
+              📁 Open Folder
+            </a>
+            <button onClick={() => { if (window.confirm("Clear the saved folder URL? This won\u2019t delete the SharePoint folder.")) onUpdate("projectFolderUrl", ""); }}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13 }}
+              title="Clear saved URL">✕</button>
+          </>
+        ) : (
+          <>
+            <input value={url} placeholder="Paste existing URL, or click Create to auto-generate…"
+              onChange={e => onUpdate("projectFolderUrl", e.target.value)}
+              style={{ flex: 1, fontSize: 13 }} />
+            <Btn variant="primary" disabled={status === "creating"}
+              onClick={create}>
+              {status === "creating" ? "\u23F3 Creating\u2026" : "\u2601 Create Project Folder"}
+            </Btn>
+          </>
+        )}
+      </div>
+      {msg && (
+        <div style={{ fontSize: 11, marginTop: 4,
+          color: status === "done" ? P.green : status === "error" ? P.red : P.textDim }}>
+          {msg}
+        </div>
+      )}
+      {!hasFolder && (
+        <div style={{ fontSize: 11, color: P.textDim, marginTop: 3 }}>
+          Creates a folder in <em>Project Document Library</em> on the NYC Projects SharePoint site
+          named <strong>{[(project.projectNumber || "").trim(), (project.name || "").trim()].filter(Boolean).join(" - ") || "Project Number - Project Name"}</strong>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClose }) {
   const [name, setName] = React.useState("");
