@@ -2014,7 +2014,11 @@ function ScheduleView({ project, onChange }) {
             let healthLabel = "—";
             let healthColor = P.textDim;
             let healthBg = "transparent";
-            if (sd && ed && ed > sd) {
+            const phaseComplete = pct >= 100;
+            if (phaseComplete) {
+              expectedPct = 100;
+              healthLabel = "✓ Completed"; healthColor = P.green; healthBg = P.greenDim;
+            } else if (sd && ed && ed > sd) {
               const todayLocal = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0") + "-" + String(today.getDate()).padStart(2,"0");
               if (today >= ed) {
                 // Past end date
@@ -2049,8 +2053,18 @@ function ScheduleView({ project, onChange }) {
             return (
               <tr key={ph.id}>
                 <td style={{ fontWeight: 500 }}>{ph.name}</td>
-                <td><input type="date" value={ph.startDate || ""} onChange={e => updatePhaseDate(ph.id, "startDate", e.target.value)} /></td>
-                <td><input type="date" value={ph.endDate || ""} onChange={e => updatePhaseDate(ph.id, "endDate", e.target.value)} /></td>
+                <td>
+                  <input type="date" value={ph.startDate || ""}
+                    disabled={phaseComplete}
+                    onChange={e => updatePhaseDate(ph.id, "startDate", e.target.value)}
+                    style={phaseComplete ? { background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" } : {}} />
+                </td>
+                <td>
+                  <input type="date" value={ph.endDate || ""}
+                    disabled={phaseComplete}
+                    onChange={e => updatePhaseDate(ph.id, "endDate", e.target.value)}
+                    style={phaseComplete ? { background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" } : {}} />
+                </td>
                 <td>
                   <input type="number" min={1} step={1}
                     value={durWD || ""}
@@ -2157,19 +2171,39 @@ function ScheduleView({ project, onChange }) {
                     : <input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} style={{ width: 190 }} />}
                 </td>
                 <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase}</td>
-                <td><input type="date" value={m.dueDate || ""} onChange={e => updateMilestone(m.id, "dueDate", e.target.value)} /></td>
                 <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <input type="number" min={0} max={100} value={m.pctComplete || 0}
-                      onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value)} style={{ width: 72 }} />
-                    <span style={{ color: P.textDim, fontSize: 12 }}>%</span>
-                    <input type="checkbox" checked={(m.pctComplete || 0) >= 100}
-                      onChange={e => updateMilestone(m.id, "pctComplete", e.target.checked ? 100 : 0)}
-                      title="Mark complete (100%)"
-                      style={{ width: 16, height: 16, cursor: "pointer", accentColor: P.green }} />
-                  </div>
+                  <input type="date" value={m.dueDate || ""}
+                    disabled={(m.pctComplete || 0) >= 100}
+                    onChange={e => updateMilestone(m.id, "dueDate", e.target.value)}
+                    style={(m.pctComplete || 0) >= 100 ? { background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" } : {}} />
                 </td>
-                <td><Badge color={statusColor} text={autoStatus} /></td>
+                <td>
+                  {(m.pctComplete || 0) >= 100 ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="number" value={100} readOnly
+                        style={{ width: 72, background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" }} />
+                      <span style={{ color: "#888", fontSize: 12 }}>%</span>
+                      <input type="checkbox" checked readOnly
+                        style={{ width: 16, height: 16, cursor: "not-allowed", accentColor: P.green, opacity: 0.6 }} />
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="number" min={0} max={100} value={m.pctComplete || 0}
+                        onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value)} style={{ width: 72 }} />
+                      <span style={{ color: P.textDim, fontSize: 12 }}>%</span>
+                      <input type="checkbox" checked={false}
+                        onChange={e => updateMilestone(m.id, "pctComplete", e.target.checked ? 100 : 0)}
+                        title="Mark complete (100%)"
+                        style={{ width: 16, height: 16, cursor: "pointer", accentColor: P.green }} />
+                    </div>
+                  )}
+                </td>
+                <td>
+                  <Badge
+                    color={(m.pctComplete || 0) >= 100 ? { bg: P.greenDim, text: P.green } : statusColor}
+                    text={(m.pctComplete || 0) >= 100 ? "✓ Completed" : autoStatus}
+                  />
+                </td>
                 <td><input value={m.notes || ""} onChange={e => updateMilestone(m.id, "notes", e.target.value)} placeholder="Notes…" style={{ width: 140 }} /></td>
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
