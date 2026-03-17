@@ -199,6 +199,13 @@ function milestoneStatus(pct) {
 function getPhasePctFromMilestones(phase, milestones) {
   const matching = milestones.filter(m => m.type === "billable" && m.phase === phase.code && !m.cancelled);
   if (!matching.length) return phase.pctComplete || 0;
+  // Fee-weighted average: a $200K milestone at 100% shouldn't be dragged down by a $5K CO at 90%
+  const totalFee = matching.reduce((a, m) => a + (m.fee || 0), 0);
+  if (totalFee > 0) {
+    const weighted = matching.reduce((a, m) => a + (m.pctComplete || 0) * (m.fee || 0), 0);
+    return Math.round(weighted / totalFee);
+  }
+  // No fees set — simple average
   return Math.round(matching.reduce((a, m) => a + (m.pctComplete || 0), 0) / matching.length);
 }
 
