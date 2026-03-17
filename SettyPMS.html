@@ -197,7 +197,8 @@ function milestoneStatus(pct) {
 
 // Phase pctComplete is derived from its billable milestones
 function getPhasePctFromMilestones(phase, milestones) {
-  const matching = milestones.filter(m => m.type === "billable" && m.phase === phase.code && !m.cancelled);
+  // Exclude CO milestones (coId set) — they use phase "__CO__" but exclude by coId too for safety
+  const matching = milestones.filter(m => m.type === "billable" && m.phase === phase.code && !m.cancelled && !m.coId);
   if (!matching.length) return phase.pctComplete || 0;
   // Fee-weighted average: a $200K milestone at 100% shouldn't be dragged down by a $5K CO at 90%
   const totalFee = matching.reduce((a, m) => a + (m.fee || 0), 0);
@@ -2177,7 +2178,7 @@ function ScheduleView({ project, onChange }) {
                     ? <span title="Unlock Fee Calculator to rename" style={{ fontSize: 13, color: P.textDim, display: "inline-flex", alignItems: "center", gap: 4 }}>🔒 {m.name}</span>
                     : <input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} style={{ width: 190 }} />}
                 </td>
-                <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase}</td>
+                <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase === "__CO__" ? "CO" : m.phase}</td>
                 <td>
                   <input type="date" value={m.dueDate || ""}
                     disabled={(m.pctComplete || 0) >= 100}
@@ -3300,14 +3301,29 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
                   <td style={{ color: P.textMuted }}>{inv.description || "—"}</td>
                   <td style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: P.green }}>{fmt(inv.amount)}</td>
                   <td>
-                    <input type="number" min={0} max={inv.amount} step={1}
-                      value={inv.amountPaid || ""}
-                      placeholder="0"
-                      onChange={e => updateInvoice(inv.id, {
-                        amountPaid: +e.target.value,
-                        ...(+e.target.value >= inv.amount && !inv.datePaid ? { datePaid: new Date().toISOString().slice(0,10) } : {})
-                      })}
-                      style={{ width: 90, fontFamily: "JetBrains Mono", color: paid > 0 ? P.green : P.text }} />
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="number" min={0} max={inv.amount} step={1}
+                        value={inv.amountPaid || ""}
+                        placeholder="0"
+                        onChange={e => updateInvoice(inv.id, {
+                          amountPaid: +e.target.value,
+                          ...(+e.target.value >= inv.amount && !inv.datePaid ? { datePaid: new Date().toISOString().slice(0,10) } : {})
+                        })}
+                        style={{ width: 90, fontFamily: "JetBrains Mono", color: paid > 0 ? P.green : P.text }} />
+                      {paid < inv.amount && (
+                        <button
+                          onClick={() => updateInvoice(inv.id, {
+                            amountPaid: inv.amount,
+                            datePaid: inv.datePaid || new Date().toISOString().slice(0,10)
+                          })}
+                          title="Mark fully paid"
+                          style={{ background: P.greenDim, border: `1px solid ${P.green}`, borderRadius: 5,
+                            color: P.green, cursor: "pointer", fontSize: 11, fontWeight: 700,
+                            padding: "3px 8px", whiteSpace: "nowrap" }}>
+                          Paid
+                        </button>
+                      )}
+                    </div>
                   </td>
                   <td>
                     <input type="date" value={inv.datePaid || ""}
@@ -3631,7 +3647,7 @@ function ChangeOrdersView({ project, onChange }) {
         const existingM = existing.find(m => m.coMilestoneId === cm.id);
         return existingM
           ? { ...existingM, name: `CO: ${co.name || co.number} — ${cm.name || "Milestone"}`, fee: cm.fee || 0, dueDate: cm.dueDate || co.date }
-          : { id: uid(), coId: id, coMilestoneId: cm.id, type: "billable", phase: "CO",
+          : { id: uid(), coId: id, coMilestoneId: cm.id, type: "billable", phase: "__CO__",
               name: `CO: ${co.name || co.number}${cm.name ? " — " + cm.name : ""}`,
               fee: cm.fee || 0, startDate: co.date, dueDate: cm.dueDate || co.date,
               pctComplete: 0, status: "Not Started", notes: co.notes || "" };
@@ -5085,7 +5101,7 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
     if (!existing) {
       milestones = [...milestones, {
         id: uid(), coId,
-        type: "billable", phase: "CO",
+        type: "billable", phase: "__CO__",
         name: `CO: ${co.name || co.number}`,
         fee: co.fee, startDate: co.date, dueDate: co.date,
         pctComplete: 0, status: "Not Started", notes: co.notes || "",
