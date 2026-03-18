@@ -746,24 +746,37 @@ async function createOneNoteNotebook(project) {
 }
 
 async function createOneNotePage(notebookId, sectionName, title, htmlBody) {
-  // Ensure section exists, then create page
-  const sections = await graphFetch("GET", `/me/onenote/notebooks/${notebookId}/sections`);
-  let section = (sections?.value || []).find(s => s.displayName === sectionName);
+  // Ensure section exists
+  const sectionsResp = await graphFetch("GET", `/me/onenote/notebooks/${notebookId}/sections`);
+  let section = (sectionsResp?.value || []).find(s => s.displayName === sectionName);
   if (!section) {
     section = await graphFetch("POST", `/me/onenote/notebooks/${notebookId}/sections`, { displayName: sectionName });
+    // After creation, re-fetch to get a proper section object with id
+    if (!section?.id) {
+      const refetch = await graphFetch("GET", `/me/onenote/notebooks/${notebookId}/sections`);
+      section = (refetch?.value || []).find(s => s.displayName === sectionName);
+    }
   }
-  if (!section?.id) throw new Error("Could not create OneNote section");
-  // OneNote pages use multipart/HTML — use fetch directly
+  if (!section?.id) throw new Error("Could not find or create OneNote section: " + sectionName);
+  // OneNote pages API requires text/html content-type
   const token = await getToken();
-  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title></head><body>${htmlBody}</body></html>`;
+  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${new Date().toISOString()}" /></head><body>${htmlBody}</body></html>`;
   const res = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/sections/${section.id}/pages`, {
     method: "POST",
-    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/xhtml+xml" },
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
     body: pageHtml,
   });
-  if (!res.ok) { const e = await res.text(); throw new Error("OneNote page error: " + res.status + " " + e.slice(0,200)); }
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error("OneNote page error " + res.status + ": " + errText.slice(0, 300));
+  }
   const page = await res.json();
-  return { id: page.id, webUrl: page.links?.oneNoteWebUrl?.href || "" };
+  // Graph returns links.oneNoteWebUrl.href or links.oneNoteClientUrl.href
+  const webUrl = page.links?.oneNoteWebUrl?.href
+    || page.links?.oneNoteClientUrl?.href
+    || page.webUrl
+    || "";
+  return { id: page.id, webUrl };
 }
 
 async function createSharePointFolder(project) {
@@ -7075,25 +7088,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
             {active.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <Btn small variant="ghost" onClick={() => printWeeklyDeliverables(active)}>🖨 Weekly Report</Btn>
-          <Btn
-            variant={syncStatus === "done" ? "success" : syncStatus === "done_with_errors" ? "warning" : "primary"}
-            small
-            disabled={syncStatus === "syncing"}
-            onClick={syncToOutlook}
-          >
-            {syncStatus === "syncing"
-              ? `⏳ Syncing… ${syncLog.length}/${allSyncableMilestones.length}`
-              : syncStatus === "done"
-              ? `✓ Synced ${syncedCount} events`
-              : syncStatus === "done_with_errors"
-              ? `⚠ ${syncedCount} synced, errors`
-              : "📅 Sync to NYC Shared Calendar"}
-          </Btn>
-          {(syncStatus === "done" || syncStatus === "done_with_errors") && (
-            <Btn small variant="ghost" onClick={() => setShowSyncLog(v => !v)}>
-              {showSyncLog ? "Hide log" : "View log"}
-            </Btn>
-          )}
+
         </div>
       </div>
 
@@ -8636,21 +8631,26 @@ function CalendarImportPanel({ project, onImport }) {
           const atts = fmtAttendees(ev);
           const loc = ev.location?.displayName || "";
           const preview = ev.bodyPreview ? ev.bodyPreview.trim().slice(0, 500) : "";
-          const pageHtml = `
-            <h1>${title}</h1>
-            <table style="border-collapse:collapse;width:100%;font-size:13px">
-              ${dtFmt ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0;width:140px">Date</td><td style="padding:6px 12px">${dtFmt}</td></tr>` : ""}
-              ${loc ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0">Location</td><td style="padding:6px 12px">${loc}</td></tr>` : ""}
-              ${atts ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0">Attendees</td><td style="padding:6px 12px">${atts}</td></tr>` : ""}
-              ${preview ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0">Agenda / Notes</td><td style="padding:6px 12px">${preview}</td></tr>` : ""}
-            </table>
-            <h2>Discussion</h2><p>&nbsp;</p>
-            <h2>Decisions</h2><p>&nbsp;</p>
-            <h2>Action Items</h2>
-            <table style="border-collapse:collapse;width:100%">
-              <tr style="background:#f0f0f0"><th style="padding:6px 12px;text-align:left">Item</th><th style="padding:6px 12px;text-align:left">Owner</th><th style="padding:6px 12px;text-align:left">Due</th></tr>
-              <tr><td style="padding:6px 12px">&nbsp;</td><td style="padding:6px 12px">&nbsp;</td><td style="padding:6px 12px">&nbsp;</td></tr>
-            </table>`;
+          const tdStyle = "padding:6px 12px";
+          const thStyle = "padding:6px 12px;font-weight:bold;background:#f0f0f0";
+          const pageHtml = "<h1>" + title + "</h1>"
+            + "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+            + (dtFmt ? "<tr><td style='" + thStyle + ";width:140px'>Date</td><td style='" + tdStyle + "'>" + dtFmt + "</td></tr>" : "")
+            + (loc ? "<tr><td style='" + thStyle + "'>Location</td><td style='" + tdStyle + "'>" + loc + "</td></tr>" : "")
+            + (atts ? "<tr><td style='" + thStyle + "'>Attendees</td><td style='" + tdStyle + "'>" + atts + "</td></tr>" : "")
+            + (preview ? "<tr><td style='" + thStyle + "'>Agenda / Notes</td><td style='" + tdStyle + "'>" + preview + "</td></tr>" : "")
+            + "</table>"
+            + "<h2>Discussion</h2><p>&nbsp;</p>"
+            + "<h2>Decisions</h2><p>&nbsp;</p>"
+            + "<h2>Action Items</h2>"
+            + "<table style='border-collapse:collapse;width:100%'>"
+            + "<tr style='background:#f0f0f0'>"
+              + "<th style='" + tdStyle + ";text-align:left'>Item</th>"
+              + "<th style='" + tdStyle + ";text-align:left'>Owner</th>"
+              + "<th style='" + tdStyle + ";text-align:left'>Due</th>"
+            + "</tr>"
+            + "<tr><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td></tr>"
+            + "</table>";
           const sectionName = cat === "Site Visit" ? "Site Visits" : cat === "Client Communication" ? "Client Communications" : "Meetings";
           const page = await createOneNotePage(notebookId, sectionName, title, pageHtml);
           oneNoteUrl = page.webUrl || "";
@@ -8716,7 +8716,7 @@ function CalendarImportPanel({ project, onImport }) {
                 style={{ background: "none", border: "none", color: P.textDim, fontSize: 12, cursor: "pointer" }}>Clear</button>
               {selectedCount > 0 && (
                 <Btn small onClick={importSelected} disabled={importing}>
-                  Import {selectedCount} as note{selectedCount !== 1 ? "s" : ""}
+                  {importing ? "⏳ Creating pages…" : "Import " + selectedCount + " as note" + (selectedCount !== 1 ? "s" : "")}
                 </Btn>
               )}
             </div>
