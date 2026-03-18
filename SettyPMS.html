@@ -9282,6 +9282,15 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                             const overlapDays = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
                             milestoneProjection = Math.round(m.fee * (overlapDays / totalDays));
                           }
+                          // Fallback for milestones with no phase schedule (e.g. COs): remaining ÷ months to due date
+                          if (milestoneProjection === 0 && m.dueDate && m.fee > 0) {
+                            const mInv = (p.invoices || []).filter(i => i.milestoneId === m.id).reduce((a, i) => a + (i.amount || 0), 0);
+                            const mRem = Math.max(0, m.fee - mInv);
+                            const now3 = new Date();
+                            const due3 = new Date(m.dueDate + "T00:00:00");
+                            const monthsLeft = Math.max(1, (due3.getFullYear() * 12 + due3.getMonth()) - (now3.getFullYear() * 12 + now3.getMonth()));
+                            milestoneProjection = Math.round(mRem / monthsLeft);
+                          }
                           return { milestoneId: m.id, amount: milestoneProjection || "", desc: m.name + " — " + monthLabel, include: milestoneProjection > 0, status: "idle", msg: "" };
                         }),
                         status: "idle", msg: "",
@@ -9418,6 +9427,14 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                                   const overlapEnd = ed < mEnd ? ed : mEnd;
                                   const overlapDays = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
                                   proj = Math.round(milestone.fee * (overlapDays / totalDays));
+                                }
+                                // Fallback: remaining ÷ months to due date
+                                if (proj === 0 && milestone.dueDate && milestone.fee > 0) {
+                                  const mInv2 = (p.invoices || []).filter(i => i.milestoneId === milestone.id).reduce((a, i) => a + (i.amount || 0), 0);
+                                  const mRem2 = Math.max(0, milestone.fee - mInv2);
+                                  const due4 = new Date(milestone.dueDate + "T00:00:00");
+                                  const monthsLeft2 = Math.max(1, (due4.getFullYear() * 12 + due4.getMonth()) - (today3.getFullYear() * 12 + today3.getMonth()));
+                                  proj = Math.round(mRem2 / monthsLeft2);
                                 }
                                 return proj > 0
                                   ? <span style={{ color: P.accentLight }}>{fmt(proj)}</span>
