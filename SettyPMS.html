@@ -740,6 +740,90 @@ async function createSharePointFolder(project) {
 }
 
 
+// ── Save email + attachments to SharePoint /Emails subfolder ──────────────────
+async function saveEmailToSharePoint(email, project, liveBodyHtml) {
+  const folderUrl = project.projectFolderUrl;
+  if (!folderUrl) throw new Error("No SharePoint project folder. Create one on the Overview tab first.");
+  const { driveId } = await resolveSpIds();
+
+  // Build folder name: DD.MM.YYYY Subject
+  const d = new Date(email.date);
+  const dd   = String(d.getDate()).padStart(2, "0");
+  const mm   = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const safeSubject = (email.subject || "No Subject")
+    .replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 70);
+  const emailFolderName = dd + "." + mm + "." + yyyy + " " + safeSubject;
+
+  // Get project folder name from stored URL
+  const urlParts = folderUrl.split("/");
+  const projectFolderName = decodeURIComponent(urlParts[urlParts.length - 1]);
+
+  // Ensure folder exists (POST with conflictBehavior:replace is idempotent)
+  async function ensureFolder(parentPath, name) {
+    try {
+      await graphFetch("POST",
+        "/drives/" + driveId + "/root:/" + encodeURIComponent(parentPath) + ":/children",
+        { name, folder: {}, "@microsoft.graph.conflictBehavior": "replace" }
+      );
+    } catch(e) { /* 409 conflict = already exists, fine */ }
+    return parentPath + "/" + name;
+  }
+
+  const emailsFolder = await ensureFolder(projectFolderName, "Emails");
+  await ensureFolder(emailsFolder, emailFolderName);
+  const targetPath = emailsFolder + "/" + emailFolderName;
+
+  const token = await getToken();
+
+  async function uploadFile(fileName, fileContent, mimeType) {
+    const safeName = fileName.replace(/[\\/:*?"<>|]/g, "-").trim();
+    const path = "/drives/" + driveId + "/root:/" +
+      encodeURIComponent(targetPath) + "/" + encodeURIComponent(safeName) + ":/content";
+    const resp = await fetch("https://graph.microsoft.com/v1.0" + path, {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + token, "Content-Type": mimeType },
+      body: fileContent,
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error("Upload failed (" + resp.status + "): " + errText.slice(0, 200));
+    }
+    return await resp.json();
+  }
+
+  // 1. Save email as HTML
+  const header = "<div style='font-family:sans-serif;font-size:12px;color:#333;padding:12px 16px;border-bottom:1px solid #ddd;margin-bottom:16px'>"
+    + "<strong>Subject:</strong> " + (email.subject || "") + "<br>"
+    + "<strong>From:</strong> " + (email.from || "") + (email.fromAddress ? " &lt;" + email.fromAddress + "&gt;" : "") + "<br>"
+    + "<strong>Date:</strong> " + new Date(email.date).toLocaleString() + "<br>"
+    + (email.to ? "<strong>To:</strong> " + email.to + "<br>" : "")
+    + (email.cc ? "<strong>CC:</strong> " + email.cc + "<br>" : "")
+    + "</div>";
+  const fullHtml = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>" + (email.subject || "Email") + "</title></head><body>"
+    + header + (liveBodyHtml || email.bodyText || "(No body content)") + "</body></html>";
+  await uploadFile("email.html", fullHtml, "text/html");
+
+  // 2. Save attachments
+  let attachCount = 0;
+  if (email.hasAttachments && email.msgId) {
+    try {
+      const attData = await graphFetch("GET",
+        "/me/messages/" + email.msgId + "/attachments", undefined, token);
+      for (const att of (attData?.value || [])) {
+        if (!att.contentBytes) continue;
+        const binary = atob(att.contentBytes);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        await uploadFile(att.name || "attachment", bytes, att.contentType || "application/octet-stream");
+        attachCount++;
+      }
+    } catch(e) { /* non-fatal */ }
+  }
+  return { folderName: emailFolderName, attachCount };
+}
+
+
 async function createOutlookDraft({ subject, bodyHtml, bodyText }) {
   const token = await getToken();
   const body = {
@@ -6926,6 +7010,7 @@ function EmailsView({ project, onChange }) {
   // View state
   const [expanded, setExpanded] = useState(null); // msgId of open email
   const [fetchingBody, setFetchingBody] = useState(null);
+  const [spSaveState, setSpSaveState] = useState({}); // msgId -> {status, msg}
   const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string }
   const [filterSender, setFilterSender] = useState("All");
 
@@ -7201,6 +7286,27 @@ function EmailsView({ project, onChange }) {
     if (dupeCount > 0) alert(`${toAdd.length} saved. ${dupeCount} skipped (already on record).`);
   }
 
+  async function saveToSharePoint(email) {
+    if (!project.projectFolderUrl) {
+      setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "No project folder — create one on the Overview tab first." } }));
+      return;
+    }
+    setSpSaveState(s => ({ ...s, [email.msgId]: { status: "saving", msg: "" } }));
+    try {
+      let bodyHtml = "";
+      try {
+        const token = await getToken();
+        const data = await graphFetch("GET", "/me/messages/" + email.msgId + "?$select=body", undefined, token);
+        bodyHtml = data?.body?.content || "";
+      } catch(e) { /* fallback to stored text */ }
+      const { folderName, attachCount } = await saveEmailToSharePoint(email, project, bodyHtml);
+      const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
+      setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg } }));
+    } catch(e) {
+      setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
+    }
+  }
+
   function deleteEmail(msgId) {
     onChange({ ...project, emails: saved.filter(e => e.msgId !== msgId) });
     if (expanded === msgId) setExpanded(null);
@@ -7411,10 +7517,27 @@ function EmailsView({ project, onChange }) {
                     ) : (
                       <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>
                     )}
-                    <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end" }}>
-                      <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this email from the project record?")) deleteEmail(email.msgId); }}>
-                        Remove
-                      </Btn>
+                    <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        {spSaveState[email.msgId] && (
+                          <span style={{ fontSize: 11, fontWeight: 500,
+                            color: spSaveState[email.msgId].status === "done" ? P.green
+                                 : spSaveState[email.msgId].status === "error" ? P.red : P.accentLight }}>
+                            {spSaveState[email.msgId].status === "saving" ? "⏳ Saving to SharePoint…" : spSaveState[email.msgId].msg}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Btn small variant="ghost"
+                          disabled={spSaveState[email.msgId]?.status === "saving"}
+                          onClick={() => saveToSharePoint(email)}
+                          title={project.projectFolderUrl ? "Save email + attachments to SharePoint" : "Create a project folder first (Overview tab)"}>
+                          📁 Save to SharePoint
+                        </Btn>
+                        <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this email from the project record?")) deleteEmail(email.msgId); }}>
+                          Remove
+                        </Btn>
+                      </div>
                     </div>
                   </div>
                 )}
