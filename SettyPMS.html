@@ -746,7 +746,7 @@ async function createOneNoteNotebook(project) {
   return { id: result.id, siteId, webUrl };
 }
 
-async function createOneNotePage(notebookId, sectionName, title, htmlBody) {
+async function createOneNotePage(notebookId, sectionName, title, htmlBody, eventDate) {
   // Use SharePoint site-scoped endpoint for team-accessible pages
   const { siteId } = await resolveSpIds();
   const baseUrl = `/sites/${siteId}/onenote`;
@@ -764,7 +764,7 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody) {
   if (!section?.id) throw new Error("Could not find or create OneNote section: " + sectionName);
   // OneNote pages API requires text/html content-type
   const token = await getToken();
-  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${new Date().toISOString()}" /></head><body>${htmlBody}</body></html>`;
+  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${htmlBody}</body></html>`;
   const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/onenote/sections/${section.id}/pages`, {
     method: "POST",
     headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
@@ -8657,7 +8657,7 @@ function CalendarImportPanel({ project, onImport }) {
             + "<tr><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td></tr>"
             + "</table>";
           const sectionName = cat === "Site Visit" ? "Site Visits" : cat === "Client Communication" ? "Client Communications" : "Meetings";
-          const page = await createOneNotePage(notebookId, sectionName, title, pageHtml);
+          const page = await createOneNotePage(notebookId, sectionName, title, pageHtml, dt || "");
           oneNoteUrl = page.webUrl || "";
         } catch(e) {
           // Non-fatal — log the note without the OneNote link
