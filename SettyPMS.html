@@ -6275,6 +6275,97 @@ function CashFlowView({ projects, onNavigateToProject }) {
           Object.values(projectTotals).forEach(p => rows.push([p.projectNumber || "", p.name, Math.round(p.totalFee), Math.round(p.totalInvoiced), Math.round(p.totalPaid || 0), Math.round(p.totalRemaining)]));
           downloadCSV("cashflow_" + new Date().toISOString().slice(0,10) + ".csv", headers, rows);
         }}>⬇ Export CSV</Btn>
+        <Btn small variant="ghost" onClick={() => {
+          // ── Monthly Invoicing Update & 6-Month Projections ────────────────
+          const today = new Date();
+          const todayStr = today.toISOString().slice(0,10);
+          const currentYM = todayStr.slice(0,7);
+          // Last 30 days window
+          const thirtyDaysAgo = new Date(today); thirtyDaysAgo.setDate(today.getDate() - 30);
+          const thirtyStr = thirtyDaysAgo.toISOString().slice(0,10);
+          // Next 6 months (skip current month)
+          const futureMonths = [];
+          for (let i = 1; i <= 6; i++) {
+            const d = new Date(today.getFullYear(), today.getMonth() + i, 1);
+            futureMonths.push(d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0"));
+          }
+
+          const rows = [];
+
+          // ── Section 1: Summary header ─────────────────────────────────────
+          rows.push(["MONTHLY INVOICING UPDATE & PROJECTIONS", "", "", "", "Generated: " + todayStr]);
+          rows.push([]);
+
+          // ── Section 2: Last 30 Days — Invoices Issued ─────────────────────
+          rows.push(["INVOICES ISSUED — LAST 30 DAYS (since " + thirtyStr + ")"]);
+          rows.push(["Project #", "Project Name", "PM", "Invoice #", "Invoice Date", "Milestone", "Amount", "Amount Paid", "Balance"]);
+          let any30 = false;
+          activeProjects.forEach(proj => {
+            const recent = (proj.invoices || []).filter(inv => inv.date && inv.date >= thirtyStr);
+            recent.forEach(inv => {
+              any30 = true;
+              rows.push([
+                proj.projectNumber || "",
+                proj.name || "",
+                proj.projectManager || "",
+                inv.number || "",
+                inv.date || "",
+                inv.milestoneName || inv.description || "",
+                Math.round(inv.amount || 0),
+                Math.round(inv.amountPaid || 0),
+                Math.round((inv.amount || 0) - (inv.amountPaid || 0)),
+              ]);
+            });
+          });
+          if (!any30) rows.push(["No invoices issued in the last 30 days"]);
+          rows.push([]);
+
+          // ── Section 3: Projects Needing Invoicing (uninvoiced remaining > 0) ──
+          rows.push(["UNINVOICED BALANCE — ACTIVE PROJECTS"]);
+          rows.push(["Project #", "Project Name", "PM", "Status", "Total Contract", "Total Invoiced", "Balance Remaining", "% Invoiced"]);
+          activeProjects.forEach(proj => {
+            const { totalFee, totalInvoiced, totalRemaining } = buildProjectCashFlow(proj);
+            if (totalRemaining <= 0) return;
+            rows.push([
+              proj.projectNumber || "",
+              proj.name || "",
+              proj.projectManager || "",
+              proj.status || "",
+              Math.round(totalFee),
+              Math.round(totalInvoiced),
+              Math.round(totalRemaining),
+              totalFee > 0 ? Math.round(totalInvoiced / totalFee * 100) + "%" : "0%",
+            ]);
+          });
+          rows.push([]);
+
+          // ── Section 4: 6-Month Fee Projections (next 6 months, skip current) ──
+          rows.push(["FEE PROJECTIONS — NEXT 6 MONTHS (expected, excluding current month)"]);
+          const projHeader = ["Project #", "Project Name", "PM", "Status", "Total Contract", "Remaining", ...futureMonths];
+          rows.push(projHeader);
+          let monthTotals = new Array(6).fill(0);
+          activeProjects.forEach(proj => {
+            const { monthlyMap, totalFee, totalRemaining } = buildProjectCashFlow(proj);
+            const monthFees = futureMonths.map((ym, i) => {
+              const m = monthlyMap[ym];
+              const v = Math.round(m ? m.fee : 0);
+              monthTotals[i] += v;
+              return v;
+            });
+            if (monthFees.every(v => v === 0) && totalRemaining <= 0) return;
+            rows.push([
+              proj.projectNumber || "",
+              proj.name || "",
+              proj.projectManager || "",
+              proj.status || "",
+              Math.round(totalFee),
+              Math.round(totalRemaining),
+              ...monthFees,
+            ]);
+          });
+          rows.push(["", "", "", "", "TOTAL PROJECTED", "", ...monthTotals]);
+          downloadCSV("invoicing_update_" + currentYM + ".csv", [], rows);
+        }}>⬇ Invoicing Update</Btn>
       </div>
       <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>
         Combined fee projections and billing across {activeProjects.length} active project{activeProjects.length !== 1 ? "s" : ""}. Expected fee distributed by phase schedule; invoiced amounts shown by actual invoice date.
