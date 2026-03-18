@@ -9266,17 +9266,23 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                         const inv = (p.invoices || []).filter(i => i.milestoneId === m.id).reduce((a, i) => a + (i.amount || 0), 0);
                         return m.fee > 0 && inv < m.fee;
                       });
-                      // Distribute projected amount proportionally across milestones by remaining balance
-                      const totalRemaining = openMilestones.reduce((a, m) => {
-                        const inv = (p.invoices || []).filter(i => i.milestoneId === m.id).reduce((s, i) => s + (i.amount || 0), 0);
-                        return a + Math.max(0, m.fee - inv);
-                      }, 0);
                       init[p.id] = {
                         milestones: openMilestones.map(m => {
-                          const inv = (p.invoices || []).filter(i => i.milestoneId === m.id).reduce((a, i) => a + (i.amount || 0), 0);
-                          const rem = Math.max(0, m.fee - inv);
-                          const share = totalRemaining > 0 ? Math.round(projected * (rem / totalRemaining)) : 0;
-                          return { milestoneId: m.id, amount: share || "", desc: m.name + " — " + monthLabel, include: share > 0, status: "idle", msg: "" };
+                          // Per-milestone projection: phase schedule overlap with current month
+                          const ph = (p.phases || []).find(ph => ph.code === m.phase);
+                          let milestoneProjection = 0;
+                          if (ph && ph.startDate && ph.endDate && m.fee > 0) {
+                            const sd = new Date(ph.startDate + "T00:00:00"), ed = new Date(ph.endDate + "T00:00:00");
+                            const now3 = new Date();
+                            const mStart = new Date(now3.getFullYear(), now3.getMonth(), 1);
+                            const mEnd = new Date(now3.getFullYear(), now3.getMonth() + 1, 0);
+                            const totalDays = (ed - sd) / 86400000 + 1;
+                            const overlapStart = sd > mStart ? sd : mStart;
+                            const overlapEnd = ed < mEnd ? ed : mEnd;
+                            const overlapDays = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
+                            milestoneProjection = Math.round(m.fee * (overlapDays / totalDays));
+                          }
+                          return { milestoneId: m.id, amount: milestoneProjection || "", desc: m.name + " — " + monthLabel, include: milestoneProjection > 0, status: "idle", msg: "" };
                         }),
                         status: "idle", msg: "",
                       };
