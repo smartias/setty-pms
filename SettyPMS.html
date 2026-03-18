@@ -7849,7 +7849,11 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             </Field>
 
             <Field label="OneNote Notebook" style={{ gridColumn: "1 / -1" }}>
-              <OneNoteNotebookField project={project} onChange={onUpdate} updateField={updateField} />
+              <OneNoteNotebookField
+                project={project}
+                onSave={(id, webUrl) => onUpdate({ ...project, oneNoteNotebookId: id, oneNoteNotebookUrl: webUrl })}
+                onClear={() => onUpdate({ ...project, oneNoteNotebookId: "", oneNoteNotebookUrl: "" })}
+              />
             </Field>
 
             <Field label="PM / Project Contact" style={{ gridColumn: "1 / -1" }}>
@@ -10814,7 +10818,7 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
   );
 }
 
-function OneNoteNotebookField({ project, onChange, updateField }) {
+function OneNoteNotebookField({ project, onSave, onClear }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
   const notebookUrl = project.oneNoteNotebookUrl || "";
@@ -10824,7 +10828,7 @@ function OneNoteNotebookField({ project, onChange, updateField }) {
     setMsg("");
     try {
       const { id, webUrl } = await createOneNoteNotebook(project);
-      onChange({ ...project, oneNoteNotebookId: id, oneNoteNotebookUrl: webUrl });
+      onSave(id, webUrl);
       setStatus("done");
       setMsg("✓ Notebook created");
     } catch(e) {
@@ -10843,7 +10847,7 @@ function OneNoteNotebookField({ project, onChange, updateField }) {
             fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
           📓 Open
         </a>
-        <button onClick={() => { if (window.confirm("Clear the saved OneNote notebook link? This won't delete the notebook.")) { if (updateField) { updateField("oneNoteNotebookUrl", ""); updateField("oneNoteNotebookId", ""); } else { onChange({ ...project, oneNoteNotebookUrl: "", oneNoteNotebookId: "" }); } }}}
+        <button onClick={() => { if (window.confirm("Clear the saved OneNote notebook link? This won't delete the notebook.")) { onClear(); }}}
           style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }}>✕</button>
       </div>
     );
