@@ -737,23 +737,27 @@ async function resolveSpIds() {
 }
 
 async function createOneNoteNotebook(project) {
-  // Creates a notebook named after the project and returns { id, webUrl }
+  // Creates a notebook in SharePoint (team-accessible) rather than personal OneDrive
   const name = [project.projectNumber, project.name].filter(Boolean).join(" — ").trim() || "Setty Project";
-  const body = { displayName: name };
-  const result = await graphFetch("POST", "/me/onenote/notebooks", body);
+  const { siteId } = await resolveSpIds();
+  const result = await graphFetch("POST", `/sites/${siteId}/onenote/notebooks`, { displayName: name });
   if (!result || !result.id) throw new Error("OneNote API did not return a notebook ID");
-  return { id: result.id, webUrl: result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "" };
+  const webUrl = result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "";
+  return { id: result.id, siteId, webUrl };
 }
 
 async function createOneNotePage(notebookId, sectionName, title, htmlBody) {
+  // Use SharePoint site-scoped endpoint for team-accessible pages
+  const { siteId } = await resolveSpIds();
+  const baseUrl = `/sites/${siteId}/onenote`;
   // Ensure section exists
-  const sectionsResp = await graphFetch("GET", `/me/onenote/notebooks/${notebookId}/sections`);
+  const sectionsResp = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`);
   let section = (sectionsResp?.value || []).find(s => s.displayName === sectionName);
   if (!section) {
-    section = await graphFetch("POST", `/me/onenote/notebooks/${notebookId}/sections`, { displayName: sectionName });
+    section = await graphFetch("POST", `${baseUrl}/notebooks/${notebookId}/sections`, { displayName: sectionName });
     // After creation, re-fetch to get a proper section object with id
     if (!section?.id) {
-      const refetch = await graphFetch("GET", `/me/onenote/notebooks/${notebookId}/sections`);
+      const refetch = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`);
       section = (refetch?.value || []).find(s => s.displayName === sectionName);
     }
   }
@@ -761,7 +765,7 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody) {
   // OneNote pages API requires text/html content-type
   const token = await getToken();
   const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${new Date().toISOString()}" /></head><body>${htmlBody}</body></html>`;
-  const res = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/sections/${section.id}/pages`, {
+  const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/onenote/sections/${section.id}/pages`, {
     method: "POST",
     headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
     body: pageHtml,
