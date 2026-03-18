@@ -2039,24 +2039,10 @@ function ScheduleView({ project, onChange }) {
       : `${ok}/${syncable.length} synced — check individual rows for errors`);
   }
 
-  function updateMilestone(id, field, val) {
-    const newMilestones = milestones.map(m => {
-      if (m.id !== id) return m;
-      const updated = { ...m, [field]: val };
-      if (field === "pctComplete") updated.status = milestoneStatus(+val);
-      return updated;
-    });
-    let newPhases = phases;
-    if (field === "dueDate") {
-      const m = milestones.find(x => x.id === id);
-      if (m && m.type === "billable")
-        newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
-      // Mark as stale if already synced
-      if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
-      // calMap is derived from milestone objects so it stays in sync automatically
-    }
-    onChange({ ...project, milestones: newMilestones, phases: newPhases });
-    if (field === "pctComplete") {
+  function updateMilestone(id, field, val, skipPrompt = false) {
+    const m = milestones.find(x => x.id === id);
+    // Confirm before reducing % complete
+    if (field === "pctComplete" && m) {
       const oldPct = m.pctComplete || 0;
       const newPct = +val;
       if (newPct < oldPct && oldPct >= 100) {
@@ -2065,12 +2051,22 @@ function ScheduleView({ project, onChange }) {
         if (!window.confirm("Reset \"" + m.name + "\" from " + oldPct + "% back to 0%?\n\nAre you sure?")) return;
       }
     }
-    if (field === "pctComplete" && +val > 0) {
-      const m = milestones.find(x => x.id === id);
-      if (m && m.type === "billable" && m.fee > 0) {
-        const amount = calcInvoiceAmount(m, +val, project);
-        if (amount > 0) setInvoicePrompt({ milestone: m, newPct: +val, invoiceAmount: amount });
-      }
+    const newMilestones = milestones.map(ms => {
+      if (ms.id !== id) return ms;
+      const updated = { ...ms, [field]: val };
+      if (field === "pctComplete") updated.status = milestoneStatus(+val);
+      return updated;
+    });
+    let newPhases = phases;
+    if (field === "dueDate") {
+      if (m && m.type === "billable")
+        newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
+      if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
+    }
+    onChange({ ...project, milestones: newMilestones, phases: newPhases });
+    if (!skipPrompt && field === "pctComplete" && +val > 0 && m && m.type === "billable" && m.fee > 0) {
+      const amount = calcInvoiceAmount(m, +val, project);
+      if (amount > 0) setInvoicePrompt({ milestone: m, newPct: +val, invoiceAmount: amount });
     }
   }
 
@@ -2418,7 +2414,9 @@ function ScheduleView({ project, onChange }) {
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <input type="number" min={0} max={100} value={m.pctComplete || 0}
-                        onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value)} style={{ width: 72 }} />
+                        onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value, true)}
+                        onBlur={e => updateMilestone(m.id, "pctComplete", +e.target.value)}
+                        style={{ width: 72, MozAppearance: "textfield" }} />
                       <span style={{ color: P.textDim, fontSize: 12 }}>%</span>
                       <input type="checkbox" checked={false}
                         onChange={e => updateMilestone(m.id, "pctComplete", e.target.checked ? 100 : 0)}
@@ -7707,7 +7705,7 @@ const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes"
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
-  const [proposalSyncState, setProposalSyncState] = useState("idle"); // idle | syncing | synced | error
+  const [proposalSyncState, setProposalSyncState] = useState(project.proposalCalendarEventId ? "synced" : "idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
   const [contractExpSyncState, setContractExpSyncState] = useState("idle");
   const [contractExpSyncMsg, setContractExpSyncMsg] = useState("");
@@ -9963,7 +9961,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
               const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
               const isOverdue = m.dueDate && new Date(m.dueDate) < now && mst !== "Completed";
 
-              function updateMilestoneField(field, val) {
+              function updateMilestoneField(field, val, skipPrompt = false) {
                 if (!onUpdateProject) return;
                 const proj = projects.find(p => p.id === m.projectId);
                 if (!proj) return;
@@ -9971,7 +9969,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                   x.id === m.id ? { ...x, [field]: val } : x
                 );
                 onUpdateProject({ ...proj, milestones: newMilestones });
-                if (field === "pctComplete" && +val > 0 && m.type === "billable" && m.fee > 0) {
+                if (!skipPrompt && field === "pctComplete" && +val > 0 && m.type === "billable" && m.fee > 0) {
                   const amount = calcInvoiceAmount(m, +val, proj);
                   if (amount > 0) setDashInvoicePrompt({ milestone: m, project: proj, newPct: +val, invoiceAmount: amount });
                 }
@@ -10041,8 +10039,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <input type="number" min={0} max={100}
                           value={m.pctComplete || 0}
-                          onChange={e => updateMilestoneField("pctComplete", +e.target.value)}
-                          style={{ width: 72, fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                          onChange={e => updateMilestoneField("pctComplete", +e.target.value, true)}
+                          onBlur={e => updateMilestoneField("pctComplete", +e.target.value)}
+                          style={{ width: 72, fontFamily: "JetBrains Mono", fontSize: 12, MozAppearance: "textfield" }} />
                         <span style={{ fontSize: 11, color: P.textDim }}>%</span>
                         <input type="checkbox" checked={(m.pctComplete || 0) >= 100}
                           onChange={e => updateMilestoneField("pctComplete", e.target.checked ? 100 : 0)}
