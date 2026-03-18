@@ -23,6 +23,7 @@
 
 
 
+
     const {useState,useEffect,useMemo}=React;
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
@@ -6625,6 +6626,8 @@ function CalendarView({ project, onChange }) {
 
 
 
+
+
 </script>
 <script type="text/babel" data-presets="react">
 
@@ -10478,11 +10481,13 @@ function newStaffMember(overrides) {
   };
 }
 
-function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToProject }) {
+function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToProject, onUpdateProject }) {
   const [editingId, setEditingId] = React.useState(null); // null=list, "__new__"=new, id=editing
   const [form, setForm] = React.useState(null);
   const [search, setSearch] = React.useState("");
   const [expandedStaff, setExpandedStaff] = React.useState({});
+  const [staffRfiModal, setStaffRfiModal] = React.useState(null);
+  const [staffSubModal, setStaffSubModal] = React.useState(null);
 
   // Build lookup: staffName → upcoming milestones across all active projects
   const activeProjects = React.useMemo(() =>
@@ -10491,19 +10496,39 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
 
   const now = new Date();
   const staffMilestones = React.useMemo(() => {
-    const map = {}; // name → [{ milestone, project }]
+    const map = {};
     activeProjects.forEach(p => {
+      const memberById = {};
+      (p.teamMembers || []).forEach(m => { if (m.id) memberById[m.id] = m; });
+      // Regular milestones
       (p.teamMembers || []).forEach(m => {
         if (!m.name) return;
         const key = m.name.trim().toLowerCase();
         if (!map[key]) map[key] = [];
         (p.milestones || [])
-          .filter(ms => ms.dueDate && milestoneStatus(ms.pctComplete) !== "Completed")
-          .forEach(ms => map[key].push({ ms, project: p, role: m.role, disciplines: m.disciplines }));
+          .filter(ms => !ms.cancelled && ms.dueDate && milestoneStatus(ms.pctComplete) !== "Completed")
+          .forEach(ms => map[key].push({ ms, project: p, role: m.role, disciplines: m.disciplines, itemType: "milestone" }));
       });
+      // RFIs assigned to staff
+      (p.rfis || []).filter(r => !["Closed","Void","Responded"].includes(r.status) && r.dueDate)
+        .forEach(r => (r.assignedTo || []).forEach(sid => {
+          const mbr = memberById[sid];
+          if (!mbr || !mbr.name) return;
+          const key = mbr.name.trim().toLowerCase();
+          if (!map[key]) map[key] = [];
+          map[key].push({ ms: { id: r.id, name: r.number + (r.title ? " — " + r.title : ""), dueDate: r.dueDate, pctComplete: 0, status: r.status }, project: p, role: mbr.role, itemType: "rfi", _rfi: r, _project: p });
+        }));
+      // Submittals assigned to staff
+      (p.submittals || []).filter(s => !["Returned","Void"].includes(s.status) && s.dueDate)
+        .forEach(s => (s.assignedTo || []).forEach(sid => {
+          const mbr = memberById[sid];
+          if (!mbr || !mbr.name) return;
+          const key = mbr.name.trim().toLowerCase();
+          if (!map[key]) map[key] = [];
+          map[key].push({ ms: { id: s.id, name: s.number + (s.description ? " — " + s.description : ""), dueDate: s.dueDate, pctComplete: 0, status: s.status }, project: p, role: mbr.role, itemType: "submittal", _sub: s, _project: p });
+        }));
     });
-    // Sort each list by dueDate ascending
-    Object.values(map).forEach(arr => arr.sort((a, b) => a.ms.dueDate.localeCompare(b.ms.dueDate)));
+    Object.values(map).forEach(arr => arr.sort((a, b) => (a.ms.dueDate||"").localeCompare(b.ms.dueDate||"")));
     return map;
   }, [activeProjects]);
 
@@ -10599,6 +10624,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   }
 
   return (
+    <>
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
@@ -10697,17 +10723,26 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                           </tr>
                         </thead>
                         <tbody>
-                          {[...overdue, ...upcoming].map(({ ms, project, role }) => {
+                          {[...overdue, ...upcoming].map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
                             const isOv = new Date(ms.dueDate) < now;
-                            const statusLabel = isOv ? "Overdue" : milestoneStatus(ms.pctComplete);
-                            const statusColor = isOv ? P.red : ms.pctComplete > 0 ? P.yellow : P.textDim;
+                            const isRS = itemType === "rfi" || itemType === "submittal";
+                            const statusLabel = isOv ? "Overdue" : (isRS ? ms.status : milestoneStatus(ms.pctComplete));
+                            const scol = (RFI_STATUS_COLORS[ms.status] || SUBMITTAL_STATUS_COLORS[ms.status] || {});
+                            const statusColor = isOv ? P.red : isRS ? (scol.text || P.textDim) : (ms.pctComplete > 0 ? P.yellow : P.textDim);
+                            const statusBg = isRS ? (scol.bg || "transparent") : "transparent";
                             return (
                               <tr key={ms.id + project.id}
-                                style={{ cursor: "pointer", opacity: ms.type === "non-billable" ? 0.75 : 1 }}
-                                onClick={() => onNavigateToProject && onNavigateToProject(project.id)}>
+                                style={{ cursor: "pointer", opacity: !isRS && ms.type === "non-billable" ? 0.75 : 1 }}
+                                onClick={() => {
+                                  if (itemType === "rfi") setStaffRfiModal({ item: _rfi, project: _project || project });
+                                  else if (itemType === "submittal") setStaffSubModal({ item: _sub, project: _project || project });
+                                  else onNavigateToProject && onNavigateToProject(project.id);
+                                }}>
                                 <td style={{ paddingLeft: 18, fontWeight: 600, fontSize: 13 }}>
-                                  {ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
-                                  {ms.name}
+                                  {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
+                                   : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
+                                   : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
+                                  {" "}{ms.name}
                                 </td>
                                 <td>
                                   <div style={{ fontWeight: 500, fontSize: 13 }}>{project.name}</div>
@@ -10717,12 +10752,12 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                                 <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: isOv ? P.red : P.textMuted, fontWeight: isOv ? 700 : 400 }}>
                                   {fmtDate(ms.dueDate)}
                                 </td>
-                                <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor }}>{statusLabel}</span></td>
+                                <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor, background: statusBg, padding: isRS ? "2px 7px" : 0, borderRadius: isRS ? 8 : 0 }}>{statusLabel}</span></td>
                                 <td>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  {!isRS && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                     <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
                                     <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
-                                  </div>
+                                  </div>}
                                 </td>
                               </tr>
                             );
@@ -10738,6 +10773,35 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
         </div>
       )}
     </div>
+    {staffRfiModal && (
+      <RFIDetailModal
+        item={staffRfiModal.item}
+        project={staffRfiModal.project}
+        staff={staff}
+        clients={[]}
+        type="rfi"
+        onSave={updated => {
+          const p = staffRfiModal.project;
+          onUpdateProject && onUpdateProject({ ...p, rfis: (p.rfis||[]).map(r => r.id===updated.id ? updated : r) });
+        }}
+        onClose={() => setStaffRfiModal(null)}
+      />
+    )}
+    {staffSubModal && (
+      <RFIDetailModal
+        item={staffSubModal.item}
+        project={staffSubModal.project}
+        staff={staff}
+        clients={[]}
+        type="submittal"
+        onSave={updated => {
+          const p = staffSubModal.project;
+          onUpdateProject && onUpdateProject({ ...p, submittals: (p.submittals||[]).map(s => s.id===updated.id ? updated : s) });
+        }}
+        onClose={() => setStaffSubModal(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -11234,7 +11298,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} staff={staff} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
-      {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
@@ -11294,6 +11358,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
   
+
 
 
 </script>
