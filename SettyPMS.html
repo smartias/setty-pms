@@ -389,7 +389,7 @@ async function graphFetch(method, path, body, token) {
     }
   }
 
-  console.log("graphFetch", method, path, reqBody ? reqBody.slice(0, 200) : "(no body)");
+
 
   const makeReq = (tok) => fetch(GRAPH_BASE + path, {
     method,
@@ -472,19 +472,19 @@ async function getNYCCalendarId() {
   try {
     const data = await graphFetch("GET", "/me/calendars?$top=50");
     const cals = data?.value || [];
-    console.log("Available calendars:", cals.map(c => c.name));
+
     // Find NYC Shared Calendar by name (case-insensitive partial match)
     const nyc = cals.find(c => c.name.toLowerCase().includes("nyc") || c.name.toLowerCase().includes("shared"));
     if (nyc) {
       _nycCalendarId = nyc.id;
       localStorage.setItem("setty_pms_cal_id", nyc.id);
-      console.log("Found NYC calendar:", nyc.name, nyc.id);
+
       return _nycCalendarId;
     }
-    console.warn("NYC Shared Calendar not found — available:", cals.map(c => c.name).join(", "));
+
     return null;
   } catch(e) {
-    console.warn("Could not fetch calendars:", e.message);
+
     return null;
   }
 }
@@ -507,7 +507,7 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
     end:   { dateTime: endDate + "T00:00:00",           timeZone: "Eastern Standard Time" },
   };
 
-  console.log("Calendar event body:", JSON.stringify(eventBody));
+
 
   // Build the correct calendar path
   async function calPath(eventId) {
