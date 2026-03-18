@@ -9245,7 +9245,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
       {showInConstruction && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
           onClick={e => { if (e.target === e.currentTarget) setShowInConstruction(false); }}>
-          <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 760, maxWidth: "95vw", maxHeight: "90vh", overflow: "auto" }}>
+          <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: "min(1100px, 96vw)", maxHeight: "92vh", overflowY: "auto", overflowX: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div style={{ fontWeight: 700, fontSize: 16 }}>In Construction Administration{dashPMFilter !== "All" ? " — " + dashPMFilter : ""}</div>
               <div style={{ display: "flex", gap: 8 }}>
@@ -9316,8 +9316,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                       <th style={{ width: 28 }}></th>
                       <th>Project</th>
                       <th>CA Milestone</th>
+                      <th>Due Date</th>
                       <th>Milestone Fee</th>
-                      <th>Already Invoiced</th>
+                      <th>% Invoiced</th>
+                      <th>This Month Projection</th>
                       <th>Amount to Invoice</th>
                       <th>Description</th>
                       <th>Status</th>
@@ -9331,7 +9333,12 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                       const mFee = selMilestone?.fee || 0;
                       const alreadyInv = (p.invoices || []).filter(inv => inv.milestoneId === st.milestoneId).reduce((a, inv) => a + (inv.amount || 0), 0);
                       const remaining = Math.max(0, mFee - alreadyInv);
+                      const pctInvoiced = mFee > 0 ? Math.round(alreadyInv / mFee * 100) : 0;
                       const noCaMilestone = caMilestones.length === 0;
+                      const { monthlyMap: projMap } = buildProjectCashFlow(p);
+                      const today2 = new Date();
+                      const currentYM2 = today2.getFullYear() + "-" + String(today2.getMonth()+1).padStart(2,"0");
+                      const projectedAmt = Math.round(projMap[currentYM2]?.fee || 0);
                       return (
                         <tr key={p.id} style={{ opacity: noCaMilestone ? 0.5 : 1, background: st.status === "done" ? "rgba(52,211,153,.07)" : st.status === "error" ? "rgba(239,68,68,.07)" : "transparent" }}>
                           <td>
@@ -9354,19 +9361,41 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                                   {caMilestones.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                                 </select>}
                           </td>
+                          <td>
+                            {selMilestone && !noCaMilestone ? (
+                              <input type="date" value={selMilestone.dueDate || ""}
+                                onChange={e => {
+                                  const newMilestones = (p.milestones || []).map(m => m.id === selMilestone.id ? { ...m, dueDate: e.target.value } : m);
+                                  onUpdateProject({ ...p, milestones: newMilestones });
+                                }}
+                                style={{ fontSize: 11, width: 120 }} />
+                            ) : <span style={{ color: P.textDim, fontSize: 11 }}>—</span>}
+                          </td>
                           <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.green }}>{mFee > 0 ? fmt(mFee) : "—"}</td>
-                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.purple }}>{mFee > 0 ? fmt(alreadyInv) : "—"}</td>
+                          <td>
+                            {mFee > 0 ? (
+                              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <div style={{ flex: 1, background: P.border, borderRadius: 3, height: 6, minWidth: 50 }}>
+                                  <div style={{ width: Math.min(100, pctInvoiced) + "%", background: pctInvoiced >= 90 ? P.green : pctInvoiced >= 50 ? P.yellow : P.accent, height: 6, borderRadius: 3 }} />
+                                </div>
+                                <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textMuted, minWidth: 30 }}>{pctInvoiced}%</span>
+                              </div>
+                            ) : "—"}
+                          </td>
+                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: projectedAmt > 0 ? P.accentLight : P.textDim }}>
+                            {projectedAmt > 0 ? fmt(projectedAmt) : "—"}
+                          </td>
                           <td>
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               <input type="number" min={0} step={500}
                                 value={st.amount || ""}
-                                placeholder={fmt(remaining)}
+                                placeholder={projectedAmt > 0 ? String(projectedAmt) : fmt(remaining)}
                                 disabled={noCaMilestone || st.status === "done"}
                                 onChange={e => setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], amount: e.target.value } }))}
                                 style={{ width: 100, fontFamily: "JetBrains Mono", fontSize: 12 }} />
-                              {remaining > 0 && st.amount !== remaining && (
+                              {remaining > 0 && (
                                 <button onClick={() => setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], amount: remaining } }))}
-                                  style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }} title="Use full remaining balance">max</button>
+                                  style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }} title="Use full remaining balance">bal</button>
                               )}
                             </div>
                           </td>
