@@ -1968,6 +1968,185 @@ function CancelMilestoneModal({ milestone, project, onConfirm, onClose }) {
 }
 
 
+// ─── CUSTOM DATE PICKER ───────────────────────────────────────────────────────
+// Used only in ScheduleView phase date cells. Stores/emits YYYY-MM-DD.
+
+const DP_MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DP_MONTHS_FULL  = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const DP_DAY_NAMES = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+
+function DatePicker({ value, onChange, disabled, style }) {
+  const parsed = value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(value + "T00:00:00") : null;
+  const [open, setOpen] = React.useState(false);
+  const [viewYear, setViewYear] = React.useState(() => parsed ? parsed.getFullYear() : new Date().getFullYear());
+  const [viewMonth, setViewMonth] = React.useState(() => parsed ? parsed.getMonth() : new Date().getMonth());
+  const [mode, setMode] = React.useState("days"); // "days" | "months" | "years"
+  const ref = React.useRef(null);
+
+  // Close on outside click
+  React.useEffect(() => {
+    if (!open) return;
+    function handler(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  // Sync view when value changes externally
+  React.useEffect(() => {
+    if (parsed) { setViewYear(parsed.getFullYear()); setViewMonth(parsed.getMonth()); }
+  }, [value]);
+
+  function select(y, m, d) {
+    const mm = String(m + 1).padStart(2, "0");
+    const dd = String(d).padStart(2, "0");
+    const iso = `${y}-${mm}-${dd}`;
+    onChange(iso);
+    setOpen(false);
+    setMode("days");
+  }
+
+  function buildCalendar() {
+    const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < firstDay; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+    while (cells.length % 7 !== 0) cells.push(null);
+    return cells;
+  }
+
+  const displayVal = parsed
+    ? DP_MONTHS_SHORT[parsed.getMonth()] + " " + parsed.getDate() + ", " + parsed.getFullYear()
+    : "";
+
+  const selectedDay   = parsed && parsed.getFullYear() === viewYear && parsed.getMonth() === viewMonth ? parsed.getDate() : null;
+  const todayD = new Date();
+  const todayDay = todayD.getFullYear() === viewYear && todayD.getMonth() === viewMonth ? todayD.getDate() : null;
+
+  // Year range for year picker
+  const baseYear = Math.floor(viewYear / 12) * 12;
+  const yearGrid = Array.from({ length: 12 }, (_, i) => baseYear + i);
+
+  const popW = 220;
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "inline-block", ...style }}>
+      <div onClick={() => { if (!disabled) { setOpen(v => !v); setMode("days"); } }}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "4px 8px", borderRadius: 6, cursor: disabled ? "not-allowed" : "pointer",
+          border: `1px solid ${open ? P.accent : P.border}`,
+          background: disabled ? "#2a2a2a" : P.card,
+          color: disabled ? "#888" : displayVal ? P.text : P.textDim,
+          fontSize: 12, fontFamily: "JetBrains Mono", minWidth: 120, userSelect: "none",
+        }}>
+        <span style={{ flex: 1 }}>{displayVal || "—"}</span>
+        {!disabled && <span style={{ fontSize: 10, color: P.textDim }}>▼</span>}
+      </div>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 9000,
+          background: P.card, border: `1px solid ${P.accent}`, borderRadius: 10,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.5)", width: popW, padding: 10,
+        }}>
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <button onClick={() => mode === "years" ? setMode("days") : (mode === "months" ? setMode("days") : (viewMonth === 0 ? (setViewMonth(11), setViewYear(y => y-1)) : setViewMonth(m => m-1)))}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14, padding: "0 4px" }}>‹</button>
+            <div style={{ display: "flex", gap: 4 }}>
+              {mode === "years" ? (
+                <span style={{ fontSize: 12, fontWeight: 700, color: P.text }}>{baseYear} – {baseYear + 11}</span>
+              ) : (
+                <>
+                  <button onClick={() => setMode(m => m === "months" ? "days" : "months")}
+                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, fontWeight: 700, padding: "0 2px" }}>
+                    {DP_MONTHS_FULL[viewMonth]}
+                  </button>
+                  <button onClick={() => setMode(m => m === "years" ? "days" : "years")}
+                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, fontWeight: 700, padding: "0 2px" }}>
+                    {viewYear}
+                  </button>
+                </>
+              )}
+            </div>
+            <button onClick={() => mode === "years" ? (setMode("days")) : (mode === "months" ? setMode("days") : (viewMonth === 11 ? (setViewMonth(0), setViewYear(y => y+1)) : setViewMonth(m => m+1)))}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14, padding: "0 4px" }}>›</button>
+          </div>
+
+          {/* Year grid */}
+          {mode === "years" && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 3 }}>
+              {yearGrid.map(y => (
+                <button key={y} onClick={() => { setViewYear(y); setMode("months"); }}
+                  style={{ background: y === viewYear ? P.accentDim : "none", border: "none",
+                    color: y === viewYear ? P.accentLight : y === todayD.getFullYear() ? P.yellow : P.text,
+                    borderRadius: 4, padding: "5px 2px", cursor: "pointer", fontSize: 11, fontWeight: y === viewYear ? 700 : 400 }}>
+                  {y}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Month grid */}
+          {mode === "months" && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 3 }}>
+              {DP_MONTHS_SHORT.map((mn, mi) => (
+                <button key={mi} onClick={() => { setViewMonth(mi); setMode("days"); }}
+                  style={{ background: mi === viewMonth ? P.accentDim : "none", border: "none",
+                    color: mi === viewMonth ? P.accentLight : P.text,
+                    borderRadius: 4, padding: "6px 2px", cursor: "pointer", fontSize: 11, fontWeight: mi === viewMonth ? 700 : 400 }}>
+                  {mn}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Day grid */}
+          {mode === "days" && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", marginBottom: 4 }}>
+                {DP_DAY_NAMES.map(d => (
+                  <div key={d} style={{ textAlign: "center", fontSize: 10, color: P.textDim, fontWeight: 600, padding: "2px 0" }}>{d}</div>
+                ))}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 1 }}>
+                {buildCalendar().map((d, i) => (
+                  <button key={i} onClick={() => d && select(viewYear, viewMonth, d)}
+                    disabled={!d}
+                    style={{
+                      background: d === selectedDay ? P.accent : d === todayDay ? P.accentDim : "none",
+                      border: "none", borderRadius: 4,
+                      color: !d ? "transparent" : d === selectedDay ? "#fff" : d === todayDay ? P.accentLight : P.text,
+                      cursor: d ? "pointer" : "default",
+                      fontSize: 11, padding: "4px 1px", textAlign: "center",
+                      fontWeight: d === selectedDay ? 700 : 400,
+                    }}>
+                    {d || ""}
+                  </button>
+                ))}
+              </div>
+              {/* Today shortcut */}
+              <div style={{ marginTop: 6, textAlign: "center" }}>
+                <button onClick={() => {
+                  const t = new Date();
+                  select(t.getFullYear(), t.getMonth(), t.getDate());
+                }} style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 4,
+                  color: P.textDim, cursor: "pointer", fontSize: 10, padding: "2px 10px" }}>
+                  Today
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function ScheduleView({ project, onChange }) {
   const phases = project.phases || [];
   const milestones = project.milestones || [];
@@ -2282,16 +2461,16 @@ function ScheduleView({ project, onChange }) {
               <tr key={ph.id}>
                 <td style={{ fontWeight: 500 }}>{ph.name}</td>
                 <td>
-                  <input type="date" value={ph.startDate || ""}
+                  <DatePicker value={ph.startDate || ""}
                     disabled={phaseComplete}
-                    onChange={e => updatePhaseDate(ph.id, "startDate", e.target.value)}
-                    style={phaseComplete ? { background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" } : {}} />
+                    onChange={val => updatePhaseDate(ph.id, "startDate", val)}
+                    style={phaseComplete ? { opacity: 0.5, pointerEvents: "none" } : {}} />
                 </td>
                 <td>
-                  <input type="date" value={ph.endDate || ""}
+                  <DatePicker value={ph.endDate || ""}
                     disabled={phaseComplete}
-                    onChange={e => updatePhaseDate(ph.id, "endDate", e.target.value)}
-                    style={phaseComplete ? { background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" } : {}} />
+                    onChange={val => updatePhaseDate(ph.id, "endDate", val)}
+                    style={phaseComplete ? { opacity: 0.5, pointerEvents: "none" } : {}} />
                 </td>
                 <td>
                   <input type="number" min={1} step={1}
