@@ -106,6 +106,22 @@ function addWorkDays(startDate, days) {
   return d;
 }
 
+
+function downloadCSV(filename, headers, rows) {
+  const esc = v => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const row = arr => arr.map(esc).join(",");
+  const csv = [row(headers), ...rows.map(r => row(r))].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function fmt(n) {
   if (n == null || isNaN(n)) return "$0";
   return "$" + Math.round(n).toLocaleString();
@@ -5518,7 +5534,30 @@ function TeamWBSView({ projects, onNavigateToProject }) {
   return (
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <div style={{ fontSize: 22, fontWeight: 800 }}>Team WBS — All Projects</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>Team WBS — All Projects</div>
+          <Btn small variant="ghost" onClick={() => {
+            // Build CSV: one row per staff member per project
+            const headers = ["Staff Member", "Project Number", "Project Name", "Role", "Disciplines", "Total Budget Hours", "PM Hours", "Disc Hours", ...WBS_DISCIPLINES.map(d => d + " Hrs")];
+            const csvRows = [];
+            staffCols.forEach(col => {
+              col.entries.forEach(entry => {
+                csvRows.push([
+                  col.displayName,
+                  entry.project.projectNumber || "",
+                  entry.project.name || "",
+                  entry.member?.role || "",
+                  (entry.member?.disciplines || []).join("; "),
+                  entry.memberBudget || 0,
+                  entry.pmHoursForEntry || 0,
+                  Object.values(entry.discBreakdown || {}).reduce((a,v) => a+v, 0),
+                  ...WBS_DISCIPLINES.map(d => entry.discBreakdown?.[d] || 0)
+                ]);
+              });
+            });
+            downloadCSV("team_wbs_" + new Date().toISOString().slice(0,10) + ".csv", headers, csvRows);
+          }}>⬇ Export CSV</Btn>
+        </div>
       </div>
       <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 20 }}>
         Weekly hours across {activeProjects.length} active project{activeProjects.length !== 1 ? "s" : ""}. Staff with matching names are merged into one column.
@@ -6218,7 +6257,25 @@ function CashFlowView({ projects, onNavigateToProject }) {
 
   return (
     <div style={{ padding: "24px 32px" }}>
-      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Cash Flow — All Projects</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>Cash Flow — All Projects</div>
+        <Btn small variant="ghost" onClick={() => {
+          const headers = ["Month", "Expected Fee", "Invoiced", "Paid", "Projects"];
+          const rows = months.map(m => [
+            m.month,
+            Math.round(m.fee),
+            Math.round(m.invoiced),
+            Math.round(m.paid),
+            m.projects.map(id => { const p = activeProjects.find(x => x.id === id); return p ? (p.projectNumber || p.name) : id; }).join("; ")
+          ]);
+          // Append project totals summary
+          rows.push([]);
+          rows.push(["PROJECT TOTALS", "", "", "", ""]);
+          rows.push(["Project Number", "Project Name", "Total Fee", "Total Invoiced", "Total Paid", "Remaining"]);
+          Object.values(projectTotals).forEach(p => rows.push([p.projectNumber || "", p.name, Math.round(p.totalFee), Math.round(p.totalInvoiced), Math.round(p.totalPaid || 0), Math.round(p.totalRemaining)]));
+          downloadCSV("cashflow_" + new Date().toISOString().slice(0,10) + ".csv", headers, rows);
+        }}>⬇ Export CSV</Btn>
+      </div>
       <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>
         Combined fee projections and billing across {activeProjects.length} active project{activeProjects.length !== 1 ? "s" : ""}. Expected fee distributed by phase schedule; invoiced amounts shown by actual invoice date.
       </div>
@@ -7349,7 +7406,24 @@ function ProjectionsView({ project }) {
 
   return (
     <div>
-      <SectionTitle>Invoice Projections</SectionTitle>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 16 }}>Invoice Projections</div>
+        <Btn small variant="ghost" onClick={() => {
+          const headers = ["Milestone", "Phase", "Due Date", "Fee", "Invoiced", "Remaining", "Overdue", "Due in 30d"];
+          const csvRows = rows.map(r => [
+            r.name, r.phase || "", r.dueDate || "",
+            Math.round(r.fee), Math.round(r.invoiced), Math.round(r.remaining),
+            r.isOverdue ? "Yes" : "No", r.isPending ? "Yes" : "No"
+          ]);
+          csvRows.push([]);
+          csvRows.push(["TOTALS", "", "", Math.round(totalFee), Math.round(totalInvoiced), Math.round(totalRemaining), "", ""]);
+          csvRows.push([]);
+          csvRows.push(["MONTHLY CASH FLOW"]);
+          csvRows.push(["Month", "Expected Fee", "Invoiced"]);
+          Object.values(monthlyMap).sort((a,b) => a.month > b.month ? 1:-1).forEach(m => csvRows.push([m.month, Math.round(m.fee), Math.round(m.invoiced)]));
+          downloadCSV((project.projectNumber || project.name || "project").replace(/[^a-zA-Z0-9]/g,"_") + "_projections_" + new Date().toISOString().slice(0,10) + ".csv", headers, csvRows);
+        }}>⬇ Export CSV</Btn>
+      </div>
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 20 }}>
         Projected billing schedule based on milestone due dates. Amounts shown are remaining uninvoiced fees.
       </div>
