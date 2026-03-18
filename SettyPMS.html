@@ -2006,6 +2006,15 @@ function ScheduleView({ project, onChange }) {
       // calMap is derived from milestone objects so it stays in sync automatically
     }
     onChange({ ...project, milestones: newMilestones, phases: newPhases });
+    if (field === "pctComplete") {
+      const oldPct = m.pctComplete || 0;
+      const newPct = +val;
+      if (newPct < oldPct && oldPct >= 100) {
+        if (!window.confirm("Reduce \"" + m.name + "\" from 100% back to " + newPct + "%?\n\nThis milestone was marked complete. Reducing it will re-open it in the dashboard and affect financial projections.")) return;
+      } else if (newPct < oldPct && newPct === 0 && oldPct > 20) {
+        if (!window.confirm("Reset \"" + m.name + "\" from " + oldPct + "% back to 0%?\n\nAre you sure?")) return;
+      }
+    }
     if (field === "pctComplete" && +val > 0) {
       const m = milestones.find(x => x.id === id);
       if (m && m.type === "billable" && m.fee > 0) {
@@ -2397,10 +2406,10 @@ function ScheduleView({ project, onChange }) {
                       </Btn>
                     )}
                     {m.type !== "billable" && (
-                      <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>
+                      <Btn small variant="danger" onClick={() => { if (window.confirm("Delete milestone \"" + m.name + "\"?\n\nThis permanently removes it from the project. This cannot be undone.")) onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) }); }}>✕</Btn>
                     )}
                     {m.type === "billable" && !project.feeScheduleFinalized && (
-                      <Btn small variant="danger" onClick={() => onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) })}>✕</Btn>
+                      <Btn small variant="danger" onClick={() => { if (window.confirm("Delete milestone \"" + m.name + "\"?\n\nThis permanently removes it from the project. This cannot be undone.")) onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) }); }}>✕</Btn>
                     )}
                   </div>
                 </td>
@@ -3138,7 +3147,13 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
   }
 
   function deleteInvoice(id) {
-    onChange({ ...project, invoices: invoices.filter(inv => inv.id !== id) });
+    const inv = invoices.find(i => i.id === id);
+    const paid = inv?.amountPaid > 0;
+    const msg = paid
+      ? "Delete invoice " + (inv?.number || "") + " for " + fmt(inv?.amount || 0) + "?\n\n⚠ This invoice has a payment of " + fmt(inv?.amountPaid) + " recorded. Deleting it will remove that payment from your records.\n\nThis cannot be undone."
+      : "Delete invoice " + (inv?.number || "") + " for " + fmt(inv?.amount || 0) + "?\n\nThis cannot be undone.";
+    if (!window.confirm(msg)) return;
+    onChange({ ...project, invoices: invoices.filter(i => i.id !== id) });
   }
 
   const totalPaid        = invoices.reduce((a, inv) => a + (inv.amountPaid || 0), 0);
@@ -4161,7 +4176,8 @@ function RFIsView({ project, onChange, staff, clients }) {
   }
 
   function deleteRFI(id) {
-    if (!window.confirm("Delete this RFI?")) return;
+    const rfi = rfis.find(r => r.id === id);
+    if (!window.confirm("Delete RFI " + (rfi?.number || "") + (rfi?.title ? " — \"" + rfi.title + "\"" : "") + "?\n\nAll notes, responses, and linked data will be lost. This cannot be undone.")) return;
     onChange({ ...project, rfis: rfis.filter(r => r.id !== id) });
   }
 
@@ -4300,7 +4316,8 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   }
 
   function deleteSubmittal(id) {
-    if (!window.confirm("Delete this submittal?")) return;
+    const sub2 = subs.find(s => s.id === id);
+    if (!window.confirm("Delete Submittal " + (sub2?.number || "") + (sub2?.description ? " — \"" + sub2.description + "\"" : "") + "?\n\nAll review comments and linked data will be lost. This cannot be undone.")) return;
     onChange({ ...project, submittals: subs.filter(s => s.id !== id) });
   }
 
@@ -4748,7 +4765,12 @@ function ChangeOrdersView({ project, onChange }) {
                       <Btn small variant="ghost" disabled={emailingId === co.id} onClick={() => emailCO(co)}>
                         {emailingId === co.id ? "⏳" : "✉ Send"}
                       </Btn>
-                      <Btn small variant="danger" onClick={() => onChange({ ...project, changeOrders: cos.filter(c => c.id !== co.id) })}>✕</Btn>
+                      <Btn small variant="danger" onClick={() => {
+                        const msg = co.approved
+                          ? "Delete Change Order \"" + (co.name || co.number || "CO") + "\" (" + fmt(co.fee) + ")?\n\n⚠ This CO is approved and included in your contract total. Deleting it will reduce the project fee.\n\nThis cannot be undone."
+                          : "Delete Change Order \"" + (co.name || co.number || "CO") + "\"?\n\nThis cannot be undone.";
+                        if (window.confirm(msg)) onChange({ ...project, changeOrders: cos.filter(c => c.id !== co.id) });
+                      }}>✕</Btn>
                     </div>
                   </td>
                 </tr>
@@ -5238,7 +5260,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
                 <td><input type="number" value={m.rate} onChange={e => updateMember(m.id, { rate: +e.target.value })} style={{ width: 100 }} /></td>
                 <td>
                   {!isPM
-                    ? <Btn small variant="danger" onClick={() => onChange({ ...project, teamMembers: team.filter(x => x.id !== m.id) })}>✕</Btn>
+                    ? <Btn small variant="danger" onClick={() => { if (window.confirm("Remove " + (m.name || "this person") + " from the project team?\n\nThis will remove their hours from the WBS view. Any RFIs or Submittals assigned to them will remain but show as unassigned.")) onChange({ ...project, teamMembers: team.filter(x => x.id !== m.id) }); }}>✕</Btn>
                     : null
                   }
                 </td>
@@ -7290,7 +7312,7 @@ function SubsView({ project, onChange }) {
                       {SUB_CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
                     </select>
                   </Field>
-                  <Btn small variant="danger" onClick={() => onChange({ ...project, subconsultants: subs.filter(s => s.id !== sub.id) })}>✕</Btn>
+                  <Btn small variant="danger" onClick={() => { if (window.confirm("Remove subconsultant \"" + (sub.name || "this sub") + "\" from the project?\n\nThis removes their fee allocation but does not affect invoices already logged.")) onChange({ ...project, subconsultants: subs.filter(s => s.id !== sub.id) }); }}>✕</Btn>
                 </div>
 
                 {/* Phase fee breakdown */}
@@ -7736,7 +7758,13 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
           <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ fontSize: 13 }}>
             {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
           </select>
-          <Btn small variant={project.archived ? "success" : "ghost"} onClick={() => updateField("archived", !project.archived)}>
+          <Btn small variant={project.archived ? "success" : "ghost"} onClick={() => {
+              if (project.archived) {
+                if (window.confirm("Unarchive \"" + project.name + "\"?\n\nThis will make it visible in the active projects list again.")) updateField("archived", false);
+              } else {
+                if (window.confirm("Archive \"" + project.name + "\"?\n\nArchived projects are hidden from the main list and dashboards. You can unarchive at any time.")) updateField("archived", true);
+              }
+            }}>
             {project.archived ? "Unarchive" : "Archive"}
           </Btn>
         </div>
@@ -8506,7 +8534,8 @@ function NotesView({ project, onChange }) {
     setEditingId(null);
   }
   function deleteNote(id) {
-    if (!window.confirm("Delete this note?")) return;
+    const note = (project.notes||[]).find(n => n.id === id);
+    if (!window.confirm("Delete this note" + (note?.content ? " (\"" + note.content.slice(0,60) + (note.content.length > 60 ? "…" : "") + "\")" : "") + "?\n\nThis cannot be undone.")) return;
     onChange({ ...project, notes: (project.notes||[]).filter(n => n.id !== id) });
   }
 
@@ -9058,7 +9087,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
     ...active.flatMap(p => (p.milestones || []).filter(m => !m.cancelled).map(m => ({
       ...m,
       projectName: p.name, projectId: p.id, pm: p.projectManager,
-      projectStatus: p.status,
+      projectStatus: p.status, contractStatus: p.contractStatus || "",
     }))),
     ...active.flatMap(p => (p.rfis || [])
       .filter(r => !["Closed","Void","Responded"].includes(r.status))
@@ -9657,12 +9686,18 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
               return (
                 <tr key={m.id}>
                   <td>
-                    <button onClick={() => onNavigateToProject(m.projectId)}
-                      style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
-                      onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
-                      onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
-                      {m.projectName}
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <button onClick={() => onNavigateToProject(m.projectId)}
+                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
+                        onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
+                        onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
+                        {m.projectName}
+                      </button>
+                      {m.contractStatus !== "Fully Executed" && !["rfi","submittal"].includes(m.type) && (
+                        <span title={"No fully executed contract — current status: " + (m.contractStatus || "Not set")}
+                          style={{ fontSize: 13, cursor: "help", lineHeight: 1 }}>⚠️</span>
+                      )}
+                    </div>
                   </td>
                   <td style={{ color: P.textMuted }}>{m.pm || "—"}</td>
                   <td style={{ fontWeight: 500 }}>
@@ -10397,7 +10432,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                   <td onClick={e => e.stopPropagation()}>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => startEdit(c)}>Edit</Btn>
-                      <Btn small variant="danger" onClick={() => deleteClient(c.id)}>✕</Btn>
+                      <Btn small variant="danger" onClick={() => { const linkedCount = (projects||[]).filter(p => p.client === c.name || p.prime === c.name).length; const msg = linkedCount > 0 ? "Remove \"" + c.name + "\" from the client directory?\n\n⚠ This client appears on " + linkedCount + " project" + (linkedCount !== 1 ? "s" : "") + ". Removing them does not change those projects, but the client name will no longer link back here." : "Remove \"" + c.name + "\" from the client directory?"; if (window.confirm(msg)) deleteClient(c.id); }}>✕</Btn>
                     </div>
                   </td>
                 </tr>
@@ -11448,6 +11483,10 @@ function App() {
 
   const [showDataTools, setShowDataTools] = useState(false);
   const [importMsg, setImportMsg] = useState("");
+  const [showBackupModal, setShowBackupModal] = useState(false);
+  const [backupImportMsg, setBackupImportMsg] = useState({ text: "", type: "idle" });
+  const [backupImportPreview, setBackupImportPreview] = useState(null); // { parsed, projCount, tcCount, staffCount, clientCount, exportedAt }
+  const [lastBackupDate, setLastBackupDate] = useState(() => localStorage.getItem("settyPMS_lastBackup") || null);
   const [cleanupMsg, setCleanupMsg] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState(null);
 
@@ -11513,15 +11552,20 @@ function App() {
   // ── Data tools ──
 
   function exportBackup() {
-    const data = JSON.stringify({ projects, termContracts, staff, clients, _exportedAt: new Date().toISOString(), _version: 3 }, null, 2);
+    const now = new Date();
+    const ts = now.toISOString();
+    const date = ts.slice(0, 10);
+    const data = JSON.stringify({ projects, termContracts, staff, clients, _exportedAt: ts, _version: 3 }, null, 2);
     const blob = new Blob([data], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const date = new Date().toISOString().slice(0, 10);
     a.href = url;
     a.download = `SettyPMS-backup-${date}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    localStorage.setItem("settyPMS_lastBackup", ts);
+    setLastBackupDate(ts);
+    setBackupImportMsg({ text: "✓ Backup downloaded: SettyPMS-backup-" + date + ".json", type: "success" });
   }
 
   function exportCSV() {
@@ -11620,6 +11664,53 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
     e.target.value = "";
   }
 
+  function handleBackupFileSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBackupImportMsg({ text: "Reading file...", type: "idle" });
+    setBackupImportPreview(null);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed.projects || !Array.isArray(parsed.projects)) {
+          setBackupImportMsg({ text: "✗ Invalid file — no projects array found.", type: "error" });
+          return;
+        }
+        setBackupImportPreview({
+          parsed,
+          projCount: parsed.projects.length,
+          tcCount: (parsed.termContracts || []).length,
+          staffCount: (parsed.staff || []).length,
+          clientCount: (parsed.clients || []).length,
+          exportedAt: parsed._exportedAt || null,
+          version: parsed._version || 1,
+          filename: file.name,
+        });
+        setBackupImportMsg({ text: "", type: "idle" });
+      } catch(err) {
+        setBackupImportMsg({ text: "✗ Could not parse file: " + err.message, type: "error" });
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  function confirmRestore() {
+    if (!backupImportPreview) return;
+    const { parsed, projCount, tcCount } = backupImportPreview;
+    setProjects(parsed.projects);
+    setTermContracts(parsed.termContracts || []);
+    setStaff(parsed.staff || []);
+    setClients(parsed.clients || []);
+    performSave({ projects: parsed.projects, termContracts: parsed.termContracts || [], staff: parsed.staff || [], clients: parsed.clients || [] });
+    setBackupImportMsg({ text: "✓ Restored " + projCount + " projects, " + tcCount + " term contracts. Saving to Supabase…", type: "success" });
+    setBackupImportPreview(null);
+    const now = new Date().toISOString();
+    localStorage.setItem("settyPMS_lastBackup", now);
+    setLastBackupDate(now);
+  }
+
   function previewCleanup(months) {
     const cutoff = new Date();
     cutoff.setMonth(cutoff.getMonth() - months);
@@ -11642,10 +11733,13 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
 
   function confirmCleanup() {
     if (!cleanupPreview) return;
+    const n = cleanupPreview.toDelete.length;
+    const typed = window.prompt(`Permanently delete ${n} archived project${n !== 1 ? "s" : ""}?\n\nThis CANNOT be undone. These projects and all their data will be gone forever.\n\nType DELETE to confirm:`);
+    if (typed !== "DELETE") { setCleanupMsg("Cancelled — you must type DELETE exactly to confirm."); return; }
     const ids = new Set(cleanupPreview.toDelete.map(p => p.id));
     const remaining = projects.filter(p => !ids.has(p.id));
     setProjects(remaining);
-    setCleanupMsg(`✓ Permanently deleted ${cleanupPreview.toDelete.length} archived project${cleanupPreview.toDelete.length !== 1 ? "s" : ""}. Saving…`);
+    setCleanupMsg(`✓ Permanently deleted ${n} archived project${n !== 1 ? "s" : ""}. Saving…`);
     setCleanupPreview(null);
     performSave({ projects: remaining, termContracts, staff, clients });
   }
@@ -11707,6 +11801,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
   ) : null;
 
   return (
+    <>
     <div style={{ minHeight: "100vh", background: P.bg }}>
       <style>{CSS}</style>
 
@@ -11724,6 +11819,17 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
         ))}
         <div style={{ flex: 1 }} />
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} />
+        {(() => {
+          const daysSince = lastBackupDate ? Math.floor((Date.now() - new Date(lastBackupDate)) / 86400000) : 999;
+          const overdue = daysSince >= 7;
+          return (
+            <Btn small variant={overdue ? "primary" : "ghost"} onClick={() => { setShowBackupModal(true); setBackupImportMsg({ text: "", type: "idle" }); setBackupImportPreview(null); }}
+              style={{ position: "relative" }}>
+              {overdue && <span style={{ position: "absolute", top: -4, right: -4, width: 8, height: 8, borderRadius: "50%", background: P.red }} />}
+              🗄 Backup{overdue ? " !" : ""}
+            </Btn>
+          );
+        })()}
         <Btn small variant="ghost" onClick={exportCSV}>⬇ CSV</Btn>
         <Btn small onClick={addProject}>+ New Project</Btn>
       </div>
@@ -11786,6 +11892,114 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
         <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} />
       )}
     </div>
+
+    {/* Backup and Restore Modal */}
+    {showBackupModal && (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 4000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+        onClick={e => { if (e.target === e.currentTarget) setShowBackupModal(false); }}>
+        <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 14, padding: 32, width: 560, maxWidth: "95vw" }}>
+
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>🗄 Backup & Restore</div>
+              <div style={{ fontSize: 12, color: P.textDim, marginTop: 3 }}>
+                {lastBackupDate
+                  ? "Last backup: " + new Date(lastBackupDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })
+                  : "No backup recorded on this device"}
+              </div>
+            </div>
+            <button onClick={() => setShowBackupModal(false)} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20 }}>✕</button>
+          </div>
+
+          {/* Stats */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 24 }}>
+            {[
+              { label: "Projects", val: projects.length },
+              { label: "Term Contracts", val: termContracts.length },
+              { label: "Staff", val: staff.length },
+              { label: "Clients", val: clients.length },
+            ].map(({ label, val }) => (
+              <div key={label} style={{ background: P.bg, borderRadius: 8, padding: "10px 14px", textAlign: "center", border: "1px solid " + P.border }}>
+                <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, fontSize: 20, color: P.accentLight }}>{val}</div>
+                <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Export */}
+          <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 10, padding: 18, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Export Backup</div>
+            <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>
+              Downloads a complete JSON backup of all projects, term contracts, staff, and clients.
+              Store it somewhere safe — SharePoint, email to yourself, or a shared drive.
+              <strong style={{ color: P.yellow }}> Recommended weekly.</strong>
+            </div>
+            <Btn onClick={exportBackup}>⬇ Download Backup</Btn>
+          </div>
+
+          {/* Import / Restore */}
+          <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 10, padding: 18 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Restore from Backup</div>
+            <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>
+              Select a previously exported <code style={{ background: P.border, padding: "1px 5px", borderRadius: 3 }}>.json</code> backup file.
+              You will see a preview before anything is overwritten.
+              <strong style={{ color: P.red }}> This replaces all current data.</strong>
+            </div>
+
+            {!backupImportPreview ? (
+              <label style={{ display: "inline-block", cursor: "pointer" }}>
+                <input type="file" accept=".json" onChange={handleBackupFileSelect} style={{ display: "none" }} />
+                <span style={{ display: "inline-block", background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600, color: P.text, cursor: "pointer" }}>
+                  📂 Select Backup File
+                </span>
+              </label>
+            ) : (
+              <div>
+                <div style={{ background: P.card, border: "1px solid " + P.yellow, borderRadius: 8, padding: 14, marginBottom: 14 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: P.yellow, marginBottom: 8 }}>⚠ Review before restoring</div>
+                  <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 4 }}>
+                    File: <strong>{backupImportPreview.filename}</strong>
+                  </div>
+                  {backupImportPreview.exportedAt && (
+                    <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 10 }}>
+                      Exported: {new Date(backupImportPreview.exportedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                  )}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 12 }}>
+                    {[
+                      { label: "Projects", val: backupImportPreview.projCount, curr: projects.length },
+                      { label: "Term Contracts", val: backupImportPreview.tcCount, curr: termContracts.length },
+                      { label: "Staff", val: backupImportPreview.staffCount, curr: staff.length },
+                      { label: "Clients", val: backupImportPreview.clientCount, curr: clients.length },
+                    ].map(({ label, val, curr }) => (
+                      <div key={label} style={{ background: P.bg, borderRadius: 6, padding: "8px 10px", textAlign: "center" }}>
+                        <div style={{ fontFamily: "JetBrains Mono", fontWeight: 700, fontSize: 16, color: val !== curr ? P.yellow : P.green }}>{val}</div>
+                        <div style={{ fontSize: 10, color: P.textDim }}>{label}</div>
+                        {val !== curr && <div style={{ fontSize: 10, color: P.textDim }}>now: {curr}</div>}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Btn variant="danger" onClick={confirmRestore}>⚠ Restore — Replace All Data</Btn>
+                    <Btn variant="ghost" onClick={() => { setBackupImportPreview(null); setBackupImportMsg({ text: "", type: "idle" }); }}>Cancel</Btn>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {backupImportMsg.text && (
+              <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600,
+                color: backupImportMsg.type === "success" ? P.green : backupImportMsg.type === "error" ? P.red : P.textDim }}>
+                {backupImportMsg.text}
+              </div>
+            )}
+          </div>
+
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
