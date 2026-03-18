@@ -3859,6 +3859,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Due Date</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
         + (isRFI && form.description ? "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Question</td><td style='padding:8px 12px'>" + form.description + "</td></tr>" : "")
       + "</table>"
+      + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
       + "<p style='font-size:11px;color:#44546A'>Please respond by the due date above. Contact the Project Manager if you have questions.</p></div>";
     try {
       await createOutlookDraft({ subject: typLabel + " Assignment: " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml });
@@ -3881,6 +3882,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Description</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
       + "</table>"
+      + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
       + "<p style='font-size:11px;color:#44546A'>Please send your response to this email. Thank you.</p></div>";
     try {
       await createOutlookDraft({ subject: typLabel + " — " + form.number + " — " + (isRFI ? form.title : form.description) + " · Sub Response Requested", bodyHtml });
@@ -8830,6 +8832,8 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const [addMilForm, setAddMilForm] = useState({ name: "", dueDate: "", notes: "" });
   const [addMilMsg, setAddMilMsg] = useState("");
   const [dashInvoicePrompt, setDashInvoicePrompt] = useState(null);
+  const [dashRfiModal, setDashRfiModal] = useState(null);    // { item, project }
+  const [dashSubModal, setDashSubModal] = useState(null);    // { item, project }
 
   function submitAddMilestone() {
     if (!addMilProjectId) { setAddMilMsg("Please select a project."); return; }
@@ -8880,15 +8884,34 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   }
   // Build a quick lookup: projectId → project
   const projectMap = Object.fromEntries(active.map(p => [p.id, p]));
-  const allMilestones = active.flatMap(p => (p.milestones || []).map(m => ({
-    ...m,
-    projectName: p.name, projectId: p.id, pm: p.projectManager,
-    projectStatus: p.status,
-  })));
+  const allMilestones = [
+    ...active.flatMap(p => (p.milestones || []).filter(m => !m.cancelled).map(m => ({
+      ...m,
+      projectName: p.name, projectId: p.id, pm: p.projectManager,
+      projectStatus: p.status,
+    }))),
+    ...active.flatMap(p => (p.rfis || [])
+      .filter(r => !["Closed","Void","Responded"].includes(r.status))
+      .map(r => ({
+        id: r.id, type: "rfi", name: r.number + (r.title ? " — " + r.title : ""),
+        dueDate: r.dueDate, pctComplete: 0, notes: r.status,
+        projectName: p.name, projectId: p.id, pm: p.projectManager,
+        projectStatus: p.status, _rfi: r, _project: p,
+      }))),
+    ...active.flatMap(p => (p.submittals || [])
+      .filter(s => !["Returned","Void"].includes(s.status))
+      .map(s => ({
+        id: s.id, type: "submittal", name: s.number + (s.description ? " — " + s.description : ""),
+        dueDate: s.dueDate, pctComplete: 0, notes: s.status,
+        projectName: p.name, projectId: p.id, pm: p.projectManager,
+        projectStatus: p.status, _sub: s, _project: p,
+      }))),
+  ];
   const now = new Date();
   const in14 = new Date(); in14.setDate(in14.getDate() + 14);
-  const overdue = allMilestones.filter(m => m.dueDate && new Date(m.dueDate) < now && milestoneStatus(m.pctComplete) !== "Completed");
-  const upcoming = allMilestones.filter(m => { const d = new Date(m.dueDate); return d >= now && d <= in14 && milestoneStatus(m.pctComplete) !== "Completed"; });
+  const isItemDone = m => ["rfi","submittal"].includes(m.type) ? false : milestoneStatus(m.pctComplete) === "Completed";
+  const overdue = allMilestones.filter(m => m.dueDate && new Date(m.dueDate) < now && !isItemDone(m));
+  const upcoming = allMilestones.filter(m => { const d = new Date(m.dueDate); return d >= now && d <= in14 && !isItemDone(m); });
 
   // ── Financial KPIs ──
   const nowDate = new Date();
@@ -9169,7 +9192,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
             <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Progress</th><th>Notes</th><th>Project Status</th><th style={{width:44}}>📅</th></tr>
           </thead>
           <tbody>
-            {allMilestones.filter(m => !(m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
+            {allMilestones.filter(m => !(!["rfi","submittal"].includes(m.type) && m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
               const mst = milestoneStatus(m.pctComplete);
               const projStatus = m.projectStatus || "Not Started";
               const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
@@ -9205,26 +9228,58 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                     </button>
                   </td>
                   <td style={{ color: P.textMuted }}>{m.pm || "—"}</td>
-                  <td style={{ fontWeight: 500 }}>{m.name}</td>
-                  <td><Badge color={m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
-                  <td>
-                    <input type="date" value={m.dueDate || ""}
-                      onChange={e => updateMilestoneField("dueDate", e.target.value)}
-                      style={{ fontFamily: "JetBrains Mono", fontSize: 12, width: 130, borderColor: isOverdue ? P.red : P.border, color: isOverdue ? P.red : P.text }} />
+                  <td style={{ fontWeight: 500 }}>
+                    {m.type === "rfi" ? (
+                      <button onClick={() => setDashRfiModal({ item: m._rfi, project: m._project })}
+                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer",
+                          fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left", textDecoration: "underline dotted" }}>
+                        {m.name}
+                      </button>
+                    ) : m.type === "submittal" ? (
+                      <button onClick={() => setDashSubModal({ item: m._sub, project: m._project })}
+                        style={{ background: "none", border: "none", color: "#a78bfa", cursor: "pointer",
+                          fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left", textDecoration: "underline dotted" }}>
+                        {m.name}
+                      </button>
+                    ) : m.name}
                   </td>
                   <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input type="number" min={0} max={100}
-                        value={m.pctComplete || 0}
-                        onChange={e => updateMilestoneField("pctComplete", +e.target.value)}
-                        style={{ width: 72, fontFamily: "JetBrains Mono", fontSize: 12 }} />
-                      <span style={{ fontSize: 11, color: P.textDim }}>%</span>
-                      <input type="checkbox" checked={(m.pctComplete || 0) >= 100}
-                        onChange={e => updateMilestoneField("pctComplete", e.target.checked ? 100 : 0)}
-                        title="Mark complete (100%)"
-                        style={{ width: 16, height: 16, cursor: "pointer", accentColor: P.green }} />
-                      <ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} />
-                    </div>
+                    {m.type === "rfi"
+                      ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
+                      : m.type === "submittal"
+                      ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="Submittal" />
+                      : <Badge color={m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }} text={m.type === "billable" ? "Billable" : "Non-Billable"} />}
+                  </td>
+                  <td>
+                    <input type="date" value={m.dueDate || ""}
+                      onChange={e => !["rfi","submittal"].includes(m.type) && updateMilestoneField("dueDate", e.target.value)}
+                      readOnly={["rfi","submittal"].includes(m.type)}
+                      style={{ fontFamily: "JetBrains Mono", fontSize: 12, width: 130,
+                        borderColor: isOverdue ? P.red : ["rfi","submittal"].includes(m.type) ? "transparent" : P.border,
+                        color: isOverdue ? P.red : P.text,
+                        background: ["rfi","submittal"].includes(m.type) ? "transparent" : undefined }} />
+                  </td>
+                  <td>
+                    {["rfi","submittal"].includes(m.type) ? (
+                      <span style={{ fontSize: 12, fontWeight: 600, padding: "2px 8px", borderRadius: 8,
+                        color: (RFI_STATUS_COLORS[m.notes] || SUBMITTAL_STATUS_COLORS[m.notes] || {}).text || P.textDim,
+                        background: (RFI_STATUS_COLORS[m.notes] || SUBMITTAL_STATUS_COLORS[m.notes] || {}).bg || "transparent" }}>
+                        {m.notes}
+                      </span>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <input type="number" min={0} max={100}
+                          value={m.pctComplete || 0}
+                          onChange={e => updateMilestoneField("pctComplete", +e.target.value)}
+                          style={{ width: 72, fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                        <span style={{ fontSize: 11, color: P.textDim }}>%</span>
+                        <input type="checkbox" checked={(m.pctComplete || 0) >= 100}
+                          onChange={e => updateMilestoneField("pctComplete", e.target.checked ? 100 : 0)}
+                          title="Mark complete (100%)"
+                          style={{ width: 16, height: 16, cursor: "pointer", accentColor: P.green }} />
+                        <ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} />
+                      </div>
+                    )}
                   </td>
                   <td>
                     <input value={m.notes || ""} placeholder="Notes…"
@@ -9279,6 +9334,34 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
           onUpdateProject({ ...proj, invoices: [...(proj.invoices || []), inv] });
         }}
         onClose={() => setDashInvoicePrompt(null)}
+      />
+    )}
+    {dashRfiModal && (
+      <RFIDetailModal
+        item={dashRfiModal.item}
+        project={dashRfiModal.project}
+        staff={staff}
+        clients={[]}
+        type="rfi"
+        onSave={updated => {
+          const p = dashRfiModal.project;
+          onUpdateProject({ ...p, rfis: (p.rfis || []).map(r => r.id === updated.id ? updated : r) });
+        }}
+        onClose={() => setDashRfiModal(null)}
+      />
+    )}
+    {dashSubModal && (
+      <RFIDetailModal
+        item={dashSubModal.item}
+        project={dashSubModal.project}
+        staff={staff}
+        clients={[]}
+        type="submittal"
+        onSave={updated => {
+          const p = dashSubModal.project;
+          onUpdateProject({ ...p, submittals: (p.submittals || []).map(s => s.id === updated.id ? updated : s) });
+        }}
+        onClose={() => setDashSubModal(null)}
       />
     )}
     </>
