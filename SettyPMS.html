@@ -9260,7 +9260,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                     inConstructionProjects.forEach(p => {
                       const { monthlyMap, totalInvoiced, totalFee } = buildProjectCashFlow(p);
                       const projected = Math.round((monthlyMap[currentYM]?.fee || 0));
-                      const caMilestone = (p.milestones || []).find(m => m.type === "billable" && m.phase === "CA" && !m.cancelled);
+                      const caMilestone = (p.milestones || []).find(m => m.type === "billable" && !m.cancelled && (m.pctComplete || 0) < 100 && m.fee > 0 && m.fee > (p.invoices || []).filter(inv => inv.milestoneId === m.id).reduce((a, inv) => a + (inv.amount || 0), 0));
                       init[p.id] = {
                         amount: projected || "",
                         desc: "Construction Administration Services — " + monthLabel,
@@ -9315,7 +9315,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                     <tr>
                       <th style={{ width: 28 }}></th>
                       <th>Project</th>
-                      <th>CA Milestone</th>
+                      <th>Milestone</th>
                       <th>Due Date</th>
                       <th>Milestone Fee</th>
                       <th>% Invoiced</th>
@@ -9328,7 +9328,11 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                   <tbody>
                     {inConstructionProjects.map(p => {
                       const st = caInvoiceState[p.id] || {};
-                      const caMilestones = (p.milestones || []).filter(m => m.type === "billable" && m.phase === "CA" && !m.cancelled);
+                      const caMilestones = (p.milestones || []).filter(m => {
+                        if (m.type !== "billable" || m.cancelled || (m.pctComplete || 0) >= 100) return false;
+                        const invoiced = (p.invoices || []).filter(inv => inv.milestoneId === m.id).reduce((a, inv) => a + (inv.amount || 0), 0);
+                        return m.fee > 0 && invoiced < m.fee;
+                      });
                       const selMilestone = (p.milestones || []).find(m => m.id === st.milestoneId) || caMilestones[0];
                       const mFee = selMilestone?.fee || 0;
                       const alreadyInv = (p.invoices || []).filter(inv => inv.milestoneId === st.milestoneId).reduce((a, inv) => a + (inv.amount || 0), 0);
@@ -9353,7 +9357,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                           </td>
                           <td>
                             {noCaMilestone
-                              ? <span style={{ fontSize: 11, color: P.red }}>No CA milestone</span>
+                              ? <span style={{ fontSize: 11, color: P.red }}>No uninvoiced milestones</span>
                               : caMilestones.length === 1
                               ? <span style={{ fontSize: 12 }}>{selMilestone?.name}</span>
                               : <select value={st.milestoneId || ""} style={{ fontSize: 12, width: 140 }}
@@ -9458,7 +9462,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                           // Create invoice record
                           const newInvoice = {
                             id: uid(), number: invNumber, date: today,
-                            phase: "CA", phaseName: milestone.name,
+                            phase: milestone.phase || "CA", phaseName: milestone.name,
                             milestoneId: milestone.id, milestoneName: milestone.name,
                             method: "ca_batch", description: st.desc || milestone.name,
                             lineItems: [{ name: st.desc || milestone.name, amount }],
