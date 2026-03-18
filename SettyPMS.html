@@ -7849,7 +7849,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             </Field>
 
             <Field label="OneNote Notebook" style={{ gridColumn: "1 / -1" }}>
-              <OneNoteNotebookField project={project} onUpdate={updateField} />
+              <OneNoteNotebookField project={project} onChange={onUpdate} updateField={updateField} />
             </Field>
 
             <Field label="PM / Project Contact" style={{ gridColumn: "1 / -1" }}>
@@ -8621,7 +8621,6 @@ function CalendarImportPanel({ project, onImport }) {
     setImporting(true);
     const toImport = events.filter(ev => selected[ev.id]);
     const notebookId = project.oneNoteNotebookId || "";
-    setImportStatus("notebookId=" + (notebookId || "MISSING"));
     const notes = [];
     for (const ev of toImport) {
       const cat = noteType[ev.id] || "Meeting";
@@ -8629,7 +8628,6 @@ function CalendarImportPanel({ project, onImport }) {
       let oneNoteUrl = "";
       // Auto-create OneNote page if notebook exists and category warrants it
       const createPage = notebookId && ["Meeting", "Site Visit", "Client Communication"].includes(cat);
-      setImportStatus("notebookId=" + (notebookId||"MISSING") + " cat=" + cat + " createPage=" + createPage);
       if (createPage) {
         try {
           const title = ev.subject || "(No title)";
@@ -10816,7 +10814,7 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
   );
 }
 
-function OneNoteNotebookField({ project, onUpdate }) {
+function OneNoteNotebookField({ project, onChange, updateField }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
   const notebookUrl = project.oneNoteNotebookUrl || "";
@@ -10826,8 +10824,7 @@ function OneNoteNotebookField({ project, onUpdate }) {
     setMsg("");
     try {
       const { id, webUrl } = await createOneNoteNotebook(project);
-      onUpdate("oneNoteNotebookId", id);
-      onUpdate("oneNoteNotebookUrl", webUrl);
+      onChange({ ...project, oneNoteNotebookId: id, oneNoteNotebookUrl: webUrl });
       setStatus("done");
       setMsg("✓ Notebook created");
     } catch(e) {
@@ -10846,7 +10843,7 @@ function OneNoteNotebookField({ project, onUpdate }) {
             fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
           📓 Open
         </a>
-        <button onClick={() => { if (window.confirm("Clear the saved OneNote notebook link? This won't delete the notebook.")) { onUpdate("oneNoteNotebookUrl", ""); onUpdate("oneNoteNotebookId", ""); }}}
+        <button onClick={() => { if (window.confirm("Clear the saved OneNote notebook link? This won't delete the notebook.")) { if (updateField) { updateField("oneNoteNotebookUrl", ""); updateField("oneNoteNotebookId", ""); } else { onChange({ ...project, oneNoteNotebookUrl: "", oneNoteNotebookId: "" }); } }}}
           style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }}>✕</button>
       </div>
     );
