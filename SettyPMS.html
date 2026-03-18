@@ -8530,6 +8530,7 @@ function CalendarImportPanel({ project, onImport }) {
   const [selected, setSelected] = React.useState({});
   const [noteType, setNoteType] = React.useState({});
   const [importing, setImporting] = React.useState(false);
+  const [importStatus, setImportStatus] = React.useState("");
 
   const defaultKeyword = React.useMemo(() => {
     const GENERIC = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","nyc","building","garage","marina","park","plaza","center","campus","tower","hall","house","complex","facility","site","phase","rehab","rehabilitation","renovation","restoration","design","engineering","services","systems","study","survey","report","plan","program","management"]);
