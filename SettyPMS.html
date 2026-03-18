@@ -252,6 +252,11 @@ function newProject(overrides = {}) {
     contractFolderUrl: "",
     projectFolderUrl: "",
     feeCalculatorSubs: [],
+    rfis: [],
+    submittals: [],
+    submittalRegister: [],
+    rfiDueDays: 5,
+    submittalDueDays: 10,
     phaseSubFees: {},
     contractExpirationDate: "",
     archived: false,
@@ -3739,6 +3744,723 @@ function MiniRichEditor({ value, onChange, placeholder }) {
   );
 }
 
+
+// ─── RFI & SUBMITTAL CONSTANTS ────────────────────────────────────────────────
+
+const RFI_STATUSES    = ["Open", "Pending Sub Response", "Responded", "Closed", "Void"];
+const SUBMITTAL_STATUSES = ["Received", "Under Review", "Pending Sub Review", "Returned", "Resubmittal Required", "Void"];
+const SUBMITTAL_STAMPS = ["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected", "—"];
+const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Multi-Discipline", "Other"];
+const SUBMITTAL_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Other"];
+
+const RFI_STATUS_COLORS = {
+  "Open":                  { bg: "#1e3a5f", text: "#60a5fa" },
+  "Pending Sub Response":  { bg: "#3b2a1a", text: "#f59e0b" },
+  "Responded":             { bg: "#1a3a2a", text: "#34d399" },
+  "Closed":                { bg: "#1a1a2e", text: "#6b7280" },
+  "Void":                  { bg: "#1a1a1a", text: "#4b5563" },
+};
+const SUBMITTAL_STATUS_COLORS = {
+  "Received":              { bg: "#1e3a5f", text: "#60a5fa" },
+  "Under Review":          { bg: "#2a1a3b", text: "#a78bfa" },
+  "Pending Sub Review":    { bg: "#3b2a1a", text: "#f59e0b" },
+  "Returned":              { bg: "#1a3a2a", text: "#34d399" },
+  "Resubmittal Required":  { bg: "#3b1a1a", text: "#f87171" },
+  "Void":                  { bg: "#1a1a1a", text: "#4b5563" },
+};
+const STAMP_COLORS = {
+  "Approved":              { bg: "#1a3a2a", text: "#34d399" },
+  "Approved as Noted":     { bg: "#1e3a5f", text: "#60a5fa" },
+  "Revise and Resubmit":   { bg: "#3b1a1a", text: "#f87171" },
+  "Rejected":              { bg: "#3b0a0a", text: "#ef4444" },
+  "—":                     { bg: "#1a1a1a", text: "#6b7280" },
+};
+
+function addWD(dateStr, days) {
+  const d = new Date(dateStr + "T00:00:00");
+  let count = 0;
+  while (count < days) {
+    d.setDate(d.getDate() + 1);
+    if (d.getDay() !== 0 && d.getDay() !== 6) count++;
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+function isOverdue(item) {
+  if (!item.dueDate) return false;
+  const closed = ["Closed", "Void", "Responded", "Returned"];
+  if (closed.includes(item.status)) return false;
+  return new Date(item.dueDate + "T00:00:00") < new Date();
+}
+
+function newRFI(cos, dueDays) {
+  const today = new Date().toISOString().slice(0, 10);
+  const num = cos.length + 1;
+  return {
+    id: uid(), number: "RFI-" + String(num).padStart(3, "0"),
+    title: "", description: "", from: "", discipline: "Mechanical",
+    assignedTo: [], subAssigned: "",
+    dateReceived: today, dueDate: addWD(today, dueDays || 5),
+    dateResponded: "", response: "",
+    status: "Open", notes: "",
+    spFolderUrl: "",
+  };
+}
+
+function newSubmittal(subs, dueDays) {
+  const today = new Date().toISOString().slice(0, 10);
+  const num = subs.length + 1;
+  return {
+    id: uid(), number: "SUB-" + String(num).padStart(3, "0"),
+    specSection: "", description: "", from: "", discipline: "Mechanical",
+    assignedTo: [], subAssigned: "",
+    dateReceived: today, dueDate: addWD(today, dueDays || 10),
+    dateReturned: "", comments: "",
+    status: "Received", stamp: "—", resubNumber: 0,
+    notes: "", spFolderUrl: "",
+    registerItemId: "",
+  };
+}
+
+// ─── SHARED: RFI/SUBMITTAL DETAIL MODAL ──────────────────────────────────────
+
+function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }) {
+  const [form, setForm] = useState({ ...item });
+  const [emailStatus, setEmailStatus] = useState("idle");
+  const [emailMsg, setEmailMsg] = useState("");
+  const [spStatus, setSpStatus] = useState("idle");
+  const isRFI = type === "rfi";
+  const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
+
+  function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
+
+  const staffList = project.teamMembers || [];
+  const subList = (project.subconsultants || []);
+  const companyName = project.prime || project.clientName || "";
+  const company = (clients || []).find(c => c.name && c.name.toLowerCase() === companyName.toLowerCase());
+  const clientContacts = company ? (company.contacts || []) : [];
+
+  async function draftAssignEmail() {
+    const assignees = (staffList || []).filter(s => (form.assignedTo || []).includes(s.id));
+    if (!assignees.length) { setEmailMsg("Select at least one assignee first."); setEmailStatus("error"); return; }
+    setEmailStatus("sending");
+    const typLabel = isRFI ? "RFI" : "Submittal";
+    const bodyHtml = "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a'>"
+      + "<div style='border-bottom:3px solid #1F3864;padding-bottom:10px;margin-bottom:16px'>"
+        + "<div style='font-size:22px;font-weight:900;color:#C00000;letter-spacing:2px'>SETTY</div>"
+        + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+      + "<p>You have been assigned a " + typLabel + " for review. Please see details below.</p>"
+      + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px'>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (project.name || "—") + (project.projectNumber ? " (" + project.projectNumber + ")" : "") + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700'>" + typLabel + " #</td><td style='padding:8px 12px'>" + form.number + "</td></tr>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Title</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700'>Discipline</td><td style='padding:8px 12px'>" + form.discipline + "</td></tr>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Date Received</td><td style='padding:8px 12px'>" + fmtDate(form.dateReceived) + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Due Date</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
+        + (isRFI && form.description ? "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Question</td><td style='padding:8px 12px'>" + form.description + "</td></tr>" : "")
+      + "</table>"
+      + "<p style='font-size:11px;color:#44546A'>Please respond by the due date above. Contact the Project Manager if you have questions.</p></div>";
+    try {
+      await createOutlookDraft({ subject: typLabel + " Assignment: " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml });
+      setEmailStatus("done"); setEmailMsg("✓ Assignment draft created in Outlook Drafts");
+    } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
+  }
+
+  async function draftSubEmail() {
+    if (!form.subAssigned) { setEmailMsg("Select a sub first."); setEmailStatus("error"); return; }
+    setEmailStatus("sending");
+    const typLabel = isRFI ? "RFI" : "Submittal";
+    const bodyHtml = "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a'>"
+      + "<div style='border-bottom:3px solid #1F3864;padding-bottom:10px;margin-bottom:16px'>"
+        + "<div style='font-size:22px;font-weight:900;color:#C00000;letter-spacing:2px'>SETTY</div>"
+        + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+      + "<p>Please review the attached " + typLabel + " and provide your response by the date indicated.</p>"
+      + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px'>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (project.name || "—") + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700'>" + typLabel + " #</td><td style='padding:8px 12px'>" + form.number + "</td></tr>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Description</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
+      + "</table>"
+      + "<p style='font-size:11px;color:#44546A'>Please send your response to this email. Thank you.</p></div>";
+    try {
+      await createOutlookDraft({ subject: typLabel + " — " + form.number + " — " + (isRFI ? form.title : form.description) + " · Sub Response Requested", bodyHtml });
+      setF("status", isRFI ? "Pending Sub Response" : "Pending Sub Review");
+      setEmailStatus("done"); setEmailMsg("✓ Sub forwarding draft created");
+    } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
+  }
+
+  async function draftResponseEmail() {
+    setEmailStatus("sending");
+    const typLabel = isRFI ? "RFI" : "Submittal";
+    const responseText = isRFI ? form.response : form.comments;
+    const bodyHtml = "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a'>"
+      + "<div style='border-bottom:3px solid #1F3864;padding-bottom:10px;margin-bottom:16px'>"
+        + "<div style='font-size:22px;font-weight:900;color:#C00000;letter-spacing:2px'>SETTY</div>"
+        + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+      + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px'>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (project.name || "—") + (project.projectNumber ? " (" + project.projectNumber + ")" : "") + "</td></tr>"
+        + "<tr><td style='padding:8px 12px;font-weight:700'>" + typLabel + " #</td><td style='padding:8px 12px'>" + form.number + "</td></tr>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Question" : "Description") + "</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
+        + (!isRFI ? "<tr><td style='padding:8px 12px;font-weight:700'>Stamp</td><td style='padding:8px 12px;font-weight:700'>" + (form.stamp || "—") + "</td></tr>" : "")
+        + (responseText ? "<tr" + (isRFI ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Response" : "Comments") + "</td><td style='padding:8px 12px'>" + responseText + "</td></tr>" : "")
+        + "<tr" + (!isRFI ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700'>Date</td><td style='padding:8px 12px'>" + fmtDate(new Date().toISOString().slice(0,10)) + "</td></tr>"
+      + "</table>"
+      + "<p style='font-size:11px;color:#44546A'>Please contact us if you have any questions regarding the above.</p></div>";
+    try {
+      const prefix = isRFI ? "RFI Response" : ("Submittal Return — " + (form.stamp || ""));
+      await createOutlookDraft({ subject: prefix + ": " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml });
+      const today = new Date().toISOString().slice(0, 10);
+      if (isRFI) { setF("status", "Responded"); setF("dateResponded", today); }
+      else { setF("status", "Returned"); setF("dateReturned", today); }
+      setEmailStatus("done"); setEmailMsg("✓ Response draft created in Outlook Drafts");
+    } catch(e) { setEmailStatus("error"); setEmailMsg("✗ " + e.message); }
+  }
+
+  async function createSpFolder() {
+    if (!project.projectFolderUrl) { setSpStatus("No project folder — create on Overview tab first."); return; }
+    setSpStatus("creating");
+    try {
+      const { driveId } = await resolveSpIds();
+      const urlParts = project.projectFolderUrl.split("/");
+      const projFolderName = decodeURIComponent(urlParts[urlParts.length - 1]);
+      const typLabel = isRFI ? "RFIs" : "Submittals";
+      const itemName = form.number + (isRFI ? " " + form.title : " " + form.description);
+      const safeName = itemName.replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+      async function ensureF(parent, name) {
+        try { await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodeURIComponent(parent) + ":/children", { name, folder: {}, "@microsoft.graph.conflictBehavior": "replace" }); } catch(e) {}
+        return parent + "/" + name;
+      }
+      const typeFolder = await ensureF(projFolderName, typLabel);
+      const itemFolder = await ensureF(typeFolder, safeName);
+      const fullUrl = project.projectFolderUrl.split("/").slice(0, -1).join("/") + "/" + typLabel + "/" + encodeURIComponent(safeName);
+      setF("spFolderUrl", fullUrl);
+      setSpStatus("done");
+    } catch(e) { setSpStatus("error: " + e.message); }
+  }
+
+  const odLabel = isOverdue(form) ? " ⚠ OVERDUE" : "";
+  const isRFI2 = isRFI;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 3000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 16px", overflowY: "auto" }}>
+      <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 14, padding: 28, width: 760, maxWidth: "98vw" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>{isRFI ? "RFI" : "Submittal"}</div>
+            <div style={{ fontWeight: 800, fontSize: 18 }}>{form.number}{odLabel && <span style={{ color: P.red, fontSize: 12, marginLeft: 10 }}>{odLabel}</span>}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={form.status} onChange={e => setF("status", e.target.value)}
+              style={{ fontWeight: 700, fontSize: 12, padding: "4px 10px", borderRadius: 6,
+                background: (isRFI ? RFI_STATUS_COLORS : SUBMITTAL_STATUS_COLORS)[form.status]?.bg || P.bg,
+                color: (isRFI ? RFI_STATUS_COLORS : SUBMITTAL_STATUS_COLORS)[form.status]?.text || P.text,
+                border: "none", cursor: "pointer" }}>
+              {(isRFI ? RFI_STATUSES : SUBMITTAL_STATUSES).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button onClick={onClose} style={{ background: "none", border: "none", color: P.textDim, fontSize: 20, cursor: "pointer" }}>✕</button>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {/* Title / Description */}
+          <Field label={isRFI ? "RFI Title / Question Summary" : "Description"} style={{ gridColumn: "1 / -1" }}>
+            <input value={isRFI ? (form.title || "") : (form.description || "")}
+              onChange={e => setF(isRFI ? "title" : "description", e.target.value)}
+              style={{ width: "100%", fontSize: 14, fontWeight: 600 }} />
+          </Field>
+
+          {/* From */}
+          <Field label="From (GC / Prime)">
+            <input value={form.from || ""} onChange={e => setF("from", e.target.value)}
+              placeholder={companyName || "Company name…"} style={{ width: "100%" }} />
+          </Field>
+
+          {/* Discipline */}
+          <Field label="Discipline">
+            <select value={form.discipline || "Mechanical"} onChange={e => setF("discipline", e.target.value)} style={{ width: "100%" }}>
+              {(isRFI ? RFI_DISCIPLINES : SUBMITTAL_DISCIPLINES).map(d => <option key={d}>{d}</option>)}
+            </select>
+          </Field>
+
+          {/* Dates */}
+          <Field label="Date Received">
+            <input type="date" value={form.dateReceived || ""} onChange={e => {
+              setF("dateReceived", e.target.value);
+              if (e.target.value) setF("dueDate", addWD(e.target.value, dueDays));
+            }} style={{ width: "100%" }} />
+          </Field>
+          <Field label={`Due Date (${dueDays} WD default)${odLabel}`}>
+            <input type="date" value={form.dueDate || ""}
+              onChange={e => setF("dueDate", e.target.value)}
+              style={{ width: "100%", borderColor: isOverdue(form) ? P.red : P.border, color: isOverdue(form) ? P.red : P.text }} />
+          </Field>
+
+          {/* Spec section (submittals only) */}
+          {!isRFI && (
+            <Field label="Spec Section">
+              <input value={form.specSection || ""} onChange={e => setF("specSection", e.target.value)}
+                placeholder="e.g. 23 09 23" style={{ width: "100%" }} />
+            </Field>
+          )}
+          {!isRFI && (
+            <Field label="Stamp">
+              <select value={form.stamp || "—"} onChange={e => setF("stamp", e.target.value)}
+                style={{ width: "100%", fontWeight: 700,
+                  color: STAMP_COLORS[form.stamp || "—"]?.text || P.text }}>
+                {SUBMITTAL_STAMPS.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+          )}
+
+          {/* Internal assignees */}
+          <Field label="Assigned To (internal)" style={{ gridColumn: "1 / -1" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+              {staffList.map(s => {
+                const checked = (form.assignedTo || []).includes(s.id);
+                return (
+                  <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12,
+                    padding: "4px 10px", borderRadius: 20, cursor: "pointer",
+                    background: checked ? P.accentDim : P.bg,
+                    border: `1px solid ${checked ? P.accent : P.border}`,
+                    color: checked ? P.accentLight : P.text }}>
+                    <input type="checkbox" checked={checked} onChange={e => {
+                      const curr = form.assignedTo || [];
+                      setF("assignedTo", e.target.checked ? [...curr, s.id] : curr.filter(id => id !== s.id));
+                    }} style={{ display: "none" }} />
+                    {s.name || s.role}
+                  </label>
+                );
+              })}
+              {staffList.length === 0 && <span style={{ fontSize: 12, color: P.textDim }}>No team members — add staff in the Team tab</span>}
+            </div>
+          </Field>
+
+          {/* Sub assignment */}
+          <Field label="Sub-Consultant (if applicable)">
+            <select value={form.subAssigned || ""} onChange={e => setF("subAssigned", e.target.value)} style={{ width: "100%" }}>
+              <option value="">— None —</option>
+              {subList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </Field>
+
+          {/* Response date */}
+          <Field label={isRFI ? "Date Responded" : "Date Returned"}>
+            <input type="date" value={isRFI ? (form.dateResponded || "") : (form.dateReturned || "")}
+              onChange={e => setF(isRFI ? "dateResponded" : "dateReturned", e.target.value)}
+              style={{ width: "100%" }} />
+          </Field>
+
+          {/* Response / Comments */}
+          <Field label={isRFI ? "Response / Resolution" : "Review Comments"} style={{ gridColumn: "1 / -1" }}>
+            <textarea value={isRFI ? (form.response || "") : (form.comments || "")}
+              onChange={e => setF(isRFI ? "response" : "comments", e.target.value)}
+              placeholder={isRFI ? "Formal response text…" : "Review comments to return with submittal…"}
+              style={{ width: "100%", height: 90, resize: "vertical", fontSize: 13 }} />
+          </Field>
+
+          {/* Description (RFI detailed question) */}
+          {isRFI && (
+            <Field label="Full Question / Description" style={{ gridColumn: "1 / -1" }}>
+              <textarea value={form.description || ""} onChange={e => setF("description", e.target.value)}
+                placeholder="Full RFI question text…"
+                style={{ width: "100%", height: 80, resize: "vertical", fontSize: 13 }} />
+            </Field>
+          )}
+
+          {/* Notes */}
+          <Field label="Internal Notes" style={{ gridColumn: "1 / -1" }}>
+            <textarea value={form.notes || ""} onChange={e => setF("notes", e.target.value)}
+              placeholder="Internal notes (not sent externally)…"
+              style={{ width: "100%", height: 60, resize: "vertical", fontSize: 13 }} />
+          </Field>
+
+          {/* SharePoint folder */}
+          <Field label="SharePoint Folder" style={{ gridColumn: "1 / -1" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {form.spFolderUrl ? (
+                <>
+                  <input value={form.spFolderUrl} readOnly style={{ flex: 1, fontSize: 11, color: P.textDim, background: "transparent" }} />
+                  <a href={form.spFolderUrl} target="_blank" rel="noreferrer"
+                    style={{ background: "#0078d4", color: "#fff", borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+                    📁 Open
+                  </a>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>
+                    {spStatus === "creating" ? "⏳ Creating folder…" : spStatus === "done" ? "✓ Created" : typeof spStatus === "string" && spStatus.startsWith("error") ? "✗ " + spStatus.slice(7) : "No folder created yet"}
+                  </span>
+                  <Btn small variant="ghost" onClick={createSpFolder} disabled={spStatus === "creating"}>📁 Create SP Folder</Btn>
+                </>
+              )}
+            </div>
+          </Field>
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 16, display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn small variant="ghost" onClick={draftAssignEmail}>✉ Assign Email</Btn>
+            {(subList.length > 0 || form.subAssigned) && (
+              <Btn small variant="ghost" onClick={draftSubEmail}>✉ Forward to Sub</Btn>
+            )}
+            <Btn small variant="primary" onClick={draftResponseEmail}>
+              ✉ {isRFI ? "Draft Response" : "Draft Return"}
+            </Btn>
+          </div>
+          {emailMsg && (
+            <span style={{ fontSize: 11, color: emailStatus === "done" ? P.green : P.red, fontWeight: 500 }}>{emailMsg}</span>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+            <Btn onClick={() => { onSave(form); onClose(); }}>Save</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── RFIs VIEW ────────────────────────────────────────────────────────────────
+
+function RFIsView({ project, onChange, staff, clients }) {
+  const rfis = project.rfis || [];
+  const [editing, setEditing] = useState(null);
+  const [filterStatus, setFilterStatus] = useState("All");
+  const [filterDisc, setFilterDisc] = useState("All");
+  const [search, setSearch] = useState("");
+
+  function addRFI() {
+    const r = newRFI(rfis, project.rfiDueDays || 5);
+    onChange({ ...project, rfis: [...rfis, r] });
+    setEditing(r);
+  }
+
+  function saveRFI(updated) {
+    onChange({ ...project, rfis: rfis.map(r => r.id === updated.id ? updated : r) });
+  }
+
+  function deleteRFI(id) {
+    if (!window.confirm("Delete this RFI?")) return;
+    onChange({ ...project, rfis: rfis.filter(r => r.id !== id) });
+  }
+
+  const filtered = rfis.filter(r => {
+    if (filterStatus !== "All" && r.status !== filterStatus) return false;
+    if (filterDisc !== "All" && r.discipline !== filterDisc) return false;
+    if (search && !((r.number + " " + r.title + " " + r.description + " " + r.from).toLowerCase().includes(search.toLowerCase()))) return false;
+    return true;
+  });
+
+  const openCount     = rfis.filter(r => r.status === "Open").length;
+  const overdueCount  = rfis.filter(r => isOverdue(r)).length;
+  const pendingSubCnt = rfis.filter(r => r.status === "Pending Sub Response").length;
+  const staffList     = project.teamMembers || [];
+
+  return (
+    <div>
+      {/* Dashboard KPIs */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+        <KpiBox label="Total RFIs" val={String(rfis.length)} color={P.accentLight} />
+        <KpiBox label="Open" val={String(openCount)} color={P.accentLight} />
+        <KpiBox label="Overdue" val={String(overdueCount)} color={overdueCount > 0 ? P.red : P.green} />
+        <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
+        <KpiBox label="Closed" val={String(rfis.filter(r => r.status === "Closed").length)} color={P.green} />
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search RFIs…" style={{ width: 200, fontSize: 13 }} />
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ fontSize: 13 }}>
+          <option value="All">All Statuses</option>
+          {RFI_STATUSES.map(s => <option key={s}>{s}</option>)}
+        </select>
+        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} style={{ fontSize: 13 }}>
+          <option value="All">All Disciplines</option>
+          {RFI_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
+        </select>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <Btn small onClick={addRFI}>+ Add RFI</Btn>
+        </div>
+      </div>
+
+      {/* Table */}
+      {filtered.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          {rfis.length === 0 ? "No RFIs logged yet. Click \"+ Add RFI\" to create one." : "No RFIs match the current filters."}
+        </div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 80 }}>#</th>
+              <th>Title</th>
+              <th>Discipline</th>
+              <th>From</th>
+              <th>Assigned</th>
+              <th>Received</th>
+              <th>Due</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(r => {
+              const overdue = isOverdue(r);
+              const sc = RFI_STATUS_COLORS[r.status] || {};
+              const assigneeNames = (r.assignedTo || []).map(id => {
+                const s = staffList.find(x => x.id === id);
+                return s ? (s.name || s.role) : null;
+              }).filter(Boolean);
+              return (
+                <tr key={r.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.accentLight }}>{r.number}</td>
+                  <td>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{r.title || <span style={{ color: P.textDim }}>No title</span>}</div>
+                    {r.description && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{r.description.slice(0, 80)}{r.description.length > 80 ? "…" : ""}</div>}
+                  </td>
+                  <td style={{ fontSize: 12 }}>{r.discipline}</td>
+                  <td style={{ fontSize: 12, color: P.textMuted }}>{r.from || "—"}</td>
+                  <td style={{ fontSize: 12 }}>
+                    {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>Unassigned</span>}
+                  </td>
+                  <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{r.dateReceived || "—"}</td>
+                  <td style={{ fontSize: 12, whiteSpace: "nowrap", color: overdue ? P.red : P.textMuted, fontWeight: overdue ? 700 : 400 }}>
+                    {r.dueDate || "—"}{overdue ? " ⚠" : ""}
+                  </td>
+                  <td><Badge color={sc} text={r.status} /></td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Btn small variant="ghost" onClick={() => setEditing(r)}>Open</Btn>
+                      <Btn small variant="danger" onClick={() => deleteRFI(r.id)}>✕</Btn>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {editing && (
+        <RFIDetailModal
+          item={editing}
+          project={project}
+          staff={staff}
+          clients={clients}
+          type="rfi"
+          onSave={saveRFI}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── SUBMITTALS VIEW ──────────────────────────────────────────────────────────
+
+function SubmittalsView({ project, onChange, staff, clients }) {
+  const subs = project.submittals || [];
+  const register = project.submittalRegister || [];
+  const [editing, setEditing] = useState(null);
+  const [filterStatus, setFilterStatus] = useState("All");
+  const [filterDisc, setFilterDisc] = useState("All");
+  const [search, setSearch] = useState("");
+  const [showRegister, setShowRegister] = useState(false);
+  const [newRegItem, setNewRegItem] = useState({ specSection: "", description: "", discipline: "Mechanical" });
+
+  function addSubmittal() {
+    const s = newSubmittal(subs, project.submittalDueDays || 10);
+    onChange({ ...project, submittals: [...subs, s] });
+    setEditing(s);
+  }
+
+  function saveSubmittal(updated) {
+    onChange({ ...project, submittals: subs.map(s => s.id === updated.id ? updated : s) });
+  }
+
+  function deleteSubmittal(id) {
+    if (!window.confirm("Delete this submittal?")) return;
+    onChange({ ...project, submittals: subs.filter(s => s.id !== id) });
+  }
+
+  function addRegisterItem() {
+    if (!newRegItem.description.trim()) return;
+    const item = { id: uid(), ...newRegItem, status: "Expected" };
+    onChange({ ...project, submittalRegister: [...register, item] });
+    setNewRegItem({ specSection: "", description: "", discipline: "Mechanical" });
+  }
+
+  function createFromRegister(item) {
+    const s = { ...newSubmittal(subs, project.submittalDueDays || 10), specSection: item.specSection, description: item.description, discipline: item.discipline, registerItemId: item.id };
+    onChange({ ...project, submittals: [...subs, s] });
+    setEditing(s);
+  }
+
+  const filtered = subs.filter(s => {
+    if (filterStatus !== "All" && s.status !== filterStatus) return false;
+    if (filterDisc !== "All" && s.discipline !== filterDisc) return false;
+    if (search && !((s.number + " " + s.description + " " + s.specSection + " " + s.from).toLowerCase().includes(search.toLowerCase()))) return false;
+    return true;
+  });
+
+  const openCount    = subs.filter(s => !["Returned", "Void"].includes(s.status)).length;
+  const overdueCount = subs.filter(s => isOverdue(s)).length;
+  const pendingSubCnt= subs.filter(s => s.status === "Pending Sub Review").length;
+  const staffList    = project.teamMembers || [];
+
+  return (
+    <div>
+      {/* Dashboard KPIs */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+        <KpiBox label="Total Submittals" val={String(subs.length)} color={P.accentLight} />
+        <KpiBox label="Open" val={String(openCount)} color={P.accentLight} />
+        <KpiBox label="Overdue" val={String(overdueCount)} color={overdueCount > 0 ? P.red : P.green} />
+        <KpiBox label="Pending Sub" val={String(pendingSubCnt)} color={pendingSubCnt > 0 ? P.yellow : P.textDim} />
+        <KpiBox label="Returned" val={String(subs.filter(s => s.status === "Returned").length)} color={P.green} />
+        <KpiBox label="Resubmittal Req." val={String(subs.filter(s => s.status === "Resubmittal Required").length)} color={P.red} />
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search submittals…" style={{ width: 200, fontSize: 13 }} />
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ fontSize: 13 }}>
+          <option value="All">All Statuses</option>
+          {SUBMITTAL_STATUSES.map(s => <option key={s}>{s}</option>)}
+        </select>
+        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} style={{ fontSize: 13 }}>
+          <option value="All">All Disciplines</option>
+          {SUBMITTAL_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
+        </select>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <Btn small variant="ghost" onClick={() => setShowRegister(v => !v)}>
+            {showRegister ? "Hide Register" : "📋 Submittal Register" + (register.length > 0 ? ` (${register.length})` : "")}
+          </Btn>
+          <Btn small onClick={addSubmittal}>+ Add Submittal</Btn>
+        </div>
+      </div>
+
+      {/* Submittal Register */}
+      {showRegister && (
+        <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12, color: P.accentLight }}>Submittal Register</div>
+          {register.length > 0 && (
+            <table style={{ marginBottom: 12, fontSize: 12 }}>
+              <thead><tr><th>Spec Section</th><th>Description</th><th>Discipline</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                {register.map(item => {
+                  const linked = subs.find(s => s.registerItemId === item.id);
+                  return (
+                    <tr key={item.id}>
+                      <td style={{ fontFamily: "JetBrains Mono" }}>{item.specSection || "—"}</td>
+                      <td style={{ fontWeight: 500 }}>{item.description}</td>
+                      <td>{item.discipline}</td>
+                      <td><Badge color={linked ? { bg: P.greenDim, text: P.green } : { bg: P.accentDim, text: P.accentLight }} text={linked ? "Received (" + linked.number + ")" : "Expected"} /></td>
+                      <td>
+                        {!linked && <Btn small variant="ghost" onClick={() => createFromRegister(item)}>+ Log Receipt</Btn>}
+                        <Btn small variant="danger" onClick={() => onChange({ ...project, submittalRegister: register.filter(r => r.id !== item.id) })}>✕</Btn>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <Field label="Spec Section" style={{ marginBottom: 0 }}>
+              <input value={newRegItem.specSection} onChange={e => setNewRegItem(x => ({ ...x, specSection: e.target.value }))} placeholder="e.g. 23 09 23" style={{ width: 100 }} />
+            </Field>
+            <Field label="Description" style={{ marginBottom: 0, flex: 1 }}>
+              <input value={newRegItem.description} onChange={e => setNewRegItem(x => ({ ...x, description: e.target.value }))} placeholder="Submittal description…" style={{ width: "100%" }} />
+            </Field>
+            <Field label="Discipline" style={{ marginBottom: 0 }}>
+              <select value={newRegItem.discipline} onChange={e => setNewRegItem(x => ({ ...x, discipline: e.target.value }))}>
+                {SUBMITTAL_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
+              </select>
+            </Field>
+            <Btn small onClick={addRegisterItem} disabled={!newRegItem.description.trim()}>+ Add to Register</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Table */}
+      {filtered.length === 0 ? (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          {subs.length === 0 ? "No submittals logged yet. Click \"+ Add Submittal\" to create one." : "No submittals match the current filters."}
+        </div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 80 }}>#</th>
+              <th>Description</th>
+              <th>Spec</th>
+              <th>Disc.</th>
+              <th>Assigned</th>
+              <th>Received</th>
+              <th>Due</th>
+              <th>Stamp</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(s => {
+              const overdue = isOverdue(s);
+              const sc = SUBMITTAL_STATUS_COLORS[s.status] || {};
+              const stc = STAMP_COLORS[s.stamp || "—"] || {};
+              const assigneeNames = (s.assignedTo || []).map(id => {
+                const st = staffList.find(x => x.id === id);
+                return st ? (st.name || st.role) : null;
+              }).filter(Boolean);
+              return (
+                <tr key={s.id} style={{ background: overdue ? "rgba(239,68,68,.06)" : "transparent" }}>
+                  <td style={{ fontFamily: "JetBrains Mono", fontWeight: 700, color: P.purple }}>{s.number}</td>
+                  <td>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{s.description || <span style={{ color: P.textDim }}>No description</span>}</div>
+                    {s.registerItemId && <div style={{ fontSize: 10, color: P.green, marginTop: 2 }}>✓ From register</div>}
+                  </td>
+                  <td style={{ fontFamily: "JetBrains Mono", fontSize: 12 }}>{s.specSection || "—"}</td>
+                  <td style={{ fontSize: 12 }}>{s.discipline}</td>
+                  <td style={{ fontSize: 12 }}>
+                    {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>—</span>}
+                  </td>
+                  <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{s.dateReceived || "—"}</td>
+                  <td style={{ fontSize: 12, whiteSpace: "nowrap", color: overdue ? P.red : P.textMuted, fontWeight: overdue ? 700 : 400 }}>
+                    {s.dueDate || "—"}{overdue ? " ⚠" : ""}
+                  </td>
+                  <td>{s.stamp && s.stamp !== "—" ? <Badge color={stc} text={s.stamp} /> : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}</td>
+                  <td><Badge color={sc} text={s.status} /></td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Btn small variant="ghost" onClick={() => setEditing(s)}>Open</Btn>
+                      <Btn small variant="danger" onClick={() => deleteSubmittal(s.id)}>✕</Btn>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {editing && (
+        <RFIDetailModal
+          item={editing}
+          project={project}
+          staff={staff}
+          clients={clients}
+          type="submittal"
+          onSave={saveSubmittal}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+
 function ChangeOrdersView({ project, onChange }) {
   const cos = project.changeOrders || [];
   const [emailingId, setEmailingId] = React.useState(null);
@@ -6757,7 +7479,7 @@ function ProjectionsView({ project }) {
 
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Calendar", "Contract", "Change Orders", "Subconsultants", "Financials", "Reimbursables", "Projections"];
+const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Calendar", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
@@ -6983,6 +7705,8 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Projections" && <ProjectionsView project={project} />}
         {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
+        {tab === "RFIs" && <RFIsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
+        {tab === "Submittals" && <SubmittalsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
