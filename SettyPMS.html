@@ -9396,8 +9396,27 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                                 </div>
                               ) : "—"}
                             </td>
-                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.textDim, fontSize: 11 }}>
-                              —
+                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12 }}>
+                              {(() => {
+                                // Per-milestone projection: phase overlap with current month
+                                if (!milestone) return <span style={{ color: P.textDim }}>—</span>;
+                                const ph = (p.phases || []).find(ph => ph.code === milestone.phase);
+                                const today3 = new Date();
+                                const yr = today3.getFullYear(), mo = today3.getMonth();
+                                const mStart = new Date(yr, mo, 1), mEnd = new Date(yr, mo + 1, 0);
+                                let proj = 0;
+                                if (ph && ph.startDate && ph.endDate && ph.fee > 0) {
+                                  const sd = new Date(ph.startDate + "T00:00:00"), ed = new Date(ph.endDate + "T00:00:00");
+                                  const totalDays = (ed - sd) / 86400000 + 1;
+                                  const overlapStart = sd > mStart ? sd : mStart;
+                                  const overlapEnd = ed < mEnd ? ed : mEnd;
+                                  const overlapDays = Math.max(0, (overlapEnd - overlapStart) / 86400000 + 1);
+                                  proj = Math.round(milestone.fee * (overlapDays / totalDays));
+                                }
+                                return proj > 0
+                                  ? <span style={{ color: P.accentLight }}>{fmt(proj)}</span>
+                                  : <span style={{ color: P.textDim }}>—</span>;
+                              })()}
                             </td>
                             <td>
                               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
