@@ -301,6 +301,8 @@ function newProject(overrides = {}) {
     scopeAuditLog: [],
     notes: [],
     oneNoteUrl: "",
+    oneNoteNotebookUrl: "",
+    oneNoteNotebookId: "",
     reimbursableBudget: 0,
     reimbursables: [],
     ...overrides,
@@ -349,6 +351,7 @@ const GRAPH_SCOPES = [
   "Mail.ReadWrite",             // email drafts + inbox scanning
   "Files.ReadWrite",            // SharePoint / OneDrive folder creation
   "Sites.ReadWrite.All",        // SharePoint site access
+  "Notes.ReadWrite",            // OneNote notebook + page creation
 ];
 
 function getCurrentUser() {
@@ -731,6 +734,36 @@ async function resolveSpIds() {
   if (!drive) throw new Error('Library not found: ' + SP_LIBRARY + '. Check SP_LIBRARY constant.');
   _spDriveId = drive.id;
   return { siteId: _spSiteId, driveId: _spDriveId };
+}
+
+async function createOneNoteNotebook(project) {
+  // Creates a notebook named after the project and returns { id, webUrl }
+  const name = [project.projectNumber, project.name].filter(Boolean).join(" — ").trim() || "Setty Project";
+  const body = { displayName: name };
+  const result = await graphFetch("POST", "/me/onenote/notebooks", body);
+  if (!result || !result.id) throw new Error("OneNote API did not return a notebook ID");
+  return { id: result.id, webUrl: result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "" };
+}
+
+async function createOneNotePage(notebookId, sectionName, title, htmlBody) {
+  // Ensure section exists, then create page
+  const sections = await graphFetch("GET", `/me/onenote/notebooks/${notebookId}/sections`);
+  let section = (sections?.value || []).find(s => s.displayName === sectionName);
+  if (!section) {
+    section = await graphFetch("POST", `/me/onenote/notebooks/${notebookId}/sections`, { displayName: sectionName });
+  }
+  if (!section?.id) throw new Error("Could not create OneNote section");
+  // OneNote pages use multipart/HTML — use fetch directly
+  const token = await getToken();
+  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title></head><body>${htmlBody}</body></html>`;
+  const res = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/sections/${section.id}/pages`, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/xhtml+xml" },
+    body: pageHtml,
+  });
+  if (!res.ok) { const e = await res.text(); throw new Error("OneNote page error: " + res.status + " " + e.slice(0,200)); }
+  const page = await res.json();
+  return { id: page.id, webUrl: page.links?.oneNoteWebUrl?.href || "" };
 }
 
 async function createSharePointFolder(project) {
@@ -7816,6 +7849,10 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
               <SharePointFolderField project={project} onUpdate={updateField} />
             </Field>
 
+            <Field label="OneNote Notebook" style={{ gridColumn: "1 / -1" }}>
+              <OneNoteNotebookField project={project} onUpdate={updateField} />
+            </Field>
+
             <Field label="PM / Project Contact" style={{ gridColumn: "1 / -1" }}>
               <POCSection
                 pocList={(project.projectContacts || {}).pm || []}
@@ -8580,20 +8617,60 @@ function CalendarImportPanel({ project, onImport }) {
     if (!noteType[id]) setNoteType(prev => ({ ...prev, [id]: "Meeting" }));
   }
 
-  function importSelected() {
+  async function importSelected() {
     setImporting(true);
     const toImport = events.filter(ev => selected[ev.id]);
-    const notes = toImport.map(ev => ({
-      id: uid(),
-      body: buildNoteBody(ev),
-      category: noteType[ev.id] || "Meeting",
-      actionItem: false,
-      visitDate: noteType[ev.id] === "Site Visit" ? (ev.start?.dateTime || ev.start?.date || "").slice(0, 10) : undefined,
-      author: getCurrentUser(),
-      createdAt: ev.start?.dateTime || ev.start?.date || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      importedFromCalendar: true,
-    }));
+    const notebookId = project.oneNoteNotebookId || "";
+    const notes = [];
+    for (const ev of toImport) {
+      const cat = noteType[ev.id] || "Meeting";
+      const noteBody = buildNoteBody(ev);
+      let oneNoteUrl = "";
+      // Auto-create OneNote page if notebook exists and category warrants it
+      const createPage = notebookId && ["Meeting", "Site Visit", "Client Communication"].includes(cat);
+      if (createPage) {
+        try {
+          const title = ev.subject || "(No title)";
+          const dt = ev.start?.dateTime || ev.start?.date || "";
+          const dtFmt = dt ? new Date(dt).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "";
+          const atts = fmtAttendees(ev);
+          const loc = ev.location?.displayName || "";
+          const preview = ev.bodyPreview ? ev.bodyPreview.trim().slice(0, 500) : "";
+          const pageHtml = `
+            <h1>${title}</h1>
+            <table style="border-collapse:collapse;width:100%;font-size:13px">
+              ${dtFmt ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0;width:140px">Date</td><td style="padding:6px 12px">${dtFmt}</td></tr>` : ""}
+              ${loc ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0">Location</td><td style="padding:6px 12px">${loc}</td></tr>` : ""}
+              ${atts ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0">Attendees</td><td style="padding:6px 12px">${atts}</td></tr>` : ""}
+              ${preview ? `<tr><td style="padding:6px 12px;font-weight:bold;background:#f0f0f0">Agenda / Notes</td><td style="padding:6px 12px">${preview}</td></tr>` : ""}
+            </table>
+            <h2>Discussion</h2><p>&nbsp;</p>
+            <h2>Decisions</h2><p>&nbsp;</p>
+            <h2>Action Items</h2>
+            <table style="border-collapse:collapse;width:100%">
+              <tr style="background:#f0f0f0"><th style="padding:6px 12px;text-align:left">Item</th><th style="padding:6px 12px;text-align:left">Owner</th><th style="padding:6px 12px;text-align:left">Due</th></tr>
+              <tr><td style="padding:6px 12px">&nbsp;</td><td style="padding:6px 12px">&nbsp;</td><td style="padding:6px 12px">&nbsp;</td></tr>
+            </table>`;
+          const sectionName = cat === "Site Visit" ? "Site Visits" : cat === "Client Communication" ? "Client Communications" : "Meetings";
+          const page = await createOneNotePage(notebookId, sectionName, title, pageHtml);
+          oneNoteUrl = page.webUrl || "";
+        } catch(e) {
+          // Non-fatal — log the note without the OneNote link
+        }
+      }
+      notes.push({
+        id: uid(),
+        body: noteBody,
+        category: cat,
+        actionItem: false,
+        visitDate: cat === "Site Visit" ? (ev.start?.dateTime || ev.start?.date || "").slice(0, 10) : undefined,
+        author: getCurrentUser(),
+        createdAt: ev.start?.dateTime || ev.start?.date || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        importedFromCalendar: true,
+        oneNoteUrl,
+      });
+    }
     onImport(notes);
     setSelected({});
     setEvents([]);
@@ -8615,6 +8692,9 @@ function CalendarImportPanel({ project, onImport }) {
       </div>
       <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
         Searches your personal Outlook calendar and NYC Shared Calendar (2 years back, 1 year forward). Select events to import as Site Visit, Meeting, or Client Communication notes.
+        {project.oneNoteNotebookId
+          ? <span style={{ color: "#a78bfa", marginLeft: 4 }}>📓 OneNote pages will be auto-created for Meetings, Site Visits, and Client Communications.</span>
+          : <span style={{ marginLeft: 4 }}>Tip: Create a OneNote Notebook on the Overview tab to auto-generate note pages on import.</span>}
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
         <input value={query} onChange={e => setQuery(e.target.value)}
@@ -10717,6 +10797,54 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
           <Btn onClick={save} disabled={!form.name.trim()}>Add to Directory & Select</Btn>
         </div>
       </div>
+    </div>
+  );
+}
+
+function OneNoteNotebookField({ project, onUpdate }) {
+  const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
+  const [msg, setMsg] = React.useState("");
+  const notebookUrl = project.oneNoteNotebookUrl || "";
+
+  async function handleCreate() {
+    setStatus("creating");
+    setMsg("");
+    try {
+      const { id, webUrl } = await createOneNoteNotebook(project);
+      onUpdate("oneNoteNotebookId", id);
+      onUpdate("oneNoteNotebookUrl", webUrl);
+      setStatus("done");
+      setMsg("✓ Notebook created");
+    } catch(e) {
+      setStatus("error");
+      setMsg("✗ " + e.message);
+    }
+  }
+
+  if (notebookUrl) {
+    return (
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input value={notebookUrl} readOnly
+          style={{ flex: 1, fontSize: 11, color: P.textDim, background: "transparent" }} />
+        <a href={notebookUrl} target="_blank" rel="noreferrer"
+          style={{ background: "#7719aa", color: "#fff", borderRadius: 6, padding: "5px 12px",
+            fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+          📓 Open
+        </a>
+        <button onClick={() => { if (window.confirm("Clear the saved OneNote notebook link? This won't delete the notebook.")) { onUpdate("oneNoteNotebookUrl", ""); onUpdate("oneNoteNotebookId", ""); }}}
+          style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }}>✕</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>
+        {status === "creating" ? "⏳ Creating notebook…" : msg || "No notebook linked"}
+      </span>
+      <Btn small variant="ghost" onClick={handleCreate} disabled={status === "creating"}>
+        📓 Create OneNote Notebook
+      </Btn>
     </div>
   );
 }
