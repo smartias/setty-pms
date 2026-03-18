@@ -8621,6 +8621,7 @@ function CalendarImportPanel({ project, onImport }) {
     setImporting(true);
     const toImport = events.filter(ev => selected[ev.id]);
     const notebookId = project.oneNoteNotebookId || "";
+    setImportStatus("notebookId=" + (notebookId || "MISSING"));
     const notes = [];
     for (const ev of toImport) {
       const cat = noteType[ev.id] || "Meeting";
@@ -8628,6 +8629,7 @@ function CalendarImportPanel({ project, onImport }) {
       let oneNoteUrl = "";
       // Auto-create OneNote page if notebook exists and category warrants it
       const createPage = notebookId && ["Meeting", "Site Visit", "Client Communication"].includes(cat);
+      setImportStatus("notebookId=" + (notebookId||"MISSING") + " cat=" + cat + " createPage=" + createPage);
       if (createPage) {
         try {
           const title = ev.subject || "(No title)";
