@@ -9000,6 +9000,8 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const [addMilForm, setAddMilForm] = useState({ name: "", dueDate: "", notes: "" });
   const [addMilMsg, setAddMilMsg] = useState("");
   const [dashInvoicePrompt, setDashInvoicePrompt] = useState(null);
+  const [showCAInvoice, setShowCAInvoice] = useState(false);
+  const [caInvoiceState, setCAInvoiceState] = useState({}); // projId -> {amount, desc, milestoneId, include, status, msg}
   const [dashRfiModal, setDashRfiModal] = useState(null);    // { item, project }
   const [dashSubModal, setDashSubModal] = useState(null);    // { item, project }
 
@@ -9243,37 +9245,212 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
       {showInConstruction && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
           onClick={e => { if (e.target === e.currentTarget) setShowInConstruction(false); }}>
-          <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 720, maxWidth: "95vw", maxHeight: "85vh", overflow: "auto" }}>
+          <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 760, maxWidth: "95vw", maxHeight: "90vh", overflow: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div style={{ fontWeight: 700, fontSize: 16 }}>In Construction Administration{dashPMFilter !== "All" ? " — " + dashPMFilter : ""}</div>
-              <button onClick={() => setShowInConstruction(false)}
-                style={{ background: "none", border: "none", color: P.textMuted, cursor: "pointer", fontSize: 20 }}>✕</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Btn small variant={showCAInvoice ? "primary" : "ghost"} onClick={() => {
+                  setShowCAInvoice(v => !v);
+                  if (!showCAInvoice) {
+                    // Pre-populate state for each CA project
+                    const today = new Date();
+                    const currentYM = today.getFullYear() + "-" + String(today.getMonth()+1).padStart(2,"0");
+                    const monthLabel = today.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+                    const init = {};
+                    inConstructionProjects.forEach(p => {
+                      const { monthlyMap, totalInvoiced, totalFee } = buildProjectCashFlow(p);
+                      const projected = Math.round((monthlyMap[currentYM]?.fee || 0));
+                      const caMilestone = (p.milestones || []).find(m => m.type === "billable" && m.phase === "CA" && !m.cancelled);
+                      init[p.id] = {
+                        amount: projected || "",
+                        desc: "Construction Administration Services — " + monthLabel,
+                        milestoneId: caMilestone?.id || "",
+                        include: projected > 0 && !!caMilestone,
+                        status: "idle", msg: "",
+                      };
+                    });
+                    setCAInvoiceState(init);
+                  }
+                }}>
+                  {showCAInvoice ? "✕ Cancel Batch Invoice" : "✉ Invoice CA Projects"}
+                </Btn>
+                <button onClick={() => { setShowInConstruction(false); setShowCAInvoice(false); }}
+                  style={{ background: "none", border: "none", color: P.textMuted, cursor: "pointer", fontSize: 20 }}>✕</button>
+              </div>
             </div>
-            {inConstructionProjects.length === 0
-              ? <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>No projects currently in construction.</div>
-              : (
-                <table>
-                  <thead><tr><th>#</th><th>Project</th><th>Client</th><th>PM</th><th>Total Fee</th><th>Invoiced</th><th>Remaining</th></tr></thead>
+
+            {!showCAInvoice ? (
+              inConstructionProjects.length === 0
+                ? <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>No projects currently in construction.</div>
+                : (
+                  <table>
+                    <thead><tr><th>#</th><th>Project</th><th>Client</th><th>PM</th><th>Total Fee</th><th>Invoiced</th><th>Remaining</th></tr></thead>
+                    <tbody>
+                      {inConstructionProjects.map(p => {
+                        const { totalFee, totalInvoiced } = buildProjectCashFlow(p);
+                        const remaining = Math.max(0, totalFee - totalInvoiced);
+                        return (
+                          <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => { setShowInConstruction(false); onNavigateToProject(p.id); }}>
+                            <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectNumber || "—"}</td>
+                            <td style={{ fontWeight: 600, color: P.accentLight }}>{p.name}</td>
+                            <td style={{ color: P.textMuted, fontSize: 12 }}>{p.client || "—"}</td>
+                            <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectManager || "—"}</td>
+                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.green }}>{fmt(totalFee)}</td>
+                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.purple }}>{fmt(totalInvoiced)}</td>
+                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: remaining > 0 ? P.accent : P.textDim }}>{fmt(remaining)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )
+            ) : (
+              <div>
+                <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16, padding: "10px 14px", background: P.bg, borderRadius: 8, border: "1px solid " + P.border }}>
+                  Pre-filled with this month's projected amount per project. Adjust amounts as needed, then click <strong style={{ color: P.accentLight }}>Generate Invoices</strong> to create invoice records and draft Outlook emails for all checked projects.
+                  CA milestone % complete will be back-calculated from the cumulative invoiced amount.
+                </div>
+                <table style={{ fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 28 }}></th>
+                      <th>Project</th>
+                      <th>CA Milestone</th>
+                      <th>Milestone Fee</th>
+                      <th>Already Invoiced</th>
+                      <th>Amount to Invoice</th>
+                      <th>Description</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
                   <tbody>
                     {inConstructionProjects.map(p => {
-                      const { totalFee, totalInvoiced } = buildProjectCashFlow(p);
-                      const remaining = Math.max(0, totalFee - totalInvoiced);
+                      const st = caInvoiceState[p.id] || {};
+                      const caMilestones = (p.milestones || []).filter(m => m.type === "billable" && m.phase === "CA" && !m.cancelled);
+                      const selMilestone = (p.milestones || []).find(m => m.id === st.milestoneId) || caMilestones[0];
+                      const mFee = selMilestone?.fee || 0;
+                      const alreadyInv = (p.invoices || []).filter(inv => inv.milestoneId === st.milestoneId).reduce((a, inv) => a + (inv.amount || 0), 0);
+                      const remaining = Math.max(0, mFee - alreadyInv);
+                      const noCaMilestone = caMilestones.length === 0;
                       return (
-                        <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => { setShowInConstruction(false); onNavigateToProject(p.id); }}>
-                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectNumber || "—"}</td>
-                          <td style={{ fontWeight: 600, color: P.accentLight }}>{p.name}</td>
-                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.client || "—"}</td>
-                          <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectManager || "—"}</td>
-                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.green }}>{fmt(totalFee)}</td>
-                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.purple }}>{fmt(totalInvoiced)}</td>
-                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: remaining > 0 ? P.accent : P.textDim }}>{fmt(remaining)}</td>
+                        <tr key={p.id} style={{ opacity: noCaMilestone ? 0.5 : 1, background: st.status === "done" ? "rgba(52,211,153,.07)" : st.status === "error" ? "rgba(239,68,68,.07)" : "transparent" }}>
+                          <td>
+                            <input type="checkbox" checked={!noCaMilestone && !!st.include}
+                              disabled={noCaMilestone}
+                              onChange={e => setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], include: e.target.checked } }))}
+                              style={{ width: 16, height: 16 }} />
+                          </td>
+                          <td>
+                            <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+                            <div style={{ fontSize: 11, color: P.textDim }}>{p.projectNumber || ""}{p.projectManager ? " · " + p.projectManager : ""}</div>
+                          </td>
+                          <td>
+                            {noCaMilestone
+                              ? <span style={{ fontSize: 11, color: P.red }}>No CA milestone</span>
+                              : caMilestones.length === 1
+                              ? <span style={{ fontSize: 12 }}>{selMilestone?.name}</span>
+                              : <select value={st.milestoneId || ""} style={{ fontSize: 12, width: 140 }}
+                                  onChange={e => setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], milestoneId: e.target.value } }))}>
+                                  {caMilestones.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                </select>}
+                          </td>
+                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.green }}>{mFee > 0 ? fmt(mFee) : "—"}</td>
+                          <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.purple }}>{mFee > 0 ? fmt(alreadyInv) : "—"}</td>
+                          <td>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <input type="number" min={0} step={500}
+                                value={st.amount || ""}
+                                placeholder={fmt(remaining)}
+                                disabled={noCaMilestone || st.status === "done"}
+                                onChange={e => setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], amount: e.target.value } }))}
+                                style={{ width: 100, fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                              {remaining > 0 && st.amount !== remaining && (
+                                <button onClick={() => setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], amount: remaining } }))}
+                                  style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }} title="Use full remaining balance">max</button>
+                              )}
+                            </div>
+                          </td>
+                          <td>
+                            <input value={st.desc || ""} disabled={noCaMilestone || st.status === "done"}
+                              onChange={e => setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], desc: e.target.value } }))}
+                              style={{ width: 220, fontSize: 12 }} />
+                          </td>
+                          <td style={{ fontSize: 11, fontWeight: 600 }}>
+                            {st.status === "done" && <span style={{ color: P.green }}>{st.msg}</span>}
+                            {st.status === "error" && <span style={{ color: P.red }}>{st.msg}</span>}
+                            {st.status === "sending" && <span style={{ color: P.accentLight }}>⏳ Working…</span>}
+                            {st.status === "idle" && !noCaMilestone && <span style={{ color: P.textDim, fontSize: 10 }}>Ready</span>}
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-              )
-            }
+                <div style={{ marginTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 12, color: P.textDim }}>
+                    {Object.values(caInvoiceState).filter(s => s.include && s.amount > 0).length} project(s) selected · {fmt(Object.values(caInvoiceState).reduce((a, s) => a + (s.include ? +s.amount || 0 : 0), 0))} total
+                  </div>
+                  <Btn variant="primary"
+                    disabled={!Object.values(caInvoiceState).some(s => s.include && +s.amount > 0)}
+                    onClick={async () => {
+                      const today = new Date().toISOString().slice(0, 10);
+                      for (const p of inConstructionProjects) {
+                        const st = caInvoiceState[p.id];
+                        if (!st?.include || !st.amount || +st.amount <= 0) continue;
+                        const milestone = (p.milestones || []).find(m => m.id === st.milestoneId);
+                        if (!milestone) continue;
+                        setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], status: "sending" } }));
+                        try {
+                          const amount = +st.amount;
+                          const invNumber = "INV-" + String((p.invoices || []).length + 1).padStart(3, "0");
+                          const alreadyInv = (p.invoices || []).filter(inv => inv.milestoneId === milestone.id).reduce((a, inv) => a + (inv.amount || 0), 0);
+                          const newTotal = alreadyInv + amount;
+                          const newPct = milestone.fee > 0 ? Math.min(100, Math.round(newTotal / milestone.fee * 100)) : 0;
+                          // Build email
+                          const bodyHtml = "<div style='font-family:Segoe UI,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px'>"
+                            + "<div style='border-bottom:3px solid #1F3864;padding-bottom:10px;margin-bottom:18px;display:flex;justify-content:space-between'>"
+                              + "<div><div style='font-size:22px;font-weight:900;color:#C00000;letter-spacing:2px'>SETTY</div>"
+                              + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
+                              + "<div style='text-align:right'><div style='font-size:16px;font-weight:700;color:#2F5496'>INVOICE</div>"
+                              + "<div style='font-size:13px;font-weight:700;color:#1F3864'>" + invNumber + "</div>"
+                              + "<div style='font-size:11px;color:#44546A'>" + fmtDate(today) + "</div></div></div>"
+                            + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px'>"
+                              + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (p.name || "—") + (p.projectNumber ? " (" + p.projectNumber + ")" : "") + "</td></tr>"
+                              + "<tr><td style='padding:8px 12px;font-weight:700'>Client / Prime</td><td style='padding:8px 12px'>" + (p.prime || p.clientName || "—") + "</td></tr>"
+                              + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Description</td><td style='padding:8px 12px'>" + (st.desc || milestone.name) + "</td></tr>"
+                              + "<tr><td style='padding:8px 12px;font-weight:700'>Milestone Fee</td><td style='padding:8px 12px;font-family:monospace'>" + fmt(milestone.fee) + "</td></tr>"
+                              + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;color:#C00000'>Amount Due</td><td style='padding:8px 12px;font-family:monospace;font-weight:700;font-size:15px;color:#1F3864'>" + fmt(amount) + "</td></tr>"
+                            + "</table>"
+                            + "<div style='font-size:11px;color:#44546A'>SETTY &amp; Associates, Ltd, PC &nbsp;&middot;&nbsp; " + (p.name || "") + " &nbsp;&middot;&nbsp; " + invNumber + "</div></div>";
+                          await createOutlookDraft({
+                            subject: "Invoice " + invNumber + " — " + (st.desc || milestone.name) + " · " + (p.name || "Project") + (p.projectNumber ? " (" + p.projectNumber + ")" : ""),
+                            bodyHtml,
+                          });
+                          // Create invoice record
+                          const newInvoice = {
+                            id: uid(), number: invNumber, date: today,
+                            phase: "CA", phaseName: milestone.name,
+                            milestoneId: milestone.id, milestoneName: milestone.name,
+                            method: "ca_batch", description: st.desc || milestone.name,
+                            lineItems: [{ name: st.desc || milestone.name, amount }],
+                            amount, finalized: true,
+                          };
+                          // Update milestone pct + add invoice
+                          const newMilestones = (p.milestones || []).map(m =>
+                            m.id === milestone.id ? { ...m, pctComplete: newPct } : m
+                          );
+                          onUpdateProject({ ...p, invoices: [...(p.invoices || []), newInvoice], milestones: newMilestones });
+                          setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], status: "done", msg: "✓ " + invNumber + " · " + newPct + "% complete" } }));
+                        } catch(e) {
+                          setCAInvoiceState(s => ({ ...s, [p.id]: { ...s[p.id], status: "error", msg: "✗ " + e.message } }));
+                        }
+                      }
+                    }}>
+                    ✉ Generate Invoices
+                  </Btn>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
