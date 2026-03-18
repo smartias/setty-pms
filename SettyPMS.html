@@ -8685,7 +8685,15 @@ function CalendarImportPanel({ project, onImport }) {
   const selectedCount = Object.values(selected).filter(Boolean).length;
 
   if (!open) return (
-    <Btn small variant="ghost" onClick={() => setOpen(true)}>&#128197; Import from Calendar</Btn>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <Btn small variant="ghost" onClick={() => { setOpen(true); setImportStatus(""); }}>&#128197; Import from Calendar</Btn>
+      {importStatus && (
+        <span style={{ fontSize: 11, fontWeight: 600,
+          color: importStatus.startsWith("✓") ? "#34d399" : "#f87171" }}>
+          {importStatus}
+        </span>
+      )}
+    </div>
   );
 
   return (
