@@ -11778,6 +11778,312 @@ function newStaffMember(overrides) {
   };
 }
 
+function TimesheetHelper({ staff, projects, onClose }) {
+  const today = new Date();
+  const [month, setMonth] = React.useState(today.getMonth());
+  const [year, setYear] = React.useState(today.getFullYear());
+  // period: "first" = 1-15, "second" = 16-end
+  const [period, setPeriod] = React.useState(today.getDate() <= 15 ? "first" : "second");
+  const [searching, setSearching] = React.useState(false);
+  const [events, setEvents] = React.useState(null); // null = not yet searched
+  const [rows, setRows] = React.useState([]); // { projectId, projectName, projectNumber, hours, notes }
+  const [manualRow, setManualRow] = React.useState({ projectId: "__manual__", label: "", hours: "", notes: "" });
+  const [extraRows, setExtraRows] = React.useState([]); // manually added rows
+
+  const MONTH_NAMES_TS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const YEARS = [today.getFullYear() - 1, today.getFullYear()];
+
+  // Date range for selected period
+  const periodStart = new Date(year, month, period === "first" ? 1 : 16);
+  const periodEnd   = period === "first"
+    ? new Date(year, month, 15, 23, 59, 59)
+    : new Date(year, month + 1, 0, 23, 59, 59); // last day of month
+
+  const fmtPeriod = MONTH_NAMES_TS[month] + " " + (period === "first" ? "1–15" : "16–" + new Date(year, month + 1, 0).getDate()) + ", " + year;
+
+  // Projects this staff member is on
+  const staffProjects = React.useMemo(() => {
+    const name = (staff.name || "").trim().toLowerCase();
+    return projects.filter(p =>
+      !p.archived &&
+      (p.teamMembers || []).some(m => m.name && m.name.trim().toLowerCase() === name)
+    );
+  }, [staff, projects]);
+
+  // Build keyword map for matching events to projects
+  const GENERIC = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","nyc","building","phase","design","engineering","services","meeting","call","coordination","review"]);
+  function projectKeywords(p) {
+    const tokens = ((p.projectNumber || "") + " " + (p.name || ""))
+      .split(/[\s\-\/,()&]+/)
+      .map(w => w.replace(/[^a-zA-Z0-9]/g, "").toLowerCase())
+      .filter(w => w.length >= 3 && !GENERIC.has(w));
+    return tokens;
+  }
+
+  function matchEventToProject(subject) {
+    const subj = subject.toLowerCase();
+    let bestMatch = null;
+    let bestScore = 0;
+    for (const p of staffProjects) {
+      const kws = projectKeywords(p);
+      const score = kws.filter(kw => subj.includes(kw)).length;
+      if (score > bestScore) { bestScore = score; bestMatch = p; }
+    }
+    return bestScore >= 1 ? bestMatch : null;
+  }
+
+  function eventDurationHours(ev) {
+    const start = new Date(ev.start?.dateTime || ev.start?.date);
+    const end   = new Date(ev.end?.dateTime   || ev.end?.date);
+    if (!start || !end || isNaN(start) || isNaN(end)) return 0;
+    return Math.round((end - start) / 36000) / 100; // round to 2dp
+  }
+
+  async function searchCalendar() {
+    setSearching(true);
+    setEvents(null);
+    try {
+      const token = await getToken();
+      const allEvents = [];
+      const seen = new Set();
+      const calIds = [null];
+      try {
+        const calData = await graphFetch("GET", "/me/calendars?$top=50", undefined, token);
+        const shared = (calData?.value || []).filter(c =>
+          c.name.toLowerCase().includes("nyc") ||
+          c.name.toLowerCase().includes("shared") ||
+          c.name.toLowerCase().includes("setty")
+        );
+        shared.forEach(c => calIds.push(c.id));
+      } catch(e) {}
+
+      for (const calId of calIds) {
+        const base = calId ? `/me/calendars/${calId}` : "/me";
+        const url = `${base}/calendarView?startDateTime=${periodStart.toISOString()}&endDateTime=${periodEnd.toISOString()}&$top=100&$select=id,subject,start,end,isCancelled,showAs`;
+        try {
+          const resp = await graphFetch("GET", url, undefined, token);
+          for (const ev of (resp?.value || [])) {
+            if (!seen.has(ev.id) && !ev.isCancelled && ev.showAs !== "free") {
+              seen.add(ev.id);
+              allEvents.push(ev);
+            }
+          }
+        } catch(e) {}
+      }
+
+      // Sort by date
+      allEvents.sort((a, b) => new Date(a.start?.dateTime || a.start?.date) - new Date(b.start?.dateTime || b.start?.date));
+      setEvents(allEvents);
+
+      // Build initial rows — aggregate hours by matched project
+      const hourMap = {}; // projectId -> { project, hours, events[] }
+      const unmatched = [];
+      for (const ev of allEvents) {
+        const proj = matchEventToProject(ev.subject || "");
+        const hrs  = eventDurationHours(ev);
+        if (proj) {
+          if (!hourMap[proj.id]) hourMap[proj.id] = { project: proj, hours: 0, eventList: [] };
+          hourMap[proj.id].hours += hrs;
+          hourMap[proj.id].eventList.push(ev.subject);
+        } else {
+          unmatched.push(ev);
+        }
+      }
+
+      const newRows = Object.values(hourMap).map(({ project, hours, eventList }) => ({
+        id: project.id,
+        projectId: project.id,
+        projectName: project.name,
+        projectNumber: project.projectNumber || "",
+        hours: Math.round(hours * 4) / 4, // round to quarter hour
+        notes: [...new Set(eventList.slice(0, 3))].join("; "),
+      }));
+
+      // Add a row for unmatched time
+      if (unmatched.length > 0) {
+        const unmatchedHrs = unmatched.reduce((a, ev) => a + eventDurationHours(ev), 0);
+        newRows.push({
+          id: "__unmatched__",
+          projectId: "__unmatched__",
+          projectName: "⚠ Unmatched / Review",
+          projectNumber: "",
+          hours: Math.round(unmatchedHrs * 4) / 4,
+          notes: unmatched.slice(0, 3).map(e => e.subject).join("; ") + (unmatched.length > 3 ? ` +${unmatched.length - 3} more` : ""),
+        });
+      }
+
+      setRows(newRows);
+    } catch(e) {
+      setEvents([]);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function updateRow(id, field, val) {
+    setRows(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
+  }
+  function removeRow(id) { setRows(prev => prev.filter(r => r.id !== id)); }
+  function addExtraRow() {
+    setExtraRows(prev => [...prev, { id: uid(), projectId: "__manual__", projectName: "", hours: "", notes: "" }]);
+  }
+  function updateExtra(id, field, val) {
+    setExtraRows(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
+  }
+  function removeExtra(id) { setExtraRows(prev => prev.filter(r => r.id !== id)); }
+
+  const allRows = [...rows, ...extraRows];
+  const totalHours = allRows.reduce((a, r) => a + (parseFloat(r.hours) || 0), 0);
+  const expectedHours = period === "first" ? 60 : 60; // ~60 hrs per half month (7.5/day × ~8 days)
+
+  return (
+    <Modal title={"📋 Timesheet Helper — " + staff.name} onClose={onClose} wide>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <div>
+          <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Month</label>
+          <select value={month} onChange={e => { setMonth(+e.target.value); setEvents(null); setRows([]); setExtraRows([]); }}
+            style={{ fontSize: 13 }}>
+            {MONTH_NAMES_TS.map((m, i) => <option key={i} value={i}>{m}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Year</label>
+          <select value={year} onChange={e => { setYear(+e.target.value); setEvents(null); setRows([]); setExtraRows([]); }}
+            style={{ fontSize: 13 }}>
+            {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Period</label>
+          <div style={{ display: "flex", gap: 0 }}>
+            {["first","second"].map(p => (
+              <button key={p} onClick={() => { setPeriod(p); setEvents(null); setRows([]); setExtraRows([]); }}
+                style={{ padding: "6px 14px", fontSize: 12, fontWeight: period === p ? 700 : 400, cursor: "pointer",
+                  background: period === p ? P.accent : P.card,
+                  color: period === p ? "#fff" : P.textMuted,
+                  border: `1px solid ${P.accent}`,
+                  borderRadius: p === "first" ? "6px 0 0 6px" : "0 6px 6px 0",
+                  borderLeft: p === "second" ? "none" : undefined }}>
+                {p === "first" ? "1st–15th" : "16th–End"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Btn onClick={searchCalendar} disabled={searching}>
+          {searching ? "⏳ Searching calendar…" : "🔍 Pull from Calendar"}
+        </Btn>
+        <div style={{ fontSize: 11, color: P.textDim, alignSelf: "center" }}>
+          {fmtPeriod}
+        </div>
+      </div>
+
+      {events === null && !searching && (
+        <div style={{ padding: "32px 0", textAlign: "center", color: P.textDim, fontSize: 13 }}>
+          Select your period and click Pull from Calendar to get started.
+        </div>
+      )}
+
+      {events !== null && (
+        <>
+          <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
+            Found {events.length} calendar event{events.length !== 1 ? "s" : ""} in period.
+            Hours matched to {rows.filter(r => r.projectId !== "__unmatched__").length} of {staffProjects.length} assigned projects.
+            Edit hours and notes as needed, then add any additional rows manually.
+          </div>
+
+          {/* Print-friendly table */}
+          <div id="ts-print-area">
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{staff.name} — Timesheet</div>
+              <div style={{ fontSize: 12, color: P.textDim }}>{fmtPeriod}{staff.role ? " · " + staff.role : ""}</div>
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: P.accentDim }}>
+                  <th style={{ textAlign: "left", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight, width: 110 }}>Project #</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight }}>Project Name</th>
+                  <th style={{ textAlign: "center", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight, width: 80 }}>Hours</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight }}>Notes / Tasks</th>
+                  <th style={{ width: 32, padding: "4px" }} className="no-print"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={r.id} style={{ background: i % 2 === 0 ? P.card : "transparent",
+                    borderBottom: `1px solid ${P.border}`,
+                    opacity: r.projectId === "__unmatched__" ? 0.7 : 1 }}>
+                    <td style={{ padding: "7px 12px", fontSize: 12, fontFamily: "JetBrains Mono", color: P.textDim }}>
+                      {r.projectNumber || (r.projectId === "__unmatched__" ? "—" : "")}
+                    </td>
+                    <td style={{ padding: "7px 12px", fontSize: 13, fontWeight: 500 }}>
+                      {r.projectId === "__unmatched__"
+                        ? <span style={{ color: P.yellow }}>{r.projectName}</span>
+                        : r.projectName}
+                    </td>
+                    <td style={{ padding: "7px 12px", textAlign: "center" }}>
+                      <input type="number" min={0} step={0.25} value={r.hours}
+                        onChange={e => updateRow(r.id, "hours", e.target.value)}
+                        style={{ width: 64, textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                    </td>
+                    <td style={{ padding: "7px 12px" }}>
+                      <input value={r.notes} onChange={e => updateRow(r.id, "notes", e.target.value)}
+                        style={{ width: "100%", fontSize: 12 }} placeholder="Tasks, meetings, deliverables…" />
+                    </td>
+                    <td style={{ padding: "4px", textAlign: "center" }} className="no-print">
+                      <button onClick={() => removeRow(r.id)}
+                        style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12 }}>✕</button>
+                    </td>
+                  </tr>
+                ))}
+                {extraRows.map((r, i) => (
+                  <tr key={r.id} style={{ background: (rows.length + i) % 2 === 0 ? P.card : "transparent", borderBottom: `1px solid ${P.border}` }}>
+                    <td style={{ padding: "7px 12px" }} colSpan={2}>
+                      <input value={r.projectName} onChange={e => updateExtra(r.id, "projectName", e.target.value)}
+                        style={{ width: "100%", fontSize: 12 }} placeholder="Project name or description…" />
+                    </td>
+                    <td style={{ padding: "7px 12px", textAlign: "center" }}>
+                      <input type="number" min={0} step={0.25} value={r.hours}
+                        onChange={e => updateExtra(r.id, "hours", e.target.value)}
+                        style={{ width: 64, textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                    </td>
+                    <td style={{ padding: "7px 12px" }}>
+                      <input value={r.notes} onChange={e => updateExtra(r.id, "notes", e.target.value)}
+                        style={{ width: "100%", fontSize: 12 }} placeholder="Notes…" />
+                    </td>
+                    <td style={{ padding: "4px", textAlign: "center" }} className="no-print">
+                      <button onClick={() => removeExtra(r.id)}
+                        style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12 }}>✕</button>
+                    </td>
+                  </tr>
+                ))}
+                {/* Total row */}
+                <tr style={{ borderTop: `2px solid ${P.accent}`, background: P.accentDim }}>
+                  <td colSpan={2} style={{ padding: "8px 12px", fontWeight: 700, fontSize: 13, color: P.accentLight }}>Total</td>
+                  <td style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, fontFamily: "JetBrains Mono", fontSize: 14,
+                    color: totalHours < 50 ? P.yellow : P.green }}>
+                    {Math.round(totalHours * 100) / 100}
+                  </td>
+                  <td colSpan={2} style={{ padding: "8px 12px", fontSize: 11, color: P.textDim }}>
+                    {totalHours < 50 && `⚠ Under — check for missing projects or unmatched time`}
+                    {totalHours >= 50 && `✓ Looks complete`}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 14, alignItems: "center" }} className="no-print">
+            <Btn small variant="ghost" onClick={addExtraRow}>+ Add Row</Btn>
+            <Btn small onClick={() => window.print()} variant="primary">🖨 Print / Save as PDF</Btn>
+            <span style={{ fontSize: 11, color: P.textDim }}>Tip: use browser Print → Save as PDF</span>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+
 function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToProject, onUpdateProject }) {
   const [editingId, setEditingId] = React.useState(null); // null=list, "__new__"=new, id=editing
   const [form, setForm] = React.useState(null);
@@ -11785,6 +12091,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   const [expandedStaff, setExpandedStaff] = React.useState({});
   const [staffRfiModal, setStaffRfiModal] = React.useState(null);
   const [staffSubModal, setStaffSubModal] = React.useState(null);
+  const [timesheetStaff, setTimesheetStaff] = React.useState(null); // staff member to generate timesheet for
 
   // Build lookup: staffName → upcoming milestones across all active projects
   const activeProjects = React.useMemo(() =>
@@ -11997,6 +12304,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
 
                   {/* Edit / delete */}
                   <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+                    <Btn small variant="ghost" onClick={e => { e.stopPropagation(); setTimesheetStaff(s); }}>📋 Timesheet</Btn>
                     <Btn small variant="ghost" onClick={() => startEdit(s)}>Edit</Btn>
                     <Btn small variant="danger" onClick={() => deleteStaff(s.id)}>✕</Btn>
                   </div>
@@ -12096,6 +12404,13 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
           onUpdateProject && onUpdateProject({ ...p, submittals: (p.submittals||[]).map(s => s.id===updated.id ? updated : s) });
         }}
         onClose={() => setStaffSubModal(null)}
+      />
+    )}
+    {timesheetStaff && (
+      <TimesheetHelper
+        staff={timesheetStaff}
+        projects={projects}
+        onClose={() => setTimesheetStaff(null)}
       />
     )}
     </>
