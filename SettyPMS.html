@@ -834,11 +834,32 @@ async function createSharePointFolder(project) {
     return existing.webUrl;
   }
 
-  // Create the folder
+  // Create the project root folder
   const result = await graphFetch("POST",
     "/drives/" + driveId + "/root/children",
     { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "rename" }
   );
+
+  // Auto-create standard subfolders
+  const subfolders = [
+    "Project Management",
+    "Design Reports and Narratives",
+    "Specifications",
+    "Site Field Reports",
+    "Electrical Design",
+    "Mechanical Design",
+    "Plumbing Design",
+    "Fire Protection Design",
+  ];
+  for (const sub of subfolders) {
+    try {
+      await graphFetch("POST",
+        "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName) + ":/children",
+        { name: sub, folder: {}, "@microsoft.graph.conflictBehavior": "skip" }
+      );
+    } catch(e) { /* non-fatal — subfolder may already exist */ }
+  }
+
   return result.webUrl;
 }
 
