@@ -8066,6 +8066,19 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button
+            title="Copy link to this project"
+            onClick={() => {
+              const url = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
+              navigator.clipboard.writeText(url).then(() => {
+                const btn = document.activeElement;
+                if (btn) { const orig = btn.textContent; btn.textContent = "✓ Copied!"; setTimeout(() => btn.textContent = orig, 1500); }
+              });
+            }}
+            style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
+            🔗 Copy Link
+          </button>
           <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ fontSize: 13 }}>
             {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
           </select>
@@ -12265,7 +12278,14 @@ function App() {
   const [termContracts, setTermContracts] = useState([]);
   const [staff, setStaff] = useState([]);
   const [clients, setClients] = useState([]);
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState(() => {
+    // Deep link: read hash on load e.g. #project:SAPX246008.00
+    const hash = window.location.hash.slice(1);
+    if (hash.startsWith("project:") || ["dashboard","list","calendar","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
+      return hash;
+    }
+    return "dashboard";
+  });
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
   const [filterQAQC, setFilterQAQC] = useState("All");
@@ -12573,6 +12593,11 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
   }, [projects, view, search, filterPM, filterQAQC, filterStatus, filterContract]);
 
   const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
+
+  // Keep URL hash in sync with current view
+  React.useEffect(() => {
+    window.location.hash = view;
+  }, [view]);
 
 
 
