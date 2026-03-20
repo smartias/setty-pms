@@ -860,7 +860,7 @@ async function createSharePointFolder(project) {
     try {
       await graphFetch("POST",
         "/drives/" + driveId + "/items/" + folderId + "/children",
-        { name: sub, folder: {}, "@microsoft.graph.conflictBehavior": "skip" }
+        { name: sub, folder: {} }
       );
     } catch(e) {
       errors.push(sub + ": " + e.message);
