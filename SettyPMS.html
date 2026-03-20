@@ -11189,7 +11189,7 @@ function OneNoteNotebookField({ project, onSave, onClear }) {
   );
 }
 
-const EXTERNAL_LINK_TYPES = ["Client FTP", "BIM 360", "Matterport", "Procore", "Client Portal", "Dropbox", "Box", "Google Drive", "Other"];
+const EXTERNAL_LINK_TYPES = ["Client FTP", "BIM 360", "Matterport", "Procore", "Client Portal", "Network Folder", "Dropbox", "Box", "Google Drive", "Other"];
 
 function ExternalLinksField({ project, onChange }) {
   const links = project.externalLinks || [];
@@ -11222,6 +11222,7 @@ function ExternalLinksField({ project, onChange }) {
     "Client FTP": { bg: "#1a2a1a", text: "#4ade80" },
     "Procore": { bg: "#2a1a1a", text: "#f87171" },
     "Client Portal": { bg: "#1a2220", text: "#34d399" },
+    "Network Folder": { bg: "#1a1e1a", text: "#86efac" },
     "Other": { bg: "#1e1e2a", text: "#94a3b8" },
   };
 
@@ -11257,12 +11258,24 @@ function ExternalLinksField({ project, onChange }) {
                   fontSize: 10, fontWeight: 700, padding: "2px 7px", whiteSpace: "nowrap" }}>
                   {l.type}
                 </span>
-                <a href={l.url} target="_blank" rel="noreferrer"
-                  style={{ fontWeight: 600, fontSize: 13, color: P.accentLight, textDecoration: "none",
-                    flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                  title={l.url}>
-                  {l.label || l.type}
-                </a>
+                {l.type === "Network Folder" ? (
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span style={{ fontWeight: 600, fontSize: 13, color: P.accentLight }}>{l.label || l.type}</span>
+                    <button onClick={() => { navigator.clipboard.writeText(l.url).then(() => alert("Path copied to clipboard")); }}
+                      title="Copy network path to clipboard"
+                      style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 4,
+                        color: P.textDim, cursor: "pointer", fontSize: 10, padding: "1px 6px", marginLeft: 8 }}>
+                      📋 Copy Path
+                    </button>
+                  </span>
+                ) : (
+                  <a href={l.url} target="_blank" rel="noreferrer"
+                    style={{ fontWeight: 600, fontSize: 13, color: P.accentLight, textDecoration: "none",
+                      flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    title={l.url}>
+                    {l.label || l.type}
+                  </a>
+                )}
                 {l.note && <span style={{ fontSize: 11, color: P.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>{l.note}</span>}
                 <button onClick={() => { setDraft({ label: l.label, url: l.url, type: l.type, note: l.note || "" }); setEditId(l.id); }}
                   style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12, padding: "2px 6px" }} title="Edit">✎</button>
@@ -11285,7 +11298,8 @@ function ExternalLinksField({ project, onChange }) {
           </div>
           <input value={draft.url} onChange={e => setDraft(d => ({ ...d, url: e.target.value }))}
             onKeyDown={e => e.key === "Enter" && saveNew()}
-            placeholder="https://…" style={{ fontSize: 12, width: "100%" }} />
+            placeholder={draft.type === "Network Folder" ? "\\\\server\\share\\folder  (UNC path)" : "https://…"}
+            style={{ fontSize: 12, width: "100%" }} />
           <input value={draft.note} onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
             placeholder="Note (optional — e.g. login: sara@setty.com)" style={{ fontSize: 12, width: "100%" }} />
           <div style={{ display: "flex", gap: 6 }}>
