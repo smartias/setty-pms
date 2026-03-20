@@ -306,6 +306,7 @@ function newProject(overrides = {}) {
     oneNoteUrl: "",
     oneNoteNotebookUrl: "",
     oneNoteNotebookId: "",
+    externalLinks: [],
     reimbursableBudget: 0,
     reimbursables: [],
     ...overrides,
@@ -8126,6 +8127,10 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
               <SharePointFolderField project={project} onUpdate={updateField} />
             </Field>
 
+            <Field label="External Sites & Links" style={{ gridColumn: "1 / -1" }}>
+              <ExternalLinksField project={project} onChange={onUpdate} />
+            </Field>
+
             <Field label="OneNote Notebook" style={{ gridColumn: "1 / -1" }}>
               <OneNoteNotebookField
                 project={project}
@@ -11183,6 +11188,118 @@ function OneNoteNotebookField({ project, onSave, onClear }) {
     </div>
   );
 }
+
+const EXTERNAL_LINK_TYPES = ["Client FTP", "BIM 360", "Matterport", "Procore", "Client Portal", "Dropbox", "Box", "Google Drive", "Other"];
+
+function ExternalLinksField({ project, onChange }) {
+  const links = project.externalLinks || [];
+  const [adding, setAdding] = React.useState(false);
+  const [draft, setDraft] = React.useState({ label: "", url: "", type: "Other", note: "" });
+  const [editId, setEditId] = React.useState(null);
+
+  function saveNew() {
+    if (!draft.url.trim()) return;
+    const label = draft.label.trim() || draft.type;
+    const newLink = { id: uid(), label, url: draft.url.trim(), type: draft.type, note: draft.note.trim() };
+    onChange({ ...project, externalLinks: [...links, newLink] });
+    setDraft({ label: "", url: "", type: "Other", note: "" });
+    setAdding(false);
+  }
+
+  function remove(id) {
+    if (!window.confirm("Remove this link?")) return;
+    onChange({ ...project, externalLinks: links.filter(l => l.id !== id) });
+  }
+
+  function saveEdit(id) {
+    onChange({ ...project, externalLinks: links.map(l => l.id === id ? { ...l, ...draft } : l) });
+    setEditId(null);
+  }
+
+  const typeColors = {
+    "BIM 360": { bg: "#1a2a3a", text: "#4da6ff" },
+    "Matterport": { bg: "#1a1a2a", text: "#a78bfa" },
+    "Client FTP": { bg: "#1a2a1a", text: "#4ade80" },
+    "Procore": { bg: "#2a1a1a", text: "#f87171" },
+    "Client Portal": { bg: "#1a2220", text: "#34d399" },
+    "Other": { bg: "#1e1e2a", text: "#94a3b8" },
+  };
+
+  return (
+    <div>
+      {links.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+          {links.map(l => {
+            const tc = typeColors[l.type] || typeColors["Other"];
+            if (editId === l.id) return (
+              <div key={l.id} style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <select value={draft.type} onChange={e => setDraft(d => ({ ...d, type: e.target.value }))} style={{ fontSize: 12 }}>
+                    {EXTERNAL_LINK_TYPES.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                  <input value={draft.label} onChange={e => setDraft(d => ({ ...d, label: e.target.value }))}
+                    placeholder="Label (optional)" style={{ fontSize: 12, flex: 1, minWidth: 120 }} />
+                </div>
+                <input value={draft.url} onChange={e => setDraft(d => ({ ...d, url: e.target.value }))}
+                  placeholder="https://…" style={{ fontSize: 12, width: "100%" }} />
+                <input value={draft.note} onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
+                  placeholder="Note (optional)" style={{ fontSize: 12, width: "100%" }} />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <Btn small onClick={() => saveEdit(l.id)}>Save</Btn>
+                  <Btn small variant="ghost" onClick={() => setEditId(null)}>Cancel</Btn>
+                </div>
+              </div>
+            );
+            return (
+              <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 8,
+                background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, padding: "8px 12px" }}>
+                <span style={{ background: tc.bg, color: tc.text, borderRadius: 4,
+                  fontSize: 10, fontWeight: 700, padding: "2px 7px", whiteSpace: "nowrap" }}>
+                  {l.type}
+                </span>
+                <a href={l.url} target="_blank" rel="noreferrer"
+                  style={{ fontWeight: 600, fontSize: 13, color: P.accentLight, textDecoration: "none",
+                    flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={l.url}>
+                  {l.label || l.type}
+                </a>
+                {l.note && <span style={{ fontSize: 11, color: P.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>{l.note}</span>}
+                <button onClick={() => { setDraft({ label: l.label, url: l.url, type: l.type, note: l.note || "" }); setEditId(l.id); }}
+                  style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12, padding: "2px 6px" }} title="Edit">✎</button>
+                <button onClick={() => remove(l.id)}
+                  style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12, padding: "2px 6px" }} title="Remove">✕</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {adding ? (
+        <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <select value={draft.type} onChange={e => setDraft(d => ({ ...d, type: e.target.value }))} style={{ fontSize: 12 }}>
+              {EXTERNAL_LINK_TYPES.map(t => <option key={t}>{t}</option>)}
+            </select>
+            <input value={draft.label} onChange={e => setDraft(d => ({ ...d, label: e.target.value }))}
+              placeholder="Label (optional — defaults to type)" style={{ fontSize: 12, flex: 1, minWidth: 120 }} />
+          </div>
+          <input value={draft.url} onChange={e => setDraft(d => ({ ...d, url: e.target.value }))}
+            onKeyDown={e => e.key === "Enter" && saveNew()}
+            placeholder="https://…" style={{ fontSize: 12, width: "100%" }} />
+          <input value={draft.note} onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
+            placeholder="Note (optional — e.g. login: sara@setty.com)" style={{ fontSize: 12, width: "100%" }} />
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn small onClick={saveNew} disabled={!draft.url.trim()}>Add Link</Btn>
+            <Btn small variant="ghost" onClick={() => { setAdding(false); setDraft({ label: "", url: "", type: "Other", note: "" }); }}>Cancel</Btn>
+          </div>
+        </div>
+      ) : (
+        <Btn small variant="ghost" onClick={() => setAdding(true)}>+ Add External Link</Btn>
+      )}
+    </div>
+  );
+}
+
 
 function SharePointFolderField({ project, onUpdate }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
