@@ -956,7 +956,10 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml) {
       }
     } catch(e) { /* non-fatal */ }
   }
-  return { folderName: emailFolderName, attachCount };
+  // Build the web URL for the email subfolder
+  const baseSpUrl = "https://setty.sharepoint.com/sites/NYCProjects/Project%20Document%20Library";
+  const folderWebUrl = baseSpUrl + "/" + encodeURIComponent(projectFolderName) + "/Emails/" + encodeURIComponent(emailFolderName);
+  return { folderName: emailFolderName, attachCount, folderWebUrl };
 }
 
 
@@ -8557,9 +8560,11 @@ function EmailsView({ project, onChange }) {
         const data = await graphFetch("GET", "/me/messages/" + email.msgId + "?$select=body", undefined, token);
         bodyHtml = data?.body?.content || "";
       } catch(e) { /* fallback to stored text */ }
-      const { folderName, attachCount } = await saveEmailToSharePoint(email, project, bodyHtml);
+      const { folderName, attachCount, folderWebUrl } = await saveEmailToSharePoint(email, project, bodyHtml);
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
-      setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg } }));
+      setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
+      // Persist the SP folder URL on the email record so it survives page refresh
+      onChange({ ...project, emails: saved.map(e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e) });
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
     }
@@ -8786,12 +8791,26 @@ function EmailsView({ project, onChange }) {
                         )}
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <Btn small variant="ghost"
-                          disabled={spSaveState[email.msgId]?.status === "saving"}
-                          onClick={() => saveToSharePoint(email)}
-                          title={project.projectFolderUrl ? "Save email + attachments to SharePoint" : "Create a project folder first (Overview tab)"}>
-                          📁 Save to SharePoint
-                        </Btn>
+                        {(() => {
+                          const spUrl = spSaveState[email.msgId]?.folderWebUrl || email.spFolderUrl || "";
+                          if (spUrl) return (
+                            <a href={spUrl} target="_blank" rel="noreferrer"
+                              style={{ display: "inline-flex", alignItems: "center", gap: 5,
+                                background: "#0078d4", color: "#fff", borderRadius: 6,
+                                fontSize: 12, fontWeight: 600, padding: "5px 12px",
+                                textDecoration: "none", whiteSpace: "nowrap" }}>
+                              📂 Open in SharePoint
+                            </a>
+                          );
+                          return (
+                            <Btn small variant="ghost"
+                              disabled={spSaveState[email.msgId]?.status === "saving"}
+                              onClick={() => saveToSharePoint(email)}
+                              title={project.projectFolderUrl ? "Save email + attachments to SharePoint" : "Create a project folder first (Overview tab)"}>
+                              {spSaveState[email.msgId]?.status === "saving" ? "⏳ Saving…" : "📁 Save to SharePoint"}
+                            </Btn>
+                          );
+                        })()}
                         <Btn small variant="danger" onClick={() => { if (window.confirm("Remove this email from the project record?")) deleteEmail(email.msgId); }}>
                           Remove
                         </Btn>
