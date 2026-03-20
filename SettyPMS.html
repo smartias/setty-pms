@@ -840,7 +840,8 @@ async function createSharePointFolder(project) {
     { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "rename" }
   );
 
-  // Auto-create standard subfolders
+  // Auto-create standard subfolders using the new folder's item ID
+  const folderId = result.id;
   const subfolders = [
     "Project Management",
     "Design Reports and Narratives",
@@ -854,7 +855,7 @@ async function createSharePointFolder(project) {
   for (const sub of subfolders) {
     try {
       await graphFetch("POST",
-        "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName) + ":/children",
+        "/drives/" + driveId + "/items/" + folderId + "/children",
         { name: sub, folder: {}, "@microsoft.graph.conflictBehavior": "skip" }
       );
     } catch(e) { /* non-fatal — subfolder may already exist */ }
