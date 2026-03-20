@@ -822,26 +822,29 @@ async function createSharePointFolder(project) {
 
   const { siteId, driveId } = await resolveSpIds();
 
-  // Check if folder already exists to avoid duplicate
+  // Check if folder already exists
   let existing = null;
   try {
     existing = await graphFetch("GET",
       "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName)
     );
-  } catch(e) { /* 404 = doesn't exist yet, which is fine */ }
+  } catch(e) { /* 404 = doesn't exist yet */ }
 
+  let folderId, folderUrl;
   if (existing && existing.id) {
-    return existing.webUrl;
+    folderId = existing.id;
+    folderUrl = existing.webUrl;
+  } else {
+    // Create the project root folder
+    const result = await graphFetch("POST",
+      "/drives/" + driveId + "/root/children",
+      { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "rename" }
+    );
+    folderId = result.id;
+    folderUrl = result.webUrl;
   }
 
-  // Create the project root folder
-  const result = await graphFetch("POST",
-    "/drives/" + driveId + "/root/children",
-    { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "rename" }
-  );
-
-  // Auto-create standard subfolders using the new folder's item ID
-  const folderId = result.id;
+  // Create standard subfolders (skip if they already exist)
   const subfolders = [
     "Project Management",
     "Design Reports and Narratives",
@@ -852,16 +855,23 @@ async function createSharePointFolder(project) {
     "Plumbing Design",
     "Fire Protection Design",
   ];
+  const errors = [];
   for (const sub of subfolders) {
     try {
       await graphFetch("POST",
         "/drives/" + driveId + "/items/" + folderId + "/children",
         { name: sub, folder: {}, "@microsoft.graph.conflictBehavior": "skip" }
       );
-    } catch(e) { /* non-fatal — subfolder may already exist */ }
+    } catch(e) {
+      errors.push(sub + ": " + e.message);
+    }
+  }
+  if (errors.length > 0 && errors.length === subfolders.length) {
+    // All subfolders failed — surface the first error so we can diagnose
+    throw new Error("Subfolders failed: " + errors[0]);
   }
 
-  return result.webUrl;
+  return folderUrl;
 }
 
 
