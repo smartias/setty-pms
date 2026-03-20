@@ -2416,7 +2416,11 @@ function ScheduleView({ project, onChange }) {
     const url = m.outgoingFolderUrl || "";
     if (url) return (
       <a href={url} target="_blank" rel="noreferrer" title="Open Document Set Folder"
-        style={{ color: "#0078d4", fontSize: 13, textDecoration: "none" }}>📂</a>
+        style={{ display: "inline-flex", alignItems: "center", gap: 3,
+          background: "#0078d4", color: "#fff", borderRadius: 5,
+          fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap" }}>
+        📂 Open
+      </a>
     );
     return (
       <button title="Create Document Set Folder"
@@ -2430,11 +2434,14 @@ function ScheduleView({ project, onChange }) {
             setStatus("done");
           } catch(e) { setStatus("error"); }
         }}
-        style={{ background: "none", border: "none",
-          cursor: project.projectFolderUrl ? "pointer" : "not-allowed",
+        style={{ display: "inline-flex", alignItems: "center", gap: 3,
+          background: status === "error" ? P.redDim : P.accentDim,
+          border: `1px solid ${status === "error" ? P.red : P.border}`,
           color: status === "error" ? P.red : P.textDim,
-          fontSize: 13, padding: "2px 4px", opacity: project.projectFolderUrl ? 1 : 0.35 }}>
-        {status === "creating" ? "⏳" : status === "error" ? "✗" : "📁"}
+          borderRadius: 5, fontSize: 11, padding: "3px 7px",
+          cursor: project.projectFolderUrl ? "pointer" : "not-allowed",
+          opacity: project.projectFolderUrl ? 1 : 0.35, whiteSpace: "nowrap" }}>
+        {status === "creating" ? "⏳" : status === "error" ? "✗" : "📁+"}
       </button>
     );
   }
@@ -2684,7 +2691,9 @@ function ScheduleView({ project, onChange }) {
                   </div>
                 </td>
                 <td>
-                  <div style={{ display: "flex", gap: 4 }}>
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <MilestoneSpBtn m={m} project={project}
+                      onSave={url => onChange({ ...project, milestones: milestones.map(x => x.id === m.id ? { ...x, outgoingFolderUrl: url } : x) })} />
                     {m.type === "billable" && (
                       <Btn small variant="danger"
                         onClick={() => setCancelPrompt(m)}
@@ -10312,7 +10321,11 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                       if (url) return (
                         <a href={url} target="_blank" rel="noreferrer"
                           title="Open Document Set Folder"
-                          style={{ color: "#0078d4", fontSize: 13, textDecoration: "none" }}>📂</a>
+                          style={{ display: "inline-flex", alignItems: "center", gap: 3,
+                            background: "#0078d4", color: "#fff", borderRadius: 5,
+                            fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap" }}>
+                          📂 Open
+                        </a>
                       );
                       return (
                         <button title="Create Document Set Folder"
@@ -10327,10 +10340,14 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                               setSpSt("done");
                             } catch(e) { setSpSt("error"); }
                           }}
-                          style={{ background: "none", border: "none", cursor: proj.projectFolderUrl ? "pointer" : "not-allowed",
-                            color: spSt === "creating" ? P.textDim : spSt === "error" ? P.red : P.textDim,
-                            fontSize: 13, padding: "2px 4px", opacity: proj.projectFolderUrl ? 1 : 0.3 }}>
-                          {spSt === "creating" ? "⏳" : spSt === "error" ? "✗" : "📁"}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 3,
+                            background: spSt === "error" ? P.redDim : P.accentDim,
+                            border: `1px solid ${spSt === "error" ? P.red : P.border}`,
+                            color: spSt === "error" ? P.red : P.textDim,
+                            borderRadius: 5, fontSize: 11, padding: "3px 7px",
+                            cursor: proj.projectFolderUrl ? "pointer" : "not-allowed",
+                            opacity: proj.projectFolderUrl ? 1 : 0.35, whiteSpace: "nowrap" }}>
+                          {spSt === "creating" ? "⏳" : spSt === "error" ? "✗" : "📁+"}
                         </button>
                       );
                     })()}
