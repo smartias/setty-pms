@@ -739,6 +739,34 @@ async function resolveSpIds() {
   return { siteId: _spSiteId, driveId: _spDriveId };
 }
 
+async function createMilestoneSpFolder(project, milestone) {
+  const { driveId } = await resolveSpIds();
+  const num  = (project.projectNumber || "").trim();
+  const name = (project.name || "Unnamed Project").trim();
+  const projFolderName = num ? num + " - " + name : name;
+  let datePrefix = "";
+  if (milestone.dueDate) {
+    const d = new Date(milestone.dueDate + "T00:00:00");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yy = String(d.getFullYear()).slice(-2);
+    datePrefix = dd + "-" + mm + "-" + yy + " ";
+  }
+  const safeName = (datePrefix + (milestone.name || "Milestone")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+  async function ensureF(parentPath, folderName) {
+    try {
+      await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodeURIComponent(parentPath) + ":/children",
+        { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "replace" });
+    } catch(e) {}
+    return parentPath + "/" + folderName;
+  }
+  const outgoingPath = await ensureF(projFolderName, "Outgoing");
+  await ensureF(outgoingPath, safeName);
+  const baseUrl = "https://setty.sharepoint.com/sites/NYCProjects/Project%20Document%20Library";
+  return baseUrl + "/" + encodeURIComponent(projFolderName) + "/Outgoing/" + encodeURIComponent(safeName);
+}
+
+
 async function createOneNoteNotebook(project) {
   // Creates a notebook in SharePoint (team-accessible) rather than personal OneDrive
   const name = [project.projectNumber, project.name].filter(Boolean).join(" — ").trim() || "Setty Project";
@@ -2382,6 +2410,35 @@ function ScheduleView({ project, onChange }) {
       setEmailMsg("✗ " + e.message);
     }
   }
+
+  function MilestoneSpBtn({ m, project, onSave }) {
+    const [status, setStatus] = React.useState("idle");
+    const url = m.outgoingFolderUrl || "";
+    if (url) return (
+      <a href={url} target="_blank" rel="noreferrer" title="Open Document Set Folder"
+        style={{ color: "#0078d4", fontSize: 13, textDecoration: "none" }}>📂</a>
+    );
+    return (
+      <button title="Create Document Set Folder"
+        disabled={status === "creating" || !project.projectFolderUrl}
+        onClick={async () => {
+          if (!project.projectFolderUrl) return;
+          setStatus("creating");
+          try {
+            const webUrl = await createMilestoneSpFolder(project, m);
+            onSave(webUrl);
+            setStatus("done");
+          } catch(e) { setStatus("error"); }
+        }}
+        style={{ background: "none", border: "none",
+          cursor: project.projectFolderUrl ? "pointer" : "not-allowed",
+          color: status === "error" ? P.red : P.textDim,
+          fontSize: 13, padding: "2px 4px", opacity: project.projectFolderUrl ? 1 : 0.35 }}>
+        {status === "creating" ? "⏳" : status === "error" ? "✗" : "📁"}
+      </button>
+    );
+  }
+
 
   function CalIcon({ m }) {
     const st = calState[m.id];
@@ -10245,6 +10302,38 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                         border: "1px solid " + projStatusColor.text, fontWeight: 600, cursor: "pointer" }}>
                       {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
                     </select>
+                  </td>
+                  <td>
+                    {!["rfi","submittal"].includes(m.type) && (() => {
+                      const proj = projects.find(p => p.id === m.projectId);
+                      if (!proj) return null;
+                      const url = m.outgoingFolderUrl || "";
+                      const [spSt, setSpSt] = React.useState("idle");
+                      if (url) return (
+                        <a href={url} target="_blank" rel="noreferrer"
+                          title="Open Document Set Folder"
+                          style={{ color: "#0078d4", fontSize: 13, textDecoration: "none" }}>📂</a>
+                      );
+                      return (
+                        <button title="Create Document Set Folder"
+                          disabled={spSt === "creating" || !proj.projectFolderUrl}
+                          onClick={async () => {
+                            if (!proj.projectFolderUrl) return;
+                            setSpSt("creating");
+                            try {
+                              const webUrl = await createMilestoneSpFolder(proj, m);
+                              const newMilestones = (proj.milestones || []).map(x => x.id === m.id ? { ...x, outgoingFolderUrl: webUrl } : x);
+                              onUpdateProject({ ...proj, milestones: newMilestones });
+                              setSpSt("done");
+                            } catch(e) { setSpSt("error"); }
+                          }}
+                          style={{ background: "none", border: "none", cursor: proj.projectFolderUrl ? "pointer" : "not-allowed",
+                            color: spSt === "creating" ? P.textDim : spSt === "error" ? P.red : P.textDim,
+                            fontSize: 13, padding: "2px 4px", opacity: proj.projectFolderUrl ? 1 : 0.3 }}>
+                          {spSt === "creating" ? "⏳" : spSt === "error" ? "✗" : "📁"}
+                        </button>
+                      );
+                    })()}
                   </td>
                   <td>
                     {m.dueDate && (() => {
