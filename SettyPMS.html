@@ -11821,7 +11821,7 @@ function TimesheetHelper({ staff, projects, onClose }) {
       );
       if (!member) return;
 
-      // WBS — disciplines on this project
+      // WBS — disciplines on this project, prorated to the pay period
       const discs = member.disciplines || [];
       const totalFee = (p.phases || []).reduce((a, ph) => a + (ph.fee || 0), 0);
       const totalHrs = totalFee > 0 ? Math.round(totalFee / 170) : 0; // WBS_HOURLY_RATE
@@ -11829,10 +11829,34 @@ function TimesheetHelper({ staff, projects, onClose }) {
       const dpmHrs = Math.round(totalHrs * 0.02);
       const discHrs = totalHrs - pmHrs - dpmHrs;
       const discTotal = discs.length;
-      let wbsHours = 0;
-      if (member.role === "Project Manager") wbsHours = pmHrs;
-      else if (member.role === "Deputy Project Manager") wbsHours = dpmHrs;
-      else if (discTotal > 0) wbsHours = Math.round(discHrs / discTotal);
+      let fullWbsHours = 0;
+      if (member.role === "Project Manager") fullWbsHours = pmHrs;
+      else if (member.role === "Deputy Project Manager") fullWbsHours = dpmHrs;
+      else if (discTotal > 0) fullWbsHours = Math.round(discHrs / discTotal);
+
+      // Prorate to pay period: find overlap of project phases with this period
+      const activePhaseDays = (p.phases || [])
+        .filter(ph => ph.startDate && ph.endDate)
+        .reduce((sum, ph) => {
+          const phStart = new Date(ph.startDate + "T00:00:00").getTime();
+          const phEnd   = new Date(ph.endDate   + "T00:00:00").getTime();
+          const overlapStart = Math.max(phStart, pStart);
+          const overlapEnd   = Math.min(phEnd, pEnd);
+          return overlapStart < overlapEnd ? sum + (overlapEnd - overlapStart) / 86400000 : sum;
+        }, 0);
+      const totalPhaseDays = Math.max(1, (p.phases || [])
+        .filter(ph => ph.startDate && ph.endDate)
+        .reduce((sum, ph) => {
+          const s = new Date(ph.startDate + "T00:00:00").getTime();
+          const e = new Date(ph.endDate   + "T00:00:00").getTime();
+          return e > s ? sum + (e - s) / 86400000 : sum;
+        }, 0));
+      // If no phase dates, fall back to pay period / 260 working days per year
+      const periodDays = (pEnd - pStart) / 86400000;
+      const ratio = activePhaseDays > 0
+        ? Math.min(1, activePhaseDays / totalPhaseDays)
+        : periodDays / 260;
+      const wbsHours = Math.round(fullWbsHours * ratio * 4) / 4; // round to quarter hour
 
       if (wbsHours > 0 || discs.length > 0) {
         items.push({
@@ -11984,13 +12008,13 @@ function TimesheetHelper({ staff, projects, onClose }) {
           hourMap[proj.id].evts.push(ev.subject);
         } else { unmatched.push(ev); }
       }
-      const newRows = Object.values(hourMap).map(({ project, hours, evts }) => ({
+      const newRows = Object.values(hourMap).map(({ project, hours }) => ({
         id: "cal-" + project.id,
         projectId: project.id,
         projectName: project.name,
         projectNumber: project.projectNumber || "",
         hours: Math.round(hours * 4) / 4,
-        notes: [...new Set(evts.slice(0,3))].join("; "),
+        notes: "",
         source: "calendar",
       }));
       if (unmatched.length > 0) {
@@ -12001,7 +12025,7 @@ function TimesheetHelper({ staff, projects, onClose }) {
           projectName: "\u26a0 Unmatched / Review",
           projectNumber: "",
           hours: Math.round(uHrs * 4) / 4,
-          notes: unmatched.slice(0,3).map(e=>e.subject).join("; ") + (unmatched.length > 3 ? ` +${unmatched.length-3} more` : ""),
+          notes: "",
           source: "calendar",
         });
       }
