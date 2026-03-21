@@ -750,8 +750,8 @@ async function createMilestoneSpFolder(project, milestone) {
     const d = new Date(milestone.dueDate + "T00:00:00");
     const dd = String(d.getDate()).padStart(2, "0");
     const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const yy = String(d.getFullYear()).slice(-2);
-    datePrefix = dd + "-" + mm + "-" + yy + " ";
+    const yyyy2 = String(d.getFullYear());
+    datePrefix = yyyy2 + "_" + mm + "_" + dd + " ";
   }
   const safeName = (datePrefix + (milestone.name || "Milestone")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
   async function ensureF(parentPath, folderName) {
@@ -882,14 +882,14 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml) {
   if (!folderUrl) throw new Error("No SharePoint project folder. Create one on the Overview tab first.");
   const { driveId } = await resolveSpIds();
 
-  // Build folder name: DD.MM.YYYY Subject
+  // Build folder name: YYYY_MM_DD Subject
   const d = new Date(email.date);
   const dd   = String(d.getDate()).padStart(2, "0");
   const mm   = String(d.getMonth() + 1).padStart(2, "0");
   const yyyy = d.getFullYear();
   const safeSubject = (email.subject || "No Subject")
     .replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 70);
-  const emailFolderName = dd + "." + mm + "." + yyyy + " " + safeSubject;
+  const emailFolderName = yyyy + "_" + mm + "_" + dd + " " + safeSubject;
 
   // Get project folder name from stored URL
   const urlParts = folderUrl.split("/");
@@ -11778,85 +11778,185 @@ function newStaffMember(overrides) {
   };
 }
 
+
 function TimesheetHelper({ staff, projects, onClose }) {
   const today = new Date();
   const [month, setMonth] = React.useState(today.getMonth());
   const [year, setYear] = React.useState(today.getFullYear());
-  // period: "first" = 1-15, "second" = 16-end
   const [period, setPeriod] = React.useState(today.getDate() <= 15 ? "first" : "second");
   const [searching, setSearching] = React.useState(false);
-  const [events, setEvents] = React.useState(null); // null = not yet searched
-  const [rows, setRows] = React.useState([]); // { projectId, projectName, projectNumber, hours, notes }
-  const [manualRow, setManualRow] = React.useState({ projectId: "__manual__", label: "", hours: "", notes: "" });
-  const [extraRows, setExtraRows] = React.useState([]); // manually added rows
+  const [calEvents, setCalEvents] = React.useState(null);
+  const [rows, setRows] = React.useState([]);
+  const [extraRows, setExtraRows] = React.useState([]);
+  const [activeTab, setActiveTab] = React.useState("calendar"); // "calendar" | "active"
 
-  const MONTH_NAMES_TS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const TS_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   const YEARS = [today.getFullYear() - 1, today.getFullYear()];
 
-  // Date range for selected period
   const periodStart = new Date(year, month, period === "first" ? 1 : 16);
   const periodEnd   = period === "first"
     ? new Date(year, month, 15, 23, 59, 59)
-    : new Date(year, month + 1, 0, 23, 59, 59); // last day of month
+    : new Date(year, month + 1, 0, 23, 59, 59);
+  const fmtPeriod = TS_MONTHS[month] + " " + (period === "first" ? "1\u201315" : "16\u2013" + new Date(year, month + 1, 0).getDate()) + ", " + year;
 
-  const fmtPeriod = MONTH_NAMES_TS[month] + " " + (period === "first" ? "1–15" : "16–" + new Date(year, month + 1, 0).getDate()) + ", " + year;
+  function resetPeriod() { setCalEvents(null); setRows([]); setExtraRows([]); }
 
-  // Projects this staff member is on
-  const staffProjects = React.useMemo(() => {
-    const name = (staff.name || "").trim().toLowerCase();
-    return projects.filter(p =>
-      !p.archived &&
-      (p.teamMembers || []).some(m => m.name && m.name.trim().toLowerCase() === name)
-    );
-  }, [staff, projects]);
+  // ── Projects this staff member is on ──────────────────────────────────────
+  const staffName = (staff.name || "").trim().toLowerCase();
+  const staffProjects = React.useMemo(() =>
+    projects.filter(p => !p.archived && (p.teamMembers || []).some(m =>
+      m.name && m.name.trim().toLowerCase() === staffName
+    )),
+  [staff, projects]);
 
-  // Build keyword map for matching events to projects
-  const GENERIC = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","nyc","building","phase","design","engineering","services","meeting","call","coordination","review"]);
+  // ── Active Work: WBS + RFIs + Submittals + Non-billable milestones ────────
+  const activeWork = React.useMemo(() => {
+    const items = [];
+    const pStart = periodStart.getTime();
+    const pEnd   = periodEnd.getTime();
+
+    staffProjects.forEach(p => {
+      const member = (p.teamMembers || []).find(m =>
+        m.name && m.name.trim().toLowerCase() === staffName
+      );
+      if (!member) return;
+
+      // WBS — disciplines on this project
+      const discs = member.disciplines || [];
+      const totalFee = (p.phases || []).reduce((a, ph) => a + (ph.fee || 0), 0);
+      const totalHrs = totalFee > 0 ? Math.round(totalFee / 170) : 0; // WBS_HOURLY_RATE
+      const pmHrs  = Math.round(totalHrs * 0.08);
+      const dpmHrs = Math.round(totalHrs * 0.02);
+      const discHrs = totalHrs - pmHrs - dpmHrs;
+      const discTotal = discs.length;
+      let wbsHours = 0;
+      if (member.role === "Project Manager") wbsHours = pmHrs;
+      else if (member.role === "Deputy Project Manager") wbsHours = dpmHrs;
+      else if (discTotal > 0) wbsHours = Math.round(discHrs / discTotal);
+
+      if (wbsHours > 0 || discs.length > 0) {
+        items.push({
+          id: "wbs-" + p.id,
+          type: "wbs",
+          projectId: p.id,
+          projectName: p.name,
+          projectNumber: p.projectNumber || "",
+          label: (discs.length > 0 ? discs.join(", ") : member.role || "Engineering") + " — WBS",
+          wbsHours,
+          role: member.role,
+          disciplines: discs,
+        });
+      }
+
+      // Non-billable milestones due in period
+      (p.milestones || [])
+        .filter(ms => ms.type !== "billable" && ms.dueDate && !ms.cancelled) 
+        .forEach(ms => {
+          const d = new Date(ms.dueDate + "T00:00:00").getTime();
+          if (d >= pStart && d <= pEnd) {
+            items.push({
+              id: "ms-" + ms.id,
+              type: "milestone",
+              projectId: p.id,
+              projectName: p.name,
+              projectNumber: p.projectNumber || "",
+              label: ms.name,
+              dueDate: ms.dueDate,
+              pct: ms.pctComplete || 0,
+            });
+          }
+        });
+
+      // RFIs assigned to this staff member, due or closed in period
+      (p.rfis || [])
+        .filter(r => (r.assignedTo || []).some(sid => {
+          const mbr = (p.teamMembers || []).find(m => m.id === sid);
+          return mbr && mbr.name && mbr.name.trim().toLowerCase() === staffName;
+        }))
+        .forEach(r => {
+          const due = r.dueDate ? new Date(r.dueDate + "T00:00:00").getTime() : null;
+          const inPeriod = due && due >= pStart && due <= pEnd;
+          const closedInPeriod = ["Responded","Closed"].includes(r.status);
+          if (inPeriod || closedInPeriod) {
+            items.push({
+              id: "rfi-" + r.id,
+              type: "rfi",
+              projectId: p.id,
+              projectName: p.name,
+              projectNumber: p.projectNumber || "",
+              label: (r.number || "RFI") + (r.title ? " — " + r.title : ""),
+              dueDate: r.dueDate,
+              status: r.status,
+            });
+          }
+        });
+
+      // Submittals assigned to this staff member, due or closed in period
+      (p.submittals || [])
+        .filter(s => (s.assignedTo || []).some(sid => {
+          const mbr = (p.teamMembers || []).find(m => m.id === sid);
+          return mbr && mbr.name && mbr.name.trim().toLowerCase() === staffName;
+        }))
+        .forEach(s => {
+          const due = s.dueDate ? new Date(s.dueDate + "T00:00:00").getTime() : null;
+          const inPeriod = due && due >= pStart && due <= pEnd;
+          const closedInPeriod = ["Returned","Void"].includes(s.status);
+          if (inPeriod || closedInPeriod) {
+            items.push({
+              id: "sub-" + s.id,
+              type: "submittal",
+              projectId: p.id,
+              projectName: p.name,
+              projectNumber: p.projectNumber || "",
+              label: (s.number || "SUB") + (s.description ? " — " + s.description : ""),
+              dueDate: s.dueDate,
+              status: s.status,
+            });
+          }
+        });
+    });
+
+    return items;
+  }, [staffProjects, staffName, period, month, year]);
+
+  // ── Calendar helpers ───────────────────────────────────────────────────────
+  const GENERIC_KW = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","nyc","building","phase","design","engineering","services","meeting","call","coordination","review"]);
   function projectKeywords(p) {
-    const tokens = ((p.projectNumber || "") + " " + (p.name || ""))
+    return ((p.projectNumber || "") + " " + (p.name || ""))
       .split(/[\s\-\/,()&]+/)
-      .map(w => w.replace(/[^a-zA-Z0-9]/g, "").toLowerCase())
-      .filter(w => w.length >= 3 && !GENERIC.has(w));
-    return tokens;
+      .map(w => w.replace(/[^a-zA-Z0-9]/g,"").toLowerCase())
+      .filter(w => w.length >= 3 && !GENERIC_KW.has(w));
   }
-
   function matchEventToProject(subject) {
     const subj = subject.toLowerCase();
-    let bestMatch = null;
-    let bestScore = 0;
+    let best = null, bestScore = 0;
     for (const p of staffProjects) {
-      const kws = projectKeywords(p);
-      const score = kws.filter(kw => subj.includes(kw)).length;
-      if (score > bestScore) { bestScore = score; bestMatch = p; }
+      const score = projectKeywords(p).filter(kw => subj.includes(kw)).length;
+      if (score > bestScore) { bestScore = score; best = p; }
     }
-    return bestScore >= 1 ? bestMatch : null;
+    return bestScore >= 1 ? best : null;
   }
-
-  function eventDurationHours(ev) {
-    const start = new Date(ev.start?.dateTime || ev.start?.date);
-    const end   = new Date(ev.end?.dateTime   || ev.end?.date);
-    if (!start || !end || isNaN(start) || isNaN(end)) return 0;
-    return Math.round((end - start) / 36000) / 100; // round to 2dp
+  function eventHours(ev) {
+    const s = new Date(ev.start?.dateTime || ev.start?.date);
+    const e = new Date(ev.end?.dateTime   || ev.end?.date);
+    if (!s || !e || isNaN(s) || isNaN(e)) return 0;
+    return Math.round((e - s) / 36000) / 100;
   }
 
   async function searchCalendar() {
-    setSearching(true);
-    setEvents(null);
+    setSearching(true); setCalEvents(null);
     try {
       const token = await getToken();
-      const allEvents = [];
-      const seen = new Set();
+      const all = []; const seen = new Set();
       const calIds = [null];
       try {
-        const calData = await graphFetch("GET", "/me/calendars?$top=50", undefined, token);
-        const shared = (calData?.value || []).filter(c =>
+        const cd = await graphFetch("GET", "/me/calendars?$top=50", undefined, token);
+        (cd?.value || []).filter(c =>
           c.name.toLowerCase().includes("nyc") ||
           c.name.toLowerCase().includes("shared") ||
           c.name.toLowerCase().includes("setty")
-        );
-        shared.forEach(c => calIds.push(c.id));
+        ).forEach(c => calIds.push(c.id));
       } catch(e) {}
-
       for (const calId of calIds) {
         const base = calId ? `/me/calendars/${calId}` : "/me";
         const url = `${base}/calendarView?startDateTime=${periodStart.toISOString()}&endDateTime=${periodEnd.toISOString()}&$top=100&$select=id,subject,start,end,isCancelled,showAs`;
@@ -11864,224 +11964,293 @@ function TimesheetHelper({ staff, projects, onClose }) {
           const resp = await graphFetch("GET", url, undefined, token);
           for (const ev of (resp?.value || [])) {
             if (!seen.has(ev.id) && !ev.isCancelled && ev.showAs !== "free") {
-              seen.add(ev.id);
-              allEvents.push(ev);
+              seen.add(ev.id); all.push(ev);
             }
           }
         } catch(e) {}
       }
+      all.sort((a,b) => new Date(a.start?.dateTime||a.start?.date) - new Date(b.start?.dateTime||b.start?.date));
+      setCalEvents(all);
 
-      // Sort by date
-      allEvents.sort((a, b) => new Date(a.start?.dateTime || a.start?.date) - new Date(b.start?.dateTime || b.start?.date));
-      setEvents(allEvents);
-
-      // Build initial rows — aggregate hours by matched project
-      const hourMap = {}; // projectId -> { project, hours, events[] }
+      // Build rows from calendar
+      const hourMap = {};
       const unmatched = [];
-      for (const ev of allEvents) {
+      for (const ev of all) {
         const proj = matchEventToProject(ev.subject || "");
-        const hrs  = eventDurationHours(ev);
+        const hrs  = eventHours(ev);
         if (proj) {
-          if (!hourMap[proj.id]) hourMap[proj.id] = { project: proj, hours: 0, eventList: [] };
+          if (!hourMap[proj.id]) hourMap[proj.id] = { project: proj, hours: 0, evts: [] };
           hourMap[proj.id].hours += hrs;
-          hourMap[proj.id].eventList.push(ev.subject);
-        } else {
-          unmatched.push(ev);
-        }
+          hourMap[proj.id].evts.push(ev.subject);
+        } else { unmatched.push(ev); }
       }
-
-      const newRows = Object.values(hourMap).map(({ project, hours, eventList }) => ({
-        id: project.id,
+      const newRows = Object.values(hourMap).map(({ project, hours, evts }) => ({
+        id: "cal-" + project.id,
         projectId: project.id,
         projectName: project.name,
         projectNumber: project.projectNumber || "",
-        hours: Math.round(hours * 4) / 4, // round to quarter hour
-        notes: [...new Set(eventList.slice(0, 3))].join("; "),
+        hours: Math.round(hours * 4) / 4,
+        notes: [...new Set(evts.slice(0,3))].join("; "),
+        source: "calendar",
       }));
-
-      // Add a row for unmatched time
       if (unmatched.length > 0) {
-        const unmatchedHrs = unmatched.reduce((a, ev) => a + eventDurationHours(ev), 0);
+        const uHrs = unmatched.reduce((a,ev) => a + eventHours(ev), 0);
         newRows.push({
           id: "__unmatched__",
           projectId: "__unmatched__",
-          projectName: "⚠ Unmatched / Review",
+          projectName: "\u26a0 Unmatched / Review",
           projectNumber: "",
-          hours: Math.round(unmatchedHrs * 4) / 4,
-          notes: unmatched.slice(0, 3).map(e => e.subject).join("; ") + (unmatched.length > 3 ? ` +${unmatched.length - 3} more` : ""),
+          hours: Math.round(uHrs * 4) / 4,
+          notes: unmatched.slice(0,3).map(e=>e.subject).join("; ") + (unmatched.length > 3 ? ` +${unmatched.length-3} more` : ""),
+          source: "calendar",
         });
       }
-
       setRows(newRows);
-    } catch(e) {
-      setEvents([]);
-    } finally {
-      setSearching(false);
-    }
+    } catch(e) { setCalEvents([]); }
+    finally { setSearching(false); }
   }
 
-  function updateRow(id, field, val) {
-    setRows(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
-  }
-  function removeRow(id) { setRows(prev => prev.filter(r => r.id !== id)); }
-  function addExtraRow() {
-    setExtraRows(prev => [...prev, { id: uid(), projectId: "__manual__", projectName: "", hours: "", notes: "" }]);
-  }
-  function updateExtra(id, field, val) {
-    setExtraRows(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
-  }
-  function removeExtra(id) { setExtraRows(prev => prev.filter(r => r.id !== id)); }
+  function updateRow(id, field, val) { setRows(prev => prev.map(r => r.id===id ? {...r,[field]:val} : r)); }
+  function removeRow(id) { setRows(prev => prev.filter(r => r.id!==id)); }
+  function addExtraRow() { setExtraRows(prev => [...prev, { id: uid(), projectName: "", hours: "", notes: "" }]); }
+  function updateExtra(id, field, val) { setExtraRows(prev => prev.map(r => r.id===id ? {...r,[field]:val} : r)); }
+  function removeExtra(id) { setExtraRows(prev => prev.filter(r => r.id!==id)); }
 
   const allRows = [...rows, ...extraRows];
-  const totalHours = allRows.reduce((a, r) => a + (parseFloat(r.hours) || 0), 0);
-  const expectedHours = period === "first" ? 60 : 60; // ~60 hrs per half month (7.5/day × ~8 days)
+  const totalHours = allRows.reduce((a,r) => a + (parseFloat(r.hours)||0), 0);
+
+  const typeColors = {
+    wbs: { bg: P.accentDim, text: P.accentLight, label: "WBS" },
+    milestone: { bg: "#1a2a1a", text: "#4ade80", label: "Milestone" },
+    rfi: { bg: "#1a2233", text: "#60b4ff", label: "RFI" },
+    submittal: { bg: "#2a1a3a", text: "#a78bfa", label: "SUB" },
+  };
 
   return (
     <Modal title={"📋 Timesheet Helper — " + staff.name} onClose={onClose} wide>
+      {/* Period selector */}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
         <div>
           <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Month</label>
-          <select value={month} onChange={e => { setMonth(+e.target.value); setEvents(null); setRows([]); setExtraRows([]); }}
-            style={{ fontSize: 13 }}>
-            {MONTH_NAMES_TS.map((m, i) => <option key={i} value={i}>{m}</option>)}
+          <select value={month} onChange={e => { setMonth(+e.target.value); resetPeriod(); }} style={{ fontSize: 13 }}>
+            {TS_MONTHS.map((m,i) => <option key={i} value={i}>{m}</option>)}
           </select>
         </div>
         <div>
           <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Year</label>
-          <select value={year} onChange={e => { setYear(+e.target.value); setEvents(null); setRows([]); setExtraRows([]); }}
-            style={{ fontSize: 13 }}>
+          <select value={year} onChange={e => { setYear(+e.target.value); resetPeriod(); }} style={{ fontSize: 13 }}>
             {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
         <div>
           <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Period</label>
-          <div style={{ display: "flex", gap: 0 }}>
+          <div style={{ display: "flex" }}>
             {["first","second"].map(p => (
-              <button key={p} onClick={() => { setPeriod(p); setEvents(null); setRows([]); setExtraRows([]); }}
-                style={{ padding: "6px 14px", fontSize: 12, fontWeight: period === p ? 700 : 400, cursor: "pointer",
-                  background: period === p ? P.accent : P.card,
-                  color: period === p ? "#fff" : P.textMuted,
+              <button key={p} onClick={() => { setPeriod(p); resetPeriod(); }}
+                style={{ padding: "6px 14px", fontSize: 12, fontWeight: period===p ? 700 : 400, cursor: "pointer",
+                  background: period===p ? P.accent : P.card, color: period===p ? "#fff" : P.textMuted,
                   border: `1px solid ${P.accent}`,
-                  borderRadius: p === "first" ? "6px 0 0 6px" : "0 6px 6px 0",
-                  borderLeft: p === "second" ? "none" : undefined }}>
-                {p === "first" ? "1st–15th" : "16th–End"}
+                  borderRadius: p==="first" ? "6px 0 0 6px" : "0 6px 6px 0",
+                  borderLeft: p==="second" ? "none" : undefined }}>
+                {p==="first" ? "1st\u201315th" : "16th\u2013End"}
               </button>
             ))}
           </div>
         </div>
-        <Btn onClick={searchCalendar} disabled={searching}>
-          {searching ? "⏳ Searching calendar…" : "🔍 Pull from Calendar"}
-        </Btn>
-        <div style={{ fontSize: 11, color: P.textDim, alignSelf: "center" }}>
-          {fmtPeriod}
-        </div>
+        <div style={{ fontSize: 11, color: P.textDim, alignSelf: "center" }}>{fmtPeriod}</div>
       </div>
 
-      {events === null && !searching && (
-        <div style={{ padding: "32px 0", textAlign: "center", color: P.textDim, fontSize: 13 }}>
-          Select your period and click Pull from Calendar to get started.
+      {/* Source tabs */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 16, borderBottom: `1px solid ${P.border}` }}>
+        {[["calendar","📅 Calendar Import"],["active","📌 Active Work (PMS)"]].map(([key,label]) => (
+          <button key={key} onClick={() => setActiveTab(key)}
+            style={{ background: "none", border: "none", borderBottom: activeTab===key ? `2px solid ${P.accentLight}` : "2px solid transparent",
+              color: activeTab===key ? P.accentLight : P.textDim, cursor: "pointer",
+              fontSize: 12, fontWeight: activeTab===key ? 700 : 400, padding: "8px 16px", marginBottom: -1 }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Calendar tab */}
+      {activeTab === "calendar" && (
+        <div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+            <Btn onClick={searchCalendar} disabled={searching}>
+              {searching ? "⏳ Searching…" : "🔍 Pull from Calendar"}
+            </Btn>
+            {calEvents !== null && (
+              <span style={{ fontSize: 11, color: P.textDim }}>
+                {calEvents.length} event{calEvents.length !== 1 ? "s" : ""} found · {rows.filter(r=>r.projectId!=="__unmatched__").length} projects matched
+              </span>
+            )}
+          </div>
+          {calEvents === null && !searching && (
+            <div style={{ padding: "24px 0", textAlign: "center", color: P.textDim, fontSize: 13 }}>
+              Click Pull from Calendar to search your Outlook calendar for this period.
+            </div>
+          )}
         </div>
       )}
 
-      {events !== null && (
-        <>
-          <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
-            Found {events.length} calendar event{events.length !== 1 ? "s" : ""} in period.
-            Hours matched to {rows.filter(r => r.projectId !== "__unmatched__").length} of {staffProjects.length} assigned projects.
-            Edit hours and notes as needed, then add any additional rows manually.
-          </div>
-
-          {/* Print-friendly table */}
-          <div id="ts-print-area">
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontWeight: 700, fontSize: 16 }}>{staff.name} — Timesheet</div>
-              <div style={{ fontSize: 12, color: P.textDim }}>{fmtPeriod}{staff.role ? " · " + staff.role : ""}</div>
+      {/* Active Work tab */}
+      {activeTab === "active" && (
+        <div style={{ marginBottom: 12 }}>
+          {activeWork.length === 0 ? (
+            <div style={{ padding: "24px 0", textAlign: "center", color: P.textDim, fontSize: 13 }}>
+              No WBS assignments, RFIs, Submittals, or milestones found for this period.
             </div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: P.accentDim }}>
-                  <th style={{ textAlign: "left", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight, width: 110 }}>Project #</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight }}>Project Name</th>
-                  <th style={{ textAlign: "center", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight, width: 80 }}>Hours</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px", fontSize: 12, fontWeight: 700, color: P.accentLight }}>Notes / Tasks</th>
-                  <th style={{ width: 32, padding: "4px" }} className="no-print"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={r.id} style={{ background: i % 2 === 0 ? P.card : "transparent",
-                    borderBottom: `1px solid ${P.border}`,
-                    opacity: r.projectId === "__unmatched__" ? 0.7 : 1 }}>
-                    <td style={{ padding: "7px 12px", fontSize: 12, fontFamily: "JetBrains Mono", color: P.textDim }}>
-                      {r.projectNumber || (r.projectId === "__unmatched__" ? "—" : "")}
-                    </td>
-                    <td style={{ padding: "7px 12px", fontSize: 13, fontWeight: 500 }}>
-                      {r.projectId === "__unmatched__"
-                        ? <span style={{ color: P.yellow }}>{r.projectName}</span>
-                        : r.projectName}
-                    </td>
-                    <td style={{ padding: "7px 12px", textAlign: "center" }}>
-                      <input type="number" min={0} step={0.25} value={r.hours}
-                        onChange={e => updateRow(r.id, "hours", e.target.value)}
-                        style={{ width: 64, textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 12 }} />
-                    </td>
-                    <td style={{ padding: "7px 12px" }}>
-                      <input value={r.notes} onChange={e => updateRow(r.id, "notes", e.target.value)}
-                        style={{ width: "100%", fontSize: 12 }} placeholder="Tasks, meetings, deliverables…" />
-                    </td>
-                    <td style={{ padding: "4px", textAlign: "center" }} className="no-print">
-                      <button onClick={() => removeRow(r.id)}
-                        style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12 }}>✕</button>
-                    </td>
+          ) : (
+            <div>
+              <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
+                {activeWork.length} item{activeWork.length !== 1 ? "s" : ""} found across {staffProjects.length} assigned project{staffProjects.length !== 1 ? "s" : ""}.
+                These are reference only — review and transfer hours to the timesheet below.
+              </div>
+              <table style={{ width: "100%", marginBottom: 0 }}>
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Project</th>
+                    <th>Item</th>
+                    <th>Due / Status</th>
+                    <th>WBS Hrs</th>
                   </tr>
-                ))}
-                {extraRows.map((r, i) => (
-                  <tr key={r.id} style={{ background: (rows.length + i) % 2 === 0 ? P.card : "transparent", borderBottom: `1px solid ${P.border}` }}>
-                    <td style={{ padding: "7px 12px" }} colSpan={2}>
-                      <input value={r.projectName} onChange={e => updateExtra(r.id, "projectName", e.target.value)}
-                        style={{ width: "100%", fontSize: 12 }} placeholder="Project name or description…" />
-                    </td>
-                    <td style={{ padding: "7px 12px", textAlign: "center" }}>
-                      <input type="number" min={0} step={0.25} value={r.hours}
-                        onChange={e => updateExtra(r.id, "hours", e.target.value)}
-                        style={{ width: 64, textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 12 }} />
-                    </td>
-                    <td style={{ padding: "7px 12px" }}>
-                      <input value={r.notes} onChange={e => updateExtra(r.id, "notes", e.target.value)}
-                        style={{ width: "100%", fontSize: 12 }} placeholder="Notes…" />
-                    </td>
-                    <td style={{ padding: "4px", textAlign: "center" }} className="no-print">
-                      <button onClick={() => removeExtra(r.id)}
-                        style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12 }}>✕</button>
-                    </td>
-                  </tr>
-                ))}
-                {/* Total row */}
-                <tr style={{ borderTop: `2px solid ${P.accent}`, background: P.accentDim }}>
-                  <td colSpan={2} style={{ padding: "8px 12px", fontWeight: 700, fontSize: 13, color: P.accentLight }}>Total</td>
-                  <td style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, fontFamily: "JetBrains Mono", fontSize: 14,
-                    color: totalHours < 50 ? P.yellow : P.green }}>
-                    {Math.round(totalHours * 100) / 100}
-                  </td>
-                  <td colSpan={2} style={{ padding: "8px 12px", fontSize: 11, color: P.textDim }}>
-                    {totalHours < 50 && `⚠ Under — check for missing projects or unmatched time`}
-                    {totalHours >= 50 && `✓ Looks complete`}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {activeWork.map((item, i) => {
+                    const tc = typeColors[item.type] || typeColors.wbs;
+                    return (
+                      <tr key={item.id} style={{ background: i % 2 === 0 ? P.card : "transparent" }}>
+                        <td>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                            background: tc.bg, color: tc.text, whiteSpace: "nowrap" }}>
+                            {tc.label}
+                          </span>
+                        </td>
+                        <td>
+                          <div style={{ fontWeight: 500, fontSize: 12 }}>{item.projectName}</div>
+                          {item.projectNumber && <div style={{ fontSize: 10, color: P.textDim }}>{item.projectNumber}</div>}
+                        </td>
+                        <td style={{ fontSize: 12 }}>
+                          {item.label}
+                          {item.disciplines && item.disciplines.length > 0 && (
+                            <div style={{ fontSize: 10, color: P.textDim }}>{item.disciplines.join(", ")}</div>
+                          )}
+                        </td>
+                        <td style={{ fontSize: 11, color: P.textDim, fontFamily: "JetBrains Mono" }}>
+                          {item.dueDate && fmtDate(item.dueDate)}
+                          {item.status && <span style={{ marginLeft: 4, color: ["Responded","Closed","Returned"].includes(item.status) ? P.green : P.yellow }}>
+                            {item.status}
+                          </span>}
+                        </td>
+                        <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.accentLight, textAlign: "center" }}>
+                          {item.wbsHours > 0 ? item.wbsHours : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
-          <div style={{ display: "flex", gap: 10, marginTop: 14, alignItems: "center" }} className="no-print">
-            <Btn small variant="ghost" onClick={addExtraRow}>+ Add Row</Btn>
-            <Btn small onClick={() => window.print()} variant="primary">🖨 Print / Save as PDF</Btn>
-            <span style={{ fontSize: 11, color: P.textDim }}>Tip: use browser Print → Save as PDF</span>
+      {/* Timesheet table — always visible */}
+      {(rows.length > 0 || extraRows.length > 0 || calEvents !== null) && (
+        <>
+          <div style={{ borderTop: `1px solid ${P.border}`, marginTop: 8, paddingTop: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10, color: P.accentLight }}>
+              📋 Timesheet — {fmtPeriod}
+            </div>
+            <div id="ts-print-area">
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{staff.name} — Timesheet</div>
+                <div style={{ fontSize: 12, color: P.textDim }}>{fmtPeriod}{staff.role ? " · " + staff.role : ""}</div>
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: P.accentDim }}>
+                    <th style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight, width: 100 }}>Project #</th>
+                    <th style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight }}>Project Name</th>
+                    <th style={{ textAlign: "center", padding: "7px 10px", fontSize: 11, color: P.accentLight, width: 72 }}>Hours</th>
+                    <th style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight }}>Notes / Tasks</th>
+                    <th style={{ width: 28 }} className="no-print"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={r.id} style={{ background: i%2===0 ? P.card : "transparent", borderBottom: `1px solid ${P.border}`,
+                      opacity: r.projectId==="__unmatched__" ? 0.7 : 1 }}>
+                      <td style={{ padding: "6px 10px", fontSize: 11, fontFamily: "JetBrains Mono", color: P.textDim }}>{r.projectNumber}</td>
+                      <td style={{ padding: "6px 10px", fontSize: 13, fontWeight: 500 }}>
+                        {r.projectId==="__unmatched__"
+                          ? <span style={{ color: P.yellow }}>{r.projectName}</span>
+                          : r.projectName}
+                      </td>
+                      <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                        <input type="number" min={0} step={0.25} value={r.hours}
+                          onChange={e => updateRow(r.id, "hours", e.target.value)}
+                          style={{ width: 60, textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                      </td>
+                      <td style={{ padding: "6px 10px" }}>
+                        <input value={r.notes} onChange={e => updateRow(r.id, "notes", e.target.value)}
+                          style={{ width: "100%", fontSize: 12 }} placeholder="Tasks, meetings, deliverables…" />
+                      </td>
+                      <td className="no-print" style={{ textAlign: "center" }}>
+                        <button onClick={() => removeRow(r.id)}
+                          style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {extraRows.map((r, i) => (
+                    <tr key={r.id} style={{ background: (rows.length+i)%2===0 ? P.card : "transparent", borderBottom: `1px solid ${P.border}` }}>
+                      <td colSpan={2} style={{ padding: "6px 10px" }}>
+                        <input value={r.projectName} onChange={e => updateExtra(r.id, "projectName", e.target.value)}
+                          style={{ width: "100%", fontSize: 12 }} placeholder="Project name or description…" />
+                      </td>
+                      <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                        <input type="number" min={0} step={0.25} value={r.hours}
+                          onChange={e => updateExtra(r.id, "hours", e.target.value)}
+                          style={{ width: 60, textAlign: "center", fontFamily: "JetBrains Mono", fontSize: 12 }} />
+                      </td>
+                      <td style={{ padding: "6px 10px" }}>
+                        <input value={r.notes} onChange={e => updateExtra(r.id, "notes", e.target.value)}
+                          style={{ width: "100%", fontSize: 12 }} placeholder="Notes…" />
+                      </td>
+                      <td className="no-print" style={{ textAlign: "center" }}>
+                        <button onClick={() => removeExtra(r.id)}
+                          style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 11 }}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: `2px solid ${P.accent}`, background: P.accentDim }}>
+                    <td colSpan={2} style={{ padding: "7px 10px", fontWeight: 700, fontSize: 13, color: P.accentLight }}>Total</td>
+                    <td style={{ padding: "7px 10px", textAlign: "center", fontWeight: 700, fontFamily: "JetBrains Mono", fontSize: 14,
+                      color: totalHours < 50 ? P.yellow : P.green }}>
+                      {Math.round(totalHours * 100) / 100}
+                    </td>
+                    <td colSpan={2} style={{ padding: "7px 10px", fontSize: 11, color: P.textDim }}>
+                      {totalHours < 50
+                        ? "\u26a0 Under \u2014 check Active Work tab for missing items"
+                        : "\u2713 Looks complete"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 12, alignItems: "center" }} className="no-print">
+              <Btn small variant="ghost" onClick={addExtraRow}>+ Add Row</Btn>
+              <Btn small variant="primary" onClick={() => window.print()}>🖨 Print / Save as PDF</Btn>
+              <span style={{ fontSize: 11, color: P.textDim }}>Browser Print → Save as PDF</span>
+            </div>
           </div>
         </>
       )}
     </Modal>
   );
 }
+
 
 
 function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToProject, onUpdateProject }) {
