@@ -6920,6 +6920,227 @@ function isSameDay(dateStr, year, month, day) {
 
 // ─── SINGLE-PROJECT CALENDAR ─────────────────────────────────────────────────
 
+function GanttView({ project }) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const allMilestones = project.milestones || [];
+  const phases       = (project.phases || []).filter(p => p.billable && p.startDate && p.endDate);
+  const milestones   = allMilestones.filter(m => m.dueDate);
+
+  const hasData = phases.length > 0 || milestones.length > 0;
+  if (!hasData) {
+    return (
+      <div style={{ color: P.textDim, fontSize: 13, padding: "40px 0", textAlign: "center" }}>
+        No schedule data yet — add billable phases with dates in the Schedule tab.
+      </div>
+    );
+  }
+
+  // ── Date range ──────────────────────────────────────────────────────────────
+  const dateCandidates = [
+    ...phases.flatMap(p => [p.startDate, p.endDate]),
+    ...milestones.map(m => m.dueDate),
+    project.startDate, project.proposalDueDate, project.contractExpirationDate, todayStr,
+  ].filter(Boolean);
+
+  const timestamps  = dateCandidates.map(d => parseLocalDate(d).getTime());
+  const PAD         = 21 * 86400000;
+  const rangeStart  = new Date(Math.min(...timestamps) - PAD);
+  const rangeEnd    = new Date(Math.max(...timestamps) + PAD);
+  rangeStart.setDate(1); // snap to month boundary
+
+  const PX_PER_DAY  = 5;
+  const ROW_H       = 38;
+  const HEADER_H    = ROW_H;
+  const LABEL_W     = 210;
+  const totalDays   = Math.ceil((rangeEnd - rangeStart) / 86400000);
+  const totalWidth  = Math.max(totalDays * PX_PER_DAY, 400);
+
+  function dateToX(dateStr) {
+    return Math.max(0, Math.floor((parseLocalDate(dateStr) - rangeStart) / 86400000) * PX_PER_DAY);
+  }
+
+  // ── Month header segments ────────────────────────────────────────────────────
+  const months = [];
+  const mc = new Date(rangeStart);
+  while (mc < rangeEnd) {
+    months.push({
+      label: MONTH_NAMES[mc.getMonth()].slice(0, 3) + " '" + String(mc.getFullYear()).slice(2),
+      x:     Math.floor((mc - rangeStart) / 86400000) * PX_PER_DAY,
+      width: getDaysInMonth(mc.getFullYear(), mc.getMonth()) * PX_PER_DAY,
+      even:  months.length % 2 === 0,
+    });
+    mc.setMonth(mc.getMonth() + 1);
+  }
+
+  // ── Row definitions ──────────────────────────────────────────────────────────
+  const PHASE_COLORS = ["#2563eb","#0d9488","#7c3aed","#d97706","#db2777","#059669","#1d4ed8","#0f766e"];
+
+  const phaseRows = phases.map((ph, i) => ({
+    type: "phase", id: ph.id,
+    label: ph.name,
+    subLabel: ph.fee > 0 ? "$" + (ph.fee >= 1000 ? (ph.fee / 1000).toFixed(0) + "K" : ph.fee) : null,
+    x:   dateToX(ph.startDate),
+    x2:  dateToX(ph.endDate),
+    color: PHASE_COLORS[i % PHASE_COLORS.length],
+    pct: getPhasePctFromMilestones(ph, allMilestones),
+  }));
+
+  const milestoneRows = milestones.map(m => ({
+    type: "milestone", id: m.id,
+    label: m.name,
+    x: dateToX(m.dueDate),
+    color: m.type === "billable" ? "#3b82f6" : m.type === "change-order" ? "#eab308" : "#8b5cf6",
+    done: (m.pctComplete || 0) >= 100,
+  }));
+
+  const allRows  = [...phaseRows, ...milestoneRows];
+  const svgH     = HEADER_H + allRows.length * ROW_H;
+  const todayX   = dateToX(todayStr);
+  const showToday = todayX >= 0 && todayX <= totalWidth;
+
+  // ── CSV export ───────────────────────────────────────────────────────────────
+  function exportCSV() {
+    const header = ["Task", "Type", "Phase Code", "Start Date", "End / Due Date", "Duration (days)", "% Complete", "Fee ($)"];
+    const rows = [
+      ...phases.map(ph => [
+        ph.name, "Phase", ph.code || "",
+        ph.startDate, ph.endDate,
+        Math.ceil((parseLocalDate(ph.endDate) - parseLocalDate(ph.startDate)) / 86400000),
+        getPhasePctFromMilestones(ph, allMilestones) + "%",
+        ph.fee > 0 ? ph.fee : "",
+      ]),
+      ...milestones.map(m => [
+        m.name, "Milestone", m.phase || "",
+        m.dueDate, m.dueDate, 0,
+        (m.pctComplete || 0) + "%",
+        m.fee > 0 ? m.fee : "",
+      ]),
+    ];
+    const csv = [header, ...rows]
+      .map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = ((project.projectNumber || project.name || "Project").replace(/[^a-z0-9]/gi, "_")) + "_Gantt.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  return (
+    <div>
+      {/* Header row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <span style={{ fontWeight: 700, fontSize: 15 }}>Project Gantt</span>
+          <span style={{ color: P.textDim, fontSize: 12, marginLeft: 10 }}>
+            {phases.length} phase{phases.length !== 1 ? "s" : ""} · {milestones.length} milestone{milestones.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <Btn small variant="ghost" onClick={exportCSV}>⬇ Export to Excel</Btn>
+      </div>
+
+      {/* Gantt body */}
+      <div style={{ display: "flex", border: `1px solid ${P.border}`, borderRadius: 10, overflow: "hidden" }}>
+
+        {/* Fixed label column */}
+        <div style={{ minWidth: LABEL_W, maxWidth: LABEL_W, borderRight: `1px solid ${P.border}`, flexShrink: 0 }}>
+          <div style={{ height: HEADER_H, background: "#1a1f35", borderBottom: `1px solid ${P.border}` }} />
+          {allRows.map((row, i) => (
+            <div key={row.id} style={{
+              height: ROW_H, display: "flex", alignItems: "center",
+              paddingLeft: row.type === "milestone" ? 20 : 12,
+              paddingRight: 8,
+              background: i % 2 === 0 ? P.card : "#151828",
+              borderBottom: `1px solid ${P.border}`,
+              gap: 5, overflow: "hidden",
+            }}>
+              {row.type === "milestone" && (
+                <span style={{ color: row.color, fontSize: 10, flexShrink: 0 }}>◆</span>
+              )}
+              <span style={{ fontSize: 12, color: P.textMuted, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {row.label}
+              </span>
+              {row.subLabel && (
+                <span style={{ fontSize: 10, color: P.green, fontFamily: "JetBrains Mono", flexShrink: 0 }}>{row.subLabel}</span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Scrollable SVG timeline */}
+        <div style={{ flex: 1, overflowX: "auto", overflowY: "visible" }}>
+          <svg width={totalWidth} height={svgH} style={{ display: "block", fontFamily: "inherit" }}>
+
+            {/* Month columns */}
+            {months.map((m, i) => (
+              <g key={i}>
+                <rect x={m.x} y={0} width={m.width} height={svgH}
+                  fill={m.even ? "#151828" : "#181c2e"} />
+                <line x1={m.x} y1={0} x2={m.x} y2={svgH} stroke="#2d3452" strokeWidth={1} />
+                {m.width > 28 && (
+                  <text x={m.x + 5} y={HEADER_H - 10} fill="#4b5675" fontSize={10} fontFamily="inherit">{m.label}</text>
+                )}
+              </g>
+            ))}
+            <line x1={0} y1={HEADER_H} x2={totalWidth} y2={HEADER_H} stroke="#2d3452" strokeWidth={1} />
+
+            {/* Row dividers */}
+            {allRows.map((_, i) => (
+              <line key={i} x1={0} y1={HEADER_H + (i + 1) * ROW_H} x2={totalWidth} y2={HEADER_H + (i + 1) * ROW_H}
+                stroke="#2d3452" strokeWidth={1} />
+            ))}
+
+            {/* Phase bars */}
+            {phaseRows.map((row, i) => {
+              const barW    = Math.max(6, row.x2 - row.x);
+              const barTop  = HEADER_H + i * ROW_H + ROW_H * 0.22;
+              const barH    = ROW_H * 0.56;
+              const progW   = barW * (row.pct / 100);
+              return (
+                <g key={row.id}>
+                  <rect x={row.x} y={barTop} width={barW} height={barH} rx={3}
+                    fill={row.color} opacity={0.18} />
+                  {progW > 0 && (
+                    <rect x={row.x} y={barTop} width={progW} height={barH} rx={3}
+                      fill={row.color} opacity={0.85} />
+                  )}
+                  {barW > 40 && (
+                    <text x={row.x + barW / 2} y={barTop + barH / 2 + 4}
+                      fill="rgba(255,255,255,0.9)" fontSize={10} textAnchor="middle"
+                      fontFamily="inherit" fontWeight={600}>{row.pct}%</text>
+                  )}
+                </g>
+              );
+            })}
+
+            {/* Milestone diamonds */}
+            {milestoneRows.map((row, mi) => {
+              const cy = HEADER_H + (phases.length + mi) * ROW_H + ROW_H / 2;
+              const sz = 7;
+              return (
+                <polygon key={row.id}
+                  points={`${row.x},${cy - sz} ${row.x + sz},${cy} ${row.x},${cy + sz} ${row.x - sz},${cy}`}
+                  fill={row.done ? P.green : row.color} opacity={0.9} />
+              );
+            })}
+
+            {/* Today line */}
+            {showToday && (
+              <g>
+                <line x1={todayX} y1={0} x2={todayX} y2={svgH}
+                  stroke="#C00000" strokeWidth={1.5} strokeDasharray="4 3" opacity={0.75} />
+                <rect x={todayX - 1} y={2} width={30} height={14} rx={3} fill="#C00000" opacity={0.8} />
+                <text x={todayX + 3} y={13} fill="white" fontSize={9} fontFamily="inherit" fontWeight={700}>Today</text>
+              </g>
+            )}
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CalendarView({ project, onChange }) {
   const today = new Date();
   const [calYear, setCalYear] = useState(today.getFullYear());
@@ -7993,7 +8214,7 @@ function ProjectionsView({ project }) {
 
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Calendar", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections"];
+const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
@@ -8255,7 +8476,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
-        {tab === "Calendar" && <CalendarView project={project} onChange={onUpdate} />}
+        {tab === "Gantt" && <GanttView project={project} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
         {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
