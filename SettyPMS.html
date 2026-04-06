@@ -557,7 +557,7 @@ async function createNoteCalendarEvent(note, project) {
     subject,
     isAllDay: true,
     start: { dateTime: today + "T00:00:00", timeZone: "Eastern Standard Time" },
-    end:   { dateTime: today + "T00:00:00", timeZone: "Eastern Standard Time" },
+    end:   { dateTime: (() => { const d = new Date(today + "T12:00:00"); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })() + "T00:00:00", timeZone: "Eastern Standard Time" },
     body:  { contentType: "text", content: bodyPreview + "\n\nLogged by: " + (note.author || "—") },
     categories: ["Project Note"],
   };
@@ -6577,7 +6577,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
     });
 
     return { combinedMap, projectTotals };
-  }, [activeProjects]);
+  }, [projects]);
 
   const months = Object.values(combinedMap).sort((a, b) => a.month > b.month ? 1 : -1);
   // Start from current month
@@ -7931,7 +7931,7 @@ function ProjectionsView({ project }) {
                     const label = new Date(m.month + "-02").toLocaleDateString("en-US", { month: "short", year: "2-digit" });
                     return (
                       <div key={m.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}
-                        titletitle={label + ": " + fmt(m.fee) + " | " + m.milestones.join(", ")}>
+                        title={label + ": " + fmt(m.fee) + " | " + m.milestones.join(", ")}>
                         <span style={{ fontSize: 10, color: P.accentLight, fontFamily: "JetBrains Mono", fontWeight: 600, whiteSpace: "nowrap" }}>
                           {fmt(m.fee)}
                         </span>
@@ -8078,7 +8078,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
               navigator.clipboard.writeText(url).then(() => {
                 const btn = document.activeElement;
                 if (btn) { const orig = btn.textContent; btn.textContent = "✓ Copied!"; setTimeout(() => btn.textContent = orig, 1500); }
-              });
+              }).catch(() => alert("Could not copy link — please copy manually:\n" + url));
             }}
             style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
               color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
@@ -11312,7 +11312,7 @@ function ExternalLinksField({ project, onChange }) {
                 {l.type === "Network Folder" ? (
                   <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <span style={{ fontWeight: 600, fontSize: 13, color: P.accentLight }}>{l.label || l.type}</span>
-                    <button onClick={() => { navigator.clipboard.writeText(l.url).then(() => alert("Path copied to clipboard")); }}
+                    <button onClick={() => { navigator.clipboard.writeText(l.url).then(() => alert("Path copied to clipboard")).catch(() => alert("Could not copy — path:\n" + l.url)); }}
                       title="Copy network path to clipboard"
                       style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 4,
                         color: P.textDim, cursor: "pointer", fontSize: 10, padding: "1px 6px", marginLeft: 8 }}>
