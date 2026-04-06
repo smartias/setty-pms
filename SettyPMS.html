@@ -355,7 +355,9 @@ const GRAPH_SCOPES = [
   "Mail.ReadWrite",             // email drafts + inbox scanning
   "Files.ReadWrite.All",        // SharePoint / OneDrive folder and file operations
   "Sites.Read.All",             // SharePoint site lookup (read-only — resolves site/drive IDs)
-  "Notes.ReadWrite.All",         // OneNote notebook + page creation (SharePoint-scoped)
+  "Notes.ReadWrite.All",        // OneNote notebook + page creation (SharePoint-scoped)
+  "ChannelMessage.Send",        // post Adaptive Cards to Teams channels (opt-in notifications)
+  "Channel.Create",             // create per-project channels in NYC Project Team
 ];
 
 function getCurrentUser() {
@@ -881,6 +883,187 @@ async function createSharePointFolder(project) {
   return folderUrl;
 }
 
+
+// ── TEAMS NOTIFICATIONS ───────────────────────────────────────────────────────
+// Opt-in per project. Creates a dedicated channel in the NYC Project Team and
+// posts Adaptive Cards whenever milestones, RFIs, submittals, COs, or team
+// members change.  No admin consent required — both scopes are delegated.
+
+const TEAMS_TEAM_ID = "a4c48361-7991-43db-af83-4c854918a760";
+
+function buildTeamsCard(type, payload) {
+  const cfgs = {
+    milestone_added:   { emoji: "🏁", title: "Milestone Added",          color: "Good"      },
+    milestone_changed: { emoji: "🏁", title: "Milestone Updated",         color: "Warning"   },
+    rfi_added:         { emoji: "🔴", title: "New RFI Logged",            color: "Attention" },
+    rfi_status:        { emoji: "🔴", title: "RFI Status Changed",        color: "Warning"   },
+    submittal_added:   { emoji: "📋", title: "New Submittal Logged",       color: "Accent"    },
+    submittal_status:  { emoji: "📋", title: "Submittal Status Changed",   color: "Warning"   },
+    co_added:          { emoji: "📝", title: "Change Order Added",         color: "Attention" },
+    co_approved:       { emoji: "✅", title: "Change Order Approved",      color: "Good"      },
+    team_added:        { emoji: "👤", title: "Team Member Added",          color: "Accent"    },
+  };
+  const cfg = cfgs[type] || { emoji: "ℹ️", title: "PMS Update", color: "Accent" };
+  return {
+    type: "AdaptiveCard",
+    $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+    version: "1.4",
+    body: [
+      {
+        type: "Container", style: "emphasis", bleed: true,
+        items: [{
+          type: "ColumnSet",
+          columns: [
+            { type: "Column", width: "auto",    items: [{ type: "TextBlock", text: cfg.emoji, size: "ExtraLarge", spacing: "None" }] },
+            { type: "Column", width: "stretch", items: [
+              { type: "TextBlock", text: cfg.title,           weight: "Bolder", size: "Medium", color: cfg.color, spacing: "None" },
+              { type: "TextBlock", text: payload.project || "", spacing: "None", isSubtle: true, size: "Small" },
+            ]},
+          ],
+        }],
+      },
+      ...(payload.facts?.length ? [{ type: "FactSet", facts: payload.facts }] : []),
+      ...(payload.note ? [{ type: "TextBlock", text: payload.note, wrap: true, spacing: "Small", isSubtle: true, size: "Small" }] : []),
+    ],
+  };
+}
+
+async function getOrCreateProjectChannel(project) {
+  if (project.teamsChannelId) return project.teamsChannelId;
+  const displayName = ((project.projectNumber ? project.projectNumber + " | " : "") + (project.name || "Project")).slice(0, 50);
+  try {
+    const ch = await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels`, {
+      displayName,
+      description: `Setty PMS notifications for: ${project.name}`,
+      membershipType: "standard",
+    });
+    return ch?.id || null;
+  } catch(e) {
+    console.warn("Teams channel create failed:", e.message);
+    return null;
+  }
+}
+
+async function postTeamsCard(channelId, card) {
+  if (!channelId) return;
+  const attachmentId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(16);
+  try {
+    await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels/${channelId}/messages`, {
+      body: { contentType: "html", content: `<attachment id="${attachmentId}"></attachment>` },
+      attachments: [{ id: attachmentId, contentType: "application/vnd.microsoft.card.adaptive", content: JSON.stringify(card) }],
+    });
+  } catch(e) {
+    console.warn("Teams post failed:", e.message);
+  }
+}
+
+// Diff old vs new project and fire cards for anything that changed.
+// Called from updateProject whenever teamsNotificationsEnabled is true.
+async function teamsNotify(oldProject, updated) {
+  if (!updated.teamsNotificationsEnabled || !updated.teamsChannelId) return;
+  const label = (updated.projectNumber ? updated.projectNumber + " · " : "") + (updated.name || "");
+  const user  = getCurrentUser();
+  const ch    = updated.teamsChannelId;
+  const cards = [];
+
+  const diff = (oldArr, newArr, onAdd, onChange) => {
+    (newArr || []).forEach(n => {
+      const o = (oldArr || []).find(x => x.id === n.id);
+      if (!o)                          cards.push(onAdd(n));
+      else if (onChange && onChange(o, n)) cards.push(onChange(o, n));
+    });
+  };
+
+  // Milestones
+  diff(oldProject?.milestones, updated.milestones,
+    m => buildTeamsCard("milestone_added", { project: label, facts: [
+      { title: "Milestone", value: m.name },
+      { title: "Due Date",  value: m.dueDate || "TBD" },
+      { title: "Type",      value: m.type || "Non-Billable" },
+      { title: "Phase",     value: m.phase || "—" },
+      { title: "Added By",  value: user },
+    ]}),
+    (o, m) => {
+      if (o.dueDate === m.dueDate && o.name === m.name && o.phase === m.phase) return null;
+      const f = [{ title: "Milestone", value: m.name }];
+      if (o.name    !== m.name)    f.push({ title: "Name",     value: `${o.name} → ${m.name}` });
+      if (o.dueDate !== m.dueDate) f.push({ title: "Due Date", value: `${o.dueDate||"—"} → ${m.dueDate||"—"}` });
+      if (o.phase   !== m.phase)   f.push({ title: "Phase",    value: `${o.phase||"—"} → ${m.phase||"—"}` });
+      f.push({ title: "Updated By", value: user });
+      return buildTeamsCard("milestone_changed", { project: label, facts: f });
+    }
+  );
+
+  // RFIs
+  diff(oldProject?.rfis, updated.rfis,
+    r => buildTeamsCard("rfi_added", { project: label, facts: [
+      { title: "RFI #",      value: r.number || "—" },
+      { title: "Title",      value: r.title  || "—" },
+      { title: "Discipline", value: r.discipline || "—" },
+      { title: "From",       value: r.from || "—" },
+      { title: "Due",        value: r.dueDate || "TBD" },
+      { title: "Logged By",  value: user },
+    ]}),
+    (o, r) => o.status === r.status ? null : buildTeamsCard("rfi_status", { project: label, facts: [
+      { title: "RFI #",      value: r.number || "—" },
+      { title: "Title",      value: r.title  || "—" },
+      { title: "Status",     value: `${o.status||"—"} → ${r.status}` },
+      { title: "Updated By", value: user },
+    ]})
+  );
+
+  // Submittals
+  diff(oldProject?.submittals, updated.submittals,
+    s => buildTeamsCard("submittal_added", { project: label, facts: [
+      { title: "Submittal #",  value: s.number || "—" },
+      { title: "Spec Section", value: s.specSection || "—" },
+      { title: "Description",  value: s.description || "—" },
+      { title: "Contractor",   value: s.contractor || "—" },
+      { title: "Due",          value: s.dueDate || "TBD" },
+    ]}),
+    (o, s) => o.status === s.status ? null : buildTeamsCard("submittal_status", { project: label, facts: [
+      { title: "Submittal #",  value: s.number || "—" },
+      { title: "Description",  value: s.description || "—" },
+      { title: "Status",       value: `${o.status||"—"} → ${s.status}` },
+      { title: "Updated By",   value: user },
+    ]})
+  );
+
+  // Change Orders
+  diff(oldProject?.changeOrders, updated.changeOrders,
+    co => buildTeamsCard("co_added", { project: label, facts: [
+      { title: "CO #",        value: co.number || "—" },
+      { title: "Description", value: co.description || "—" },
+      { title: "Amount",      value: co.amount != null ? "$" + Number(co.amount).toLocaleString() : "—" },
+      { title: "Status",      value: co.status || "Pending" },
+    ]}),
+    (o, co) => (o.status !== co.status && co.status === "Approved")
+      ? buildTeamsCard("co_approved", { project: label, facts: [
+          { title: "CO #",          value: co.number || "—" },
+          { title: "Description",   value: co.description || "—" },
+          { title: "Amount",        value: co.amount != null ? "$" + Number(co.amount).toLocaleString() : "—" },
+          { title: "Date Approved", value: co.dateApproved || "—" },
+          { title: "Approved By",   value: user },
+        ]})
+      : null
+  );
+
+  // Team Members
+  diff(oldProject?.teamMembers, updated.teamMembers,
+    m => buildTeamsCard("team_added", { project: label, facts: [
+      { title: "Name",       value: m.name || "—" },
+      { title: "Role",       value: m.role || "—" },
+      { title: "Discipline", value: (m.disciplines || []).join(", ") || "—" },
+      { title: "Added By",   value: user },
+    ]}),
+    null
+  );
+
+  // Post sequentially to avoid rate limits
+  for (const card of cards.filter(Boolean)) {
+    await postTeamsCard(ch, card);
+  }
+}
 
 // ── Save email + attachments to SharePoint /Emails subfolder ──────────────────
 async function saveEmailToSharePoint(email, project, liveBodyHtml) {
@@ -8388,6 +8571,10 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
               />
             </Field>
 
+            <Field label="Teams Notifications" style={{ gridColumn: "1 / -1" }}>
+              <TeamsNotificationsField project={project} onUpdate={onUpdate} />
+            </Field>
+
             <Field label="PM / Project Contact" style={{ gridColumn: "1 / -1" }}>
               <POCSection
                 pocList={(project.projectContacts || {}).pm || []}
@@ -11466,6 +11653,121 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
   );
 }
 
+// ── Teams Notifications opt-in field ─────────────────────────────────────────
+function TeamsNotificationsField({ project, onUpdate }) {
+  const [status, setStatus]   = React.useState("idle"); // idle | creating | error | done
+  const [msg,    setMsg]      = React.useState("");
+  const enabled   = !!project.teamsNotificationsEnabled;
+  const channelId = project.teamsChannelId || "";
+
+  const channelUrl = channelId
+    ? `https://teams.microsoft.com/l/channel/${encodeURIComponent(channelId)}/conversations?groupId=${TEAMS_TEAM_ID}&tenantId=f374c024-71c2-48b6-8420-076fff97327c`
+    : null;
+
+  async function handleEnable() {
+    setStatus("creating");
+    setMsg("");
+    try {
+      const id = await getOrCreateProjectChannel(project);
+      if (!id) throw new Error("No channel ID returned — you may need to be a member of the NYC Project Team.");
+      onUpdate({ ...project, teamsNotificationsEnabled: true, teamsChannelId: id });
+      setStatus("done");
+      setMsg("Channel ready. Cards will be posted for milestones, RFIs, submittals, COs, and team changes.");
+    } catch(e) {
+      setStatus("error");
+      setMsg(e.message || "Failed to create channel.");
+    }
+  }
+
+  function handleDisable() {
+    // Keeps the channelId in case they re-enable later — just stops posting
+    onUpdate({ ...project, teamsNotificationsEnabled: false });
+    setStatus("idle");
+    setMsg("");
+  }
+
+  const boxStyle = {
+    background: enabled ? "#f0f7f0" : P.card,
+    border: `1.5px solid ${enabled ? "#375623" : P.border}`,
+    borderRadius: 8, padding: "14px 16px",
+    display: "flex", flexDirection: "column", gap: 10,
+  };
+  const rowStyle = { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" };
+
+  return (
+    <div style={boxStyle}>
+      <div style={rowStyle}>
+        {/* Status dot */}
+        <div style={{
+          width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
+          background: enabled ? "#375623" : "#aaa",
+          boxShadow: enabled ? "0 0 0 3px #c6dfc6" : "none",
+        }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: P.text }}>
+            {enabled ? "Teams Notifications Active" : "Teams Notifications Off"}
+          </div>
+          <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
+            {enabled && channelId
+              ? "Adaptive Cards are posted to the project channel in NYC Project Team."
+              : "Opt in to receive milestone, RFI, submittal, CO, and team-change cards in Teams."}
+          </div>
+        </div>
+
+        {!enabled && (
+          <button onClick={handleEnable} disabled={status === "creating"}
+            style={{ background: "#1F3864", color: "#fff", border: "none", borderRadius: 6,
+              padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+            {status === "creating" ? "Creating channel…" : "Enable Notifications"}
+          </button>
+        )}
+        {enabled && (
+          <button onClick={handleDisable}
+            style={{ background: "none", color: P.textDim, border: `1px solid ${P.border}`,
+              borderRadius: 6, padding: "6px 14px", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>
+            Disable
+          </button>
+        )}
+      </div>
+
+      {/* Channel link */}
+      {enabled && channelUrl && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 18 }}>💬</span>
+          <a href={channelUrl} target="_blank" rel="noopener noreferrer"
+            style={{ fontSize: 12, color: "#2F5496", fontWeight: 600 }}>
+            Open project channel in Teams
+          </a>
+          <span style={{ fontSize: 11, color: P.textDim }}>— {project.projectNumber || project.name}</span>
+        </div>
+      )}
+
+      {/* Notification types legend */}
+      {enabled && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {[["🏁","Milestones"],["🔴","RFIs"],["📋","Submittals"],["📝","Change Orders"],["👤","Team Changes"]].map(([ic,lbl]) => (
+            <div key={lbl} style={{ display: "flex", alignItems: "center", gap: 4,
+              background: "#fff", border: `1px solid #d4e6d4`, borderRadius: 20,
+              padding: "3px 10px", fontSize: 11, color: "#375623", fontWeight: 600 }}>
+              {ic} {lbl}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Status message */}
+      {msg && (
+        <div style={{ fontSize: 11, color: status === "error" ? P.red : "#375623",
+          background: status === "error" ? "#fff0f0" : "#f0f7f0",
+          border: `1px solid ${status === "error" ? "#f5c6c6" : "#c6dfc6"}`,
+          borderRadius: 5, padding: "6px 10px" }}>
+          {status === "error" ? "⚠️ " : "✅ "}{msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function OneNoteNotebookField({ project, onSave, onClear }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
@@ -13380,7 +13682,14 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
   }
 
   function updateProject(updated) {
-    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+    setProjects(prev => {
+      const old = prev.find(p => p.id === updated.id);
+      // Fire Teams notification asynchronously — does not block save
+      if (old && updated.teamsNotificationsEnabled && updated.teamsChannelId) {
+        teamsNotify(old, updated).catch(e => console.warn("Teams notify:", e));
+      }
+      return prev.map(p => p.id === updated.id ? updated : p);
+    });
   }
 
   function addProject() {
