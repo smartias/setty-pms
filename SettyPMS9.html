@@ -9633,6 +9633,44 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
+function DashMilestoneSpBtn({ milestone, project, onSave }) {
+  const [spSt, setSpSt] = React.useState("idle");
+  const url = milestone.outgoingFolderUrl || "";
+  if (url) return (
+    <a href={url} target="_blank" rel="noreferrer"
+      title="Open Document Set Folder"
+      style={{ display: "inline-flex", alignItems: "center", gap: 3,
+        background: "#0078d4", color: "#fff", borderRadius: 5,
+        fontSize: 11, fontWeight: 600, padding: "3px 7px",
+        textDecoration: "none", whiteSpace: "nowrap" }}>
+      📂 Open
+    </a>
+  );
+  return (
+    <button title="Create Document Set Folder"
+      disabled={spSt === "creating" || !project.projectFolderUrl}
+      onClick={async () => {
+        if (!project.projectFolderUrl) return;
+        setSpSt("creating");
+        try {
+          const webUrl = await createMilestoneSpFolder(project, milestone);
+          onSave(webUrl);
+          setSpSt("done");
+        } catch(e) { setSpSt("error"); }
+      }}
+      style={{ display: "inline-flex", alignItems: "center", gap: 3,
+        background: spSt === "error" ? P.redDim : P.accentDim,
+        border: `1px solid ${spSt === "error" ? P.red : P.border}`,
+        color: spSt === "error" ? P.red : P.textDim,
+        borderRadius: 5, fontSize: 11, padding: "3px 7px",
+        cursor: project.projectFolderUrl ? "pointer" : "not-allowed",
+        opacity: project.projectFolderUrl ? 1 : 0.35, whiteSpace: "nowrap" }}>
+      {spSt === "creating" ? "⏳" : spSt === "error" ? "✗" : "📁+"}
+    </button>
+  );
+}
+
+
 function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
   const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
   const [dashPMFilter, setDashPMFilter] = useState("All");
@@ -10389,39 +10427,16 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                     {!["rfi","submittal"].includes(m.type) && (() => {
                       const proj = projects.find(p => p.id === m.projectId);
                       if (!proj) return null;
-                      const url = m.outgoingFolderUrl || "";
-                      const [spSt, setSpSt] = React.useState("idle");
-                      if (url) return (
-                        <a href={url} target="_blank" rel="noreferrer"
-                          title="Open Document Set Folder"
-                          style={{ display: "inline-flex", alignItems: "center", gap: 3,
-                            background: "#0078d4", color: "#fff", borderRadius: 5,
-                            fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap" }}>
-                          📂 Open
-                        </a>
-                      );
                       return (
-                        <button title="Create Document Set Folder"
-                          disabled={spSt === "creating" || !proj.projectFolderUrl}
-                          onClick={async () => {
-                            if (!proj.projectFolderUrl) return;
-                            setSpSt("creating");
-                            try {
-                              const webUrl = await createMilestoneSpFolder(proj, m);
-                              const newMilestones = (proj.milestones || []).map(x => x.id === m.id ? { ...x, outgoingFolderUrl: webUrl } : x);
-                              onUpdateProject({ ...proj, milestones: newMilestones });
-                              setSpSt("done");
-                            } catch(e) { setSpSt("error"); }
+                        <DashMilestoneSpBtn
+                          key={m.id}
+                          milestone={m}
+                          project={proj}
+                          onSave={webUrl => {
+                            const newMilestones = (proj.milestones || []).map(x => x.id === m.id ? { ...x, outgoingFolderUrl: webUrl } : x);
+                            onUpdateProject({ ...proj, milestones: newMilestones });
                           }}
-                          style={{ display: "inline-flex", alignItems: "center", gap: 3,
-                            background: spSt === "error" ? P.redDim : P.accentDim,
-                            border: `1px solid ${spSt === "error" ? P.red : P.border}`,
-                            color: spSt === "error" ? P.red : P.textDim,
-                            borderRadius: 5, fontSize: 11, padding: "3px 7px",
-                            cursor: proj.projectFolderUrl ? "pointer" : "not-allowed",
-                            opacity: proj.projectFolderUrl ? 1 : 0.35, whiteSpace: "nowrap" }}>
-                          {spSt === "creating" ? "⏳" : spSt === "error" ? "✗" : "📁+"}
-                        </button>
+                        />
                       );
                     })()}
                   </td>
