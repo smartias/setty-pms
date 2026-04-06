@@ -354,10 +354,10 @@ const GRAPH_SCOPES = [
   "User.Read",                  // sign in
   "Mail.ReadWrite",             // email drafts + inbox scanning
   "Files.ReadWrite.All",        // SharePoint / OneDrive folder and file operations
-  "Sites.Read.All",             // SharePoint site lookup (read-only — resolves site/drive IDs)
   "Notes.ReadWrite.All",        // OneNote notebook + page creation (SharePoint-scoped)
   "ChannelMessage.Send",        // post Adaptive Cards to Teams channels (opt-in notifications)
   "Channel.Create",             // create per-project channels in NYC Project Team
+  // Sites.Read.All removed — site and drive IDs are hardcoded below (no admin consent needed)
 ];
 
 function getCurrentUser() {
@@ -736,22 +736,18 @@ const SP_HOST       = "setty.sharepoint.com";
 const SP_SITE_PATH  = "/sites/NYCProjects";
 const SP_LIBRARY    = "Project Document Library";
 
-// Cache resolved IDs so we only look them up once per session
-let _spSiteId  = null;
-let _spDriveId = null;
+// Hardcoded SharePoint IDs — obtained via SharePoint REST API (no admin consent required).
+// These eliminate the Sites.Read.All scope entirely. If the NYCProjects site is ever
+// migrated or recreated, update these two constants from:
+//   https://setty.sharepoint.com/sites/NYCProjects/_api/v2.0/drives
+const SP_SITE_ID_HARDCODED  = "setty.sharepoint.com,aa580464-13e9-4eb4-8ad4-ca6ff5b9e001,c97a67e8-fb1b-4a23-a29a-753a5d57d410";
+const SP_DRIVE_ID_HARDCODED = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BBnJPKsNGM-TaGmbGiL3ZaU";
+
+let _spSiteId  = SP_SITE_ID_HARDCODED;
+let _spDriveId = SP_DRIVE_ID_HARDCODED;
 
 async function resolveSpIds() {
-  if (_spSiteId && _spDriveId) return { siteId: _spSiteId, driveId: _spDriveId };
-  // Resolve site
-  const siteData = await graphFetch("GET", "/sites/" + SP_HOST + ":" + SP_SITE_PATH);
-  _spSiteId = siteData.id;
-  // Resolve the named document library drive
-  const drivesData = await graphFetch("GET", "/sites/" + _spSiteId + "/drives");
-  const drive = (drivesData.value || []).find(d =>
-    d.name === SP_LIBRARY || d.name.toLowerCase() === SP_LIBRARY.toLowerCase()
-  );
-  if (!drive) throw new Error('Library not found: ' + SP_LIBRARY + '. Check SP_LIBRARY constant.');
-  _spDriveId = drive.id;
+  // IDs are hardcoded — no Graph API call needed, no Sites.Read.All required.
   return { siteId: _spSiteId, driveId: _spDriveId };
 }
 
@@ -13891,6 +13887,9 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
               </div>
             ))}
           </div>
+
+          {/* SharePoint ID Lookup — one-time use to eliminate Sites.Read.All */}
+          <SpIdLookupPanel />
 
           {/* Export */}
           <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 10, padding: 18, marginBottom: 16 }}>
