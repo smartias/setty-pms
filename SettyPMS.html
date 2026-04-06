@@ -370,12 +370,18 @@ function getCurrentUser() {
 async function getToken(forceRefresh = false) {
   const app = await getMsalApp();
   const accounts = app.getAllAccounts();
-  if (accounts.length > 0 && !forceRefresh) {
-    try {
-      const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
-      return r.accessToken;
-    } catch(e) { /* fall through to popup */ }
+  if (accounts.length > 0) {
+    if (!forceRefresh) {
+      try {
+        const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+        return r.accessToken;
+      } catch(e) { /* fall through to interactive */ }
+    }
+    // Already signed in — use acquireTokenPopup, not loginPopup
+    const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
+    return r.accessToken;
   }
+  // No account at all — full sign-in
   const r = await app.loginPopup({ scopes: GRAPH_SCOPES });
   return r.accessToken;
 }
