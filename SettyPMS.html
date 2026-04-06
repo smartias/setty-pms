@@ -464,14 +464,21 @@ async function loadState() {
 }
 
 async function saveState(state) {
-  await sbFetch("POST", "/rest/v1/pms_data", {
-    id:             "singleton",
+  const payload = {
     projects:       state.projects       || [],
     term_contracts: state.termContracts  || [],
     staff:          state.staff          || [],
     clients:        state.clients        || [],
     updated_at:     new Date().toISOString(),
-  });
+  };
+  // PATCH (UPDATE) is the correct operation for the always-existing singleton row.
+  // It only requires an UPDATE policy in Supabase RLS — no INSERT policy needed.
+  // Falls back to POST (upsert) only if the row genuinely does not exist yet.
+  const patched = await sbFetch("PATCH", "/rest/v1/pms_data?id=eq.singleton", payload);
+  if (patched === null || (Array.isArray(patched) && patched.length === 0)) {
+    // Row doesn't exist yet — create it for the first time
+    await sbFetch("POST", "/rest/v1/pms_data", { id: "singleton", ...payload });
+  }
 }
 
 // ── Calendar helpers ──
@@ -13370,7 +13377,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
 }
 
 // Save status indicator component
-function SaveBadge({ status, lastSaved, onRetry }) {
+function SaveBadge({ status, lastSaved, onRetry, errorDetail }) {
   const cfg = {
     idle:    { color: P.textDim,    icon: "",   text: "" },
     saving:  { color: P.accentLight,icon: "⏳", text: "Saving…" },
@@ -13383,7 +13390,13 @@ function SaveBadge({ status, lastSaved, onRetry }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: cfg.color }}>
       <span>{cfg.icon}</span>
-      <span>{cfg.text}</span>
+      <span title={status === "error" && errorDetail ? errorDetail : undefined}>{cfg.text}</span>
+      {status === "error" && errorDetail && (
+        <span style={{ fontSize: 10, color: P.red, opacity: 0.8, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          title={errorDetail}>
+          — {errorDetail.slice(0, 80)}{errorDetail.length > 80 ? "…" : ""}
+        </span>
+      )}
       {status === "error" && onRetry && (
         <button onClick={onRetry}
           style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 11, textDecoration: "underline", padding: 0 }}>
@@ -13414,6 +13427,7 @@ function App() {
   const [filterContract, setFilterContract] = useState("All");
   const [appStatus, setAppStatus] = useState("loading"); // loading | idle | saving | saved | error
   const [lastSaved, setLastSaved] = useState(null);
+  const [saveErrorDetail, setSaveErrorDetail] = useState("");
   const [loadError, setLoadError] = useState(null);
   const pendingSave = React.useRef(null);   // bug 3 fix: timer ID in ref, not state
   const isLoaded = React.useRef(false);     // bug 1 fix: guard against save-on-load
@@ -13469,6 +13483,7 @@ function App() {
 
   async function performSave(state) {
     setAppStatus("saving");
+    setSaveErrorDetail("");
     try {
       await saveState(state);
       const now = new Date();
@@ -13478,6 +13493,7 @@ function App() {
       setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
     } catch(e) {
       console.error("Save failed:", e);
+      setSaveErrorDetail(e.message || "Unknown error");
       setAppStatus("error");
     }
   }
@@ -13767,7 +13783,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
           </button>
         ))}
         <div style={{ flex: 1 }} />
-        <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} />
+        <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
         {(() => {
           const daysSince = lastBackupDate ? Math.floor((Date.now() - new Date(lastBackupDate)) / 86400000) : 999;
           const overdue = daysSince >= 7;
