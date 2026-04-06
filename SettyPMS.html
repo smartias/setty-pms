@@ -5322,10 +5322,14 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
   }
 
   function pickFromDirectory(memberId, s) {
-    // Fill from staff directory entry — role, rate, disciplines from directory
+    const existing = team.find(m => m.id === memberId);
+    // Preserve the row's role if it's PM or DPM — those slots are fixed by position,
+    // not by whatever role the person holds in the staff directory
+    const protectedRoles = ["Project Manager", "Deputy Project Manager"];
+    const role = protectedRoles.includes(existing?.role) ? existing.role : (s.role || "Engineer");
     updateMember(memberId, {
       name: s.name,
-      role: s.role || "Engineer",
+      role,
       rate: s.rate || 0,
       disciplines: s.disciplines || [],
       email: s.email || "",
@@ -8622,6 +8626,43 @@ function EmailsView({ project, onChange }) {
     return cleanBodyText(text || "");
   }
 
+  // Renders raw HTML email in a sandboxed iframe — preserves all formatting,
+  // isolates email CSS, and handles chains the way the email client intended.
+  function EmailIframe({ html }) {
+    const ref = React.useRef(null);
+    const [height, setHeight] = React.useState(300);
+
+    const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>
+      *{box-sizing:border-box;}
+      body{background:#fff;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+           font-size:13px;line-height:1.6;padding:16px;margin:0;word-break:break-word;}
+      img{max-width:100%;height:auto;}
+      a{color:#1d4ed8;}
+      table{max-width:100%!important;}
+      td,th{word-break:break-word;}
+    </style></head><body>${html}</body></html>`;
+
+    function onLoad() {
+      try {
+        const body = ref.current?.contentDocument?.body;
+        if (body) setHeight(Math.min(body.scrollHeight + 24, 600));
+      } catch(e) { /* cross-origin guard */ }
+    }
+
+    return (
+      <div style={{ background: "#fff", borderRadius: 8, overflow: "hidden", border: `1px solid ${P.border}` }}>
+        <iframe
+          ref={ref}
+          srcDoc={doc}
+          sandbox="allow-same-origin"
+          onLoad={onLoad}
+          style={{ width: "100%", height, border: "none", display: "block" }}
+          title="email-body"
+        />
+      </div>
+    );
+  }
+
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
 
@@ -8811,7 +8852,8 @@ function EmailsView({ project, onChange }) {
       const token = await getToken();
       const data = await graphFetch("GET", `/me/messages/${msgId}?$select=body,hasAttachments`, undefined, token);
       if (data?.body?.content) {
-        setLiveBody(prev => ({ ...prev, [msgId]: htmlToText(data.body.content) }));
+        // Store raw HTML — rendered via iframe to preserve all formatting
+        setLiveBody(prev => ({ ...prev, [msgId]: data.body.content }));
       }
     } catch(e) {
       // fallback to stored body — already there
@@ -9004,8 +9046,12 @@ function EmailsView({ project, onChange }) {
                   <div style={{ borderTop: `1px solid ${P.border}`, padding: "14px 16px" }}>
                     {isFetching ? (
                       <div style={{ color: P.textDim, fontSize: 12 }}>⏳ Loading…</div>
-                    ) : body ? (
-                      <EmailChain body={body} />
+                    ) : liveBody[email.msgId] ? (
+                      // Live HTML from Graph — render in sandboxed iframe for correct formatting
+                      <EmailIframe html={liveBody[email.msgId]} />
+                    ) : email.bodyText ? (
+                      // Fallback: stored plain text — use chain parser
+                      <EmailChain body={email.bodyText} />
                     ) : (
                       <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>
                     )}
