@@ -369,23 +369,36 @@ function getCurrentUser() {
   return "Unknown";
 }
 
+// Sign in with only User.Read to avoid consent popup on initial login.
+// Full scopes are acquired silently/incrementally after authentication.
+const LOGIN_SCOPES = ["User.Read"];
+
 async function getToken(forceRefresh = false) {
   const app = await getMsalApp();
   const accounts = app.getAllAccounts();
   if (accounts.length > 0) {
     if (!forceRefresh) {
       try {
+        // Try full scopes silently first — works once admin consent is granted
         const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
         return r.accessToken;
       } catch(e) { /* fall through to interactive */ }
     }
-    // Already signed in — use acquireTokenPopup, not loginPopup
+    // Already signed in — use acquireTokenPopup for incremental consent
     const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
     return r.accessToken;
   }
-  // No account at all — full sign-in
-  const r = await app.loginPopup({ scopes: GRAPH_SCOPES });
-  return r.accessToken;
+  // No account — sign in with User.Read only (no consent prompt)
+  const loginResult = await app.loginPopup({ scopes: LOGIN_SCOPES });
+  // Immediately acquire full scopes silently after login
+  try {
+    const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: loginResult.account });
+    return r.accessToken;
+  } catch(e) {
+    // If silent fails, use popup for incremental consent (one-time only)
+    const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: loginResult.account });
+    return r.accessToken;
+  }
 }
 
 async function graphFetch(method, path, body, token) {
