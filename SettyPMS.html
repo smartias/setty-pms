@@ -343,8 +343,13 @@ async function getMsalApp() {
       redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
     },
     cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
+    system: {
+      allowNativeBroker: false,
+    },
   });
   await _msalApp.initialize();
+  // Process any redirect response — required to complete auth after redirect
+  try { await _msalApp.handleRedirectPromise(); } catch(e) {}
   return _msalApp;
 }
 
@@ -383,11 +388,13 @@ async function getToken(forceRefresh = false, useTeamsScopes = false) {
   if (accounts.length > 0) {
     if (!forceRefresh) {
       try {
-        const r = await app.acquireTokenSilent({ scopes, account: accounts[0] });
+        const r = await app.acquireTokenSilent({ scopes, account: accounts[0], forceRefresh: false });
         return r.accessToken;
       } catch(e) { /* fall through */ }
     }
-    const r = await app.acquireTokenPopup({ scopes, account: accounts[0] });
+    const r = await app.acquireTokenPopup({ scopes, account: accounts[0], prompt: "none" }).catch(() =>
+      app.acquireTokenPopup({ scopes, account: accounts[0] })
+    );
     return r.accessToken;
   }
   // No account — sign in with User.Read only to avoid consent popup
