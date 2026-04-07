@@ -349,16 +349,23 @@ async function getMsalApp() {
 }
 
 // Scopes — all delegated, none require admin consent
+// Core scopes — used for everyday PMS operations
+// All delegated, all pre-consented, no admin approval popup
 const GRAPH_SCOPES = [
-  "Calendars.ReadWrite.Shared", // shared calendars
-  "User.Read",                  // sign in
-  "Mail.ReadWrite",             // email drafts + inbox scanning
-  "Files.ReadWrite.All",        // SharePoint / OneDrive folder and file operations
-  "Notes.ReadWrite.All",        // OneNote notebook + page creation (SharePoint-scoped)
-  "ChannelMessage.Send",        // post Adaptive Cards to Teams channels (opt-in notifications)
-  "Channel.Create",             // create per-project channels in NYC Project Team
-  // Sites.Read.All removed — site and drive IDs are hardcoded below (no admin consent needed)
+  "User.Read",
+  "Mail.ReadWrite",
+  "Calendars.ReadWrite.Shared",
+  "Files.ReadWrite.All",
+  "Notes.ReadWrite.All",
 ];
+// Teams scopes — only requested when Teams features are used
+// Kept separate to prevent consent loop on sign-in
+const TEAMS_SCOPES = [
+  ...GRAPH_SCOPES,
+  "ChannelMessage.Send",
+  "Channel.Create",
+];
+const LOGIN_SCOPES = ["User.Read"];
 
 function getCurrentUser() {
   try {
@@ -369,33 +376,26 @@ function getCurrentUser() {
   return "Unknown";
 }
 
-// Sign in with only User.Read to avoid consent popup on initial login.
-// Full scopes are acquired silently/incrementally after authentication.
-const LOGIN_SCOPES = ["User.Read"];
-
-async function getToken(forceRefresh = false) {
+async function getToken(forceRefresh = false, useTeamsScopes = false) {
   const app = await getMsalApp();
+  const scopes = useTeamsScopes ? TEAMS_SCOPES : GRAPH_SCOPES;
   const accounts = app.getAllAccounts();
   if (accounts.length > 0) {
     if (!forceRefresh) {
       try {
-        // Try full scopes silently first — works once admin consent is granted
-        const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+        const r = await app.acquireTokenSilent({ scopes, account: accounts[0] });
         return r.accessToken;
-      } catch(e) { /* fall through to interactive */ }
+      } catch(e) { /* fall through */ }
     }
-    // Already signed in — use acquireTokenPopup for incremental consent
-    const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
+    const r = await app.acquireTokenPopup({ scopes, account: accounts[0] });
     return r.accessToken;
   }
-  // No account — sign in with User.Read only (no consent prompt)
+  // No account — sign in with User.Read only to avoid consent popup
   const loginResult = await app.loginPopup({ scopes: LOGIN_SCOPES });
-  // Immediately acquire full scopes silently after login
   try {
     const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: loginResult.account });
     return r.accessToken;
   } catch(e) {
-    // If silent fails, use popup for incremental consent (one-time only)
     const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: loginResult.account });
     return r.accessToken;
   }
@@ -948,11 +948,13 @@ async function getOrCreateProjectChannel(project) {
   if (project.teamsChannelId) return project.teamsChannelId;
   const displayName = ((project.projectNumber ? project.projectNumber + " | " : "") + (project.name || "Project")).slice(0, 50);
   try {
+    // Use Teams scopes — acquired lazily only when Teams features are used
+    const teamsToken = await getToken(false, true);
     const ch = await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels`, {
       displayName,
       description: `Setty PMS notifications for: ${project.name}`,
       membershipType: "standard",
-    });
+    }, teamsToken);
     return ch?.id || null;
   } catch(e) {
     console.warn("Teams channel create failed:", e.message);
@@ -964,10 +966,12 @@ async function postTeamsCard(channelId, card) {
   if (!channelId) return;
   const attachmentId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(16);
   try {
+    // Use Teams scopes — acquired lazily only when Teams features are used
+    const teamsToken = await getToken(false, true);
     await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels/${channelId}/messages`, {
       body: { contentType: "html", content: `<attachment id="${attachmentId}"></attachment>` },
       attachments: [{ id: attachmentId, contentType: "application/vnd.microsoft.card.adaptive", content: JSON.stringify(card) }],
-    });
+    }, teamsToken);
   } catch(e) {
     console.warn("Teams post failed:", e.message);
   }
