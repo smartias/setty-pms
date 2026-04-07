@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Setty PMS</title>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -398,22 +398,17 @@ async function getToken(forceRefresh = false, useTeamsScopes = false) {
       try {
         const r = await app.acquireTokenSilent({ scopes, account: accounts[0], forceRefresh: false });
         return r.accessToken;
-      } catch(e) { /* fall through */ }
+      } catch(e) {
+        console.warn("Silent token failed:", e.message);
+      }
     }
-    const r = await app.acquireTokenPopup({ scopes, account: accounts[0], prompt: "none" }).catch(() =>
-      app.acquireTokenPopup({ scopes, account: accounts[0] })
-    );
-    return r.accessToken;
+    // Use redirect — GitHub Pages COOP headers block popup window communication
+    await app.acquireTokenRedirect({ scopes, account: accounts[0] });
+    return null;
   }
-  // No account — sign in with User.Read only to avoid consent popup
-  const loginResult = await app.loginPopup({ scopes: LOGIN_SCOPES });
-  try {
-    const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: loginResult.account });
-    return r.accessToken;
-  } catch(e) {
-    const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: loginResult.account });
-    return r.accessToken;
-  }
+  // No session — full redirect login with minimal scopes
+  await app.loginRedirect({ scopes: LOGIN_SCOPES });
+  return null;
 }
 
 async function graphFetch(method, path, body, token) {
