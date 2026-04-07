@@ -341,15 +341,23 @@ async function getMsalApp() {
       clientId: MSAL_CLIENT_ID,
       authority: `https://login.microsoftonline.com/${TENANT_ID}`,
       redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
+      navigateToLoginRequestUrl: true,
     },
-    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
-    system: {
-      allowNativeBroker: false,
-    },
+    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: true },
+    system: { allowNativeBroker: false },
   });
   await _msalApp.initialize();
-  // Process any redirect response — required to complete auth after redirect
-  try { await _msalApp.handleRedirectPromise(); } catch(e) {}
+  // Handle redirect response on page load — picks up token after Microsoft redirects back
+  try {
+    const response = await _msalApp.handleRedirectPromise();
+    if (response?.account) {
+      try {
+        await _msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: response.account });
+      } catch(e) { /* retries on first API call */ }
+    }
+  } catch(e) {
+    console.warn("MSAL redirect error:", e.message);
+  }
   return _msalApp;
 }
 
