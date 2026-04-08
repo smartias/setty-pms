@@ -429,6 +429,24 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
 async function getToken(forceRefresh = false) {
   return getTokenForScopes(GRAPH_SCOPES, forceRefresh);
 }
+function sanitizeTeamsChannelName(name) {
+  if (!name) return "New Channel";
+
+  let cleaned = String(name)
+    .replace(/[~#%&*{}+\/\\:<>\?|'""]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  cleaned = cleaned.replace(/^[_\.]+/, "");
+  cleaned = cleaned.replace(/[\.]+$/, "");
+
+  if (!cleaned) cleaned = "New Channel";
+
+  cleaned = cleaned.slice(0, 50).trim();
+  cleaned = cleaned.replace(/[\.]+$/, "");
+
+  return cleaned || "New Channel";
+}
 
 async function graphFetch(method, path, body, token, scopes = GRAPH_SCOPES) {
   const t = token || await getTokenForScopes(scopes);
@@ -988,10 +1006,11 @@ function buildTeamsCard(type, payload) {
 async function getOrCreateProjectChannel(project) {
   if (project.teamsChannelId) return project.teamsChannelId;
 
-  const displayName = (
-    (project.projectNumber ? project.projectNumber + " | " : "") +
-    (project.name || "Project")
-  ).slice(0, 50);
+const rawName =
+  (project.projectNumber ? project.projectNumber + " | " : "") +
+  (project.name || "Project");
+
+const displayName = sanitizeTeamsChannelName(rawName);
 
   try {
     const ch = await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels`, {
