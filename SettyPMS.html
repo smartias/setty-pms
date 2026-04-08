@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Setty PMS</title>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -341,44 +341,30 @@ async function getMsalApp() {
       clientId: MSAL_CLIENT_ID,
       authority: `https://login.microsoftonline.com/${TENANT_ID}`,
       redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
-      navigateToLoginRequestUrl: true,
     },
-    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: true },
-    system: { allowNativeBroker: false },
+    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
   });
   await _msalApp.initialize();
-  // Handle redirect response on page load — picks up token after Microsoft redirects back
-  try {
-    const response = await _msalApp.handleRedirectPromise();
-    if (response?.account) {
-      try {
-        await _msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: response.account });
-      } catch(e) { /* retries on first API call */ }
-    }
-  } catch(e) {
-    console.warn("MSAL redirect error:", e.message);
-  }
   return _msalApp;
 }
 
-// Scopes — all delegated, none require admin consent
-// Core scopes — used for everyday PMS operations
-// All delegated, all pre-consented, no admin approval popup
+// Scopes — all delegated, none require admin consent at login
 const GRAPH_SCOPES = [
-  "User.Read",
-  "Mail.ReadWrite",
-  "Calendars.ReadWrite.Shared",
-  "Files.ReadWrite.All",
-  "Notes.ReadWrite.All",
+  "Calendars.ReadWrite.Shared", // shared calendars
+  "User.Read",                  // sign in
+  "Mail.ReadWrite",             // email drafts + inbox scanning
+  "Files.ReadWrite.All",        // SharePoint / OneDrive folder and file operations
+  "Notes.ReadWrite.All",        // OneNote notebook + page creation (SharePoint-scoped)
+  // Sites.Read.All removed — site and drive IDs are hardcoded below (no admin consent needed)
+  // ChannelMessage.Send + Channel.Create moved to TEAMS_SCOPES for incremental consent
 ];
-// Teams scopes — only requested when Teams features are used
-// Kept separate to prevent consent loop on sign-in
+
+// Teams scopes — requested lazily when user enables notifications for a project.
+// Channel.Create requires admin consent; isolating it here means login is never blocked.
 const TEAMS_SCOPES = [
-  ...GRAPH_SCOPES,
   "ChannelMessage.Send",
   "Channel.Create",
 ];
-const LOGIN_SCOPES = ["User.Read"];
 
 function getCurrentUser() {
   try {
@@ -389,26 +375,23 @@ function getCurrentUser() {
   return "Unknown";
 }
 
-async function getToken(forceRefresh = false, useTeamsScopes = false) {
+async function getToken(forceRefresh = false) {
   const app = await getMsalApp();
-  const scopes = useTeamsScopes ? TEAMS_SCOPES : GRAPH_SCOPES;
   const accounts = app.getAllAccounts();
   if (accounts.length > 0) {
     if (!forceRefresh) {
       try {
-        const r = await app.acquireTokenSilent({ scopes, account: accounts[0], forceRefresh: false });
+        const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
         return r.accessToken;
-      } catch(e) {
-        console.warn("Silent token failed:", e.message);
-      }
+      } catch(e) { /* fall through to interactive */ }
     }
-    // Use redirect — GitHub Pages COOP headers block popup window communication
-    await app.acquireTokenRedirect({ scopes, account: accounts[0] });
-    return null;
+    // Already signed in — use acquireTokenPopup, not loginPopup
+    const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
+    return r.accessToken;
   }
-  // No session — full redirect login with minimal scopes
-  await app.loginRedirect({ scopes: LOGIN_SCOPES });
-  return null;
+  // No account at all — full sign-in
+  const r = await app.loginPopup({ scopes: GRAPH_SCOPES });
+  return r.accessToken;
 }
 
 async function graphFetch(method, path, body, token) {
@@ -958,13 +941,11 @@ async function getOrCreateProjectChannel(project) {
   if (project.teamsChannelId) return project.teamsChannelId;
   const displayName = ((project.projectNumber ? project.projectNumber + " | " : "") + (project.name || "Project")).slice(0, 50);
   try {
-    // Use Teams scopes — acquired lazily only when Teams features are used
-    const teamsToken = await getToken(false, true);
     const ch = await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels`, {
       displayName,
       description: `Setty PMS notifications for: ${project.name}`,
       membershipType: "standard",
-    }, teamsToken);
+    });
     return ch?.id || null;
   } catch(e) {
     console.warn("Teams channel create failed:", e.message);
@@ -976,12 +957,10 @@ async function postTeamsCard(channelId, card) {
   if (!channelId) return;
   const attachmentId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(16);
   try {
-    // Use Teams scopes — acquired lazily only when Teams features are used
-    const teamsToken = await getToken(false, true);
     await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels/${channelId}/messages`, {
       body: { contentType: "html", content: `<attachment id="${attachmentId}"></attachment>` },
       attachments: [{ id: attachmentId, contentType: "application/vnd.microsoft.card.adaptive", content: JSON.stringify(card) }],
-    }, teamsToken);
+    });
   } catch(e) {
     console.warn("Teams post failed:", e.message);
   }
