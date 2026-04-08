@@ -2582,7 +2582,9 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     if (m && m.type === "billable") {
       newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
     }
-    if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
+    if (calMap[id]) {
+      setCalState(s => ({ ...s, [id]: "stale" }));
+    }
   }
 
   onChange(
@@ -2593,8 +2595,16 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   if (!skipPrompt && field === "pctComplete" && +val > 0 && m && m.type === "billable" && m.fee > 0) {
     try {
       const amount = calcInvoiceAmount(m, +val, project);
-      if (amount > 0) setInvoicePrompt({ milestone: { ...m }, newPct: +val, invoiceAmount: amount });
-    } catch (e) { /* non-fatal */ }
+      if (amount > 0) {
+        setInvoicePrompt({
+          milestone: { ...m },
+          newPct: +val,
+          invoiceAmount: amount
+        });
+      }
+    } catch (e) {
+      // non-fatal
+    }
   }
 }
 
@@ -13791,7 +13801,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
     setCleanupPreview(null);
     performSave({ projects: remaining, termContracts, staff, clients });
   }
-}
+
 
 function confirmCleanup() {
   if (!cleanupPreview) return;
