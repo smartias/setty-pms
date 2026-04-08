@@ -987,7 +987,12 @@ function buildTeamsCard(type, payload) {
 
 async function getOrCreateProjectChannel(project) {
   if (project.teamsChannelId) return project.teamsChannelId;
-  const displayName = ((project.projectNumber ? project.projectNumber + " | " : "") + (project.name || "Project")).slice(0, 50);
+
+  const displayName = (
+    (project.projectNumber ? project.projectNumber + " | " : "") +
+    (project.name || "Project")
+  ).slice(0, 50);
+
   try {
     const ch = await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels`, {
       displayName,
@@ -995,12 +1000,11 @@ async function getOrCreateProjectChannel(project) {
       membershipType: "standard",
     });
     return ch?.id || null;
-  } catch(e) {
-    console.warn("Teams channel create failed:", e.message);
-    return null;
+  } catch (e) {
+    console.error("Teams channel create failed:", e);
+    throw e;
   }
 }
-
 async function postTeamsCard(channelId, card) {
   if (!channelId) return;
   const attachmentId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(16);
