@@ -336,15 +336,26 @@ const MSAL_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301";
 
 async function getMsalApp() {
   if (_msalApp) return _msalApp;
+
   _msalApp = new msal.PublicClientApplication({
     auth: {
       clientId: MSAL_CLIENT_ID,
       authority: `https://login.microsoftonline.com/${TENANT_ID}`,
       redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
     },
-    cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
+    cache: {
+      cacheLocation: "localStorage",
+      storeAuthStateInCookie: false
+    },
   });
+
   await _msalApp.initialize();
+
+  const accounts = _msalApp.getAllAccounts();
+  if (!_msalApp.getActiveAccount() && accounts.length > 0) {
+    _msalApp.setActiveAccount(accounts[0]);
+  }
+
   return _msalApp;
 }
 
@@ -377,23 +388,49 @@ function getCurrentUser() {
 
 async function getToken(forceRefresh = false) {
   const app = await getMsalApp();
+
+  const existingActive = app.getActiveAccount();
   const accounts = app.getAllAccounts();
-  if (accounts.length > 0) {
+
+  // Ensure we always have an active account set
+  if (!existingActive && accounts.length > 0) {
+    app.setActiveAccount(accounts[0]);
+  }
+
+  const account = app.getActiveAccount() || accounts[0];
+
+  if (account) {
     if (!forceRefresh) {
       try {
-        const r = await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+        const r = await app.acquireTokenSilent({
+          scopes: GRAPH_SCOPES,
+          account: account
+        });
         return r.accessToken;
-      } catch(e) { /* fall through to interactive */ }
+      } catch (e) {
+        // fall through to interactive
+      }
     }
-    // Already signed in — use acquireTokenPopup, not loginPopup
-    const r = await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
+
+    const r = await app.acquireTokenPopup({
+      scopes: GRAPH_SCOPES,
+      account: account
+    });
+
+    // 🔑 THIS is the key fix
+    app.setActiveAccount(r.account);
+
     return r.accessToken;
   }
-  // No account at all — full sign-in
+
+  // First-time login
   const r = await app.loginPopup({ scopes: GRAPH_SCOPES });
+
+  // 🔑 ALSO critical here
+  app.setActiveAccount(r.account);
+
   return r.accessToken;
 }
-
 async function graphFetch(method, path, body, token) {
   const t = token || await getToken();
   const isBytes = body instanceof Uint8Array;
