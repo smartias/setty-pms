@@ -2554,38 +2554,49 @@ function ScheduleView({ project, onChange }) {
       : `${ok}/${syncable.length} synced — check individual rows for errors`);
   }
 
-  function updateMilestone(id, field, val, skipPrompt = false) {
-    const m = milestones.find(x => x.id === id);
-    // Confirm before reducing % complete
-    if (field === "pctComplete" && m) {
-      const oldPct = m.pctComplete || 0;
-      const newPct = +val;
-      if (newPct < oldPct && oldPct >= 100) {
-        if (!window.confirm("Reduce \"" + m.name + "\" from 100% back to " + newPct + "%?\n\nThis milestone was marked complete. Reducing it will re-open it in the dashboard and affect financial projections.")) return;
-      } else if (newPct < oldPct && newPct === 0 && oldPct > 20) {
-        if (!window.confirm("Reset \"" + m.name + "\" from " + oldPct + "% back to 0%?\n\nAre you sure?")) return;
-      }
-    }
-    const newMilestones = milestones.map(ms => {
-      if (ms.id !== id) return ms;
-      const updated = { ...ms, [field]: val };
-      if (field === "pctComplete") updated.status = milestoneStatus(+val);
-      return updated;
-    });
-    let newPhases = phases;
-    if (field === "dueDate") {
-      if (m && m.type === "billable")
-        newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
-      if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
-    }
-    onChange({ ...project, milestones: newMilestones, phases: newPhases });
-    if (!skipPrompt && field === "pctComplete" && +val > 0 && m && m.type === "billable" && m.fee > 0) {
-      try {
-        const amount = calcInvoiceAmount(m, +val, project);
-        if (amount > 0) setInvoicePrompt({ milestone: { ...m }, newPct: +val, invoiceAmount: amount });
-      } catch(e) { /* non-fatal — skip invoice prompt if calculation fails */ }
+function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
+  const { notifyTeams = true, debounceTeams = false, teamsDelay = 2000 } = options;
+
+  const m = milestones.find(x => x.id === id);
+
+  // Confirm before reducing % complete
+  if (field === "pctComplete" && m) {
+    const oldPct = m.pctComplete || 0;
+    const newPct = +val;
+    if (newPct < oldPct && oldPct >= 100) {
+      if (!window.confirm("Reduce \"" + m.name + "\" from 100% back to " + newPct + "%?\n\nThis milestone was marked complete. Reducing it will re-open it in the dashboard and affect financial projections.")) return;
+    } else if (newPct < oldPct && newPct === 0 && oldPct > 20) {
+      if (!window.confirm("Reset \"" + m.name + "\" from " + oldPct + "% back to 0%?\n\nAre you sure?")) return;
     }
   }
+
+  const newMilestones = milestones.map(ms => {
+    if (ms.id !== id) return ms;
+    const updated = { ...ms, [field]: val };
+    if (field === "pctComplete") updated.status = milestoneStatus(+val);
+    return updated;
+  });
+
+  let newPhases = phases;
+  if (field === "dueDate") {
+    if (m && m.type === "billable") {
+      newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
+    }
+    if (calMap[id]) setCalState(s => ({ ...s, [id]: "stale" }));
+  }
+
+  onChange(
+    { ...project, milestones: newMilestones, phases: newPhases },
+    { notifyTeams, debounceTeams, teamsDelay }
+  );
+
+  if (!skipPrompt && field === "pctComplete" && +val > 0 && m && m.type === "billable" && m.fee > 0) {
+    try {
+      const amount = calcInvoiceAmount(m, +val, project);
+      if (amount > 0) setInvoicePrompt({ milestone: { ...m }, newPct: +val, invoiceAmount: amount });
+    } catch (e) { /* non-fatal */ }
+  }
+}
 
   function updatePhaseDuration(phId, newDays) {
     const ph = phases.find(p => p.id === phId);
@@ -2946,13 +2957,18 @@ function ScheduleView({ project, onChange }) {
                 <td>
                   {m.type === "billable" && project.feeScheduleFinalized
                     ? <span title="Unlock Fee Calculator to rename" style={{ fontSize: 13, color: P.textDim, display: "inline-flex", alignItems: "center", gap: 4 }}>🔒 {m.name}</span>
-                    : <input value={m.name} onChange={e => updateMilestone(m.id, "name", e.target.value)} style={{ width: 190 }} />}
+                    : <input
+  value={m.name}
+  onChange={e => updateMilestone(m.id, "name", e.target.value, false, { notifyTeams: false })}
+  onBlur={e => updateMilestone(m.id, "name", e.target.value, false, { debounceTeams: true, teamsDelay: 2000 })}
+  style={{ width: 190 }}
+/>}
                 </td>
                 <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase === "__CO__" ? "CO" : m.phase}</td>
                 <td>
                   <input type="date" value={m.dueDate || ""}
                     disabled={(m.pctComplete || 0) >= 100}
-                    onChange={e => updateMilestone(m.id, "dueDate", e.target.value)}
+                    onChange={e => updateMilestone(m.id, "dueDate", e.target.value, false, { debounceTeams: true, teamsDelay: 1000 })}
                     style={(m.pctComplete || 0) >= 100 ? { background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" } : {}} />
                 </td>
                 <td>
@@ -2967,8 +2983,8 @@ function ScheduleView({ project, onChange }) {
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <input type="number" min={0} max={100} value={m.pctComplete || 0}
-                        onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value, true)}
-                        onBlur={e => updateMilestone(m.id, "pctComplete", +e.target.value)}
+                       onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value, true, { notifyTeams: false })}
+			onBlur={e => updateMilestone(m.id, "pctComplete", +e.target.value, false, { debounceTeams: true, teamsDelay: 1000 })}
                         style={{ width: 72, MozAppearance: "textfield" }} />
                       <span style={{ color: P.textDim, fontSize: 12 }}>%</span>
                       <input type="checkbox" checked={false}
@@ -2984,7 +3000,13 @@ function ScheduleView({ project, onChange }) {
                     text={(m.pctComplete || 0) >= 100 ? "✓ Completed" : autoStatus}
                   />
                 </td>
-                <td><input value={m.notes || ""} onChange={e => updateMilestone(m.id, "notes", e.target.value)} placeholder="Notes…" style={{ width: 140 }} /></td>
+                <td><input
+  value={m.notes || ""}
+  onChange={e => updateMilestone(m.id, "notes", e.target.value, false, { notifyTeams: false })}
+  onBlur={e => updateMilestone(m.id, "notes", e.target.value, false, { debounceTeams: true, teamsDelay: 2000 })}
+  placeholder="Notes…"
+  style={{ width: 140 }}
+/></td>
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                     <CalIcon m={m} />
@@ -13769,17 +13791,62 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
     setCleanupPreview(null);
     performSave({ projects: remaining, termContracts, staff, clients });
   }
+}
 
-  function updateProject(updated) {
-    setProjects(prev => {
-      const old = prev.find(p => p.id === updated.id);
-      // Fire Teams notification asynchronously — does not block save
-      if (old && updated.teamsNotificationsEnabled && updated.teamsChannelId) {
+function confirmCleanup() {
+  if (!cleanupPreview) return;
+  const n = cleanupPreview.toDelete.length;
+  const typed = window.prompt(`Permanently delete ${n} archived project${n !== 1 ? "s" : ""}?\n\nThis CANNOT be undone. These projects and all their data will be gone forever.\n\nType DELETE to confirm:`);
+  if (typed !== "DELETE") { setCleanupMsg("Cancelled — you must type DELETE exactly to confirm."); return; }
+  const ids = new Set(cleanupPreview.toDelete.map(p => p.id));
+  const remaining = projects.filter(p => !ids.has(p.id));
+  setProjects(remaining);
+  setCleanupMsg(`✓ Permanently deleted ${n} archived project${n !== 1 ? "s" : ""}. Saving…`);
+  setCleanupPreview(null);
+  performSave({ projects: remaining, termContracts, staff, clients });
+}
+
+const teamsNotifyTimers = {};
+
+function scheduleProjectTeamsNotify(projectId, fn, delay = 2000) {
+  if (teamsNotifyTimers[projectId]) {
+    clearTimeout(teamsNotifyTimers[projectId]);
+  }
+
+  teamsNotifyTimers[projectId] = setTimeout(() => {
+    delete teamsNotifyTimers[projectId];
+    fn();
+  }, delay);
+}
+
+function updateProject(updated, options = {}) {
+  const {
+    notifyTeams = true,
+    debounceTeams = false,
+    teamsDelay = 2000
+  } = options;
+
+  setProjects(prev => {
+    const old = prev.find(p => p.id === updated.id);
+
+    if (
+      notifyTeams &&
+      old &&
+      updated.teamsNotificationsEnabled &&
+      updated.teamsChannelId
+    ) {
+      if (debounceTeams) {
+        scheduleProjectTeamsNotify(updated.id, () => {
+          teamsNotify(old, updated).catch(e => console.warn("Teams notify:", e));
+        }, teamsDelay);
+      } else {
         teamsNotify(old, updated).catch(e => console.warn("Teams notify:", e));
       }
-      return prev.map(p => p.id === updated.id ? updated : p);
-    });
-  }
+    }
+
+    return prev.map(p => p.id === updated.id ? updated : p);
+  });
+}
 
   function addProject() {
     const p = newProject();
