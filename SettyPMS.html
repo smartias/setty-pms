@@ -867,13 +867,13 @@ const result = await graphFetch(
 async function getOrCreateTeamsOneNoteNotebook(project) {
   const name = [project.projectNumber, project.name].filter(Boolean).join(" — ").trim() || "Setty Project";
   // Check for an existing notebook with this name in the team
-  const existing = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, null, null, ONENOTE_SCOPES);
+  const existing = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`);
   const found = (existing?.value || []).find(n => n.displayName === name);
   if (found) {
     const webUrl = found.links?.oneNoteWebUrl?.href || found.links?.oneNoteClientUrl?.href || "";
     return { id: found.id, webUrl };
   }
-  const result = await graphFetch("POST", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, { displayName: name }, null, ONENOTE_SCOPES);
+  const result = await graphFetch("POST", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, { displayName: name });
   if (!result?.id) throw new Error("Teams OneNote API did not return a notebook ID");
   const webUrl = result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "";
   return { id: result.id, webUrl };
@@ -881,12 +881,12 @@ async function getOrCreateTeamsOneNoteNotebook(project) {
 
 async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, eventDate) {
   const baseUrl = `/groups/${TEAMS_TEAM_ID}/onenote`;
-  const sectionsResp = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`, null, null, ONENOTE_SCOPES);
+  const sectionsResp = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`);
   let section = (sectionsResp?.value || []).find(s => s.displayName === sectionName);
   if (!section) {
-    section = await graphFetch("POST", `${baseUrl}/notebooks/${notebookId}/sections`, { displayName: sectionName }, null, ONENOTE_SCOPES);
+    section = await graphFetch("POST", `${baseUrl}/notebooks/${notebookId}/sections`, { displayName: sectionName });
     if (!section?.id) {
-      const refetch = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`, null, null, ONENOTE_SCOPES);
+      const refetch = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`);
       section = (refetch?.value || []).find(s => s.displayName === sectionName);
     }
   }
