@@ -306,6 +306,8 @@ function newProject(overrides = {}) {
     oneNoteUrl: "",
     oneNoteNotebookUrl: "",
     oneNoteNotebookId: "",
+    teamsOneNoteNotebookId: "",
+    teamsOneNoteUrl: "",
     externalLinks: [],
     reimbursableBudget: 0,
     reimbursables: [],
@@ -859,6 +861,53 @@ const result = await graphFetch(
 
   const webUrl = result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "";
   return { id: result.id, siteId, webUrl };
+}
+
+// ── Teams-channel OneNote (Groups API) ───────────────────────────────────────
+// Uses /groups/{teamId}/onenote instead of /sites/{siteId}/onenote so the
+// notebook lives inside the Teams team and requires no SharePoint site lookup.
+
+async function getOrCreateTeamsOneNoteNotebook(project) {
+  const name = [project.projectNumber, project.name].filter(Boolean).join(" — ").trim() || "Setty Project";
+  // Check for an existing notebook with this name in the team
+  const existing = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, null, null, ONENOTE_SCOPES);
+  const found = (existing?.value || []).find(n => n.displayName === name);
+  if (found) {
+    const webUrl = found.links?.oneNoteWebUrl?.href || found.links?.oneNoteClientUrl?.href || "";
+    return { id: found.id, webUrl };
+  }
+  const result = await graphFetch("POST", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, { displayName: name }, null, ONENOTE_SCOPES);
+  if (!result?.id) throw new Error("Teams OneNote API did not return a notebook ID");
+  const webUrl = result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "";
+  return { id: result.id, webUrl };
+}
+
+async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, eventDate) {
+  const baseUrl = `/groups/${TEAMS_TEAM_ID}/onenote`;
+  const sectionsResp = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`, null, null, ONENOTE_SCOPES);
+  let section = (sectionsResp?.value || []).find(s => s.displayName === sectionName);
+  if (!section) {
+    section = await graphFetch("POST", `${baseUrl}/notebooks/${notebookId}/sections`, { displayName: sectionName }, null, ONENOTE_SCOPES);
+    if (!section?.id) {
+      const refetch = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`, null, null, ONENOTE_SCOPES);
+      section = (refetch?.value || []).find(s => s.displayName === sectionName);
+    }
+  }
+  if (!section?.id) throw new Error("Could not find or create OneNote section: " + sectionName);
+  const token = await getTokenForScopes(ONENOTE_SCOPES);
+  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${htmlBody}</body></html>`;
+  const res = await fetch(`https://graph.microsoft.com/v1.0/groups/${TEAMS_TEAM_ID}/onenote/sections/${section.id}/pages`, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
+    body: pageHtml,
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error("OneNote page error " + res.status + ": " + errText.slice(0, 300));
+  }
+  const page = await res.json();
+  const webUrl = page.links?.oneNoteWebUrl?.href || page.links?.oneNoteClientUrl?.href || page.webUrl || "";
+  return { id: page.id, webUrl };
 }
 
 async function createOneNotePage(notebookId, sectionName, title, htmlBody, eventDate) {
@@ -8675,12 +8724,23 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
               <ExternalLinksField project={project} onChange={onUpdate} />
             </Field>
 
-            <Field label="OneNote Notebook" style={{ gridColumn: "1 / -1" }}>
-              <OneNoteNotebookField
-                project={project}
-                onSave={(id, webUrl) => onUpdate({ ...project, oneNoteNotebookId: id, oneNoteNotebookUrl: webUrl })}
-                onClear={() => onUpdate({ ...project, oneNoteNotebookId: "", oneNoteNotebookUrl: "" })}
-              />
+            <Field label="OneNote (via Teams)" style={{ gridColumn: "1 / -1" }}>
+              {project.teamsNotificationsEnabled && project.teamsOneNoteNotebookId ? (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>Auto-linked to Teams channel notebook — pages created on note log</span>
+                  {project.teamsOneNoteUrl && (
+                    <a href={project.teamsOneNoteUrl} target="_blank" rel="noreferrer"
+                      style={{ background: "#7719aa", color: "#fff", borderRadius: 6, padding: "5px 12px",
+                        fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+                      📓 Open Notebook
+                    </a>
+                  )}
+                </div>
+              ) : project.teamsNotificationsEnabled ? (
+                <span style={{ fontSize: 12, color: P.textDim }}>Teams enabled — notebook not yet linked. Try disabling and re-enabling Teams Notifications below.</span>
+              ) : (
+                <span style={{ fontSize: 12, color: P.textDim }}>Enable Teams Notifications below to auto-link a OneNote notebook for this project.</span>
+              )}
             </Field>
 
             <Field label="Teams Notifications" style={{ gridColumn: "1 / -1" }}>
@@ -9513,7 +9573,8 @@ function CalendarImportPanel({ project, onImport }) {
   async function importSelected() {
     setImporting(true);
     const toImport = events.filter(ev => selected[ev.id]);
-    const notebookId = project.oneNoteNotebookId || "";
+    const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
+    const useTeamsNB = !!project.teamsOneNoteNotebookId;
     const notes = [];
     for (const ev of toImport) {
       const cat = noteType[ev.id] || "Meeting";
@@ -9550,7 +9611,9 @@ function CalendarImportPanel({ project, onImport }) {
             + "<tr><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td></tr>"
             + "</table>";
           const sectionName = cat === "Site Visit" ? "Site Visits" : cat === "Client Communication" ? "Client Communications" : "Meetings";
-          const page = await createOneNotePage(notebookId, sectionName, title, pageHtml, dt || "");
+          const page = useTeamsNB
+            ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, dt || "")
+            : await createOneNotePage(notebookId, sectionName, title, pageHtml, dt || "");
           oneNoteUrl = page.webUrl || "";
         } catch(e) {
           // Non-fatal — log the note without the OneNote link
@@ -9598,9 +9661,9 @@ function CalendarImportPanel({ project, onImport }) {
       </div>
       <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
         Searches your personal Outlook calendar and NYC Shared Calendar (2 years back, 1 year forward). Select events to import as Site Visit, Meeting, or Client Communication notes.
-        {project.oneNoteNotebookId
+        {(project.teamsOneNoteNotebookId || project.oneNoteNotebookId)
           ? <span style={{ color: "#a78bfa", marginLeft: 4 }}>📓 OneNote pages will be auto-created for Meetings, Site Visits, and Client Communications.</span>
-          : <span style={{ marginLeft: 4 }}>Tip: Create a OneNote Notebook on the Overview tab to auto-generate note pages on import.</span>}
+          : <span style={{ marginLeft: 4 }}>Tip: Enable Teams Notifications on the Overview tab to auto-generate OneNote pages on import.</span>}
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
         <input value={query} onChange={e => setQuery(e.target.value)}
@@ -9702,15 +9765,42 @@ function NotesView({ project, onChange }) {
     }
   }
 
-  function addNote() {
+  async function addNote() {
     if (!draft.body.trim()) return;
+    const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
+    const useTeamsNB = !!project.teamsOneNoteNotebookId;
+    const shouldCreatePage = notebookId && ["Meeting", "Site Visit", "Client Communication"].includes(draft.category);
+
+    const entryId = uid();
     const entry = {
-      id: uid(), body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
+      id: entryId, body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
       ...(draft.category === "Site Visit" && draft.visitDate ? { visitDate: draft.visitDate } : {}),
       author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      oneNoteUrl: "",
     };
-    onChange({ ...project, notes: [entry, ...(project.notes || [])] });
+    const newNotes = [entry, ...(project.notes || [])];
+    onChange({ ...project, notes: newNotes });
     setDraft({ body: "", category: "General", actionItem: false, visitDate: "" });
+
+    // Background: create OneNote page for qualifying categories
+    if (shouldCreatePage) {
+      try {
+        const sectionName = draft.category === "Site Visit" ? "Site Visits"
+          : draft.category === "Client Communication" ? "Client Communications"
+          : "Meetings";
+        const dateLabel = draft.visitDate || new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+        const title = draft.category + " — " + dateLabel;
+        const pageHtml = "<h1>" + title + "</h1>"
+          + "<h2>Notes</h2><p>" + entry.body.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/\n/g, "</p><p>") + "</p>"
+          + "<h2>Action Items</h2><p>&nbsp;</p>";
+        const page = useTeamsNB
+          ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, "")
+          : await createOneNotePage(notebookId, sectionName, title, pageHtml, "");
+        if (page?.webUrl) {
+          onChange({ ...project, notes: newNotes.map(n => n.id === entryId ? { ...n, oneNoteUrl: page.webUrl } : n) });
+        }
+      } catch(e) { /* non-fatal — note already saved */ }
+    }
   }
 
   function startEdit(note) { setEditingId(note.id); setEditDraft({ body: note.body, category: note.category, actionItem: note.actionItem, visitDate: note.visitDate || "" }); }
@@ -11782,9 +11872,25 @@ function TeamsNotificationsField({ project, onUpdate }) {
     try {
       const id = await getOrCreateProjectChannel(project);
       if (!id) throw new Error("No channel ID returned — you may need to be a member of the NYC Project Team.");
-      onUpdate({ ...project, teamsNotificationsEnabled: true, teamsChannelId: id });
+
+      // Auto-provision the Teams OneNote notebook (non-fatal if it fails)
+      let notebookId = project.teamsOneNoteNotebookId || "";
+      let notebookUrl = project.teamsOneNoteUrl || "";
+      if (!notebookId) {
+        try {
+          const nb = await getOrCreateTeamsOneNoteNotebook(project);
+          notebookId = nb.id;
+          notebookUrl = nb.webUrl;
+        } catch(e) {
+          console.warn("OneNote notebook setup failed (non-fatal):", e.message);
+        }
+      }
+
+      onUpdate({ ...project, teamsNotificationsEnabled: true, teamsChannelId: id, teamsOneNoteNotebookId: notebookId, teamsOneNoteUrl: notebookUrl });
       setStatus("done");
-      setMsg("Channel ready. Cards will be posted for milestones, RFIs, submittals, COs, and team changes.");
+      setMsg(notebookId
+        ? "Channel + OneNote notebook ready. Cards and note pages will be auto-created."
+        : "Channel ready. Cards will be posted for milestones, RFIs, submittals, COs, and team changes.");
     } catch(e) {
       setStatus("error");
       setMsg(e.message || "Failed to create channel.");
@@ -11851,6 +11957,21 @@ function TeamsNotificationsField({ project, onUpdate }) {
             Open project channel in Teams
           </a>
           <span style={{ fontSize: 11, color: P.textDim }}>— {project.projectNumber || project.name}</span>
+        </div>
+      )}
+
+      {/* OneNote notebook link */}
+      {enabled && project.teamsOneNoteNotebookId && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 18 }}>📓</span>
+          {project.teamsOneNoteUrl
+            ? <a href={project.teamsOneNoteUrl} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize: 12, color: "#7719aa", fontWeight: 600 }}>
+                Open project OneNote notebook
+              </a>
+            : <span style={{ fontSize: 12, color: P.textDim }}>OneNote notebook linked</span>
+          }
+          <span style={{ fontSize: 11, color: P.textDim }}>— pages auto-created for Meetings, Site Visits &amp; Client Communications</span>
         </div>
       )}
 
@@ -13817,22 +13938,26 @@ function confirmCleanup() {
 }
 
 const teamsNotifyTimers = {};
+const teamsNotifyFromStates = {}; // captures project state before first change in a debounce window
 
-function scheduleProjectTeamsNotify(projectId, fn, delay = 2000) {
-  if (teamsNotifyTimers[projectId]) {
-    clearTimeout(teamsNotifyTimers[projectId]);
+function scheduleProjectTeamsNotify(projectId, fromProject, toProject, delay = 2000) {
+  // Capture the "before" state only on the FIRST call — subsequent keystrokes keep the original
+  if (!teamsNotifyTimers[projectId]) {
+    teamsNotifyFromStates[projectId] = fromProject;
   }
-
+  clearTimeout(teamsNotifyTimers[projectId]);
   teamsNotifyTimers[projectId] = setTimeout(() => {
+    const from = teamsNotifyFromStates[projectId];
     delete teamsNotifyTimers[projectId];
-    fn();
+    delete teamsNotifyFromStates[projectId];
+    teamsNotify(from, toProject).catch(e => console.warn("Teams notify:", e));
   }, delay);
 }
 
 function updateProject(updated, options = {}) {
   const {
     notifyTeams = true,
-    debounceTeams = false,
+    debounceTeams = true,   // default ON — prevents per-keystroke cards
     teamsDelay = 2000
   } = options;
 
@@ -13846,9 +13971,7 @@ function updateProject(updated, options = {}) {
       updated.teamsChannelId
     ) {
       if (debounceTeams) {
-        scheduleProjectTeamsNotify(updated.id, () => {
-          teamsNotify(old, updated).catch(e => console.warn("Teams notify:", e));
-        }, teamsDelay);
+        scheduleProjectTeamsNotify(updated.id, old, updated, teamsDelay);
       } else {
         teamsNotify(old, updated).catch(e => console.warn("Teams notify:", e));
       }
