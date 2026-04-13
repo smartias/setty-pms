@@ -1422,42 +1422,42 @@ function printFeeProposal(project) {
       <tbody>
         ${phaseRows}
         ${coRows}
-      </tbody>
-      <tfoot>
-        <tr>
-          <td style="font-weight:700;padding:10px 14px;">Total ${project.feeType || "Lump Sum"} Fee</td>
+        <tr style="background:#E7E6E6;page-break-inside:avoid;page-break-before:avoid;">
+          <td style="font-weight:700;padding:10px 14px;font-size:10pt;">Total ${project.feeType || "Lump Sum"} Fee</td>
           <td style="text-align:right;font-family:monospace;font-weight:700;color:#1F3864;padding:10px 14px;font-size:11pt;">$${Math.round(totalContractFee).toLocaleString()}</td>
         </tr>
-      </tfoot>
+      </tbody>
     </table>
 
-    <div class="amount-box">
-      <div class="amount-inner" style="min-width:260px;">
-        <div style="font-size:8pt;letter-spacing:1px;text-transform:uppercase;opacity:0.8;margin-bottom:4px;">${project.feeType || "Lump Sum"} Fee</div>
-        <div style="font-size:22pt;font-weight:800;font-family:monospace;letter-spacing:-0.5px;">$${Math.round(totalContractFee).toLocaleString()}</div>
-      </div>
-    </div>
-
-    <div style="margin-top:32px;padding:16px 18px;border:1px solid #E7E6E6;border-radius:6px;font-size:9pt;color:#44546A;line-height:1.8;">
-      <strong style="color:#1F3864;font-size:9.5pt;">Notes &amp; Assumptions</strong><br>
-      This fee proposal is submitted in conjunction with the attached Scope of Services and Terms &amp; Conditions, which are incorporated herein by reference and form part of this proposal.
-      The fees listed above are based on the scope of work described in the attachment. Any modifications to the scope may result in an adjustment to the proposed fee.
-      This proposal is valid for 90 days from the date of issuance.
-    </div>
-
-    <div style="margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:48px;">
-      <div>
-        <div style="border-top:1.5px solid #1F3864;padding-top:8px;">
-          <div style="font-size:9pt;color:#1F3864;font-weight:600;">SETTY &amp; Associates, LTD, PC</div>
-          <div style="font-size:8.5pt;color:#44546A;margin-top:2px;">Authorized Signature</div>
-          <div style="margin-top:18px;font-size:8.5pt;color:#44546A;">Date: _______________________</div>
+    <div style="page-break-inside:avoid;">
+      <div class="amount-box">
+        <div class="amount-inner" style="min-width:260px;">
+          <div style="font-size:8pt;letter-spacing:1px;text-transform:uppercase;opacity:0.8;margin-bottom:4px;">${project.feeType || "Lump Sum"} Fee</div>
+          <div style="font-size:22pt;font-weight:800;font-family:monospace;letter-spacing:-0.5px;">$${Math.round(totalContractFee).toLocaleString()}</div>
         </div>
       </div>
-      <div>
-        <div style="border-top:1.5px solid #1F3864;padding-top:8px;">
-          <div style="font-size:9pt;color:#1F3864;font-weight:600;">${project.prime || project.clientName || "Client / Prime"}</div>
-          <div style="font-size:8.5pt;color:#44546A;margin-top:2px;">Accepted Signature</div>
-          <div style="margin-top:18px;font-size:8.5pt;color:#44546A;">Date: _______________________</div>
+
+      <div style="margin-top:32px;padding:16px 18px;border:1px solid #E7E6E6;border-radius:6px;font-size:9pt;color:#44546A;line-height:1.8;">
+        <strong style="color:#1F3864;font-size:9.5pt;">Notes &amp; Assumptions</strong><br>
+        This fee proposal is submitted in conjunction with the attached Scope of Services and Terms &amp; Conditions, which are incorporated herein by reference and form part of this proposal.
+        The fees listed above are based on the scope of work described in the attachment. Any modifications to the scope may result in an adjustment to the proposed fee.
+        This proposal is valid for 90 days from the date of issuance.
+      </div>
+
+      <div style="margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:48px;">
+        <div>
+          <div style="border-top:1.5px solid #1F3864;padding-top:8px;">
+            <div style="font-size:9pt;color:#1F3864;font-weight:600;">SETTY &amp; Associates, LTD, PC</div>
+            <div style="font-size:8.5pt;color:#44546A;margin-top:2px;">Authorized Signature</div>
+            <div style="margin-top:18px;font-size:8.5pt;color:#44546A;">Date: _______________________</div>
+          </div>
+        </div>
+        <div>
+          <div style="border-top:1.5px solid #1F3864;padding-top:8px;">
+            <div style="font-size:9pt;color:#1F3864;font-weight:600;">${project.prime || project.clientName || "Client / Prime"}</div>
+            <div style="font-size:8.5pt;color:#44546A;margin-top:2px;">Accepted Signature</div>
+            <div style="margin-top:18px;font-size:8.5pt;color:#44546A;">Date: _______________________</div>
+          </div>
         </div>
       </div>
     </div>
