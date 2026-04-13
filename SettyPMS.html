@@ -1120,58 +1120,75 @@ async function teamsNotify(oldProject, updated) {
     }
   );
 
-  // RFIs
+  // RFIs — only fire when title is filled; detect blank→titled as the real "logged" moment
+  const rfiCard = r => r.title
+    ? buildTeamsCard("rfi_added", { project: label, facts: [
+        { title: "RFI #",      value: r.number || "—" },
+        { title: "Title",      value: r.title },
+        { title: "Discipline", value: r.discipline || "—" },
+        { title: "From",       value: r.from || "—" },
+        { title: "Due",        value: r.dueDate || "TBD" },
+        { title: "Logged By",  value: user },
+      ]})
+    : null;
   diff(oldProject?.rfis, updated.rfis,
-    r => buildTeamsCard("rfi_added", { project: label, facts: [
-      { title: "RFI #",      value: r.number || "—" },
-      { title: "Title",      value: r.title  || "—" },
-      { title: "Discipline", value: r.discipline || "—" },
-      { title: "From",       value: r.from || "—" },
-      { title: "Due",        value: r.dueDate || "TBD" },
-      { title: "Logged By",  value: user },
-    ]}),
-    (o, r) => o.status === r.status ? null : buildTeamsCard("rfi_status", { project: label, facts: [
-      { title: "RFI #",      value: r.number || "—" },
-      { title: "Title",      value: r.title  || "—" },
-      { title: "Status",     value: `${o.status||"—"} → ${r.status}` },
-      { title: "Updated By", value: user },
-    ]})
+    rfiCard,
+    (o, r) => {
+      if (!o.title && r.title) return rfiCard(r);           // blank→titled = newly logged
+      if (o.status !== r.status) return buildTeamsCard("rfi_status", { project: label, facts: [
+        { title: "RFI #",      value: r.number || "—" },
+        { title: "Title",      value: r.title  || "—" },
+        { title: "Status",     value: `${o.status||"—"} → ${r.status}` },
+        { title: "Updated By", value: user },
+      ]});
+      return null;
+    }
   );
 
-  // Submittals
+  // Submittals — same pattern: only fire when description is filled
+  const subCard = s => s.description
+    ? buildTeamsCard("submittal_added", { project: label, facts: [
+        { title: "Submittal #",  value: s.number || "—" },
+        { title: "Spec Section", value: s.specSection || "—" },
+        { title: "Description",  value: s.description },
+        { title: "Contractor",   value: s.contractor || "—" },
+        { title: "Due",          value: s.dueDate || "TBD" },
+      ]})
+    : null;
   diff(oldProject?.submittals, updated.submittals,
-    s => buildTeamsCard("submittal_added", { project: label, facts: [
-      { title: "Submittal #",  value: s.number || "—" },
-      { title: "Spec Section", value: s.specSection || "—" },
-      { title: "Description",  value: s.description || "—" },
-      { title: "Contractor",   value: s.contractor || "—" },
-      { title: "Due",          value: s.dueDate || "TBD" },
-    ]}),
-    (o, s) => o.status === s.status ? null : buildTeamsCard("submittal_status", { project: label, facts: [
-      { title: "Submittal #",  value: s.number || "—" },
-      { title: "Description",  value: s.description || "—" },
-      { title: "Status",       value: `${o.status||"—"} → ${s.status}` },
-      { title: "Updated By",   value: user },
-    ]})
+    subCard,
+    (o, s) => {
+      if (!o.description && s.description) return subCard(s);  // blank→described = newly logged
+      if (o.status !== s.status) return buildTeamsCard("submittal_status", { project: label, facts: [
+        { title: "Submittal #",  value: s.number || "—" },
+        { title: "Description",  value: s.description || "—" },
+        { title: "Status",       value: `${o.status||"—"} → ${s.status}` },
+        { title: "Updated By",   value: user },
+      ]});
+      return null;
+    }
   );
 
-  // Change Orders
+  // Change Orders — only fire when name is filled
+  const coAddedCard = co => co.name
+    ? buildTeamsCard("co_added", { project: label, facts: [
+        { title: "CO #",        value: co.number || "—" },
+        { title: "Description", value: co.name },
+        { title: "Amount",      value: co.fee > 0 ? "$" + Number(co.fee).toLocaleString() : "—" },
+      ]})
+    : null;
   diff(oldProject?.changeOrders, updated.changeOrders,
-    co => buildTeamsCard("co_added", { project: label, facts: [
-      { title: "CO #",        value: co.number || "—" },
-      { title: "Description", value: co.description || "—" },
-      { title: "Amount",      value: co.amount != null ? "$" + Number(co.amount).toLocaleString() : "—" },
-      { title: "Status",      value: co.status || "Pending" },
-    ]}),
-    (o, co) => (o.status !== co.status && co.status === "Approved")
-      ? buildTeamsCard("co_approved", { project: label, facts: [
-          { title: "CO #",          value: co.number || "—" },
-          { title: "Description",   value: co.description || "—" },
-          { title: "Amount",        value: co.amount != null ? "$" + Number(co.amount).toLocaleString() : "—" },
-          { title: "Date Approved", value: co.dateApproved || "—" },
-          { title: "Approved By",   value: user },
-        ]})
-      : null
+    coAddedCard,
+    (o, co) => {
+      if (!o.name && co.name) return coAddedCard(co);          // blank→named = newly logged
+      if (!o.approved && co.approved) return buildTeamsCard("co_approved", { project: label, facts: [
+        { title: "CO #",          value: co.number || "—" },
+        { title: "Description",   value: co.name || "—" },
+        { title: "Amount",        value: co.fee > 0 ? "$" + Number(co.fee).toLocaleString() : "—" },
+        { title: "Approved By",   value: user },
+      ]});
+      return null;
+    }
   );
 
   // Team Members
