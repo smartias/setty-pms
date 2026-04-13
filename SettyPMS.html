@@ -1175,14 +1175,20 @@ async function teamsNotify(oldProject, updated) {
   );
 
   // Team Members
+  // Team Members — fire card only when a member has a real name.
+  // onAdd: new member with no name yet → skip (card fires via onChange once named).
+  // onChange: blank→named transition = the real "added" moment.
+  const teamCard = m => m.name
+    ? buildTeamsCard("team_added", { project: label, facts: [
+        { title: "Name",       value: m.name },
+        { title: "Role",       value: m.role || "—" },
+        { title: "Discipline", value: (m.disciplines || []).join(", ") || "—" },
+        { title: "Added By",   value: user },
+      ]})
+    : null;
   diff(oldProject?.teamMembers, updated.teamMembers,
-    m => buildTeamsCard("team_added", { project: label, facts: [
-      { title: "Name",       value: m.name || "—" },
-      { title: "Role",       value: m.role || "—" },
-      { title: "Discipline", value: (m.disciplines || []).join(", ") || "—" },
-      { title: "Added By",   value: user },
-    ]}),
-    null
+    teamCard,
+    (o, m) => !o.name && m.name ? teamCard(m) : null
   );
 
   // Post sequentially to avoid rate limits
