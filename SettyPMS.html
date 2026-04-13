@@ -3353,7 +3353,7 @@ function printDocument(htmlContent, title) {
       width: 8.5in;
       min-height: 11in;
       margin: 0 auto;
-      padding: 1in;
+      padding: 1in 1in 1.4in 1in;
       background: #fff;
       position: relative;
     }
@@ -3511,7 +3511,7 @@ function printDocument(htmlContent, title) {
     }
     @media print {
       body { padding: 0; }
-      .page { width: 100%; padding: 0.75in; min-height: auto; }
+      .page { width: 100%; padding: 0.75in 0.75in 1.25in 0.75in; min-height: auto; }
       .doc-footer { position: fixed; }
       .no-print { display: none !important; }
     }
@@ -8775,13 +8775,14 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
               <ExternalLinksField project={project} onChange={onUpdate} />
             </Field>
 
-            <Field label="OneNote (via Teams)" style={{ gridColumn: "1 / -1" }}>
-              <TeamsOneNoteField project={project} onUpdate={onUpdate} />
-            </Field>
-
-            <Field label="Teams Notifications" style={{ gridColumn: "1 / -1" }}>
-              <TeamsNotificationsField project={project} onUpdate={onUpdate} />
-            </Field>
+            {!isPipeline(project) && (<>
+              <Field label="OneNote (via Teams)" style={{ gridColumn: "1 / -1" }}>
+                <TeamsOneNoteField project={project} onUpdate={onUpdate} />
+              </Field>
+              <Field label="Teams Notifications" style={{ gridColumn: "1 / -1" }}>
+                <TeamsNotificationsField project={project} onUpdate={onUpdate} />
+              </Field>
+            </>)}
 
             <Field label="PM / Project Contact" style={{ gridColumn: "1 / -1" }}>
               <POCSection
