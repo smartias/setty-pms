@@ -2709,12 +2709,14 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   }
 
   function addNonBillable() {
+    // Suppress Teams on add — card fires via the debounced onChange once the user
+    // renames the milestone and/or sets a real due date (default values aren't meaningful)
     onChange({ ...project, milestones: [...milestones, {
       id: uid(), type: "non-billable", phase: "NB", name: "Comment Response", fee: 0,
       startDate: new Date().toISOString().slice(0, 10),
       dueDate: new Date().toISOString().slice(0, 10),
       pctComplete: 0, status: "Not Started", notes: "",
-    }]});
+    }]}, { notifyTeams: false });
   }
 
   const syncableCount = milestones.filter(m => m.dueDate).length;
@@ -5692,17 +5694,18 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     // not by whatever role the person holds in the staff directory
     const protectedRoles = ["Project Manager", "Deputy Project Manager"];
     const role = protectedRoles.includes(existing?.role) ? existing.role : (s.role || "Engineer");
+    // Fire Teams card immediately on directory pick (full name + discipline known at this moment)
     updateMember(memberId, {
       name: s.name,
       role,
       rate: s.rate || 0,
       disciplines: s.disciplines || [],
       email: s.email || "",
-    });
+    }, { notifyTeams: true, debounceTeams: false, teamsDelay: 500 });
     setTypeaheadOpen(null);
   }
 
-  function updateMember(id, updates) {
+  function updateMember(id, updates, teamsOpts = { notifyTeams: false }) {
     const newTeam = team.map(m => m.id === id ? { ...m, ...updates } : m);
     // Keep projectManager / deputyProjectManager in sync with team name fields
     const pmMember  = newTeam.find(m => m.role === "Project Manager");
@@ -5712,7 +5715,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
       teamMembers: newTeam,
       projectManager: pmMember?.name || project.projectManager || "",
       deputyProjectManager: dpmMember?.name || project.deputyProjectManager || "",
-    });
+    }, teamsOpts);
   }
 
   function toggleDisc(memberId, disc) {
