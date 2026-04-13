@@ -308,6 +308,7 @@ function newProject(overrides = {}) {
     oneNoteNotebookId: "",
     teamsOneNoteNotebookId: "",
     teamsOneNoteUrl: "",
+    teamsChannelFolderUrl: "",
     externalLinks: [],
     reimbursableBudget: 0,
     reimbursables: [],
@@ -11916,7 +11917,18 @@ function TeamsNotificationsField({ project, onUpdate }) {
         }
       }
 
-      onUpdate({ ...project, teamsNotificationsEnabled: true, teamsChannelId: id, teamsOneNoteNotebookId: notebookId, teamsOneNoteUrl: notebookUrl });
+      // Fetch the channel's auto-created SharePoint folder (temp working files)
+      let channelFolderUrl = project.teamsChannelFolderUrl || "";
+      if (!channelFolderUrl) {
+        try {
+          const folder = await graphFetch("GET", `/teams/${TEAMS_TEAM_ID}/channels/${id}/filesFolder`);
+          channelFolderUrl = folder?.webUrl || "";
+        } catch(e) {
+          console.warn("Channel folder fetch failed (non-fatal):", e.message);
+        }
+      }
+
+      onUpdate({ ...project, teamsNotificationsEnabled: true, teamsChannelId: id, teamsOneNoteNotebookId: notebookId, teamsOneNoteUrl: notebookUrl, teamsChannelFolderUrl: channelFolderUrl });
       setStatus("done");
       setMsg(notebookId
         ? "Channel + OneNote notebook ready. Cards and note pages will be auto-created."
@@ -12002,6 +12014,24 @@ function TeamsNotificationsField({ project, onUpdate }) {
             : <span style={{ fontSize: 12, color: P.textDim }}>OneNote notebook linked</span>
           }
           <span style={{ fontSize: 11, color: P.textDim }}>— pages auto-created for Meetings, Site Visits &amp; Client Communications</span>
+        </div>
+      )}
+
+      {/* Working files folder link */}
+      {enabled && project.teamsChannelFolderUrl && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 18 }}>📁</span>
+            <a href={project.teamsChannelFolderUrl} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 12, color: "#8B4513", fontWeight: 600 }}>
+              Open working files folder
+            </a>
+          </div>
+          <div style={{ fontSize: 11, color: P.textDim, paddingLeft: 26, lineHeight: 1.5 }}>
+            This folder is auto-created by Teams and lives in SharePoint alongside the channel.
+            Use it for <strong>in-progress or shared drafts</strong> — files being actively worked on or shared with the team during coordination.
+            It is <em>not</em> a replacement for the project's main document library, which remains the authoritative record for deliverables, submittals, and project files.
+          </div>
         </div>
       )}
 
