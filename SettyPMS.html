@@ -366,19 +366,16 @@ const GRAPH_SCOPES = [
   "User.Read",
   "Calendars.ReadWrite.Shared",
   "Mail.ReadWrite",
-  "Files.ReadWrite.All"
-];
-
-// OneNote — request only when needed
-const ONENOTE_SCOPES = [
-  "Notes.ReadWrite.All"
-];
-
-// Teams — request only when needed
-const TEAMS_SCOPES = [
+  "Files.ReadWrite.All",
+  "Notes.ReadWrite.All",
   "ChannelMessage.Send",
   "Channel.Create"
 ];
+
+// Kept for legacy callers — now bundled into GRAPH_SCOPES so consent is
+// granted at login and no mid-flow popup is needed.
+const ONENOTE_SCOPES = GRAPH_SCOPES;
+const TEAMS_SCOPES   = GRAPH_SCOPES;
 
 function getCurrentUser() {
   try {
@@ -8725,22 +8722,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             </Field>
 
             <Field label="OneNote (via Teams)" style={{ gridColumn: "1 / -1" }}>
-              {project.teamsNotificationsEnabled && project.teamsOneNoteNotebookId ? (
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>Auto-linked to Teams channel notebook — pages created on note log</span>
-                  {project.teamsOneNoteUrl && (
-                    <a href={project.teamsOneNoteUrl} target="_blank" rel="noreferrer"
-                      style={{ background: "#7719aa", color: "#fff", borderRadius: 6, padding: "5px 12px",
-                        fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
-                      📓 Open Notebook
-                    </a>
-                  )}
-                </div>
-              ) : project.teamsNotificationsEnabled ? (
-                <span style={{ fontSize: 12, color: P.textDim }}>Teams enabled — notebook not yet linked. Try disabling and re-enabling Teams Notifications below.</span>
-              ) : (
-                <span style={{ fontSize: 12, color: P.textDim }}>Enable Teams Notifications below to auto-link a OneNote notebook for this project.</span>
-              )}
+              <TeamsOneNoteField project={project} onUpdate={onUpdate} />
             </Field>
 
             <Field label="Teams Notifications" style={{ gridColumn: "1 / -1" }}>
@@ -11996,6 +11978,62 @@ function TeamsNotificationsField({ project, onUpdate }) {
           borderRadius: 5, padding: "6px 10px" }}>
           {status === "error" ? "⚠️ " : "✅ "}{msg}
         </div>
+      )}
+    </div>
+  );
+}
+
+function TeamsOneNoteField({ project, onUpdate }) {
+  const [status, setStatus] = React.useState("idle"); // idle | linking | done | error
+  const [msg, setMsg] = React.useState("");
+
+  const hasTeams    = !!project.teamsNotificationsEnabled;
+  const notebookId  = project.teamsOneNoteNotebookId || "";
+  const notebookUrl = project.teamsOneNoteUrl || "";
+
+  async function handleLink() {
+    setStatus("linking");
+    setMsg("");
+    try {
+      const nb = await getOrCreateTeamsOneNoteNotebook(project);
+      onUpdate({ ...project, teamsOneNoteNotebookId: nb.id, teamsOneNoteUrl: nb.webUrl });
+      setStatus("done");
+      setMsg("Notebook linked!");
+    } catch(e) {
+      setStatus("error");
+      setMsg(e.message || "Failed to link notebook.");
+    }
+  }
+
+  if (!hasTeams) {
+    return <span style={{ fontSize: 12, color: P.textDim }}>Enable Teams Notifications below to auto-link a OneNote notebook.</span>;
+  }
+
+  if (notebookId) {
+    return (
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>Linked to Teams notebook — pages auto-created on note log</span>
+        {notebookUrl && (
+          <a href={notebookUrl} target="_blank" rel="noreferrer"
+            style={{ background: "#7719aa", color: "#fff", borderRadius: 6, padding: "5px 12px",
+              fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+            📓 Open Notebook
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>
+        {status === "linking" ? "⏳ Linking notebook…" : msg || "Teams active — notebook not yet linked."}
+      </span>
+      <Btn small variant="ghost" onClick={handleLink} disabled={status === "linking"}>
+        📓 Link Teams Notebook
+      </Btn>
+      {status === "error" && (
+        <span style={{ fontSize: 11, color: P.red }}>⚠ {msg}</span>
       )}
     </div>
   );
