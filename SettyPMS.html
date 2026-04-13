@@ -271,6 +271,7 @@ function newProject(overrides = {}) {
     contractDate: "",
     contractFolderUrl: "",
     projectFolderUrl: "",
+    proposalFolderUrl: "",
     feeCalculatorSubs: [],
     rfis: [],
     submittals: [],
@@ -802,8 +803,11 @@ const SP_LIBRARY    = "Project Document Library";
 // These eliminate the Sites.Read.All scope entirely. If the NYCProjects site is ever
 // migrated or recreated, update these two constants from:
 //   https://setty.sharepoint.com/sites/NYCProjects/_api/v2.0/drives
-const SP_SITE_ID_HARDCODED  = "setty.sharepoint.com,aa580464-13e9-4eb4-8ad4-ca6ff5b9e001,c97a67e8-fb1b-4a23-a29a-753a5d57d410";
-const SP_DRIVE_ID_HARDCODED = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BBnJPKsNGM-TaGmbGiL3ZaU";
+const SP_SITE_ID_HARDCODED       = "setty.sharepoint.com,aa580464-13e9-4eb4-8ad4-ca6ff5b9e001,c97a67e8-fb1b-4a23-a29a-753a5d57d410";
+const SP_DRIVE_ID_HARDCODED      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BBnJPKsNGM-TaGmbGiL3ZaU";
+// Proposals library — separate drive on the same site, for pipeline/pre-award project folders.
+// Obtained from: https://setty.sharepoint.com/sites/NYCProjects/_api/v2.0/drives
+const SP_PROPOSALS_DRIVE_ID      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BD05MwIg6LcTbBQFEDE4JKC";
 
 let _spSiteId  = SP_SITE_ID_HARDCODED;
 let _spDriveId = SP_DRIVE_ID_HARDCODED;
@@ -811,6 +815,23 @@ let _spDriveId = SP_DRIVE_ID_HARDCODED;
 async function resolveSpIds() {
   // IDs are hardcoded — no Graph API call needed, no Sites.Read.All required.
   return { siteId: _spSiteId, driveId: _spDriveId };
+}
+
+// Creates a folder in the Proposals library named "[Year] — [Project Name]".
+// Used only for pipeline projects before a project number is assigned.
+// The main project library is completely unaffected.
+async function createProposalFolder(project) {
+  if (!project.name) throw new Error("Add a project name first.");
+  const year = new Date().getFullYear();
+  const safeName = (project.name || "Unnamed").replace(/[\\/:*?"<>|]/g, "-").trim();
+  const folderName = `${year} \u2014 ${safeName}`;
+  const result = await graphFetch("POST", `/drives/${SP_PROPOSALS_DRIVE_ID}/root/children`, {
+    name: folderName,
+    folder: {},
+    "@microsoft.graph.conflictBehavior": "rename",
+  });
+  if (!result?.webUrl) throw new Error("Folder created but no URL returned.");
+  return result.webUrl;
 }
 
 async function createMilestoneSpFolder(project, milestone) {
@@ -8712,7 +8733,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
       </div>
 
       <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: `1px solid ${P.border}` }}>
-        {TABS.map(t => {
+        {TABS.filter(t => !isPipeline(project) || !["Change Orders","RFIs","Submittals","Gantt"].includes(t)).map(t => {
           const isFeeTab = t === "Fee Calculator";
           const isLocked = isFeeTab && project.feeScheduleFinalized;
           return (
@@ -8740,9 +8761,15 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
             </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
 
-            <Field label="Project Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
-              <SharePointFolderField project={project} onUpdate={updateField} />
-            </Field>
+            {isPipeline(project) ? (
+              <Field label="Proposal Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
+                <ProposalFolderField project={project} onUpdate={updateField} />
+              </Field>
+            ) : (
+              <Field label="Project Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
+                <SharePointFolderField project={project} onUpdate={updateField} />
+              </Field>
+            )}
 
             <Field label="External Sites & Links" style={{ gridColumn: "1 / -1" }}>
               <ExternalLinksField project={project} onChange={onUpdate} />
@@ -12292,6 +12319,69 @@ function ExternalLinksField({ project, onChange }) {
   );
 }
 
+
+function ProposalFolderField({ project, onUpdate }) {
+  const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
+  const [msg, setMsg]       = React.useState("");
+
+  const url       = project.proposalFolderUrl || "";
+  const hasFolder = !!url;
+
+  async function create() {
+    if (!project.name) { setMsg("Add a project name first."); setStatus("error"); return; }
+    setStatus("creating"); setMsg("");
+    try {
+      const folderUrl = await createProposalFolder(project);
+      onUpdate("proposalFolderUrl", folderUrl);
+      setStatus("done");
+      setMsg("✓ Proposal folder created");
+    } catch(e) {
+      setStatus("error");
+      setMsg("✗ " + e.message);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {hasFolder ? (
+          <>
+            <input value={url} readOnly
+              style={{ flex: 1, color: P.textMuted, fontSize: 12, background: "transparent",
+                borderColor: P.border, cursor: "default" }} />
+            <a href={url} target="_blank" rel="noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6,
+                background: "#8B4513", color: "#fff", borderRadius: 6,
+                padding: "6px 14px", fontSize: 13, fontWeight: 600,
+                textDecoration: "none", whiteSpace: "nowrap" }}>
+              📁 Open Proposal Folder
+            </a>
+            <button onClick={() => { if (window.confirm("Clear the saved folder URL? This won\u2019t delete the SharePoint folder.")) onUpdate("proposalFolderUrl", ""); }}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 18, lineHeight: 1 }} title="Clear URL">×</button>
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>
+              No proposal folder yet — creates in the Proposals library as <em>{new Date().getFullYear()} — {project.name || "Project Name"}</em>
+            </span>
+            <button onClick={create} disabled={status === "creating"}
+              style={{ background: "#8B4513", color: "#fff", border: "none", borderRadius: 6,
+                padding: "7px 16px", fontSize: 12, fontWeight: 700,
+                cursor: "pointer", whiteSpace: "nowrap" }}>
+              {status === "creating" ? "Creating…" : "📁 Create Proposal Folder"}
+            </button>
+          </>
+        )}
+      </div>
+      {msg && (
+        <div style={{ fontSize: 11, color: status === "error" ? P.red : "#375623" }}>{msg}</div>
+      )}
+      <div style={{ fontSize: 11, color: P.textDim, lineHeight: 1.5 }}>
+        Stored separately from the main project library. When awarded, create a project folder on the Overview tab — the proposal folder stays as a proposal archive.
+      </div>
+    </div>
+  );
+}
 
 function SharePointFolderField({ project, onUpdate }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
