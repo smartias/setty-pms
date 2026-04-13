@@ -8848,6 +8848,7 @@ function EmailsView({ project, onChange }) {
   const [spSaveState, setSpSaveState] = useState({}); // msgId -> {status, msg}
   const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string }
   const [filterSender, setFilterSender] = useState("All");
+  const [logSearch, setLogSearch] = useState("");
 
   // Strip HTML to plain text
   function htmlToText(html) {
@@ -9215,7 +9216,17 @@ function EmailsView({ project, onChange }) {
     return ["All", ...Array.from(s).sort()];
   }, [saved]);
 
-  const filtered = filterSender === "All" ? saved : saved.filter(e => e.from === filterSender);
+  const filtered = saved.filter(e => {
+    if (filterSender !== "All" && e.from !== filterSender) return false;
+    if (logSearch.trim()) {
+      const q = logSearch.toLowerCase();
+      return (e.subject || "").toLowerCase().includes(q)
+        || (e.from || "").toLowerCase().includes(q)
+        || (e.to || "").toLowerCase().includes(q)
+        || (e.bodyText || "").toLowerCase().includes(q);
+    }
+    return true;
+  });
   const sortedSaved = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   const selectedCount = Object.values(selected).filter(Boolean).length;
@@ -9314,17 +9325,31 @@ function EmailsView({ project, onChange }) {
       </div>
 
       {/* ── Saved emails ── */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10, flexWrap: "wrap" }}>
         <SectionTitle style={{ margin: 0 }}>
           Saved Emails
-          <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: P.textDim }}>({saved.length})</span>
+          <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: P.textDim }}>
+            ({filtered.length}{filtered.length !== saved.length ? ` of ${saved.length}` : ""})
+          </span>
         </SectionTitle>
-        {senders.length > 2 && (
-          <select value={filterSender} onChange={e => setFilterSender(e.target.value)}
-            style={{ fontSize: 12, padding: "3px 8px" }}>
-            {senders.map(s => <option key={s}>{s}</option>)}
-          </select>
-        )}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            value={logSearch}
+            onChange={e => setLogSearch(e.target.value)}
+            placeholder="Search subject, sender, body…"
+            style={{ fontSize: 12, padding: "3px 8px", width: 220 }}
+          />
+          {logSearch && (
+            <button onClick={() => setLogSearch("")}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13 }}>✕</button>
+          )}
+          {senders.length > 2 && (
+            <select value={filterSender} onChange={e => setFilterSender(e.target.value)}
+              style={{ fontSize: 12, padding: "3px 8px" }}>
+              {senders.map(s => <option key={s}>{s}</option>)}
+            </select>
+          )}
+        </div>
       </div>
 
       {sortedSaved.length === 0 ? (
@@ -13580,7 +13605,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                 const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
                 const weighted = fee * ((p.probability ?? 50) / 100);
                 const isOverdue = p.proposalDueDate && new Date(p.proposalDueDate) < now && !PAST_DUE_EXEMPT.includes(p.status);
-                const isSoon = p.proposalDueDate && !isOverdue && (() => { const d = new Date(p.proposalDueDate); const in14 = new Date(); in14.setDate(in14.getDate()+14); return d <= in14; })();
+                const isSoon = p.proposalDueDate && !isOverdue && p.status !== "Proposal Submitted" && (() => { const d = new Date(p.proposalDueDate); const in14 = new Date(); in14.setDate(in14.getDate()+14); return d <= in14; })();
                 return (
                   <tr key={p.id}>
                     <td>
