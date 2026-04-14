@@ -275,8 +275,12 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
           </select>
         </div>
         <div class="form-group">
+          <label>Site Address <span style="font-size:11px;color:var(--dim);font-weight:400;">(auto-filled from GPS)</span></label>
+          <input type="text" id="fAddress" placeholder="e.g. 350 5th Ave, New York, NY" />
+        </div>
+        <div class="form-group">
           <label>Location / Floor</label>
-          <input type="text" id="fLocation" placeholder="e.g. 3rd Floor, Roof, Mechanical Room" />
+          <input type="text" id="fLocation" placeholder="e.g. Room 202, Roof, Mech Room" />
         </div>
         <div class="form-group">
           <label>Photographer</label>
@@ -606,13 +610,13 @@ async function populateExifFields(firstFile) {
     dateEl.value = exif.date;
   }
 
-  // Only fill location if the field is empty
-  const locEl = document.getElementById('fLocation');
-  if (locEl.value === '' && exif.lat !== null && exif.lng !== null) {
-    locEl.placeholder = 'Resolving GPS…';
+  // Auto-fill Site Address from GPS (separate from Location / Floor)
+  const addrEl = document.getElementById('fAddress');
+  if (addrEl.value === '' && exif.lat !== null && exif.lng !== null) {
+    addrEl.placeholder = 'Resolving GPS…';
     const addr = await reverseGeocode(exif.lat, exif.lng);
-    locEl.placeholder = 'e.g. 3rd floor, east stairwell';
-    if (addr) locEl.value = addr;
+    addrEl.placeholder = 'e.g. 350 5th Ave, New York, NY';
+    if (addr) addrEl.value = addr;
   }
 }
 
@@ -866,6 +870,7 @@ async function startUpload() {
       source: 'field-photo-app',
       phase,
       system: document.getElementById('fSystem').value,
+      address: document.getElementById('fAddress').value,
       location: document.getElementById('fLocation').value,
       photographer: document.getElementById('fPhotographer').value,
       notes: document.getElementById('fNotes').value,

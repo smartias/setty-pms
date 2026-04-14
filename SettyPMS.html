@@ -9210,8 +9210,12 @@ function IntelligenceView({ project }) {
 
 // ─── PHOTOS ───────────────────────────────────────────────────────────────────
 
-function PhotoThumb({ item, meta }) {
+function PhotoThumb({ item, meta, folderName }) {
   const [hovered, setHovered] = React.useState(false);
+
+  // Derive fallbacks from folder name ("YYYY-MM-DD - Phase Name")
+  const parsedDate  = folderName ? (folderName.split(' - ')[0] || '').trim() : '';
+  const parsedPhase = folderName ? folderName.split(' - ').slice(1).join(' - ').trim() : '';
 
   // Display order and labels for known fields. Anything in the sidecar
   // not listed here still gets shown at the bottom under its raw key.
@@ -9219,7 +9223,8 @@ function PhotoThumb({ item, meta }) {
     { key: "date",          label: "Date" },
     { key: "phase",         label: "Phase" },
     { key: "system",        label: "System" },
-    { key: "location",      label: "Location" },
+    { key: "address",       label: "Site Address" },
+    { key: "location",      label: "Location / Floor" },
     { key: "photographer",  label: "Photographer" },
     { key: "notes",         label: "Notes" },
     { key: "tags",          label: "Tags" },
@@ -9229,23 +9234,38 @@ function PhotoThumb({ item, meta }) {
     { key: "docType",       label: "Doc Type" },
     { key: "createdBy",     label: "Uploaded By" },
     { key: "photoCount",    label: "Photos in Batch" },
+    { key: "uploadedAt",    label: "Uploaded" },
   ];
   const SKIP = new Set(["_schema", "source"]);
 
-  const fields = meta ? [
+  // Effective value: sidecar field → folder-name fallback for date/phase → skip if still empty
+  function effectiveValue(key) {
+    const v = meta ? meta[key] : undefined;
+    if (key === "date"  && (v === undefined || v === "" || v === null)) return parsedDate;
+    if (key === "phase" && (v === undefined || v === "" || v === null)) return parsedPhase;
+    return v;
+  }
+
+  function formatValue(key, v) {
+    // Trim ISO timestamps to just the date part
+    if (key === "uploadedAt" && typeof v === "string" && v.length > 10) return v.slice(0, 10);
+    return Array.isArray(v) ? v.join(", ") : String(v);
+  }
+
+  const fields = (meta || parsedDate || parsedPhase) ? [
     ...KNOWN
       .filter(({ key }) => {
-        const v = meta[key];
+        const v = effectiveValue(key);
         return v !== undefined && v !== "" && v !== null && !(Array.isArray(v) && v.length === 0);
       })
       .map(({ key, label }) => ({
         label,
-        value: Array.isArray(meta[key]) ? meta[key].join(", ") : String(meta[key]),
+        value: formatValue(key, effectiveValue(key)),
       })),
     // Any extra keys not in KNOWN and not in SKIP
-    ...Object.keys(meta)
+    ...(meta ? Object.keys(meta)
       .filter(k => !KNOWN.find(f => f.key === k) && !SKIP.has(k) && meta[k] !== "" && meta[k] !== null)
-      .map(k => ({ label: k, value: Array.isArray(meta[k]) ? meta[k].join(", ") : String(meta[k]) })),
+      .map(k => ({ label: k, value: Array.isArray(meta[k]) ? meta[k].join(", ") : String(meta[k]) })) : []),
   ] : [];
 
   return (
@@ -9639,7 +9659,7 @@ function PhotosView({ project }) {
                     {groupItems !== "loading" && groupItems?.items?.length > 0 && (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10, overflow: "visible" }}>
                         {groupItems.items.map(item => (
-                          <PhotoThumb key={item.id} item={item} meta={groupItems.meta} />
+                          <PhotoThumb key={item.id} item={item} meta={groupItems.meta} folderName={folder.name} />
                         ))}
                       </div>
                     )}
