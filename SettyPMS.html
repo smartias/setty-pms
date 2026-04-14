@@ -9226,6 +9226,11 @@ function PhotosView({ project }) {
   const [progress,  setProgress]  = React.useState({ done: 0, total: 0, label: "" });
   const [uploadMsg, setUploadMsg] = React.useState(null);
 
+  // Gallery
+  const [groups,    setGroups]    = React.useState(null);  // null = not yet loaded
+  const [expanded,  setExpanded]  = React.useState({});   // { folderId: [items] | "loading" }
+  const [galleryErr,setGalleryErr]= React.useState("");
+
   function getProjFolderName() {
     if (!project.projectFolderUrl) return null;
     const parts = project.projectFolderUrl.split("/");
@@ -9318,6 +9323,37 @@ function PhotosView({ project }) {
       setProgress({ done: 0, total: 0, label: "" });
     }
   }
+
+  async function loadGallery() {
+    const projFolderName = getProjFolderName();
+    if (!projFolderName) { setGroups([]); return; }
+    setGalleryErr("");
+    try {
+      const { driveId } = await resolveSpIds();
+      const enc = encodeURIComponent(projFolderName);
+      const res = await graphFetch("GET", `/drives/${driveId}/root:/${enc}/Photos:/children?$top=100&$orderby=name desc`);
+      setGroups((res?.value || []).filter(i => i.folder));
+    } catch(e) {
+      if (!e.message || e.message.includes("404")) { setGroups([]); }
+      else { setGalleryErr(e.message); setGroups([]); }
+    }
+  }
+
+  async function loadGroupItems(folder) {
+    setExpanded(prev => ({ ...prev, [folder.id]: "loading" }));
+    try {
+      const { driveId } = await resolveSpIds();
+      const res = await graphFetch("GET", `/drives/${driveId}/items/${folder.id}/children?$top=200`);
+      const items = (res?.value || []).filter(i => i.file && /\.(jpg|jpeg|png|webp|heic)$/i.test(i.name));
+      setExpanded(prev => ({ ...prev, [folder.id]: items }));
+    } catch(e) {
+      setExpanded(prev => ({ ...prev, [folder.id]: [] }));
+    }
+  }
+
+  React.useEffect(() => {
+    if (subTab === "gallery" && groups === null) loadGallery();
+  }, [subTab]);
 
   const inputStyle = { padding: "7px 10px", border: "1px solid " + P.border, borderRadius: 4, background: P.card, color: P.text, fontSize: 13, width: "100%" };
 
@@ -9473,25 +9509,79 @@ function PhotosView({ project }) {
       )}
 
       {/* ── GALLERY TAB ── */}
-      {subTab === "gallery" && (() => {
-        const photosUrl = project.projectFolderUrl ? project.projectFolderUrl + "/Photos" : null;
-        return (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "56px 20px", gap: 16, textAlign: "center" }}>
-            <div style={{ fontSize: 40, opacity: 0.3 }}>📁</div>
-            {photosUrl ? (
-              <>
-                <div style={{ color: P.text, fontSize: 14 }}>Photos are stored in the project's SharePoint folder, organized by date and phase.</div>
-                <a href={photosUrl} target="_blank" rel="noopener noreferrer"
-                  style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 22px", background: P.accent, color: "#fff", borderRadius: 6, textDecoration: "none", fontWeight: 600, fontSize: 13 }}>
-                  Open Photos folder in SharePoint ↗
-                </a>
-              </>
-            ) : (
-              <div style={{ color: P.textDim, fontSize: 13 }}>No SharePoint folder linked — create one on the Overview tab first.</div>
-            )}
-          </div>
-        );
-      })()}
+      {subTab === "gallery" && (
+        <div>
+          {/* Link to Photos folder in SharePoint */}
+          {project.projectFolderUrl && (
+            <div style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
+              <a href={project.projectFolderUrl + "/Photos"} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize: 12, color: P.accentLight, textDecoration: "none" }}>
+                Open Photos folder in SharePoint ↗
+              </a>
+            </div>
+          )}
+          {groups === null && <div style={{ textAlign: "center", padding: 48, color: P.textDim }}>Loading gallery…</div>}
+          {galleryErr && <div style={{ color: P.red, fontSize: 13, marginBottom: 12 }}>Error: {galleryErr}</div>}
+          {groups !== null && groups.length === 0 && !galleryErr && (
+            <div style={{ textAlign: "center", padding: 56, color: P.textDim }}>
+              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>📷</div>
+              <div>No photos uploaded yet. Use Upload &amp; Tag to add photos.</div>
+            </div>
+          )}
+          {groups !== null && groups.map(folder => {
+            const groupItems = expanded[folder.id];
+            const isOpen = groupItems !== undefined;
+            return (
+              <div key={folder.id} style={{ marginBottom: 14, border: "1px solid " + P.border, borderRadius: 8, overflow: "hidden" }}>
+                <div
+                  onClick={() => isOpen
+                    ? setExpanded(prev => { const n = {...prev}; delete n[folder.id]; return n; })
+                    : loadGroupItems(folder)
+                  }
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", background: P.card, userSelect: "none" }}
+                >
+                  <span style={{ color: P.textDim }}>{isOpen ? "▾" : "▸"}</span>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: P.text }}>📁 {folder.name}</span>
+                  <span style={{ fontSize: 12, color: P.textDim, marginLeft: "auto" }}>
+                    {folder.folder?.childCount ?? "?"} items
+                  </span>
+                </div>
+                {isOpen && (
+                  <div style={{ padding: 16, borderTop: "1px solid " + P.border, background: P.bg }}>
+                    {groupItems === "loading" && <div style={{ color: P.textDim, fontSize: 13 }}>Loading…</div>}
+                    {Array.isArray(groupItems) && groupItems.length === 0 && (
+                      <div style={{ color: P.textDim, fontSize: 13 }}>No image files found in this folder.</div>
+                    )}
+                    {Array.isArray(groupItems) && groupItems.length > 0 && (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
+                        {groupItems.map(item => (
+                          <a key={item.id} href={item.webUrl} target="_blank" rel="noopener noreferrer"
+                            style={{ display: "block", borderRadius: 6, overflow: "hidden", border: "1px solid " + P.border, textDecoration: "none" }}>
+                            <div style={{ aspectRatio: "1", overflow: "hidden", background: P.card }}>
+                              <img src={item["@microsoft.graph.downloadUrl"]} alt={item.name}
+                                style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                                onError={e => { e.target.style.display = "none"; }} />
+                            </div>
+                            <div style={{ padding: "4px 8px", fontSize: 10, color: P.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {item.name}
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {groups !== null && groups.length > 0 && (
+            <button onClick={() => { setGroups(null); setExpanded({}); loadGallery(); }}
+              style={{ marginTop: 4, padding: "7px 16px", background: "transparent", border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, cursor: "pointer", color: P.textDim }}>
+              Refresh
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
