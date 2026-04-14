@@ -18,6 +18,7 @@
     input[type=number]::-webkit-inner-spin-button,
     input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
     input[type=number]{-moz-appearance:textfield}
+    mark{background:#854d0e;color:#fef08a;border-radius:2px;padding:0 2px;font-style:normal}
   </style>
 </head>
 <body>
@@ -9030,7 +9031,11 @@ function parseSearchHits(rawResults, project) {
       for (const hit of (container.hits || [])) {
         const r = hit.resource || {};
         const odata = r["@odata.type"] || "";
-        const summary = (hit.summary || "").replace(/<[^>]+>/g, "").trim();
+        // Graph Search wraps matched terms in <c0>…</c0>. Convert to <mark> and strip other tags.
+        const summary = (hit.summary || "")
+          .replace(/<c0>/g, "<mark>").replace(/<\/c0>/g, "</mark>")
+          .replace(/<(?!\/?(mark))[^>]+>/g, "")
+          .trim();
         let item = null;
 
         if (odata.includes("driveItem")) {
@@ -9196,9 +9201,12 @@ function IntelligenceView({ project }) {
                 </div>
                 {hit.summary && (
                   <div style={{ fontSize: 12, color: P.textMuted, lineHeight: 1.55, margin: "6px 0 6px 28px",
-                    borderLeft: "2px solid " + P.border, paddingLeft: 8 }}>
-                    {hit.summary.slice(0, 240)}{hit.summary.length > 240 ? "…" : ""}
-                  </div>
+                    borderLeft: "2px solid " + P.border, paddingLeft: 8 }}
+                    dangerouslySetInnerHTML={{ __html:
+                      hit.summary.length > 280
+                        ? hit.summary.slice(0, 280) + "…"
+                        : hit.summary
+                    }} />
                 )}
                 {hit.linkedItems.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginLeft: 28, marginTop: 4 }}>
