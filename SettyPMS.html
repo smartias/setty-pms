@@ -9199,53 +9199,93 @@ function IntelligenceView({ project }) {
           </div>
           {results.map(hit => {
             const sm = SOURCE_META[hit.source] || { icon: "📄", label: hit.source, color: P.textDim };
+
+            // File extension badge for SharePoint files
+            const ext = hit.source === "sharepoint" || hit.source === "photos"
+              ? (hit.title.includes(".") ? hit.title.split(".").pop().toUpperCase() : null)
+              : null;
+            const EXT_COLORS = { PDF: "#ef4444", DWG: "#f59e0b", DXF: "#f59e0b",
+              DOCX: "#3b82f6", DOC: "#3b82f6", XLSX: "#10b981", XLS: "#10b981",
+              PPTX: "#a78bfa", JSON: "#64748b", JPG: "#06b6d4", PNG: "#06b6d4", MP4: "#06b6d4" };
+            const extColor = EXT_COLORS[ext] || P.textDim;
+
+            // Trim path to last 3 segments for readability
+            const pathParts = (hit.path || "").split("/").filter(Boolean);
+            const shortPath = pathParts.slice(-3).join(" › ");
+
+            // For photo batches replace raw JSON summary with readable metadata line
+            const summaryHtml = hit.source === "photos"
+              ? null
+              : hit.summary
+                ? (hit.summary.length > 380 ? hit.summary.slice(0, 380) + "…" : hit.summary)
+                : null;
+
             return (
-              <div key={hit.id} style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 8 }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 4 }}>
-                  <span style={{ fontSize: 18, lineHeight: 1.2, flexShrink: 0 }}>{sm.icon}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      {hit.url
-                        ? <a href={hit.url} target="_blank" rel="noreferrer"
-                            style={{ fontWeight: 600, fontSize: 13, color: sm.color, textDecoration: "none",
-                              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "55vw" }}>
-                            {hit.title}
-                          </a>
-                        : <span style={{ fontWeight: 600, fontSize: 13, color: sm.color }}>{hit.title}</span>
-                      }
+              <div key={hit.id} style={{
+                background: P.card, border: "1px solid " + P.border, borderRadius: 8,
+                marginBottom: 8, display: "flex", overflow: "hidden",
+              }}>
+                {/* Accent stripe */}
+                <div style={{ width: 4, flexShrink: 0, background: sm.color, borderRadius: "8px 0 0 8px" }} />
+
+                <div style={{ flex: 1, minWidth: 0, padding: "12px 14px" }}>
+                  {/* Title row */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                    <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>{sm.icon}</span>
+                    {hit.url
+                      ? <a href={hit.url} target="_blank" rel="noreferrer"
+                          style={{ fontWeight: 700, fontSize: 14, color: sm.color, textDecoration: "none",
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "50vw" }}>
+                          {hit.title}
+                        </a>
+                      : <span style={{ fontWeight: 700, fontSize: 14, color: sm.color }}>{hit.title}</span>
+                    }
+                    {ext && ext !== hit.title.toUpperCase() && (
                       <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
-                        background: sm.color + "22", color: sm.color, whiteSpace: "nowrap" }}>{sm.label}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
-                      {hit.from && <span>{hit.from} · </span>}
-                      {hit.date && new Date(hit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                      {hit.path && <span style={{ marginLeft: 6, opacity: 0.55 }}>· {hit.path}</span>}
-                    </div>
+                        background: extColor + "25", color: extColor, whiteSpace: "nowrap", flexShrink: 0 }}>
+                        {ext}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
+                      background: sm.color + "20", color: sm.color, whiteSpace: "nowrap", flexShrink: 0 }}>
+                      {sm.label}
+                    </span>
                   </div>
+
+                  {/* Meta row — date + path */}
+                  <div style={{ fontSize: 11, color: P.textDim, marginBottom: summaryHtml ? 8 : 4, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {hit.from && <span style={{ color: P.textMuted }}>{hit.from}</span>}
+                    {hit.date && (
+                      <span>{new Date(hit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
+                    )}
+                    {shortPath && (
+                      <span style={{ opacity: 0.6 }}>· {shortPath}</span>
+                    )}
+                  </div>
+
+                  {/* Summary */}
+                  {summaryHtml && (
+                    <div style={{ fontSize: 13, color: P.textMuted, lineHeight: 1.6,
+                      borderLeft: "2px solid " + sm.color + "50", paddingLeft: 10, marginBottom: 4 }}
+                      dangerouslySetInnerHTML={{ __html: summaryHtml }} />
+                  )}
+
+                  {/* Linked items */}
+                  {hit.linkedItems.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                      <span style={{ fontSize: 10, color: P.textDim, fontWeight: 700, marginRight: 2, alignSelf: "center" }}>Linked:</span>
+                      {hit.linkedItems.map((li, i) => {
+                        const ltDef = LINK_TYPES.find(t => t.value === li.linkType) || { color: "#888" };
+                        return (
+                          <span key={i} style={{ fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 3,
+                            background: ltDef.color + "20", color: ltDef.color }}>
+                            {li.entityLabel}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                {hit.summary && (
-                  <div style={{ fontSize: 12, color: P.textMuted, lineHeight: 1.55, margin: "6px 0 6px 28px",
-                    borderLeft: "2px solid " + P.border, paddingLeft: 8 }}
-                    dangerouslySetInnerHTML={{ __html:
-                      hit.summary.length > 280
-                        ? hit.summary.slice(0, 280) + "…"
-                        : hit.summary
-                    }} />
-                )}
-                {hit.linkedItems.length > 0 && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginLeft: 28, marginTop: 4 }}>
-                    <span style={{ fontSize: 10, color: P.textDim, fontWeight: 700, marginRight: 2, alignSelf: "center" }}>Linked:</span>
-                    {hit.linkedItems.map((li, i) => {
-                      const ltDef = LINK_TYPES.find(t => t.value === li.linkType) || { color: "#888" };
-                      return (
-                        <span key={i} style={{ fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 3,
-                          background: ltDef.color + "20", color: ltDef.color }}>
-                          {li.entityLabel}
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
             );
           })}
