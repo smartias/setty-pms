@@ -9148,11 +9148,26 @@ function IntelligenceView({ project }) {
   return (
     <div>
       <SectionTitle>Project Intelligence</SectionTitle>
-      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>
-        Search across SharePoint, OneNote, and Email for this project. Results show linked RFIs, COs, milestones, and notes automatically.
+
+      {/* ── How-it-works strip ─────────────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+        {[
+          { icon: "📁", label: "SharePoint Files",
+            desc: "Reads inside PDFs, Word docs, drawings, and specs stored in the project folder. New uploads may take 15–30 min to appear." },
+          { icon: "✉️", label: "Outlook Email",
+            desc: "Searches email subject lines and message body text. Does not search inside email attachments." },
+          { icon: "📓", label: "OneNote Notes",
+            desc: "Searches meeting notes, decisions, and action items saved to the project notebook." },
+        ].map(({ icon, label, desc }) => (
+          <div key={label} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: P.text, marginBottom: 4 }}>{icon} {label}</div>
+            <div style={{ fontSize: 11, color: P.textDim, lineHeight: 1.5 }}>{desc}</div>
+          </div>
+        ))}
       </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, alignItems: "flex-end" }}>
+      {/* ── Search controls ────────────────────────────────────────────── */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, alignItems: "flex-end" }}>
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Keyword</div>
           <input value={keyword} onChange={e => setKeyword(e.target.value)}
@@ -9161,19 +9176,19 @@ function IntelligenceView({ project }) {
             onKeyDown={e => e.key === "Enter" && doSearch()} />
         </div>
         <div>
-          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Doc Type</div>
+          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Filter by Type</div>
           <select value={docType} onChange={e => setDocType(e.target.value)} style={{ fontSize: 12 }}>
-            <option value="">All Types</option>
+            <option value="">All Doc Types</option>
             {Object.values(PMS_DOC_TYPES).map(dt => <option key={dt} value={dt}>{dt}</option>)}
           </select>
         </div>
         <div>
-          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Source</div>
+          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Search In</div>
           <select value={source} onChange={e => setSource(e.target.value)} style={{ fontSize: 12 }}>
-            <option value="all">All Sources</option>
-            <option value="files">SharePoint Files</option>
-            <option value="emails">Email</option>
-            <option value="notes">OneNote</option>
+            <option value="all">Files + Email + Notes</option>
+            <option value="files">Files only (SharePoint)</option>
+            <option value="emails">Email only</option>
+            <option value="notes">Notes only (OneNote)</option>
           </select>
         </div>
         <Btn onClick={doSearch} disabled={searching} style={{ alignSelf: "flex-end" }}>
@@ -9181,20 +9196,40 @@ function IntelligenceView({ project }) {
         </Btn>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, color: scopeToProject ? P.accentLight : P.textDim, userSelect: "none" }}>
-          <input type="checkbox" checked={scopeToProject} onChange={e => setScopeToProject(e.target.checked)}
-            style={{ accentColor: P.accent, width: 14, height: 14 }} />
-          Scope to project {project.projectNumber ? `"${project.projectNumber}"` : "(no project #)"}
+      {/* ── Project filter toggle ──────────────────────────────────────── */}
+      <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", flex: 1, minWidth: 200 }}>
+          <div style={{
+            width: 36, height: 20, borderRadius: 10, flexShrink: 0,
+            background: scopeToProject ? P.accent : P.border,
+            position: "relative", transition: "background 0.2s", cursor: "pointer"
+          }}
+            onClick={() => setScopeToProject(v => !v)}>
+            <div style={{
+              position: "absolute", top: 2, left: scopeToProject ? 18 : 2,
+              width: 16, height: 16, borderRadius: 8, background: "#fff",
+              transition: "left 0.2s", boxShadow: "0 1px 3px #0004"
+            }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: scopeToProject ? P.accentLight : P.textDim }}>
+              {scopeToProject ? `📌 This project only — ${project.projectNumber || "set a project # first"}` : "🌐 All projects (entire library)"}
+            </div>
+            <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
+              {scopeToProject
+                ? "Files: limited to the project SharePoint folder. Emails & notes: must mention the project number."
+                : "No project filter — useful when searching across all projects, but results may include unrelated content."}
+            </div>
+          </div>
         </label>
         {!scopeToProject && (
-          <span style={{ fontSize: 11, color: P.yellow }}>
-            ⚠ Searching entire library — results may include other projects
+          <span style={{ fontSize: 11, color: P.yellow, fontWeight: 600 }}>
+            ⚠ Results may include other projects
           </span>
         )}
       </div>
 
-      {!hasNum && <div style={{ fontSize: 12, color: P.yellow, marginBottom: 10 }}>⚠ Set a project number on the Overview tab to enable search.</div>}
+      {!hasNum && <div style={{ fontSize: 12, color: P.yellow, marginBottom: 10 }}>⚠ Set a project number on the Overview tab to enable project-scoped search.</div>}
       {error     && <div style={{ fontSize: 12, color: P.red,    marginBottom: 10 }}>{error}</div>}
 
       {results !== null && (
