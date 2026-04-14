@@ -9218,6 +9218,11 @@ function PhotoThumb({ item, meta, folderName }) {
   const parsedDate = (parts[0] || '').trim();
   const parsedPhase= parts.slice(1).join(' - ').trim();
 
+  // TEMP DEBUG — remove after diagnosis
+  React.useEffect(() => {
+    console.log('[PhotoThumb]', { folderName, parsedDate, parsedPhase, meta });
+  }, []);
+
   const SKIP = new Set(["_schema", "source", "docType"]);
 
   // Helper: is a value worth displaying?
