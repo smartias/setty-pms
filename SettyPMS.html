@@ -9213,60 +9213,60 @@ function IntelligenceView({ project }) {
 function PhotoThumb({ item, meta, folderName }) {
   const [hovered, setHovered] = React.useState(false);
 
-  // Derive fallbacks from folder name ("YYYY-MM-DD - Phase Name")
-  const parsedDate  = folderName ? (folderName.split(' - ')[0] || '').trim() : '';
-  const parsedPhase = folderName ? folderName.split(' - ').slice(1).join(' - ').trim() : '';
+  // Derive date + phase from folder name ("YYYY-MM-DD - Phase Name") as fallback
+  const parts      = folderName ? folderName.split(' - ') : [];
+  const parsedDate = (parts[0] || '').trim();
+  const parsedPhase= parts.slice(1).join(' - ').trim();
 
-  // Display order and labels for known fields. Anything in the sidecar
-  // not listed here still gets shown at the bottom under its raw key.
-  const KNOWN = [
-    { key: "date",          label: "Date" },
-    { key: "phase",         label: "Phase" },
+  const SKIP = new Set(["_schema", "source", "docType"]);
+
+  // Helper: is a value worth displaying?
+  function hasVal(v) {
+    return v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
+  }
+
+  // Build the field list manually so date/phase always appear when we have any info
+  const fields = [];
+
+  // Date — sidecar wins, folder name is fallback
+  const dateVal = (meta && hasVal(meta.date)) ? meta.date : parsedDate;
+  if (hasVal(dateVal)) fields.push({ label: "Date", value: String(dateVal) });
+
+  // Phase — sidecar wins, folder name is fallback
+  const phaseVal = (meta && hasVal(meta.phase)) ? meta.phase : parsedPhase;
+  if (hasVal(phaseVal)) fields.push({ label: "Phase", value: String(phaseVal) });
+
+  // Remaining known fields straight from the sidecar
+  const REST = [
     { key: "system",        label: "System" },
     { key: "address",       label: "Site Address" },
     { key: "location",      label: "Location / Floor" },
     { key: "photographer",  label: "Photographer" },
+    { key: "createdBy",     label: "Uploaded By" },
     { key: "notes",         label: "Notes" },
     { key: "tags",          label: "Tags" },
+    { key: "photoCount",    label: "Photos in Batch" },
     { key: "projectNumber", label: "Project #" },
     { key: "projectName",   label: "Project" },
     { key: "client",        label: "Client" },
-    { key: "docType",       label: "Doc Type" },
-    { key: "createdBy",     label: "Uploaded By" },
-    { key: "photoCount",    label: "Photos in Batch" },
     { key: "uploadedAt",    label: "Uploaded" },
   ];
-  const SKIP = new Set(["_schema", "source"]);
-
-  // Effective value: sidecar field → folder-name fallback for date/phase → skip if still empty
-  function effectiveValue(key) {
-    const v = meta ? meta[key] : undefined;
-    if (key === "date"  && (v === undefined || v === "" || v === null)) return parsedDate;
-    if (key === "phase" && (v === undefined || v === "" || v === null)) return parsedPhase;
-    return v;
+  if (meta) {
+    REST.forEach(({ key, label }) => {
+      const v = meta[key];
+      if (!hasVal(v)) return;
+      const display = (key === "uploadedAt" && typeof v === "string" && v.length > 10)
+        ? v.slice(0, 10)
+        : Array.isArray(v) ? v.join(", ") : String(v);
+      fields.push({ label, value: display });
+    });
+    // Any sidecar keys not in REST and not skipped
+    const knownKeys = new Set([...REST.map(r => r.key), "date", "phase"]);
+    Object.keys(meta).forEach(k => {
+      if (knownKeys.has(k) || SKIP.has(k) || !hasVal(meta[k])) return;
+      fields.push({ label: k, value: Array.isArray(meta[k]) ? meta[k].join(", ") : String(meta[k]) });
+    });
   }
-
-  function formatValue(key, v) {
-    // Trim ISO timestamps to just the date part
-    if (key === "uploadedAt" && typeof v === "string" && v.length > 10) return v.slice(0, 10);
-    return Array.isArray(v) ? v.join(", ") : String(v);
-  }
-
-  const fields = (meta || parsedDate || parsedPhase) ? [
-    ...KNOWN
-      .filter(({ key }) => {
-        const v = effectiveValue(key);
-        return v !== undefined && v !== "" && v !== null && !(Array.isArray(v) && v.length === 0);
-      })
-      .map(({ key, label }) => ({
-        label,
-        value: formatValue(key, effectiveValue(key)),
-      })),
-    // Any extra keys not in KNOWN and not in SKIP
-    ...(meta ? Object.keys(meta)
-      .filter(k => !KNOWN.find(f => f.key === k) && !SKIP.has(k) && meta[k] !== "" && meta[k] !== null)
-      .map(k => ({ label: k, value: Array.isArray(meta[k]) ? meta[k].join(", ") : String(meta[k]) })) : []),
-  ] : [];
 
   return (
     <div style={{ position: "relative" }}
