@@ -9119,16 +9119,22 @@ function IntelligenceView({ project }) {
                         : source === "emails" ? ["message"]
                         : source === "notes"  ? ["onenotePage"]
                         : ["driveItem", "message", "onenotePage"];
-      // Base query — used for email + OneNote (path: filter doesn't apply there)
-      const baseQ = [scopeToProject && hasNum ? project.projectNumber : "", docType, keyword]
-                      .filter(Boolean).join(" ");
+      // Quote multi-word keywords so Graph treats them as an exact phrase, not word1 OR word2
+      const kw = keyword.trim();
+      const kwQ = kw.includes(" ") ? `"${kw}"` : kw;
+
+      // Base query — used for email + OneNote.
+      // Use AND so project number + keyword must BOTH appear, not either/or.
+      const baseTerms = [scopeToProject && hasNum ? project.projectNumber : "", docType, kwQ]
+                          .filter(Boolean);
+      const baseQ = baseTerms.join(" AND ");
 
       // File query — scopes SharePoint search to the project folder using KQL path: filter.
-      // This finds drawings, specs, PDFs etc. even if they don't contain the project number.
+      // path: already implies AND, so no project number needed — folder URL is the scope.
       let fileQ = baseQ;
       if (scopeToProject && project.projectFolderUrl) {
         const folderUrl = decodeURIComponent(project.projectFolderUrl).replace(/\/$/, "");
-        const terms = [docType, keyword].filter(Boolean).join(" ");
+        const terms = [docType, kwQ].filter(Boolean).join(" AND ");
         fileQ = terms ? `${terms} path:"${folderUrl}"` : `path:"${folderUrl}"`;
       }
 
