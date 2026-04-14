@@ -2678,6 +2678,7 @@ function ScheduleView({ project, onChange }) {
   const [emailMsg, setEmailMsg] = useState("");
   const [invoicePrompt, setInvoicePrompt] = useState(null); // {milestone, newPct, invoiceAmount}
   const [cancelPrompt, setCancelPrompt] = useState(null); // milestone to cancel
+  const [expandedLinks, setExpandedLinks] = useState(null); // milestone id with links panel open
 
   // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
@@ -3150,7 +3151,8 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
             const statusColor = MILESTONE_STATUS_COLORS[autoStatus] || MILESTONE_STATUS_COLORS["Not Started"];
             const typeColor = m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple };
             return (
-              <tr key={m.id}>
+              <React.Fragment key={m.id}>
+              <tr>
                 <td><Badge color={typeColor} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
                 <td>
                   {m.type === "billable" && project.feeScheduleFinalized
@@ -3234,9 +3236,32 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                     {m.type === "billable" && !project.feeScheduleFinalized && (
                       <Btn small variant="danger" onClick={() => { if (window.confirm("Delete milestone \"" + m.name + "\"?\n\nThis permanently removes it from the project. This cannot be undone.")) onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) }); }}>✕</Btn>
                     )}
+                    <Btn small variant="ghost"
+                      onClick={() => setExpandedLinks(expandedLinks === m.id ? null : m.id)}
+                      title="Linked items"
+                      style={{ color: expandedLinks === m.id ? P.accentLight : P.textDim }}>
+                      ⛓
+                    </Btn>
                   </div>
                 </td>
               </tr>
+              {expandedLinks === m.id && (
+                <tr>
+                  <td colSpan={9} style={{ padding: "0 8px 14px" }}>
+                    <div style={{ padding: "12px 0 0" }}>
+                      <LinkManager
+                        links={m.links || []}
+                        onAdd={lk => updateMilestone(m.id, "links", [...(m.links||[]), lk], false, { notifyTeams: false })}
+                        onRemove={lid => updateMilestone(m.id, "links", (m.links||[]).filter(l => l.id !== lid), false, { notifyTeams: false })}
+                        project={project}
+                        selfType="milestone"
+                        selfId={m.id}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             );
           })}
         </tbody>
@@ -4997,6 +5022,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       }
       const typeFolder = await ensureF(projFolderName, typLabel);
       const itemFolder = await ensureF(typeFolder, safeName);
+      await writeSharePointMetadataSidecar(driveId, itemFolder, buildPmsMetadata(project, isRFI ? PMS_DOC_TYPES.RFI : PMS_DOC_TYPES.SUBMITTAL));
       const fullUrl = project.projectFolderUrl.split("/").slice(0, -1).join("/") + "/" + typLabel + "/" + encodeURIComponent(safeName);
       setF("spFolderUrl", fullUrl);
       setSpStatus("done");
@@ -8923,9 +8949,260 @@ function ProjectionsView({ project }) {
   );
 }
 
+// ─── INTELLIGENCE / SEARCH ────────────────────────────────────────────────────
+// Layer 3: unified search across SharePoint, OneNote, and email.
+// Project number is always the anchor filter. Results are enriched with linked
+// PMS entities from the link graph built in Layer 2.
+
+async function searchPmsCorpus(queryString, entityTypes) {
+  const token = await getToken();
+  // driveItem, message, and onenotePage each need their own request object
+  const groups = [
+    ["driveItem"],
+    ["message"],
+    ["onenotePage"],
+  ].filter(g => g.some(t => entityTypes.includes(t)));
+
+  const requests = groups.map(types => ({
+    entityTypes: types,
+    query: { queryString },
+    from: 0, size: 20,
+  }));
+
+  const res = await fetch("https://graph.microsoft.com/v1.0/search/query", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ requests }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || "Search failed " + res.status);
+  }
+  return (await res.json()).value || [];
+}
+
+function normalizeUrl(url) {
+  try { return decodeURIComponent(url || "").toLowerCase().replace(/\/$/, ""); }
+  catch { return (url || "").toLowerCase().replace(/\/$/, ""); }
+}
+
+// Scan the project's link graph to find PMS entities connected to a search result URL.
+// Checks both explicit links[] and native URL fields (spFolderUrl, oneNoteUrl, etc.).
+function findLinkedByUrl(project, resultUrl) {
+  if (!resultUrl) return [];
+  const norm = normalizeUrl(resultUrl);
+  const matched = [];
+  const defs = [
+    { list: project.rfis||[],         type: "rfi",       label: e => e.number + (e.title       ? ": " + e.title       : ""), urls: ["spFolderUrl"] },
+    { list: project.submittals||[],   type: "submittal", label: e => e.number + (e.description ? ": " + e.description : ""), urls: ["spFolderUrl"] },
+    { list: project.changeOrders||[], type: "co",        label: e => e.number + (e.name        ? " – " + e.name        : ""), urls: [] },
+    { list: project.milestones||[],   type: "milestone", label: e => e.name || e.id,                                          urls: ["outgoingFolderUrl"] },
+    { list: project.notes||[],        type: "note",      label: e => (e.category||"Note") + " – " + (e.createdAt||"").slice(0, 10), urls: ["oneNoteUrl"] },
+    { list: project.emails||[],       type: "email",     label: e => e.subject || "(email)",                                  urls: ["spFolderUrl"] },
+  ];
+  for (const { list, type, label, urls } of defs) {
+    for (const entity of list) {
+      for (const lk of (entity.links || [])) {
+        if (lk.targetUrl && normalizeUrl(lk.targetUrl) === norm)
+          matched.push({ entityType: type, entityLabel: label(entity), linkType: lk.linkType });
+      }
+      for (const key of urls) {
+        if (entity[key] && normalizeUrl(entity[key]) === norm)
+          matched.push({ entityType: type, entityLabel: label(entity), linkType: "documents" });
+      }
+    }
+  }
+  return matched;
+}
+
+function parseSearchHits(rawResults, project) {
+  const hits = [];
+  for (const entityResult of rawResults) {
+    for (const container of (entityResult.hitsContainers || [])) {
+      for (const hit of (container.hits || [])) {
+        const r = hit.resource || {};
+        const odata = r["@odata.type"] || "";
+        const summary = (hit.summary || "").replace(/<[^>]+>/g, "").trim();
+        let item = null;
+
+        if (odata.includes("driveItem")) {
+          if (r.name === "_pms-metadata.json") continue; // sidecar — skip, don't show to user
+          item = {
+            id: hit.hitId, source: "sharepoint",
+            title: r.name || "Untitled",
+            url: r.webUrl || "",
+            date: r.lastModifiedDateTime || "",
+            path: (r.parentReference?.path || "").split("/root:/").pop(),
+            summary,
+          };
+        } else if (odata.includes("message")) {
+          item = {
+            id: hit.hitId, source: "email",
+            title: r.subject || "(no subject)",
+            url: r.webLink || "",
+            date: r.receivedDateTime || "",
+            from: r.from?.emailAddress?.name || r.from?.emailAddress?.address || "",
+            summary,
+          };
+        } else if (odata.includes("onenotePage")) {
+          item = {
+            id: hit.hitId, source: "onenote",
+            title: r.title || "Untitled",
+            url: r.links?.oneNoteWebUrl?.href || r.webUrl || "",
+            date: r.lastModifiedDateTime || "",
+            summary,
+          };
+        }
+
+        if (item) {
+          item.linkedItems = findLinkedByUrl(project, item.url);
+          hits.push(item);
+        }
+      }
+    }
+  }
+  return hits.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+}
+
+const SOURCE_META = {
+  sharepoint: { icon: "📁", label: "SharePoint", color: "#60a5fa" },
+  email:      { icon: "✉",  label: "Email",      color: "#10b981" },
+  onenote:    { icon: "📓", label: "OneNote",    color: "#a78bfa" },
+};
+
+function IntelligenceView({ project }) {
+  const [keyword,   setKeyword]   = React.useState("");
+  const [docType,   setDocType]   = React.useState("");
+  const [source,    setSource]    = React.useState("all");
+  const [results,   setResults]   = React.useState(null);
+  const [searching, setSearching] = React.useState(false);
+  const [error,     setError]     = React.useState("");
+  const hasNum = !!(project.projectNumber || "").trim();
+
+  async function doSearch() {
+    if (!hasNum) { setError("Set a project number on the Overview tab first."); return; }
+    setSearching(true); setError(""); setResults(null);
+    try {
+      const entityTypes = source === "files"  ? ["driveItem"]
+                        : source === "emails" ? ["message"]
+                        : source === "notes"  ? ["onenotePage"]
+                        : ["driveItem", "message", "onenotePage"];
+      const q = [project.projectNumber, docType, keyword].filter(Boolean).join(" ");
+      const raw = await searchPmsCorpus(q, entityTypes);
+      setResults(parseSearchHits(raw, project));
+    } catch (e) { setError("✗ " + e.message); }
+    setSearching(false);
+  }
+
+  return (
+    <div>
+      <SectionTitle>Project Intelligence</SectionTitle>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>
+        Search across SharePoint, OneNote, and Email for this project. Results show linked RFIs, COs, milestones, and notes automatically.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "flex-end" }}>
+        <div>
+          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Project</div>
+          <input value={project.projectNumber || "(no number)"} readOnly
+            style={{ width: 110, color: P.textDim, cursor: "default" }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Keyword</div>
+          <input value={keyword} onChange={e => setKeyword(e.target.value)}
+            placeholder="facade, RFI-012, curtain wall…"
+            style={{ width: "100%" }}
+            onKeyDown={e => e.key === "Enter" && doSearch()} />
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Doc Type</div>
+          <select value={docType} onChange={e => setDocType(e.target.value)} style={{ fontSize: 12 }}>
+            <option value="">All Types</option>
+            {Object.values(PMS_DOC_TYPES).map(dt => <option key={dt} value={dt}>{dt}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Source</div>
+          <select value={source} onChange={e => setSource(e.target.value)} style={{ fontSize: 12 }}>
+            <option value="all">All Sources</option>
+            <option value="files">SharePoint Files</option>
+            <option value="emails">Email</option>
+            <option value="notes">OneNote</option>
+          </select>
+        </div>
+        <Btn onClick={doSearch} disabled={searching || !hasNum} style={{ alignSelf: "flex-end" }}>
+          {searching ? "⏳ Searching…" : "🔍 Search"}
+        </Btn>
+      </div>
+
+      {!hasNum && <div style={{ fontSize: 12, color: P.yellow, marginBottom: 10 }}>⚠ Set a project number on the Overview tab to enable search.</div>}
+      {error     && <div style={{ fontSize: 12, color: P.red,    marginBottom: 10 }}>{error}</div>}
+
+      {results !== null && (
+        <div>
+          <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
+            {results.length === 0
+              ? "No results. Try a broader keyword, or check that documents were saved with this project number."
+              : `${results.length} result${results.length !== 1 ? "s" : ""}`}
+          </div>
+          {results.map(hit => {
+            const sm = SOURCE_META[hit.source] || { icon: "📄", label: hit.source, color: P.textDim };
+            return (
+              <div key={hit.id} style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 4 }}>
+                  <span style={{ fontSize: 18, lineHeight: 1.2, flexShrink: 0 }}>{sm.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      {hit.url
+                        ? <a href={hit.url} target="_blank" rel="noreferrer"
+                            style={{ fontWeight: 600, fontSize: 13, color: sm.color, textDecoration: "none",
+                              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "55vw" }}>
+                            {hit.title}
+                          </a>
+                        : <span style={{ fontWeight: 600, fontSize: 13, color: sm.color }}>{hit.title}</span>
+                      }
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
+                        background: sm.color + "22", color: sm.color, whiteSpace: "nowrap" }}>{sm.label}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
+                      {hit.from && <span>{hit.from} · </span>}
+                      {hit.date && new Date(hit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                      {hit.path && <span style={{ marginLeft: 6, opacity: 0.55 }}>· {hit.path}</span>}
+                    </div>
+                  </div>
+                </div>
+                {hit.summary && (
+                  <div style={{ fontSize: 12, color: P.textMuted, lineHeight: 1.55, margin: "6px 0 6px 28px",
+                    borderLeft: "2px solid " + P.border, paddingLeft: 8 }}>
+                    {hit.summary.slice(0, 240)}{hit.summary.length > 240 ? "…" : ""}
+                  </div>
+                )}
+                {hit.linkedItems.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginLeft: 28, marginTop: 4 }}>
+                    <span style={{ fontSize: 10, color: P.textDim, fontWeight: 700, marginRight: 2, alignSelf: "center" }}>Linked:</span>
+                    {hit.linkedItems.map((li, i) => {
+                      const ltDef = LINK_TYPES.find(t => t.value === li.linkType) || { color: "#888" };
+                      return (
+                        <span key={i} style={{ fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 3,
+                          background: ltDef.color + "20", color: ltDef.color }}>
+                          {li.entityLabel}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections"];
+const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Intelligence"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
@@ -9198,6 +9475,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
         {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
+        {tab === "Intelligence" && <IntelligenceView project={project} />}
       </Card>
     </div>
   );
@@ -10158,7 +10436,7 @@ function NotesView({ project, onChange }) {
       id: entryId, body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
       ...(draft.category === "Site Visit" && draft.visitDate ? { visitDate: draft.visitDate } : {}),
       author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-      oneNoteUrl: "",
+      oneNoteUrl: "", links: [],
     };
     const newNotes = [entry, ...(project.notes || [])];
     onChange({ ...project, notes: newNotes });
@@ -10377,6 +10655,14 @@ function NotesView({ project, onChange }) {
                 ) : (
                   <div style={{ fontSize: 13, color: P.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{note.body}</div>
                 )}
+                <LinkManager
+                  links={note.links || []}
+                  onAdd={lk => onChange({ ...project, notes: (project.notes||[]).map(n => n.id === note.id ? { ...n, links: [...(n.links||[]), lk] } : n) })}
+                  onRemove={lid => onChange({ ...project, notes: (project.notes||[]).map(n => n.id === note.id ? { ...n, links: (n.links||[]).filter(l => l.id !== lid) } : n) })}
+                  project={project}
+                  selfType="note"
+                  selfId={note.id}
+                />
               </div>
             );
           })}
