@@ -9306,7 +9306,7 @@ function IntelligenceView({ project }) {
                     {/* For non-PDF files: copy keyword button so user can Ctrl+F immediately */}
                     {!isPdf && keyword.trim() && hit.source === "sharepoint" && hit.url && (
                       <button onClick={() => { navigator.clipboard.writeText(keyword.trim()); }}
-                        title={"Copy "" + keyword.trim() + "" to clipboard, then Ctrl+F in the document"}
+                        title={`Copy "${keyword.trim()}" to clipboard, then Ctrl+F in the document`}
                         style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, border: "1px solid " + P.border,
                           background: "transparent", color: P.textDim, cursor: "pointer", flexShrink: 0 }}>
                         📋 Copy search term
@@ -9347,7 +9347,7 @@ function IntelligenceView({ project }) {
                   {noExcerptReason && (
                     <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginBottom: 4,
                       padding: "6px 10px", background: P.bg + "80", borderRadius: 4 }}>
-                      ℹ {noExcerptReason}
+                      💡 {noExcerptReason}
                     </div>
                   )}
 
