@@ -754,6 +754,30 @@ async function ensureFolder(parent, name) {
   return parent + '/' + name;
 }
 
+// Returns a unique session folder path. If "2026-04-14 - Phase" already has a sidecar
+// from a previous upload, we use "2026-04-14 - Phase (2)", "(3)", etc. so each session
+// gets its own metadata without overwriting an earlier batch.
+async function findSessionFolder(basePath, subfolderName) {
+  const candidates = [subfolderName, ...Array.from({length: 9}, (_, i) => `${subfolderName} (${i + 2})`)];
+  for (const name of candidates) {
+    const folderPath = basePath + '/' + name;
+    // Check if folder exists and already has a sidecar
+    const res = await graphFetch('GET',
+      `/drives/${DRIVE_ID}/root:/${encodePath(folderPath)}:/children?$select=name&$top=5`
+    ).catch(() => null);
+    if (!res) {
+      // Folder doesn't exist yet — create it and use it
+      await ensureFolder(basePath, name);
+      return folderPath;
+    }
+    const hasSidecar = (res.value || []).some(i => i.name === '_pms-metadata.json');
+    if (!hasSidecar) return folderPath; // Folder exists but no prior sidecar — use it
+    // Folder already has a sidecar from a previous session — try next number
+  }
+  // Fallback: just use the base name (shouldn't reach here in practice)
+  return basePath + '/' + subfolderName;
+}
+
 // ---- Chunked upload session (required for files > 4 MB, e.g. video) ----
 async function uploadWithSession(uploadFolder, fname, file, onChunk) {
   const token = await getToken();
@@ -797,9 +821,10 @@ async function startUpload() {
   const quality = parseInt(document.getElementById('compQuality').value);
   const maxWidth = parseInt(document.getElementById('compWidth').value);
 
-  // Build subfolder path
+  // Build subfolder path — include location if filled in so each area gets its own folder
   const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split('/').pop());
-  const subfolderName = `${date} - ${phase}`;
+  const location = document.getElementById('fLocation').value.trim();
+  const subfolderName = location ? `${date} - ${phase} - ${location}` : `${date} - ${phase}`;
   const basePath = folderSegment + '/Photos';
 
   const prog = document.getElementById('uploadProgress');
@@ -820,7 +845,7 @@ async function startUpload() {
   try {
     setProgress(0, 'Creating folder structure...');
     await ensureFolder(folderSegment, 'Photos');
-    const uploadFolder = await ensureFolder(basePath, subfolderName);
+    const uploadFolder = await findSessionFolder(basePath, subfolderName);
 
     for (let i = 0; i < toUpload.length; i++) {
       const pf = toUpload[i];

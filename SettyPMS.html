@@ -9034,15 +9034,29 @@ function parseSearchHits(rawResults, project) {
         let item = null;
 
         if (odata.includes("driveItem")) {
-          if (r.name === "_pms-metadata.json") continue; // sidecar — skip, don't show to user
-          item = {
-            id: hit.hitId, source: "sharepoint",
-            title: r.name || "Untitled",
-            url: r.webUrl || "",
-            date: r.lastModifiedDateTime || "",
-            path: (r.parentReference?.path || "").split("/root:/").pop(),
-            summary,
-          };
+          if (r.name === "_pms-metadata.json") {
+            // Sidecar found — surface it as a photo batch result card
+            const parentPath = (r.parentReference?.path || "").split("/root:/").pop();
+            const folderName = parentPath.split("/").pop() || "Photo batch";
+            const folderUrl  = r.webUrl ? r.webUrl.substring(0, r.webUrl.lastIndexOf("/")) : "";
+            item = {
+              id: hit.hitId, source: "photos",
+              title: folderName,
+              url: folderUrl,
+              date: r.lastModifiedDateTime || "",
+              path: parentPath,
+              summary: summary || "Site photos",
+            };
+          } else {
+            item = {
+              id: hit.hitId, source: "sharepoint",
+              title: r.name || "Untitled",
+              url: r.webUrl || "",
+              date: r.lastModifiedDateTime || "",
+              path: (r.parentReference?.path || "").split("/root:/").pop(),
+              summary,
+            };
+          }
         } else if (odata.includes("message")) {
           item = {
             id: hit.hitId, source: "email",
@@ -9076,6 +9090,7 @@ const SOURCE_META = {
   sharepoint: { icon: "📁", label: "SharePoint", color: "#60a5fa" },
   email:      { icon: "✉",  label: "Email",      color: "#10b981" },
   onenote:    { icon: "📓", label: "OneNote",    color: "#a78bfa" },
+  photos:     { icon: "📷", label: "Site Photos", color: "#f59e0b" },
 };
 
 function IntelligenceView({ project }) {
@@ -9213,10 +9228,12 @@ function IntelligenceView({ project }) {
 function PhotoThumb({ item, meta, folderName }) {
   const [hovered, setHovered] = React.useState(false);
 
-  // Derive date + phase from folder name ("YYYY-MM-DD - Phase Name") as fallback
-  const parts      = folderName ? folderName.split(' - ') : [];
-  const parsedDate = (parts[0] || '').trim();
-  const parsedPhase= parts.slice(1).join(' - ').trim();
+  // Derive date, phase, location from folder name
+  // Formats: "YYYY-MM-DD - Phase" or "YYYY-MM-DD - Phase - Location"
+  const parts         = folderName ? folderName.split(' - ') : [];
+  const parsedDate    = (parts[0] || '').trim();
+  const parsedPhase   = (parts[1] || '').trim();
+  const parsedLocation= parts.slice(2).join(' - ').trim();
 
 
   const SKIP = new Set(["_schema", "source", "docType"]);
@@ -9237,11 +9254,14 @@ function PhotoThumb({ item, meta, folderName }) {
   const phaseVal = (meta && hasVal(meta.phase)) ? meta.phase : parsedPhase;
   if (hasVal(phaseVal)) fields.push({ label: "Phase", value: String(phaseVal) });
 
+  // Location — sidecar wins, folder name segment is fallback
+  const locationVal = (meta && hasVal(meta.location)) ? meta.location : parsedLocation;
+  if (hasVal(locationVal)) fields.push({ label: "Location / Floor", value: String(locationVal) });
+
   // Remaining known fields straight from the sidecar
   const REST = [
     { key: "system",        label: "System" },
     { key: "address",       label: "Site Address" },
-    { key: "location",      label: "Location / Floor" },
     { key: "photographer",  label: "Photographer" },
     { key: "createdBy",     label: "Uploaded By" },
     { key: "notes",         label: "Notes" },
