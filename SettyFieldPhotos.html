@@ -8,6 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -557,7 +558,66 @@ dropzone.addEventListener('drop', e => {
   handleFiles(e.dataTransfer.files);
 });
 
+// ---- EXIF helpers ----
+async function extractExifFromFile(file) {
+  try {
+    if (typeof exifr === 'undefined') return null;
+    const exif = await exifr.parse(file, { DateTimeOriginal: true, CreateDate: true, gps: true });
+    if (!exif) return null;
+    const dt = exif.DateTimeOriginal || exif.CreateDate;
+    const date = dt ? new Date(dt).toISOString().slice(0, 10) : null;
+    const lat  = exif.latitude  ?? null;
+    const lng  = exif.longitude ?? null;
+    return { date, lat, lng };
+  } catch(e) {
+    return null;
+  }
+}
+
+async function reverseGeocode(lat, lng) {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=18&addressdetails=1`,
+      { headers: { 'Accept-Language': 'en' } }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    // Build a concise address: street number + street, city, state
+    const a = data.address || {};
+    const parts = [
+      [a.house_number, a.road].filter(Boolean).join(' '),
+      a.city || a.town || a.village || a.county,
+      a.state,
+    ].filter(Boolean);
+    return parts.join(', ') || data.display_name || null;
+  } catch(e) {
+    return null;
+  }
+}
+
+async function populateExifFields(firstFile) {
+  const exif = await extractExifFromFile(firstFile);
+  if (!exif) return;
+
+  // Only fill date if user hasn't changed it from today's default
+  const dateEl = document.getElementById('fDate');
+  const today  = new Date().toISOString().slice(0, 10);
+  if (exif.date && (dateEl.value === today || dateEl.value === '')) {
+    dateEl.value = exif.date;
+  }
+
+  // Only fill location if the field is empty
+  const locEl = document.getElementById('fLocation');
+  if (locEl.value === '' && exif.lat !== null && exif.lng !== null) {
+    locEl.placeholder = 'Resolving GPS…';
+    const addr = await reverseGeocode(exif.lat, exif.lng);
+    locEl.placeholder = 'e.g. 3rd floor, east stairwell';
+    if (addr) locEl.value = addr;
+  }
+}
+
 function handleFiles(files) {
+  let isFirst = pendingFiles.length === 0;
   Array.from(files).forEach(f => {
     if (!f.type.startsWith('image/') && !/\.(heic|heif)$/i.test(f.name)) return;
     const reader = new FileReader();
@@ -567,6 +627,9 @@ function handleFiles(files) {
     };
     reader.readAsDataURL(f);
   });
+  // Use the first file in the batch to populate EXIF fields
+  const validFiles = Array.from(files).filter(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name));
+  if (isFirst && validFiles.length > 0) populateExifFields(validFiles[0]);
 }
 
 function renderPreviews() {
