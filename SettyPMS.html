@@ -9213,15 +9213,40 @@ function IntelligenceView({ project }) {
 function PhotoThumb({ item, meta }) {
   const [hovered, setHovered] = React.useState(false);
 
-  const fields = [
-    meta?.date         && { label: "Date",         value: meta.date },
-    meta?.phase        && { label: "Phase",        value: meta.phase },
-    meta?.system       && { label: "System",       value: meta.system },
-    meta?.location     && { label: "Location",     value: meta.location },
-    meta?.photographer && { label: "Photographer", value: meta.photographer },
-    meta?.notes        && { label: "Notes",        value: meta.notes },
-    meta?.tags?.length && { label: "Tags",         value: meta.tags.join(", ") },
-  ].filter(Boolean);
+  // Display order and labels for known fields. Anything in the sidecar
+  // not listed here still gets shown at the bottom under its raw key.
+  const KNOWN = [
+    { key: "date",          label: "Date" },
+    { key: "phase",         label: "Phase" },
+    { key: "system",        label: "System" },
+    { key: "location",      label: "Location" },
+    { key: "photographer",  label: "Photographer" },
+    { key: "notes",         label: "Notes" },
+    { key: "tags",          label: "Tags" },
+    { key: "projectNumber", label: "Project #" },
+    { key: "projectName",   label: "Project" },
+    { key: "client",        label: "Client" },
+    { key: "docType",       label: "Doc Type" },
+    { key: "createdBy",     label: "Uploaded By" },
+    { key: "photoCount",    label: "Photos in Batch" },
+  ];
+  const SKIP = new Set(["_schema", "source"]);
+
+  const fields = meta ? [
+    ...KNOWN
+      .filter(({ key }) => {
+        const v = meta[key];
+        return v !== undefined && v !== "" && v !== null && !(Array.isArray(v) && v.length === 0);
+      })
+      .map(({ key, label }) => ({
+        label,
+        value: Array.isArray(meta[key]) ? meta[key].join(", ") : String(meta[key]),
+      })),
+    // Any extra keys not in KNOWN and not in SKIP
+    ...Object.keys(meta)
+      .filter(k => !KNOWN.find(f => f.key === k) && !SKIP.has(k) && meta[k] !== "" && meta[k] !== null)
+      .map(k => ({ label: k, value: Array.isArray(meta[k]) ? meta[k].join(", ") : String(meta[k]) })),
+  ] : [];
 
   return (
     <div style={{ position: "relative" }}
@@ -9355,6 +9380,7 @@ function PhotosView({ project }) {
       }
 
       await writeSharePointMetadataSidecar(driveId, targetFolder, buildPmsMetadata(project, PMS_DOC_TYPES.SITE_PHOTO, {
+        date: meta.date,
         phase: meta.phase, system: meta.system, location: meta.location,
         photographer: meta.photographer, notes: meta.notes,
         tags: meta.tags.split(",").map(t => t.trim()).filter(Boolean),
