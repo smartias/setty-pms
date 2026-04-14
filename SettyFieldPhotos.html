@@ -400,7 +400,8 @@ const msalConfig = {
   },
   cache: { cacheLocation: "localStorage" }
 };
-let msalApp = null;   // initialized inside initAuth() to avoid TDZ with MSAL v3
+let msalApp = null;       // initialized inside initAuth() to avoid TDZ with MSAL v3
+let msalReady = null;     // promise — resolved once msalApp is initialized
 
 let currentUser = null;
 let allProjects = [];
@@ -431,6 +432,7 @@ async function initAuth() {
 
 async function signIn() {
   try {
+    await msalReady;   // wait for initAuth to finish before calling loginRedirect
     await msalApp.loginRedirect({ scopes: GRAPH_SCOPES });
   } catch(e) {
     document.getElementById('authError').textContent = e.message;
@@ -438,11 +440,13 @@ async function signIn() {
   }
 }
 
-function signOut() {
+async function signOut() {
+  await msalReady;
   msalApp.logoutRedirect();
 }
 
 async function getToken() {
+  await msalReady;
   const accounts = msalApp.getAllAccounts();
   if (!accounts.length) throw new Error("Not signed in");
   const res = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
@@ -1173,7 +1177,7 @@ function toast(msg, type) {
 }
 
 // ---- Init ----
-initAuth();
+msalReady = initAuth();
 </script>
 </body>
 </html>
