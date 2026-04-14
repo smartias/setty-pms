@@ -901,7 +901,85 @@ async function getOrCreateTeamsOneNoteNotebook(project) {
   return { id: result.id, webUrl };
 }
 
-async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, eventDate) {
+// ── PMS Metadata Schema ────────────────────────────────────────────────────────
+// One metadata object, written at save-time to SharePoint, OneNote, and Outlook.
+// This is the connective tissue that makes the corpus searchable across all stores.
+// All document-write functions accept a `metadata` param built from buildPmsMetadata().
+
+const PMS_DOC_TYPES = {
+  MEETING_MINUTES: "meeting-minutes",
+  SITE_VISIT:      "site-visit",
+  CLIENT_COMM:     "client-communication",
+  RFI:             "rfi",
+  SUBMITTAL:       "submittal",
+  CHANGE_ORDER:    "change-order",
+  INVOICE:         "invoice",
+  CORRESPONDENCE:  "correspondence",
+  SCHEDULE:        "schedule",
+  CONTRACT:        "contract",
+};
+
+function buildPmsMetadata(project, docType, extra = {}) {
+  return {
+    projectNumber: project.projectNumber || "",
+    projectName:   project.name          || "",
+    client:        project.prime || project.clientName || "",
+    docType,
+    date:          extra.date   || new Date().toISOString().slice(0, 10),
+    createdBy:     getCurrentUser(),
+    source:        extra.source || "pms",
+    phase:         extra.phase  || "",
+    tags:          extra.tags   || [],
+    _schema:       "pms-v1",
+  };
+}
+
+// Writes _pms-metadata.json into a SharePoint folder path.
+// No column setup required — Graph Search indexes JSON content natively.
+// Non-fatal: sidecar failure never blocks the primary save.
+async function writeSharePointMetadataSidecar(driveId, folderPath, metadata) {
+  try {
+    const token = await getToken();
+    const path = "/drives/" + driveId + "/root:/" +
+      encodeURIComponent(folderPath) + "/_pms-metadata.json:/content";
+    await fetch("https://graph.microsoft.com/v1.0" + path, {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify(metadata, null, 2),
+    });
+  } catch(e) { console.warn("PMS metadata sidecar:", e.message); }
+}
+
+// Prepend to OneNote page HTML.
+// Hidden comment = machine-readable by AI/search. Badge strip = human-readable.
+function buildOneNoteMetadataHtml(metadata) {
+  const badge = [
+    metadata.projectNumber && `<span style="background:#003865;color:#fff;padding:2px 8px;border-radius:3px;font-size:11px;margin-right:6px">${metadata.projectNumber}</span>`,
+    metadata.docType       && `<span style="background:#e8edf2;color:#003865;padding:2px 8px;border-radius:3px;font-size:11px;margin-right:6px">${metadata.docType}</span>`,
+    metadata.phase         && `<span style="background:#e8edf2;color:#555;padding:2px 8px;border-radius:3px;font-size:11px;margin-right:6px">${metadata.phase}</span>`,
+    metadata.client        && `<span style="background:#e8edf2;color:#555;padding:2px 8px;border-radius:3px;font-size:11px">${metadata.client}</span>`,
+  ].filter(Boolean).join("");
+  return `<!-- pms-metadata:${JSON.stringify(metadata)} -->
+<div style="border-bottom:2px solid #003865;padding-bottom:8px;margin-bottom:16px;font-family:sans-serif">
+  ${badge}
+  <span style="float:right;font-size:10px;color:#999">${metadata.createdBy} · ${metadata.date}</span>
+  <div style="clear:both"></div>
+</div>`;
+}
+
+// Appended to Outlook draft body — small, unobtrusive filing reference.
+function buildEmailMetadataFooter(metadata) {
+  const fields = [
+    metadata.projectNumber && `Project: ${metadata.projectNumber}`,
+    metadata.projectName   && metadata.projectName,
+    metadata.docType       && `Type: ${metadata.docType}`,
+    metadata.phase         && `Phase: ${metadata.phase}`,
+  ].filter(Boolean).join(" · ");
+  if (!fields) return "";
+  return `<div style="margin-top:32px;padding-top:8px;border-top:1px solid #e8e8e8;font-family:sans-serif;font-size:10px;color:#bbb">${fields} · ${metadata.date}</div>`;
+}
+
+async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, eventDate, metadata = null) {
   const baseUrl = `/groups/${TEAMS_TEAM_ID}/onenote`;
   const sectionsResp = await graphFetch("GET", `${baseUrl}/notebooks/${notebookId}/sections`);
   let section = (sectionsResp?.value || []).find(s => s.displayName === sectionName);
@@ -914,7 +992,8 @@ async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, 
   }
   if (!section?.id) throw new Error("Could not find or create OneNote section: " + sectionName);
   const token = await getTokenForScopes(ONENOTE_SCOPES);
-  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${htmlBody}</body></html>`;
+  const metaBlock = metadata ? buildOneNoteMetadataHtml(metadata) : "";
+  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${metaBlock}${htmlBody}</body></html>`;
   const res = await fetch(`https://graph.microsoft.com/v1.0/groups/${TEAMS_TEAM_ID}/onenote/sections/${section.id}/pages`, {
     method: "POST",
     headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
@@ -929,7 +1008,7 @@ async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, 
   return { id: page.id, webUrl };
 }
 
-async function createOneNotePage(notebookId, sectionName, title, htmlBody, eventDate) {
+async function createOneNotePage(notebookId, sectionName, title, htmlBody, eventDate, metadata = null) {
   // Use SharePoint site-scoped endpoint for team-accessible pages
   const { siteId } = await resolveSpIds();
   const baseUrl = `/sites/${siteId}/onenote`;
@@ -947,7 +1026,8 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody, event
   if (!section?.id) throw new Error("Could not find or create OneNote section: " + sectionName);
   // OneNote pages API requires text/html content-type
   const token = await getTokenForScopes(ONENOTE_SCOPES);
-  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${htmlBody}</body></html>`;
+  const metaBlock = metadata ? buildOneNoteMetadataHtml(metadata) : "";
+  const pageHtml = `<!DOCTYPE html><html><head><title>${title}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${metaBlock}${htmlBody}</body></html>`;
   const res = await fetch(`https://graph.microsoft.com/v1.0/sites/${siteId}/onenote/sections/${section.id}/pages`, {
     method: "POST",
     headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
@@ -1253,7 +1333,7 @@ async function teamsNotify(oldProject, updated) {
 }
 
 // ── Save email + attachments to SharePoint /Emails subfolder ──────────────────
-async function saveEmailToSharePoint(email, project, liveBodyHtml) {
+async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = null) {
   const folderUrl = project.projectFolderUrl;
   if (!folderUrl) throw new Error("No SharePoint project folder. Create one on the Overview tab first.");
   const { driveId } = await resolveSpIds();
@@ -1285,6 +1365,8 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml) {
   const emailsFolder = await ensureFolder(projectFolderName, "Emails");
   await ensureFolder(emailsFolder, emailFolderName);
   const targetPath = emailsFolder + "/" + emailFolderName;
+
+  if (metadata) await writeSharePointMetadataSidecar(driveId, targetPath, metadata);
 
   const token = await getToken();
 
@@ -1339,11 +1421,13 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml) {
 }
 
 
-async function createOutlookDraft({ subject, bodyHtml, bodyText }) {
+async function createOutlookDraft({ subject, bodyHtml, bodyText, metadata = null }) {
   const token = await getToken();
+  const footer = metadata ? buildEmailMetadataFooter(metadata) : "";
+  const content = (bodyHtml || bodyText || "") + footer;
   const body = {
     subject,
-    body: { contentType: "HTML", content: bodyHtml || bodyText || "" },
+    body: { contentType: "HTML", content },
     toRecipients: [],
   };
   const res = await fetch("https://graph.microsoft.com/v1.0/me/messages", {
@@ -4504,6 +4588,226 @@ function MiniRichEditor({ value, onChange, placeholder }) {
 }
 
 
+// ─── LINKAGE SYSTEM ───────────────────────────────────────────────────────────
+// Layer 2: connects documents across systems with lightweight pointers.
+// Each entity (RFI, Submittal, CO, Milestone, Note, Email) carries a `links:[]`.
+// Back-links computed at render time — no sync overhead, no duplicate storage.
+
+// Taxonomy validated for AEC use — language matches how PMs describe project relationships.
+// Sentence test: "This [item] [label] [target]" should sound natural.
+// Grouped by how project teams think: context / action+decision / impact+origin.
+const LINK_TYPES = [
+  // Context
+  { value: "references",      label: "References",      group: "Context",            color: "#64748b", prompt: "What is this item pointing to for context?" },
+  { value: "documents",       label: "Documents",       group: "Context",            color: "#10b981", prompt: "What condition, observation, or discussion does this capture?" },
+  // Action / Decision
+  { value: "responds-to",     label: "Responds To",     group: "Action / Decision",  color: "#3b82f6", prompt: "What are you replying or responding to?" },
+  { value: "resolves",        label: "Resolves",        group: "Action / Decision",  color: "#06b6d4", prompt: "Which open issue does this close out?" },
+  { value: "supersedes",      label: "Supersedes",      group: "Action / Decision",  color: "#ef4444", prompt: "What prior item no longer controls?" },
+  // Impact / Origin
+  { value: "originates-from", label: "Originates From", group: "Impact / Origin",    color: "#d97706", prompt: "What triggered or caused this item?" },
+  { value: "affects",         label: "Affects",         group: "Impact / Origin",    color: "#8b5cf6", prompt: "What does this impact — cost, schedule, or scope?" },
+];
+
+const PMS_TARGET_TYPES = [
+  { value: "rfi",       label: "RFI",           listKey: "rfis",         labelFn: e => e.number + (e.title       ? ": " + e.title       : "") },
+  { value: "submittal", label: "Submittal",      listKey: "submittals",   labelFn: e => e.number + (e.description ? ": " + e.description : "") },
+  { value: "co",        label: "Change Order",   listKey: "changeOrders", labelFn: e => e.number + (e.name        ? " – " + e.name        : "") },
+  { value: "milestone", label: "Milestone",      listKey: "milestones",   labelFn: e => e.name || e.id },
+  { value: "note",      label: "Note / Meeting", listKey: "notes",        labelFn: e => (e.category || "Note") + " – " + (e.createdAt || "").slice(0, 10) },
+  { value: "email",     label: "Email",          listKey: "emails",       labelFn: e => e.subject || "(no subject)", idKey: "msgId" },
+];
+
+function resolvePmsLabel(project, targetType, targetId) {
+  const def = PMS_TARGET_TYPES.find(t => t.value === targetType);
+  if (!def) return targetId;
+  const idKey = def.idKey || "id";
+  const entity = (project[def.listKey] || []).find(e => e[idKey] === targetId);
+  return entity ? def.labelFn(entity) : targetId;
+}
+
+// Scans all project entities for links pointing at a given entity.
+// Returns back-links so any entity can show what references it — zero extra storage.
+function findBackLinks(project, selfType, selfId) {
+  const sources = [
+    ...((project.rfis         || []).map(e => ({ e, type: "rfi",       labelFn: x => x.number + (x.title       ? ": " + x.title       : "") }))),
+    ...((project.submittals   || []).map(e => ({ e, type: "submittal", labelFn: x => x.number + (x.description ? ": " + x.description : "") }))),
+    ...((project.changeOrders || []).map(e => ({ e, type: "co",        labelFn: x => x.number + (x.name        ? " – " + x.name        : "") }))),
+    ...((project.milestones   || []).map(e => ({ e, type: "milestone", labelFn: x => x.name || x.id }))),
+    ...((project.notes        || []).map(e => ({ e, type: "note",      labelFn: x => (x.category || "Note") + " – " + (x.createdAt || "").slice(0, 10) }))),
+  ];
+  return sources.flatMap(({ e, type, labelFn }) =>
+    (e.links || [])
+      .filter(lk => lk.targetSystem === "pms" && lk.targetType === selfType && lk.targetId === selfId)
+      .map(lk => ({ ...lk, _backFrom: type, _backLabel: labelFn(e) }))
+  );
+}
+
+function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId }) {
+  const [open, setOpen] = React.useState(false);
+  const backLinks = selfType && selfId ? findBackLinks(project, selfType, selfId) : [];
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          Linked Items
+        </span>
+        <button onClick={() => setOpen(true)} style={{
+          fontSize: 11, padding: "1px 8px", borderRadius: 4,
+          border: "1px solid " + P.border, background: "transparent",
+          color: P.accentLight, cursor: "pointer", fontWeight: 600,
+        }}>+ Link</button>
+      </div>
+
+      {links.length === 0 && backLinks.length === 0 && (
+        <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>No linked items.</div>
+      )}
+
+      {links.map(lk => {
+        const typeDef = LINK_TYPES.find(t => t.value === lk.linkType) || { label: lk.linkType, color: "#888" };
+        const label = lk.targetSystem === "pms"
+          ? resolvePmsLabel(project, lk.targetType, lk.targetId)
+          : (lk.targetLabel || lk.targetUrl);
+        return (
+          <div key={lk.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, padding: "4px 8px", borderRadius: 5, background: P.card }}>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: typeDef.color + "22", color: typeDef.color, whiteSpace: "nowrap" }}>
+              {typeDef.label}
+            </span>
+            {lk.targetUrl
+              ? <a href={lk.targetUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: P.accentLight, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</a>
+              : <span style={{ fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: P.text }}>{label}</span>
+            }
+            <button onClick={() => onRemove(lk.id)} title="Remove link" style={{ background: "none", border: "none", cursor: "pointer", color: P.textDim, fontSize: 14, padding: "0 2px", lineHeight: 1 }}>×</button>
+          </div>
+        );
+      })}
+
+      {backLinks.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontSize: 10, color: P.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Referenced By</div>
+          {backLinks.map((lk, i) => {
+            const typeDef = LINK_TYPES.find(t => t.value === lk.linkType) || { label: lk.linkType, color: "#888" };
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, padding: "4px 8px", borderRadius: 5, background: P.card, opacity: 0.75 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: typeDef.color + "22", color: typeDef.color, whiteSpace: "nowrap" }}>
+                  ← {typeDef.label}
+                </span>
+                <span style={{ fontSize: 12, flex: 1, color: P.textMuted }}>{lk._backLabel}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {open && (
+        <AddLinkModal project={project} onAdd={lk => { onAdd(lk); setOpen(false); }} onClose={() => setOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+function AddLinkModal({ project, onAdd, onClose }) {
+  const [linkType,     setLinkType]     = React.useState("references");
+  const [targetSystem, setTargetSystem] = React.useState("pms");
+  const [targetType,   setTargetType]   = React.useState("rfi");
+  const [targetId,     setTargetId]     = React.useState("");
+  const [targetUrl,    setTargetUrl]    = React.useState("");
+  const [targetLabel,  setTargetLabel]  = React.useState("");
+
+  const pmsTypeDef  = PMS_TARGET_TYPES.find(t => t.value === targetType);
+  const pmsEntities = pmsTypeDef ? (project[pmsTypeDef.listKey] || []) : [];
+  const idKey       = pmsTypeDef?.idKey || "id";
+  const canAdd      = targetSystem === "pms" ? !!targetId : !!targetUrl;
+
+  function handleAdd() {
+    if (!canAdd) return;
+    const label = targetSystem === "pms"
+      ? resolvePmsLabel(project, targetType, targetId)
+      : (targetLabel || targetUrl);
+    onAdd({
+      id: uid(), linkType,
+      targetSystem,
+      targetType:  targetSystem === "pms" ? targetType : (targetType || "file"),
+      targetId:    targetSystem === "pms" ? targetId   : "",
+      targetUrl:   targetSystem === "pms" ? ""         : targetUrl,
+      targetLabel: label,
+      createdAt:   new Date().toISOString(),
+      createdBy:   getCurrentUser(),
+    });
+  }
+
+  const overlay  = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 9100, display: "flex", alignItems: "center", justifyContent: "center" };
+  const box      = { background: P.card, border: "1px solid " + P.border, borderRadius: 10, padding: 24, width: 420, maxWidth: "90vw", boxShadow: "0 12px 40px rgba(0,0,0,0.4)" };
+  const lbl      = { fontSize: 11, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 4, marginTop: 12 };
+  const sel      = { width: "100%", padding: "6px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.bg, color: P.text, fontSize: 13 };
+
+  return (
+    <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={box}>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: P.text }}>Add Link</div>
+        <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>Connect this item to another document, entity, or file.</div>
+
+        <label style={lbl}>Relationship</label>
+        <select value={linkType} onChange={e => setLinkType(e.target.value)} style={sel}>
+          {["Context", "Action / Decision", "Impact / Origin"].map(group => (
+            <optgroup key={group} label={group}>
+              {LINK_TYPES.filter(t => t.group === group).map(t =>
+                <option key={t.value} value={t.value}>{t.label}</option>
+              )}
+            </optgroup>
+          ))}
+        </select>
+        {(() => {
+          const prompt = LINK_TYPES.find(t => t.value === linkType)?.prompt;
+          return prompt ? (
+            <div style={{ fontSize: 11, color: P.accentLight, marginTop: 4, marginBottom: 2, fontStyle: "italic" }}>
+              → {prompt}
+            </div>
+          ) : null;
+        })()}
+
+        <label style={lbl}>Link To</label>
+        <select value={targetSystem} onChange={e => { setTargetSystem(e.target.value); setTargetId(""); setTargetUrl(""); setTargetLabel(""); }} style={sel}>
+          <option value="pms">PMS Entity (RFI, CO, Milestone…)</option>
+          <option value="sharepoint">SharePoint File / Folder</option>
+          <option value="onenote">OneNote Page</option>
+          <option value="outlook">Email Thread</option>
+          <option value="external">External URL</option>
+        </select>
+
+        {targetSystem === "pms" && (<>
+          <label style={lbl}>Entity Type</label>
+          <select value={targetType} onChange={e => { setTargetType(e.target.value); setTargetId(""); }} style={sel}>
+            {PMS_TARGET_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+          <label style={lbl}>Select {pmsTypeDef?.label}</label>
+          <select value={targetId} onChange={e => setTargetId(e.target.value)} style={sel}>
+            <option value="">— choose —</option>
+            {pmsEntities.map(e => <option key={e[idKey]} value={e[idKey]}>{pmsTypeDef.labelFn(e)}</option>)}
+          </select>
+        </>)}
+
+        {targetSystem !== "pms" && (<>
+          <label style={lbl}>URL</label>
+          <input value={targetUrl} onChange={e => setTargetUrl(e.target.value)}
+            placeholder="Paste SharePoint / OneNote / email URL"
+            style={{ ...sel, fontFamily: "monospace", fontSize: 11 }} />
+          <label style={lbl}>Label</label>
+          <input value={targetLabel} onChange={e => setTargetLabel(e.target.value)}
+            placeholder="e.g., Drawing A-101 Rev 2 · Sheet Facade Detail"
+            style={sel} />
+        </>)}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={handleAdd} disabled={!canAdd}>Add Link</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── RFI & SUBMITTAL CONSTANTS ────────────────────────────────────────────────
 
 const RFI_STATUSES    = ["Open", "Pending Sub Response", "Responded", "Closed", "Void"];
@@ -4562,7 +4866,7 @@ function newRFI(cos, dueDays) {
     dateReceived: today, dueDate: addWD(today, dueDays || 5),
     dateResponded: "", response: "",
     status: "Open", notes: "",
-    spFolderUrl: "",
+    spFolderUrl: "", links: [],
   };
 }
 
@@ -4576,7 +4880,7 @@ function newSubmittal(subs, dueDays) {
     dateReceived: today, dueDate: addWD(today, dueDays || 10),
     dateReturned: "", comments: "",
     status: "Received", stamp: "—", resubNumber: 0,
-    notes: "", spFolderUrl: "",
+    notes: "", spFolderUrl: "", links: [],
     registerItemId: "",
   };
 }
@@ -4857,6 +5161,18 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
               )}
             </div>
           </Field>
+        </div>
+
+        {/* Linked items */}
+        <div style={{ gridColumn: "1 / -1" }}>
+          <LinkManager
+            links={form.links || []}
+            onAdd={lk => setF("links", [...(form.links || []), lk])}
+            onRemove={id => setF("links", (form.links || []).filter(l => l.id !== id))}
+            project={project}
+            selfType={isRFI ? "rfi" : "submittal"}
+            selfId={form.id}
+          />
         </div>
 
         {/* Action buttons */}
@@ -5244,7 +5560,7 @@ function ChangeOrdersView({ project, onChange }) {
         fee: 0,  // derived: sum of milestones
         milestones: [{ id: uid(), name: "", fee: 0, dueDate: new Date().toISOString().slice(0, 10) }],
         sentToClient: false, approved: false,
-        date: new Date().toISOString().slice(0, 10), notes: "",
+        date: new Date().toISOString().slice(0, 10), notes: "", links: [],
       }],
     });
   }
@@ -5519,6 +5835,14 @@ function ChangeOrdersView({ project, onChange }) {
                           value={co.scope || ""}
                           onChange={html => updateCO(co.id, { scope: html })}
                           placeholder="Describe the scope of this change order…"
+                        />
+                        <LinkManager
+                          links={co.links || []}
+                          onAdd={lk => updateCO(co.id, { links: [...(co.links || []), lk] })}
+                          onRemove={id => updateCO(co.id, { links: (co.links || []).filter(l => l.id !== id) })}
+                          project={project}
+                          selfType="co"
+                          selfId={co.id}
                         />
                       </div>
                     </td>
@@ -9221,7 +9545,7 @@ function EmailsView({ project, onChange }) {
         const data = await graphFetch("GET", "/me/messages/" + email.msgId + "?$select=body", undefined, token);
         bodyHtml = data?.body?.content || "";
       } catch(e) { /* fallback to stored text */ }
-      const { folderName, attachCount, folderWebUrl } = await saveEmailToSharePoint(email, project, bodyHtml);
+      const { folderName, attachCount, folderWebUrl } = await saveEmailToSharePoint(email, project, bodyHtml, buildPmsMetadata(project, PMS_DOC_TYPES.CORRESPONDENCE));
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
       // Persist the SP folder URL on the email record so it survives page refresh
@@ -9667,9 +9991,11 @@ function CalendarImportPanel({ project, onImport }) {
             + "<tr><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td></tr>"
             + "</table>";
           const sectionName = cat === "Site Visit" ? "Site Visits" : cat === "Client Communication" ? "Client Communications" : "Meetings";
+          const docType = cat === "Site Visit" ? PMS_DOC_TYPES.SITE_VISIT : cat === "Client Communication" ? PMS_DOC_TYPES.CLIENT_COMM : PMS_DOC_TYPES.MEETING_MINUTES;
+          const noteMeta = buildPmsMetadata(project, docType, { date: (dt || "").slice(0, 10) || undefined });
           const page = useTeamsNB
-            ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, dt || "")
-            : await createOneNotePage(notebookId, sectionName, title, pageHtml, dt || "");
+            ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, dt || "", noteMeta)
+            : await createOneNotePage(notebookId, sectionName, title, pageHtml, dt || "", noteMeta);
           oneNoteUrl = page.webUrl || "";
         } catch(e) {
           // Non-fatal — log the note without the OneNote link
@@ -9849,9 +10175,11 @@ function NotesView({ project, onChange }) {
         const pageHtml = "<h1>" + title + "</h1>"
           + "<h2>Notes</h2><p>" + entry.body.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/\n/g, "</p><p>") + "</p>"
           + "<h2>Action Items</h2><p>&nbsp;</p>";
+        const noteDocType = draft.category === "Site Visit" ? PMS_DOC_TYPES.SITE_VISIT : draft.category === "Client Communication" ? PMS_DOC_TYPES.CLIENT_COMM : PMS_DOC_TYPES.MEETING_MINUTES;
+        const noteMeta = buildPmsMetadata(project, noteDocType, { date: draft.visitDate || undefined });
         const page = useTeamsNB
-          ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, "")
-          : await createOneNotePage(notebookId, sectionName, title, pageHtml, "");
+          ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, "", noteMeta)
+          : await createOneNotePage(notebookId, sectionName, title, pageHtml, "", noteMeta);
         if (page?.webUrl) {
           onChange({ ...project, notes: newNotes.map(n => n.id === entryId ? { ...n, oneNoteUrl: page.webUrl } : n) });
         }
