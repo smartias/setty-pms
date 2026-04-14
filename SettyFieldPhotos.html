@@ -400,7 +400,7 @@ const msalConfig = {
   },
   cache: { cacheLocation: "localStorage" }
 };
-const msalApp = new msal.PublicClientApplication(msalConfig);
+let msalApp = null;   // initialized inside initAuth() to avoid TDZ with MSAL v3
 
 let currentUser = null;
 let allProjects = [];
@@ -416,6 +416,7 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 // ---- Auth ----
 async function initAuth() {
   try {
+    msalApp = new msal.PublicClientApplication(msalConfig);
     await msalApp.initialize();
     await msalApp.handleRedirectPromise();
     const accounts = msalApp.getAllAccounts();
