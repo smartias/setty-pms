@@ -917,6 +917,7 @@ const PMS_DOC_TYPES = {
   CORRESPONDENCE:  "correspondence",
   SCHEDULE:        "schedule",
   CONTRACT:        "contract",
+  SITE_PHOTO:      "site-photo",
 };
 
 function buildPmsMetadata(project, docType, extra = {}) {
@@ -9206,9 +9207,380 @@ function IntelligenceView({ project }) {
   );
 }
 
+// ─── PHOTOS ───────────────────────────────────────────────────────────────────
+
+function PhotosView({ project }) {
+  const PHASES  = ["Existing Conditions","Demo / Abatement","Rough-In","Construction Progress","Commissioning","Substantial Completion","Punch List","Final / Completed"];
+  const SYSTEMS = ["General","Mechanical / HVAC","Electrical","Plumbing","Fire Protection","MEP Combined","Exterior / Envelope","Structural","Architectural","Site / Civil","Coordination"];
+
+  const [subTab,    setSubTab]    = React.useState("upload");
+  const [files,     setFiles]     = React.useState([]);   // { id, file, preview }
+  const [dragging,  setDragging]  = React.useState(false);
+  const [meta,      setMeta]      = React.useState({
+    date: new Date().toISOString().slice(0,10), phase: "", system: "",
+    location: "", photographer: "", notes: "", tags: "",
+  });
+  const [quality,   setQuality]   = React.useState(80);
+  const [maxWidth,  setMaxWidth]  = React.useState(2000);
+  const [uploading, setUploading] = React.useState(false);
+  const [progress,  setProgress]  = React.useState({ done: 0, total: 0, label: "" });
+  const [uploadMsg, setUploadMsg] = React.useState(null);
+
+  // Gallery
+  const [groups,    setGroups]    = React.useState(null);  // null = not yet loaded
+  const [expanded,  setExpanded]  = React.useState({});   // { folderId: [items] | "loading" }
+  const [galleryErr,setGalleryErr]= React.useState("");
+
+  function getProjFolderName() {
+    if (!project.projectFolderUrl) return null;
+    const parts = project.projectFolderUrl.split("/");
+    return decodeURIComponent(parts[parts.length - 1]);
+  }
+
+  async function ensureSpSubfolder(driveId, parent, name) {
+    try {
+      await graphFetch("POST", `/drives/${driveId}/root:/${encodeURIComponent(parent)}:/children`,
+        { name, folder: {}, "@microsoft.graph.conflictBehavior": "replace" });
+    } catch(e) {}
+    return parent + "/" + name;
+  }
+
+  function compressImage(file, q, mw) {
+    return new Promise(resolve => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (mw > 0 && w > mw) { h = Math.round(h * mw / w); w = mw; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(blob => resolve(blob), "image/jpeg", q / 100);
+      };
+      img.src = url;
+    });
+  }
+
+  function addFiles(fileList) {
+    const incoming = Array.from(fileList)
+      .filter(f => f.type.startsWith("image/"))
+      .map(f => ({ id: Math.random().toString(36).slice(2), file: f, preview: URL.createObjectURL(f) }));
+    setFiles(prev => [...prev, ...incoming]);
+  }
+
+  function removeFile(id) {
+    setFiles(prev => {
+      const f = prev.find(x => x.id === id);
+      if (f) URL.revokeObjectURL(f.preview);
+      return prev.filter(x => x.id !== id);
+    });
+  }
+
+  async function handleUpload() {
+    const projFolderName = getProjFolderName();
+    if (!projFolderName) { setUploadMsg({ ok: false, text: "No SharePoint folder — create one on the Overview tab first." }); return; }
+    if (!files.length) return;
+
+    setUploading(true); setUploadMsg(null);
+    setProgress({ done: 0, total: files.length, label: "Preparing…" });
+
+    try {
+      const { driveId } = await resolveSpIds();
+      const datePart  = meta.date || new Date().toISOString().slice(0,10);
+      const phasePart = meta.phase ? " - " + meta.phase : "";
+      const subfolderName = (datePart + phasePart).replace(/[/:*?"<>|]/g, "-").trim();
+
+      const photosRoot   = await ensureSpSubfolder(driveId, projFolderName, "Photos");
+      const targetFolder = await ensureSpSubfolder(driveId, photosRoot, subfolderName);
+      const encodedFolder = targetFolder.split("/").map(encodeURIComponent).join("/");
+
+      let done = 0;
+      for (const item of files) {
+        setProgress({ done, total: files.length, label: `Uploading ${item.file.name}…` });
+        const blob  = await compressImage(item.file, quality, maxWidth);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const safeName = item.file.name.replace(/[/:*?"<>|]/g, "-");
+        await graphFetch("PUT", `/drives/${driveId}/root:/${encodedFolder}/${encodeURIComponent(safeName)}:/content`, bytes);
+        done++;
+        setProgress({ done, total: files.length, label: `Uploaded ${done} / ${files.length}` });
+      }
+
+      await writeSharePointMetadataSidecar(driveId, targetFolder, buildPmsMetadata(project, PMS_DOC_TYPES.SITE_PHOTO, {
+        phase: meta.phase, system: meta.system, location: meta.location,
+        photographer: meta.photographer, notes: meta.notes,
+        tags: meta.tags.split(",").map(t => t.trim()).filter(Boolean),
+        photoCount: files.length,
+      }));
+
+      setUploadMsg({ ok: true, text: `✓ ${files.length} photo${files.length !== 1 ? "s" : ""} saved to Photos / ${subfolderName}` });
+      files.forEach(f => URL.revokeObjectURL(f.preview));
+      setFiles([]);
+      setGroups(null); // reset gallery so it reloads fresh
+    } catch(e) {
+      setUploadMsg({ ok: false, text: "Upload failed: " + e.message });
+    } finally {
+      setUploading(false);
+      setProgress({ done: 0, total: 0, label: "" });
+    }
+  }
+
+  async function loadGallery() {
+    const projFolderName = getProjFolderName();
+    if (!projFolderName) { setGroups([]); return; }
+    setGalleryErr("");
+    try {
+      const { driveId } = await resolveSpIds();
+      const enc = encodeURIComponent(projFolderName);
+      const res = await graphFetch("GET", `/drives/${driveId}/root:/${enc}/Photos:/children?$top=100&$orderby=name desc`);
+      setGroups((res?.value || []).filter(i => i.folder));
+    } catch(e) {
+      if (!e.message || e.message.includes("404")) { setGroups([]); }
+      else { setGalleryErr(e.message); setGroups([]); }
+    }
+  }
+
+  async function loadGroupItems(folder) {
+    setExpanded(prev => ({ ...prev, [folder.id]: "loading" }));
+    try {
+      const { driveId } = await resolveSpIds();
+      const res = await graphFetch("GET", `/drives/${driveId}/items/${folder.id}/children?$top=200`);
+      const items = (res?.value || []).filter(i => i.file && /\.(jpg|jpeg|png|webp|heic)$/i.test(i.name));
+      setExpanded(prev => ({ ...prev, [folder.id]: items }));
+    } catch(e) {
+      setExpanded(prev => ({ ...prev, [folder.id]: [] }));
+    }
+  }
+
+  React.useEffect(() => {
+    if (subTab === "gallery" && groups === null) loadGallery();
+  }, [subTab]);
+
+  const inputStyle = { padding: "7px 10px", border: "1px solid " + P.border, borderRadius: 4, background: P.card, color: P.text, fontSize: 13, width: "100%" };
+
+  return (
+    <div>
+      {/* Sub-tab bar */}
+      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "1px solid " + P.border }}>
+        {[["upload","Upload & Tag"],["gallery","Gallery"]].map(([key, label]) => (
+          <button key={key} onClick={() => setSubTab(key)} style={{
+            padding: "8px 20px", border: "none", background: "none", cursor: "pointer", fontSize: 13,
+            fontWeight: subTab === key ? 600 : 400,
+            color: subTab === key ? P.accentLight : P.textDim,
+            borderBottom: subTab === key ? "2px solid " + P.accent : "2px solid transparent",
+            marginBottom: -1,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {/* ── UPLOAD TAB ── */}
+      {subTab === "upload" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Drop zone */}
+          <div
+            onDragOver={e => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={e => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}
+            onClick={() => document.getElementById("pms-photo-input").click()}
+            style={{
+              border: "2px dashed " + (dragging ? P.accent : P.border), borderRadius: 8,
+              padding: "36px 20px", textAlign: "center", cursor: "pointer",
+              background: dragging ? P.accentDim : P.bg, transition: "all 0.15s",
+            }}
+          >
+            <input id="pms-photo-input" type="file" accept="image/*" multiple style={{ display: "none" }}
+              onChange={e => { addFiles(e.target.files); e.target.value = ""; }} />
+            <div style={{ fontSize: 36, marginBottom: 8, opacity: 0.4 }}>📷</div>
+            <div style={{ color: P.text, fontSize: 14, marginBottom: 4 }}>Click to browse or drag photos here</div>
+            <div style={{ color: P.textDim, fontSize: 12 }}>JPG, PNG, WEBP — compression happens locally, nothing sent to an external server</div>
+          </div>
+
+          {/* Preview thumbnails */}
+          {files.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10 }}>
+              {files.map(f => (
+                <div key={f.id} style={{ position: "relative", aspectRatio: "1", borderRadius: 6, overflow: "hidden", border: "1px solid " + P.border }}>
+                  <img src={f.preview} alt={f.file.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 9, padding: "3px 6px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {f.file.name}
+                  </div>
+                  <button onClick={e => { e.stopPropagation(); removeFile(f.id); }} style={{
+                    position: "absolute", top: 4, right: 4, width: 20, height: 20, borderRadius: "50%",
+                    background: "rgba(200,0,0,0.85)", border: "none", color: "#fff", fontSize: 11,
+                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Metadata */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+            {[
+              { label: "Date Taken",      key: "date",         type: "date" },
+              { label: "Photographer",    key: "photographer", type: "text", placeholder: "e.g. Sara Arias" },
+              { label: "Location / Floor",key: "location",     type: "text", placeholder: "e.g. Penthouse, 4th Floor" },
+            ].map(({ label, key, type, placeholder }) => (
+              <label key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</span>
+                <input type={type} value={meta[key]} placeholder={placeholder || ""}
+                  onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))} style={inputStyle} />
+              </label>
+            ))}
+            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Phase</span>
+              <select value={meta.phase} onChange={e => setMeta(m => ({ ...m, phase: e.target.value }))} style={inputStyle}>
+                <option value="">— Select —</option>
+                {PHASES.map(p => <option key={p}>{p}</option>)}
+              </select>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>System Type</span>
+              <select value={meta.system} onChange={e => setMeta(m => ({ ...m, system: e.target.value }))} style={inputStyle}>
+                <option value="">— Select —</option>
+                {SYSTEMS.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Tags</span>
+              <input type="text" value={meta.tags} placeholder="coordination issue, exposed MEP, rooftop"
+                onChange={e => setMeta(m => ({ ...m, tags: e.target.value }))} style={inputStyle} />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 5, gridColumn: "1 / -1" }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Notes</span>
+              <textarea value={meta.notes} rows={3}
+                placeholder="Describe what's shown — field observations, coordination issues, conditions found…"
+                onChange={e => setMeta(m => ({ ...m, notes: e.target.value }))}
+                style={{ ...inputStyle, resize: "vertical" }} />
+            </label>
+          </div>
+
+          {/* Compression options */}
+          <div style={{ display: "flex", gap: 28, alignItems: "center", flexWrap: "wrap", padding: "12px 16px", background: P.card, borderRadius: 6, border: "1px solid " + P.border }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>JPEG Quality</span>
+              <input type="range" min={40} max={95} value={quality} onChange={e => setQuality(+e.target.value)}
+                style={{ width: 120, accentColor: P.accent }} />
+              <span style={{ fontWeight: 700, color: P.accentLight, minWidth: 28, fontSize: 14 }}>{quality}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Max Width</span>
+              <select value={maxWidth} onChange={e => setMaxWidth(+e.target.value)}
+                style={{ padding: "6px 10px", border: "1px solid " + P.border, borderRadius: 4, background: P.bg, color: P.text, fontSize: 13 }}>
+                <option value={0}>No resize</option>
+                <option value={2000}>2000 px</option>
+                <option value={1600}>1600 px</option>
+                <option value={1200}>1200 px</option>
+                <option value={800}>800 px</option>
+              </select>
+            </div>
+            <span style={{ fontSize: 12, color: P.textDim }}>All processing is local — nothing sent to an external server.</span>
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={handleUpload} disabled={uploading || !files.length} style={{
+              padding: "9px 22px", background: P.accent, color: "#fff", border: "none", borderRadius: 6,
+              fontWeight: 600, fontSize: 13, cursor: files.length && !uploading ? "pointer" : "not-allowed",
+              opacity: uploading || !files.length ? 0.5 : 1,
+            }}>
+              {uploading ? "Uploading…" : `Compress & Upload${files.length ? " (" + files.length + ")" : ""}`}
+            </button>
+            {files.length > 0 && !uploading && (
+              <button onClick={() => { files.forEach(f => URL.revokeObjectURL(f.preview)); setFiles([]); }}
+                style={{ padding: "9px 18px", background: "transparent", border: "1px solid " + P.border, borderRadius: 6, fontSize: 13, cursor: "pointer", color: P.text }}>
+                Clear
+              </button>
+            )}
+            {uploadMsg && (
+              <span style={{ fontSize: 12, color: uploadMsg.ok ? P.green : P.red }}>{uploadMsg.text}</span>
+            )}
+          </div>
+
+          {uploading && (
+            <div>
+              <div style={{ height: 6, background: P.border, borderRadius: 3, overflow: "hidden" }}>
+                <div style={{ height: "100%", background: P.accent, borderRadius: 3, transition: "width 0.2s",
+                  width: progress.total ? (progress.done / progress.total * 100) + "%" : "0%" }} />
+              </div>
+              <div style={{ fontSize: 12, color: P.textDim, marginTop: 5 }}>{progress.label}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── GALLERY TAB ── */}
+      {subTab === "gallery" && (
+        <div>
+          {groups === null && <div style={{ textAlign: "center", padding: 48, color: P.textDim }}>Loading gallery…</div>}
+          {galleryErr && <div style={{ color: P.red, fontSize: 13, marginBottom: 12 }}>Error: {galleryErr}</div>}
+          {groups !== null && groups.length === 0 && !galleryErr && (
+            <div style={{ textAlign: "center", padding: 56, color: P.textDim }}>
+              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>📷</div>
+              <div>No photos uploaded yet. Use Upload &amp; Tag to add photos.</div>
+            </div>
+          )}
+          {groups !== null && groups.map(folder => {
+            const groupItems = expanded[folder.id];
+            const isOpen = groupItems !== undefined;
+            return (
+              <div key={folder.id} style={{ marginBottom: 14, border: "1px solid " + P.border, borderRadius: 8, overflow: "hidden" }}>
+                <div
+                  onClick={() => isOpen
+                    ? setExpanded(prev => { const n = {...prev}; delete n[folder.id]; return n; })
+                    : loadGroupItems(folder)
+                  }
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", background: P.card, userSelect: "none" }}
+                >
+                  <span style={{ color: P.textDim }}>{isOpen ? "▾" : "▸"}</span>
+                  <span style={{ fontWeight: 600, fontSize: 13, color: P.text }}>📁 {folder.name}</span>
+                  <span style={{ fontSize: 12, color: P.textDim, marginLeft: "auto" }}>
+                    {folder.folder?.childCount ?? "?"} items
+                  </span>
+                </div>
+                {isOpen && (
+                  <div style={{ padding: 16, borderTop: "1px solid " + P.border, background: P.bg }}>
+                    {groupItems === "loading" && <div style={{ color: P.textDim, fontSize: 13 }}>Loading…</div>}
+                    {Array.isArray(groupItems) && groupItems.length === 0 && (
+                      <div style={{ color: P.textDim, fontSize: 13 }}>No image files found in this folder.</div>
+                    )}
+                    {Array.isArray(groupItems) && groupItems.length > 0 && (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
+                        {groupItems.map(item => (
+                          <a key={item.id} href={item["@microsoft.graph.downloadUrl"]} target="_blank" rel="noopener noreferrer"
+                            style={{ display: "block", borderRadius: 6, overflow: "hidden", border: "1px solid " + P.border, textDecoration: "none" }}>
+                            <div style={{ aspectRatio: "1", overflow: "hidden", background: P.card }}>
+                              <img src={item["@microsoft.graph.downloadUrl"]} alt={item.name}
+                                style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                                onError={e => { e.target.style.display = "none"; }} />
+                            </div>
+                            <div style={{ padding: "4px 8px", fontSize: 10, color: P.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {item.name}
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {groups !== null && groups.length > 0 && (
+            <button onClick={() => { setGroups(null); setExpanded({}); loadGallery(); }}
+              style={{ marginTop: 4, padding: "7px 16px", background: "transparent", border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, cursor: "pointer", color: P.textDim }}>
+              Refresh
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Intelligence"];
+const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Intelligence", "Photos"];
 
 function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
@@ -9482,6 +9854,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
         {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
         {tab === "Intelligence" && <IntelligenceView project={project} />}
+        {tab === "Photos" && <PhotosView project={project} />}
       </Card>
     </div>
   );
