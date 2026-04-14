@@ -18,7 +18,7 @@
     input[type=number]::-webkit-inner-spin-button,
     input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
     input[type=number]{-moz-appearance:textfield}
-    mark{background:#854d0e;color:#fef08a;border-radius:2px;padding:0 2px;font-style:normal}
+    mark{background:#f59e0b;color:#1a1000;border-radius:3px;padding:1px 4px;font-style:normal;font-weight:600}
   </style>
 </head>
 <body>
@@ -9130,11 +9130,12 @@ function IntelligenceView({ project }) {
       const baseQ = baseTerms.join(" AND ");
 
       // File query — scopes SharePoint search to the project folder using KQL path: filter.
-      // path: already implies AND, so no project number needed — folder URL is the scope.
+      // Use plain space (not AND) between keyword terms — path: handles the project scoping,
+      // and plain-space queries produce reliable <c0> highlight snippets from Graph.
       let fileQ = baseQ;
       if (scopeToProject && project.projectFolderUrl) {
         const folderUrl = decodeURIComponent(project.projectFolderUrl).replace(/\/$/, "");
-        const terms = [docType, kwQ].filter(Boolean).join(" AND ");
+        const terms = [docType, kwQ].filter(Boolean).join(" ");
         fileQ = terms ? `${terms} path:"${folderUrl}"` : `path:"${folderUrl}"`;
       }
 
@@ -9219,12 +9220,8 @@ function IntelligenceView({ project }) {
             const pathParts = (hit.path || "").split("/").filter(Boolean);
             const shortPath = pathParts.slice(-3).join(" › ");
 
-            // For photo batches replace raw JSON summary with readable metadata line
-            const summaryHtml = hit.source === "photos"
-              ? null
-              : hit.summary
-                ? (hit.summary.length > 380 ? hit.summary.slice(0, 380) + "…" : hit.summary)
-                : null;
+            // For photo batches don't show the raw JSON; all other sources show full Graph snippet
+            const summaryHtml = hit.source === "photos" ? null : (hit.summary || null);
 
             return (
               <div key={hit.id} style={{
@@ -9269,10 +9266,11 @@ function IntelligenceView({ project }) {
                     )}
                   </div>
 
-                  {/* Summary */}
+                  {/* Summary — full Graph snippet, no truncation */}
                   {summaryHtml && (
-                    <div style={{ fontSize: 13, color: P.textMuted, lineHeight: 1.6,
-                      borderLeft: "2px solid " + sm.color + "50", paddingLeft: 10, marginBottom: 4 }}
+                    <div style={{ fontSize: 13.5, color: P.text, lineHeight: 1.7,
+                      background: P.bg + "80", borderRadius: 6,
+                      borderLeft: "3px solid " + sm.color, padding: "8px 12px", marginBottom: 4 }}
                       dangerouslySetInnerHTML={{ __html: summaryHtml }} />
                   )}
 
