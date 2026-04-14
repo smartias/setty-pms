@@ -8956,29 +8956,35 @@ function ProjectionsView({ project }) {
 
 async function searchPmsCorpus(queryString, entityTypes) {
   const token = await getToken();
-  // driveItem, message, and onenotePage each need their own request object
+  // Each entity type family gets its own fetch — onenotePage is flaky on some tenants
+  // and we don't want one failure to kill SharePoint / email results.
   const groups = [
-    ["driveItem"],
-    ["message"],
-    ["onenotePage"],
-  ].filter(g => g.some(t => entityTypes.includes(t)));
+    { types: ["driveItem"],   label: "SharePoint" },
+    { types: ["message"],     label: "Email" },
+    { types: ["onenotePage"], label: "OneNote" },
+  ].filter(g => g.types.some(t => entityTypes.includes(t)));
 
-  const requests = groups.map(types => ({
-    entityTypes: types,
-    query: { queryString },
-    from: 0, size: 20,
-  }));
+  const settled = await Promise.allSettled(
+    groups.map(({ types }) =>
+      fetch("https://graph.microsoft.com/v1.0/search/query", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({ requests: [{ entityTypes: types, query: { queryString }, from: 0, size: 20 }] }),
+      }).then(async r => {
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error(err?.error?.message || "Search failed " + r.status);
+        }
+        return (await r.json()).value || [];
+      })
+    )
+  );
 
-  const res = await fetch("https://graph.microsoft.com/v1.0/search/query", {
-    method: "POST",
-    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-    body: JSON.stringify({ requests }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || "Search failed " + res.status);
+  // Only surface an error if every source failed — partial results are still useful.
+  if (settled.every(r => r.status === "rejected")) {
+    throw new Error(settled[0].reason?.message || "All search sources failed.");
   }
-  return (await res.json()).value || [];
+  return settled.flatMap(r => r.status === "fulfilled" ? r.value : []);
 }
 
 function normalizeUrl(url) {
