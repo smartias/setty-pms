@@ -232,8 +232,8 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
       <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
         <div class="dz-icon">&#128247;</div>
         <p><strong>Tap to select</strong> or drag &amp; drop photos here</p>
-        <p>JPEG, PNG, HEIC supported &bull; Multiple files OK</p>
-        <input type="file" id="fileInput" multiple accept="image/*,.heic,.heif" style="display:none" onchange="handleFiles(this.files)" />
+        <p>JPEG, PNG, HEIC, MP4, MOV supported &bull; Multiple files OK</p>
+        <input type="file" id="fileInput" multiple accept="image/*,video/*,.heic,.heif,.mp4,.mov,.avi,.m4v" style="display:none" onchange="handleFiles(this.files)" />
       </div>
       <div class="file-previews" id="filePreviews"></div>
 
@@ -616,20 +616,55 @@ async function populateExifFields(firstFile) {
   }
 }
 
+function isVideoFile(f) {
+  return f.type.startsWith('video/') || /\.(mp4|mov|avi|m4v|mkv|webm)$/i.test(f.name);
+}
+
+function generateVideoThumbnail(file) {
+  return new Promise(resolve => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+    const url = URL.createObjectURL(file);
+    video.src = url;
+    video.onseeked = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width  = video.videoWidth  || 320;
+      canvas.height = video.videoHeight || 240;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    video.onloadedmetadata = () => { video.currentTime = 1; };
+    video.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+  });
+}
+
 function handleFiles(files) {
   let isFirst = pendingFiles.length === 0;
   Array.from(files).forEach(f => {
-    if (!f.type.startsWith('image/') && !/\.(heic|heif)$/i.test(f.name)) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      pendingFiles.push({ file: f, previewUrl: ev.target.result, status: 'pending' });
-      renderPreviews();
-    };
-    reader.readAsDataURL(f);
+    const isImg   = f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name);
+    const isVideo = isVideoFile(f);
+    if (!isImg && !isVideo) return;
+
+    if (isVideo) {
+      generateVideoThumbnail(f).then(thumb => {
+        pendingFiles.push({ file: f, previewUrl: thumb, status: 'pending', isVideo: true });
+        renderPreviews();
+      });
+    } else {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        pendingFiles.push({ file: f, previewUrl: ev.target.result, status: 'pending', isVideo: false });
+        renderPreviews();
+      };
+      reader.readAsDataURL(f);
+    }
   });
-  // Use the first file in the batch to populate EXIF fields
-  const validFiles = Array.from(files).filter(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name));
-  if (isFirst && validFiles.length > 0) populateExifFields(validFiles[0]);
+  // Use the first image in the batch for EXIF (videos don't have EXIF GPS/date via exifr)
+  const firstImage = Array.from(files).find(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name));
+  if (isFirst && firstImage) populateExifFields(firstImage);
 }
 
 function renderPreviews() {
@@ -642,7 +677,10 @@ function renderPreviews() {
                        pf.status === 'err' ? '<div class="status-icon err">&#33;</div>' : '';
     div.innerHTML = `
       ${statusIcon}
-      <img src="${pf.previewUrl}" alt="${pf.file.name}" />
+      ${pf.previewUrl
+        ? `<img src="${pf.previewUrl}" alt="${pf.file.name}" />`
+        : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:28px;">&#127910;</div>`}
+      ${pf.isVideo ? `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.55);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;pointer-events:none;">&#9654;</div>` : ''}
       <div class="fname">${pf.file.name}</div>
       ${pf.status === 'pending' ? `<button class="remove-btn" onclick="removeFile(${i})">&#215;</button>` : ''}`;
     wrap.appendChild(div);
@@ -712,6 +750,36 @@ async function ensureFolder(parent, name) {
   return parent + '/' + name;
 }
 
+// ---- Chunked upload session (required for files > 4 MB, e.g. video) ----
+async function uploadWithSession(uploadFolder, fname, file, onChunk) {
+  const token = await getToken();
+  // 1. Create upload session
+  const sessionRes = await graphFetch('POST',
+    `/drives/${DRIVE_ID}/root:/${encodePath(uploadFolder + '/' + fname)}:/createUploadSession`,
+    { item: { '@microsoft.graph.conflictBehavior': 'replace' } }
+  );
+  const uploadUrl = sessionRes.uploadUrl;
+
+  // 2. Upload in 10 MB chunks — session URL is pre-auth, no Authorization header
+  const CHUNK = 10 * 1024 * 1024;
+  let offset = 0;
+  while (offset < file.size) {
+    const end   = Math.min(offset + CHUNK, file.size);
+    const chunk = file.slice(offset, end);
+    const res   = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Range':  `bytes ${offset}-${end - 1}/${file.size}`,
+        'Content-Length': String(end - offset),
+      },
+      body: chunk,
+    });
+    if (!res.ok && res.status !== 202) throw new Error('Chunk upload failed: ' + res.status);
+    offset = end;
+    if (onChunk) onChunk(offset / file.size);
+  }
+}
+
 // ---- Upload ----
 async function startUpload() {
   if (!selectedProject) { toast('Please select a project first.', 'error'); return; }
@@ -752,15 +820,32 @@ async function startUpload() {
 
     for (let i = 0; i < toUpload.length; i++) {
       const pf = toUpload[i];
-      setProgress(i + 1, `Compressing ${pf.file.name}...`);
       try {
-        const compressed = await normalizeToBlob(pf.file, quality, maxWidth);
-        const buf = await compressed.arrayBuffer();
-        // Sanitize filename
-        let fname = pf.file.name.replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg');
-        fname = fname.replace(/[^a-zA-Z0-9._\- ]/g, '_');
-        setProgress(i + 1, `Uploading ${fname}...`);
-        await graphFetch('PUT', `/drives/${DRIVE_ID}/root:/${encodePath(uploadFolder)}/${encodeURIComponent(fname)}:/content`, buf);
+        let fname = pf.file.name
+          .replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg')
+          .replace(/[^a-zA-Z0-9._\- ]/g, '_');
+
+        if (pf.isVideo) {
+          // Videos: no compression, use chunked session upload
+          setProgress(i + 1, `Uploading video ${fname}...`);
+          await uploadWithSession(uploadFolder, fname, pf.file, pct => {
+            document.getElementById('progressBar').style.width =
+              Math.round(((i + pct) / (total + 2)) * 100) + '%';
+          });
+        } else {
+          // Images: compress then upload
+          setProgress(i + 1, `Compressing ${pf.file.name}...`);
+          const compressed = await normalizeToBlob(pf.file, quality, maxWidth);
+          const buf = await compressed.arrayBuffer();
+          setProgress(i + 1, `Uploading ${fname}...`);
+          // Use session for large images too (> 4 MB)
+          if (buf.byteLength > 4 * 1024 * 1024) {
+            const blob = new Blob([buf], { type: 'image/jpeg' });
+            await uploadWithSession(uploadFolder, fname, blob, () => {});
+          } else {
+            await graphFetch('PUT', `/drives/${DRIVE_ID}/root:/${encodePath(uploadFolder)}/${encodeURIComponent(fname)}:/content`, buf);
+          }
+        }
         pf.status = 'ok';
       } catch(e) {
         pf.status = 'err';
