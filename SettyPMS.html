@@ -8957,7 +8957,9 @@ function ProjectionsView({ project }) {
 // Project number is always the anchor filter. Results are enriched with linked
 // PMS entities from the link graph built in Layer 2.
 
-async function searchPmsCorpus(queryString, entityTypes) {
+// driveItemQuery can differ from queryString — used to scope file searches by folder path
+// rather than by project number keyword.
+async function searchPmsCorpus(queryString, entityTypes, driveItemQuery) {
   const token = await getToken();
   // Each entity type family gets its own fetch — onenotePage is flaky on some tenants
   // and we don't want one failure to kill SharePoint / email results.
@@ -8968,19 +8970,20 @@ async function searchPmsCorpus(queryString, entityTypes) {
   ].filter(g => g.types.some(t => entityTypes.includes(t)));
 
   const settled = await Promise.allSettled(
-    groups.map(({ types }) =>
-      fetch("https://graph.microsoft.com/v1.0/search/query", {
+    groups.map(({ types }) => {
+      const q = (driveItemQuery && types.includes("driveItem")) ? driveItemQuery : queryString;
+      return fetch("https://graph.microsoft.com/v1.0/search/query", {
         method: "POST",
         headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-        body: JSON.stringify({ requests: [{ entityTypes: types, query: { queryString }, from: 0, size: 20 }] }),
+        body: JSON.stringify({ requests: [{ entityTypes: types, query: { queryString: q }, from: 0, size: 20 }] }),
       }).then(async r => {
         if (!r.ok) {
           const err = await r.json().catch(() => ({}));
           throw new Error(err?.error?.message || "Search failed " + r.status);
         }
         return (await r.json()).value || [];
-      })
-    )
+      });
+    })
   );
 
   // Only surface an error if every source failed — partial results are still useful.
@@ -9102,21 +9105,34 @@ function IntelligenceView({ project }) {
   const [keyword,   setKeyword]   = React.useState("");
   const [docType,   setDocType]   = React.useState("");
   const [source,    setSource]    = React.useState("all");
+  const [scopeToProject, setScopeToProject] = React.useState(true);
   const [results,   setResults]   = React.useState(null);
   const [searching, setSearching] = React.useState(false);
   const [error,     setError]     = React.useState("");
   const hasNum = !!(project.projectNumber || "").trim();
 
   async function doSearch() {
-    if (!hasNum) { setError("Set a project number on the Overview tab first."); return; }
+    if (!keyword.trim() && !docType) { setError("Enter a keyword to search."); return; }
     setSearching(true); setError(""); setResults(null);
     try {
       const entityTypes = source === "files"  ? ["driveItem"]
                         : source === "emails" ? ["message"]
                         : source === "notes"  ? ["onenotePage"]
                         : ["driveItem", "message", "onenotePage"];
-      const q = [project.projectNumber, docType, keyword].filter(Boolean).join(" ");
-      const raw = await searchPmsCorpus(q, entityTypes);
+      // Base query — used for email + OneNote (path: filter doesn't apply there)
+      const baseQ = [scopeToProject && hasNum ? project.projectNumber : "", docType, keyword]
+                      .filter(Boolean).join(" ");
+
+      // File query — scopes SharePoint search to the project folder using KQL path: filter.
+      // This finds drawings, specs, PDFs etc. even if they don't contain the project number.
+      let fileQ = baseQ;
+      if (scopeToProject && project.projectFolderUrl) {
+        const folderUrl = decodeURIComponent(project.projectFolderUrl).replace(/\/$/, "");
+        const terms = [docType, keyword].filter(Boolean).join(" ");
+        fileQ = terms ? `${terms} path:"${folderUrl}"` : `path:"${folderUrl}"`;
+      }
+
+      const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
       setResults(parseSearchHits(raw, project));
     } catch (e) { setError("✗ " + e.message); }
     setSearching(false);
@@ -9129,16 +9145,11 @@ function IntelligenceView({ project }) {
         Search across SharePoint, OneNote, and Email for this project. Results show linked RFIs, COs, milestones, and notes automatically.
       </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "flex-end" }}>
-        <div>
-          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Project</div>
-          <input value={project.projectNumber || "(no number)"} readOnly
-            style={{ width: 110, color: P.textDim, cursor: "default" }} />
-        </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, alignItems: "flex-end" }}>
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Keyword</div>
           <input value={keyword} onChange={e => setKeyword(e.target.value)}
-            placeholder="facade, RFI-012, curtain wall…"
+            placeholder="fire pump, curtain wall, RFI-012…"
             style={{ width: "100%" }}
             onKeyDown={e => e.key === "Enter" && doSearch()} />
         </div>
@@ -9158,9 +9169,22 @@ function IntelligenceView({ project }) {
             <option value="notes">OneNote</option>
           </select>
         </div>
-        <Btn onClick={doSearch} disabled={searching || !hasNum} style={{ alignSelf: "flex-end" }}>
+        <Btn onClick={doSearch} disabled={searching} style={{ alignSelf: "flex-end" }}>
           {searching ? "⏳ Searching…" : "🔍 Search"}
         </Btn>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, color: scopeToProject ? P.accentLight : P.textDim, userSelect: "none" }}>
+          <input type="checkbox" checked={scopeToProject} onChange={e => setScopeToProject(e.target.checked)}
+            style={{ accentColor: P.accent, width: 14, height: 14 }} />
+          Scope to project {project.projectNumber ? `"${project.projectNumber}"` : "(no project #)"}
+        </label>
+        {!scopeToProject && (
+          <span style={{ fontSize: 11, color: P.yellow }}>
+            ⚠ Searching entire library — results may include other projects
+          </span>
+        )}
       </div>
 
       {!hasNum && <div style={{ fontSize: 12, color: P.yellow, marginBottom: 10 }}>⚠ Set a project number on the Overview tab to enable search.</div>}
