@@ -922,7 +922,8 @@ const PMS_DOC_TYPES = {
 
 function buildPmsMetadata(project, docType, extra = {}) {
   return {
-    projectNumber: project.projectNumber || "",
+    ...extra,                                             // caller-supplied fields first (system, location, photographer, notes, photoCount, etc.)
+    projectNumber: project.projectNumber || "",           // core fields always win
     projectName:   project.name          || "",
     client:        project.prime || project.clientName || "",
     docType,
