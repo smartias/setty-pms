@@ -9242,21 +9242,35 @@ function IntelligenceView({ project }) {
           {results.map(hit => {
             const sm = SOURCE_META[hit.source] || { icon: "📄", label: hit.source, color: P.textDim };
 
-            // File extension badge for SharePoint files
-            const ext = hit.source === "sharepoint" || hit.source === "photos"
-              ? (hit.title.includes(".") ? hit.title.split(".").pop().toUpperCase() : null)
-              : null;
+            // File extension
+            const ext = (hit.source === "sharepoint" || hit.source === "photos") && hit.title.includes(".")
+              ? hit.title.split(".").pop().toUpperCase() : null;
             const EXT_COLORS = { PDF: "#ef4444", DWG: "#f59e0b", DXF: "#f59e0b",
               DOCX: "#3b82f6", DOC: "#3b82f6", XLSX: "#10b981", XLS: "#10b981",
               PPTX: "#a78bfa", JSON: "#64748b", JPG: "#06b6d4", PNG: "#06b6d4", MP4: "#06b6d4" };
             const extColor = EXT_COLORS[ext] || P.textDim;
 
-            // Trim path to last 3 segments for readability
+            // Path breadcrumb — last 3 segments
             const pathParts = (hit.path || "").split("/").filter(Boolean);
             const shortPath = pathParts.slice(-3).join(" › ");
 
-            // For photo batches don't show the raw JSON; all other sources show full Graph snippet
+            // For PDFs: append #search=keyword so the SharePoint PDF viewer jumps to the match.
+            // For Word/Excel/etc: open normally — user can Ctrl+F with the keyword copied.
+            const isPdf = ext === "PDF";
+            const searchFrag = keyword.trim() ? "#search=" + encodeURIComponent(keyword.trim()) : "";
+            const openUrl = hit.url
+              ? (isPdf ? hit.url + searchFrag : hit.url)
+              : null;
+
+            // Excerpt from Graph — only show for non-photo sources
             const summaryHtml = hit.source === "photos" ? null : (hit.summary || null);
+
+            // Determine why there's no excerpt (so we can give a useful message)
+            const noExcerptReason = !summaryHtml && hit.source === "sharepoint"
+              ? (["DWG","DXF","RVT","NWD","IFC"].includes(ext)
+                  ? "CAD/BIM file — binary format, content not text-searchable"
+                  : "No text preview — file may be a scanned image or the term matched only in the filename")
+              : null;
 
             return (
               <div key={hit.id} style={{
@@ -9267,11 +9281,12 @@ function IntelligenceView({ project }) {
                 <div style={{ width: 4, flexShrink: 0, background: sm.color, borderRadius: "8px 0 0 8px" }} />
 
                 <div style={{ flex: 1, minWidth: 0, padding: "12px 14px" }}>
+
                   {/* Title row */}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
                     <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>{sm.icon}</span>
-                    {hit.url
-                      ? <a href={hit.url} target="_blank" rel="noreferrer"
+                    {openUrl
+                      ? <a href={openUrl} target="_blank" rel="noreferrer"
                           style={{ fontWeight: 700, fontSize: 14, color: sm.color, textDecoration: "none",
                             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "50vw" }}>
                           {hit.title}
@@ -9288,25 +9303,52 @@ function IntelligenceView({ project }) {
                       background: sm.color + "20", color: sm.color, whiteSpace: "nowrap", flexShrink: 0 }}>
                       {sm.label}
                     </span>
+                    {/* For non-PDF files: copy keyword button so user can Ctrl+F immediately */}
+                    {!isPdf && keyword.trim() && hit.source === "sharepoint" && hit.url && (
+                      <button onClick={() => { navigator.clipboard.writeText(keyword.trim()); }}
+                        title={"Copy "" + keyword.trim() + "" to clipboard, then Ctrl+F in the document"}
+                        style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, border: "1px solid " + P.border,
+                          background: "transparent", color: P.textDim, cursor: "pointer", flexShrink: 0 }}>
+                        📋 Copy search term
+                      </button>
+                    )}
+                    {/* For PDFs: label that the link jumps to the match */}
+                    {isPdf && keyword.trim() && hit.url && (
+                      <span style={{ fontSize: 10, color: "#10b981", fontStyle: "italic", flexShrink: 0 }}>
+                        ↗ opens at match
+                      </span>
+                    )}
                   </div>
 
-                  {/* Meta row — date + path */}
-                  <div style={{ fontSize: 11, color: P.textDim, marginBottom: summaryHtml ? 8 : 4, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {/* Meta row — sender / date / path */}
+                  <div style={{ fontSize: 11, color: P.textDim, marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {hit.from && <span style={{ color: P.textMuted }}>{hit.from}</span>}
                     {hit.date && (
                       <span>{new Date(hit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
                     )}
-                    {shortPath && (
-                      <span style={{ opacity: 0.6 }}>· {shortPath}</span>
-                    )}
+                    {shortPath && <span style={{ opacity: 0.6 }}>· {shortPath}</span>}
                   </div>
 
-                  {/* Summary — full Graph snippet, no truncation */}
+                  {/* Matched excerpt from Graph */}
                   {summaryHtml && (
-                    <div style={{ fontSize: 13.5, color: P.text, lineHeight: 1.7,
-                      background: P.bg + "80", borderRadius: 6,
-                      borderLeft: "3px solid " + sm.color, padding: "8px 12px", marginBottom: 4 }}
-                      dangerouslySetInnerHTML={{ __html: summaryHtml }} />
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: sm.color, textTransform: "uppercase",
+                        letterSpacing: "0.06em", marginBottom: 4 }}>
+                        Matched excerpt
+                      </div>
+                      <div style={{ fontSize: 13.5, color: P.text, lineHeight: 1.7,
+                        background: P.bg + "cc", borderRadius: 6,
+                        borderLeft: "3px solid " + sm.color, padding: "8px 12px" }}
+                        dangerouslySetInnerHTML={{ __html: summaryHtml }} />
+                    </div>
+                  )}
+
+                  {/* No excerpt — explain why */}
+                  {noExcerptReason && (
+                    <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginBottom: 4,
+                      padding: "6px 10px", background: P.bg + "80", borderRadius: 4 }}>
+                      ℹ {noExcerptReason}
+                    </div>
                   )}
 
                   {/* Linked items */}
@@ -9324,6 +9366,7 @@ function IntelligenceView({ project }) {
                       })}
                     </div>
                   )}
+
                 </div>
               </div>
             );
