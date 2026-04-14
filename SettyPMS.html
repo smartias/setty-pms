@@ -9218,10 +9218,6 @@ function PhotoThumb({ item, meta, folderName }) {
   const parsedDate = (parts[0] || '').trim();
   const parsedPhase= parts.slice(1).join(' - ').trim();
 
-  // TEMP DEBUG — remove after diagnosis
-  React.useEffect(() => {
-    console.log('[PhotoThumb]', { folderName, parsedDate, parsedPhase, meta });
-  }, []);
 
   const SKIP = new Set(["_schema", "source", "docType"]);
 
@@ -9641,13 +9637,13 @@ function PhotosView({ project }) {
             const groupItems = expanded[folder.id];
             const isOpen = groupItems !== undefined;
             return (
-              <div key={folder.id} style={{ marginBottom: 14, border: "1px solid " + P.border, borderRadius: 8, overflow: "hidden" }}>
+              <div key={folder.id} style={{ marginBottom: 14, border: "1px solid " + P.border, borderRadius: 8 }}>
                 <div
                   onClick={() => isOpen
                     ? setExpanded(prev => { const n = {...prev}; delete n[folder.id]; return n; })
                     : loadGroupItems(folder)
                   }
-                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", background: P.card, userSelect: "none" }}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", background: P.card, userSelect: "none", borderRadius: isOpen ? "8px 8px 0 0" : "8px" }}
                 >
                   <span style={{ color: P.textDim }}>{isOpen ? "▾" : "▸"}</span>
                   <span style={{ fontWeight: 600, fontSize: 13, color: P.text }}>📁 {folder.name}</span>
@@ -9656,7 +9652,7 @@ function PhotosView({ project }) {
                   </span>
                 </div>
                 {isOpen && (
-                  <div style={{ padding: 16, borderTop: "1px solid " + P.border, background: P.bg }}>
+                  <div style={{ padding: 16, borderTop: "1px solid " + P.border, background: P.bg, borderRadius: "0 0 8px 8px", overflow: "visible" }}>
                     {groupItems === "loading" && <div style={{ color: P.textDim, fontSize: 13 }}>Loading…</div>}
                     {groupItems !== "loading" && groupItems?.items?.length === 0 && (
                       <div style={{ color: P.textDim, fontSize: 13 }}>No image files found in this folder.</div>
