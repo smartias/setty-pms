@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SETTY Field Photos</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/dist/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --navy: #1F3864; --red: #C00000; --bg: #0F1117; --card: #1A1D2E;
+  --blue: #3B82F6; --green: #10B981; --text: #E2E8F0; --dim: #64748B;
+  --border: #2D3148; --hover: #252840; --input: #0D1021;
+}
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: Calibri, 'Segoe UI', sans-serif; font-size: 15px; }
+a { color: var(--blue); text-decoration: none; }
+button { cursor: pointer; font-family: inherit; font-size: 14px; border: none; border-radius: 6px; transition: all .2s; }
+input, select, textarea { font-family: inherit; font-size: 14px; background: var(--input); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 12px; width: 100%; outline: none; transition: border-color .2s; }
+input:focus, select:focus, textarea:focus { border-color: var(--blue); }
+select option { background: var(--card); }
+label { font-size: 13px; color: var(--dim); display: block; margin-bottom: 4px; }
+.hidden { display: none !important; }
+
+/* Auth screen */
+#authScreen { display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column; gap: 24px; }
+.auth-logo { display: flex; align-items: center; gap: 16px; }
+.auth-logo .logo-box { width: 52px; height: 52px; background: var(--navy); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 20px; color: white; letter-spacing: -1px; }
+.auth-logo h1 { font-size: 28px; font-weight: 700; color: var(--text); }
+.auth-logo h1 span { color: var(--red); }
+.auth-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 40px 48px; text-align: center; max-width: 400px; width: 90%; }
+.auth-card p { color: var(--dim); margin-bottom: 24px; font-size: 15px; }
+.btn-primary { background: var(--blue); color: white; padding: 10px 24px; border-radius: 7px; font-weight: 600; }
+.btn-primary:hover { background: #2563EB; }
+.btn-danger { background: var(--red); color: white; padding: 6px 14px; border-radius: 6px; font-size: 13px; }
+.btn-danger:hover { background: #a00; }
+.btn-ghost { background: transparent; color: var(--dim); border: 1px solid var(--border); padding: 6px 14px; }
+.btn-ghost:hover { background: var(--hover); color: var(--text); }
+
+/* App layout */
+#app { display: none; flex-direction: column; height: 100vh; }
+header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; border-bottom: 2px solid var(--red); }
+.hdr-logo { display: flex; align-items: center; gap: 10px; }
+.hdr-logo .logo-box { width: 36px; height: 36px; background: white; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 14px; color: var(--navy); letter-spacing: -1px; }
+.hdr-logo span { font-weight: 700; font-size: 17px; color: white; letter-spacing: .5px; }
+.hdr-divider { width: 1px; height: 30px; background: rgba(255,255,255,.25); }
+.hdr-title { font-size: 15px; color: rgba(255,255,255,.85); font-weight: 600; flex: 1; }
+.hdr-user { font-size: 13px; color: rgba(255,255,255,.65); margin-right: 8px; }
+
+/* Tabs */
+.tabs { display: flex; background: var(--card); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.tab-btn { padding: 12px 22px; background: transparent; color: var(--dim); font-size: 14px; font-weight: 600; border-radius: 0; border-bottom: 3px solid transparent; transition: all .2s; }
+.tab-btn:hover { color: var(--text); background: var(--hover); }
+.tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+.tab-content { display: none; flex: 1; overflow-y: auto; }
+.tab-content.active { display: block; }
+
+/* Upload tab */
+#uploadTab { padding: 20px; max-width: 860px; margin: 0 auto; }
+.section-title { font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.project-picker { position: relative; margin-bottom: 20px; }
+.project-picker input { font-size: 15px; padding: 10px 14px; }
+.picker-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; max-height: 240px; overflow-y: auto; z-index: 100; }
+.picker-item { padding: 10px 14px; cursor: pointer; transition: background .15s; font-size: 14px; }
+.picker-item:hover, .picker-item.selected { background: var(--hover); }
+.picker-item .proj-num { color: var(--dim); font-size: 12px; margin-top: 2px; }
+.selected-project { background: var(--card); border: 1px solid var(--green); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; }
+.selected-project .proj-info strong { color: var(--green); }
+.selected-project .proj-info small { color: var(--dim); font-size: 12px; display: block; margin-top: 2px; }
+
+/* Drop zone */
+.dropzone { border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px; text-align: center; cursor: pointer; transition: all .2s; margin-bottom: 20px; }
+.dropzone:hover, .dropzone.drag-over { border-color: var(--blue); background: rgba(59,130,246,.06); }
+.dropzone .dz-icon { font-size: 40px; margin-bottom: 10px; }
+.dropzone p { color: var(--dim); font-size: 14px; margin-bottom: 6px; }
+.dropzone strong { color: var(--blue); }
+.file-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; margin-bottom: 16px; }
+.file-thumb { position: relative; aspect-ratio: 1; border-radius: 6px; overflow: hidden; background: var(--card); border: 1px solid var(--border); }
+.file-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.file-thumb .remove-btn { position: absolute; top: 3px; right: 3px; background: rgba(0,0,0,.7); color: white; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.file-thumb .fname { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.65); font-size: 9px; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: white; }
+.file-thumb .status-icon { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; display: flex; align-items: center; justify-content: center; }
+.status-icon.ok { background: var(--green); }
+.status-icon.err { background: var(--red); }
+.status-icon.pending { background: var(--dim); }
+
+/* Form grid */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+.form-grid .full { grid-column: 1 / -1; }
+.form-group { display: flex; flex-direction: column; }
+.compress-row { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.compress-row label { color: var(--dim); font-size: 13px; white-space: nowrap; }
+.compress-row input[type=range] { width: 100px; accent-color: var(--blue); }
+.compress-row span { font-size: 13px; color: var(--blue); min-width: 32px; }
+
+/* Progress */
+.upload-progress { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.progress-bar-wrap { background: var(--border); border-radius: 99px; height: 6px; margin-top: 8px; overflow: hidden; }
+.progress-bar { height: 100%; background: var(--blue); border-radius: 99px; transition: width .3s; }
+.progress-label { font-size: 13px; color: var(--dim); margin-top: 6px; }
+
+/* Gallery tab */
+#galleryTab { display: flex; flex-direction: column; height: 100%; }
+.gallery-toolbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; flex-shrink: 0; }
+.gallery-toolbar select, .gallery-toolbar input { width: auto; min-width: 160px; flex: 1; max-width: 220px; }
+.gallery-toolbar .spacer { flex: 1; }
+.gallery-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
+.folder-group { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
+.folder-header { padding: 12px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; user-select: none; transition: background .2s; }
+.folder-header:hover { background: var(--hover); }
+.folder-chevron { color: var(--dim); font-size: 12px; transition: transform .25s; }
+.folder-header.open .folder-chevron { transform: rotate(90deg); }
+.folder-meta { flex: 1; }
+.folder-name { font-weight: 700; font-size: 14px; }
+.folder-sub { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.folder-count { font-size: 12px; color: var(--blue); background: rgba(59,130,246,.12); padding: 2px 8px; border-radius: 99px; }
+.folder-photos { display: none; padding: 12px; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.folder-photos.open { display: grid; }
+.photo-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; cursor: pointer; transition: border-color .2s, transform .2s; position: relative; }
+.photo-card:hover { border-color: var(--blue); transform: translateY(-2px); }
+.photo-card .thumb { aspect-ratio: 1; overflow: hidden; background: var(--border); }
+.photo-card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-card .card-name { padding: 6px 8px; font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.photo-card .cb { position: absolute; top: 6px; left: 6px; width: 18px; height: 18px; border-radius: 4px; cursor: pointer; accent-color: var(--blue); }
+.photo-card .tooltip { display: none; position: absolute; bottom: 36px; left: 50%; transform: translateX(-50%); background: rgba(10,12,24,.95); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; white-space: nowrap; z-index: 50; pointer-events: none; min-width: 200px; }
+.photo-card:hover .tooltip { display: block; }
+.tooltip-row { display: flex; gap: 6px; margin-bottom: 3px; }
+.tooltip-row .tlabel { color: var(--dim); min-width: 72px; }
+.gallery-empty { text-align: center; padding: 60px 20px; color: var(--dim); }
+.gallery-empty .empty-icon { font-size: 48px; margin-bottom: 12px; }
+.load-spinner { text-align: center; padding: 30px; color: var(--dim); }
+
+/* Batch download tab */
+#batchTab { padding: 20px; max-width: 860px; margin: 0 auto; }
+.batch-toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+.batch-list { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.batch-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); transition: background .15s; }
+.batch-item:last-child { border-bottom: none; }
+.batch-item:hover { background: var(--hover); }
+.batch-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: var(--border); }
+.batch-info { flex: 1; min-width: 0; }
+.batch-info .bname { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.batch-info .bmeta { font-size: 11px; color: var(--dim); margin-top: 2px; }
+.batch-size { font-size: 12px; color: var(--dim); white-space: nowrap; }
+.btn-zip { background: var(--green); color: white; padding: 10px 22px; font-weight: 600; border-radius: 7px; }
+.btn-zip:hover { background: #0e9e72; }
+.btn-zip:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Lightbox */
+#lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 999; display: none; align-items: center; }
+#lightbox.open { display: flex; }
+.lb-img-wrap { flex: 7; display: flex; align-items: center; justify-content: center; padding: 20px; height: 100vh; }
+.lb-img-wrap img { max-width: 100%; max-height: 100vh; object-fit: contain; border-radius: 4px; }
+.lb-meta { flex: 3; background: var(--card); border-left: 1px solid var(--border); height: 100vh; overflow-y: auto; padding: 24px 20px; }
+.lb-meta h3 { font-size: 15px; margin-bottom: 14px; word-break: break-all; }
+.lb-field { margin-bottom: 12px; }
+.lb-field .lbl { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
+.lb-field .val { font-size: 13px; word-break: break-word; }
+.lb-close { position: absolute; top: 14px; right: 14px; background: rgba(255,255,255,.1); color: white; border: none; border-radius: 50%; width: 36px; height: 36px; font-size: 18px; display: flex; align-items: center; justify-content: center; }
+.lb-close:hover { background: rgba(255,255,255,.2); }
+.lb-nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,.1); color: white; border: none; border-radius: 50%; width: 44px; height: 44px; font-size: 22px; display: flex; align-items: center; justify-content: center; }
+.lb-nav:hover { background: rgba(255,255,255,.2); }
+#lbPrev { left: 14px; }
+#lbNext { right: 280px; }
+
+/* Toasts */
+#toastArea { position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+.toast { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; font-size: 13px; min-width: 260px; max-width: 360px; animation: slideIn .25s ease; }
+.toast.success { border-color: var(--green); }
+.toast.error { border-color: var(--red); }
+@keyframes slideIn { from { transform: translateX(30px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .lb-meta { display: none; }
+  #lbNext { right: 14px; }
+  .gallery-toolbar select, .gallery-toolbar input { max-width: 100%; }
+  .tabs .tab-btn { padding: 10px 14px; font-size: 13px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Auth Screen -->
+<div id="authScreen">
+  <div class="auth-logo">
+    <div class="logo-box">S&amp;A</div>
+    <h1>SETTY <span>&amp;</span> Associates</h1>
+  </div>
+  <div class="auth-card">
+    <p style="font-size:20px;font-weight:700;color:var(--text);margin-bottom:8px;">Field Photos</p>
+    <p>Sign in with your Setty Microsoft account to upload and browse field photos.</p>
+    <button class="btn-primary" style="width:100%;" onclick="signIn()">Sign In with Microsoft</button>
+    <p id="authError" style="color:var(--red);margin-top:12px;font-size:13px;display:none;"></p>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <header>
+    <div class="hdr-logo">
+      <div class="logo-box">S&amp;A</div>
+      <span>SETTY</span>
+    </div>
+    <div class="hdr-divider"></div>
+    <div class="hdr-title">Field Photos</div>
+    <span class="hdr-user" id="hdrUser"></span>
+    <button class="btn-danger" onclick="signOut()">Sign Out</button>
+  </header>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('upload',this)">&#8593; Upload</button>
+    <button class="tab-btn" onclick="switchTab('gallery',this)">&#9783; Gallery</button>
+    <button class="tab-btn" onclick="switchTab('batch',this)">&#8615; Batch Download</button>
+  </div>
+
+  <!-- Upload Tab -->
+  <div id="uploadTab" class="tab-content active">
+    <div style="padding:20px;max-width:860px;margin:0 auto;">
+      <div class="section-title">Select Project</div>
+      <div class="project-picker">
+        <input type="text" id="projSearch" placeholder="Search by project name or number..." autocomplete="off" oninput="filterProjects()" onfocus="showDropdown()" />
+        <div class="picker-dropdown hidden" id="projDropdown"></div>
+      </div>
+      <div id="selectedProjectCard" class="hidden"></div>
+
+      <div class="section-title">Photos</div>
+      <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+        <div class="dz-icon">&#128247;</div>
+        <p><strong>Tap to select</strong> or drag &amp; drop photos here</p>
+        <p>JPEG, PNG, HEIC supported &bull; Multiple files OK</p>
+        <input type="file" id="fileInput" multiple accept="image/*,.heic,.heif" style="display:none" onchange="handleFiles(this.files)" />
+      </div>
+      <div class="file-previews" id="filePreviews"></div>
+
+      <div class="section-title">Metadata</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Date Taken *</label>
+          <input type="date" id="fDate" />
+        </div>
+        <div class="form-group">
+          <label>Phase *</label>
+          <select id="fPhase">
+            <option value="">— Select Phase —</option>
+            <option>Existing Conditions</option>
+            <option>Demo/Abatement</option>
+            <option>Rough-In</option>
+            <option>Construction Progress</option>
+            <option>Commissioning</option>
+            <option>Substantial Completion</option>
+            <option>Punch List</option>
+            <option>Final/Completed</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>System Type</label>
+          <select id="fSystem">
+            <option value="">— Select System —</option>
+            <option>General</option>
+            <option>Mechanical/HVAC</option>
+            <option>Electrical</option>
+            <option>Plumbing</option>
+            <option>Fire Protection</option>
+            <option>MEP Combined</option>
+            <option>Exterior/Envelope</option>
+            <option>Structural</option>
+            <option>Architectural</option>
+            <option>Site/Civil</option>
+            <option>Coordination</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Location / Floor</label>
+          <input type="text" id="fLocation" placeholder="e.g. 3rd Floor, Roof, Mechanical Room" />
+        </div>
+        <div class="form-group">
+          <label>Photographer</label>
+          <input type="text" id="fPhotographer" />
+        </div>
+        <div class="form-group">
+          <label>Tags (comma-separated)</label>
+          <input type="text" id="fTags" placeholder="hvac, rooftop, ahu-1" />
+        </div>
+        <div class="form-group full">
+          <label>Notes</label>
+          <textarea id="fNotes" rows="3" placeholder="Any additional notes about this batch of photos..."></textarea>
+        </div>
+      </div>
+
+      <div class="compress-row">
+        <label>Compression Quality:</label>
+        <input type="range" id="compQuality" min="40" max="95" value="80" oninput="document.getElementById('qualVal').textContent=this.value+'%'" />
+        <span id="qualVal">80%</span>
+        <label style="margin-left:12px;">Max Width:</label>
+        <input type="range" id="compWidth" min="800" max="4000" step="200" value="2400" oninput="document.getElementById('widthVal').textContent=this.value+'px'" />
+        <span id="widthVal">2400px</span>
+      </div>
+
+      <div id="uploadProgress" class="upload-progress hidden">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong id="progressTitle">Uploading...</strong>
+          <span id="progressCount" style="font-size:13px;color:var(--dim);"></span>
+        </div>
+        <div class="progress-bar-wrap"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
+        <div class="progress-label" id="progressLabel"></div>
+      </div>
+
+      <button class="btn-primary" id="uploadBtn" style="width:100%;padding:14px;font-size:16px;font-weight:700;" onclick="startUpload()">
+        &#8593; Upload Photos to SharePoint
+      </button>
+    </div>
+  </div>
+
+  <!-- Gallery Tab -->
+  <div id="galleryTab" class="tab-content" style="display:none;flex-direction:column;height:calc(100vh - 96px);">
+    <div class="gallery-toolbar">
+      <select id="galProject" onchange="loadGallery()">
+        <option value="">All Projects</option>
+      </select>
+      <select id="galPhase" onchange="filterGallery()">
+        <option value="">All Phases</option>
+        <option>Existing Conditions</option>
+        <option>Demo/Abatement</option>
+        <option>Rough-In</option>
+        <option>Construction Progress</option>
+        <option>Commissioning</option>
+        <option>Substantial Completion</option>
+        <option>Punch List</option>
+        <option>Final/Completed</option>
+      </select>
+      <select id="galSort" onchange="filterGallery()">
+        <option value="desc">Newest First</option>
+        <option value="asc">Oldest First</option>
+      </select>
+      <input type="text" id="galSearch" placeholder="Search photos..." oninput="filterGallery()" style="max-width:180px;" />
+      <div class="spacer"></div>
+      <button class="btn-ghost" onclick="refreshGallery()" style="white-space:nowrap;">&#8635; Refresh</button>
+    </div>
+    <div class="gallery-body" id="galleryBody">
+      <div class="gallery-empty">
+        <div class="empty-icon">&#128248;</div>
+        <p>Select a project to browse photos, or load all projects.</p>
+        <button class="btn-primary" style="margin-top:16px;" onclick="loadGallery()">Load Gallery</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Batch Tab -->
+  <div id="batchTab" class="tab-content" style="display:none;">
+    <div style="padding:20px;max-width:860px;margin:0 auto;">
+      <div class="section-title">Batch Download</div>
+      <div class="batch-toolbar">
+        <button class="btn-ghost" onclick="toggleSelectAll()">Select All</button>
+        <button class="btn-ghost" onclick="clearSelection()">Clear</button>
+        <span id="selCount" style="font-size:13px;color:var(--dim);">0 selected</span>
+        <div style="flex:1;"></div>
+        <button class="btn-zip" id="zipBtn" onclick="downloadZip()" disabled>&#8615; Download ZIP</button>
+      </div>
+      <div id="batchList" class="batch-list">
+        <div style="padding:40px;text-align:center;color:var(--dim);">
+          Load the Gallery tab first to populate photos here.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" onclick="closeLightboxOnBg(event)">
+  <button class="lb-close" onclick="closeLightbox()">&#215;</button>
+  <button class="lb-nav" id="lbPrev" onclick="navLightbox(-1)">&#8249;</button>
+  <button class="lb-nav" id="lbNext" onclick="navLightbox(1)">&#8250;</button>
+  <div class="lb-img-wrap"><img id="lbImg" src="" alt="" /></div>
+  <div class="lb-meta" id="lbMeta"></div>
+</div>
+
+<!-- Toast Area -->
+<div id="toastArea"></div>
+
+<script>
+// ---- Config ----
+const TENANT_ID      = "f374c024-71c2-48b6-8420-076fff97327c";
+const MSAL_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301";
+const DRIVE_ID       = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BBnJPKsNGM-TaGmbGiL3ZaU";
+const SP_BASE        = "https://setty.sharepoint.com/sites/NYCProjects/Project%20Document%20Library";
+const SUPABASE_URL   = "https://khxmgjilwhdguuepbhne.supabase.co";
+const SUPABASE_KEY   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
+const GRAPH_SCOPES   = ["User.Read", "Files.ReadWrite.All"];
+
+// ---- MSAL ----
+const msalConfig = {
+  auth: {
+    clientId: MSAL_CLIENT_ID,
+    authority: "https://login.microsoftonline.com/" + TENANT_ID,
+    redirectUri: window.location.href.split('?')[0].split('#')[0]
+  },
+  cache: { cacheLocation: "localStorage" }
+};
+const msalApp = new msal.PublicClientApplication(msalConfig);
+
+let currentUser = null;
+let allProjects = [];
+let selectedProject = null;
+let pendingFiles = [];      // { file, previewUrl, status }
+let galleryData = [];       // all loaded photo items for lightbox/batch
+let lbIndex = 0;
+let batchSelected = new Set();
+
+// ---- Supabase ----
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ---- Auth ----
+async function initAuth() {
+  try {
+    await msalApp.initialize();
+    await msalApp.handleRedirectPromise();
+    const accounts = msalApp.getAllAccounts();
+    if (accounts.length) {
+      currentUser = accounts[0];
+      onSignedIn();
+    }
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function signIn() {
+  try {
+    await msalApp.loginRedirect({ scopes: GRAPH_SCOPES });
+  } catch(e) {
+    document.getElementById('authError').textContent = e.message;
+    document.getElementById('authError').style.display = 'block';
+  }
+}
+
+function signOut() {
+  msalApp.logoutRedirect();
+}
+
+async function getToken() {
+  const accounts = msalApp.getAllAccounts();
+  if (!accounts.length) throw new Error("Not signed in");
+  const res = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+  return res.accessToken;
+}
+
+async function onSignedIn() {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  document.getElementById('hdrUser').textContent = currentUser.name || currentUser.username;
+
+  // Default date to today
+  document.getElementById('fDate').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('fPhotographer').value = currentUser.name || '';
+
+  await loadProjects();
+}
+
+// ---- Projects ----
+async function loadProjects() {
+  try {
+    const { data, error } = await sb.from('pms_data').select('projects').eq('id', 'singleton').single();
+    if (error) throw error;
+    allProjects = (data.projects || []).filter(p => !p.archived);
+    populateGalleryProjectDropdown();
+  } catch(e) {
+    toast('Failed to load projects: ' + e.message, 'error');
+  }
+}
+
+function populateGalleryProjectDropdown() {
+  const sel = document.getElementById('galProject');
+  // keep first "All Projects" option
+  while (sel.options.length > 1) sel.remove(1);
+  allProjects.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.projectNumber || p.name;
+    opt.textContent = (p.projectNumber ? p.projectNumber + ' — ' : '') + p.name;
+    opt.dataset.idx = allProjects.indexOf(p);
+    sel.appendChild(opt);
+  });
+}
+
+function filterProjects() {
+  const q = document.getElementById('projSearch').value.toLowerCase();
+  showDropdown();
+  const dd = document.getElementById('projDropdown');
+  dd.innerHTML = '';
+  const filtered = allProjects.filter(p =>
+    p.name.toLowerCase().includes(q) ||
+    (p.projectNumber || '').toLowerCase().includes(q)
+  ).slice(0, 20);
+  if (!filtered.length) {
+    dd.innerHTML = '<div class="picker-item" style="color:var(--dim);">No projects found</div>';
+    return;
+  }
+  filtered.forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'picker-item';
+    el.innerHTML = `<div>${p.name}</div><div class="proj-num">${p.projectNumber || ''} &bull; ${p.projectAddress || ''}</div>`;
+    el.onclick = () => selectProject(p);
+    dd.appendChild(el);
+  });
+}
+
+function showDropdown() {
+  document.getElementById('projDropdown').classList.remove('hidden');
+}
+
+function hideDropdown() {
+  document.getElementById('projDropdown').classList.add('hidden');
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.project-picker')) hideDropdown();
+});
+
+function selectProject(p) {
+  selectedProject = p;
+  hideDropdown();
+  document.getElementById('projSearch').value = p.name;
+  const card = document.getElementById('selectedProjectCard');
+  card.classList.remove('hidden');
+  card.innerHTML = `
+    <div class="selected-project">
+      <div class="proj-info">
+        <strong>${p.name}</strong>
+        <small>${p.projectNumber || ''} &bull; ${p.projectAddress || ''}</small>
+        ${p.projectFolderUrl ? `<small style="color:var(--dim);margin-top:2px;">&#128193; SharePoint folder linked</small>` : `<small style="color:var(--red);">&#9888; No SharePoint folder set up</small>`}
+      </div>
+      <button class="btn-ghost" onclick="clearProject()" style="white-space:nowrap;">Change</button>
+    </div>`;
+}
+
+function clearProject() {
+  selectedProject = null;
+  document.getElementById('projSearch').value = '';
+  document.getElementById('selectedProjectCard').classList.add('hidden');
+}
+
+// ---- File Handling ----
+const dropzone = document.getElementById('dropzone');
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag-over');
+  handleFiles(e.dataTransfer.files);
+});
+
+function handleFiles(files) {
+  Array.from(files).forEach(f => {
+    if (!f.type.startsWith('image/') && !/\.(heic|heif)$/i.test(f.name)) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      pendingFiles.push({ file: f, previewUrl: ev.target.result, status: 'pending' });
+      renderPreviews();
+    };
+    reader.readAsDataURL(f);
+  });
+}
+
+function renderPreviews() {
+  const wrap = document.getElementById('filePreviews');
+  wrap.innerHTML = '';
+  pendingFiles.forEach((pf, i) => {
+    const div = document.createElement('div');
+    div.className = 'file-thumb';
+    const statusIcon = pf.status === 'ok' ? '<div class="status-icon ok">&#10003;</div>' :
+                       pf.status === 'err' ? '<div class="status-icon err">&#33;</div>' : '';
+    div.innerHTML = `
+      ${statusIcon}
+      <img src="${pf.previewUrl}" alt="${pf.file.name}" />
+      <div class="fname">${pf.file.name}</div>
+      ${pf.status === 'pending' ? `<button class="remove-btn" onclick="removeFile(${i})">&#215;</button>` : ''}`;
+    wrap.appendChild(div);
+  });
+}
+
+function removeFile(i) {
+  pendingFiles.splice(i, 1);
+  renderPreviews();
+}
+
+// ---- Compression ----
+async function compressBlob(blob, quality, maxWidth) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let w = img.width, h = img.height;
+      if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error('Canvas toBlob failed')), 'image/jpeg', quality / 100);
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+async function normalizeToBlob(file, quality, maxWidth) {
+  let blob = file;
+  if (file.type === 'image/heic' || file.type === 'image/heif' || /\.heic$/i.test(file.name) || /\.heif$/i.test(file.name)) {
+    blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+    if (Array.isArray(blob)) blob = blob[0];
+  }
+  return compressBlob(blob, quality, maxWidth);
+}
+
+// ---- Graph API ----
+async function graphFetch(method, path, body) {
+  const token = await getToken();
+  const isBytes = body instanceof Uint8Array || body instanceof ArrayBuffer;
+  const headers = { Authorization: 'Bearer ' + token };
+  if (body !== undefined) headers['Content-Type'] = isBytes ? 'application/octet-stream' : 'application/json';
+  const res = await fetch('https://graph.microsoft.com/v1.0' + path, {
+    method,
+    headers,
+    body: isBytes ? body : (body !== undefined ? JSON.stringify(body) : undefined)
+  });
+  if (res.status === 204) return null;
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error('Graph ' + res.status + ': ' + await res.text());
+  return res.json();
+}
+
+// Encode a full slash-separated path for Graph API drive:/ URL syntax
+function encodePath(p) {
+  return p.split('/').map(s => encodeURIComponent(s)).join('/');
+}
+
+async function ensureFolder(parent, name) {
+  try {
+    await graphFetch('POST', `/drives/${DRIVE_ID}/root:/${encodePath(parent)}:/children`,
+      { name, folder: {}, '@microsoft.graph.conflictBehavior': 'replace' });
+  } catch(e) { /* folder may already exist */ }
+  return parent + '/' + name;
+}
+
+// ---- Upload ----
+async function startUpload() {
+  if (!selectedProject) { toast('Please select a project first.', 'error'); return; }
+  if (!selectedProject.projectFolderUrl) { toast('This project has no SharePoint folder set up yet.', 'error'); return; }
+  if (!pendingFiles.filter(f => f.status === 'pending').length) { toast('No photos to upload.', 'error'); return; }
+  const phase = document.getElementById('fPhase').value;
+  const date = document.getElementById('fDate').value;
+  if (!phase) { toast('Please select a phase.', 'error'); return; }
+  if (!date) { toast('Please enter the date photos were taken.', 'error'); return; }
+
+  const quality = parseInt(document.getElementById('compQuality').value);
+  const maxWidth = parseInt(document.getElementById('compWidth').value);
+
+  // Build subfolder path
+  const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split('/').pop());
+  const subfolderName = `${date} - ${phase}`;
+  const basePath = folderSegment + '/Photos';
+
+  const prog = document.getElementById('uploadProgress');
+  prog.classList.remove('hidden');
+  document.getElementById('uploadBtn').disabled = true;
+
+  let done = 0;
+  const toUpload = pendingFiles.filter(f => f.status === 'pending');
+  const total = toUpload.length;
+
+  function setProgress(n, label) {
+    document.getElementById('progressBar').style.width = Math.round((n / (total + 2)) * 100) + '%';
+    document.getElementById('progressCount').textContent = `${n}/${total}`;
+    document.getElementById('progressLabel').textContent = label;
+    document.getElementById('progressTitle').textContent = n <= total ? 'Uploading...' : 'Finishing up...';
+  }
+
+  try {
+    setProgress(0, 'Creating folder structure...');
+    await ensureFolder(folderSegment, 'Photos');
+    const uploadFolder = await ensureFolder(basePath, subfolderName);
+
+    for (let i = 0; i < toUpload.length; i++) {
+      const pf = toUpload[i];
+      setProgress(i + 1, `Compressing ${pf.file.name}...`);
+      try {
+        const compressed = await normalizeToBlob(pf.file, quality, maxWidth);
+        const buf = await compressed.arrayBuffer();
+        // Sanitize filename
+        let fname = pf.file.name.replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg');
+        fname = fname.replace(/[^a-zA-Z0-9._\- ]/g, '_');
+        setProgress(i + 1, `Uploading ${fname}...`);
+        await graphFetch('PUT', `/drives/${DRIVE_ID}/root:/${encodePath(uploadFolder)}/${encodeURIComponent(fname)}:/content`, buf);
+        pf.status = 'ok';
+      } catch(e) {
+        pf.status = 'err';
+        console.error('Upload failed for', pf.file.name, e);
+      }
+      renderPreviews();
+    }
+
+    // Write metadata sidecar
+    setProgress(total + 1, 'Writing metadata...');
+    const metadata = {
+      projectNumber: selectedProject.projectNumber || '',
+      projectName: selectedProject.name,
+      client: selectedProject.prime || selectedProject.clientName || '',
+      docType: 'site-photo',
+      date,
+      createdBy: currentUser.name || currentUser.username,
+      source: 'field-photo-app',
+      phase,
+      system: document.getElementById('fSystem').value,
+      location: document.getElementById('fLocation').value,
+      photographer: document.getElementById('fPhotographer').value,
+      notes: document.getElementById('fNotes').value,
+      tags: document.getElementById('fTags').value.split(',').map(t => t.trim()).filter(Boolean),
+      photoCount: toUpload.filter(f => f.status === 'ok').length,
+      _schema: 'pms-v1',
+      uploadedAt: new Date().toISOString()
+    };
+    const metaBytes = new TextEncoder().encode(JSON.stringify(metadata, null, 2));
+    await graphFetch('PUT', `/drives/${DRIVE_ID}/root:/${encodePath(uploadFolder)}/_pms-metadata.json:/content`, metaBytes);
+
+    setProgress(total + 2, 'Done!');
+    document.getElementById('progressBar').style.width = '100%';
+    document.getElementById('progressBar').style.background = 'var(--green)';
+    document.getElementById('progressTitle').textContent = 'Upload complete!';
+
+    const okCount = toUpload.filter(f => f.status === 'ok').length;
+    const errCount = toUpload.filter(f => f.status === 'err').length;
+    toast(`${okCount} photo${okCount !== 1 ? 's' : ''} uploaded${errCount ? ` (${errCount} failed)` : ''}!`, 'success');
+
+    // Clean up successes
+    setTimeout(() => {
+      pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
+      renderPreviews();
+      prog.classList.add('hidden');
+      document.getElementById('progressBar').style.background = 'var(--blue)';
+      document.getElementById('uploadBtn').disabled = false;
+    }, 2500);
+
+  } catch(e) {
+    toast('Upload failed: ' + e.message, 'error');
+    prog.classList.add('hidden');
+    document.getElementById('uploadBtn').disabled = false;
+  }
+}
+
+// ---- Gallery ----
+let galleryGroups = [];   // [{folderName, projectLabel, items:[]}]
+let galleryLoaded = false;
+
+async function loadGallery() {
+  const body = document.getElementById('galleryBody');
+  body.innerHTML = '<div class="load-spinner">&#8987; Loading photos...</div>';
+  galleryGroups = [];
+  galleryData = [];
+
+  const selProjectVal = document.getElementById('galProject').value;
+  let projectsToLoad = [];
+
+  if (selProjectVal) {
+    const p = allProjects.find(p => (p.projectNumber || p.name) === selProjectVal);
+    if (p) projectsToLoad = [p];
+  } else {
+    // Load all projects that have a SharePoint folder
+    projectsToLoad = allProjects.filter(p => p.projectFolderUrl);
+  }
+
+  if (!projectsToLoad.length) {
+    body.innerHTML = '<div class="gallery-empty"><div class="empty-icon">&#128248;</div><p>No projects with SharePoint folders found.</p></div>';
+    return;
+  }
+
+  for (const p of projectsToLoad) {
+    try {
+      const folderSegment = decodeURIComponent(p.projectFolderUrl.split('/').pop());
+      const photosPath = folderSegment + '/Photos';
+      const res = await graphFetch('GET', `/drives/${DRIVE_ID}/root:/${encodePath(photosPath)}:/children?$select=id,name,folder,file,webUrl,size&$top=200`);
+      if (!res || !res.value) continue;
+      const subfolders = res.value.filter(i => i.folder);
+      for (const sf of subfolders) {
+        galleryGroups.push({
+          folderId: sf.id,
+          folderName: sf.name,
+          projectLabel: (p.projectNumber ? p.projectNumber + ' — ' : '') + p.name,
+          project: p,
+          folderPath: photosPath + '/' + sf.name,
+          items: null,  // loaded lazily
+          metadata: null
+        });
+      }
+    } catch(e) {
+      console.warn('Gallery load failed for project', p.name, e);
+    }
+  }
+
+  galleryLoaded = true;
+  renderGallery();
+}
+
+function refreshGallery() {
+  galleryLoaded = false;
+  loadGallery();
+}
+
+function filterGallery() {
+  if (!galleryLoaded) return;
+  renderGallery();
+}
+
+function renderGallery() {
+  const body = document.getElementById('galleryBody');
+  const phaseFilter = document.getElementById('galPhase').value.toLowerCase();
+  const sortDir = document.getElementById('galSort').value;
+  const searchQ = document.getElementById('galSearch').value.toLowerCase();
+
+  let groups = [...galleryGroups];
+
+  // Filter by phase (folder name contains phase)
+  if (phaseFilter) groups = groups.filter(g => g.folderName.toLowerCase().includes(phaseFilter));
+
+  // Filter by search query (folder name or project)
+  if (searchQ) groups = groups.filter(g =>
+    g.folderName.toLowerCase().includes(searchQ) ||
+    g.projectLabel.toLowerCase().includes(searchQ)
+  );
+
+  // Sort by folder name (date prefix)
+  groups.sort((a, b) => {
+    const cmp = a.folderName.localeCompare(b.folderName);
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  if (!groups.length) {
+    body.innerHTML = '<div class="gallery-empty"><div class="empty-icon">&#128248;</div><p>No photo folders found. Try adjusting your filters or upload some photos first.</p></div>';
+    return;
+  }
+
+  body.innerHTML = '';
+  groups.forEach(g => {
+    const div = document.createElement('div');
+    div.className = 'folder-group';
+    div.dataset.folderId = g.folderId;
+    div.innerHTML = `
+      <div class="folder-header" onclick="toggleFolder(this, '${g.folderId}')">
+        <span class="folder-chevron">&#9654;</span>
+        <div class="folder-meta">
+          <div class="folder-name">${escHtml(g.folderName)}</div>
+          <div class="folder-sub">${escHtml(g.projectLabel)}</div>
+        </div>
+        <span class="folder-count" id="fc-${g.folderId}">...</span>
+      </div>
+      <div class="folder-photos" id="fp-${g.folderId}"></div>`;
+    body.appendChild(div);
+    // Eagerly fetch count from metadata
+    fetchFolderCount(g);
+  });
+}
+
+async function fetchFolderCount(g) {
+  try {
+    const res = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${g.folderId}/children?$select=id,name,file&$top=250`);
+    if (!res) return;
+    const photos = res.value.filter(i => i.file && !i.name.startsWith('_'));
+    const countEl = document.getElementById('fc-' + g.folderId);
+    if (countEl) countEl.textContent = photos.length + ' photo' + (photos.length !== 1 ? 's' : '');
+
+    // Check for metadata sidecar
+    const meta = res.value.find(i => i.name === '_pms-metadata.json');
+    if (meta) {
+      try {
+        const token = await getToken();
+        const mr = await fetch(`https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/items/${meta.id}/content`, {
+          headers: { Authorization: 'Bearer ' + token }
+        });
+        if (mr.ok) g.metadata = await mr.json();
+      } catch(e) {}
+    }
+
+    // Store items in group for lazy load
+    g.items = photos.map(i => ({
+      id: i.id,
+      name: i.name,
+      webUrl: i.webUrl,
+      size: i.size,
+      folderName: g.folderName,
+      projectLabel: g.projectLabel,
+      project: g.project,
+      metadata: g.metadata
+    }));
+  } catch(e) {
+    console.warn('Count fetch failed', e);
+  }
+}
+
+async function toggleFolder(headerEl, folderId) {
+  headerEl.classList.toggle('open');
+  const photosEl = document.getElementById('fp-' + folderId);
+  const isOpen = headerEl.classList.contains('open');
+
+  if (!isOpen) {
+    photosEl.classList.remove('open');
+    return;
+  }
+
+  photosEl.classList.add('open');
+
+  if (photosEl.dataset.loaded) return;
+  photosEl.dataset.loaded = '1';
+  photosEl.innerHTML = '<div style="grid-column:1/-1;padding:20px;text-align:center;color:var(--dim);">&#8987; Loading...</div>';
+
+  // Find the group
+  const g = galleryGroups.find(x => x.folderId === folderId);
+  if (!g) return;
+
+  // Wait for items if not yet loaded
+  let tries = 0;
+  while (!g.items && tries++ < 20) await new Promise(r => setTimeout(r, 300));
+  if (!g.items || !g.items.length) {
+    photosEl.innerHTML = '<div style="grid-column:1/-1;padding:20px;text-align:center;color:var(--dim);">No photos in this folder.</div>';
+    return;
+  }
+
+  photosEl.innerHTML = '';
+
+  for (const item of g.items) {
+    // Get thumbnail URL
+    let thumbUrl = '';
+    try {
+      const thumbRes = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${item.id}/thumbnails/0/medium`);
+      if (thumbRes) thumbUrl = thumbRes.url;
+    } catch(e) {}
+
+    // Add to galleryData for lightbox
+    const gIdx = galleryData.length;
+    galleryData.push({ ...item, thumbUrl, downloadUrl: null });
+
+    const card = document.createElement('div');
+    card.className = 'photo-card';
+    card.dataset.gidx = gIdx;
+
+    const meta = item.metadata || {};
+    const tooltipHtml = `
+      <div class="tooltip-row"><span class="tlabel">Phase:</span>${escHtml(meta.phase || g.folderName.split(' - ').slice(1).join(' - ') || '—')}</div>
+      <div class="tooltip-row"><span class="tlabel">System:</span>${escHtml(meta.system || '—')}</div>
+      <div class="tooltip-row"><span class="tlabel">Location:</span>${escHtml(meta.location || '—')}</div>
+      <div class="tooltip-row"><span class="tlabel">Photographer:</span>${escHtml(meta.photographer || '—')}</div>
+      <div class="tooltip-row"><span class="tlabel">Date:</span>${escHtml(meta.date || '—')}</div>
+      ${meta.notes ? `<div class="tooltip-row"><span class="tlabel">Notes:</span>${escHtml(meta.notes.slice(0,80))}</div>` : ''}`;
+
+    card.innerHTML = `
+      <input type="checkbox" class="cb" onchange="toggleBatch(${gIdx}, this.checked)" onclick="event.stopPropagation()" />
+      <div class="thumb">${thumbUrl ? `<img src="${thumbUrl}" alt="${escHtml(item.name)}" loading="lazy" />` : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:28px;">&#128247;</div>'}</div>
+      <div class="card-name">${escHtml(item.name)}</div>
+      <div class="tooltip">${tooltipHtml}</div>`;
+
+    card.addEventListener('click', e => {
+      if (e.target.type === 'checkbox') return;
+      openLightbox(parseInt(card.dataset.gidx));
+    });
+    photosEl.appendChild(card);
+  }
+
+  // Sync batch checkboxes
+  syncBatchCheckboxes();
+}
+
+// ---- Lightbox ----
+function openLightbox(idx) {
+  lbIndex = idx;
+  renderLightbox();
+  document.getElementById('lightbox').classList.add('open');
+}
+
+async function renderLightbox() {
+  const item = galleryData[lbIndex];
+  if (!item) return;
+
+  document.getElementById('lbImg').src = item.thumbUrl || '';
+
+  // Try to get full-res URL
+  if (!item.downloadUrl) {
+    try {
+      const res = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${item.id}?$select=@microsoft.graph.downloadUrl`);
+      if (res) item.downloadUrl = res['@microsoft.graph.downloadUrl'];
+    } catch(e) {}
+  }
+  if (item.downloadUrl) document.getElementById('lbImg').src = item.downloadUrl;
+
+  const meta = item.metadata || {};
+  const phase = meta.phase || (item.folderName ? item.folderName.split(' - ').slice(1).join(' - ') : '');
+  document.getElementById('lbMeta').innerHTML = `
+    <h3>${escHtml(item.name)}</h3>
+    <div class="lb-field"><div class="lbl">Project</div><div class="val">${escHtml(item.projectLabel || '')}</div></div>
+    <div class="lb-field"><div class="lbl">Date</div><div class="val">${escHtml(meta.date || item.folderName?.split(' - ')[0] || '—')}</div></div>
+    <div class="lb-field"><div class="lbl">Phase</div><div class="val">${escHtml(phase || '—')}</div></div>
+    <div class="lb-field"><div class="lbl">System</div><div class="val">${escHtml(meta.system || '—')}</div></div>
+    <div class="lb-field"><div class="lbl">Location</div><div class="val">${escHtml(meta.location || '—')}</div></div>
+    <div class="lb-field"><div class="lbl">Photographer</div><div class="val">${escHtml(meta.photographer || '—')}</div></div>
+    ${(meta.tags || []).length ? `<div class="lb-field"><div class="lbl">Tags</div><div class="val">${meta.tags.map(t => `<span style="background:rgba(59,130,246,.15);border-radius:4px;padding:2px 7px;font-size:12px;margin-right:4px;">${escHtml(t)}</span>`).join('')}</div></div>` : ''}
+    ${meta.notes ? `<div class="lb-field"><div class="lbl">Notes</div><div class="val">${escHtml(meta.notes)}</div></div>` : ''}
+    <div class="lb-field"><div class="lbl">Folder</div><div class="val" style="font-size:11px;color:var(--dim);">${escHtml(item.folderName || '—')}</div></div>
+    ${item.downloadUrl ? `<div style="margin-top:20px;"><a href="${item.downloadUrl}" download="${escHtml(item.name)}" class="btn-primary" style="display:block;text-align:center;padding:10px;border-radius:7px;">&#8615; Download Full Res</a></div>` : ''}
+  `;
+}
+
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lbImg').src = '';
+}
+
+function closeLightboxOnBg(e) {
+  if (e.target === document.getElementById('lightbox')) closeLightbox();
+}
+
+function navLightbox(dir) {
+  lbIndex = (lbIndex + dir + galleryData.length) % galleryData.length;
+  renderLightbox();
+}
+
+document.addEventListener('keydown', e => {
+  if (!document.getElementById('lightbox').classList.contains('open')) return;
+  if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'ArrowRight') navLightbox(1);
+  if (e.key === 'ArrowLeft') navLightbox(-1);
+});
+
+// ---- Batch Download ----
+function toggleBatch(gIdx, checked) {
+  if (checked) batchSelected.add(gIdx);
+  else batchSelected.delete(gIdx);
+  updateBatchUI();
+}
+
+function toggleSelectAll() {
+  if (batchSelected.size === galleryData.length) {
+    batchSelected.clear();
+  } else {
+    galleryData.forEach((_, i) => batchSelected.add(i));
+  }
+  syncBatchCheckboxes();
+  updateBatchUI();
+}
+
+function clearSelection() {
+  batchSelected.clear();
+  syncBatchCheckboxes();
+  updateBatchUI();
+}
+
+function syncBatchCheckboxes() {
+  document.querySelectorAll('.photo-card .cb').forEach(cb => {
+    const idx = parseInt(cb.closest('.photo-card').dataset.gidx);
+    cb.checked = batchSelected.has(idx);
+  });
+}
+
+function updateBatchUI() {
+  const count = batchSelected.size;
+  document.getElementById('selCount').textContent = count + ' selected';
+  document.getElementById('zipBtn').disabled = count === 0;
+  renderBatchList();
+}
+
+function renderBatchList() {
+  const list = document.getElementById('batchList');
+  if (galleryData.length === 0) {
+    list.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Load the Gallery tab first to populate photos here.</div>';
+    return;
+  }
+  if (batchSelected.size === 0) {
+    list.innerHTML = '<div style="padding:40px;text-align:center;color:var(--dim);">Select photos in the Gallery tab using the checkboxes.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  [...batchSelected].sort().forEach(idx => {
+    const item = galleryData[idx];
+    const div = document.createElement('div');
+    div.className = 'batch-item';
+    div.innerHTML = `
+      ${item.thumbUrl ? `<img class="batch-thumb" src="${item.thumbUrl}" alt="" />` : '<div class="batch-thumb" style="display:flex;align-items:center;justify-content:center;color:var(--dim);">&#128247;</div>'}
+      <div class="batch-info">
+        <div class="bname">${escHtml(item.name)}</div>
+        <div class="bmeta">${escHtml(item.projectLabel || '')} &bull; ${escHtml(item.folderName || '')}</div>
+      </div>
+      <div class="batch-size">${item.size ? formatSize(item.size) : ''}</div>
+      <button class="btn-ghost" style="padding:4px 10px;font-size:12px;" onclick="toggleBatch(${idx}, false);syncBatchCheckboxes();updateBatchUI();">&#215;</button>`;
+    list.appendChild(div);
+  });
+}
+
+async function downloadZip() {
+  if (!batchSelected.size) return;
+  const btn = document.getElementById('zipBtn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing ZIP...';
+  try {
+    const zip = new JSZip();
+    let i = 0;
+    for (const idx of batchSelected) {
+      const item = galleryData[idx];
+      btn.textContent = `Downloading ${++i}/${batchSelected.size}...`;
+      try {
+        // Get download URL
+        if (!item.downloadUrl) {
+          const res = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${item.id}?$select=@microsoft.graph.downloadUrl`);
+          if (res) item.downloadUrl = res['@microsoft.graph.downloadUrl'];
+        }
+        if (!item.downloadUrl) continue;
+        const r = await fetch(item.downloadUrl);
+        if (!r.ok) continue;
+        const buf = await r.arrayBuffer();
+        const safeName = (item.folderName || 'Photos').replace(/[/\\:*?"<>|]/g, '_') + '/' + item.name;
+        zip.file(safeName, buf);
+      } catch(e) { console.warn('Zip item failed', item.name, e); }
+    }
+    btn.textContent = 'Generating ZIP...';
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'SETTY-FieldPhotos-' + new Date().toISOString().slice(0,10) + '.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('ZIP downloaded!', 'success');
+  } catch(e) {
+    toast('ZIP failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇ Download ZIP';
+  }
+}
+
+// ---- Tabs ----
+function switchTab(name, btnEl) {
+  document.querySelectorAll('.tab-content').forEach(el => {
+    el.classList.remove('active');
+    el.style.display = 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+
+  const tabEl = document.getElementById(name + 'Tab');
+  tabEl.style.display = name === 'gallery' ? 'flex' : 'block';
+  tabEl.classList.add('active');
+  if (btnEl) btnEl.classList.add('active');
+
+  if (name === 'batch') renderBatchList();
+}
+
+// ---- Utilities ----
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function toast(msg, type) {
+  const area = document.getElementById('toastArea');
+  const el = document.createElement('div');
+  el.className = 'toast ' + (type || '');
+  el.textContent = msg;
+  area.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ---- Init ----
+initAuth();
+</script>
+</body>
+</html>
