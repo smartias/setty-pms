@@ -1173,11 +1173,8 @@ function buildTeamsCard(type, payload) {
 async function getOrCreateProjectChannel(project) {
   if (project.teamsChannelId) return project.teamsChannelId;
 
-const rawName =
-  (project.projectNumber ? project.projectNumber + " | " : "") +
-  (project.name || "Project");
-
-const displayName = sanitizeTeamsChannelName(rawName);
+  const rawName = (project.projectNumber ? project.projectNumber + " | " : "") + (project.name || "Project");
+  const displayName = sanitizeTeamsChannelName(rawName);
 
   try {
     const ch = await graphFetch("POST", `/teams/${TEAMS_TEAM_ID}/channels`, {
@@ -1187,7 +1184,14 @@ const displayName = sanitizeTeamsChannelName(rawName);
     });
     return ch?.id || null;
   } catch (e) {
-    console.error("Teams channel create failed:", e);
+    // NameAlreadyExists means the channel is already there — fetch it and return its ID.
+    // This happens when a previous setup attempt created the channel but failed before
+    // saving the ID to Supabase, leaving the project in a half-configured state.
+    if (e.message?.includes("NameAlreadyExists") || e.message?.includes("already existed")) {
+      const all = await graphFetch("GET", `/teams/${TEAMS_TEAM_ID}/channels`);
+      const found = (all?.value || []).find(c => c.displayName === displayName);
+      if (found?.id) return found.id;
+    }
     throw e;
   }
 }
