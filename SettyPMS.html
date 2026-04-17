@@ -12641,8 +12641,36 @@ function ScopeView({ project, onChange }) {
 
   function exec(cmd, val) {
     if (scopeLocked) return;
+    if (cmd === "indent" || cmd === "outdent") {
+      customIndentOutdent(cmd === "indent");
+      return;
+    }
     document.execCommand(cmd, false, val || null);
     if (editorRef.current) editorRef.current.focus();
+    saveContent();
+  }
+
+  // execCommand('indent') only works on list items in modern browsers.
+  // For paragraphs and headings we walk up to the nearest block-level
+  // child of the editor and nudge its margin-left by 30 px.
+  function customIndentOutdent(isIndent) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    // Walk up from the anchor node until we find a direct child of the editor.
+    let node = sel.anchorNode;
+    while (node && node.parentNode !== editor) node = node.parentNode;
+    if (!node || node === editor) {
+      // Fallback: native command still handles lists correctly.
+      document.execCommand(isIndent ? "indent" : "outdent", false, null);
+      editor.focus();
+      saveContent();
+      return;
+    }
+    const current = parseInt(node.style.marginLeft || "0", 10) || 0;
+    node.style.marginLeft = Math.max(0, current + (isIndent ? 30 : -30)) + "px";
+    editor.focus();
     saveContent();
   }
 
@@ -12731,53 +12759,70 @@ function ScopeView({ project, onChange }) {
         </div>
       )}
 
-      {/* Toolbar */}
-      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", padding: "8px 10px", background: P.card, border: "1px solid " + P.border, borderBottom: "none", borderRadius: "8px 8px 0 0", opacity: scopeLocked ? 0.5 : 1 }}>
-        <select
-          onChange={e => { exec("formatBlock", e.target.value); e.target.value = "p"; }}
-          defaultValue="p"
-          disabled={scopeLocked}
-          style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: scopeLocked ? "not-allowed" : "pointer" }}>
-          <option value="p">Paragraph</option>
-          <option value="h1">Heading 1</option>
-          <option value="h2">Heading 2</option>
-          <option value="h3">Heading 3</option>
-        </select>
-        {divider}
-        <TB label="B" cmd="bold" title="Bold" />
-        <TB label="I" cmd="italic" title="Italic" />
-        <TB label="U" cmd="underline" title="Underline" />
-        {divider}
-        <TB label="• List" cmd="insertUnorderedList" title="Bullet list" />
-        <TB label="1. List" cmd="insertOrderedList" title="Numbered list" />
-        {divider}
-        <TB label="⇤" cmd="outdent" title="Decrease indent" />
-        <TB label="⇥" cmd="indent" title="Increase indent" />
-        {divider}
-        <TB label="✕ Clear" cmd="removeFormat" title="Clear formatting" />
-      </div>
+      {/* Scoped typography for the scope editor */}
+      <style>{`
+        .scope-editor { font-family: 'Calibri', Calibri, 'Trebuchet MS', sans-serif; font-size: 10pt; }
+        .scope-editor p  { font-family: inherit; font-size: 10pt; margin: 0 0 4px; }
+        .scope-editor h1 { font-family: inherit; font-size: 16pt; font-weight: 700; margin: 10px 0 4px; }
+        .scope-editor h2 { font-family: inherit; font-size: 13pt; font-weight: 700; margin: 8px 0 3px; }
+        .scope-editor h3 { font-family: inherit; font-size: 11pt; font-weight: 700; margin: 6px 0 2px; }
+        .scope-editor ul, .scope-editor ol { font-family: inherit; font-size: 10pt; margin: 2px 0 4px 24px; }
+        .scope-editor li { margin-bottom: 2px; }
+      `}</style>
 
-      {/* Editor */}
-      <div
-        ref={editorRef}
-        contentEditable={scopeLocked ? "false" : "true"}
-        suppressContentEditableWarning={true}
-        onInput={saveContent}
-        style={{
-          minHeight: 520,
-          padding: "20px 24px",
-          background: "#ffffff",
-          border: "1px solid " + (scopeLocked ? P.green : P.border),
-          borderTop: "none",
-          borderRadius: "0 0 8px 8px",
-          outline: "none",
-          fontSize: 13,
-          lineHeight: 1.75,
-          color: "#1a1a1a",
-          overflowY: "auto",
-          cursor: scopeLocked ? "default" : "text",
-        }}
-      />
+      {/* Sticky toolbar + scrollable editor — outer div is the fixed-height frame */}
+      <div style={{
+        display: "flex", flexDirection: "column",
+        height: 620,
+        border: "1px solid " + (scopeLocked ? P.green : P.border),
+        borderRadius: 8,
+        overflow: "hidden",
+      }}>
+        {/* Toolbar — never scrolls away */}
+        <div style={{ flexShrink: 0, display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center", padding: "8px 10px", background: P.card, borderBottom: "1px solid " + P.border, opacity: scopeLocked ? 0.5 : 1 }}>
+          <select
+            onChange={e => { exec("formatBlock", e.target.value); e.target.value = "p"; }}
+            defaultValue="p"
+            disabled={scopeLocked}
+            style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: scopeLocked ? "not-allowed" : "pointer" }}>
+            <option value="p">Paragraph</option>
+            <option value="h1">Heading 1</option>
+            <option value="h2">Heading 2</option>
+            <option value="h3">Heading 3</option>
+          </select>
+          {divider}
+          <TB label="B" cmd="bold" title="Bold" />
+          <TB label="I" cmd="italic" title="Italic" />
+          <TB label="U" cmd="underline" title="Underline" />
+          {divider}
+          <TB label="• List" cmd="insertUnorderedList" title="Bullet list" />
+          <TB label="1. List" cmd="insertOrderedList" title="Numbered list" />
+          {divider}
+          <TB label="⇤" cmd="outdent" title="Decrease indent" />
+          <TB label="⇥" cmd="indent" title="Increase indent" />
+          {divider}
+          <TB label="✕ Clear" cmd="removeFormat" title="Clear formatting" />
+        </div>
+
+        {/* Editor — fills remaining height, scrolls independently */}
+        <div
+          ref={editorRef}
+          className="scope-editor"
+          contentEditable={scopeLocked ? "false" : "true"}
+          suppressContentEditableWarning={true}
+          onInput={saveContent}
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "20px 24px",
+            background: "#ffffff",
+            outline: "none",
+            lineHeight: 1.6,
+            color: "#1a1a1a",
+            cursor: scopeLocked ? "default" : "text",
+          }}
+        />
+      </div>
 
       <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
         💡 Use <strong style={{ color: P.text }}>Heading 1</strong> for discipline sections, <strong style={{ color: P.text }}>Heading 2</strong> for subsections, bullet lists for deliverables and exclusions.
