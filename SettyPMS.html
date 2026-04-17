@@ -12674,6 +12674,31 @@ function ScopeView({ project, onChange }) {
     saveContent();
   }
 
+  // Wraps the current selection in a <span> with an explicit font size.
+  // execCommand('fontSize') only accepts 1-7 HTML sizes — this gives real pt values.
+  function applyFontSize(pt) {
+    if (scopeLocked) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    if (sel.isCollapsed) { editor.focus(); return; }
+    const range = sel.getRangeAt(0);
+    // extractContents handles multi-element selections safely
+    const fragment = range.extractContents();
+    const span = document.createElement("span");
+    span.style.fontSize = pt + "pt";
+    span.appendChild(fragment);
+    range.insertNode(span);
+    // Restore selection over the new span
+    const newRange = document.createRange();
+    newRange.selectNodeContents(span);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+    editor.focus();
+    saveContent();
+  }
+
   function saveContent() {
     if (scopeLocked) return;
     const html = editorRef.current ? editorRef.current.innerHTML : "";
@@ -12768,7 +12793,7 @@ function ScopeView({ project, onChange }) {
         .scope-editor h3 { font-family: inherit; font-size: 11pt; font-weight: 700; margin: 6px 0 2px; }
         .scope-editor ul, .scope-editor ol { font-family: inherit; font-size: 10pt; margin: 2px 0 4px 24px; }
         .scope-editor li { margin-bottom: 2px; }
-        .scope-editor li::marker { font-family: inherit; font-size: inherit; }
+        .scope-editor li::marker { font-family: 'Calibri', Calibri, 'Trebuchet MS', sans-serif; font-size: 10pt; }
       `}</style>
 
       {/* Sticky toolbar + scrollable editor — outer div is the fixed-height frame */}
@@ -12790,6 +12815,15 @@ function ScopeView({ project, onChange }) {
             <option value="h1">Heading 1</option>
             <option value="h2">Heading 2</option>
             <option value="h3">Heading 3</option>
+          </select>
+          <select
+            onChange={e => { if (e.target.value) { applyFontSize(e.target.value); } e.target.value = ""; }}
+            defaultValue=""
+            disabled={scopeLocked}
+            title="Font size (select text first)"
+            style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: scopeLocked ? "not-allowed" : "pointer" }}>
+            <option value="" disabled>pt</option>
+            {[8,9,10,11,12,14,16,18,24].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           {divider}
           <TB label="B" cmd="bold" title="Bold" />
