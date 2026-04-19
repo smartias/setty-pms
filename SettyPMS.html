@@ -908,18 +908,36 @@ async function getOrCreateTeamsOneNoteNotebook(project) {
 // All document-write functions accept a `metadata` param built from buildPmsMetadata().
 
 const PMS_DOC_TYPES = {
-  MEETING_MINUTES: "meeting-minutes",
-  SITE_VISIT:      "site-visit",
-  CLIENT_COMM:     "client-communication",
-  RFI:             "rfi",
-  SUBMITTAL:       "submittal",
-  CHANGE_ORDER:    "change-order",
-  INVOICE:         "invoice",
-  CORRESPONDENCE:  "correspondence",
-  SCHEDULE:        "schedule",
-  CONTRACT:        "contract",
-  SITE_PHOTO:      "site-photo",
+  MEETING_MINUTES:   "meeting-minutes",
+  INTERNAL_MEETING:  "internal-meeting",
+  SITE_VISIT:        "site-visit",
+  CLIENT_COMM:       "client-communication",
+  RFI:               "rfi",
+  SUBMITTAL:         "submittal",
+  CHANGE_ORDER:      "change-order",
+  INVOICE:           "invoice",
+  CORRESPONDENCE:    "correspondence",
+  SCHEDULE:          "schedule",
+  CONTRACT:          "contract",
+  SITE_PHOTO:        "site-photo",
 };
+
+// Maps a note category to its OneNote section name and PMS doc type.
+function getNoteSection(category) {
+  const map = {
+    "Client Meeting":       { sectionName: "Client Meetings",      docType: PMS_DOC_TYPES.MEETING_MINUTES  },
+    "Internal Meeting":     { sectionName: "Internal Meetings",    docType: PMS_DOC_TYPES.INTERNAL_MEETING },
+    "Meeting":              { sectionName: "Meetings",             docType: PMS_DOC_TYPES.MEETING_MINUTES  }, // legacy
+    "Site Visit":           { sectionName: "Site Visits",          docType: PMS_DOC_TYPES.SITE_VISIT       },
+    "Client Communication": { sectionName: "Client Communications",docType: PMS_DOC_TYPES.CLIENT_COMM      },
+    "Decision":             { sectionName: "Decisions",            docType: PMS_DOC_TYPES.CORRESPONDENCE   },
+    "Issue":                { sectionName: "Issues",               docType: PMS_DOC_TYPES.CORRESPONDENCE   },
+    "Action Item":          { sectionName: "Action Items",         docType: PMS_DOC_TYPES.CORRESPONDENCE   },
+    "Internal":             { sectionName: "Internal Notes",       docType: PMS_DOC_TYPES.INTERNAL_MEETING },
+    "General":              { sectionName: "General Notes",        docType: PMS_DOC_TYPES.CORRESPONDENCE   },
+  };
+  return map[category] || { sectionName: "General Notes", docType: PMS_DOC_TYPES.CORRESPONDENCE };
+}
 
 function buildPmsMetadata(project, docType, extra = {}) {
   return {
@@ -10781,9 +10799,11 @@ function EmailsView({ project, onChange }) {
 
 // ─── NOTES VIEW ──────────────────────────────────────────────────────────────
 
-const NOTE_CATEGORIES = ["Meeting", "Site Visit", "Decision", "Client Communication", "Internal", "Issue", "Action Item", "General"];
+const NOTE_CATEGORIES = ["Client Meeting", "Internal Meeting", "Site Visit", "Decision", "Client Communication", "Internal", "Issue", "Action Item", "General"];
 const NOTE_CAT_COLORS = {
-  "Meeting":              { bg: P.accentDim,  text: P.accentLight },
+  "Client Meeting":       { bg: P.accentDim,  text: P.accentLight },
+  "Internal Meeting":     { bg: "#1a2040",    text: "#93c5fd" },
+  "Meeting":              { bg: P.accentDim,  text: P.accentLight }, // legacy fallback
   "Decision":             { bg: P.purpleDim,  text: P.purple },
   "Client Communication": { bg: P.greenDim,   text: P.green },
   "Internal":             { bg: P.border,     text: P.textMuted },
@@ -10885,7 +10905,7 @@ function CalendarImportPanel({ project, onImport }) {
 
   function toggleSelect(id) {
     setSelected(prev => ({ ...prev, [id]: !prev[id] }));
-    if (!noteType[id]) setNoteType(prev => ({ ...prev, [id]: "Meeting" }));
+    if (!noteType[id]) setNoteType(prev => ({ ...prev, [id]: "Client Meeting" }));
   }
 
   async function importSelected() {
@@ -10898,9 +10918,7 @@ function CalendarImportPanel({ project, onImport }) {
       const cat = noteType[ev.id] || "Meeting";
       const noteBody = buildNoteBody(ev);
       let oneNoteUrl = "";
-      // Auto-create OneNote page if notebook exists and category warrants it
-      const createPage = notebookId && ["Meeting", "Site Visit", "Client Communication"].includes(cat);
-      if (createPage) {
+      if (notebookId) {
         try {
           const title = ev.subject || "(No title)";
           const dt = ev.start?.dateTime || ev.start?.date || "";
@@ -10928,8 +10946,7 @@ function CalendarImportPanel({ project, onImport }) {
             + "</tr>"
             + "<tr><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td></tr>"
             + "</table>";
-          const sectionName = cat === "Site Visit" ? "Site Visits" : cat === "Client Communication" ? "Client Communications" : "Meetings";
-          const docType = cat === "Site Visit" ? PMS_DOC_TYPES.SITE_VISIT : cat === "Client Communication" ? PMS_DOC_TYPES.CLIENT_COMM : PMS_DOC_TYPES.MEETING_MINUTES;
+          const { sectionName, docType } = getNoteSection(cat);
           const noteMeta = buildPmsMetadata(project, docType, { date: (dt || "").slice(0, 10) || undefined });
           const page = useTeamsNB
             ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, dt || "", noteMeta)
@@ -10980,9 +10997,9 @@ function CalendarImportPanel({ project, onImport }) {
         <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16 }}>\u2715</button>
       </div>
       <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
-        Searches your personal Outlook calendar and NYC Shared Calendar (2 years back, 1 year forward). Select events to import as Site Visit, Meeting, or Client Communication notes.
+        Searches your personal Outlook calendar and NYC Shared Calendar (2 years back, 1 year forward). Select events to import as Client Meeting, Internal Meeting, Site Visit, or any note type.
         {(project.teamsOneNoteNotebookId || project.oneNoteNotebookId)
-          ? <span style={{ color: "#a78bfa", marginLeft: 4 }}>📓 OneNote pages will be auto-created for Meetings, Site Visits, and Client Communications.</span>
+          ? <span style={{ color: "#a78bfa", marginLeft: 4 }}>📓 A OneNote page will be auto-created for every imported note.</span>
           : <span style={{ marginLeft: 4 }}>Tip: Enable Teams Notifications on the Overview tab to auto-generate OneNote pages on import.</span>}
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
@@ -11036,7 +11053,7 @@ function CalendarImportPanel({ project, onImport }) {
                     {isChecked && (
                       <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6 }} onClick={e => e.stopPropagation()}>
                         <span style={{ fontSize: 11, color: P.textDim }}>Log as:</span>
-                        <select value={noteType[ev.id] || "Meeting"}
+                        <select value={noteType[ev.id] || "Client Meeting"}
                           onChange={e => setNoteType(prev => ({ ...prev, [ev.id]: e.target.value }))}
                           style={{ fontSize: 11, padding: "2px 6px" }}>
                           {NOTE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
@@ -11056,13 +11073,16 @@ function CalendarImportPanel({ project, onImport }) {
 
 function NotesView({ project, onChange }) {
   const notes = (project.notes || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const [draft, setDraft] = useState({ body: "", category: "General", actionItem: false, visitDate: "" });
+  const [draft, setDraft] = useState({ body: "", category: "Client Meeting", actionItem: false, visitDate: "" });
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState({});
   const [filterCat, setFilterCat] = useState("All");
   const [search, setSearch] = useState("");
   const [calStatus, setCalStatus] = useState({}); // { [noteId]: "syncing"|"synced"|"error" }
   const [calMsg, setCalMsg] = useState({});   // { [noteId]: message string }
+  // Always points to the latest project prop — prevents stale-closure overwrites in async OneNote tasks
+  const projectRef = React.useRef(project);
+  React.useEffect(() => { projectRef.current = project; }, [project]);
 
   async function syncSiteVisit(note) {
     if (!note.visitDate) return;
@@ -11089,7 +11109,6 @@ function NotesView({ project, onChange }) {
     if (!draft.body.trim()) return;
     const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
     const useTeamsNB = !!project.teamsOneNoteNotebookId;
-    const shouldCreatePage = notebookId && ["Meeting", "Site Visit", "Client Communication"].includes(draft.category);
 
     const entryId = uid();
     const entry = {
@@ -11100,26 +11119,25 @@ function NotesView({ project, onChange }) {
     };
     const newNotes = [entry, ...(project.notes || [])];
     onChange({ ...project, notes: newNotes });
-    setDraft({ body: "", category: "General", actionItem: false, visitDate: "" });
+    setDraft({ body: "", category: draft.category, actionItem: false, visitDate: "" });
 
-    // Background: create OneNote page for qualifying categories
-    if (shouldCreatePage) {
+    // Background: create a OneNote page for every logged note (when notebook is configured)
+    if (notebookId) {
       try {
-        const sectionName = draft.category === "Site Visit" ? "Site Visits"
-          : draft.category === "Client Communication" ? "Client Communications"
-          : "Meetings";
+        const { sectionName, docType } = getNoteSection(draft.category);
         const dateLabel = draft.visitDate || new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
         const title = draft.category + " — " + dateLabel;
         const pageHtml = "<h1>" + title + "</h1>"
           + "<h2>Notes</h2><p>" + entry.body.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/\n/g, "</p><p>") + "</p>"
           + "<h2>Action Items</h2><p>&nbsp;</p>";
-        const noteDocType = draft.category === "Site Visit" ? PMS_DOC_TYPES.SITE_VISIT : draft.category === "Client Communication" ? PMS_DOC_TYPES.CLIENT_COMM : PMS_DOC_TYPES.MEETING_MINUTES;
-        const noteMeta = buildPmsMetadata(project, noteDocType, { date: draft.visitDate || undefined });
+        const noteMeta = buildPmsMetadata(project, docType, { date: draft.visitDate || undefined });
         const page = useTeamsNB
           ? await createTeamsOneNotePage(notebookId, sectionName, title, pageHtml, "", noteMeta)
           : await createOneNotePage(notebookId, sectionName, title, pageHtml, "", noteMeta);
         if (page?.webUrl) {
-          onChange({ ...project, notes: newNotes.map(n => n.id === entryId ? { ...n, oneNoteUrl: page.webUrl } : n) });
+          // Use projectRef.current so we never overwrite notes added while OneNote was being created
+          const latest = projectRef.current;
+          onChange({ ...latest, notes: latest.notes.map(n => n.id === entryId ? { ...n, oneNoteUrl: page.webUrl } : n) });
         }
       } catch(e) { /* non-fatal — note already saved */ }
     }
@@ -11187,7 +11205,7 @@ function NotesView({ project, onChange }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
           <span style={{ fontSize: 11, color: P.textDim }}>Ctrl+Enter to post</span>
           <div style={{ display: "flex", gap: 8 }}>
-            <CalendarImportPanel project={project} onImport={imported => onChange({ ...project, notes: [...(project.notes || []), ...imported] })} />
+            <CalendarImportPanel project={project} onImport={imported => { const latest = projectRef.current; onChange({ ...latest, notes: [...(latest.notes || []), ...imported] }); }} />
             <Btn onClick={addNote} disabled={!draft.body.trim()}>Post Note</Btn>
           </div>
         </div>
