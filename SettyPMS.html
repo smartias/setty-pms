@@ -372,7 +372,9 @@ const GRAPH_SCOPES = [
   "Files.ReadWrite.All",
   "Notes.ReadWrite.All",
   "ChannelMessage.Send",
-  "Channel.Create"
+  "Channel.Create",
+  "Channel.ReadBasic.All",  // needed to list channels when NameAlreadyExists on create
+  "Group.Read.All",          // needed for /groups/{id}/onenote and group resource reads
 ];
 
 // Kept for legacy callers — now bundled into GRAPH_SCOPES so consent is
@@ -13299,13 +13301,15 @@ function TeamsNotificationsField({ project, onUpdate }) {
       // Auto-provision the Teams OneNote notebook (non-fatal if it fails)
       let notebookId = project.teamsOneNoteNotebookId || "";
       let notebookUrl = project.teamsOneNoteUrl || "";
+      let notebookWarning = "";
       if (!notebookId) {
         try {
           const nb = await getOrCreateTeamsOneNoteNotebook(project);
           notebookId = nb.id;
           notebookUrl = nb.webUrl;
         } catch(e) {
-          console.warn("OneNote notebook setup failed (non-fatal):", e.message);
+          notebookWarning = e.message;
+          console.warn("OneNote notebook setup failed:", e.message);
         }
       }
 
@@ -13321,10 +13325,12 @@ function TeamsNotificationsField({ project, onUpdate }) {
       }
 
       onUpdate({ ...project, teamsNotificationsEnabled: true, teamsChannelId: id, teamsOneNoteNotebookId: notebookId, teamsOneNoteUrl: notebookUrl, teamsChannelFolderUrl: channelFolderUrl });
-      setStatus("done");
+      setStatus(notebookWarning ? "error" : "done");
       setMsg(notebookId
         ? "Channel + OneNote notebook ready. Cards and note pages will be auto-created."
-        : "Channel ready. Cards will be posted for milestones, RFIs, submittals, COs, and team changes.");
+        : notebookWarning
+          ? "Channel linked, but OneNote notebook failed: " + notebookWarning + " — use the 'Link Teams Notebook' button above to retry."
+          : "Channel ready. Cards will be posted for milestones, RFIs, submittals, COs, and team changes.");
     } catch(e) {
       setStatus("error");
       setMsg(e.message || "Failed to create channel.");
