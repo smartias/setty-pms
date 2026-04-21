@@ -11240,6 +11240,7 @@ function NotesView({ project, onChange }) {
         </div>
         {draft.actionItem && (
           <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+            {/* Owner intentionally stays team-driven (dropdown), not free-text, to keep assignment accountable. */}
             <select value={draft.actionOwner} onChange={e => setDraft({ ...draft, actionOwner: e.target.value })}
               style={{ width: 220, fontSize: 12 }}>
               <option value="">Owner (default: you)</option>
