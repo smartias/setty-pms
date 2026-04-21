@@ -9964,6 +9964,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
   const totalFee = (project.phases || []).filter(p => p.billable && p.fee > 0).reduce((a, p) => a + p.fee, 0);
   const totalInvoiced = (project.invoices || []).reduce((a, inv) => a + inv.amount, 0);
+  const openNoteActions = openActionItemCount(project);
 
   return (
     <div style={{ padding: "24px 32px" }}>
@@ -10024,18 +10025,23 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
           sub={`Open: ${fmt(totalFee - totalInvoiced)}`} />
       </div>
 
-      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: `1px solid ${P.border}` }}>
-        {TABS.filter(t => !isPipeline(project) || !["Change Orders","RFIs","Submittals","Gantt"].includes(t)).map(t => {
-          const isFeeTab = t === "Fee Calculator";
-          const isLocked = isFeeTab && project.feeScheduleFinalized;
-          return (
-            <button key={t} onClick={() => setTab(t)}
-              style={{ padding: "8px 16px", background: "none", border: "none", color: tab === t ? P.accentLight : P.textMuted, borderBottom: tab === t ? `2px solid ${P.accentLight}` : "2px solid transparent", fontWeight: tab === t ? 600 : 400, fontSize: 13, cursor: "pointer", marginBottom: -1, display: "flex", alignItems: "center", gap: 5 }}>
-              {t}{isLocked && <span style={{ fontSize: 11 }}>🔒</span>}
-            </button>
-          );
-        })}
-      </div>
+	      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: `1px solid ${P.border}` }}>
+	        {TABS.filter(t => !isPipeline(project) || !["Change Orders","RFIs","Submittals","Gantt"].includes(t)).map(t => {
+	          const isFeeTab = t === "Fee Calculator";
+	          const isLocked = isFeeTab && project.feeScheduleFinalized;
+          const isNotesTab = t === "Notes";
+	          return (
+	            <button key={t} onClick={() => setTab(t)}
+	              style={{ padding: "8px 16px", background: "none", border: "none", color: tab === t ? P.accentLight : P.textMuted, borderBottom: tab === t ? `2px solid ${P.accentLight}` : "2px solid transparent", fontWeight: tab === t ? 600 : 400, fontSize: 13, cursor: "pointer", marginBottom: -1, display: "flex", alignItems: "center", gap: 5 }}>
+	              {t}
+              {isNotesTab && openNoteActions > 0 && (
+                <span title={`${openNoteActions} open action item${openNoteActions !== 1 ? "s" : ""}`} style={{ fontSize: 11 }}>🚩</span>
+              )}
+              {isLocked && <span style={{ fontSize: 11 }}>🔒</span>}
+	            </button>
+	          );
+	        })}
+	      </div>
 
       <Card>
         {tab === "Overview" && (
@@ -14846,6 +14852,27 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
           if (!map[key]) map[key] = [];
           map[key].push({ ms: { id: s.id, name: s.number + (s.description ? " — " + s.description : ""), dueDate: s.dueDate, pctComplete: 0, status: s.status }, project: p, role: mbr.role, itemType: "submittal", _sub: s, _project: p });
         }));
+      // Notes action items assigned by owner name
+      (p.notes || [])
+        .filter(n => n.actionItem && (n.actionStatus || "open") !== "done" && (n.actionOwner || "").trim())
+        .forEach(n => {
+          const key = (n.actionOwner || "").trim().toLowerCase();
+          if (!map[key]) map[key] = [];
+          map[key].push({
+            ms: {
+              id: n.id,
+              name: (n.body || "Action item").slice(0, 120),
+              dueDate: n.actionDueDate || "",
+              pctComplete: (n.actionStatus || "open") === "done" ? 100 : 0,
+              status: n.actionStatus || "open",
+            },
+            project: p,
+            role: "Action Item Owner",
+            itemType: "action-item",
+            _note: n,
+            _project: p
+          });
+        });
     });
     Object.values(map).forEach(arr => arr.sort((a, b) => (a.ms.dueDate||"").localeCompare(b.ms.dueDate||"")));
     return map;
@@ -14964,11 +14991,11 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map(s => {
-            const key = s.name.trim().toLowerCase();
-            const milEntries = staffMilestones[key] || [];
-            const overdue = milEntries.filter(({ ms }) => new Date(ms.dueDate) < now);
-            const upcoming = milEntries.filter(({ ms }) => new Date(ms.dueDate) >= now).slice(0, 10);
+	          {filtered.map(s => {
+	            const key = s.name.trim().toLowerCase();
+	            const milEntries = staffMilestones[key] || [];
+	            const overdue = milEntries.filter(({ ms }) => ms.dueDate && new Date(ms.dueDate) < now);
+	            const upcoming = milEntries.filter(({ ms }) => !ms.dueDate || new Date(ms.dueDate) >= now).slice(0, 10);
             const isExpanded = !!expandedStaff[s.id];
             const dcMap = { "Mechanical": { bg: "#1a2a3a", text: "#60b4ff" }, "Electrical": { bg: "#2a1a3a", text: "#c084fc" }, "Plumbing": { bg: "#1a3a2a", text: "#34d399" }, "Fire Protection": { bg: "#3a1a1a", text: "#f87171" } };
 
@@ -15014,7 +15041,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                         {upcoming.length} upcoming
                       </span>
                     )}
-                    {milEntries.length === 0 && <span style={{ fontSize: 11, color: P.textDim }}>no open milestones</span>}
+                    {milEntries.length === 0 && <span style={{ fontSize: 11, color: P.textDim }}>no open items</span>}
                   </div>
 
                   {/* Edit / delete */}
@@ -15028,8 +15055,8 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                 {/* Expanded milestones */}
                 {isExpanded && (
                   <div style={{ borderTop: "1px solid " + P.border, background: P.bg }}>
-                    {milEntries.length === 0 ? (
-                      <div style={{ padding: "14px 18px", color: P.textDim, fontSize: 13 }}>No open milestones on active projects.</div>
+	                    {milEntries.length === 0 ? (
+	                      <div style={{ padding: "14px 18px", color: P.textDim, fontSize: 13 }}>No open milestones, RFIs, submittals, or action items on active projects.</div>
                     ) : (
                       <table style={{ margin: 0 }}>
                         <thead>
@@ -15043,45 +15070,60 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                           </tr>
                         </thead>
                         <tbody>
-                          {[...overdue, ...upcoming].map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
-                            const isOv = new Date(ms.dueDate) < now;
-                            const isRS = itemType === "rfi" || itemType === "submittal";
-                            const statusLabel = isOv ? "Overdue" : (isRS ? ms.status : milestoneStatus(ms.pctComplete));
-                            const scol = (RFI_STATUS_COLORS[ms.status] || SUBMITTAL_STATUS_COLORS[ms.status] || {});
-                            const statusColor = isOv ? P.red : isRS ? (scol.text || P.textDim) : (ms.pctComplete > 0 ? P.yellow : P.textDim);
-                            const statusBg = isRS ? (scol.bg || "transparent") : "transparent";
-                            return (
-                              <tr key={ms.id + project.id}
-                                style={{ cursor: "pointer", opacity: !isRS && ms.type === "non-billable" ? 0.75 : 1 }}
-                                onClick={() => {
-                                  if (itemType === "rfi") setStaffRfiModal({ item: _rfi, project: _project || project });
-                                  else if (itemType === "submittal") setStaffSubModal({ item: _sub, project: _project || project });
-                                  else onNavigateToProject && onNavigateToProject(project.id);
-                                }}>
-                                <td style={{ paddingLeft: 18, fontWeight: 600, fontSize: 13 }}>
-                                  {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
-                                   : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
-                                   : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
-                                  {" "}{ms.name}
-                                </td>
+	                          {[...overdue, ...upcoming].map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
+	                            const isOv = !!ms.dueDate && new Date(ms.dueDate) < now;
+	                            const isRS = itemType === "rfi" || itemType === "submittal";
+                              const isActionItem = itemType === "action-item";
+	                            const statusLabel = isOv
+                                ? "Overdue"
+                                : (isActionItem
+                                    ? ((ms.status || "open").replace("-", " ").replace(/\b\w/g, c => c.toUpperCase()))
+                                    : (isRS ? ms.status : milestoneStatus(ms.pctComplete)));
+	                            const scol = (RFI_STATUS_COLORS[ms.status] || SUBMITTAL_STATUS_COLORS[ms.status] || {});
+	                            const statusColor = isOv
+                                ? P.red
+                                : isActionItem
+                                  ? (ms.status === "blocked" ? P.yellow : P.accentLight)
+                                  : isRS
+                                    ? (scol.text || P.textDim)
+                                    : (ms.pctComplete > 0 ? P.yellow : P.textDim);
+	                            const statusBg = isRS ? (scol.bg || "transparent")
+                                : isActionItem ? (ms.status === "blocked" ? P.yellowDim : P.accentDim)
+                                : "transparent";
+	                            return (
+	                              <tr key={ms.id + project.id}
+	                                style={{ cursor: "pointer", opacity: !isRS && ms.type === "non-billable" ? 0.75 : 1 }}
+	                                onClick={() => {
+	                                  if (itemType === "rfi") setStaffRfiModal({ item: _rfi, project: _project || project });
+	                                  else if (itemType === "submittal") setStaffSubModal({ item: _sub, project: _project || project });
+	                                  else onNavigateToProject && onNavigateToProject(project.id);
+	                                }}>
+	                                <td style={{ paddingLeft: 18, fontWeight: 600, fontSize: 13 }}>
+	                                  {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
+	                                   : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
+                                   : itemType === "action-item" ? <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text="ACT" />
+	                                   : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
+	                                  {" "}{ms.name}
+	                                </td>
                                 <td>
                                   <div style={{ fontWeight: 500, fontSize: 13 }}>{project.name}</div>
                                   {project.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{project.projectNumber}</div>}
                                 </td>
                                 <td style={{ color: P.textMuted, fontSize: 12 }}>{role || "—"}</td>
-                                <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: isOv ? P.red : P.textMuted, fontWeight: isOv ? 700 : 400 }}>
-                                  {fmtDate(ms.dueDate)}
-                                </td>
-                                <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor, background: statusBg, padding: isRS ? "2px 7px" : 0, borderRadius: isRS ? 8 : 0 }}>{statusLabel}</span></td>
-                                <td>
-                                  {!isRS && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                    <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
-                                    <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
-                                  </div>}
-                                </td>
-                              </tr>
-                            );
-                          })}
+	                                <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: isOv ? P.red : P.textMuted, fontWeight: isOv ? 700 : 400 }}>
+	                                  {ms.dueDate ? fmtDate(ms.dueDate) : "—"}
+	                                </td>
+	                                <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor, background: statusBg, padding: isRS ? "2px 7px" : 0, borderRadius: isRS ? 8 : 0 }}>{statusLabel}</span></td>
+	                                <td>
+	                                  {!isRS && !isActionItem && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+	                                    <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
+	                                    <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
+	                                  </div>}
+                                    {isActionItem && <span style={{ fontSize: 11, color: P.textDim }}>—</span>}
+	                                </td>
+	                              </tr>
+	                            );
+	                          })}
                         </tbody>
                       </table>
                     )}
