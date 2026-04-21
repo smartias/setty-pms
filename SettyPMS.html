@@ -4678,6 +4678,15 @@ function resolvePmsLabel(project, targetType, targetId) {
   return entity ? def.labelFn(entity) : targetId;
 }
 
+function resolvePmsTargetUrl(project, targetType, targetId) {
+  const def = PMS_TARGET_TYPES.find(t => t.value === targetType);
+  if (!def) return "";
+  const idKey = def.idKey || "id";
+  const entity = (project[def.listKey] || []).find(e => e[idKey] === targetId);
+  if (!entity) return "";
+  return entity.spFolderUrl || entity.oneNoteUrl || entity.outgoingFolderUrl || "";
+}
+
 // Scans all project entities for links pointing at a given entity.
 // Returns back-links so any entity can show what references it — zero extra storage.
 function findBackLinks(project, selfType, selfId) {
@@ -4711,6 +4720,9 @@ function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId })
           color: P.accentLight, cursor: "pointer", fontWeight: 600,
         }}>+ Link</button>
       </div>
+      <div style={{ fontSize: 11, color: P.textDim, marginBottom: 8, lineHeight: 1.5 }}>
+        PMS links map relationships and power <strong>Referenced By</strong> + search context. If the linked item has a file/page URL, it opens as a live link automatically.
+      </div>
 
       {links.length === 0 && backLinks.length === 0 && (
         <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>No linked items.</div>
@@ -4718,6 +4730,9 @@ function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId })
 
       {links.map(lk => {
         const typeDef = LINK_TYPES.find(t => t.value === lk.linkType) || { label: lk.linkType, color: "#888" };
+        const resolvedUrl = lk.targetUrl || (lk.targetSystem === "pms"
+          ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId)
+          : "");
         const label = lk.targetSystem === "pms"
           ? resolvePmsLabel(project, lk.targetType, lk.targetId)
           : (lk.targetLabel || lk.targetUrl);
@@ -4726,8 +4741,8 @@ function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId })
             <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: typeDef.color + "22", color: typeDef.color, whiteSpace: "nowrap" }}>
               {typeDef.label}
             </span>
-            {lk.targetUrl
-              ? <a href={lk.targetUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: P.accentLight, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</a>
+            {resolvedUrl
+              ? <a href={resolvedUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: P.accentLight, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</a>
               : <span style={{ fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: P.text }}>{label}</span>
             }
             <button onClick={() => onRemove(lk.id)} title="Remove link" style={{ background: "none", border: "none", cursor: "pointer", color: P.textDim, fontSize: 14, padding: "0 2px", lineHeight: 1 }}>×</button>
@@ -9219,6 +9234,9 @@ function IntelligenceView({ project }) {
           {searching ? "⏳ Searching…" : "🔍 Search"}
         </Btn>
       </div>
+      <div style={{ fontSize: 11, color: P.textDim, marginBottom: 12, lineHeight: 1.55 }}>
+        Tip: best results come from <strong>project number + short keyword</strong> (example: <code>SAPX246008.00 fire pump</code>). Use exact phrases in quotes for multi-word issues.
+      </div>
 
       {/* ── Project filter toggle ──────────────────────────────────────── */}
       <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -9946,6 +9964,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
   const totalFee = (project.phases || []).filter(p => p.billable && p.fee > 0).reduce((a, p) => a + p.fee, 0);
   const totalInvoiced = (project.invoices || []).reduce((a, inv) => a + inv.amount, 0);
+  const openNoteActions = openActionItemCount(project);
 
   return (
     <div style={{ padding: "24px 32px" }}>
@@ -10006,18 +10025,23 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
           sub={`Open: ${fmt(totalFee - totalInvoiced)}`} />
       </div>
 
-      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: `1px solid ${P.border}` }}>
-        {TABS.filter(t => !isPipeline(project) || !["Change Orders","RFIs","Submittals","Gantt"].includes(t)).map(t => {
-          const isFeeTab = t === "Fee Calculator";
-          const isLocked = isFeeTab && project.feeScheduleFinalized;
-          return (
-            <button key={t} onClick={() => setTab(t)}
-              style={{ padding: "8px 16px", background: "none", border: "none", color: tab === t ? P.accentLight : P.textMuted, borderBottom: tab === t ? `2px solid ${P.accentLight}` : "2px solid transparent", fontWeight: tab === t ? 600 : 400, fontSize: 13, cursor: "pointer", marginBottom: -1, display: "flex", alignItems: "center", gap: 5 }}>
-              {t}{isLocked && <span style={{ fontSize: 11 }}>🔒</span>}
-            </button>
-          );
-        })}
-      </div>
+	      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: `1px solid ${P.border}` }}>
+	        {TABS.filter(t => !isPipeline(project) || !["Change Orders","RFIs","Submittals","Gantt"].includes(t)).map(t => {
+	          const isFeeTab = t === "Fee Calculator";
+	          const isLocked = isFeeTab && project.feeScheduleFinalized;
+          const isNotesTab = t === "Notes";
+	          return (
+	            <button key={t} onClick={() => setTab(t)}
+	              style={{ padding: "8px 16px", background: "none", border: "none", color: tab === t ? P.accentLight : P.textMuted, borderBottom: tab === t ? `2px solid ${P.accentLight}` : "2px solid transparent", fontWeight: tab === t ? 600 : 400, fontSize: 13, cursor: "pointer", marginBottom: -1, display: "flex", alignItems: "center", gap: 5 }}>
+	              {t}
+              {isNotesTab && openNoteActions > 0 && (
+                <span title={`${openNoteActions} open action item${openNoteActions !== 1 ? "s" : ""}`} style={{ fontSize: 11 }}>🚩</span>
+              )}
+              {isLocked && <span style={{ fontSize: 11 }}>🔒</span>}
+	            </button>
+	          );
+	        })}
+	      </div>
 
       <Card>
         {tab === "Overview" && (
@@ -11075,7 +11099,7 @@ function CalendarImportPanel({ project, onImport }) {
 
 function NotesView({ project, onChange }) {
   const notes = (project.notes || []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const [draft, setDraft] = useState({ body: "", category: "Client Meeting", actionItem: false, visitDate: "" });
+  const [draft, setDraft] = useState({ body: "", category: "Client Meeting", actionItem: false, actionOwner: "", actionDueDate: "", actionStatus: "open", visitDate: "" });
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState({});
   const [filterCat, setFilterCat] = useState("All");
@@ -11115,13 +11139,16 @@ function NotesView({ project, onChange }) {
     const entryId = uid();
     const entry = {
       id: entryId, body: draft.body.trim(), category: draft.category, actionItem: draft.actionItem,
+      actionOwner: draft.actionItem ? (draft.actionOwner || getCurrentUser()) : "",
+      actionDueDate: draft.actionItem ? (draft.actionDueDate || "") : "",
+      actionStatus: draft.actionItem ? (draft.actionStatus || "open") : "open",
       ...(draft.category === "Site Visit" && draft.visitDate ? { visitDate: draft.visitDate } : {}),
       author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       oneNoteUrl: "", links: [],
     };
     const newNotes = [entry, ...(project.notes || [])];
     onChange({ ...project, notes: newNotes });
-    setDraft({ body: "", category: draft.category, actionItem: false, visitDate: "" });
+    setDraft({ body: "", category: draft.category, actionItem: false, actionOwner: "", actionDueDate: "", actionStatus: "open", visitDate: "" });
 
     // Background: create a OneNote page for every logged note (when notebook is configured)
     if (notebookId) {
@@ -11145,7 +11172,7 @@ function NotesView({ project, onChange }) {
     }
   }
 
-  function startEdit(note) { setEditingId(note.id); setEditDraft({ body: note.body, category: note.category, actionItem: note.actionItem, visitDate: note.visitDate || "" }); }
+  function startEdit(note) { setEditingId(note.id); setEditDraft({ body: note.body, category: note.category, actionItem: note.actionItem, actionOwner: note.actionOwner || "", actionDueDate: note.actionDueDate || "", actionStatus: note.actionStatus || "open", visitDate: note.visitDate || "" }); }
   function saveEdit(id) {
     onChange({ ...project, notes: (project.notes||[]).map(n => n.id === id ? { ...n, ...editDraft, ...(editDraft.category === "Site Visit" && editDraft.visitDate ? { visitDate: editDraft.visitDate } : { visitDate: undefined }) , updatedAt: new Date().toISOString() } : n) });
     setEditingId(null);
@@ -11161,21 +11188,46 @@ function NotesView({ project, onChange }) {
     (!search || n.body.toLowerCase().includes(search.toLowerCase()) || (n.author||"").toLowerCase().includes(search.toLowerCase()))
   );
   const actionItems = notes.filter(n => n.actionItem);
+  const openActionItems = actionItems.filter(n => (n.actionStatus || "open") !== "done");
+  const doneActionItems = actionItems.filter(n => (n.actionStatus || "open") === "done");
 
   const [linkingNoteId, setLinkingNoteId] = useState(null); // note.id being linked
   const [oneNoteLinkDraft, setOneNoteLinkDraft] = useState("");
+  const teamOwnerOptions = React.useMemo(() => {
+    const names = new Set();
+    (project.teamMembers || []).forEach(tm => { if (tm?.name) names.add(tm.name); });
+    if (project.projectManager) names.add(project.projectManager);
+    names.add(getCurrentUser());
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [project.teamMembers, project.projectManager]);
 
   return (
     <div>
-      <SectionTitle>Project Notes &amp; Log</SectionTitle>
+      <SectionTitle>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <span>Project Notes &amp; Log</span>
+          {openActionItems.length > 0 && (
+            <span
+              title={`${openActionItems.length} open action item${openActionItems.length !== 1 ? "s" : ""}`}
+              style={{ fontSize: 11, fontWeight: 700, color: "#fbbf24", background: "#3a2410", border: "1px solid #7c4a11", borderRadius: 999, padding: "2px 8px" }}>
+              🚩 {openActionItems.length}
+            </span>
+          )}
+        </span>
+      </SectionTitle>
 
       {actionItems.length > 0 && (
         <div style={{ background: P.yellowDim, border: "1px solid " + P.yellow, borderRadius: 8, padding: 12, marginBottom: 20 }}>
-          <div style={{ fontWeight: 700, fontSize: 12, color: P.yellow, marginBottom: 6 }}>ACTION ITEMS ({actionItems.length})</div>
-          {actionItems.map(n => (
+          <div style={{ fontWeight: 700, fontSize: 12, color: P.yellow, marginBottom: 6 }}>
+            ACTION ITEMS ({openActionItems.length} open / {doneActionItems.length} done)
+          </div>
+          {openActionItems.map(n => (
             <div key={n.id} style={{ fontSize: 12, color: P.text, marginBottom: 3 }}>
               {"\u00b7"} {n.body.length > 120 ? n.body.slice(0, 120) + "\u2026" : n.body}
-              <span style={{ color: P.textDim, marginLeft: 8 }}>{"\u2014"} {n.author}</span>
+              <span style={{ color: P.textDim, marginLeft: 8 }}>{"\u2014"} {n.actionOwner || n.author}</span>
+              {n.actionDueDate && (
+                <span style={{ color: P.textDim, marginLeft: 6 }}>due {n.actionDueDate}</span>
+              )}
             </div>
           ))}
         </div>
@@ -11192,6 +11244,23 @@ function NotesView({ project, onChange }) {
           </label>
           <span style={{ fontSize: 11, color: P.textDim, marginLeft: "auto" }}>Posting as: {getCurrentUser()}</span>
         </div>
+        {draft.actionItem && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+            {/* Owner intentionally stays team-driven (dropdown), not free-text, to keep assignment accountable. */}
+            <select value={draft.actionOwner} onChange={e => setDraft({ ...draft, actionOwner: e.target.value })}
+              style={{ width: 220, fontSize: 12 }}>
+              <option value="">Owner (default: you)</option>
+              {teamOwnerOptions.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <input type="date" value={draft.actionDueDate} onChange={e => setDraft({ ...draft, actionDueDate: e.target.value })}
+              style={{ width: 150, fontSize: 12 }} />
+            <select value={draft.actionStatus} onChange={e => setDraft({ ...draft, actionStatus: e.target.value })} style={{ fontSize: 12 }}>
+              <option value="open">Open</option>
+              <option value="blocked">Blocked</option>
+              <option value="done">Done</option>
+            </select>
+          </div>
+        )}
         {draft.category === "Site Visit" && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <label style={{ fontSize: 12, color: "#4ade80", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
@@ -11240,6 +11309,14 @@ function NotesView({ project, onChange }) {
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <Badge color={cc} text={note.category} />
                     {note.actionItem && <Badge color={{ bg: P.yellowDim, text: P.yellow }} text="Action Item" />}
+                    {note.actionItem && (
+                      <Badge color={(note.actionStatus || "open") === "done"
+                        ? { bg: "#123226", text: "#4ade80" }
+                        : (note.actionStatus === "blocked"
+                            ? { bg: "#3a2410", text: "#fbbf24" }
+                            : { bg: "#2a1f08", text: "#facc15" })}
+                        text={(note.actionStatus || "open").toUpperCase()} />
+                    )}
                     <span style={{ fontSize: 11, color: P.textDim }}>{note.author}</span>
                     <span style={{ fontSize: 11, color: P.textDim }}>{"\u00b7"} {new Date(note.createdAt).toLocaleString()}</span>
                     {edited && <span style={{ fontSize: 10, color: P.textDim, fontStyle: "italic" }}>(edited)</span>}
@@ -11318,6 +11395,24 @@ function NotesView({ project, onChange }) {
                         Action Item
                       </label>
                     </div>
+                    {editDraft.actionItem && (
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                        <select value={editDraft.actionOwner || ""} onChange={e => setEditDraft({ ...editDraft, actionOwner: e.target.value })}
+                          style={{ width: 220, fontSize: 12 }}>
+                          <option value="">Owner (default: note author)</option>
+                          {[...new Set([...(teamOwnerOptions || []), ...(editDraft.actionOwner ? [editDraft.actionOwner] : [])])].map(name =>
+                            <option key={name} value={name}>{name}</option>
+                          )}
+                        </select>
+                        <input type="date" value={editDraft.actionDueDate || ""} onChange={e => setEditDraft({ ...editDraft, actionDueDate: e.target.value })}
+                          style={{ width: 150, fontSize: 12 }} />
+                        <select value={editDraft.actionStatus || "open"} onChange={e => setEditDraft({ ...editDraft, actionStatus: e.target.value })} style={{ fontSize: 12 }}>
+                          <option value="open">Open</option>
+                          <option value="blocked">Blocked</option>
+                          <option value="done">Done</option>
+                        </select>
+                      </div>
+                    )}
                     {editDraft.category === "Site Visit" && (
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                         <label style={{ fontSize: 12, color: "#4ade80", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
@@ -11333,7 +11428,20 @@ function NotesView({ project, onChange }) {
                     </div>
                   </div>
                 ) : (
-                  <div style={{ fontSize: 13, color: P.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{note.body}</div>
+                  <div>
+                    {note.actionItem && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 8, fontSize: 11, color: P.textDim }}>
+                        <span><strong>Owner:</strong> {note.actionOwner || note.author}</span>
+                        {note.actionDueDate && <span><strong>Due:</strong> {note.actionDueDate}</span>}
+                        <button
+                          onClick={() => onChange({ ...project, notes: (project.notes||[]).map(n => n.id === note.id ? { ...n, actionStatus: (n.actionStatus || "open") === "done" ? "open" : "done", updatedAt: new Date().toISOString() } : n) })}
+                          style={{ background: "none", border: "1px solid " + P.border, borderRadius: 5, color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "2px 8px" }}>
+                          {(note.actionStatus || "open") === "done" ? "↺ Reopen" : "✓ Mark Done"}
+                        </button>
+                      </div>
+                    )}
+                    <div style={{ fontSize: 13, color: P.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{note.body}</div>
+                  </div>
                 )}
                 <LinkManager
                   links={note.links || []}
@@ -11483,11 +11591,16 @@ function ReimbursablesView({ project, onChange }) {
 
 // ─── PROJECT LIST CARD ────────────────────────────────────────────────────────
 
+function openActionItemCount(project) {
+  return (project.notes || []).filter(n => n.actionItem && (n.actionStatus || "open") !== "done").length;
+}
+
 function ProjectCard({ project, onClick }) {
   const pct = projectOverallPct(project);
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
   const contractColor = CONTRACT_COLORS[project.contractStatus] || {};
   const totalFee = (project.phases || []).filter(p => p.billable && p.fee > 0).reduce((a, p) => a + p.fee, 0);
+  const openActions = openActionItemCount(project);
 
   return (
     <div onClick={onClick}
@@ -11503,6 +11616,7 @@ function ProjectCard({ project, onClick }) {
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <Badge color={contractColor} text={project.contractStatus} />
+        {openActions > 0 && <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text={`🚩 ${openActions} Open Action${openActions !== 1 ? "s" : ""}`} />}
         {project.projectManager && <span style={{ fontSize: 11, color: P.textMuted }}>PM: {project.projectManager}</span>}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
@@ -12256,38 +12370,44 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 24 }}>
         <Card>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: P.red }}>⚠ Overdue Milestones</div>
-          {overdue.length === 0
-            ? <div style={{ color: P.textDim, fontSize: 13 }}>None – great work!</div>
-            : overdue.slice(0, 6).map(m => (
-              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
+	          {overdue.length === 0
+	            ? <div style={{ color: P.textDim, fontSize: 13 }}>None – great work!</div>
+	            : overdue.slice(0, 6).map(m => (
+	              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
                 <div style={{ fontSize: 12, color: P.textMuted }}>
-                  <button onClick={() => onNavigateToProject(m.projectId)}
-                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
-                    {m.projectName}
-                  </button>
-                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
-                </div>
-              </div>
-            ))
+	                  <button onClick={() => onNavigateToProject(m.projectId)}
+	                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
+	                    {m.projectName}
+	                  </button>
+	                  {openActionItemCount(projectMap[m.projectId] || {}) > 0 && (
+	                    <span title={`${openActionItemCount(projectMap[m.projectId] || {})} open action item(s)`} style={{ marginLeft: 6 }}>🚩</span>
+	                  )}
+	                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
+	                </div>
+	              </div>
+	            ))
           }
         </Card>
         <Card>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: P.yellow }}>📅 Due in 14 Days</div>
-          {upcoming.length === 0
-            ? <div style={{ color: P.textDim, fontSize: 13 }}>Nothing due soon.</div>
-            : upcoming.slice(0, 6).map(m => (
-              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
+	          {upcoming.length === 0
+	            ? <div style={{ color: P.textDim, fontSize: 13 }}>Nothing due soon.</div>
+	            : upcoming.slice(0, 6).map(m => (
+	              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
                 <div style={{ fontSize: 12, color: P.textMuted }}>
-                  <button onClick={() => onNavigateToProject(m.projectId)}
-                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
-                    {m.projectName}
-                  </button>
-                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
-                </div>
-              </div>
-            ))
+	                  <button onClick={() => onNavigateToProject(m.projectId)}
+	                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
+	                    {m.projectName}
+	                  </button>
+	                  {openActionItemCount(projectMap[m.projectId] || {}) > 0 && (
+	                    <span title={`${openActionItemCount(projectMap[m.projectId] || {})} open action item(s)`} style={{ marginLeft: 6 }}>🚩</span>
+	                  )}
+	                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
+	                </div>
+	              </div>
+	            ))
           }
         </Card>
       </div>
@@ -12328,9 +12448,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
           <tbody>
             {allMilestones.filter(m => !(!["rfi","submittal"].includes(m.type) && m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
               const mst = milestoneStatus(m.pctComplete);
-              const projStatus = m.projectStatus || "Not Started";
-              const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
-              const isOverdue = m.dueDate && new Date(m.dueDate) < now && mst !== "Completed";
+	              const projStatus = m.projectStatus || "Not Started";
+	              const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
+	              const isOverdue = m.dueDate && new Date(m.dueDate) < now && mst !== "Completed";
+	              const openActions = openActionItemCount(projectMap[m.projectId] || {});
 
               function updateMilestoneField(field, val, skipPrompt = false) {
                 if (!onUpdateProject) return;
@@ -12355,16 +12476,19 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                 <tr key={m.id}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                      <button onClick={() => onNavigateToProject(m.projectId)}
-                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
-                        onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
-                        onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
-                        {m.projectName}
-                      </button>
-                      {m.contractStatus !== "Fully Executed" && !["rfi","submittal"].includes(m.type) && (
-                        <span title={"No fully executed contract — current status: " + (m.contractStatus || "Not set")}
-                          style={{ fontSize: 13, cursor: "help", lineHeight: 1 }}>⚠️</span>
-                      )}
+	                      <button onClick={() => onNavigateToProject(m.projectId)}
+	                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
+	                        onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
+	                        onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
+	                        {m.projectName}
+	                      </button>
+	                      {openActions > 0 && (
+	                        <span title={`${openActions} open action item(s)`} style={{ fontSize: 13, cursor: "help", lineHeight: 1 }}>🚩</span>
+	                      )}
+	                      {m.contractStatus !== "Fully Executed" && !["rfi","submittal"].includes(m.type) && (
+	                        <span title={"No fully executed contract — current status: " + (m.contractStatus || "Not set")}
+	                          style={{ fontSize: 13, cursor: "help", lineHeight: 1 }}>⚠️</span>
+	                      )}
                     </div>
                   </td>
                   <td style={{ color: P.textMuted }}>{m.pm || "—"}</td>
@@ -14728,6 +14852,27 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
           if (!map[key]) map[key] = [];
           map[key].push({ ms: { id: s.id, name: s.number + (s.description ? " — " + s.description : ""), dueDate: s.dueDate, pctComplete: 0, status: s.status }, project: p, role: mbr.role, itemType: "submittal", _sub: s, _project: p });
         }));
+      // Notes action items assigned by owner name
+      (p.notes || [])
+        .filter(n => n.actionItem && (n.actionStatus || "open") !== "done" && (n.actionOwner || "").trim())
+        .forEach(n => {
+          const key = (n.actionOwner || "").trim().toLowerCase();
+          if (!map[key]) map[key] = [];
+          map[key].push({
+            ms: {
+              id: n.id,
+              name: (n.body || "Action item").slice(0, 120),
+              dueDate: n.actionDueDate || "",
+              pctComplete: (n.actionStatus || "open") === "done" ? 100 : 0,
+              status: n.actionStatus || "open",
+            },
+            project: p,
+            role: "Action Item Owner",
+            itemType: "action-item",
+            _note: n,
+            _project: p
+          });
+        });
     });
     Object.values(map).forEach(arr => arr.sort((a, b) => (a.ms.dueDate||"").localeCompare(b.ms.dueDate||"")));
     return map;
@@ -14846,11 +14991,11 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map(s => {
-            const key = s.name.trim().toLowerCase();
-            const milEntries = staffMilestones[key] || [];
-            const overdue = milEntries.filter(({ ms }) => new Date(ms.dueDate) < now);
-            const upcoming = milEntries.filter(({ ms }) => new Date(ms.dueDate) >= now).slice(0, 10);
+	          {filtered.map(s => {
+	            const key = s.name.trim().toLowerCase();
+	            const milEntries = staffMilestones[key] || [];
+	            const overdue = milEntries.filter(({ ms }) => ms.dueDate && new Date(ms.dueDate) < now);
+	            const upcoming = milEntries.filter(({ ms }) => !ms.dueDate || new Date(ms.dueDate) >= now).slice(0, 10);
             const isExpanded = !!expandedStaff[s.id];
             const dcMap = { "Mechanical": { bg: "#1a2a3a", text: "#60b4ff" }, "Electrical": { bg: "#2a1a3a", text: "#c084fc" }, "Plumbing": { bg: "#1a3a2a", text: "#34d399" }, "Fire Protection": { bg: "#3a1a1a", text: "#f87171" } };
 
@@ -14896,7 +15041,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                         {upcoming.length} upcoming
                       </span>
                     )}
-                    {milEntries.length === 0 && <span style={{ fontSize: 11, color: P.textDim }}>no open milestones</span>}
+                    {milEntries.length === 0 && <span style={{ fontSize: 11, color: P.textDim }}>no open items</span>}
                   </div>
 
                   {/* Edit / delete */}
@@ -14910,8 +15055,8 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                 {/* Expanded milestones */}
                 {isExpanded && (
                   <div style={{ borderTop: "1px solid " + P.border, background: P.bg }}>
-                    {milEntries.length === 0 ? (
-                      <div style={{ padding: "14px 18px", color: P.textDim, fontSize: 13 }}>No open milestones on active projects.</div>
+	                    {milEntries.length === 0 ? (
+	                      <div style={{ padding: "14px 18px", color: P.textDim, fontSize: 13 }}>No open milestones, RFIs, submittals, or action items on active projects.</div>
                     ) : (
                       <table style={{ margin: 0 }}>
                         <thead>
@@ -14925,45 +15070,60 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                           </tr>
                         </thead>
                         <tbody>
-                          {[...overdue, ...upcoming].map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
-                            const isOv = new Date(ms.dueDate) < now;
-                            const isRS = itemType === "rfi" || itemType === "submittal";
-                            const statusLabel = isOv ? "Overdue" : (isRS ? ms.status : milestoneStatus(ms.pctComplete));
-                            const scol = (RFI_STATUS_COLORS[ms.status] || SUBMITTAL_STATUS_COLORS[ms.status] || {});
-                            const statusColor = isOv ? P.red : isRS ? (scol.text || P.textDim) : (ms.pctComplete > 0 ? P.yellow : P.textDim);
-                            const statusBg = isRS ? (scol.bg || "transparent") : "transparent";
-                            return (
-                              <tr key={ms.id + project.id}
-                                style={{ cursor: "pointer", opacity: !isRS && ms.type === "non-billable" ? 0.75 : 1 }}
-                                onClick={() => {
-                                  if (itemType === "rfi") setStaffRfiModal({ item: _rfi, project: _project || project });
-                                  else if (itemType === "submittal") setStaffSubModal({ item: _sub, project: _project || project });
-                                  else onNavigateToProject && onNavigateToProject(project.id);
-                                }}>
-                                <td style={{ paddingLeft: 18, fontWeight: 600, fontSize: 13 }}>
-                                  {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
-                                   : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
-                                   : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
-                                  {" "}{ms.name}
-                                </td>
+	                          {[...overdue, ...upcoming].map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
+	                            const isOv = !!ms.dueDate && new Date(ms.dueDate) < now;
+	                            const isRS = itemType === "rfi" || itemType === "submittal";
+                              const isActionItem = itemType === "action-item";
+	                            const statusLabel = isOv
+                                ? "Overdue"
+                                : (isActionItem
+                                    ? ((ms.status || "open").replace("-", " ").replace(/\b\w/g, c => c.toUpperCase()))
+                                    : (isRS ? ms.status : milestoneStatus(ms.pctComplete)));
+	                            const scol = (RFI_STATUS_COLORS[ms.status] || SUBMITTAL_STATUS_COLORS[ms.status] || {});
+	                            const statusColor = isOv
+                                ? P.red
+                                : isActionItem
+                                  ? (ms.status === "blocked" ? P.yellow : P.accentLight)
+                                  : isRS
+                                    ? (scol.text || P.textDim)
+                                    : (ms.pctComplete > 0 ? P.yellow : P.textDim);
+	                            const statusBg = isRS ? (scol.bg || "transparent")
+                                : isActionItem ? (ms.status === "blocked" ? P.yellowDim : P.accentDim)
+                                : "transparent";
+	                            return (
+	                              <tr key={ms.id + project.id}
+	                                style={{ cursor: "pointer", opacity: !isRS && ms.type === "non-billable" ? 0.75 : 1 }}
+	                                onClick={() => {
+	                                  if (itemType === "rfi") setStaffRfiModal({ item: _rfi, project: _project || project });
+	                                  else if (itemType === "submittal") setStaffSubModal({ item: _sub, project: _project || project });
+	                                  else onNavigateToProject && onNavigateToProject(project.id);
+	                                }}>
+	                                <td style={{ paddingLeft: 18, fontWeight: 600, fontSize: 13 }}>
+	                                  {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
+	                                   : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
+                                   : itemType === "action-item" ? <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text="ACT" />
+	                                   : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
+	                                  {" "}{ms.name}
+	                                </td>
                                 <td>
                                   <div style={{ fontWeight: 500, fontSize: 13 }}>{project.name}</div>
                                   {project.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{project.projectNumber}</div>}
                                 </td>
                                 <td style={{ color: P.textMuted, fontSize: 12 }}>{role || "—"}</td>
-                                <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: isOv ? P.red : P.textMuted, fontWeight: isOv ? 700 : 400 }}>
-                                  {fmtDate(ms.dueDate)}
-                                </td>
-                                <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor, background: statusBg, padding: isRS ? "2px 7px" : 0, borderRadius: isRS ? 8 : 0 }}>{statusLabel}</span></td>
-                                <td>
-                                  {!isRS && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                    <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
-                                    <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
-                                  </div>}
-                                </td>
-                              </tr>
-                            );
-                          })}
+	                                <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: isOv ? P.red : P.textMuted, fontWeight: isOv ? 700 : 400 }}>
+	                                  {ms.dueDate ? fmtDate(ms.dueDate) : "—"}
+	                                </td>
+	                                <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor, background: statusBg, padding: isRS ? "2px 7px" : 0, borderRadius: isRS ? 8 : 0 }}>{statusLabel}</span></td>
+	                                <td>
+	                                  {!isRS && !isActionItem && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+	                                    <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
+	                                    <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
+	                                  </div>}
+                                    {isActionItem && <span style={{ fontSize: 11, color: P.textDim }}>—</span>}
+	                                </td>
+	                              </tr>
+	                            );
+	                          })}
                         </tbody>
                       </table>
                     )}
