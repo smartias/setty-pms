@@ -11164,7 +11164,7 @@ function NotesView({ project, onChange }) {
       actionOwner: draft.actionItem ? (draft.actionOwner || getCurrentUser()) : "",
       actionDueDate: draft.actionItem ? (draft.actionDueDate || "") : "",
       actionStatus: draft.actionItem ? (draft.actionStatus || "open") : "open",
-      actionCalendarEventId: "",
+      ...(draft.actionItem ? { actionCalendarEventId: "" } : {}),
       ...(draft.category === "Site Visit" && draft.visitDate ? { visitDate: draft.visitDate } : {}),
       author: getCurrentUser(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       oneNoteUrl: "", links: [],
