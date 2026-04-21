@@ -11187,10 +11187,28 @@ function NotesView({ project, onChange }) {
 
   const [linkingNoteId, setLinkingNoteId] = useState(null); // note.id being linked
   const [oneNoteLinkDraft, setOneNoteLinkDraft] = useState("");
+  const teamOwnerOptions = React.useMemo(() => {
+    const names = new Set();
+    (project.teamMembers || []).forEach(tm => { if (tm?.name) names.add(tm.name); });
+    if (project.projectManager) names.add(project.projectManager);
+    names.add(getCurrentUser());
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [project.teamMembers, project.projectManager]);
 
   return (
     <div>
-      <SectionTitle>Project Notes &amp; Log</SectionTitle>
+      <SectionTitle>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <span>Project Notes &amp; Log</span>
+          {openActionItems.length > 0 && (
+            <span
+              title={`${openActionItems.length} open action item${openActionItems.length !== 1 ? "s" : ""}`}
+              style={{ fontSize: 11, fontWeight: 700, color: "#fbbf24", background: "#3a2410", border: "1px solid #7c4a11", borderRadius: 999, padding: "2px 8px" }}>
+              🚩 {openActionItems.length}
+            </span>
+          )}
+        </span>
+      </SectionTitle>
 
       {actionItems.length > 0 && (
         <div style={{ background: P.yellowDim, border: "1px solid " + P.yellow, borderRadius: 8, padding: 12, marginBottom: 20 }}>
@@ -11222,8 +11240,12 @@ function NotesView({ project, onChange }) {
         </div>
         {draft.actionItem && (
           <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <input value={draft.actionOwner} onChange={e => setDraft({ ...draft, actionOwner: e.target.value })}
-              placeholder="Owner (default: you)" style={{ width: 220, fontSize: 12 }} />
+            {/* Owner intentionally stays team-driven (dropdown), not free-text, to keep assignment accountable. */}
+            <select value={draft.actionOwner} onChange={e => setDraft({ ...draft, actionOwner: e.target.value })}
+              style={{ width: 220, fontSize: 12 }}>
+              <option value="">Owner (default: you)</option>
+              {teamOwnerOptions.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
             <input type="date" value={draft.actionDueDate} onChange={e => setDraft({ ...draft, actionDueDate: e.target.value })}
               style={{ width: 150, fontSize: 12 }} />
             <select value={draft.actionStatus} onChange={e => setDraft({ ...draft, actionStatus: e.target.value })} style={{ fontSize: 12 }}>
@@ -11369,8 +11391,13 @@ function NotesView({ project, onChange }) {
                     </div>
                     {editDraft.actionItem && (
                       <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-                        <input value={editDraft.actionOwner || ""} onChange={e => setEditDraft({ ...editDraft, actionOwner: e.target.value })}
-                          placeholder="Owner" style={{ width: 220, fontSize: 12 }} />
+                        <select value={editDraft.actionOwner || ""} onChange={e => setEditDraft({ ...editDraft, actionOwner: e.target.value })}
+                          style={{ width: 220, fontSize: 12 }}>
+                          <option value="">Owner (default: note author)</option>
+                          {[...new Set([...(teamOwnerOptions || []), ...(editDraft.actionOwner ? [editDraft.actionOwner] : [])])].map(name =>
+                            <option key={name} value={name}>{name}</option>
+                          )}
+                        </select>
                         <input type="date" value={editDraft.actionDueDate || ""} onChange={e => setEditDraft({ ...editDraft, actionDueDate: e.target.value })}
                           style={{ width: 150, fontSize: 12 }} />
                         <select value={editDraft.actionStatus || "open"} onChange={e => setEditDraft({ ...editDraft, actionStatus: e.target.value })} style={{ fontSize: 12 }}>
@@ -11558,11 +11585,16 @@ function ReimbursablesView({ project, onChange }) {
 
 // ─── PROJECT LIST CARD ────────────────────────────────────────────────────────
 
+function openActionItemCount(project) {
+  return (project.notes || []).filter(n => n.actionItem && (n.actionStatus || "open") !== "done").length;
+}
+
 function ProjectCard({ project, onClick }) {
   const pct = projectOverallPct(project);
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
   const contractColor = CONTRACT_COLORS[project.contractStatus] || {};
   const totalFee = (project.phases || []).filter(p => p.billable && p.fee > 0).reduce((a, p) => a + p.fee, 0);
+  const openActions = openActionItemCount(project);
 
   return (
     <div onClick={onClick}
@@ -11578,6 +11610,7 @@ function ProjectCard({ project, onClick }) {
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <Badge color={contractColor} text={project.contractStatus} />
+        {openActions > 0 && <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text={`🚩 ${openActions} Open Action${openActions !== 1 ? "s" : ""}`} />}
         {project.projectManager && <span style={{ fontSize: 11, color: P.textMuted }}>PM: {project.projectManager}</span>}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
@@ -12331,38 +12364,44 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 24 }}>
         <Card>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: P.red }}>⚠ Overdue Milestones</div>
-          {overdue.length === 0
-            ? <div style={{ color: P.textDim, fontSize: 13 }}>None – great work!</div>
-            : overdue.slice(0, 6).map(m => (
-              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
+	          {overdue.length === 0
+	            ? <div style={{ color: P.textDim, fontSize: 13 }}>None – great work!</div>
+	            : overdue.slice(0, 6).map(m => (
+	              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
                 <div style={{ fontSize: 12, color: P.textMuted }}>
-                  <button onClick={() => onNavigateToProject(m.projectId)}
-                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
-                    {m.projectName}
-                  </button>
-                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
-                </div>
-              </div>
-            ))
+	                  <button onClick={() => onNavigateToProject(m.projectId)}
+	                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
+	                    {m.projectName}
+	                  </button>
+	                  {openActionItemCount(projectMap[m.projectId] || {}) > 0 && (
+	                    <span title={`${openActionItemCount(projectMap[m.projectId] || {})} open action item(s)`} style={{ marginLeft: 6 }}>🚩</span>
+	                  )}
+	                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
+	                </div>
+	              </div>
+	            ))
           }
         </Card>
         <Card>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14, color: P.yellow }}>📅 Due in 14 Days</div>
-          {upcoming.length === 0
-            ? <div style={{ color: P.textDim, fontSize: 13 }}>Nothing due soon.</div>
-            : upcoming.slice(0, 6).map(m => (
-              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
+	          {upcoming.length === 0
+	            ? <div style={{ color: P.textDim, fontSize: 13 }}>Nothing due soon.</div>
+	            : upcoming.slice(0, 6).map(m => (
+	              <div key={m.id} style={{ padding: "8px 0", borderBottom: `1px solid ${P.border}` }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
                 <div style={{ fontSize: 12, color: P.textMuted }}>
-                  <button onClick={() => onNavigateToProject(m.projectId)}
-                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
-                    {m.projectName}
-                  </button>
-                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
-                </div>
-              </div>
-            ))
+	                  <button onClick={() => onNavigateToProject(m.projectId)}
+	                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
+	                    {m.projectName}
+	                  </button>
+	                  {openActionItemCount(projectMap[m.projectId] || {}) > 0 && (
+	                    <span title={`${openActionItemCount(projectMap[m.projectId] || {})} open action item(s)`} style={{ marginLeft: 6 }}>🚩</span>
+	                  )}
+	                  {" "}· PM: {m.pm || "—"} · Due: {m.dueDate}
+	                </div>
+	              </div>
+	            ))
           }
         </Card>
       </div>
@@ -12403,9 +12442,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
           <tbody>
             {allMilestones.filter(m => !(!["rfi","submittal"].includes(m.type) && m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
               const mst = milestoneStatus(m.pctComplete);
-              const projStatus = m.projectStatus || "Not Started";
-              const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
-              const isOverdue = m.dueDate && new Date(m.dueDate) < now && mst !== "Completed";
+	              const projStatus = m.projectStatus || "Not Started";
+	              const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
+	              const isOverdue = m.dueDate && new Date(m.dueDate) < now && mst !== "Completed";
+	              const openActions = openActionItemCount(projectMap[m.projectId] || {});
 
               function updateMilestoneField(field, val, skipPrompt = false) {
                 if (!onUpdateProject) return;
@@ -12430,16 +12470,19 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                 <tr key={m.id}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                      <button onClick={() => onNavigateToProject(m.projectId)}
-                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
-                        onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
-                        onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
-                        {m.projectName}
-                      </button>
-                      {m.contractStatus !== "Fully Executed" && !["rfi","submittal"].includes(m.type) && (
-                        <span title={"No fully executed contract — current status: " + (m.contractStatus || "Not set")}
-                          style={{ fontSize: 13, cursor: "help", lineHeight: 1 }}>⚠️</span>
-                      )}
+	                      <button onClick={() => onNavigateToProject(m.projectId)}
+	                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
+	                        onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
+	                        onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
+	                        {m.projectName}
+	                      </button>
+	                      {openActions > 0 && (
+	                        <span title={`${openActions} open action item(s)`} style={{ fontSize: 13, cursor: "help", lineHeight: 1 }}>🚩</span>
+	                      )}
+	                      {m.contractStatus !== "Fully Executed" && !["rfi","submittal"].includes(m.type) && (
+	                        <span title={"No fully executed contract — current status: " + (m.contractStatus || "Not set")}
+	                          style={{ fontSize: 13, cursor: "help", lineHeight: 1 }}>⚠️</span>
+	                      )}
                     </div>
                   </td>
                   <td style={{ color: P.textMuted }}>{m.pm || "—"}</td>
