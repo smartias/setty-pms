@@ -249,30 +249,30 @@
       </div>
       <div>
         <label>Project Number</label>
-        <input type="text" id="projectNumber" placeholder="e.g. SAPX246006.00"/>
+        <input type="text" id="projectNumber" placeholder="e.g. SAPX246006.00" onblur="populateRecipientDropdown()"/>
       </div>
     </div>
     <div class="form-row">
       <div>
-        <label>Client / Agency</label>
-        <input type="text" id="clientName" placeholder="e.g. CUNY / DASNY"/>
-      </div>
-      <div>
         <label>Transmittal Date</label>
         <input type="date" id="transmittalDate"/>
+      </div>
+      <div>
+        <label>Transmittal No.</label>
+        <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="document.getElementById('transmittalNo').value=this.value"/>
       </div>
     </div>
     <div class="form-row">
       <div>
         <label>Issuing To</label>
-        <select id="recipientType" onchange="populateRecipientDropdown()" style="margin-bottom:6px">
-          <option value="client">Client</option>
-          <option value="prime">Prime / GC</option>
+        <select id="recipientType" onchange="populateRecipientDropdown()">
+          <option value="owner">Owner / Agency</option>
+          <option value="prime">Prime / Architect</option>
         </select>
       </div>
       <div>
         <label>Contact</label>
-        <select id="recipientContact" onchange="onContactSelected()" style="margin-bottom:6px">
+        <select id="recipientContact" onchange="onContactSelected()">
           <option value="">— Select contact —</option>
         </select>
       </div>
@@ -280,12 +280,19 @@
     <div class="form-row">
       <div>
         <label>Attn: Name</label>
-        <input type="text" id="recipientName" placeholder="Contact name"/>
+        <input type="text" id="recipientName" placeholder="Auto-filled from contact"/>
       </div>
       <div>
         <label>Attn: Email</label>
-        <input type="text" id="recipientEmail" placeholder="email@example.com"/>
+        <input type="text" id="recipientEmail" placeholder="Auto-filled from contact"/>
       </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Company / Agency</label>
+        <input type="text" id="recipientCompany" placeholder="Auto-filled from contact"/>
+      </div>
+      <div></div>
     </div>
     <div class="form-row">
       <div>
@@ -302,11 +309,9 @@
           <option>Sent via Email</option>
         </select>
       </div>
-      <div>
-        <label>Transmittal No.</label>
-        <input type="text" id="transmittalNo" placeholder="e.g. T-001"/>
-      </div>
+      <div></div>
     </div>
+    <input type="hidden" id="transmittalNo" value="T-001"/>
     <button class="btn btn-primary" id="loadFolderBtn">🔍 Load Files from SharePoint</button>
     <div class="status" id="loadStatus"></div>
   </div>
@@ -473,29 +478,74 @@ function populateRecipientDropdown(project) {
   const contactSelect = document.getElementById("recipientContact");
   if (!typeSelect || !contactSelect) return;
 
-  const type = typeSelect.value; // "client" or "prime"
+  const type = typeSelect.value; // "owner" or "prime"
   contactSelect.innerHTML = "<option value=''>— Select contact —</option>";
 
-  let contacts = [];
-  if (project) {
-    // Pull from project POCs
-    const pocs = project.projectContacts || {};
-    const allPocs = [...(pocs.pm || []), ...(pocs.client || []), ...(pocs.other || [])];
-    allPocs.forEach(c => {
-      if (c.name) contacts.push({ name: c.name, email: c.email || "", company: project.client || "" });
-    });
-  }
-  // Also pull from client directory
-  pmsClients.forEach(cl => {
-    (cl.contacts || []).forEach(c => {
-      if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
-    });
-  });
+  // Get the project from pmsProjects if not passed directly
+  const projNum = document.getElementById("projectNumber").value.trim();
+  const proj = project || pmsProjects.find(p => p.projectNumber === projNum) || null;
 
-  // Deduplicate by name+email
+  let contacts = [];
+
+  if (type === "owner") {
+    // Owner/Agency — pull from project client field + client directory matching that client
+    const clientName = proj ? (proj.client || "") : "";
+    // Find matching client in directory
+    const matchedClient = pmsClients.find(cl =>
+      cl.name && clientName && cl.name.toLowerCase().includes(clientName.toLowerCase().split("/")[0].trim())
+    );
+    if (matchedClient) {
+      (matchedClient.contacts || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: matchedClient.name || clientName });
+      });
+    }
+    // Also add project-level client POCs
+    if (proj) {
+      const pocs = proj.projectContacts || {};
+      (pocs.client || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: clientName });
+      });
+    }
+    // If no contacts found, show all clients
+    if (contacts.length === 0) {
+      pmsClients.forEach(cl => {
+        (cl.contacts || []).forEach(c => {
+          if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
+        });
+      });
+    }
+  } else {
+    // Prime/Architect — pull from project PM POCs and prime field
+    if (proj) {
+      const pocs = proj.projectContacts || {};
+      // PM contacts = prime/architect contacts
+      (pocs.pm || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: proj.prime || "" });
+      });
+      (pocs.other || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: proj.prime || "" });
+      });
+    }
+    // Also search clients directory for architecture firms
+    pmsClients.filter(cl => cl.type === "Prime" || cl.type === "Architect" || cl.type === "Prime / GC").forEach(cl => {
+      (cl.contacts || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
+      });
+    });
+    // Fallback — show all contacts if nothing found
+    if (contacts.length === 0) {
+      pmsClients.forEach(cl => {
+        (cl.contacts || []).forEach(c => {
+          if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
+        });
+      });
+    }
+  }
+
+  // Deduplicate
   const seen = new Set();
   contacts = contacts.filter(c => {
-    const key = c.name + c.email;
+    const key = (c.name + c.email).toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key); return true;
   });
@@ -503,7 +553,7 @@ function populateRecipientDropdown(project) {
   contacts.forEach(c => {
     const opt = document.createElement("option");
     opt.value = JSON.stringify(c);
-    opt.textContent = c.name + (c.company ? " (" + c.company + ")" : "") + (c.email ? " — " + c.email : "");
+    opt.textContent = c.name + (c.company ? " — " + c.company : "") + (c.email ? " (" + c.email + ")" : "");
     contactSelect.appendChild(opt);
   });
 }
@@ -551,8 +601,7 @@ function onContactSelected() {
     const c = JSON.parse(val);
     document.getElementById("recipientName").value = c.name || "";
     document.getElementById("recipientEmail").value = c.email || "";
-    if (c.company && !document.getElementById("clientName").value)
-      document.getElementById("clientName").value = c.company;
+    document.getElementById("recipientCompany").value = c.company || "";
   } catch(e) {}
 }
 
@@ -814,10 +863,12 @@ async function generateDocx() {
 
     const projectName = document.getElementById("projectName").value.trim() || "Project";
     const projectNumber = document.getElementById("projectNumber").value.trim() || "";
-    const clientName = document.getElementById("clientName").value.trim() || "";
     const recipientName = document.getElementById("recipientName").value.trim() || "";
     const recipientEmail = document.getElementById("recipientEmail").value.trim() || "";
-    const recipientType = document.getElementById("recipientType").value === "prime" ? "Prime / GC" : "Client";
+    const recipientCompany = document.getElementById("recipientCompany").value.trim() || "";
+    const recipientTypeVal = document.getElementById("recipientType").value;
+    const recipientTypeLabel = recipientTypeVal === "prime" ? "Prime / Architect" : "Owner / Agency";
+    const clientName = recipientCompany; // used in info table
     const txDate = document.getElementById("transmittalDate").value || new Date().toISOString().slice(0,10);
     const issuedFor = document.getElementById("issuedFor").value;
     const txNo = document.getElementById("transmittalNo").value.trim() || "T-001";
@@ -967,8 +1018,8 @@ async function generateDocx() {
             rows: [
               infoRow("Project:", projectName),
               infoRow("Project No.:", projectNumber),
-              infoRow("Client:", clientName),
-              ...(recipientName ? [infoRow("Attn (" + recipientType + "):", recipientName + (recipientEmail ? "  |  " + recipientEmail : ""))] : []),
+              ...(recipientCompany ? [infoRow(recipientTypeLabel + ":", recipientCompany)] : []),
+              ...(recipientName ? [infoRow("Attn:", recipientName + (recipientEmail ? "  |  " + recipientEmail : ""))] : []),
               infoRow("Date:", dateDisplay),
               infoRow("Transmittal No.:", txNo),
               infoRow("Issued For:", issuedFor),
