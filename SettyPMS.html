@@ -358,7 +358,7 @@ async function getMsalApp() {
 
   await _msalApp.initialize();
 
-  // Handle redirect response — picks up token after Microsoft login redirect
+  // Handle redirect response on page load
   try {
     const response = await _msalApp.handleRedirectPromise();
     if (response?.account) {
@@ -377,7 +377,6 @@ async function getMsalApp() {
 }
 
 // Base scopes — used for normal app login (NO admin consent triggers)
-// Core scopes — no Teams permissions to avoid 90095 consent loop on sign-in
 const GRAPH_SCOPES = [
   "User.Read",
   "Calendars.ReadWrite.Shared",
@@ -387,16 +386,13 @@ const GRAPH_SCOPES = [
   "Channel.ReadBasic.All",
   "Group.Read.All",
 ];
-
-// Teams scopes — only requested when Teams features are actually used
-// Kept separate so Channel.Create (admin-consent-required) doesn't
-// trigger the approval popup on every sign-in
+// Teams scopes separated — Channel.Create requires admin consent and
+// triggers 90095 approval loop if included in initial sign-in
 const TEAMS_SCOPES = [
   ...GRAPH_SCOPES,
   "ChannelMessage.Send",
   "Channel.Create",
 ];
-
 const ONENOTE_SCOPES = GRAPH_SCOPES;
 
 function getCurrentUser() {
@@ -423,22 +419,33 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
   if (account) {
     if (!forceRefresh) {
       try {
-        const r = await app.acquireTokenSilent({
-          scopes,
-          account
-        });
+        const r = await app.acquireTokenSilent({ scopes, account });
         return r.accessToken;
       } catch (e) {
-        // fall through to interactive
+        // Silent failed — try one more time with forceRefresh
+        try {
+          const r = await app.acquireTokenSilent({ scopes, account, forceRefresh: true });
+          return r.accessToken;
+        } catch(e2) {
+          // Still failed — redirect to re-authenticate
+          // This only happens if the session is truly expired
+          console.warn("Token refresh failed, redirecting:", e2.message);
+          await app.acquireTokenRedirect({ scopes, account });
+          return null;
+        }
       }
     }
-
-    // Use redirect — GitHub Pages COOP headers block popup window communication
-    await app.acquireTokenRedirect({ scopes, account });
-    return null; // page will redirect and return with token
+    // forceRefresh = true path
+    try {
+      const r = await app.acquireTokenSilent({ scopes, account, forceRefresh: true });
+      return r.accessToken;
+    } catch(e) {
+      await app.acquireTokenRedirect({ scopes, account });
+      return null;
+    }
   }
 
-  // No account — redirect login with minimal scopes to avoid consent prompt
+  // No account at all — fresh login via redirect
   await app.loginRedirect({ scopes: ["User.Read", "openid", "profile"] });
   return null;
 }
@@ -3264,14 +3271,9 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                     <MilestoneSpBtn m={m} project={project}
                       onSave={url => onChange({ ...project, milestones: milestones.map(x => x.id === m.id ? { ...x, outgoingFolderUrl: url } : x) })} />
                     {m.outgoingFolderUrl && (
-                      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(m.outgoingFolderUrl)}&project=${encodeURIComponent(project.name || "")}&number=${encodeURIComponent(project.projectNumber || "")}&client=${encodeURIComponent(project.client || "")}`}
-                        target="_blank" rel="noreferrer"
-                        title="Generate Sheet List & Transmittal"
-                        style={{ display: "inline-flex", alignItems: "center", gap: 3,
-                          background: "#14532d", color: "#4ade80", borderRadius: 5,
-                          fontSize: 11, fontWeight: 600, padding: "3px 7px",
-                          textDecoration: "none", whiteSpace: "nowrap",
-                          border: "1px solid #166534" }}>
+                      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(m.outgoingFolderUrl)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}`}
+                        target="_blank" rel="noreferrer" title="Generate Sheet List & Transmittal"
+                        style={{ display:"inline-flex",alignItems:"center",gap:3,background:"#14532d",color:"#4ade80",borderRadius:5,fontSize:11,fontWeight:600,padding:"3px 7px",textDecoration:"none",whiteSpace:"nowrap",border:"1px solid #166534" }}>
                         📄 TX
                       </a>
                     )}
@@ -11797,14 +11799,9 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
           textDecoration: "none", whiteSpace: "nowrap" }}>
         📂 Open
       </a>
-      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name || "")}&number=${encodeURIComponent(project.projectNumber || "")}&client=${encodeURIComponent(project.client || "")}`}
-        target="_blank" rel="noreferrer"
-        title="Generate Sheet List & Transmittal"
-        style={{ display: "inline-flex", alignItems: "center", gap: 3,
-          background: "#14532d", color: "#4ade80", borderRadius: 5,
-          fontSize: 11, fontWeight: 600, padding: "3px 7px",
-          textDecoration: "none", whiteSpace: "nowrap",
-          border: "1px solid #166534" }}>
+      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}`}
+        target="_blank" rel="noreferrer" title="Generate Sheet List & Transmittal"
+        style={{ display:"inline-flex",alignItems:"center",gap:3,background:"#14532d",color:"#4ade80",borderRadius:5,fontSize:11,fontWeight:600,padding:"3px 7px",textDecoration:"none",whiteSpace:"nowrap",border:"1px solid #166534" }}>
         📄 TX
       </a>
     </div>
