@@ -919,11 +919,12 @@ async function generateDocx() {
     const {
       Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
       Header, AlignmentType, BorderStyle, WidthType, ShadingType,
-      VerticalAlign, ImageRun, PageNumber, UnderlineType
+      VerticalAlign, ImageRun, PageNumber, UnderlineType, ExternalHyperlink
     } = docxLib;
 
     const projectName = document.getElementById("projectName").value.trim() || "Project";
     const projectNumber = document.getElementById("projectNumber").value.trim() || "";
+    const spFolderUrl = decodeURIComponent(new URLSearchParams(window.location.search).get("folder") || "");
     const recipientName = document.getElementById("recipientName").value.trim() || "";
     const recipientEmail = document.getElementById("recipientEmail").value.trim() || "";
     const recipientCompany = document.getElementById("recipientCompany").value.trim() || "";
@@ -1009,6 +1010,27 @@ async function generateDocx() {
     } catch(e) { /* logo unavailable — fall back to text */ }
 
     // Info table (project metadata)
+    function infoRowLink(label, url, displayText) {
+      return new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 2160, type: WidthType.DXA }, borders: cellBorders,
+            shading: { fill: LIGHT, type: ShadingType.CLEAR },
+            margins: { top: 60, bottom: 60, left: 120, right: 120 },
+            children: [new Paragraph({ children: [new TextRun({ text: label, font: "Calibri", size: 18, bold: true, color: NAVY })] })]
+          }),
+          new TableCell({
+            width: { size: 7200, type: WidthType.DXA }, borders: cellBorders,
+            shading: { fill: WHITE, type: ShadingType.CLEAR },
+            margins: { top: 60, bottom: 60, left: 120, right: 120 },
+            children: [new Paragraph({ children: [new ExternalHyperlink({
+              link: url,
+              children: [new TextRun({ text: displayText || url, font: "Calibri", size: 20, color: BLUE, underline: {} })]
+            })] })]
+          }),
+        ]
+      });
+    }
     function infoRow(label, value) {
       return new TableRow({
         children: [
@@ -1084,6 +1106,7 @@ async function generateDocx() {
               infoRow("Date:", dateDisplay),
               infoRow("Transmittal No.:", txNo),
               infoRow("Issued For:", issuedFor),
+              ...(spFolderUrl ? [infoRowLink("SharePoint:", spFolderUrl, "Open Document Folder ↗")] : []),
             ]
           }),
 
