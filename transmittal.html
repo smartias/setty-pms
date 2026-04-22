@@ -249,7 +249,7 @@
       </div>
       <div>
         <label>Project Number</label>
-        <input type="text" id="projectNumber" placeholder="e.g. SAPX246006.00" onblur="populateRecipientDropdown()"/>
+        <input type="text" id="projectNumber" placeholder="e.g. SAPX246006.00" onblur="updateRecipientFromProject()"/>
       </div>
     </div>
     <div class="form-row">
@@ -265,22 +265,23 @@
     <div class="form-row">
       <div>
         <label>Issuing To</label>
-        <select id="recipientType" onchange="populateRecipientDropdown()">
+        <select id="recipientType" onchange="onRecipientTypeChange()">
           <option value="owner">Owner / Agency</option>
           <option value="prime">Prime / Architect</option>
         </select>
       </div>
       <div>
-        <label>Contact</label>
-        <select id="recipientContact" onchange="onContactSelected()">
-          <option value="">— Select contact —</option>
-        </select>
+        <label>Company / Agency</label>
+        <input type="text" id="recipientCompany" placeholder="Auto-filled from project" readonly
+          style="background:#1a2030;color:#94a3b8;cursor:default"/>
       </div>
     </div>
     <div class="form-row">
       <div>
-        <label>Attn: Name</label>
-        <input type="text" id="recipientName" placeholder="Auto-filled from contact"/>
+        <label>Contact</label>
+        <select id="recipientContact" onchange="onContactSelected()">
+          <option value="">— Select contact —</option>
+        </select>
       </div>
       <div>
         <label>Attn: Email</label>
@@ -289,8 +290,8 @@
     </div>
     <div class="form-row">
       <div>
-        <label>Company / Agency</label>
-        <input type="text" id="recipientCompany" placeholder="Auto-filled from contact"/>
+        <label>Attn: Name</label>
+        <input type="text" id="recipientName" placeholder="Auto-filled from contact"/>
       </div>
       <div></div>
     </div>
@@ -457,92 +458,112 @@ async function loadPmsData() {
     pmsClients = data.clients || [];
     pmsProjects = (data.projects || []).filter(p => !p.archived);
     populateRecipientDropdown();
-    // Pre-fill project info if project number was passed
+    // Pre-fill project info if project number was passed from PMS URL param
     const urlNumber = new URLSearchParams(window.location.search).get("number");
+    const urlProject = new URLSearchParams(window.location.search).get("project");
     if (urlNumber) {
       const proj = pmsProjects.find(p => p.projectNumber === decodeURIComponent(urlNumber));
       if (proj) {
         document.getElementById("projectName").value = proj.name || "";
         document.getElementById("projectNumber").value = proj.projectNumber || "";
-        document.getElementById("clientName").value = proj.client || "";
-        populateRecipientDropdown(proj);
+      } else if (urlProject) {
+        document.getElementById("projectName").value = decodeURIComponent(urlProject);
+        document.getElementById("projectNumber").value = decodeURIComponent(urlNumber);
       }
     }
+    // Now populate recipient based on loaded project data
+    updateRecipientFromProject();
   } catch(e) {
     console.warn("Could not load PMS data:", e.message);
   }
 }
 
-function populateRecipientDropdown(project) {
-  const typeSelect = document.getElementById("recipientType");
-  const contactSelect = document.getElementById("recipientContact");
-  if (!typeSelect || !contactSelect) return;
+// Called when type changes or project number changes
+function onRecipientTypeChange() {
+  updateRecipientFromProject();
+}
 
-  const type = typeSelect.value; // "owner" or "prime"
-  contactSelect.innerHTML = "<option value=''>— Select contact —</option>";
-
-  // Get the project from pmsProjects if not passed directly
+function updateRecipientFromProject() {
   const projNum = document.getElementById("projectNumber").value.trim();
-  const proj = project || pmsProjects.find(p => p.projectNumber === projNum) || null;
+  const proj = pmsProjects.find(p => p.projectNumber === projNum) || null;
+  const type = document.getElementById("recipientType").value;
+  const companyEl = document.getElementById("recipientCompany");
+  const contactSelect = document.getElementById("recipientContact");
 
+  // Clear previous
+  companyEl.value = "";
+  contactSelect.innerHTML = "<option value=''>— Select contact —</option>";
+  document.getElementById("recipientName").value = "";
+  document.getElementById("recipientEmail").value = "";
+
+  let company = "";
   let contacts = [];
 
   if (type === "owner") {
-    // Owner/Agency — pull from project client field + client directory matching that client
-    const clientName = proj ? (proj.client || "") : "";
-    // Find matching client in directory
-    const matchedClient = pmsClients.find(cl =>
-      cl.name && clientName && cl.name.toLowerCase().includes(clientName.toLowerCase().split("/")[0].trim())
-    );
-    if (matchedClient) {
-      (matchedClient.contacts || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: matchedClient.name || clientName });
+    // Owner = the public agency/client on the project
+    company = proj ? (proj.client || "") : "";
+    companyEl.value = company;
+
+    // Find contacts — search client directory for matching company name
+    if (company) {
+      const tokens = company.toLowerCase().split(/[\s\/,&]+/).filter(t => t.length > 2);
+      pmsClients.forEach(cl => {
+        const clName = (cl.name || "").toLowerCase();
+        const matches = tokens.some(t => clName.includes(t));
+        if (matches) {
+          (cl.contacts || []).forEach(c => {
+            if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
+          });
+        }
       });
     }
-    // Also add project-level client POCs
+    // Also pull project-level client POCs
     if (proj) {
       const pocs = proj.projectContacts || {};
       (pocs.client || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: clientName });
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
       });
     }
-    // If no contacts found, show all clients
-    if (contacts.length === 0) {
-      pmsClients.forEach(cl => {
-        (cl.contacts || []).forEach(c => {
-          if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
-        });
-      });
-    }
+
   } else {
-    // Prime/Architect — pull from project PM POCs and prime field
+    // Prime/Architect = who Setty is contracted to (prime field on project)
+    company = proj ? (proj.prime || proj.primeContractor || "") : "";
+    companyEl.value = company;
+
+    // Pull from project PM POCs (these are prime contacts)
     if (proj) {
       const pocs = proj.projectContacts || {};
-      // PM contacts = prime/architect contacts
       (pocs.pm || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: proj.prime || "" });
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
       });
       (pocs.other || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: proj.prime || "" });
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
       });
     }
-    // Also search clients directory for architecture firms
-    pmsClients.filter(cl => cl.type === "Prime" || cl.type === "Architect" || cl.type === "Prime / GC").forEach(cl => {
-      (cl.contacts || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
-      });
-    });
-    // Fallback — show all contacts if nothing found
-    if (contacts.length === 0) {
+    // Also search client directory for matching prime name
+    if (company) {
+      const tokens = company.toLowerCase().split(/[\s\/,&]+/).filter(t => t.length > 2);
       pmsClients.forEach(cl => {
-        (cl.contacts || []).forEach(c => {
-          if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
-        });
+        const clName = (cl.name || "").toLowerCase();
+        if (tokens.some(t => clName.includes(t))) {
+          (cl.contacts || []).forEach(c => {
+            if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
+          });
+        }
       });
     }
   }
 
-  // Deduplicate
+  // If still no contacts, show full client directory as fallback
+  if (contacts.length === 0) {
+    pmsClients.forEach(cl => {
+      (cl.contacts || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
+      });
+    });
+  }
+
+  // Deduplicate by name+email
   const seen = new Set();
   contacts = contacts.filter(c => {
     const key = (c.name + c.email).toLowerCase();
@@ -553,9 +574,19 @@ function populateRecipientDropdown(project) {
   contacts.forEach(c => {
     const opt = document.createElement("option");
     opt.value = JSON.stringify(c);
-    opt.textContent = c.name + (c.company ? " — " + c.company : "") + (c.email ? " (" + c.email + ")" : "");
+    opt.textContent = c.name + (c.email ? " — " + c.email : "");
     contactSelect.appendChild(opt);
   });
+
+  // Auto-select if only one contact
+  if (contacts.length === 1) {
+    contactSelect.selectedIndex = 1;
+    onContactSelected();
+  }
+}
+
+function populateRecipientDropdown() {
+  updateRecipientFromProject();
 }
 
 document.getElementById("signInBtn").onclick = async () => {
