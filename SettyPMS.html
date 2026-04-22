@@ -422,16 +422,15 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
         const r = await app.acquireTokenSilent({ scopes, account });
         return r.accessToken;
       } catch (e) {
-        // Silent failed — try one more time with forceRefresh
+        // Silent failed — try once more with forceRefresh before giving up
         try {
           const r = await app.acquireTokenSilent({ scopes, account, forceRefresh: true });
           return r.accessToken;
         } catch(e2) {
-          // Still failed — redirect to re-authenticate
-          // This only happens if the session is truly expired
-          console.warn("Token refresh failed, redirecting:", e2.message);
-          await app.acquireTokenRedirect({ scopes, account });
-          return null;
+          // Both silent attempts failed — throw error so the caller
+          // can show a message. Do NOT redirect mid-session as it
+          // navigates away and loses all unsaved state.
+          throw new Error("Session token expired. Please refresh the page to re-authenticate.");
         }
       }
     }
@@ -440,12 +439,11 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
       const r = await app.acquireTokenSilent({ scopes, account, forceRefresh: true });
       return r.accessToken;
     } catch(e) {
-      await app.acquireTokenRedirect({ scopes, account });
-      return null;
+      throw new Error("Session token expired. Please refresh the page to re-authenticate.");
     }
   }
 
-  // No account at all — fresh login via redirect
+  // No account at all on first load — redirect to login
   await app.loginRedirect({ scopes: ["User.Read", "openid", "profile"] });
   return null;
 }
