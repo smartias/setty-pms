@@ -264,6 +264,31 @@
     </div>
     <div class="form-row">
       <div>
+        <label>Issuing To</label>
+        <select id="recipientType" onchange="populateRecipientDropdown()" style="margin-bottom:6px">
+          <option value="client">Client</option>
+          <option value="prime">Prime / GC</option>
+        </select>
+      </div>
+      <div>
+        <label>Contact</label>
+        <select id="recipientContact" onchange="onContactSelected()" style="margin-bottom:6px">
+          <option value="">— Select contact —</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Attn: Name</label>
+        <input type="text" id="recipientName" placeholder="Contact name"/>
+      </div>
+      <div>
+        <label>Attn: Email</label>
+        <input type="text" id="recipientEmail" placeholder="email@example.com"/>
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
         <label>Issued For</label>
         <select id="issuedFor">
           <option>Issued for Review</option>
@@ -274,6 +299,7 @@
           <option>Record Set</option>
           <option>Preliminary Review</option>
           <option>Design Development Review</option>
+          <option>Sent via Email</option>
         </select>
       </div>
       <div>
@@ -341,6 +367,8 @@ const MSAL_CONFIG = {
 const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All"];
 const LOGIN_SCOPES  = ["User.Read", "openid", "profile"];
 const SP_DRIVE_ID   = "b!your-drive-id"; // resolved at runtime
+const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let msalApp = null;
@@ -351,6 +379,8 @@ let resolvedFolderPath = null;
 let sheets = [];
 let generatedBlob = null;
 let generatedFileName = "";
+let pmsClients = []; // loaded from Supabase
+let pmsProjects = []; // loaded from Supabase
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 (async function init() {
@@ -408,6 +438,74 @@ function onSignedIn() {
   document.getElementById("signInOverlay").style.display = "none";
   document.getElementById("signOutBtn").style.display = "block";
   document.getElementById("headerUser").textContent = msalAccount.name || msalAccount.username;
+  loadPmsData();
+}
+
+async function loadPmsData() {
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?select=data&limit=1", {
+      headers: { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPABASE_ANON }
+    });
+    const rows = await res.json();
+    if (!rows || !rows[0]) return;
+    const data = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
+    pmsClients = data.clients || [];
+    pmsProjects = (data.projects || []).filter(p => !p.archived);
+    populateRecipientDropdown();
+    // Pre-fill project info if project number was passed
+    const urlNumber = new URLSearchParams(window.location.search).get("number");
+    if (urlNumber) {
+      const proj = pmsProjects.find(p => p.projectNumber === decodeURIComponent(urlNumber));
+      if (proj) {
+        document.getElementById("projectName").value = proj.name || "";
+        document.getElementById("projectNumber").value = proj.projectNumber || "";
+        document.getElementById("clientName").value = proj.client || "";
+        populateRecipientDropdown(proj);
+      }
+    }
+  } catch(e) {
+    console.warn("Could not load PMS data:", e.message);
+  }
+}
+
+function populateRecipientDropdown(project) {
+  const typeSelect = document.getElementById("recipientType");
+  const contactSelect = document.getElementById("recipientContact");
+  if (!typeSelect || !contactSelect) return;
+
+  const type = typeSelect.value; // "client" or "prime"
+  contactSelect.innerHTML = "<option value=''>— Select contact —</option>";
+
+  let contacts = [];
+  if (project) {
+    // Pull from project POCs
+    const pocs = project.projectContacts || {};
+    const allPocs = [...(pocs.pm || []), ...(pocs.client || []), ...(pocs.other || [])];
+    allPocs.forEach(c => {
+      if (c.name) contacts.push({ name: c.name, email: c.email || "", company: project.client || "" });
+    });
+  }
+  // Also pull from client directory
+  pmsClients.forEach(cl => {
+    (cl.contacts || []).forEach(c => {
+      if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
+    });
+  });
+
+  // Deduplicate by name+email
+  const seen = new Set();
+  contacts = contacts.filter(c => {
+    const key = c.name + c.email;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+
+  contacts.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = JSON.stringify(c);
+    opt.textContent = c.name + (c.company ? " (" + c.company + ")" : "") + (c.email ? " — " + c.email : "");
+    contactSelect.appendChild(opt);
+  });
 }
 
 document.getElementById("signInBtn").onclick = async () => {
@@ -445,6 +543,19 @@ async function graphFetch(method, path, body, token) {
 }
 
 // ─── LOAD FILES ───────────────────────────────────────────────────────────────
+function onContactSelected() {
+  const sel = document.getElementById("recipientContact");
+  const val = sel.value;
+  if (!val) return;
+  try {
+    const c = JSON.parse(val);
+    document.getElementById("recipientName").value = c.name || "";
+    document.getElementById("recipientEmail").value = c.email || "";
+    if (c.company && !document.getElementById("clientName").value)
+      document.getElementById("clientName").value = c.company;
+  } catch(e) {}
+}
+
 document.getElementById("loadFolderBtn").onclick = loadFolder;
 
 async function loadFolder() {
@@ -704,6 +815,9 @@ async function generateDocx() {
     const projectName = document.getElementById("projectName").value.trim() || "Project";
     const projectNumber = document.getElementById("projectNumber").value.trim() || "";
     const clientName = document.getElementById("clientName").value.trim() || "";
+    const recipientName = document.getElementById("recipientName").value.trim() || "";
+    const recipientEmail = document.getElementById("recipientEmail").value.trim() || "";
+    const recipientType = document.getElementById("recipientType").value === "prime" ? "Prime / GC" : "Client";
     const txDate = document.getElementById("transmittalDate").value || new Date().toISOString().slice(0,10);
     const issuedFor = document.getElementById("issuedFor").value;
     const txNo = document.getElementById("transmittalNo").value.trim() || "T-001";
@@ -770,15 +884,17 @@ async function generateDocx() {
     // Load logo
     let logoImageRun = null;
     try {
-      const logoRes = await fetch("/setty-logo.png");
-      const logoBlob = await logoRes.blob();
-      const logoBuffer = await logoBlob.arrayBuffer();
-      logoImageRun = new ImageRun({
-        data: logoBuffer,
-        transformation: { width: 120, height: 20 },
-        type: "png",
-      });
-    } catch(e) { /* logo unavailable */ }
+      const logoRes = await fetch("https://smartias.github.io/setty-pms/setty-logo.png");
+      if (logoRes.ok) {
+        const logoBlob = await logoRes.blob();
+        const logoBuffer = await logoBlob.arrayBuffer();
+        logoImageRun = new ImageRun({
+          data: logoBuffer,
+          transformation: { width: 120, height: 20 },
+          type: "png",
+        });
+      }
+    } catch(e) { /* logo unavailable — fall back to text */ }
 
     // Info table (project metadata)
     function infoRow(label, value) {
@@ -822,7 +938,7 @@ async function generateDocx() {
                 children: [
                   ...(logoImageRun ? [logoImageRun, new TextRun({ text: "    ", font: "Calibri", size: 20 })] : [
                     new TextRun({ text: "SETTY", font: "Calibri", size: 28, bold: true, color: RED }),
-                    new TextRun({ text: "  &  Associates International, PLLC    ", font: "Calibri", size: 18, color: GRAY }),
+                    new TextRun({ text: "  & Associates    ", font: "Calibri", size: 18, color: GRAY }),
                   ]),
                   new TextRun({ text: "Sheet List & Transmittal", font: "Calibri", size: 18, color: GRAY }),
                 ]
@@ -835,7 +951,7 @@ async function generateDocx() {
           new Paragraph({
             spacing: { before: 0, after: 160 },
             children: [
-              new TextRun({ text: "SHEET LIST & TRANSMITTAL", font: "Calibri", size: 40, bold: true, color: NAVY }),
+              new TextRun({ text: "TRANSMITTAL", font: "Calibri", size: 40, bold: true, color: NAVY }),
             ]
           }),
           new Paragraph({
@@ -852,6 +968,7 @@ async function generateDocx() {
               infoRow("Project:", projectName),
               infoRow("Project No.:", projectNumber),
               infoRow("Client:", clientName),
+              ...(recipientName ? [infoRow("Attn (" + recipientType + "):", recipientName + (recipientEmail ? "  |  " + recipientEmail : ""))] : []),
               infoRow("Date:", dateDisplay),
               infoRow("Transmittal No.:", txNo),
               infoRow("Issued For:", issuedFor),
@@ -888,7 +1005,7 @@ async function generateDocx() {
             children: [
               new TextRun({ text: `Total: ${included.length} sheet${included.length !== 1 ? "s" : ""}     `, font: "Calibri", size: 18, color: GRAY }),
               new TextRun({ text: `Generated: ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}     `, font: "Calibri", size: 18, color: GRAY }),
-              new TextRun({ text: "SETTY & Associates International, PLLC", font: "Calibri", size: 18, bold: true, color: NAVY }),
+              new TextRun({ text: "Setty & Associates", font: "Calibri", size: 18, bold: true, color: NAVY }),
             ]
           }),
         ]
