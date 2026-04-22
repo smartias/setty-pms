@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Setty PMS</title>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -347,14 +347,26 @@ async function getMsalApp() {
       clientId: MSAL_CLIENT_ID,
       authority: `https://login.microsoftonline.com/${TENANT_ID}`,
       redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
+      navigateToLoginRequestUrl: true,
     },
     cache: {
-      cacheLocation: "localStorage",
-      storeAuthStateInCookie: false
+      cacheLocation: "sessionStorage",
+      storeAuthStateInCookie: false,
     },
+    system: { allowNativeBroker: false },
   });
 
   await _msalApp.initialize();
+
+  // Handle redirect response — picks up token after Microsoft login redirect
+  try {
+    const response = await _msalApp.handleRedirectPromise();
+    if (response?.account) {
+      _msalApp.setActiveAccount(response.account);
+    }
+  } catch(e) {
+    console.warn("MSAL redirect error:", e.message);
+  }
 
   const accounts = _msalApp.getAllAccounts();
   if (!_msalApp.getActiveAccount() && accounts.length > 0) {
@@ -365,22 +377,27 @@ async function getMsalApp() {
 }
 
 // Base scopes — used for normal app login (NO admin consent triggers)
+// Core scopes — no Teams permissions to avoid 90095 consent loop on sign-in
 const GRAPH_SCOPES = [
   "User.Read",
   "Calendars.ReadWrite.Shared",
   "Mail.ReadWrite",
   "Files.ReadWrite.All",
   "Notes.ReadWrite.All",
-  "ChannelMessage.Send",
-  "Channel.Create",
-  "Channel.ReadBasic.All",  // needed to list channels when NameAlreadyExists on create
-  "Group.Read.All",          // needed for /groups/{id}/onenote and group resource reads
+  "Channel.ReadBasic.All",
+  "Group.Read.All",
 ];
 
-// Kept for legacy callers — now bundled into GRAPH_SCOPES so consent is
-// granted at login and no mid-flow popup is needed.
+// Teams scopes — only requested when Teams features are actually used
+// Kept separate so Channel.Create (admin-consent-required) doesn't
+// trigger the approval popup on every sign-in
+const TEAMS_SCOPES = [
+  ...GRAPH_SCOPES,
+  "ChannelMessage.Send",
+  "Channel.Create",
+];
+
 const ONENOTE_SCOPES = GRAPH_SCOPES;
-const TEAMS_SCOPES   = GRAPH_SCOPES;
 
 function getCurrentUser() {
   try {
@@ -416,18 +433,14 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
       }
     }
 
-    const r = await app.acquireTokenPopup({
-      scopes,
-      account
-    });
-
-    app.setActiveAccount(r.account);
-    return r.accessToken;
+    // Use redirect — GitHub Pages COOP headers block popup window communication
+    await app.acquireTokenRedirect({ scopes, account });
+    return null; // page will redirect and return with token
   }
 
-  const r = await app.loginPopup({ scopes });
-  app.setActiveAccount(r.account);
-  return r.accessToken;
+  // No account — redirect login with minimal scopes to avoid consent prompt
+  await app.loginRedirect({ scopes: ["User.Read", "openid", "profile"] });
+  return null;
 }
 
 async function getToken(forceRefresh = false) {
@@ -3250,6 +3263,18 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                   <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                     <MilestoneSpBtn m={m} project={project}
                       onSave={url => onChange({ ...project, milestones: milestones.map(x => x.id === m.id ? { ...x, outgoingFolderUrl: url } : x) })} />
+                    {m.outgoingFolderUrl && (
+                      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(m.outgoingFolderUrl)}&project=${encodeURIComponent(project.name || "")}&number=${encodeURIComponent(project.projectNumber || "")}&client=${encodeURIComponent(project.client || "")}`}
+                        target="_blank" rel="noreferrer"
+                        title="Generate Sheet List & Transmittal"
+                        style={{ display: "inline-flex", alignItems: "center", gap: 3,
+                          background: "#14532d", color: "#4ade80", borderRadius: 5,
+                          fontSize: 11, fontWeight: 600, padding: "3px 7px",
+                          textDecoration: "none", whiteSpace: "nowrap",
+                          border: "1px solid #166534" }}>
+                        📄 TX
+                      </a>
+                    )}
                     {m.type === "billable" && (
                       <Btn small variant="danger"
                         onClick={() => setCancelPrompt(m)}
@@ -11763,14 +11788,26 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
   const [spSt, setSpSt] = React.useState("idle");
   const url = milestone.outgoingFolderUrl || "";
   if (url) return (
-    <a href={url} target="_blank" rel="noreferrer"
-      title="Open Document Set Folder"
-      style={{ display: "inline-flex", alignItems: "center", gap: 3,
-        background: "#0078d4", color: "#fff", borderRadius: 5,
-        fontSize: 11, fontWeight: 600, padding: "3px 7px",
-        textDecoration: "none", whiteSpace: "nowrap" }}>
-      📂 Open
-    </a>
+    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      <a href={url} target="_blank" rel="noreferrer"
+        title="Open Document Set Folder"
+        style={{ display: "inline-flex", alignItems: "center", gap: 3,
+          background: "#0078d4", color: "#fff", borderRadius: 5,
+          fontSize: 11, fontWeight: 600, padding: "3px 7px",
+          textDecoration: "none", whiteSpace: "nowrap" }}>
+        📂 Open
+      </a>
+      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name || "")}&number=${encodeURIComponent(project.projectNumber || "")}&client=${encodeURIComponent(project.client || "")}`}
+        target="_blank" rel="noreferrer"
+        title="Generate Sheet List & Transmittal"
+        style={{ display: "inline-flex", alignItems: "center", gap: 3,
+          background: "#14532d", color: "#4ade80", borderRadius: 5,
+          fontSize: 11, fontWeight: 600, padding: "3px 7px",
+          textDecoration: "none", whiteSpace: "nowrap",
+          border: "1px solid #166534" }}>
+        📄 TX
+      </a>
+    </div>
   );
   return (
     <button title="Create Document Set Folder"

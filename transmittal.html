@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Setty — Sheet List & Transmittal Generator</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --navy: #1F3864;
+      --red: #C00000;
+      --blue: #2F5496;
+      --gray: #44546A;
+      --light: #E7E6E6;
+      --off-white: #F8F8F8;
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+    }
+    body { font-family: "Segoe UI", Calibri, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* Header */
+    .app-header {
+      background: var(--navy);
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 3px solid var(--red);
+    }
+    .app-header-left { display: flex; align-items: center; gap: 16px; }
+    .app-title { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: 0.5px; }
+    .app-subtitle { font-size: 11px; color: rgba(255,255,255,0.6); }
+    .sign-btn {
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .sign-btn:hover { background: rgba(255,255,255,0.25); }
+
+    /* Main */
+    .main { max-width: 900px; margin: 0 auto; padding: 28px 20px; }
+
+    /* Cards */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Form */
+    label { display: block; font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px; }
+    input[type="text"], input[type="date"], select, textarea {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      margin-bottom: 14px;
+      outline: none;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--blue); }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+    /* Buttons */
+    .btn {
+      padding: 9px 18px;
+      border-radius: 7px;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: var(--navy); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--blue); }
+    .btn-green { background: #14532d; color: #4ade80; border: 1px solid #166534; }
+    .btn-green:hover:not(:disabled) { background: #166534; }
+    .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-ghost:hover:not(:disabled) { background: var(--card); color: var(--text); }
+    .btn-red { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
+
+    /* Status */
+    .status {
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      margin-bottom: 14px;
+      display: none;
+    }
+    .status.show { display: block; }
+    .status.info { background: #1e3a5f; color: #60b4ff; border: 1px solid #1d4ed8; }
+    .status.success { background: #14532d; color: #4ade80; border: 1px solid #166534; }
+    .status.error { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
+    .status.warn { background: #431407; color: #fb923c; border: 1px solid #7c2d12; }
+
+    /* Sheet table */
+    .sheet-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .sheet-table th {
+      background: var(--navy);
+      color: #fff;
+      padding: 8px 12px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .sheet-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .sheet-table tr:nth-child(even) td { background: #0d1117; }
+    .sheet-table tr:hover td { background: #21262d; }
+    .sheet-table input[type="text"] { margin-bottom: 0; padding: 4px 8px; font-size: 12px; }
+    .sheet-table input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue); }
+
+    /* Discipline badge */
+    .disc-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .disc-M { background: #1a2a3a; color: #60b4ff; }
+    .disc-E { background: #2a1a3a; color: #c084fc; }
+    .disc-P { background: #1a3a2a; color: #34d399; }
+    .disc-FP { background: #3a1a1a; color: #f87171; }
+    .disc-G { background: #1e1e2a; color: #94a3b8; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+    .count-badge { font-size: 11px; color: var(--muted); margin-left: auto; }
+
+    /* Sign-in overlay */
+    #signInOverlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.8);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .sign-in-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      width: 380px;
+      text-align: center;
+    }
+    .sign-in-logo {
+      font-size: 28px;
+      font-weight: 900;
+      color: var(--red);
+      letter-spacing: 3px;
+      margin-bottom: 8px;
+    }
+    .sign-in-sub { font-size: 12px; color: var(--muted); margin-bottom: 24px; line-height: 1.5; }
+    .sign-in-btn {
+      width: 100%;
+      padding: 12px;
+      background: var(--navy);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .sign-in-btn:hover { background: var(--blue); }
+    #signInError { margin-top: 12px; font-size: 12px; color: #f87171; min-height: 20px; }
+
+    .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 13px; }
+    .folder-url-display { font-size: 11px; color: var(--muted); font-family: monospace; word-break: break-all; margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+
+<!-- Sign-in overlay -->
+<div id="signInOverlay">
+  <div class="sign-in-card">
+    <div class="sign-in-logo">SETTY</div>
+    <div class="sign-in-sub">Sheet List &amp; Transmittal Generator<br/>Sign in with your Setty Microsoft 365 account</div>
+    <button class="sign-in-btn" id="signInBtn">🔐 Sign in with Microsoft</button>
+    <div id="signInError"></div>
+  </div>
+</div>
+
+<!-- App header -->
+<div class="app-header">
+  <div class="app-header-left">
+    <div>
+      <div class="app-title">SETTY — Sheet List &amp; Transmittal Generator</div>
+      <div class="app-subtitle" id="headerUser">Not signed in</div>
+    </div>
+  </div>
+  <button class="sign-btn" id="signOutBtn" style="display:none">Sign out</button>
+</div>
+
+<div class="main">
+
+  <!-- Folder & Project Info -->
+  <div class="card">
+    <div class="card-title">📁 Folder &amp; Project Info</div>
+    <div class="folder-url-display" id="folderUrlDisplay">No folder URL provided</div>
+    <div class="form-row">
+      <div>
+        <label>Project Name</label>
+        <input type="text" id="projectName" placeholder="e.g. SPARC Hunter College"/>
+      </div>
+      <div>
+        <label>Project Number</label>
+        <input type="text" id="projectNumber" placeholder="e.g. SAPX246006.00"/>
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Client / Agency</label>
+        <input type="text" id="clientName" placeholder="e.g. CUNY / DASNY"/>
+      </div>
+      <div>
+        <label>Transmittal Date</label>
+        <input type="date" id="transmittalDate"/>
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label>Issued For</label>
+        <select id="issuedFor">
+          <option>Issued for Review</option>
+          <option>Issued for Bid</option>
+          <option>Issued for Construction</option>
+          <option>Issued for Permit</option>
+          <option>Issued for Coordination</option>
+          <option>Record Set</option>
+          <option>Preliminary Review</option>
+          <option>Design Development Review</option>
+        </select>
+      </div>
+      <div>
+        <label>Transmittal No.</label>
+        <input type="text" id="transmittalNo" placeholder="e.g. T-001"/>
+      </div>
+    </div>
+    <button class="btn btn-primary" id="loadFolderBtn">🔍 Load Files from SharePoint</button>
+    <div class="status" id="loadStatus"></div>
+  </div>
+
+  <!-- Sheet List -->
+  <div class="card" id="sheetListCard" style="display:none">
+    <div class="card-title">📋 Sheet List
+      <span class="count-badge" id="sheetCount"></span>
+    </div>
+
+    <div class="toolbar">
+      <button class="btn btn-ghost" id="selectAllBtn">☑ Select All</button>
+      <button class="btn btn-ghost" id="deselectAllBtn">☐ Deselect All</button>
+      <button class="btn btn-ghost" id="addRowBtn">+ Add Row</button>
+      <button class="btn btn-ghost" id="sortBtn">↕ Sort by Sheet No.</button>
+    </div>
+
+    <div style="overflow-x:auto">
+      <table class="sheet-table" id="sheetTable">
+        <thead>
+          <tr>
+            <th style="width:32px">✓</th>
+            <th style="width:90px">Discipline</th>
+            <th style="width:110px">Sheet No.</th>
+            <th>Sheet Name / Title</th>
+            <th style="width:80px">Revision</th>
+            <th style="width:110px">Date</th>
+            <th style="width:32px"></th>
+          </tr>
+        </thead>
+        <tbody id="sheetTableBody"></tbody>
+      </table>
+    </div>
+
+    <div class="status" id="parseStatus"></div>
+
+    <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-green" id="generateBtn">📄 Generate Transmittal (.docx)</button>
+      <button class="btn btn-primary" id="saveToSpBtn">💾 Save to SharePoint Folder</button>
+    </div>
+    <div class="status" id="generateStatus"></div>
+  </div>
+
+</div>
+
+<script>
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+const MSAL_CONFIG = {
+  auth: {
+    clientId: "c4739c11-e89b-4a04-9580-f2d886356301",
+    authority: "https://login.microsoftonline.com/f374c024-71c2-48b6-8420-076fff97327c",
+    redirectUri: window.location.origin + window.location.pathname,
+    navigateToLoginRequestUrl: true,
+  },
+  cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
+  system: { allowNativeBroker: false },
+};
+const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All"];
+const LOGIN_SCOPES  = ["User.Read", "openid", "profile"];
+const SP_DRIVE_ID   = "b!your-drive-id"; // resolved at runtime
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let msalApp = null;
+let msalAccount = null;
+let folderUrl = "";
+let resolvedDriveId = null;
+let resolvedFolderPath = null;
+let sheets = [];
+let generatedBlob = null;
+let generatedFileName = "";
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+(async function init() {
+  // Read folder URL from query param
+  const params = new URLSearchParams(window.location.search);
+  folderUrl = params.get("folder") || "";
+  if (folderUrl) {
+    document.getElementById("folderUrlDisplay").textContent = decodeURIComponent(folderUrl);
+    // Try to pre-fill project info from folder name
+    const parts = decodeURIComponent(folderUrl).split("/");
+    const folderName = parts[parts.length - 1];
+    const match = folderName.match(/^([A-Z]+\d+[\w.]+)\s*[-–]\s*(.+)$/);
+    if (match) {
+      document.getElementById("projectNumber").value = match[1];
+      document.getElementById("projectName").value = match[2];
+      document.getElementById("transmittalNo").value = "T-001";
+    }
+  }
+  // Also read project info passed from PMS
+  const projectParam = params.get("project");
+  const numberParam = params.get("number");
+  const clientParam = params.get("client");
+  if (projectParam && !document.getElementById("projectName").value)
+    document.getElementById("projectName").value = decodeURIComponent(projectParam);
+  if (numberParam && !document.getElementById("projectNumber").value)
+    document.getElementById("projectNumber").value = decodeURIComponent(numberParam);
+  if (clientParam)
+    document.getElementById("clientName").value = decodeURIComponent(clientParam);
+  if (numberParam || projectParam) {
+    // Auto-generate transmittal number
+    document.getElementById("transmittalNo").value = "T-001";
+  }
+  // Set today's date
+  document.getElementById("transmittalDate").value = new Date().toISOString().slice(0, 10);
+
+  // Init MSAL
+  msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalApp.initialize();
+  try {
+    const response = await msalApp.handleRedirectPromise();
+    if (response?.account) {
+      msalAccount = response.account;
+      onSignedIn();
+      return;
+    }
+  } catch(e) {}
+  const accounts = msalApp.getAllAccounts();
+  if (accounts.length > 0) {
+    msalAccount = accounts[0];
+    onSignedIn();
+  }
+})();
+
+function onSignedIn() {
+  document.getElementById("signInOverlay").style.display = "none";
+  document.getElementById("signOutBtn").style.display = "block";
+  document.getElementById("headerUser").textContent = msalAccount.name || msalAccount.username;
+}
+
+document.getElementById("signInBtn").onclick = async () => {
+  document.getElementById("signInError").textContent = "";
+  try {
+    await msalApp.loginRedirect({ scopes: LOGIN_SCOPES });
+  } catch(e) {
+    document.getElementById("signInError").textContent = "Sign-in failed: " + e.message;
+  }
+};
+
+document.getElementById("signOutBtn").onclick = async () => {
+  await msalApp.logoutRedirect({ account: msalAccount });
+};
+
+async function getToken() {
+  try {
+    const r = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: msalAccount });
+    return r.accessToken;
+  } catch(e) {
+    await msalApp.acquireTokenRedirect({ scopes: GRAPH_SCOPES, account: msalAccount });
+    return null;
+  }
+}
+
+async function graphFetch(method, path, body, token) {
+  const t = token || await getToken();
+  const res = await fetch("https://graph.microsoft.com/v1.0" + path, {
+    method,
+    headers: { "Authorization": "Bearer " + t, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error("Graph " + res.status + ": " + (await res.text()).slice(0, 200));
+  return res.status === 204 ? null : res.json();
+}
+
+// ─── LOAD FILES ───────────────────────────────────────────────────────────────
+document.getElementById("loadFolderBtn").onclick = loadFolder;
+
+async function loadFolder() {
+  const btn = document.getElementById("loadFolderBtn");
+  btn.disabled = true;
+  setStatus("loadStatus", "info", "⏳ Connecting to SharePoint…");
+
+  try {
+    const token = await getToken();
+    if (!token) return;
+
+    // Resolve the drive
+    const siteRes = await graphFetch("GET", "/sites/setty.sharepoint.com:/sites/NYCProjects:", null, token);
+    const siteId = siteRes.id;
+    const drivesRes = await graphFetch("GET", `/sites/${siteId}/drives`, null, token);
+    const drive = (drivesRes.value || []).find(d => d.name === "Project Document Library");
+    if (!drive) throw new Error("Project Document Library not found");
+    resolvedDriveId = drive.id;
+
+    // Build folder path from URL
+    let folderPath = "";
+    if (folderUrl) {
+      const url = decodeURIComponent(folderUrl);
+      const libIdx = url.indexOf("Project Document Library/");
+      if (libIdx !== -1) {
+        folderPath = url.slice(libIdx + "Project Document Library/".length);
+      }
+    }
+
+    if (!folderPath) throw new Error("Could not parse folder path from URL. Please check the folder URL.");
+    resolvedFolderPath = folderPath;
+
+    setStatus("loadStatus", "info", "⏳ Reading files in folder…");
+
+    const filesRes = await graphFetch("GET",
+      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=name,lastModifiedDateTime,size`,
+      null, token
+    );
+
+    const files = (filesRes.value || []).filter(f =>
+      !f.folder && /\.(pdf|dwg|rvt|dgn|dxf)$/i.test(f.name)
+    );
+
+    if (files.length === 0) {
+      setStatus("loadStatus", "warn", "⚠ No drawing files found in this folder. Only PDF, DWG, RVT, DGN, and DXF files are listed. You can add rows manually.");
+    } else {
+      setStatus("loadStatus", "success", `✓ Found ${files.length} drawing file${files.length !== 1 ? "s" : ""}.`);
+    }
+
+    // Parse filenames into sheet rows
+    sheets = files.map(f => parseFilename(f.name, f.lastModifiedDateTime)).filter(Boolean);
+    // Add manual empty rows if nothing found
+    if (sheets.length === 0) {
+      sheets = [emptyRow(), emptyRow(), emptyRow()];
+    }
+
+    renderTable();
+    document.getElementById("sheetListCard").style.display = "block";
+
+  } catch(e) {
+    setStatus("loadStatus", "error", "✗ " + e.message);
+  }
+  btn.disabled = false;
+}
+
+// ─── FILENAME PARSER ──────────────────────────────────────────────────────────
+function parseFilename(filename, modifiedDate) {
+  // Remove extension
+  const base = filename.replace(/\.(pdf|dwg|rvt|dgn|dxf)$/i, "");
+
+  // Patterns to try in order:
+  // 1. M-501_Mechanical-Roof-Plan_Rev2
+  // 2. M-501 Mechanical Roof Plan Rev2
+  // 3. SAPX246006-M-501-MechanicalRoofPlan-Rev2
+  // 4. M501_SheetTitle_Rev0
+  // 5. Just a sheet number and title
+
+  let sheetNo = "", title = "", revision = "0", discipline = "";
+
+  // Pattern 1 & 2: Discipline-Number_Title_RevX or Discipline-Number Title RevX
+  let m = base.match(/^([A-Z]{1,4})-(\d+[A-Z]?)[\s_-]+(.+?)[\s_-]+[Rr]ev[\s.]?(\w+)$/);
+  if (!m) m = base.match(/^([A-Z]{1,4})-(\d+[A-Z]?)[\s_-]+(.+)$/);
+  if (m) {
+    discipline = m[1];
+    sheetNo = m[1] + "-" + m[2];
+    title = m[3].replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+    revision = m[4] || "0";
+  }
+
+  // Pattern 3: Full project number prefix then sheet
+  if (!sheetNo) {
+    m = base.match(/[A-Z]{4}\d+[\w.]*[-_]([A-Z]{1,4})-(\d+[A-Z]?)[-_](.+?)[-_]?[Rr]ev[\s.]?(\w+)$/);
+    if (m) {
+      discipline = m[1];
+      sheetNo = m[1] + "-" + m[2];
+      title = m[3].replace(/[-_]/g, " ").trim();
+      revision = m[4] || "0";
+    }
+  }
+
+  // Pattern 4: No delimiter, just letter(s) then number
+  if (!sheetNo) {
+    m = base.match(/^([A-Z]{1,4})(\d+[A-Z]?)\s+(.+)$/);
+    if (m) {
+      discipline = m[1];
+      sheetNo = m[1] + "-" + m[2];
+      title = m[3].replace(/[-_]/g, " ").trim();
+    }
+  }
+
+  // Fallback — use filename as title, try to detect sheet number
+  if (!sheetNo) {
+    m = base.match(/([A-Z]{1,4}[-–]\d+[A-Z]?)/);
+    if (m) {
+      sheetNo = m[1];
+      discipline = sheetNo.split(/[-–]/)[0];
+      title = base.replace(m[1], "").replace(/[-_]/g, " ").trim();
+    } else {
+      sheetNo = "";
+      title = base.replace(/[-_]/g, " ").trim();
+    }
+  }
+
+  // Extract revision if in title
+  const revMatch = title.match(/\s+[Rr]ev[\s.]?(\w+)$/);
+  if (revMatch && !revision) {
+    revision = revMatch[1];
+    title = title.replace(revMatch[0], "").trim();
+  }
+
+  const date = modifiedDate ? modifiedDate.slice(0, 10) : new Date().toISOString().slice(0, 10);
+
+  return {
+    id: uid(),
+    include: true,
+    discipline: mapDiscipline(discipline),
+    sheetNo,
+    title,
+    revision: revision || "0",
+    date,
+    filename,
+  };
+}
+
+function mapDiscipline(code) {
+  const map = { M: "Mechanical", E: "Electrical", P: "Plumbing", FP: "Fire Protection", G: "General", A: "Architectural", S: "Structural", C: "Civil" };
+  return map[code] || code || "General";
+}
+
+function discCode(disc) {
+  const map = { Mechanical: "M", Electrical: "E", Plumbing: "P", "Fire Protection": "FP", General: "G", Architectural: "A", Structural: "S", Civil: "C" };
+  return map[disc] || "G";
+}
+
+function emptyRow() {
+  return { id: uid(), include: true, discipline: "General", sheetNo: "", title: "", revision: "0", date: new Date().toISOString().slice(0, 10), filename: "" };
+}
+
+function uid() { return Math.random().toString(36).slice(2, 9); }
+
+// ─── TABLE RENDER ─────────────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById("sheetTableBody");
+  tbody.innerHTML = "";
+
+  sheets.forEach((s, i) => {
+    const dc = discCode(s.discipline);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="checkbox" ${s.include ? "checked" : ""} onchange="sheets[${i}].include=this.checked;updateCount()"/></td>
+      <td>
+        <span class="disc-badge disc-${dc}">${dc}</span>
+        <select style="display:none" onchange="sheets[${i}].discipline=this.value;renderTable()">
+          ${["Mechanical","Electrical","Plumbing","Fire Protection","General","Architectural","Structural","Civil"].map(d =>
+            `<option ${d === s.discipline ? "selected" : ""}>${d}</option>`
+          ).join("")}
+        </select>
+      </td>
+      <td><input type="text" value="${esc(s.sheetNo)}" placeholder="M-501" onchange="sheets[${i}].sheetNo=this.value"/></td>
+      <td><input type="text" value="${esc(s.title)}" placeholder="Sheet title…" onchange="sheets[${i}].title=this.value"/></td>
+      <td><input type="text" value="${esc(s.revision)}" placeholder="0" style="width:60px" onchange="sheets[${i}].revision=this.value"/></td>
+      <td><input type="text" value="${esc(s.date)}" placeholder="YYYY-MM-DD" onchange="sheets[${i}].date=this.value"/></td>
+      <td><button onclick="removeRow(${i})" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
+    `;
+    // Click badge to open select
+    tr.querySelector(".disc-badge").onclick = function() {
+      this.style.display = "none";
+      const sel = tr.querySelector("select");
+      sel.style.display = "inline-block";
+      sel.focus();
+      sel.onblur = () => { sel.style.display = "none"; this.style.display = "inline-block"; };
+    };
+    tbody.appendChild(tr);
+  });
+
+  updateCount();
+}
+
+function updateCount() {
+  const included = sheets.filter(s => s.include).length;
+  document.getElementById("sheetCount").textContent = `${included} of ${sheets.length} selected`;
+}
+
+function removeRow(i) { sheets.splice(i, 1); renderTable(); }
+function esc(s) { return (s || "").replace(/"/g, "&quot;"); }
+
+document.getElementById("addRowBtn").onclick = () => { sheets.push(emptyRow()); renderTable(); };
+document.getElementById("selectAllBtn").onclick = () => { sheets.forEach(s => s.include = true); renderTable(); };
+document.getElementById("deselectAllBtn").onclick = () => { sheets.forEach(s => s.include = false); renderTable(); };
+document.getElementById("sortBtn").onclick = () => {
+  sheets.sort((a, b) => (a.sheetNo || "").localeCompare(b.sheetNo || ""));
+  renderTable();
+};
+
+// ─── GENERATE DOCX ────────────────────────────────────────────────────────────
+document.getElementById("generateBtn").onclick = generateDocx;
+document.getElementById("saveToSpBtn").onclick = saveToSharePoint;
+
+async function generateDocx() {
+  const included = sheets.filter(s => s.include);
+  if (included.length === 0) { setStatus("generateStatus", "error", "No sheets selected."); return; }
+
+  const btn = document.getElementById("generateBtn");
+  btn.disabled = true;
+  setStatus("generateStatus", "info", "⏳ Generating transmittal…");
+
+  try {
+    const {
+      Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+      Header, AlignmentType, BorderStyle, WidthType, ShadingType,
+      VerticalAlign, ImageRun, PageNumber, UnderlineType
+    } = docx;
+
+    const projectName = document.getElementById("projectName").value.trim() || "Project";
+    const projectNumber = document.getElementById("projectNumber").value.trim() || "";
+    const clientName = document.getElementById("clientName").value.trim() || "";
+    const txDate = document.getElementById("transmittalDate").value || new Date().toISOString().slice(0,10);
+    const issuedFor = document.getElementById("issuedFor").value;
+    const txNo = document.getElementById("transmittalNo").value.trim() || "T-001";
+
+    // Format date for display
+    const dateDisplay = new Date(txDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+    // Colors
+    const NAVY = "1F3864", RED = "C00000", BLUE = "2F5496", GRAY = "44546A", LIGHT = "E7E6E6", WHITE = "FFFFFF";
+
+    // Border helpers
+    const border = (color = LIGHT, size = 4) => ({ style: BorderStyle.SINGLE, size, color });
+    const cellBorders = { top: border(), bottom: border(), left: border(), right: border() };
+    const headerBorders = { top: border(NAVY, 4), bottom: border(NAVY, 4), left: border(NAVY, 4), right: border(NAVY, 4) };
+
+    // Header cell helper
+    function headerCell(text, width) {
+      return new TableCell({
+        width: { size: width, type: WidthType.DXA },
+        borders: headerBorders,
+        shading: { fill: NAVY, type: ShadingType.CLEAR },
+        margins: { top: 80, bottom: 80, left: 120, right: 120 },
+        verticalAlign: VerticalAlign.CENTER,
+        children: [new Paragraph({
+          alignment: AlignmentType.LEFT,
+          children: [new TextRun({ text, font: "Calibri", size: 18, bold: true, color: WHITE })]
+        })]
+      });
+    }
+
+    // Data cell helper
+    function dataCell(text, width, isEven, bold = false, color = "000000") {
+      return new TableCell({
+        width: { size: width, type: WidthType.DXA },
+        borders: cellBorders,
+        shading: { fill: isEven ? "F8F8F8" : WHITE, type: ShadingType.CLEAR },
+        margins: { top: 60, bottom: 60, left: 120, right: 120 },
+        verticalAlign: VerticalAlign.CENTER,
+        children: [new Paragraph({
+          children: [new TextRun({ text: text || "—", font: "Calibri", size: 20, bold, color })]
+        })]
+      });
+    }
+
+    // Column widths (total = 9360 DXA for 1" margins US Letter)
+    const COL = [480, 1200, 4080, 960, 1200, 1440]; // check, disc, title, rev, date (no check col in docx)
+    const COL_DOCX = [1200, 4800, 960, 1200, 1200]; // disc, sheet no, title, rev, date — total 9360
+
+    // Sheet rows
+    const sheetRows = included.map((s, i) => {
+      const isEven = i % 2 === 1;
+      const dc = discCode(s.discipline);
+      return new TableRow({
+        children: [
+          dataCell(dc, COL_DOCX[0], isEven, true, BLUE),
+          dataCell(s.sheetNo, COL_DOCX[1], isEven, true),
+          dataCell(s.title, COL_DOCX[2], isEven),
+          dataCell(s.revision, COL_DOCX[3], isEven, false, GRAY),
+          dataCell(s.date, COL_DOCX[4], isEven, false, GRAY),
+        ]
+      });
+    });
+
+    // Load logo
+    let logoImageRun = null;
+    try {
+      const logoRes = await fetch("/setty-logo.png");
+      const logoBlob = await logoRes.blob();
+      const logoBuffer = await logoBlob.arrayBuffer();
+      logoImageRun = new ImageRun({
+        data: logoBuffer,
+        transformation: { width: 120, height: 20 },
+        type: "png",
+      });
+    } catch(e) { /* logo unavailable */ }
+
+    // Info table (project metadata)
+    function infoRow(label, value) {
+      return new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 2160, type: WidthType.DXA },
+            borders: cellBorders,
+            shading: { fill: LIGHT, type: ShadingType.CLEAR },
+            margins: { top: 60, bottom: 60, left: 120, right: 120 },
+            children: [new Paragraph({ children: [new TextRun({ text: label, font: "Calibri", size: 18, bold: true, color: NAVY })] })]
+          }),
+          new TableCell({
+            width: { size: 7200, type: WidthType.DXA },
+            borders: cellBorders,
+            shading: { fill: WHITE, type: ShadingType.CLEAR },
+            margins: { top: 60, bottom: 60, left: 120, right: 120 },
+            children: [new Paragraph({ children: [new TextRun({ text: value, font: "Calibri", size: 20 })] })]
+          }),
+        ]
+      });
+    }
+
+    const doc = new Document({
+      styles: {
+        default: { document: { run: { font: "Calibri", size: 22 } } }
+      },
+      sections: [{
+        properties: {
+          page: {
+            size: { width: 12240, height: 15840 },
+            margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 },
+          }
+        },
+        headers: {
+          default: new Header({
+            children: [
+              new Paragraph({
+                border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: RED, space: 1 } },
+                spacing: { after: 120 },
+                children: [
+                  ...(logoImageRun ? [logoImageRun, new TextRun({ text: "    ", font: "Calibri", size: 20 })] : [
+                    new TextRun({ text: "SETTY", font: "Calibri", size: 28, bold: true, color: RED }),
+                    new TextRun({ text: "  &  Associates International, PLLC    ", font: "Calibri", size: 18, color: GRAY }),
+                  ]),
+                  new TextRun({ text: "Sheet List & Transmittal", font: "Calibri", size: 18, color: GRAY }),
+                ]
+              })
+            ]
+          })
+        },
+        children: [
+          // Title
+          new Paragraph({
+            spacing: { before: 0, after: 160 },
+            children: [
+              new TextRun({ text: "SHEET LIST & TRANSMITTAL", font: "Calibri", size: 40, bold: true, color: NAVY }),
+            ]
+          }),
+          new Paragraph({
+            border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: NAVY, space: 1 } },
+            spacing: { after: 200 },
+            children: [new TextRun({ text: issuedFor.toUpperCase(), font: "Calibri", size: 22, bold: true, color: BLUE })]
+          }),
+
+          // Info table
+          new Table({
+            width: { size: 9360, type: WidthType.DXA },
+            columnWidths: [2160, 7200],
+            rows: [
+              infoRow("Project:", projectName),
+              infoRow("Project No.:", projectNumber),
+              infoRow("Client:", clientName),
+              infoRow("Date:", dateDisplay),
+              infoRow("Transmittal No.:", txNo),
+              infoRow("Issued For:", issuedFor),
+            ]
+          }),
+
+          new Paragraph({ spacing: { before: 200, after: 160 },
+            children: [new TextRun({ text: "DRAWING SCHEDULE", font: "Calibri", size: 24, bold: true, color: NAVY })]
+          }),
+
+          // Sheet table
+          new Table({
+            width: { size: 9360, type: WidthType.DXA },
+            columnWidths: COL_DOCX,
+            rows: [
+              new TableRow({
+                tableHeader: true,
+                children: [
+                  headerCell("DISC.", COL_DOCX[0]),
+                  headerCell("SHEET NO.", COL_DOCX[1]),
+                  headerCell("SHEET TITLE", COL_DOCX[2]),
+                  headerCell("REV.", COL_DOCX[3]),
+                  headerCell("DATE", COL_DOCX[4]),
+                ]
+              }),
+              ...sheetRows
+            ]
+          }),
+
+          // Footer note
+          new Paragraph({
+            spacing: { before: 300 },
+            border: { top: { style: BorderStyle.SINGLE, size: 4, color: LIGHT, space: 1 } },
+            children: [
+              new TextRun({ text: `Total: ${included.length} sheet${included.length !== 1 ? "s" : ""}     `, font: "Calibri", size: 18, color: GRAY }),
+              new TextRun({ text: `Generated: ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}     `, font: "Calibri", size: 18, color: GRAY }),
+              new TextRun({ text: "SETTY & Associates International, PLLC", font: "Calibri", size: 18, bold: true, color: NAVY }),
+            ]
+          }),
+        ]
+      }]
+    });
+
+    const buffer = await Packer.toBlob(doc);
+    generatedBlob = buffer;
+    generatedFileName = `${projectNumber ? projectNumber + "_" : ""}Transmittal_${txNo.replace(/[^a-zA-Z0-9]/g,"")}_${txDate}.docx`;
+
+    // Auto-download
+    saveAs(buffer, generatedFileName);
+    setStatus("generateStatus", "success", `✓ "${generatedFileName}" downloaded. Click "Save to SharePoint" to also save it to the folder.`);
+
+  } catch(e) {
+    setStatus("generateStatus", "error", "✗ " + e.message);
+    console.error(e);
+  }
+  btn.disabled = false;
+}
+
+// ─── SAVE TO SHAREPOINT ───────────────────────────────────────────────────────
+async function saveToSharePoint() {
+  if (!generatedBlob) { setStatus("generateStatus", "error", "Generate the transmittal first."); return; }
+  if (!resolvedDriveId || !resolvedFolderPath) { setStatus("generateStatus", "error", "Load the folder first."); return; }
+
+  setStatus("generateStatus", "info", "⏳ Saving to SharePoint…");
+  try {
+    const token = await getToken();
+    const path = `/drives/${resolvedDriveId}/root:/${encodeURIComponent(resolvedFolderPath)}/${encodeURIComponent(generatedFileName)}:/content`;
+    const arrayBuffer = await generatedBlob.arrayBuffer();
+    const res = await fetch("https://graph.microsoft.com/v1.0" + path, {
+      method: "PUT",
+      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+      body: arrayBuffer,
+    });
+    if (!res.ok) throw new Error("Upload failed: " + res.status);
+    setStatus("generateStatus", "success", `✓ Saved to SharePoint folder as "${generatedFileName}"`);
+  } catch(e) {
+    setStatus("generateStatus", "error", "✗ " + e.message);
+  }
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function setStatus(id, type, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = "status" + (msg ? " show " + type : "");
+  el.textContent = msg;
+}
+</script>
+</body>
+</html>
