@@ -476,11 +476,17 @@ async function loadPmsData() {
     }
 
     // Debug: show what loaded
+    const projNumField = document.getElementById("projectNumber").value;
     console.log("[TX] Loaded:", pmsProjects.length, "projects,", pmsClients.length, "clients");
-    console.log("[TX] Project number field:", document.getElementById("projectNumber").value);
-    const dbgProj = pmsProjects.find(p => p.projectNumber === document.getElementById("projectNumber").value);
+    console.log("[TX] Project number field:", projNumField);
+    console.log("[TX] First 5 project numbers:", pmsProjects.slice(0,5).map(p => JSON.stringify(p.projectNumber)));
+    console.log("[TX] Exact match test:", pmsProjects.some(p => p.projectNumber === projNumField));
+    const dbgProj = pmsProjects.find(p => p.projectNumber === projNumField);
     console.log("[TX] Matched project:", dbgProj ? dbgProj.name : "none", "| client:", dbgProj?.client, "| prime:", dbgProj?.prime);
     console.log("[TX] Clients:", pmsClients.slice(0,5).map(c => c.name + "(" + (c.contacts||[]).length + ")").join(", "));
+    // Check data structure
+    if (pmsProjects.length === 0) console.warn("[TX] WARNING: pmsProjects is empty — check Supabase data key");
+    if (data && !data.projects) console.warn("[TX] WARNING: data.projects missing — keys:", Object.keys(data).slice(0,10).join(", "));
 
     // STEP 2: NOW populate recipient with project number already in the field
     updateRecipientFromProject();
