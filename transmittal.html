@@ -449,14 +449,22 @@ function onSignedIn() {
 
 async function loadPmsData() {
   try {
-    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?select=data&limit=1", {
-      headers: { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPABASE_ANON }
+    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=projects,clients", {
+      headers: {
+        "apikey": SUPABASE_ANON,
+        "Authorization": "Bearer " + SUPABASE_ANON,
+        "Content-Type": "application/json",
+      }
     });
+    if (!res.ok) { console.warn("[TX] Supabase error:", res.status, await res.text()); return; }
     const rows = await res.json();
-    if (!rows || !rows[0]) return;
-    const data = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
-    pmsClients = data.clients || [];
-    pmsProjects = (data.projects || []).filter(p => !p.archived);
+    if (!rows || !rows[0]) { console.warn("[TX] No rows returned from Supabase"); return; }
+    const row = rows[0];
+    // Projects and clients are direct columns, not nested in a data field
+    const rawProjects = Array.isArray(row.projects) ? row.projects : (typeof row.projects === "string" ? JSON.parse(row.projects) : []);
+    const rawClients = Array.isArray(row.clients) ? row.clients : (typeof row.clients === "string" ? JSON.parse(row.clients) : []);
+    pmsClients = rawClients;
+    pmsProjects = rawProjects.filter(p => !p.archived);
 
     // STEP 1: Fill in project fields from URL params FIRST
     const urlNumber = new URLSearchParams(window.location.search).get("number");
