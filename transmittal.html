@@ -457,21 +457,32 @@ async function loadPmsData() {
     const data = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
     pmsClients = data.clients || [];
     pmsProjects = (data.projects || []).filter(p => !p.archived);
-    populateRecipientDropdown();
-    // Pre-fill project info if project number was passed from PMS URL param
+
+    // STEP 1: Fill in project fields from URL params FIRST
     const urlNumber = new URLSearchParams(window.location.search).get("number");
     const urlProject = new URLSearchParams(window.location.search).get("project");
+    const urlClient = new URLSearchParams(window.location.search).get("client");
     if (urlNumber) {
-      const proj = pmsProjects.find(p => p.projectNumber === decodeURIComponent(urlNumber));
+      const decodedNum = decodeURIComponent(urlNumber);
+      const proj = pmsProjects.find(p => p.projectNumber === decodedNum);
       if (proj) {
         document.getElementById("projectName").value = proj.name || "";
         document.getElementById("projectNumber").value = proj.projectNumber || "";
-      } else if (urlProject) {
-        document.getElementById("projectName").value = decodeURIComponent(urlProject);
-        document.getElementById("projectNumber").value = decodeURIComponent(urlNumber);
+      } else {
+        // Project not found by number — use URL params directly
+        if (urlProject) document.getElementById("projectName").value = decodeURIComponent(urlProject);
+        document.getElementById("projectNumber").value = decodedNum;
       }
     }
-    // Now populate recipient based on loaded project data
+
+    // Debug: show what loaded
+    console.log("[TX] Loaded:", pmsProjects.length, "projects,", pmsClients.length, "clients");
+    console.log("[TX] Project number field:", document.getElementById("projectNumber").value);
+    const dbgProj = pmsProjects.find(p => p.projectNumber === document.getElementById("projectNumber").value);
+    console.log("[TX] Matched project:", dbgProj ? dbgProj.name : "none", "| client:", dbgProj?.client, "| prime:", dbgProj?.prime);
+    console.log("[TX] Clients:", pmsClients.slice(0,5).map(c => c.name + "(" + (c.contacts||[]).length + ")").join(", "));
+
+    // STEP 2: NOW populate recipient with project number already in the field
     updateRecipientFromProject();
   } catch(e) {
     console.warn("Could not load PMS data:", e.message);
@@ -495,6 +506,8 @@ function updateRecipientFromProject() {
   contactSelect.innerHTML = "<option value=''>— Select contact —</option>";
   document.getElementById("recipientName").value = "";
   document.getElementById("recipientEmail").value = "";
+
+  console.log("[TX] updateRecipientFromProject: projNum='" + projNum + "' proj=" + (proj ? proj.name : "null") + " type=" + type);
 
   let company = "";
   let contacts = [];
@@ -554,6 +567,8 @@ function updateRecipientFromProject() {
     }
   }
 
+  console.log("[TX] company='" + company + "' contacts before fallback:", contacts.length);
+
   // If still no contacts, show full client directory as fallback
   if (contacts.length === 0) {
     pmsClients.forEach(cl => {
@@ -561,6 +576,7 @@ function updateRecipientFromProject() {
         if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
       });
     });
+    console.log("[TX] fallback contacts:", contacts.length);
   }
 
   // Deduplicate by name+email
