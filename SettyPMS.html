@@ -420,7 +420,7 @@ async function interactiveMicrosoftSignIn(app, scopes = GRAPH_SCOPES) {
   return tokenResult.accessToken;
 }
 
-async function getTokenForScopes(scopes, forceRefresh = false) {
+async function getTokenForScopes(scopes, forceRefresh = false, allowInteractive = false) {
   const app = await getMsalApp();
 
   const existingActive = app.getActiveAccount();
@@ -460,7 +460,11 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
   }
 
   // No cached account (first-time user or cleared storage).
-  // Keep an in-page interactive path so users can connect without redirecting.
+  // Keep Graph actions non-disruptive and ask the user to connect explicitly.
+  if (!allowInteractive) {
+    throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
+  }
+
   try {
     return await interactiveMicrosoftSignIn(app, scopes);
   } catch (e) {
@@ -470,12 +474,11 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
 }
 
 async function getToken(forceRefresh = false) {
-  return getTokenForScopes(GRAPH_SCOPES, forceRefresh);
+  return getTokenForScopes(GRAPH_SCOPES, forceRefresh, false);
 }
 
 async function connectMicrosoft(scopes = GRAPH_SCOPES) {
-  const app = await getMsalApp();
-  return interactiveMicrosoftSignIn(app, scopes);
+  return getTokenForScopes(scopes, false, true);
 }
 function sanitizeTeamsChannelName(name) {
   if (!name) return "New Channel";
