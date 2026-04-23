@@ -10612,7 +10612,7 @@ function EmailsView({ project, onChange }) {
         ...project,
         emails: allEmails.map(e => (e && typeof e === "object" && e.msgId === email.msgId)
           ? { ...e, spFolderUrl: folderWebUrl }
-          : e)
+          : e),
       });
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
@@ -10622,7 +10622,7 @@ function EmailsView({ project, onChange }) {
   function deleteEmail(msgId) {
     onChange({
       ...project,
-      emails: allEmails.filter(e => !(e && typeof e === "object" && e.msgId === msgId))
+      emails: allEmails.filter(e => !(e && typeof e === "object" && e.msgId === msgId)),
     });
     if (expanded === msgId) setExpanded(null);
   }
