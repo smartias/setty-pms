@@ -404,6 +404,22 @@ function getCurrentUser() {
   return "Unknown";
 }
 
+async function interactiveMicrosoftSignIn(app, scopes = GRAPH_SCOPES) {
+  // Keep auth recovery in-page: popup-based sign in avoids hard redirects.
+  const loginResult = await app.loginPopup({ scopes, prompt: "select_account" });
+  if (loginResult?.account) {
+    app.setActiveAccount(loginResult.account);
+  }
+
+  const account = loginResult?.account || app.getActiveAccount() || app.getAllAccounts()[0];
+  if (!account) {
+    throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
+  }
+
+  const tokenResult = await app.acquireTokenSilent({ scopes, account });
+  return tokenResult.accessToken;
+}
+
 async function getTokenForScopes(scopes, forceRefresh = false) {
   const app = await getMsalApp();
 
@@ -430,7 +446,7 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
           // Both silent attempts failed — throw error so the caller
           // can show a message. Do NOT redirect mid-session as it
           // navigates away and loses all unsaved state.
-          throw new Error("Session token expired. Please refresh the page to re-authenticate.");
+          throw new Error("Session token expired. Please click Connect Microsoft to re-authenticate.");
         }
       }
     }
@@ -439,22 +455,18 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
       const r = await app.acquireTokenSilent({ scopes, account, forceRefresh: true });
       return r.accessToken;
     } catch(e) {
-      throw new Error("Session token expired. Please refresh the page to re-authenticate.");
+      throw new Error("Session token expired. Please click Connect Microsoft to re-authenticate.");
     }
   }
 
   // No cached account (first-time user or cleared storage).
-  // Use a non-redirect interactive popup so users can recover in-place.
+  // Keep an in-page interactive path so users can connect without redirecting.
   try {
-    const loginResult = await app.acquireTokenPopup({ scopes, prompt: "select_account" });
-    if (loginResult?.account) app.setActiveAccount(loginResult.account);
-    if (loginResult?.accessToken) return loginResult.accessToken;
+    return await interactiveMicrosoftSignIn(app, scopes);
   } catch (e) {
-    const msg = e?.message || "Interactive Microsoft sign-in failed.";
+    const msg = e?.message || 'Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.';
     throw new Error(msg);
   }
-
-  throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
 }
 
 async function getToken(forceRefresh = false) {
@@ -463,14 +475,7 @@ async function getToken(forceRefresh = false) {
 
 async function connectMicrosoft(scopes = GRAPH_SCOPES) {
   const app = await getMsalApp();
-  const loginResult = await app.acquireTokenPopup({ scopes, prompt: "select_account" });
-  if (loginResult?.account) {
-    app.setActiveAccount(loginResult.account);
-  }
-  if (!loginResult?.accessToken) {
-    throw new Error("Interactive Microsoft sign-in did not return a token.");
-  }
-  return loginResult.accessToken;
+  return interactiveMicrosoftSignIn(app, scopes);
 }
 function sanitizeTeamsChannelName(name) {
   if (!name) return "New Channel";
