@@ -10255,7 +10255,8 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
 // ─── EMAILS VIEW ─────────────────────────────────────────────────────────────
 
 function EmailsView({ project, onChange }) {
-  const saved = (project.emails || []).filter(e => e && typeof e === "object");
+  const allEmails = Array.isArray(project.emails) ? project.emails : [];
+  const saved = allEmails.filter(e => e && typeof e === "object");
   const toText = (value, fallback = "") => {
     if (typeof value === "string") return value;
     if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -10584,7 +10585,7 @@ function EmailsView({ project, onChange }) {
       };
     }));
 
-    onChange({ ...project, emails: [...saved, ...toAdd] });
+    onChange({ ...project, emails: [...allEmails, ...toAdd] });
     setSelected({});
     setResults([]);
     if (dupeCount > 0) alert(`${toAdd.length} saved. ${dupeCount} skipped (already on record).`);
@@ -10607,14 +10608,22 @@ function EmailsView({ project, onChange }) {
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
       // Persist the SP folder URL on the email record so it survives page refresh
-      onChange({ ...project, emails: saved.map(e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e) });
+      onChange({
+        ...project,
+        emails: allEmails.map(e => (e && typeof e === "object" && e.msgId === email.msgId)
+          ? { ...e, spFolderUrl: folderWebUrl }
+          : e)
+      });
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
     }
   }
 
   function deleteEmail(msgId) {
-    onChange({ ...project, emails: saved.filter(e => e.msgId !== msgId) });
+    onChange({
+      ...project,
+      emails: allEmails.filter(e => !(e && typeof e === "object" && e.msgId === msgId))
+    });
     if (expanded === msgId) setExpanded(null);
   }
 
