@@ -1490,7 +1490,7 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
   if (email.hasAttachments && email.msgId) {
     try {
       const attData = await graphFetch("GET",
-        "/me/messages/" + email.msgId + "/attachments", undefined, token);
+        "/me/messages/" + encodeURIComponent(email.msgId) + "/attachments", undefined, token);
       for (const att of (attData?.value || [])) {
         if (!att.contentBytes) continue;
         const binary = atob(att.contentBytes);
@@ -10256,6 +10256,14 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
 
 function EmailsView({ project, onChange }) {
   const saved = (project.emails || []).filter(e => e && typeof e === "object");
+  const toText = (value, fallback = "") => {
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (!value || typeof value !== "object") return fallback;
+    if (typeof value.name === "string" && value.name.trim()) return value.name;
+    if (typeof value.address === "string" && value.address.trim()) return value.address;
+    return fallback;
+  };
 
   // Search state
   const [query, setQuery] = useState(project.name || project.projectNumber || "");
@@ -10551,7 +10559,7 @@ function EmailsView({ project, onChange }) {
       let attachmentNames = [];
       if (m.hasAttachments) {
         try {
-          const res = await graphFetch("GET", `/me/messages/${m.id}/attachments?$select=name,size,contentType`, undefined, token);
+          const res = await graphFetch("GET", `/me/messages/${encodeURIComponent(m.id)}/attachments?$select=name,size,contentType`, undefined, token);
           attachmentNames = (res?.value || [])
             .filter(a => !a.contentType?.startsWith("image/") || a.size > 10000) // skip tiny inline images
             .map(a => a.name)
@@ -10570,7 +10578,7 @@ function EmailsView({ project, onChange }) {
         preview: m.bodyPreview || "",
         hasAttachments: !!m.hasAttachments,
         attachmentNames,
-        bodyText: htmlToText(m.body?.content || ""),
+        bodyText: htmlToText(m.body?.content || "") || (m.bodyPreview || "").trim(),
         savedAt: new Date().toISOString(),
         savedBy: getCurrentUser(),
       };
@@ -10592,7 +10600,7 @@ function EmailsView({ project, onChange }) {
       let bodyHtml = "";
       try {
         const token = await getToken();
-        const data = await graphFetch("GET", "/me/messages/" + email.msgId + "?$select=body", undefined, token);
+        const data = await graphFetch("GET", "/me/messages/" + encodeURIComponent(email.msgId) + "?$select=body", undefined, token);
         bodyHtml = data?.body?.content || "";
       } catch(e) { /* fallback to stored text */ }
       const { folderName, attachCount, folderWebUrl } = await saveEmailToSharePoint(email, project, bodyHtml, buildPmsMetadata(project, PMS_DOC_TYPES.CORRESPONDENCE));
@@ -10615,7 +10623,7 @@ function EmailsView({ project, onChange }) {
     setFetchingBody(msgId);
     try {
       const token = await getToken();
-      const data = await graphFetch("GET", `/me/messages/${msgId}?$select=body,hasAttachments`, undefined, token);
+      const data = await graphFetch("GET", `/me/messages/${encodeURIComponent(msgId)}?$select=body,hasAttachments`, undefined, token);
       if (data?.body?.content) {
         // Store raw HTML — rendered via iframe to preserve all formatting
         setLiveBody(prev => ({ ...prev, [msgId]: data.body.content }));
@@ -10635,18 +10643,22 @@ function EmailsView({ project, onChange }) {
 
   // Unique senders for filter
   const senders = useMemo(() => {
-    const s = new Set(saved.map(e => e.from).filter(Boolean));
+    const s = new Set(saved.map(e => toText(e.from, "")).filter(Boolean));
     return ["All", ...Array.from(s).sort()];
   }, [saved]);
 
   const filtered = saved.filter(e => {
-    if (filterSender !== "All" && e.from !== filterSender) return false;
+    const subjectTxt = toText(e.subject, "");
+    const fromTxt = toText(e.from, "");
+    const toTxt = toText(e.to, "");
+    const bodyTxt = toText(e.bodyText, "");
+    if (filterSender !== "All" && fromTxt !== filterSender) return false;
     if (logSearch.trim()) {
       const q = logSearch.toLowerCase();
-      return (e.subject || "").toLowerCase().includes(q)
-        || (e.from || "").toLowerCase().includes(q)
-        || (e.to || "").toLowerCase().includes(q)
-        || (e.bodyText || "").toLowerCase().includes(q);
+      return subjectTxt.toLowerCase().includes(q)
+        || fromTxt.toLowerCase().includes(q)
+        || toTxt.toLowerCase().includes(q)
+        || bodyTxt.toLowerCase().includes(q);
     }
     return true;
   });
@@ -10799,17 +10811,17 @@ function EmailsView({ project, onChange }) {
                 >
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{email.subject || "(no subject)"}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{toText(email.subject, "(no subject)")}</div>
                       <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
                         {new Date(email.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                       </div>
                     </div>
                     <div style={{ fontSize: 12, color: P.textMuted, marginTop: 2 }}>
-                      <span>From: <strong>{email.from || "Unknown"}</strong></span>
-                      {email.to && <span style={{ marginLeft: 10 }}>To: {email.to.length > 60 ? email.to.slice(0, 60) + "…" : email.to}</span>}
+                      <span>From: <strong>{toText(email.from, "Unknown")}</strong></span>
+                      {toText(email.to, "") && <span style={{ marginLeft: 10 }}>To: {toText(email.to, "").length > 60 ? toText(email.to, "").slice(0, 60) + "…" : toText(email.to, "")}</span>}
                     </div>
-                    {email.cc && (
-                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>CC: {email.cc.length > 80 ? email.cc.slice(0, 80) + "…" : email.cc}</div>
+                    {toText(email.cc, "") && (
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>CC: {toText(email.cc, "").length > 80 ? toText(email.cc, "").slice(0, 80) + "…" : toText(email.cc, "")}</div>
                     )}
                     <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
                       {email.hasAttachments && (
@@ -10842,6 +10854,10 @@ function EmailsView({ project, onChange }) {
                     ) : email.bodyText ? (
                       // Fallback: stored plain text — use chain parser
                       <EmailChain body={email.bodyText} />
+                    ) : email.preview ? (
+                      <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
+                        {toText(email.preview, "")}
+                      </pre>
                     ) : (
                       <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>
                     )}
