@@ -443,8 +443,20 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
     }
   }
 
-  // No account available — never hard-redirect from a data action.
-  // Redirects here can wipe in-memory edits and look like a random logout.
+  // No cached account — use popup-based interactive auth so first-time users
+  // still have a non-disruptive sign-in path from within the current session.
+  try {
+    const loginResult = await app.acquireTokenPopup({ scopes, prompt: "select_account" });
+    if (loginResult?.account) {
+      app.setActiveAccount(loginResult.account);
+    }
+    if (loginResult?.accessToken) {
+      return loginResult.accessToken;
+    }
+  } catch (e) {
+    const msg = e?.message || "Interactive Microsoft sign-in failed.";
+    throw new Error(msg);
+  }
   throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
 }
 
@@ -15472,15 +15484,10 @@ function App() {
     setAppStatus("loading");
     loadState()
       .then(s => {
-        const hasRemoteData = !!(s && (s.projects?.length || s.termContracts?.length || s.staff?.length || s.clients?.length));
-        const localSnap = loadLocalSnapshot();
-        const shouldUseLocal = !hasRemoteData && localSnap && (localSnap.projects?.length || localSnap.termContracts?.length || localSnap.staff?.length || localSnap.clients?.length);
-
-        const source = shouldUseLocal ? localSnap : s;
-        if (source?.projects) setProjects(source.projects);
-        if (source?.termContracts) setTermContracts(source.termContracts);
-        if (source?.staff) setStaff(source.staff);
-        if (source?.clients) setClients(source.clients);
+        if (s?.projects) setProjects(s.projects);
+        if (s?.termContracts) setTermContracts(s.termContracts);
+        if (s?.staff) setStaff(s.staff);
+        if (s?.clients) setClients(s.clients);
         isLoaded.current = true; // bug 1 fix: mark load complete before setting idle
         setAppStatus("idle");
       })
