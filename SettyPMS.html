@@ -443,25 +443,23 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
     }
   }
 
-  // No cached account — use popup-based interactive auth so first-time users
-  // still have a non-disruptive sign-in path from within the current session.
-  try {
-    const loginResult = await app.acquireTokenPopup({ scopes, prompt: "select_account" });
-    if (loginResult?.account) {
-      app.setActiveAccount(loginResult.account);
-    }
-    if (loginResult?.accessToken) {
-      return loginResult.accessToken;
-    }
-  } catch (e) {
-    const msg = e?.message || "Interactive Microsoft sign-in failed.";
-    throw new Error(msg);
-  }
   throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
 }
 
 async function getToken(forceRefresh = false) {
   return getTokenForScopes(GRAPH_SCOPES, forceRefresh);
+}
+
+async function connectMicrosoft(scopes = GRAPH_SCOPES) {
+  const app = await getMsalApp();
+  const loginResult = await app.acquireTokenPopup({ scopes, prompt: "select_account" });
+  if (loginResult?.account) {
+    app.setActiveAccount(loginResult.account);
+  }
+  if (!loginResult?.accessToken) {
+    throw new Error("Interactive Microsoft sign-in did not return a token.");
+  }
+  return loginResult.accessToken;
 }
 function sanitizeTeamsChannelName(name) {
   if (!name) return "New Channel";
@@ -15467,6 +15465,7 @@ function App() {
   const [lastSaved, setLastSaved] = useState(null);
   const [saveErrorDetail, setSaveErrorDetail] = useState("");
   const [loadError, setLoadError] = useState(null);
+  const [authMessage, setAuthMessage] = useState("");
   const pendingSave = React.useRef(null);   // bug 3 fix: timer ID in ref, not state
   const isLoaded = React.useRef(false);     // bug 1 fix: guard against save-on-load
 
@@ -15825,6 +15824,18 @@ function updateProject(updated, options = {}) {
     setView(`project:${p.id}`);
   }
 
+  async function handleConnectMicrosoft() {
+    try {
+      setAuthMessage("Connecting to Microsoft…");
+      await connectMicrosoft();
+      setAuthMessage("Microsoft account connected.");
+      setTimeout(() => setAuthMessage(""), 2500);
+    } catch (e) {
+      const msg = e?.message || "Microsoft sign-in failed.";
+      setAuthMessage(msg);
+    }
+  }
+
   const allPMs = useMemo(() => ["All", ...new Set(projects.map(p => p.projectManager).filter(Boolean))], [projects]);
   const allQAQC = useMemo(() => {
     const names = new Set();
@@ -15894,6 +15905,7 @@ function updateProject(updated, options = {}) {
           </button>
         ))}
         <div style={{ flex: 1 }} />
+        <Btn small variant="ghost" onClick={handleConnectMicrosoft}>🔐 Connect Microsoft</Btn>
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
         {(() => {
           const daysSince = lastBackupDate ? Math.floor((Date.now() - new Date(lastBackupDate)) / 86400000) : 999;
@@ -15911,6 +15923,11 @@ function updateProject(updated, options = {}) {
       </div>
 
       {loadErrorBanner}
+      {authMessage && (
+        <div style={{ margin: "12px 32px 0", fontSize: 12, color: P.textMuted }}>
+          {authMessage}
+        </div>
+      )}
 
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} staff={staff} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
