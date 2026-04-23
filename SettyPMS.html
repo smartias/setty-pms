@@ -443,6 +443,17 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
     }
   }
 
+  // No cached account (first-time user or cleared storage).
+  // Use a non-redirect interactive popup so users can recover in-place.
+  try {
+    const loginResult = await app.acquireTokenPopup({ scopes, prompt: "select_account" });
+    if (loginResult?.account) app.setActiveAccount(loginResult.account);
+    if (loginResult?.accessToken) return loginResult.accessToken;
+  } catch (e) {
+    const msg = e?.message || "Interactive Microsoft sign-in failed.";
+    throw new Error(msg);
+  }
+
   throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
 }
 
@@ -15483,10 +15494,12 @@ function App() {
     setAppStatus("loading");
     loadState()
       .then(s => {
-        if (s?.projects) setProjects(s.projects);
-        if (s?.termContracts) setTermContracts(s.termContracts);
-        if (s?.staff) setStaff(s.staff);
-        if (s?.clients) setClients(s.clients);
+        // Only apply cloud payload as the source of truth on successful load,
+        // even when it is intentionally empty.
+        setProjects(Array.isArray(s?.projects) ? s.projects : []);
+        setTermContracts(Array.isArray(s?.termContracts) ? s.termContracts : []);
+        setStaff(Array.isArray(s?.staff) ? s.staff : []);
+        setClients(Array.isArray(s?.clients) ? s.clients : []);
         isLoaded.current = true; // bug 1 fix: mark load complete before setting idle
         setAppStatus("idle");
       })
@@ -15494,10 +15507,10 @@ function App() {
         console.error("Load failed:", e);
         if (e.message?.includes("401") || e.message?.includes("403") || e.message?.includes("interaction_required")) {
           getToken(true).then(() => loadState()).then(s => {
-            if (s?.projects) setProjects(s.projects);
-            if (s?.termContracts) setTermContracts(s.termContracts);
-            if (s?.staff) setStaff(s.staff);
-            if (s?.clients) setClients(s.clients);
+            setProjects(Array.isArray(s?.projects) ? s.projects : []);
+            setTermContracts(Array.isArray(s?.termContracts) ? s.termContracts : []);
+            setStaff(Array.isArray(s?.staff) ? s.staff : []);
+            setClients(Array.isArray(s?.clients) ? s.clients : []);
             isLoaded.current = true;
             setAppStatus("idle");
           }).catch(e2 => {
