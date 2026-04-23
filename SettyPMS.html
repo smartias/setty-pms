@@ -350,7 +350,7 @@ async function getMsalApp() {
       navigateToLoginRequestUrl: true,
     },
     cache: {
-      cacheLocation: "sessionStorage",
+      cacheLocation: "localStorage",
       storeAuthStateInCookie: false,
     },
     system: { allowNativeBroker: false },
@@ -443,9 +443,9 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
     }
   }
 
-  // No account at all on first load — redirect to login
-  await app.loginRedirect({ scopes: ["User.Read", "openid", "profile"] });
-  return null;
+  // No account available — never hard-redirect from a data action.
+  // Redirects here can wipe in-memory edits and look like a random logout.
+  throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
 }
 
 async function getToken(forceRefresh = false) {
@@ -564,6 +564,37 @@ async function saveState(state) {
     await sbFetch("POST", "/rest/v1/pms_data", { id: "singleton", ...payload });
   }
 }
+
+const LOCAL_SNAPSHOT_KEY = "setty_pms_local_snapshot_v1";
+
+function saveLocalSnapshot(state) {
+  try {
+    const payload = {
+      projects: state.projects || [],
+      termContracts: state.termContracts || [],
+      staff: state.staff || [],
+      clients: state.clients || [],
+      _savedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(payload));
+  } catch (e) {
+    console.warn("Local snapshot save failed:", e.message);
+  }
+}
+
+function loadLocalSnapshot() {
+  try {
+    const raw = localStorage.getItem(LOCAL_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.projects)) return null;
+    return parsed;
+  } catch (e) {
+    console.warn("Local snapshot parse failed:", e.message);
+    return null;
+  }
+}
+
 
 // ── Calendar helpers ──
 // Cache the NYC Shared Calendar ID so we only look it up once per session
@@ -15441,10 +15472,15 @@ function App() {
     setAppStatus("loading");
     loadState()
       .then(s => {
-        if (s?.projects) setProjects(s.projects);
-        if (s?.termContracts) setTermContracts(s.termContracts);
-        if (s?.staff) setStaff(s.staff);
-        if (s?.clients) setClients(s.clients);
+        const hasRemoteData = !!(s && (s.projects?.length || s.termContracts?.length || s.staff?.length || s.clients?.length));
+        const localSnap = loadLocalSnapshot();
+        const shouldUseLocal = !hasRemoteData && localSnap && (localSnap.projects?.length || localSnap.termContracts?.length || localSnap.staff?.length || localSnap.clients?.length);
+
+        const source = shouldUseLocal ? localSnap : s;
+        if (source?.projects) setProjects(source.projects);
+        if (source?.termContracts) setTermContracts(source.termContracts);
+        if (source?.staff) setStaff(source.staff);
+        if (source?.clients) setClients(source.clients);
         isLoaded.current = true; // bug 1 fix: mark load complete before setting idle
         setAppStatus("idle");
       })
@@ -15458,7 +15494,32 @@ function App() {
             if (s?.clients) setClients(s.clients);
             isLoaded.current = true;
             setAppStatus("idle");
-          }).catch(e2 => { setLoadError(e2.message); setAppStatus("error"); });
+          }).catch(e2 => {
+            const localSnap = loadLocalSnapshot();
+            if (localSnap) {
+              setProjects(localSnap.projects || []);
+              setTermContracts(localSnap.termContracts || []);
+              setStaff(localSnap.staff || []);
+              setClients(localSnap.clients || []);
+              isLoaded.current = true;
+              setLoadError("Cloud load failed. Restored latest local snapshot.");
+              setAppStatus("idle");
+              return;
+            }
+            setLoadError(e2.message);
+            setAppStatus("error");
+          });
+          return;
+        }
+        const localSnap = loadLocalSnapshot();
+        if (localSnap) {
+          setProjects(localSnap.projects || []);
+          setTermContracts(localSnap.termContracts || []);
+          setStaff(localSnap.staff || []);
+          setClients(localSnap.clients || []);
+          isLoaded.current = true;
+          setLoadError("Cloud load failed. Restored latest local snapshot.");
+          setAppStatus("idle");
           return;
         }
         setLoadError(e.message || "Could not load data");
@@ -15469,6 +15530,7 @@ function App() {
   // ── Debounced auto-save — fires 2s after last change ──
   useEffect(() => {
     if (!isLoaded.current) return; // bug 1 fix: don't save until initial load is done
+    saveLocalSnapshot({ projects, termContracts, staff, clients });
     if (pendingSave.current) clearTimeout(pendingSave.current); // bug 3 fix: use ref
     pendingSave.current = setTimeout(() => {
       performSave({ projects, termContracts, staff, clients });
