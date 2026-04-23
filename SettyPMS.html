@@ -888,9 +888,13 @@ async function createProposalFolder(project) {
 
 async function createMilestoneSpFolder(project, milestone) {
   const { driveId } = await resolveSpIds();
-  const num  = (project.projectNumber || "").trim();
-  const name = (project.name || "Unnamed Project").trim();
-  const projFolderName = num ? num + " - " + name : name;
+  const projectFolderUrl = (project.projectFolderUrl || "").trim();
+  if (!projectFolderUrl) throw new Error("No project folder URL is set.");
+
+  const urlParts = decodeURIComponent(projectFolderUrl).replace(/\/+$/, "").split("/");
+  const projFolderName = (urlParts[urlParts.length - 1] || "").trim();
+  if (!projFolderName) throw new Error("Could not determine project folder name from URL.");
+
   let datePrefix = "";
   if (milestone.dueDate) {
     const d = new Date(milestone.dueDate + "T00:00:00");
@@ -900,17 +904,24 @@ async function createMilestoneSpFolder(project, milestone) {
     datePrefix = yyyy2 + "_" + mm + "_" + dd + " ";
   }
   const safeName = (datePrefix + (milestone.name || "Milestone")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+
+  const encodePath = p => p.split("/").map(seg => encodeURIComponent(seg)).join("/");
+
   async function ensureF(parentPath, folderName) {
     try {
-      await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodeURIComponent(parentPath) + ":/children",
+      await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodePath(parentPath) + ":/children",
         { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "replace" });
-    } catch(e) {}
+    } catch(e) {
+      // If create failed, verify folder actually exists before continuing.
+      await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodePath(parentPath + "/" + folderName));
+    }
     return parentPath + "/" + folderName;
   }
   const outgoingPath = await ensureF(projFolderName, "Outgoing");
-  await ensureF(outgoingPath, safeName);
-  const baseUrl = "https://setty.sharepoint.com/sites/NYCProjects/Project%20Document%20Library";
-  return baseUrl + "/" + encodeURIComponent(projFolderName) + "/Outgoing/" + encodeURIComponent(safeName);
+  const docSetPath = await ensureF(outgoingPath, safeName);
+  const item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodePath(docSetPath));
+  if (!item?.webUrl) throw new Error("Folder created but no SharePoint URL was returned.");
+  return item.webUrl;
 }
 
 
