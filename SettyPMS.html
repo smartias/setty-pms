@@ -891,9 +891,42 @@ async function createMilestoneSpFolder(project, milestone) {
   const projectFolderUrl = (project.projectFolderUrl || "").trim();
   if (!projectFolderUrl) throw new Error("No project folder URL is set.");
 
-  const urlParts = decodeURIComponent(projectFolderUrl).replace(/\/+$/, "").split("/");
-  const projFolderName = (urlParts[urlParts.length - 1] || "").trim();
-  if (!projFolderName) throw new Error("Could not determine project folder name from URL.");
+  const decodeSafe = (v = "") => {
+    try { return decodeURIComponent(v); } catch { return v; }
+  };
+
+  const getPathnameFromCandidate = (candidate, baseOrigin) => {
+    if (!candidate) return "";
+    try {
+      return new URL(candidate, baseOrigin).pathname || "";
+    } catch {
+      return candidate;
+    }
+  };
+
+  let projectFolderPathname = "";
+  try {
+    const parsedUrl = new URL(projectFolderUrl, window.location.origin);
+    const pathname = parsedUrl.pathname || "";
+
+    // SharePoint folder links are often embedded in query params on view pages.
+    const queryPath =
+      parsedUrl.searchParams.get("id") ||
+      parsedUrl.searchParams.get("RootFolder") ||
+      parsedUrl.searchParams.get("Folder") ||
+      "";
+
+    const resolvedQueryPath = getPathnameFromCandidate(queryPath, parsedUrl.origin);
+    projectFolderPathname = (/\.aspx$/i.test(pathname) && resolvedQueryPath) ? resolvedQueryPath : pathname;
+  } catch {
+    throw new Error("Project folder URL is not a valid URL.");
+  }
+
+  const pathSegments = projectFolderPathname.replace(/\/+$/, "").split("/").filter(Boolean);
+  const projFolderName = decodeSafe(pathSegments[pathSegments.length - 1] || "").trim();
+  if (!projFolderName || /\.aspx$/i.test(projFolderName)) {
+    throw new Error("Could not determine project folder name from URL.");
+  }
 
   let datePrefix = "";
   if (milestone.dueDate) {
