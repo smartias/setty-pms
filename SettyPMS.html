@@ -891,9 +891,68 @@ async function createMilestoneSpFolder(project, milestone) {
   const projectFolderUrl = (project.projectFolderUrl || "").trim();
   if (!projectFolderUrl) throw new Error("No project folder URL is set.");
 
-  const urlParts = decodeURIComponent(projectFolderUrl).replace(/\/+$/, "").split("/");
-  const projFolderName = (urlParts[urlParts.length - 1] || "").trim();
-  if (!projFolderName) throw new Error("Could not determine project folder name from URL.");
+  const decodeSafe = (v = "") => {
+    try { return decodeURIComponent(v); } catch { return v; }
+  };
+
+  const getPathnameFromCandidate = (candidate, baseOrigin) => {
+    if (!candidate) return "";
+    try {
+      return new URL(candidate, baseOrigin).pathname || "";
+    } catch {
+      return candidate;
+    }
+  };
+
+  const resolveProjectFolderPathFromUrl = async () => {
+    // Prefer Graph's canonical resolution from webUrl -> driveItem path.
+    const shareToken = btoa(projectFolderUrl)
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+    const shareItem = await graphFetch("GET", "/shares/u!" + shareToken + "/driveItem?$select=name,parentReference");
+
+    if (shareItem?.parentReference?.driveId && shareItem.parentReference.driveId !== driveId) {
+      throw new Error("Project folder URL points to a different SharePoint library.");
+    }
+
+    const parentPath = (shareItem?.parentReference?.path || "").split("/root:/").pop() || "";
+    const itemName = (shareItem?.name || "").trim();
+    const relPath = [parentPath, itemName].filter(Boolean).join("/");
+    if (!relPath) throw new Error("Could not determine project folder path from URL.");
+    return relPath;
+  };
+
+  let projectFolderPath = "";
+  try {
+    projectFolderPath = await resolveProjectFolderPathFromUrl();
+  } catch {
+    // Fallback parser for legacy URLs where /shares lookup may fail.
+    try {
+      const parsedUrl = new URL(projectFolderUrl, window.location.origin);
+      const pathname = parsedUrl.pathname || "";
+
+      const queryPath =
+        parsedUrl.searchParams.get("id") ||
+        parsedUrl.searchParams.get("RootFolder") ||
+        parsedUrl.searchParams.get("Folder") ||
+        "";
+
+      const resolvedQueryPath = getPathnameFromCandidate(queryPath, parsedUrl.origin);
+      const projectFolderPathname = (/\.aspx$/i.test(pathname) && resolvedQueryPath) ? resolvedQueryPath : pathname;
+
+      const pathSegments = projectFolderPathname.replace(/\/+$/, "").split("/").filter(Boolean).map(decodeSafe);
+      const docLibIdx = pathSegments.findIndex(seg => /^(Shared Documents|Documents)$/i.test(seg));
+      const relSegments = (docLibIdx >= 0 ? pathSegments.slice(docLibIdx + 1) : pathSegments);
+      projectFolderPath = relSegments.join("/").trim();
+    } catch {
+      throw new Error("Project folder URL is not a valid URL.");
+    }
+  }
+
+  if (!projectFolderPath || /\.aspx$/i.test(projectFolderPath)) {
+    throw new Error("Could not determine project folder name from URL.");
+  }
 
   let datePrefix = "";
   if (milestone.dueDate) {
@@ -917,7 +976,7 @@ async function createMilestoneSpFolder(project, milestone) {
     }
     return parentPath + "/" + folderName;
   }
-  const outgoingPath = await ensureF(projFolderName, "Outgoing");
+  const outgoingPath = await ensureF(projectFolderPath, "Outgoing");
   const docSetPath = await ensureF(outgoingPath, safeName);
   const item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodePath(docSetPath));
   if (!item?.webUrl) throw new Error("Folder created but no SharePoint URL was returned.");
