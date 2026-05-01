@@ -10121,15 +10121,136 @@ const SOURCE_META = {
   photos:     { icon: "📷", label: "Site Photos", color: "#f59e0b" },
 };
 
-function IntelligenceView({ project }) {
+// ── Investigation view ───────────────────────────────────────────────────────
+// Project-forensic search across SharePoint files, Outlook email, OneNote
+// notes, and project photos. Renamed from "Intelligence" because the use case
+// is investigative: "what's the history of <topic> on this project?"
+//
+// Result presentation is a chronological timeline (grouped by month) so the
+// user can see how an issue evolved over time. Filters operate on the result
+// set: source (chips), date range (preset chips), and people (extracted from
+// email senders dynamically).
+function InvestigationView({ project }) {
   const [keyword,   setKeyword]   = React.useState("");
   const [docType,   setDocType]   = React.useState("");
-  const [source,    setSource]    = React.useState("all");
+  const [source,    setSource]    = React.useState("all");          // all | files | emails | notes
+  const [dateRange, setDateRange] = React.useState("all");           // all | 30d | 6m | 1y | custom
+  const [customFrom, setCustomFrom] = React.useState("");
+  const [customTo,   setCustomTo]   = React.useState("");
+  const [personFilter, setPersonFilter] = React.useState("");        // exact match on hit.from
+  const [sortMode,  setSortMode]  = React.useState("date");          // date | relevance
   const [scopeToProject, setScopeToProject] = React.useState(true);
+  const [showHowItWorks, setShowHowItWorks] = React.useState(false); // collapsible "what gets searched" panel
   const [results,   setResults]   = React.useState(null);
   const [searching, setSearching] = React.useState(false);
   const [error,     setError]     = React.useState("");
   const hasNum = !!(project.projectNumber || "").trim();
+
+  // Per-hit renderer used by both timeline and relevance views.
+  // Defined inside the component so it can use JSX (Babel) and closes over `keyword`.
+  function renderHit(hit) {
+    const sm = SOURCE_META[hit.source] || { icon: "📄", label: hit.source, color: P.textDim };
+    const ext = (hit.source === "sharepoint" || hit.source === "photos") && hit.title.includes(".")
+      ? hit.title.split(".").pop().toUpperCase() : null;
+    const EXT_COLORS = { PDF: "#ef4444", DWG: "#f59e0b", DXF: "#f59e0b",
+      DOCX: "#3b82f6", DOC: "#3b82f6", XLSX: "#10b981", XLS: "#10b981",
+      PPTX: "#a78bfa", JSON: "#64748b", JPG: "#06b6d4", PNG: "#06b6d4", MP4: "#06b6d4" };
+    const extColor = EXT_COLORS[ext] || P.textDim;
+    const pathParts = (hit.path || "").split("/").filter(Boolean);
+    const shortPath = pathParts.slice(-3).join(" › ");
+    const isPdf = ext === "PDF";
+    const searchFrag = keyword.trim() ? "#search=" + encodeURIComponent(keyword.trim()) : "";
+    const openUrl = hit.url ? (isPdf ? hit.url + searchFrag : hit.url) : null;
+    const summaryHtml = hit.source === "photos" ? null : (hit.summary || null);
+    const noExcerptReason = !summaryHtml && hit.source === "sharepoint"
+      ? (["DWG","DXF","RVT","NWD","IFC"].includes(ext)
+          ? "CAD/BIM file — binary format, content not text-searchable"
+          : "No text preview — file may be a scanned image or the term matched only in the filename")
+      : null;
+    return (
+      <div key={hit.id} style={{
+        background: P.card, border: "1px solid " + P.border, borderRadius: 8,
+        marginBottom: 8, display: "flex", overflow: "hidden",
+      }}>
+        <div style={{ width: 4, flexShrink: 0, background: sm.color, borderRadius: "8px 0 0 8px" }} />
+        <div style={{ flex: 1, minWidth: 0, padding: "12px 14px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+            <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>{sm.icon}</span>
+            {openUrl
+              ? <a href={openUrl} target="_blank" rel="noreferrer"
+                  style={{ fontWeight: 700, fontSize: 14, color: sm.color, textDecoration: "none",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "50vw" }}>
+                  {hit.title}
+                </a>
+              : <span style={{ fontWeight: 700, fontSize: 14, color: sm.color }}>{hit.title}</span>
+            }
+            {ext && ext !== hit.title.toUpperCase() && (
+              <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
+                background: extColor + "25", color: extColor, whiteSpace: "nowrap", flexShrink: 0 }}>
+                {ext}
+              </span>
+            )}
+            <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
+              background: sm.color + "20", color: sm.color, whiteSpace: "nowrap", flexShrink: 0 }}>
+              {sm.label}
+            </span>
+            {!isPdf && keyword.trim() && hit.source === "sharepoint" && hit.url && (
+              <button onClick={() => { navigator.clipboard.writeText(keyword.trim()); }}
+                title={`Copy "${keyword.trim()}" to clipboard, then Ctrl+F in the document`}
+                style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, border: "1px solid " + P.border,
+                  background: "transparent", color: P.textDim, cursor: "pointer", flexShrink: 0 }}>
+                📋 Copy search term
+              </button>
+            )}
+            {isPdf && keyword.trim() && hit.url && (
+              <span style={{ fontSize: 10, color: "#10b981", fontStyle: "italic", flexShrink: 0 }}>
+                ↗ opens at match
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: P.textDim, marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {hit.from && <span style={{ color: P.textMuted }}>{hit.from}</span>}
+            {hit.date && (
+              <span>{new Date(hit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
+            )}
+            {shortPath && <span style={{ opacity: 0.6 }}>· {shortPath}</span>}
+          </div>
+          {summaryHtml && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: sm.color, textTransform: "uppercase",
+                letterSpacing: "0.06em", marginBottom: 4 }}>
+                Matched excerpt
+              </div>
+              <div style={{ fontSize: 13.5, color: P.text, lineHeight: 1.7,
+                background: P.bg + "cc", borderRadius: 6,
+                borderLeft: "3px solid " + sm.color, padding: "8px 12px" }}
+                dangerouslySetInnerHTML={{ __html: summaryHtml }} />
+            </div>
+          )}
+          {noExcerptReason && (
+            <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginBottom: 4,
+              padding: "6px 10px", background: P.bg + "80", borderRadius: 4 }}>
+              💡 {noExcerptReason}
+            </div>
+          )}
+          {hit.linkedItems && hit.linkedItems.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+              <span style={{ fontSize: 10, color: P.textDim, fontWeight: 700, marginRight: 2, alignSelf: "center" }}>Linked:</span>
+              {hit.linkedItems.map((li, i) => {
+                const ltDef = LINK_TYPES.find(t => t.value === li.linkType) || { color: "#888" };
+                return (
+                  <span key={i} style={{ fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 3,
+                    background: ltDef.color + "20", color: ltDef.color }}>
+                    {li.entityLabel}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   async function doSearch() {
     if (!keyword.trim() && !docType) { setError("Enter a keyword to search."); return; }
@@ -10167,56 +10288,115 @@ function IntelligenceView({ project }) {
 
   return (
     <div>
-      <SectionTitle>Project Intelligence</SectionTitle>
+      <SectionTitle action={
+        <button onClick={() => setShowHowItWorks(v => !v)}
+          style={{ background: "transparent", border: "1px solid " + P.border, color: P.textDim,
+            fontSize: 11, padding: "3px 10px", borderRadius: 4, cursor: "pointer" }}>
+          {showHowItWorks ? "▴ Hide" : "ℹ What gets searched"}
+        </button>
+      }>Project Investigation</SectionTitle>
 
-      {/* ── How-it-works strip ─────────────────────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
-        {[
-          { icon: "📁", label: "SharePoint Files",
-            desc: "Reads inside PDFs, Word docs, drawings, and specs stored in the project folder. New uploads may take 15–30 min to appear." },
-          { icon: "✉️", label: "Outlook Email",
-            desc: "Searches email subject lines and message body text. Does not search inside email attachments." },
-          { icon: "📓", label: "OneNote Notes",
-            desc: "Searches meeting notes, decisions, and action items saved to the project notebook." },
-        ].map(({ icon, label, desc }) => (
-          <div key={label} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 12px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: P.text, marginBottom: 4 }}>{icon} {label}</div>
-            <div style={{ fontSize: 11, color: P.textDim, lineHeight: 1.5 }}>{desc}</div>
-          </div>
-        ))}
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12, lineHeight: 1.55 }}>
+        Investigate the history of any topic on this project — find when it was first raised,
+        who was involved, and how it was resolved. Searches across files, emails, and notes.
       </div>
 
-      {/* ── Search controls ────────────────────────────────────────────── */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, alignItems: "flex-end" }}>
+      {/* ── Collapsible "what gets searched" panel ─────────────────────── */}
+      {showHowItWorks && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+          {[
+            { icon: "📁", label: "SharePoint Files",
+              desc: "Reads inside PDFs, Word docs, drawings, and specs stored in the project folder. New uploads may take 15–30 min to appear." },
+            { icon: "✉️", label: "Outlook Email",
+              desc: "Searches email subject lines and message body text. Does not search inside email attachments." },
+            { icon: "📓", label: "OneNote Notes",
+              desc: "Searches meeting notes, decisions, and action items saved to the project notebook." },
+          ].map(({ icon, label, desc }) => (
+            <div key={label} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: P.text, marginBottom: 4 }}>{icon} {label}</div>
+              <div style={{ fontSize: 11, color: P.textDim, lineHeight: 1.5 }}>{desc}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Search bar — keyword + doc type + Go ───────────────────────── */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "flex-end" }}>
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Keyword</div>
           <input value={keyword} onChange={e => setKeyword(e.target.value)}
-            placeholder="fire pump, curtain wall, RFI-012…"
+            placeholder="lead paint, fire pump, RFI-012…"
             style={{ width: "100%" }}
             onKeyDown={e => e.key === "Enter" && doSearch()} />
         </div>
         <div>
-          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Filter by Type</div>
+          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Doc Type</div>
           <select value={docType} onChange={e => setDocType(e.target.value)} style={{ fontSize: 12 }}>
-            <option value="">All Doc Types</option>
+            <option value="">All</option>
             {Object.values(PMS_DOC_TYPES).map(dt => <option key={dt} value={dt}>{dt}</option>)}
           </select>
         </div>
-        <div>
-          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Search In</div>
-          <select value={source} onChange={e => setSource(e.target.value)} style={{ fontSize: 12 }}>
-            <option value="all">Files + Email + Notes</option>
-            <option value="files">Files only (SharePoint)</option>
-            <option value="emails">Email only</option>
-            <option value="notes">Notes only (OneNote)</option>
-          </select>
-        </div>
-        <Btn onClick={doSearch} disabled={searching} style={{ alignSelf: "flex-end" }}>
-          {searching ? "⏳ Searching…" : "🔍 Search"}
+        <Btn onClick={doSearch} disabled={searching}>
+          {searching ? "⏳ Searching…" : "🔍 Investigate"}
         </Btn>
       </div>
+
+      {/* ── Source chips (was a dropdown — chips are easier to scan and faster to flip) ── */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 10, color: P.textDim, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginRight: 4 }}>Source:</span>
+        {[
+          { v: "all",    label: "All" },
+          { v: "files",  label: "📁 Files" },
+          { v: "emails", label: "✉️ Email" },
+          { v: "notes",  label: "📓 Notes" },
+        ].map(opt => (
+          <button key={opt.v} onClick={() => setSource(opt.v)}
+            style={{
+              fontSize: 11, padding: "4px 10px", borderRadius: 12, cursor: "pointer",
+              border: `1px solid ${source === opt.v ? P.accent : P.border}`,
+              background: source === opt.v ? P.accentDim : "transparent",
+              color: source === opt.v ? P.accentLight : P.textDim,
+              fontWeight: source === opt.v ? 700 : 500,
+            }}>
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Date range chips ──────────────────────────────────────────── */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
+        <span style={{ fontSize: 10, color: P.textDim, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginRight: 4 }}>Date:</span>
+        {[
+          { v: "all", label: "All time" },
+          { v: "30d", label: "Last 30 days" },
+          { v: "6m",  label: "Last 6 months" },
+          { v: "1y",  label: "Last year" },
+          { v: "custom", label: "Custom…" },
+        ].map(opt => (
+          <button key={opt.v} onClick={() => setDateRange(opt.v)}
+            style={{
+              fontSize: 11, padding: "4px 10px", borderRadius: 12, cursor: "pointer",
+              border: `1px solid ${dateRange === opt.v ? P.accent : P.border}`,
+              background: dateRange === opt.v ? P.accentDim : "transparent",
+              color: dateRange === opt.v ? P.accentLight : P.textDim,
+              fontWeight: dateRange === opt.v ? 700 : 500,
+            }}>
+            {opt.label}
+          </button>
+        ))}
+        {dateRange === "custom" && (
+          <>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+              style={{ fontSize: 11, padding: "3px 6px" }} />
+            <span style={{ fontSize: 11, color: P.textDim }}>to</span>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+              style={{ fontSize: 11, padding: "3px 6px" }} />
+          </>
+        )}
+      </div>
+
       <div style={{ fontSize: 11, color: P.textDim, marginBottom: 12, lineHeight: 1.55 }}>
-        Tip: best results come from <strong>project number + short keyword</strong> (example: <code>SAPX246008.00 fire pump</code>). Use exact phrases in quotes for multi-word issues.
+        Tip: <strong>project number + short keyword</strong> gives the cleanest history (e.g., <code>{project.projectNumber || "PROJ-NUM"} lead paint</code>). Use quotes for multi-word phrases.
       </div>
 
       {/* ── Project filter toggle ──────────────────────────────────────── */}
@@ -10255,147 +10435,148 @@ function IntelligenceView({ project }) {
       {!hasNum && <div style={{ fontSize: 12, color: P.yellow, marginBottom: 10 }}>⚠ Set a project number on the Overview tab to enable project-scoped search.</div>}
       {error     && <div style={{ fontSize: 12, color: P.red,    marginBottom: 10 }}>{error}</div>}
 
-      {results !== null && (
-        <div>
-          <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
-            {results.length === 0
-              ? "No results. Try a broader keyword, or check that documents were saved with this project number."
-              : `${results.length} result${results.length !== 1 ? "s" : ""}`}
-          </div>
-          {results.map(hit => {
-            const sm = SOURCE_META[hit.source] || { icon: "📄", label: hit.source, color: P.textDim };
+      {results !== null && (() => {
+        // Apply post-search filters: date range and person.
+        // (The query itself doesn't accept date/person filters from Graph easily,
+        // so we filter the raw results client-side.)
+        const now = new Date();
+        const cutoffDate = (() => {
+          if (dateRange === "30d") return new Date(now.getTime() - 30 * 86400000);
+          if (dateRange === "6m")  return new Date(now.getTime() - 180 * 86400000);
+          if (dateRange === "1y")  return new Date(now.getTime() - 365 * 86400000);
+          if (dateRange === "custom" && customFrom) return new Date(customFrom);
+          return null;
+        })();
+        const customToDate = (dateRange === "custom" && customTo) ? new Date(customTo + "T23:59:59") : null;
 
-            // File extension
-            const ext = (hit.source === "sharepoint" || hit.source === "photos") && hit.title.includes(".")
-              ? hit.title.split(".").pop().toUpperCase() : null;
-            const EXT_COLORS = { PDF: "#ef4444", DWG: "#f59e0b", DXF: "#f59e0b",
-              DOCX: "#3b82f6", DOC: "#3b82f6", XLSX: "#10b981", XLS: "#10b981",
-              PPTX: "#a78bfa", JSON: "#64748b", JPG: "#06b6d4", PNG: "#06b6d4", MP4: "#06b6d4" };
-            const extColor = EXT_COLORS[ext] || P.textDim;
+        const filtered = (results || []).filter(hit => {
+          if (cutoffDate && hit.date) {
+            const d = new Date(hit.date);
+            if (!isNaN(d) && d < cutoffDate) return false;
+          }
+          if (customToDate && hit.date) {
+            const d = new Date(hit.date);
+            if (!isNaN(d) && d > customToDate) return false;
+          }
+          if (personFilter && hit.from !== personFilter) return false;
+          return true;
+        });
 
-            // Path breadcrumb — last 3 segments
-            const pathParts = (hit.path || "").split("/").filter(Boolean);
-            const shortPath = pathParts.slice(-3).join(" › ");
+        // Extract distinct people from results (mostly emails) for the filter dropdown.
+        const peopleSet = new Set();
+        for (const hit of (results || [])) {
+          if (hit.from) peopleSet.add(hit.from);
+        }
+        const people = [...peopleSet].sort();
 
-            // For PDFs: append #search=keyword so the SharePoint PDF viewer jumps to the match.
-            // For Word/Excel/etc: open normally — user can Ctrl+F with the keyword copied.
-            const isPdf = ext === "PDF";
-            const searchFrag = keyword.trim() ? "#search=" + encodeURIComponent(keyword.trim()) : "";
-            const openUrl = hit.url
-              ? (isPdf ? hit.url + searchFrag : hit.url)
-              : null;
+        // Sort: by date desc (default — forensic timeline) or by relevance (Graph's order).
+        const sorted = sortMode === "date"
+          ? [...filtered].sort((a, b) => {
+              const da = a.date ? new Date(a.date).getTime() : 0;
+              const db = b.date ? new Date(b.date).getTime() : 0;
+              return db - da;
+            })
+          : filtered;
 
-            // Excerpt from Graph — only show for non-photo sources
-            const summaryHtml = hit.source === "photos" ? null : (hit.summary || null);
+        // Group by Year-Month for the timeline view.
+        const groups = [];
+        const groupMap = new Map();
+        for (const hit of sorted) {
+          let key = "Undated";
+          let sortKey = "0000-00";
+          if (hit.date) {
+            const d = new Date(hit.date);
+            if (!isNaN(d)) {
+              key = d.toLocaleString("en-US", { month: "long", year: "numeric" });
+              sortKey = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+            }
+          }
+          if (!groupMap.has(key)) {
+            const g = { label: key, sortKey, hits: [] };
+            groups.push(g);
+            groupMap.set(key, g);
+          }
+          groupMap.get(key).hits.push(hit);
+        }
+        // Most recent month first; "Undated" sinks to the bottom.
+        groups.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
 
-            // Determine why there's no excerpt (so we can give a useful message)
-            const noExcerptReason = !summaryHtml && hit.source === "sharepoint"
-              ? (["DWG","DXF","RVT","NWD","IFC"].includes(ext)
-                  ? "CAD/BIM file — binary format, content not text-searchable"
-                  : "No text preview — file may be a scanned image or the term matched only in the filename")
-              : null;
+        return (
+          <div>
+            {/* ── Result count + filter strip ──────────────────────────── */}
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 12,
+              padding: "8px 12px", background: P.bg, border: "1px solid " + P.border, borderRadius: 6 }}>
+              <span style={{ fontSize: 12, color: P.text, fontWeight: 700 }}>
+                {filtered.length === 0
+                  ? "No results"
+                  : `${filtered.length} result${filtered.length !== 1 ? "s" : ""}`}
+                {filtered.length !== (results?.length || 0) && (
+                  <span style={{ color: P.textDim, fontWeight: 400 }}> (filtered from {results.length})</span>
+                )}
+              </span>
 
-            return (
-              <div key={hit.id} style={{
-                background: P.card, border: "1px solid " + P.border, borderRadius: 8,
-                marginBottom: 8, display: "flex", overflow: "hidden",
-              }}>
-                {/* Accent stripe */}
-                <div style={{ width: 4, flexShrink: 0, background: sm.color, borderRadius: "8px 0 0 8px" }} />
-
-                <div style={{ flex: 1, minWidth: 0, padding: "12px 14px" }}>
-
-                  {/* Title row */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-                    <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>{sm.icon}</span>
-                    {openUrl
-                      ? <a href={openUrl} target="_blank" rel="noreferrer"
-                          style={{ fontWeight: 700, fontSize: 14, color: sm.color, textDecoration: "none",
-                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "50vw" }}>
-                          {hit.title}
-                        </a>
-                      : <span style={{ fontWeight: 700, fontSize: 14, color: sm.color }}>{hit.title}</span>
-                    }
-                    {ext && ext !== hit.title.toUpperCase() && (
-                      <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
-                        background: extColor + "25", color: extColor, whiteSpace: "nowrap", flexShrink: 0 }}>
-                        {ext}
-                      </span>
-                    )}
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
-                      background: sm.color + "20", color: sm.color, whiteSpace: "nowrap", flexShrink: 0 }}>
-                      {sm.label}
-                    </span>
-                    {/* For non-PDF files: copy keyword button so user can Ctrl+F immediately */}
-                    {!isPdf && keyword.trim() && hit.source === "sharepoint" && hit.url && (
-                      <button onClick={() => { navigator.clipboard.writeText(keyword.trim()); }}
-                        title={`Copy "${keyword.trim()}" to clipboard, then Ctrl+F in the document`}
-                        style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, border: "1px solid " + P.border,
-                          background: "transparent", color: P.textDim, cursor: "pointer", flexShrink: 0 }}>
-                        📋 Copy search term
-                      </button>
-                    )}
-                    {/* For PDFs: label that the link jumps to the match */}
-                    {isPdf && keyword.trim() && hit.url && (
-                      <span style={{ fontSize: 10, color: "#10b981", fontStyle: "italic", flexShrink: 0 }}>
-                        ↗ opens at match
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Meta row — sender / date / path */}
-                  <div style={{ fontSize: 11, color: P.textDim, marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {hit.from && <span style={{ color: P.textMuted }}>{hit.from}</span>}
-                    {hit.date && (
-                      <span>{new Date(hit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
-                    )}
-                    {shortPath && <span style={{ opacity: 0.6 }}>· {shortPath}</span>}
-                  </div>
-
-                  {/* Matched excerpt from Graph */}
-                  {summaryHtml && (
-                    <div style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: sm.color, textTransform: "uppercase",
-                        letterSpacing: "0.06em", marginBottom: 4 }}>
-                        Matched excerpt
-                      </div>
-                      <div style={{ fontSize: 13.5, color: P.text, lineHeight: 1.7,
-                        background: P.bg + "cc", borderRadius: 6,
-                        borderLeft: "3px solid " + sm.color, padding: "8px 12px" }}
-                        dangerouslySetInnerHTML={{ __html: summaryHtml }} />
-                    </div>
-                  )}
-
-                  {/* No excerpt — explain why */}
-                  {noExcerptReason && (
-                    <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginBottom: 4,
-                      padding: "6px 10px", background: P.bg + "80", borderRadius: 4 }}>
-                      💡 {noExcerptReason}
-                    </div>
-                  )}
-
-                  {/* Linked items */}
-                  {hit.linkedItems.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
-                      <span style={{ fontSize: 10, color: P.textDim, fontWeight: 700, marginRight: 2, alignSelf: "center" }}>Linked:</span>
-                      {hit.linkedItems.map((li, i) => {
-                        const ltDef = LINK_TYPES.find(t => t.value === li.linkType) || { color: "#888" };
-                        return (
-                          <span key={i} style={{ fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 3,
-                            background: ltDef.color + "20", color: ltDef.color }}>
-                            {li.entityLabel}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-
+              {/* People filter — only shows when there's a sender to filter by */}
+              {people.length > 1 && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: 11, color: P.textDim, fontWeight: 600 }}>From:</span>
+                  <select value={personFilter} onChange={e => setPersonFilter(e.target.value)}
+                    style={{ fontSize: 11, padding: "2px 6px" }}>
+                    <option value="">Anyone ({people.length})</option>
+                    {people.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
                 </div>
+              )}
+
+              {/* Sort toggle */}
+              <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+                <span style={{ fontSize: 11, color: P.textDim, fontWeight: 600, alignSelf: "center", marginRight: 4 }}>Sort:</span>
+                {[
+                  { v: "date",      label: "📅 Timeline" },
+                  { v: "relevance", label: "⭐ Relevance" },
+                ].map(opt => (
+                  <button key={opt.v} onClick={() => setSortMode(opt.v)}
+                    style={{
+                      fontSize: 10, padding: "3px 8px", borderRadius: 10, cursor: "pointer",
+                      border: `1px solid ${sortMode === opt.v ? P.accent : P.border}`,
+                      background: sortMode === opt.v ? P.accentDim : "transparent",
+                      color: sortMode === opt.v ? P.accentLight : P.textDim,
+                      fontWeight: sortMode === opt.v ? 700 : 500,
+                    }}>
+                    {opt.label}
+                  </button>
+                ))}
               </div>
-            );
-          })}
-        </div>
-      )}
+            </div>
+
+            {filtered.length === 0 && (
+              <div style={{ fontSize: 12, color: P.textDim, padding: "16px 0", lineHeight: 1.6 }}>
+                {results.length === 0
+                  ? "No results. Try a broader keyword, or check that documents were saved with this project number."
+                  : "No results match the current filters. Try widening the date range or clearing the person filter."}
+              </div>
+            )}
+
+            {/* ── Timeline groups ──────────────────────────────────────── */}
+            {sortMode === "date" && groups.map(group => (
+              <div key={group.label} style={{ marginBottom: 18 }}>
+                {/* Date header — anchors the user in time */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8,
+                  padding: "4px 0", borderBottom: "2px solid " + P.accent }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: P.accentLight, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    {group.label}
+                  </span>
+                  <span style={{ fontSize: 11, color: P.textDim }}>
+                    {group.hits.length} item{group.hits.length !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                {group.hits.map(hit => renderHit(hit))}
+              </div>
+            ))}
+            {/* Relevance-sorted view: flat list, no date grouping */}
+            {sortMode === "relevance" && filtered.map(hit => renderHit(hit))}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -10880,7 +11061,11 @@ function PhotosView({ project }) {
 
 // ─── PROJECT DETAIL ───────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Intelligence", "Photos"];
+// Investigation moved up to position 2 — it's the project-forensics entry point
+// and was previously buried at position 17 (between "Projections" and "Photos").
+// Renamed from "Intelligence" so the label matches what users actually use it
+// for: investigating the history of a specific topic on a project.
+const TABS = ["Overview", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos"];
 
 function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
@@ -11159,7 +11344,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
         {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
-        {tab === "Intelligence" && <IntelligenceView project={project} />}
+        {tab === "Investigation" && <InvestigationView project={project} />}
         {tab === "Photos" && <PhotosView project={project} />}
       </Card>
     </div>
