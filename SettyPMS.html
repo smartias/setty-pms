@@ -748,6 +748,54 @@ async function isMigrationComplete() {
   }
 }
 
+// Tab-coordination lock for migration. Without this, opening PMS in two tabs
+// before either has migrated causes BOTH to run runMigrationV1 simultaneously,
+// each batching upserts and racing the version counter. The result: rows end
+// up at version=2 (one from each migration), but tab 1's versionsRef thinks
+// they're version=1, so every save from tab 1 gets a false ConflictError.
+//
+// We use a localStorage flag for same-browser coordination + a polling wait
+// so a second tab silently waits for the first tab's migration. Cross-browser
+// races are still possible but extremely rare (different users opening for
+// the first time within the same minute) and the upsert is idempotent enough
+// that the worst case is a false-conflict cycle that resolves on next reload.
+async function withMigrationLock(runner, onWait) {
+  const LOCK_KEY = "settyPms_migration_lock_v1";
+  const STALE_AFTER_MS = 90 * 1000; // assume crashed lock after 90 seconds
+
+  // Try to claim the lock. If another tab has it AND it's fresh, wait.
+  while (true) {
+    const existingRaw = localStorage.getItem(LOCK_KEY);
+    const existing = existingRaw ? parseInt(existingRaw, 10) : 0;
+    const now = Date.now();
+    const isStale = !existing || (now - existing) > STALE_AFTER_MS;
+
+    if (isStale) {
+      localStorage.setItem(LOCK_KEY, String(now));
+      // Re-read to detect race (two tabs both setting at the same instant)
+      await new Promise(r => setTimeout(r, 50));
+      const verify = parseInt(localStorage.getItem(LOCK_KEY) || "0", 10);
+      if (verify !== now) {
+        // Another tab won the race — wait it out
+        onWait?.("Another tab is migrating; waiting for it to finish…");
+        await new Promise(r => setTimeout(r, 1500));
+        continue;
+      }
+      try {
+        return await runner();
+      } finally {
+        localStorage.removeItem(LOCK_KEY);
+      }
+    }
+
+    // Existing lock is fresh — wait. Re-poll the cloud flag every 1.5s in case
+    // the other tab finished while we were waiting.
+    onWait?.("Another tab is migrating; waiting…");
+    await new Promise(r => setTimeout(r, 1500));
+    if (await isMigrationComplete()) return null; // other tab finished
+  }
+}
+
 async function runMigrationV1(progressCb) {
   const log = (msg) => { console.log("[migration]", msg); progressCb?.(msg); };
 
@@ -990,12 +1038,47 @@ async function performSaveV2(state, lastSavedRef, versions) {
 }
 
 // ── Eager save for a single project (bypass debounce, used by Phase 1.4) ─────
+// On version mismatch we do an automatic retry: re-fetch the cloud version,
+// keep all cloud fields except those the caller explicitly changed, then save.
+// This makes bulk reconcile resilient to concurrent saves — without it, if
+// Sara saves Project X while reconcile is mid-pass on Project X, the
+// reconcile's link-write fails permanently and X stays orphaned.
 async function eagerSaveProjectV2(project, versions, lastSavedRef) {
   if (!project?.id) return;
-  const newVer = await saveProjectV2(project, versions.projects.get(project.id));
-  versions.projects.set(project.id, newVer);
-  if (lastSavedRef?.current) {
-    lastSavedRef.current.projects.set(project.id, JSON.stringify(project));
+  try {
+    const newVer = await saveProjectV2(project, versions.projects.get(project.id));
+    versions.projects.set(project.id, newVer);
+    if (lastSavedRef?.current) {
+      lastSavedRef.current.projects.set(project.id, JSON.stringify(project));
+    }
+    return;
+  } catch (e) {
+    if (!(e instanceof ConflictError) || !e.cloudRow) throw e;
+    // Single retry: merge our intended changes onto the latest cloud version.
+    // We know which fields we want to write because they're the ones that
+    // differ between the local-passed-in project and our last-saved baseline.
+    const cloudProject = e.cloudRow.project;
+    const cloudVersion = e.cloudRow.version;
+    const baselineJson = lastSavedRef?.current?.projects?.get(project.id);
+    const baseline = baselineJson ? JSON.parse(baselineJson) : null;
+
+    const merged = { ...cloudProject };
+    for (const key of Object.keys(project)) {
+      // If we have a baseline, only re-apply fields that differ from baseline
+      // (= the fields the caller intended to change). If no baseline, apply
+      // all fields where local differs from cloud (best-effort).
+      const ours = project[key];
+      const base = baseline ? baseline[key] : undefined;
+      const cloudVal = cloudProject[key];
+      const userIntent = baseline ? !jsonEq(ours, base) : !jsonEq(ours, cloudVal);
+      if (userIntent) merged[key] = ours;
+    }
+    versions.projects.set(project.id, cloudVersion);
+    const newVer = await saveProjectV2(merged, cloudVersion);
+    versions.projects.set(project.id, newVer);
+    if (lastSavedRef?.current) {
+      lastSavedRef.current.projects.set(project.id, JSON.stringify(merged));
+    }
   }
 }
 
@@ -1594,10 +1677,15 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody, event
 // conflict on that item only.
 
 // Arrays whose items have an `id` field — merged item-by-id, not blindly replaced.
+// MUST stay in sync with newProject() — any new id-bearing array added to the
+// project schema needs to be listed here, otherwise concurrent edits to those
+// arrays will trigger spurious scalar-conflict modals (or silently drop one
+// user's additions).
 const ARRAY_FIELDS_BY_ID_V2 = [
   "rfis", "submittals", "submittalRegister", "notes", "milestones",
   "phases", "changeOrders", "emails", "invoices", "teamMembers",
   "externalLinks", "reimbursables", "feeCalculatorSubs",
+  "scopeAuditLog",
 ];
 
 // Fields where cloud always wins silently — server-managed metadata, never a
@@ -16664,6 +16752,17 @@ function App() {
   // are silently retrying so the user knows the system isn't dead.
   const [networkRetry, setNetworkRetry] = useState({ active: false, attempt: 0, error: "" });
 
+  // Refs that always hold the LATEST values, used by setTimeout callbacks
+  // that would otherwise capture stale React state in closures. The retry
+  // path is the most dangerous of these: without `currentStateRef`, edits
+  // made between a save failure and its retry are silently dropped.
+  const currentStateRef = React.useRef({ projects: [], termContracts: [], staff: [], clients: [] });
+  const retryAttemptRef = React.useRef(0);
+  // V1-fallback flag: when load falls back to legacy pms_data because V2
+  // tables were unreachable, we suppress saves entirely so a user editing
+  // can't write garbage version=1 PATCHes that would clobber V2 data.
+  const v2LoadFailedRef = React.useRef(false);
+
   const [showDataTools, setShowDataTools] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [showBackupModal, setShowBackupModal] = useState(false);
@@ -16683,21 +16782,32 @@ function App() {
         const migrated = await isMigrationComplete();
 
         if (!migrated) {
-          // 1a. Trigger automatic backup BEFORE migration (option C — safety net)
-          setMigrationState({ phase: "backing-up", message: "Saving safety backup before migration…" });
-          try {
-            await downloadPreMigrationBackup();
-          } catch (bkErr) {
-            console.warn("Pre-migration backup failed:", bkErr);
-            // Don't block migration on backup failure — log and continue.
-            // The old pms_data row is still intact as a deeper safety net.
-          }
+          // Coordinate across tabs so only ONE migration runs at a time.
+          // The lock helper yields to a polling wait if another tab claimed it.
+          await withMigrationLock(
+            async () => {
+              // Re-check inside the lock — another tab may have just finished
+              if (await isMigrationComplete()) return;
 
-          // 1b. Run migration
-          setMigrationState({ phase: "migrating", message: "Migrating to per-project rows…" });
-          await runMigrationV1((msg) => {
-            setMigrationState({ phase: "migrating", message: msg });
-          });
+              // 1a. Trigger automatic backup BEFORE migration (option C — safety net)
+              setMigrationState({ phase: "backing-up", message: "Saving safety backup before migration…" });
+              try {
+                await downloadPreMigrationBackup();
+              } catch (bkErr) {
+                console.warn("Pre-migration backup failed:", bkErr);
+                // Don't block migration on backup failure — log and continue.
+              }
+
+              // 1b. Run migration
+              setMigrationState({ phase: "migrating", message: "Migrating to per-project rows…" });
+              await runMigrationV1((msg) => {
+                setMigrationState({ phase: "migrating", message: msg });
+              });
+            },
+            (waitMsg) => {
+              setMigrationState({ phase: "migrating", message: waitMsg });
+            }
+          );
         }
 
         // 2. Load from V2 tables
@@ -16728,7 +16838,12 @@ function App() {
         setAppStatus("idle");
       } catch (e) {
         console.error("V2 load failed:", e);
-        // Fallback chain: try V1 load, then localStorage snapshot
+        // V2 load failed. We mark v2LoadFailedRef so the auto-save effect
+        // refuses to write — without this, every project would be PATCHed
+        // with version=undefined, hitting INSERT-or-conflict on every row
+        // and flooding the conflict modal with spurious errors.
+        v2LoadFailedRef.current = true;
+        // Fallback chain: try V1 load (read-only), then localStorage snapshot
         try {
           const s = await loadState();
           if (s?.projects) setProjects(s.projects);
@@ -16736,7 +16851,7 @@ function App() {
           if (s?.staff) setStaff(s.staff);
           if (s?.clients) setClients(s.clients);
           isLoaded.current = true;
-          setLoadError("V2 load failed (" + e.message + "). Showing legacy data — DO NOT EDIT until this is resolved.");
+          setLoadError("V2 load failed (" + e.message + "). Showing READ-ONLY legacy snapshot. Auto-save is disabled until you reload the page.");
           setAppStatus("error");
           setMigrationState({ phase: "error", message: e.message });
         } catch (e2) {
@@ -16747,7 +16862,7 @@ function App() {
             setStaff(localSnap.staff || []);
             setClients(localSnap.clients || []);
             isLoaded.current = true;
-            setLoadError("Cloud load failed. Restored latest local snapshot. DO NOT EDIT until cloud is back.");
+            setLoadError("Cloud load failed. Showing READ-ONLY local snapshot. Auto-save is disabled until you reload.");
             setAppStatus("error");
             return;
           }
@@ -16788,7 +16903,13 @@ function App() {
   // Only writes rows that actually changed since the last successful save,
   // determined by performSaveV2 via JSON.stringify diff against lastSavedRef.
   useEffect(() => {
+    // Always keep the latest state reachable from non-React contexts (retry
+    // timers, etc). This must run on EVERY change, even before isLoaded,
+    // so it captures the post-load state.
+    currentStateRef.current = { projects, termContracts, staff, clients };
+
     if (!isLoaded.current) return; // bug 1 fix: don't save until initial load is done
+    if (v2LoadFailedRef.current) return; // safety: don't save when V2 load failed
     saveLocalSnapshot({ projects, termContracts, staff, clients });
     if (pendingSave.current) clearTimeout(pendingSave.current); // bug 3 fix: use ref
     pendingSave.current = setTimeout(() => {
@@ -16817,6 +16938,7 @@ function App() {
 
       // Network retry banner clears on any successful save
       if (networkRetry.active) setNetworkRetry({ active: false, attempt: 0, error: "" });
+      retryAttemptRef.current = 0; // reset retry counter on success
 
       setAppStatus(state.projects && state.projects.length > 0 ? "saved" : "idle");
       setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
@@ -16824,21 +16946,30 @@ function App() {
       console.error("Save failed:", e);
       // Phase 5: distinguish network errors from logic errors. Network errors
       // get silent retry; logic errors surface immediately.
+      //
+      // Retry uses refs (retryAttemptRef + currentStateRef) instead of
+      // closing over React state. Without this, the retry timer would
+      // (a) read a stale attempt counter and never trip the < 5 guard
+      //     → infinite retry timer accumulation
+      // (b) re-save with the snapshot of state at the original failed call
+      //     → silently drop any edits made during the retry window
       const isNetwork = isLikelyTransient(e);
-      if (isNetwork && networkRetry.attempt < 5) {
-        const nextAttempt = networkRetry.attempt + 1;
+      if (isNetwork && retryAttemptRef.current < 5) {
+        retryAttemptRef.current = retryAttemptRef.current + 1;
+        const nextAttempt = retryAttemptRef.current;
         setNetworkRetry({ active: true, attempt: nextAttempt, error: e.message || "" });
-        // Exponential backoff: 5s, 15s, 30s, 60s, 120s
         const delays = [5000, 15000, 30000, 60000, 120000];
         const delay = delays[Math.min(nextAttempt - 1, delays.length - 1)];
-        setTimeout(() => performSave(state), delay);
+        setTimeout(() => {
+          // Re-read live state at fire time, not the stale captured `state`
+          performSave(currentStateRef.current);
+        }, delay);
         setAppStatus("idle"); // hide the error indicator; banner will show retry
       } else {
         setSaveErrorDetail(e.message || "Unknown error");
         setAppStatus("error");
         if (isNetwork) {
-          // Hit max retries — keep banner up but mark as failed
-          setNetworkRetry({ active: true, attempt: networkRetry.attempt, error: "Max retries reached. Click Retry manually." });
+          setNetworkRetry({ active: true, attempt: retryAttemptRef.current, error: "Max retries reached. Click Retry manually." });
         }
       }
     }
@@ -16950,8 +17081,27 @@ function App() {
 
   function cancelConflict() {
     // User wants to keep editing without resolving. Re-open the modal next save.
+    //
+    // CRITICAL: update lastSavedRef to the CURRENT React state of the project
+    // before exiting. Otherwise the next auto-save will use a stale baseline
+    // (the JSON from before the conflict was detected) — silently dropping
+    // any keystrokes the user made between conflict detection and Cancel.
+    // We use currentStateRef.current.projects rather than the captured
+    // `localProject` from pendingConflict, since those keystrokes happened
+    // AFTER pendingConflict was constructed.
+    if (pendingConflict) {
+      const liveProject = (currentStateRef.current.projects || []).find(p => p.id === pendingConflict.projectId);
+      if (liveProject) {
+        // Reset the baseline so the next diff sees user's continued edits as
+        // legitimately dirty against the cloud version (which we know about).
+        // Setting baseline = cloudProject means "we agree cloud was the truth
+        // up to this point; everything I've done since is the new local diff."
+        lastSavedRef.current.projects.set(pendingConflict.projectId, JSON.stringify(pendingConflict.cloudProject));
+        // versionsRef is already correct (set during handleSaveConflict)
+      }
+    }
     setPendingConflict(null);
-    setSaveErrorDetail("Conflict deferred. Save again to re-resolve.");
+    setSaveErrorDetail("Conflict deferred. Continue editing — the next save will retry against the latest cloud version.");
     setAppStatus("idle");
   }
 
@@ -16984,45 +17134,75 @@ function App() {
     const date = ts.slice(0, 10);
     setBackupImportMsg({ text: "⏳ Fetching latest data from cloud…", type: "idle" });
     try {
-      // 1. Pull authoritative copy direct from Supabase
-      const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=*", {
-        headers: {
-          "apikey": SUPABASE_ANON_KEY,
-          "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-        },
-      });
-      if (!res.ok) throw new Error("Cloud fetch failed: HTTP " + res.status);
-      const rows = await res.json();
-      if (!rows || rows.length === 0) throw new Error("No data row found in cloud.");
-      const cloud = rows[0];
+      // V2: read from pms_projects + pms_clients + pms_meta. Falls back to
+      // legacy pms_data if migration hasn't run (or for users still on the
+      // old schema during a rollback scenario). Without this fallback, the
+      // backup button silently returned empty data after migration completed
+      // because pms_data.projects is no longer kept up to date.
+      const sbHeaders = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+      };
+      let projects = [], termContracts = [], staff = [], clients = [], cloudUpdatedAt = null, source = "v2";
+      const [pRes, cRes, mRes] = await Promise.all([
+        fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project,updated_at", { headers: sbHeaders }),
+        fetch(SUPABASE_URL + "/rest/v1/pms_clients?select=client,updated_at", { headers: sbHeaders }),
+        fetch(SUPABASE_URL + "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at", { headers: sbHeaders }),
+      ]);
+      if (pRes.ok && cRes.ok && mRes.ok) {
+        const pRows = await pRes.json();
+        const cRows = await cRes.json();
+        const mRows = await mRes.json();
+        projects = (pRows || []).map(r => r.project).filter(Boolean);
+        clients  = (cRows || []).map(r => r.client).filter(Boolean);
+        const meta = mRows?.[0]?.data || {};
+        staff = meta.staff || [];
+        termContracts = meta.termContracts || [];
+        // Newest updated_at across the three tables — useful for "how fresh"
+        const stamps = [
+          ...(pRows || []).map(r => r.updated_at),
+          ...(cRows || []).map(r => r.updated_at),
+          mRows?.[0]?.updated_at,
+        ].filter(Boolean);
+        cloudUpdatedAt = stamps.sort().slice(-1)[0] || null;
+      }
+
+      // Fallback to V1 if V2 returned nothing (migration not yet run)
+      if (projects.length === 0 && clients.length === 0 && termContracts.length === 0 && staff.length === 0) {
+        const v1res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=*", { headers: sbHeaders });
+        if (v1res.ok) {
+          const rows = await v1res.json();
+          if (rows && rows[0]) {
+            projects      = rows[0].projects       || [];
+            termContracts = rows[0].term_contracts || [];
+            staff         = rows[0].staff          || [];
+            clients       = rows[0].clients        || [];
+            cloudUpdatedAt = rows[0].updated_at || null;
+            source = "v1-fallback";
+          }
+        }
+      }
 
       // 2. Defer stringify to next tick so the UI can render the spinner first.
-      //    Then drop the pretty-print — pretty JSON doubles size and is the main
-      //    cause of the page going blank for large datasets.
       await new Promise(r => setTimeout(r, 0));
       let data;
       try {
         data = JSON.stringify({
-          projects:       cloud.projects       || [],
-          termContracts:  cloud.term_contracts || [],
-          staff:          cloud.staff          || [],
-          clients:        cloud.clients        || [],
+          projects, termContracts, staff, clients,
           _exportedAt:    ts,
-          _cloudUpdatedAt: cloud.updated_at || null,
-          _projectCount:  (cloud.projects || []).length,
-          _version:       4,
+          _cloudUpdatedAt: cloudUpdatedAt,
+          _projectCount:  projects.length,
+          _source:        source,
+          _version:       5,
         });
       } catch (stringifyErr) {
         // Identify which top-level array is unserializable so we can recover what we can.
         const safe = {};
-        for (const [k, v] of Object.entries({
-          projects: cloud.projects, termContracts: cloud.term_contracts,
-          staff: cloud.staff, clients: cloud.clients,
-        })) {
+        for (const [k, v] of Object.entries({ projects, termContracts, staff, clients })) {
           try { JSON.stringify(v); safe[k] = v; }
           catch { safe[k] = `[UNSERIALIZABLE — ${(v?.length ?? 0)} items skipped]`; }
         }
-        data = JSON.stringify({ ...safe, _exportedAt: ts, _stringifyError: stringifyErr.message, _version: 4 });
+        data = JSON.stringify({ ...safe, _exportedAt: ts, _stringifyError: stringifyErr.message, _version: 5 });
         console.warn("Backup partial — some arrays were unserializable:", stringifyErr);
       }
 
@@ -17045,7 +17225,7 @@ function App() {
       localStorage.setItem("settyPMS_lastBackup", ts);
       setLastBackupDate(ts);
       setBackupImportMsg({
-        text: `✓ Backup downloaded: SettyPMS-backup-${date}.json (${sizeMB} MB, ${(cloud.projects||[]).length} projects). If the file didn't appear, run copy(window.__pmsLastBackup) in DevTools console and paste into a .json file.`,
+        text: `✓ Backup downloaded: SettyPMS-backup-${date}.json (${sizeMB} MB, ${projects.length} projects, source: ${source}). If the file didn't appear, run copy(window.__pmsLastBackup) in DevTools console and paste into a .json file.`,
         type: "success",
       });
     } catch (e) {
