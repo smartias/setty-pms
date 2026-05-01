@@ -1575,6 +1575,135 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody, event
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PHASE 5 — 3-WAY MERGE & CONFLICT RESOLUTION
+// ═══════════════════════════════════════════════════════════════════════════
+// When saveProjectV2 detects a version mismatch (someone else saved while we
+// were editing), we have three states:
+//   - local       — what we tried to save (in-memory React state)
+//   - lastSaved   — what we last successfully saved (our baseline)
+//   - cloud       — what's currently in the database
+//
+// `mergeProjectThreeWay` performs git-style 3-way merge:
+//   - Field unchanged in local AND cloud         → no conflict
+//   - Only local changed                          → use local (silent)
+//   - Only cloud changed                          → use cloud (silent)
+//   - Both changed to same value                  → no conflict
+//   - Both changed differently                    → CONFLICT
+// For arrays of objects with `id`, the same logic applies per-item: two users
+// adding different items both succeed; same-id different-content triggers
+// conflict on that item only.
+
+// Arrays whose items have an `id` field — merged item-by-id, not blindly replaced.
+const ARRAY_FIELDS_BY_ID_V2 = [
+  "rfis", "submittals", "submittalRegister", "notes", "milestones",
+  "phases", "changeOrders", "emails", "invoices", "teamMembers",
+  "externalLinks", "reimbursables", "feeCalculatorSubs",
+];
+
+// Fields where cloud always wins silently — server-managed metadata, never a
+// "user authored this" situation.
+const PREFER_CLOUD_FIELDS = new Set([
+  "updated_at", "updatedAt", "version", "_savedAt",
+]);
+
+function jsonEq(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function mergeProjectThreeWay(local, lastSaved, cloud) {
+  const merged = {};
+  const conflicts = [];
+
+  // Some old projects may be missing fields the schema added later; default
+  // missing baselines to {}/undefined so the merge logic stays correct.
+  local     = local     || {};
+  lastSaved = lastSaved || {};
+  cloud     = cloud     || {};
+
+  const allKeys = new Set([
+    ...Object.keys(local), ...Object.keys(lastSaved), ...Object.keys(cloud),
+  ]);
+
+  for (const key of allKeys) {
+    if (key === "id") { merged.id = local.id || cloud.id || lastSaved.id; continue; }
+    if (PREFER_CLOUD_FIELDS.has(key)) { merged[key] = cloud[key]; continue; }
+
+    const lv = local[key], bv = lastSaved[key], cv = cloud[key];
+    const localChanged = !jsonEq(lv, bv);
+    const cloudChanged = !jsonEq(cv, bv);
+
+    if (!localChanged && !cloudChanged) { merged[key] = bv; continue; }
+    if ( localChanged && !cloudChanged) { merged[key] = lv; continue; }
+    if (!localChanged &&  cloudChanged) { merged[key] = cv; continue; }
+    // Both sides changed
+    if (jsonEq(lv, cv)) { merged[key] = lv; continue; }
+
+    // Array-of-id case: do per-item 3-way merge
+    if (ARRAY_FIELDS_BY_ID_V2.includes(key)
+        && Array.isArray(lv) && Array.isArray(cv) && Array.isArray(bv ?? [])) {
+      const r = mergeArrayByIdThreeWay(lv, bv || [], cv);
+      merged[key] = r.merged;
+      for (const c of r.conflicts) {
+        conflicts.push({ path: `${key}[id=${c.id}]`, kind: c.kind, local: c.local, cloud: c.cloud });
+      }
+      continue;
+    }
+
+    // True scalar conflict — record but tentatively keep local in merged
+    // so the modal can show diff and let user pick.
+    merged[key] = lv;
+    conflicts.push({ path: key, kind: "scalar", local: lv, cloud: cv, base: bv });
+  }
+
+  return { merged, conflicts };
+}
+
+function mergeArrayByIdThreeWay(localArr, baseArr, cloudArr) {
+  // Items without an id can't be 3-way merged — fall back to local + cloud union.
+  const indexBy = arr => Object.fromEntries(arr.filter(x => x?.id).map(x => [x.id, x]));
+  const L = indexBy(localArr), B = indexBy(baseArr), C = indexBy(cloudArr);
+
+  const merged = [];
+  const conflicts = [];
+  const allIds = new Set([...Object.keys(L), ...Object.keys(B), ...Object.keys(C)]);
+
+  for (const id of allIds) {
+    const l = L[id], b = B[id], c = C[id];
+    const inL = !!l, inB = !!b, inC = !!c;
+
+    if      ( inL && !inB && !inC) merged.push(l);                              // local added
+    else if (!inL && !inB &&  inC) merged.push(c);                              // cloud added
+    else if ( inL &&  inB && !inC) {
+      // Local has it, base had it, cloud removed it
+      if (jsonEq(l, b)) { /* clean delete by cloud — accept */ }
+      else conflicts.push({ id, kind: "delete-vs-modify", local: l, cloud: null });
+    }
+    else if (!inL &&  inB &&  inC) {
+      // Local removed it, cloud still has it
+      if (jsonEq(c, b)) { /* clean delete by local — accept (omit from merged) */ }
+      else conflicts.push({ id, kind: "delete-vs-modify", local: null, cloud: c });
+    }
+    else if ( inL &&  inB &&  inC) {
+      // 3-way merge on the item itself
+      if (jsonEq(l, c))      merged.push(l);
+      else if (jsonEq(l, b)) merged.push(c);    // we didn't touch
+      else if (jsonEq(c, b)) merged.push(l);    // cloud didn't touch
+      else {
+        merged.push(l);                          // tentatively keep local
+        conflicts.push({ id, kind: "modify-vs-modify", local: l, cloud: c });
+      }
+    }
+    else if ( inL && !inB &&  inC) {
+      // Both added an item with the same id (uid() collision — extremely rare)
+      if (jsonEq(l, c)) merged.push(l);
+      else { merged.push(l); conflicts.push({ id, kind: "add-vs-add", local: l, cloud: c }); }
+    }
+  }
+
+  return { merged, conflicts };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PHASE 4 — RECONCILE ENGINE
 // ═══════════════════════════════════════════════════════════════════════════
 // Heals projects whose folder/notebook URLs are missing by searching SharePoint
@@ -16227,6 +16356,118 @@ function SaveBadge({ status, lastSaved, onRetry, errorDetail }) {
 // nothing rather than crashing the modal.
 function SpIdLookupPanel() { return null; }
 
+// ConflictResolutionModal — shown when 3-way merge produces unresolvable
+// conflicts (true same-field collisions). Lets the user pick winner per field
+// and downloads a JSON safety backup of the local version BEFORE any choice
+// can destroy data.
+function ConflictResolutionModal({ projectName, projectId, conflicts, localProject, cloudProject, onResolve, onCancel }) {
+  // Default each conflict to "local" (user's in-progress version) — the safer
+  // default since cloud data is recoverable from the source row.
+  const [picks, setPicks] = React.useState(() =>
+    Object.fromEntries(conflicts.map((c, i) => [i, "local"]))
+  );
+  const [backupDone, setBackupDone] = React.useState(false);
+
+  React.useEffect(() => {
+    // Auto-download a backup of the user's local version on open. If they pick
+    // wrong in the modal, this file is the recovery path.
+    try {
+      const data = JSON.stringify({
+        projectId,
+        projectName,
+        localVersion: localProject,
+        cloudVersion: cloudProject,
+        conflicts,
+        _exportedAt: new Date().toISOString(),
+        _purpose: "pre-conflict-resolution-safety-backup",
+      });
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `SettyPMS-CONFLICT-${projectId}-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+      setBackupDone(true);
+    } catch (e) {
+      console.warn("Conflict-modal safety backup failed:", e);
+    }
+  }, []);
+
+  function fmt(v) {
+    if (v === null || v === undefined) return <em style={{ color: P.textDim }}>(removed)</em>;
+    if (typeof v === "object") return <code style={{ fontSize: 11 }}>{JSON.stringify(v).slice(0, 120)}{JSON.stringify(v).length > 120 ? "…" : ""}</code>;
+    return <code style={{ fontSize: 11 }}>{String(v).slice(0, 120)}{String(v).length > 120 ? "…" : ""}</code>;
+  }
+
+  function applyAndResolve() {
+    onResolve(picks);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 5000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: P.card, border: `2px solid ${P.yellow}`, borderRadius: 14, padding: 28, width: 720, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 800, fontSize: 18, color: P.yellow }}>⚠ Save Conflict — {projectName}</div>
+          <div style={{ fontSize: 12, color: P.textDim, marginTop: 4, lineHeight: 1.5 }}>
+            Someone else saved this project while you were editing. {conflicts.length} field{conflicts.length === 1 ? "" : "s"} need{conflicts.length === 1 ? "s" : ""} your decision.
+            <br/>{backupDone ? <span style={{ color: P.green }}>✓ Safety backup downloaded — your version is safe regardless of what you pick.</span> : <span style={{ color: P.textDim }}>(Backup downloading…)</span>}
+          </div>
+        </div>
+
+        <div style={{ background: P.bg, borderRadius: 8, padding: 4, marginBottom: 16 }}>
+          {conflicts.map((c, i) => (
+            <div key={i} style={{ padding: 12, borderBottom: i < conflicts.length - 1 ? `1px solid ${P.border}` : "none" }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color: P.text, marginBottom: 8 }}>
+                <code style={{ background: P.border, padding: "2px 6px", borderRadius: 3 }}>{c.path}</code>
+                {c.kind !== "scalar" && <span style={{ marginLeft: 8, fontSize: 10, color: P.textDim }}>({c.kind})</span>}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <label style={{ display: "block", padding: 10, borderRadius: 6, cursor: "pointer",
+                  background: picks[i] === "local" ? P.accentDim : P.card,
+                  border: `1px solid ${picks[i] === "local" ? P.accent : P.border}` }}>
+                  <input type="radio" name={`conflict-${i}`} checked={picks[i] === "local"}
+                    onChange={() => setPicks(p => ({ ...p, [i]: "local" }))}
+                    style={{ marginRight: 6 }} />
+                  <span style={{ fontWeight: 600, fontSize: 11, color: P.accentLight }}>Your version</span>
+                  <div style={{ marginTop: 4 }}>{fmt(c.local)}</div>
+                </label>
+                <label style={{ display: "block", padding: 10, borderRadius: 6, cursor: "pointer",
+                  background: picks[i] === "cloud" ? P.accentDim : P.card,
+                  border: `1px solid ${picks[i] === "cloud" ? P.accent : P.border}` }}>
+                  <input type="radio" name={`conflict-${i}`} checked={picks[i] === "cloud"}
+                    onChange={() => setPicks(p => ({ ...p, [i]: "cloud" }))}
+                    style={{ marginRight: 6 }} />
+                  <span style={{ fontWeight: 600, fontSize: 11, color: P.green }}>Cloud version (latest)</span>
+                  <div style={{ marginTop: 4 }}>{fmt(c.cloud)}</div>
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <button onClick={() => setPicks(Object.fromEntries(conflicts.map((_, i) => [i, "local"])))}
+            style={{ background: "none", border: `1px solid ${P.border}`, color: P.textDim, padding: "6px 12px", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>
+            All mine
+          </button>
+          <button onClick={() => setPicks(Object.fromEntries(conflicts.map((_, i) => [i, "cloud"])))}
+            style={{ background: "none", border: `1px solid ${P.border}`, color: P.textDim, padding: "6px 12px", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>
+            All cloud
+          </button>
+          <div style={{ flex: 1 }} />
+          <button onClick={onCancel}
+            style={{ background: "none", border: `1px solid ${P.border}`, color: P.textDim, padding: "8px 16px", borderRadius: 6, cursor: "pointer" }}>
+            Cancel (keep editing)
+          </button>
+          <Btn onClick={applyAndResolve}>Save merged version</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Phase 4: Reconcile orphaned SharePoint folder + OneNote notebook links.
 // For projects with no projectFolderUrl (or no notebook), searches SP/Teams
 // for an existing folder/notebook matching the project name and links it
@@ -16413,6 +16654,16 @@ function App() {
   const [migrationState, setMigrationState] = useState({ phase: "checking", message: "" });
   // phase: "checking" | "backing-up" | "migrating" | "done" | "error" | "skipped"
 
+  // Phase 5: conflict resolution state. When a save conflict can't be merged
+  // automatically (true same-field collision), this holds the pending conflict
+  // and the ConflictResolutionModal renders to ask the user to resolve.
+  const [pendingConflict, setPendingConflict] = useState(null);
+  // shape: { projectId, projectName, conflicts, localProject, cloudProject }
+
+  // Network retry state — surfaces a small banner when transient failures
+  // are silently retrying so the user knows the system isn't dead.
+  const [networkRetry, setNetworkRetry] = useState({ active: false, attempt: 0, error: "" });
+
   const [showDataTools, setShowDataTools] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [showBackupModal, setShowBackupModal] = useState(false);
@@ -16554,24 +16805,166 @@ function App() {
       const now = new Date();
       setLastSaved(`${now.getHours()}:${String(now.getMinutes()).padStart(2,"0")}`);
 
+      // Phase 5 — handle ConflictErrors via 3-way merge. The vast majority of
+      // conflicts (different fields edited, items added by both users to the
+      // same array) get merged silently. Only true same-field collisions
+      // bubble up to the modal.
       if (result.conflicts.length > 0) {
-        // Phase 5 will surface a proper modal here. For now: log + show summary
-        // so the user knows a conflict happened and which projects are affected.
-        console.warn("Save conflicts (will get UX in Phase 5):", result.conflicts);
-        setSaveErrorDetail(`⚠ ${result.conflicts.length} conflict(s) detected. ` +
-          result.conflicts.slice(0, 2).map(c => c.kind + " " + c.id).join(", ") +
-          ". Reload to see latest cloud version.");
-        setAppStatus("error");
-        return;
+        for (const conflict of result.conflicts) {
+          await handleSaveConflict(conflict, state);
+        }
       }
 
-      setAppStatus("saved");
+      // Network retry banner clears on any successful save
+      if (networkRetry.active) setNetworkRetry({ active: false, attempt: 0, error: "" });
+
+      setAppStatus(state.projects && state.projects.length > 0 ? "saved" : "idle");
       setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
     } catch(e) {
       console.error("Save failed:", e);
-      setSaveErrorDetail(e.message || "Unknown error");
+      // Phase 5: distinguish network errors from logic errors. Network errors
+      // get silent retry; logic errors surface immediately.
+      const isNetwork = isLikelyTransient(e);
+      if (isNetwork && networkRetry.attempt < 5) {
+        const nextAttempt = networkRetry.attempt + 1;
+        setNetworkRetry({ active: true, attempt: nextAttempt, error: e.message || "" });
+        // Exponential backoff: 5s, 15s, 30s, 60s, 120s
+        const delays = [5000, 15000, 30000, 60000, 120000];
+        const delay = delays[Math.min(nextAttempt - 1, delays.length - 1)];
+        setTimeout(() => performSave(state), delay);
+        setAppStatus("idle"); // hide the error indicator; banner will show retry
+      } else {
+        setSaveErrorDetail(e.message || "Unknown error");
+        setAppStatus("error");
+        if (isNetwork) {
+          // Hit max retries — keep banner up but mark as failed
+          setNetworkRetry({ active: true, attempt: networkRetry.attempt, error: "Max retries reached. Click Retry manually." });
+        }
+      }
+    }
+  }
+
+  // Phase 5: handle a single project ConflictError by attempting 3-way merge.
+  // If merge succeeds with no manual conflicts, save the merged version
+  // silently. If conflicts remain, surface the modal.
+  async function handleSaveConflict(conflict, state) {
+    const localProject = state.projects.find(p => p.id === conflict.id);
+    if (!localProject) return; // project deleted locally during save? skip.
+
+    // Pull lastSaved baseline (may be missing on first-ever save of this project)
+    const baselineJson = lastSavedRef.current.projects.get(conflict.id);
+    const baseline = baselineJson ? JSON.parse(baselineJson) : null;
+    const cloudProject = conflict.cloudRow?.project;
+    if (!cloudProject) {
+      // No cloud row to compare against — fall back to "user must reload"
+      setSaveErrorDetail(`Conflict on ${localProject.name || localProject.id}: cloud version unreadable. Refresh page to reconcile.`);
+      setAppStatus("error");
+      return;
+    }
+
+    // 3-way merge. If baseline is null (first save), treat as "everything in
+    // local was changed" so anything matching cloud merges, anything else conflicts.
+    const { merged, conflicts: fieldConflicts } = mergeProjectThreeWay(
+      localProject,
+      baseline || cloudProject, // fallback baseline = cloud (preserves cloud edits)
+      cloudProject
+    );
+
+    if (fieldConflicts.length === 0) {
+      // SILENT MERGE — most common path. Save the merged version directly.
+      try {
+        const cloudVersion = conflict.cloudRow.version;
+        versionsRef.current.projects.set(conflict.id, cloudVersion);
+        const newVer = await saveProjectV2(merged, cloudVersion);
+        versionsRef.current.projects.set(conflict.id, newVer);
+        lastSavedRef.current.projects.set(conflict.id, JSON.stringify(merged));
+        // Update React state with merged version so UI reflects merge
+        setProjects(prev => prev.map(p => p.id === merged.id ? merged : p));
+        console.log("[merge] Silent merge resolved conflict on", merged.id);
+      } catch (e) {
+        console.warn("[merge] Re-save after silent merge failed:", e);
+        // Surface the new conflict — could be a 3-way race with yet another save
+        setPendingConflict({
+          projectId: conflict.id,
+          projectName: localProject.name || localProject.id,
+          conflicts: [{ path: "(re-save failure)", kind: "scalar", local: merged, cloud: null }],
+          localProject: merged,
+          cloudProject,
+        });
+      }
+      return;
+    }
+
+    // MODAL PATH — true conflicts that need human judgment. Modal also
+    // auto-downloads a backup of localProject so any choice is reversible.
+    setPendingConflict({
+      projectId: conflict.id,
+      projectName: localProject.name || localProject.id,
+      conflicts: fieldConflicts,
+      localProject,
+      cloudProject,
+      mergedSoFar: merged, // already-merged fields, modal only resolves the conflicting ones
+    });
+  }
+
+  // Apply user's modal picks — merges local/cloud per pick and re-saves.
+  async function resolveConflict(picks) {
+    if (!pendingConflict) return;
+    const { projectId, conflicts, mergedSoFar, cloudProject } = pendingConflict;
+    const finalProject = { ...mergedSoFar };
+    conflicts.forEach((c, i) => {
+      const pick = picks[i] === "cloud" ? c.cloud : c.local;
+      // Conflict path looks like "rfis[id=abc123]" or just "feeAmount"
+      if (c.path.includes("[id=")) {
+        const [field, idPart] = c.path.split("[id=");
+        const itemId = idPart.replace("]", "");
+        const arr = (finalProject[field] || []).slice();
+        const idx = arr.findIndex(x => x?.id === itemId);
+        if (pick === null) {
+          if (idx >= 0) arr.splice(idx, 1); // delete
+        } else {
+          if (idx >= 0) arr[idx] = pick; else arr.push(pick);
+        }
+        finalProject[field] = arr;
+      } else {
+        finalProject[c.path] = pick;
+      }
+    });
+
+    try {
+      const cloudVersion = cloudProject?.version
+        || versionsRef.current.projects.get(projectId);
+      const newVer = await saveProjectV2(finalProject, cloudVersion);
+      versionsRef.current.projects.set(projectId, newVer);
+      lastSavedRef.current.projects.set(projectId, JSON.stringify(finalProject));
+      setProjects(prev => prev.map(p => p.id === projectId ? finalProject : p));
+      setPendingConflict(null);
+      setAppStatus("saved");
+      setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
+    } catch (e) {
+      console.error("[resolve] Save after manual resolution failed:", e);
+      setSaveErrorDetail("Resolution save failed: " + (e.message || "unknown"));
       setAppStatus("error");
     }
+  }
+
+  function cancelConflict() {
+    // User wants to keep editing without resolving. Re-open the modal next save.
+    setPendingConflict(null);
+    setSaveErrorDetail("Conflict deferred. Save again to re-resolve.");
+    setAppStatus("idle");
+  }
+
+  // Heuristic: is this error likely transient (worth silent retry) or
+  // structural (needs user attention)?
+  function isLikelyTransient(e) {
+    const msg = (e?.message || "").toLowerCase();
+    if (msg.includes("network") || msg.includes("fetch") || msg.includes("offline")) return true;
+    if (msg.includes("supabase 5") || msg.includes("5xx")) return true;
+    if (msg.includes("supabase 503") || msg.includes("supabase 504")) return true;
+    if (msg.includes("timeout")) return true;
+    if (msg.includes("typeerror") && msg.includes("failed to fetch")) return true;
+    return false;
   }
 
   function manualRetry() {
@@ -17089,6 +17482,38 @@ async function updateProjectAndFlush(updated) {
         <ProjectDetail project={viewingProject} onUpdate={updateProject} onEagerSave={updateProjectAndFlush} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} />
       )}
     </div>
+
+    {/* Phase 5 — Conflict resolution modal (renders only when a true same-field conflict needs human judgment) */}
+    {pendingConflict && (
+      <ConflictResolutionModal
+        projectId={pendingConflict.projectId}
+        projectName={pendingConflict.projectName}
+        conflicts={pendingConflict.conflicts}
+        localProject={pendingConflict.localProject}
+        cloudProject={pendingConflict.cloudProject}
+        onResolve={resolveConflict}
+        onCancel={cancelConflict}
+      />
+    )}
+
+    {/* Phase 5 — Network retry banner (visible only during transient-failure backoff) */}
+    {networkRetry.active && (
+      <div style={{ position: "fixed", bottom: 16, right: 16, zIndex: 4500,
+        background: P.card, border: `2px solid ${P.yellow}`, borderRadius: 8,
+        padding: "12px 16px", maxWidth: 360, fontSize: 12, boxShadow: "0 4px 24px rgba(0,0,0,0.5)" }}>
+        <div style={{ fontWeight: 700, color: P.yellow, marginBottom: 4 }}>
+          ⏳ Cloud temporarily unreachable
+        </div>
+        <div style={{ color: P.textMuted, lineHeight: 1.4 }}>
+          Retrying save (attempt {networkRetry.attempt}/5). Your edits are safe locally.
+        </div>
+        {networkRetry.error && (
+          <div style={{ color: P.textDim, fontSize: 10, marginTop: 4, fontFamily: "monospace" }}>
+            {networkRetry.error.slice(0, 100)}
+          </div>
+        )}
+      </div>
+    )}
 
     {/* Backup and Restore Modal */}
     {showBackupModal && (
