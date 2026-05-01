@@ -1267,11 +1267,15 @@ async function createProposalFolder(project) {
 async function createMilestoneSpFolder(project, milestone) {
   const { driveId } = await resolveSpIds();
   const projectFolderUrl = (project.projectFolderUrl || "").trim();
-  if (!projectFolderUrl) throw new Error("No project folder URL is set.");
+  if (!projectFolderUrl) {
+    throw new Error("This project has no SharePoint folder URL. Create one on the Overview tab first, then try again.");
+  }
 
   const urlParts = decodeURIComponent(projectFolderUrl).replace(/\/+$/, "").split("/");
   const projFolderName = (urlParts[urlParts.length - 1] || "").trim();
-  if (!projFolderName) throw new Error("Could not determine project folder name from URL.");
+  if (!projFolderName) {
+    throw new Error("Could not parse project folder name from URL: " + projectFolderUrl);
+  }
 
   let datePrefix = "";
   if (milestone.dueDate) {
@@ -1282,23 +1286,60 @@ async function createMilestoneSpFolder(project, milestone) {
     datePrefix = yyyy2 + "_" + mm + "_" + dd + " ";
   }
   const safeName = (datePrefix + (milestone.name || "Milestone")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+  if (!safeName) throw new Error("Milestone name is empty after sanitization.");
 
   const encodePath = p => p.split("/").map(seg => encodeURIComponent(seg)).join("/");
 
+  // Safer create-or-get pattern. Previous code used conflictBehavior:"replace"
+  // which on newer Graph API can delete-and-recreate folders with their child
+  // contents — and threw silent errors that the catch swallowed without
+  // surfacing the underlying cause. Now: fail on conflict, GET to verify, only
+  // throw if neither create nor lookup succeeds. Errors carry context so the
+  // button can show a meaningful tooltip.
   async function ensureF(parentPath, folderName) {
+    const childUrl = "/drives/" + driveId + "/root:/" + encodePath(parentPath + "/" + folderName);
+    // Try GET first — if folder already exists, no write needed.
     try {
-      await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodePath(parentPath) + ":/children",
-        { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "replace" });
-    } catch(e) {
-      // If create failed, verify folder actually exists before continuing.
-      await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodePath(parentPath + "/" + folderName));
+      const existing = await graphFetch("GET", childUrl);
+      if (existing?.id) return parentPath + "/" + folderName;
+    } catch (getErr) {
+      // 404 expected if folder missing; other errors propagate via the create path.
     }
-    return parentPath + "/" + folderName;
+    // Doesn't exist — create it. conflictBehavior:fail so we don't accidentally
+    // overwrite something with the same name (e.g., a file).
+    try {
+      await graphFetch("POST",
+        "/drives/" + driveId + "/root:/" + encodePath(parentPath) + ":/children",
+        { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
+      return parentPath + "/" + folderName;
+    } catch (createErr) {
+      // Race condition: someone else created it between our GET and POST.
+      // One more GET to confirm. If that also fails, surface the real error.
+      try {
+        const recheck = await graphFetch("GET", childUrl);
+        if (recheck?.id) return parentPath + "/" + folderName;
+      } catch { /* fall through */ }
+      const msg = (createErr.message || "").includes("Graph 403")
+        ? "Permission denied creating '" + folderName + "' under '" + parentPath + "'. Check that you have edit access to the project folder in SharePoint."
+        : (createErr.message || "").includes("Graph 404")
+        ? "Parent folder '" + parentPath + "' was not found in SharePoint. The Overview-tab folder URL may be stale — re-create or re-link it."
+        : "Failed to create '" + folderName + "': " + (createErr.message || "unknown error");
+      throw new Error(msg);
+    }
   }
+
   const outgoingPath = await ensureF(projFolderName, "Outgoing");
   const docSetPath = await ensureF(outgoingPath, safeName);
-  const item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodePath(docSetPath));
-  if (!item?.webUrl) throw new Error("Folder created but no SharePoint URL was returned.");
+  // Final GET to obtain the webUrl. If this fails, the folder was created but
+  // SharePoint hasn't yet returned a URL — wait briefly and retry once.
+  let item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodePath(docSetPath));
+  if (!item?.webUrl) {
+    await new Promise(r => setTimeout(r, 800));
+    item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodePath(docSetPath));
+  }
+  if (!item?.webUrl) {
+    throw new Error("Folder '" + safeName + "' was created in SharePoint but no webUrl was returned. Refresh the page — it may have been saved correctly.");
+  }
   return item.webUrl;
 }
 
@@ -3131,7 +3172,7 @@ function DatePicker({ value, onChange, disabled, style }) {
 }
 
 
-function ScheduleView({ project, onChange }) {
+function ScheduleView({ project, onChange, onEagerSave }) {
   const phases = project.phases || [];
   const milestones = project.milestones || [];
   const billablePhases = phases.filter(p => p.billable && p.fee > 0);
@@ -3395,6 +3436,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
 
   function MilestoneSpBtn({ m, project, onSave }) {
     const [status, setStatus] = React.useState("idle");
+    const [errMsg, setErrMsg] = React.useState("");  // hotfix: capture & display error
     const url = m.outgoingFolderUrl || "";
     if (url) return (
       <a href={url} target="_blank" rel="noreferrer" title="Open Document Set Folder"
@@ -3404,17 +3446,30 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
         📂 Open
       </a>
     );
+    const tooltip = !project.projectFolderUrl
+      ? "Create a project folder on the Overview tab first."
+      : status === "error"
+      ? "✗ " + errMsg + " — click to retry"
+      : status === "done"
+      ? "✓ Folder created"
+      : "Create Document Set Folder";
     return (
-      <button title="Create Document Set Folder"
+      <button title={tooltip}
         disabled={status === "creating" || !project.projectFolderUrl}
         onClick={async () => {
           if (!project.projectFolderUrl) return;
           setStatus("creating");
+          setErrMsg("");
           try {
             const webUrl = await createMilestoneSpFolder(project, m);
-            onSave(webUrl);
+            await onSave(webUrl);  // awaited so eager-save can flush before status flip
             setStatus("done");
-          } catch(e) { setStatus("error"); }
+            setTimeout(() => setStatus("idle"), 2000);
+          } catch(e) {
+            console.error("createMilestoneSpFolder failed:", e);
+            setErrMsg(e.message || "Unknown error");
+            setStatus("error");
+          }
         }}
         style={{ display: "inline-flex", alignItems: "center", gap: 3,
           background: status === "error" ? P.redDim : P.accentDim,
@@ -3423,7 +3478,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
           borderRadius: 5, fontSize: 11, padding: "3px 7px",
           cursor: project.projectFolderUrl ? "pointer" : "not-allowed",
           opacity: project.projectFolderUrl ? 1 : 0.35, whiteSpace: "nowrap" }}>
-        {status === "creating" ? "⏳" : status === "error" ? "✗" : "📁+"}
+        {status === "creating" ? "⏳" : status === "error" ? "✗" : status === "done" ? "✓" : "📁+"}
       </button>
     );
   }
@@ -3687,7 +3742,18 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                 <td>
                   <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                     <MilestoneSpBtn m={m} project={project}
-                      onSave={url => onChange({ ...project, milestones: milestones.map(x => x.id === m.id ? { ...x, outgoingFolderUrl: url } : x) })} />
+                      onSave={async url => {
+                        // Eager-save: flush to Supabase synchronously so the
+                        // newly-created folder URL can never be lost in the
+                        // 2-second debounce window. Falls back to debounced
+                        // path if onEagerSave isn't wired yet.
+                        const updatedProject = { ...project, milestones: milestones.map(x => x.id === m.id ? { ...x, outgoingFolderUrl: url } : x) };
+                        if (onEagerSave) {
+                          await onEagerSave(updatedProject);
+                        } else {
+                          onChange(updatedProject);
+                        }
+                      }} />
                     {m.outgoingFolderUrl && (
                       <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(m.outgoingFolderUrl)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}`}
                         target="_blank" rel="noreferrer" title="Generate Sheet List & Transmittal"
@@ -10609,7 +10675,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           </div>
         )}
         {tab === "Fee Calculator" && <FeeCalculator project={project} onChange={onUpdate} />}
-        {tab === "Schedule" && <ScheduleView project={project} onChange={onUpdate} />}
+        {tab === "Schedule" && <ScheduleView project={project} onChange={onUpdate} onEagerSave={onEagerSave} />}
         {tab === "Subconsultants" && <SubsView project={project} onChange={onUpdate} />}
         {tab === "Projections" && <ProjectionsView project={project} />}
         {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} clients={clients} onUpdateClient={onUpdateClient} />}
@@ -12285,6 +12351,7 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
 
 function DashMilestoneSpBtn({ milestone, project, onSave }) {
   const [spSt, setSpSt] = React.useState("idle");
+  const [errMsg, setErrMsg] = React.useState("");  // hotfix: surface real error
   const url = milestone.outgoingFolderUrl || "";
   if (url) return (
     <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -12303,17 +12370,30 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
       </a>
     </div>
   );
+  const tooltip = !project.projectFolderUrl
+    ? "Create a project folder on the Overview tab first."
+    : spSt === "error"
+    ? "✗ " + errMsg + " — click to retry"
+    : spSt === "done"
+    ? "✓ Folder created"
+    : "Create Document Set Folder";
   return (
-    <button title="Create Document Set Folder"
+    <button title={tooltip}
       disabled={spSt === "creating" || !project.projectFolderUrl}
       onClick={async () => {
         if (!project.projectFolderUrl) return;
         setSpSt("creating");
+        setErrMsg("");
         try {
           const webUrl = await createMilestoneSpFolder(project, milestone);
-          onSave(webUrl);
+          await onSave(webUrl);   // await so onSave can eager-flush
           setSpSt("done");
-        } catch(e) { setSpSt("error"); }
+          setTimeout(() => setSpSt("idle"), 2000);
+        } catch(e) {
+          console.error("createMilestoneSpFolder failed:", e);
+          setErrMsg(e.message || "Unknown error");
+          setSpSt("error");
+        }
       }}
       style={{ display: "inline-flex", alignItems: "center", gap: 3,
         background: spSt === "error" ? P.redDim : P.accentDim,
@@ -12322,13 +12402,13 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
         borderRadius: 5, fontSize: 11, padding: "3px 7px",
         cursor: project.projectFolderUrl ? "pointer" : "not-allowed",
         opacity: project.projectFolderUrl ? 1 : 0.35, whiteSpace: "nowrap" }}>
-      {spSt === "creating" ? "⏳" : spSt === "error" ? "✗" : "📁+"}
+      {spSt === "creating" ? "⏳" : spSt === "error" ? "✗" : spSt === "done" ? "✓" : "📁+"}
     </button>
   );
 }
 
 
-function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
+function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSaveProject, staff }) {
   const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
   const [dashPMFilter, setDashPMFilter] = useState("All");
   const [milPMFilter, setMilPMFilter] = useState("All");
@@ -13099,9 +13179,12 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, staff }) {
                           key={m.id}
                           milestone={m}
                           project={proj}
-                          onSave={webUrl => {
+                          onSave={async webUrl => {
+                            // Eager-save so the URL can't be lost in the debounce window
                             const newMilestones = (proj.milestones || []).map(x => x.id === m.id ? { ...x, outgoingFolderUrl: webUrl } : x);
-                            onUpdateProject({ ...proj, milestones: newMilestones });
+                            const updated = { ...proj, milestones: newMilestones };
+                            if (onEagerSaveProject) await onEagerSaveProject(updated);
+                            else onUpdateProject(updated);
                           }}
                         />
                       );
@@ -16571,7 +16654,7 @@ async function updateProjectAndFlush(updated) {
 
       {loadErrorBanner}
 
-      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} staff={staff} />}
+      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} staff={staff} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
