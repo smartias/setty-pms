@@ -1576,14 +1576,20 @@ function buildFolderNameVariants(project) {
 
 // Try each variant against SharePoint root. Returns the first match's webUrl,
 // or null if none found. Distinguishes 404 (try next) from real errors (throw).
-async function findExistingProjectFolder(project) {
+//
+// `token` is optional — if passed, reused for all variant lookups, avoiding
+// MSAL's per-call token acquisition. Bulk reconcile passes a pre-fetched
+// token so 186+ Graph calls don't trigger 186+ MSAL refreshes (which can
+// clear the active account state under concurrent load).
+async function findExistingProjectFolder(project, token = null) {
   const variants = buildFolderNameVariants(project);
   if (variants.length === 0) return null;
   const { driveId } = await resolveSpIds();
   for (const variant of variants) {
     try {
       const item = await graphFetch("GET",
-        "/drives/" + driveId + "/root:/" + encodeURIComponent(variant)
+        "/drives/" + driveId + "/root:/" + encodeURIComponent(variant),
+        undefined, token
       );
       if (item?.id && item?.webUrl) {
         return { webUrl: item.webUrl, matchedVariant: variant };
@@ -1625,20 +1631,56 @@ function findExistingTeamsNotebook(project, allTeamsNotebooks) {
 
 // Bulk reconcile across an array of projects. Returns:
 //   { linked: [{project, webUrl}], notFound: [project], errored: [{project, error}] }
+//
+// Pre-fetches one Graph token up front and reuses it for every variant lookup.
+// Without this, 186+ rapid Graph calls each trigger MSAL's token-acquisition
+// pipeline, and concurrent silent refreshes can clear the active account →
+// every project after the first few errors with "Not signed in to Microsoft".
 async function bulkReconcileFolders(projects, onProgress) {
   const linked = [], notFound = [], errored = [];
+  if (projects.length === 0) return { linked, notFound, errored };
+
+  // Acquire a single token to share across all 186+ variant lookups.
+  let token;
+  try {
+    token = await getToken();
+  } catch (e) {
+    // Token acquisition itself failed — bail out cleanly. Marking every project
+    // as errored with the auth message so the user sees one clear cause.
+    for (const p of projects) errored.push({ project: p, error: "Auth failed: " + (e.message || "could not acquire token") });
+    return { linked, notFound, errored };
+  }
+
   let i = 0;
   for (const p of projects) {
     i++;
     onProgress?.(i, projects.length, p);
     try {
-      const result = await findExistingProjectFolder(p);
+      const result = await findExistingProjectFolder(p, token);
       if (result?.webUrl) {
         linked.push({ project: p, webUrl: result.webUrl, matchedVariant: result.matchedVariant });
       } else {
         notFound.push(p);
       }
     } catch (e) {
+      // If the token expired mid-loop, refresh it once and continue.
+      const msg = (e.message || "").toLowerCase();
+      if (msg.includes("401") || msg.includes("unauthorized") || msg.includes("not signed in")) {
+        try {
+          token = await getToken(true); // forceRefresh
+          // Retry this project once with the new token
+          const retryResult = await findExistingProjectFolder(p, token);
+          if (retryResult?.webUrl) {
+            linked.push({ project: p, webUrl: retryResult.webUrl, matchedVariant: retryResult.matchedVariant });
+          } else {
+            notFound.push(p);
+          }
+          continue;
+        } catch (retryErr) {
+          errored.push({ project: p, error: "Token refresh failed: " + (retryErr.message || "unknown") });
+          continue;
+        }
+      }
       errored.push({ project: p, error: e.message || "unknown" });
     }
   }
@@ -1648,10 +1690,17 @@ async function bulkReconcileFolders(projects, onProgress) {
 // Bulk reconcile OneNote notebooks. Fetches the team's notebook list ONCE,
 // then matches each project against it locally — avoids 80 Graph round-trips.
 async function bulkReconcileNotebooks(projects, onProgress) {
+  // Pre-fetch token (consistent with bulkReconcileFolders)
+  let token;
+  try {
+    token = await getTokenForScopes(ONENOTE_SCOPES);
+  } catch (e) {
+    return { linked: [], notFound: projects, errored: [{ error: "Auth failed: " + (e.message || "could not acquire OneNote token") }] };
+  }
   // Fetch all Teams notebooks in one call
   let allNotebooks = [];
   try {
-    const data = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks?$top=200`);
+    const data = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks?$top=200`, undefined, token, ONENOTE_SCOPES);
     allNotebooks = data?.value || [];
   } catch (e) {
     return { linked: [], notFound: projects, errored: [{ error: "Notebook list fetch failed: " + e.message }] };
