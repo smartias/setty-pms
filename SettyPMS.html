@@ -8,6 +8,8 @@
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <!-- pako: zlib in JS — used to compress email HTML bodies before storing in Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     body{background:#0d0f1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -608,6 +610,58 @@ function loadLocalSnapshot() {
   } catch (e) {
     console.warn("Local snapshot parse failed:", e.message);
     return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EMAIL BODY COMPRESSION (Phase 3)
+// ═══════════════════════════════════════════════════════════════════════════
+// Email HTML is compressed with pako (zlib) at save time and stored as base64
+// in the email record. Typical compression ratio for Outlook HTML is 6–10x
+// (lots of repeated inline styles, MSO conditionals, whitespace) so a 200KB
+// email becomes ~25KB in the row. Decompression is single-digit milliseconds.
+//
+// Storage shape on email records:
+//   email.bodyHtmlCompressed = "<base64-deflate>"   (new)
+//   email.bodyHtmlSize       = <int>                (uncompressed bytes, for telemetry)
+//   email.bodyText           = "<plain-text-fallback>"  (legacy, kept for old records)
+
+function compressHtml(html) {
+  if (!html || typeof html !== "string") return "";
+  if (typeof pako === "undefined") {
+    console.warn("compressHtml: pako not loaded — storing uncompressed");
+    return null; // signal caller to fall back
+  }
+  try {
+    const deflated = pako.deflate(html, { level: 6 });
+    // Convert Uint8Array → binary string → base64. For very large inputs
+    // (>1MB), batch the String.fromCharCode call to avoid stack overflow.
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < deflated.length; i += CHUNK) {
+      binary += String.fromCharCode.apply(null, deflated.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  } catch (e) {
+    console.warn("compressHtml failed:", e);
+    return null;
+  }
+}
+
+function decompressHtml(base64) {
+  if (!base64 || typeof base64 !== "string") return "";
+  if (typeof pako === "undefined") {
+    console.warn("decompressHtml: pako not loaded — cannot read compressed body");
+    return "";
+  }
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return pako.inflate(bytes, { to: "string" });
+  } catch (e) {
+    console.warn("decompressHtml failed:", e);
+    return "";
   }
 }
 
@@ -10890,6 +10944,10 @@ function EmailsView({ project, onChange }) {
             .filter(Boolean);
         } catch(e) { /* non-fatal */ }
       }
+      // Phase 3: capture and compress full HTML body at save time so the email
+      // renders correctly even if it's later deleted from Outlook.
+      const rawHtml = m.body?.content || "";
+      const compressed = rawHtml ? compressHtml(rawHtml) : "";
       return {
         msgId: m.id,
         conversationId: m.conversationId || null,
@@ -10902,7 +10960,9 @@ function EmailsView({ project, onChange }) {
         preview: m.bodyPreview || "",
         hasAttachments: !!m.hasAttachments,
         attachmentNames,
-        bodyText: htmlToText(m.body?.content || "") || (m.bodyPreview || "").trim(),
+        bodyText: htmlToText(rawHtml) || (m.bodyPreview || "").trim(),
+        bodyHtmlCompressed: compressed || "",
+        bodyHtmlSize: rawHtml.length,
         savedAt: new Date().toISOString(),
         savedBy: getCurrentUser(),
       };
@@ -10949,8 +11009,23 @@ function EmailsView({ project, onChange }) {
       const token = await getToken();
       const data = await graphFetch("GET", `/me/messages/${encodeURIComponent(msgId)}?$select=body,hasAttachments`, undefined, token);
       if (data?.body?.content) {
-        // Store raw HTML — rendered via iframe to preserve all formatting
-        setLiveBody(prev => ({ ...prev, [msgId]: data.body.content }));
+        const html = data.body.content;
+        setLiveBody(prev => ({ ...prev, [msgId]: html }));
+        // Phase 3: persist the compressed body to the project record so we never
+        // need to re-fetch it. Future opens go straight to decompress + render.
+        // The save uses onChange (debounced auto-save) — no extra round-trip cost.
+        const existing = saved.find(e => e.msgId === msgId);
+        if (existing && !existing.bodyHtmlCompressed) {
+          const compressed = compressHtml(html);
+          if (compressed) {
+            onChange({
+              ...project,
+              emails: saved.map(e => e.msgId === msgId
+                ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
+                : e),
+            });
+          }
+        }
       }
     } catch(e) {
       // fallback to stored body — already there
@@ -10962,6 +11037,14 @@ function EmailsView({ project, onChange }) {
 
   function toggleExpand(email) {
     if (expanded === email.msgId) { setExpanded(null); return; }
+    // Phase 3: if we have a compressed body stored, render it immediately —
+    // no need to call Graph. Saves a round-trip and works offline / for
+    // emails deleted from Outlook.
+    if (email.bodyHtmlCompressed) {
+      setExpanded(email.msgId);
+      return;
+    }
+    // Otherwise fetch live + opportunistically persist the compressed body
     fetchLiveBody(email.msgId);
   }
 
@@ -11170,32 +11253,64 @@ function EmailsView({ project, onChange }) {
                 {/* Body */}
                 {isOpen && (
                   <div style={{ borderTop: `1px solid ${P.border}`, padding: "14px 16px" }}>
-                    {isFetching ? (
-                      <div style={{ color: P.textDim, fontSize: 12 }}>⏳ Loading…</div>
-                    ) : liveBody[emailId] ? (
-                      // Live HTML from Graph — render in sandboxed iframe for correct formatting
-                      <EmailIframe html={liveBody[emailId]} />
-                    ) : email.bodyText ? (
-                      // Fallback: stored plain text — use chain parser
-                      <EmailChain body={email.bodyText} />
-                    ) : email.preview ? (
-                      <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
-                        {toText(email.preview, "")}
-                      </pre>
-                    ) : (
-                      <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>
-                    )}
+                    {(() => {
+                      // Render priority (Phase 3):
+                      // 1. liveBody — just-fetched HTML, freshest possible
+                      // 2. email.bodyHtmlCompressed — persisted compressed HTML
+                      //    (always works, no Graph round-trip, survives email deletion)
+                      // 3. email.bodyText — legacy plain-text fallback
+                      // 4. email.preview — Outlook preview snippet
+                      // 5. nothing
+                      if (isFetching) {
+                        return <div style={{ color: P.textDim, fontSize: 12 }}>⏳ Loading…</div>;
+                      }
+                      if (liveBody[emailId]) {
+                        return <EmailIframe html={liveBody[emailId]} />;
+                      }
+                      if (email.bodyHtmlCompressed) {
+                        const html = decompressHtml(email.bodyHtmlCompressed);
+                        if (html) return <EmailIframe html={html} />;
+                        // Fall through if decompression failed
+                      }
+                      if (email.bodyText) {
+                        return <EmailChain body={email.bodyText} />;
+                      }
+                      if (email.preview) {
+                        return (
+                          <pre style={{ fontFamily: "inherit", fontSize: 12, lineHeight: 1.7, color: P.text, whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}>
+                            {toText(email.preview, "")}
+                          </pre>
+                        );
+                      }
+                      return <div style={{ color: P.textDim, fontSize: 12 }}>No body content stored.</div>;
+                    })()}
                     <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                      <div style={{ flex: 1 }}>
+                      <div style={{ flex: 1, fontSize: 11, color: P.textDim }}>
                         {spSaveState[emailId] && (
-                          <span style={{ fontSize: 11, fontWeight: 500,
+                          <span style={{ fontWeight: 500,
                             color: spSaveState[emailId].status === "done" ? P.green
                                  : spSaveState[emailId].status === "error" ? P.red : P.accentLight }}>
                             {spSaveState[emailId].status === "saving" ? "⏳ Saving to SharePoint…" : spSaveState[emailId].msg}
                           </span>
                         )}
+                        {/* Phase 3: surface body persistence state so user knows whether
+                            this email will render offline or needs Outlook live-fetch. */}
+                        {!spSaveState[emailId] && (
+                          email.bodyHtmlCompressed
+                            ? <span title="Email body is stored locally — will always render even if deleted from Outlook">📦 Body cached ({Math.round((email.bodyHtmlSize || 0) / 1024)}KB)</span>
+                            : <span title="Body fetched live from Outlook each time — click Refresh to cache it permanently">⚡ Live-fetched only</span>
+                        )}
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
+                        {/* Refresh from Outlook — re-fetches and persists compressed body */}
+                        {email.msgId && !email.bodyHtmlCompressed && (
+                          <Btn small variant="ghost"
+                            disabled={isFetching}
+                            onClick={() => fetchLiveBody(email.msgId)}
+                            title="Re-fetch from Outlook and cache locally so it always renders">
+                            {isFetching ? "⏳" : "🔄 Refresh + Cache"}
+                          </Btn>
+                        )}
                         {(() => {
                           const spUrl = spSaveState[emailId]?.folderWebUrl || email.spFolderUrl || "";
                           if (spUrl) return (
