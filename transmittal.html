@@ -449,27 +449,49 @@ function onSignedIn() {
 
 async function loadPmsData() {
   try {
-    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=projects,clients", {
-      headers: {
-        "apikey": SUPABASE_ANON,
-        "Authorization": "Bearer " + SUPABASE_ANON,
-        "Content-Type": "application/json",
+    const headers = {
+      "apikey": SUPABASE_ANON,
+      "Authorization": "Bearer " + SUPABASE_ANON,
+      "Content-Type": "application/json",
+    };
+    // V2: read from per-project / per-client rows. Falls back to legacy
+    // pms_data only if V2 tables are empty (pre-migration). Without this,
+    // post-migration the transmittal form auto-fill silently broke because
+    // pms_data.projects is no longer kept up to date — same bug class as
+    // the backup-button issue.
+    let pRows = [], cRows = [];
+    try {
+      const [pRes, cRes] = await Promise.all([
+        fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project", { headers }),
+        fetch(SUPABASE_URL + "/rest/v1/pms_clients?select=client",   { headers }),
+      ]);
+      if (pRes.ok && cRes.ok) {
+        pRows = await pRes.json();
+        cRows = await cRes.json();
       }
-    });
-    if (!res.ok) { console.warn("[TX] Supabase error:", res.status, await res.text()); return; }
-    const rows = await res.json();
-    if (!rows || !rows[0]) { console.warn("[TX] No rows returned from Supabase"); return; }
-    const row = rows[0];
-    // Projects and clients are direct columns, not nested in a data field
-    const rawProjects = Array.isArray(row.projects) ? row.projects : (typeof row.projects === "string" ? JSON.parse(row.projects) : []);
-    const rawClients = Array.isArray(row.clients) ? row.clients : (typeof row.clients === "string" ? JSON.parse(row.clients) : []);
-    pmsClients = rawClients;
-    pmsProjects = rawProjects.filter(p => !p.archived);
+    } catch (e) {
+      console.warn("[TX] V2 load failed, falling back to legacy:", e.message);
+    }
+
+    if (pRows.length === 0) {
+      // V2 empty (or unreachable) — fall back to pms_data
+      const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=projects,clients", { headers });
+      if (!res.ok) { console.warn("[TX] Supabase error:", res.status, await res.text()); return; }
+      const rows = await res.json();
+      if (!rows || !rows[0]) { console.warn("[TX] No rows returned from Supabase"); return; }
+      const row = rows[0];
+      const rawProjects = Array.isArray(row.projects) ? row.projects : (typeof row.projects === "string" ? JSON.parse(row.projects) : []);
+      const rawClients = Array.isArray(row.clients) ? row.clients : (typeof row.clients === "string" ? JSON.parse(row.clients) : []);
+      pmsClients = rawClients;
+      pmsProjects = rawProjects.filter(p => !p.archived);
+    } else {
+      pmsProjects = pRows.map(r => r.project).filter(p => p && !p.archived);
+      pmsClients  = (cRows || []).map(r => r.client).filter(Boolean);
+    }
 
     // STEP 1: Fill in project fields from URL params FIRST
     const urlNumber = new URLSearchParams(window.location.search).get("number");
     const urlProject = new URLSearchParams(window.location.search).get("project");
-    const urlClient = new URLSearchParams(window.location.search).get("client");
     if (urlNumber) {
       const decodedNum = decodeURIComponent(urlNumber);
       const proj = pmsProjects.find(p => p.projectNumber === decodedNum);
@@ -485,16 +507,8 @@ async function loadPmsData() {
 
     // Debug: show what loaded
     const projNumField = document.getElementById("projectNumber").value;
-    console.log("[TX] Loaded:", pmsProjects.length, "projects,", pmsClients.length, "clients");
-    console.log("[TX] Project number field:", projNumField);
-    console.log("[TX] First 5 project numbers:", pmsProjects.slice(0,5).map(p => JSON.stringify(p.projectNumber)));
-    console.log("[TX] Exact match test:", pmsProjects.some(p => p.projectNumber === projNumField));
-    const dbgProj = pmsProjects.find(p => p.projectNumber === projNumField);
-    console.log("[TX] Matched project:", dbgProj ? dbgProj.name : "none", "| client:", dbgProj?.client, "| prime:", dbgProj?.prime);
-    console.log("[TX] Clients:", pmsClients.slice(0,5).map(c => c.name + "(" + (c.contacts||[]).length + ")").join(", "));
-    // Check data structure
-    if (pmsProjects.length === 0) console.warn("[TX] WARNING: pmsProjects is empty — check Supabase data key");
-    if (data && !data.projects) console.warn("[TX] WARNING: data.projects missing — keys:", Object.keys(data).slice(0,10).join(", "));
+    console.log("[TX] Loaded:", pmsProjects.length, "projects,", pmsClients.length, "clients (source:", pRows.length > 0 ? "V2" : "legacy", ")");
+    if (pmsProjects.length === 0) console.warn("[TX] WARNING: pmsProjects is empty — check Supabase tables");
 
     // STEP 2: NOW populate recipient with project number already in the field
     updateRecipientFromProject();
@@ -637,8 +651,22 @@ async function getToken() {
     const r = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: msalAccount });
     return r.accessToken;
   } catch(e) {
-    await msalApp.acquireTokenRedirect({ scopes: GRAPH_SCOPES, account: msalAccount });
-    return null;
+    // Redirect would wipe the form (sheet selections, recipient fields,
+    // generated DOCX in memory) and dump the user back at /transmittal.html
+    // with no context. Popup keeps the page state intact while re-auth happens.
+    try {
+      const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: msalAccount });
+      return r.accessToken;
+    } catch (popupErr) {
+      const msg = (popupErr?.message || "").toLowerCase();
+      if (msg.includes("popup") || msg.includes("blocked")) {
+        throw new Error("Microsoft sign-in popup was blocked. Allow popups for this site (browser address-bar 🚫 icon), then click again. If you'd rather refresh, you'll lose any unsaved sheet edits.");
+      }
+      if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
+        throw new Error("Sign-in cancelled. Click again to retry.");
+      }
+      throw new Error("Could not refresh Microsoft session: " + (popupErr?.message || "unknown"));
+    }
   }
 }
 
