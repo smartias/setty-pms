@@ -418,36 +418,38 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
 
   const account = app.getActiveAccount() || accounts[0];
 
-  if (account) {
-    if (!forceRefresh) {
-      try {
-        const r = await app.acquireTokenSilent({ scopes, account });
-        return r.accessToken;
-      } catch (e) {
-        // Silent failed — try once more with forceRefresh before giving up
-        try {
-          const r = await app.acquireTokenSilent({ scopes, account, forceRefresh: true });
-          return r.accessToken;
-        } catch(e2) {
-          // Both silent attempts failed — throw error so the caller
-          // can show a message. Do NOT redirect mid-session as it
-          // navigates away and loses all unsaved state.
-          throw new Error("Session token expired. Please refresh the page to re-authenticate.");
-        }
-      }
-    }
-    // forceRefresh = true path
-    try {
-      const r = await app.acquireTokenSilent({ scopes, account, forceRefresh: true });
-      return r.accessToken;
-    } catch(e) {
-      throw new Error("Session token expired. Please refresh the page to re-authenticate.");
-    }
+  if (!account) {
+    throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
   }
 
-  // No account available — never hard-redirect from a data action.
-  // Redirects here can wipe in-memory edits and look like a random logout.
-  throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
+  // Step 1 — Try silent acquisition (uses cached token or hidden iframe refresh)
+  try {
+    const r = await app.acquireTokenSilent({ scopes, account, forceRefresh });
+    return r.accessToken;
+  } catch (silentErr) {
+    console.warn("Silent token acquisition failed:", silentErr?.message || silentErr);
+
+    // Step 2 — Silent failed. The most common cause is the browser blocking
+    // MSAL's hidden iframe (top-level navigation sandbox restriction). Fall
+    // back to a popup, which is a real top-level window with no sandbox.
+    // Manifests as: "Create Document Set Folder" / "Save email" / etc.
+    // working right after sign-in but failing ~1 hour later when token expires
+    // and silent refresh hits the iframe-blocked code path.
+    try {
+      const r = await app.acquireTokenPopup({ scopes, account });
+      return r.accessToken;
+    } catch (popupErr) {
+      console.error("Popup token acquisition failed:", popupErr);
+      const msg = (popupErr?.message || "").toLowerCase();
+      if (msg.includes("popup_window_error") || msg.includes("popup window") || msg.includes("blocked")) {
+        throw new Error("Microsoft sign-in popup was blocked. Allow popups for this site (browser address bar 🚫 icon), then click the action again. Or refresh the page to fully re-authenticate.");
+      }
+      if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
+        throw new Error("Sign-in was cancelled. Click the action again to retry.");
+      }
+      throw new Error("Could not refresh Microsoft session: " + (popupErr?.message || "unknown error") + ". Refresh the page to re-sign in.");
+    }
+  }
 }
 
 async function getToken(forceRefresh = false) {
