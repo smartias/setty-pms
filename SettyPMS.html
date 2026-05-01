@@ -555,14 +555,30 @@ async function saveState(state) {
     clients:        state.clients        || [],
     updated_at:     new Date().toISOString(),
   };
-  // PATCH (UPDATE) is the correct operation for the always-existing singleton row.
-  // It only requires an UPDATE policy in Supabase RLS — no INSERT policy needed.
-  // Falls back to POST (upsert) only if the row genuinely does not exist yet.
-  const patched = await sbFetch("PATCH", "/rest/v1/pms_data?id=eq.singleton", payload);
-  if (patched === null || (Array.isArray(patched) && patched.length === 0)) {
-    // Row doesn't exist yet — create it for the first time
-    await sbFetch("POST", "/rest/v1/pms_data", { id: "singleton", ...payload });
+  // PATCH the singleton row. We use Prefer: return=representation so the response
+  // body actually tells us whether a row was updated — the previous code used
+  // return=minimal (empty body) and treated that as "row missing", causing every
+  // single save to fire a redundant POST upsert. That doubled the write rate and
+  // widened the race window for cross-tab/cross-user saves.
+  const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton", {
+    method: "PATCH",
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+      "Content-Type": "application/json",
+      "Prefer": "return=representation",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error("Supabase PATCH " + res.status + ": " + txt.slice(0, 300));
   }
+  const updated = await res.json().catch(() => []);
+  if (Array.isArray(updated) && updated.length > 0) return; // success — row updated
+
+  // Row genuinely missing — create it. Only happens on first-ever save.
+  await sbFetch("POST", "/rest/v1/pms_data", { id: "singleton", ...payload });
 }
 
 const LOCAL_SNAPSHOT_KEY = "setty_pms_local_snapshot_v1";
@@ -592,6 +608,314 @@ function loadLocalSnapshot() {
   } catch (e) {
     console.warn("Local snapshot parse failed:", e.message);
     return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V2 PERSISTENCE — per-project / per-client rows + optimistic concurrency
+// ═══════════════════════════════════════════════════════════════════════════
+// Replaces the legacy "everything in one pms_data row" pattern. Each project
+// is its own row in pms_projects; each client is its own row in pms_clients;
+// staff + termContracts live in a single pms_meta row keyed 'app_meta'.
+//
+// Optimistic concurrency: every row carries a `version` int. Saves do
+// UPDATE ... WHERE id = ? AND version = ? — if 0 rows match, someone else
+// saved first → ConflictError thrown with the cloud version attached.
+// Phase 5's handleSaveFailure consumes that error to drive the merge UX.
+
+class ConflictError extends Error {
+  constructor(message, kind, id, cloudRow) {
+    super(message);
+    this.name = "ConflictError";
+    this.kind = kind; // "project" | "client" | "meta"
+    this.id = id;
+    this.cloudRow = cloudRow;
+  }
+}
+
+// Lightweight wrapper around fetch() that surfaces Supabase errors cleanly.
+async function sbFetchV2(method, path, body, extraPrefer = "") {
+  const headers = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+    "Content-Type": "application/json",
+    "Prefer": "return=representation" + (extraPrefer ? "," + extraPrefer : ""),
+  };
+  const res = await fetch(SUPABASE_URL + path, {
+    method,
+    headers,
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error("Supabase " + method + " " + res.status + ": " + txt.slice(0, 300));
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+// ── MIGRATION ────────────────────────────────────────────────────────────────
+// Reads the old pms_data singleton, writes per-project + per-client rows,
+// flips the migration_status flag. Idempotent: if it crashes mid-flight, the
+// next run picks up where it left off (UPSERTs not INSERTs).
+async function isMigrationComplete() {
+  try {
+    const rows = await sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.migration_status&select=data");
+    return !!(rows?.[0]?.data?.v1_complete);
+  } catch (e) {
+    console.warn("Migration status check failed; assuming incomplete:", e.message);
+    return false;
+  }
+}
+
+async function runMigrationV1(progressCb) {
+  const log = (msg) => { console.log("[migration]", msg); progressCb?.(msg); };
+
+  log("Reading legacy data from pms_data…");
+  const legacyRows = await sbFetchV2("GET", "/rest/v1/pms_data?id=eq.singleton&select=*");
+  if (!legacyRows || legacyRows.length === 0) {
+    log("No legacy data found — nothing to migrate. Marking complete.");
+    await markMigrationComplete();
+    return { projects: 0, clients: 0 };
+  }
+  const legacy = legacyRows[0];
+  const projects = legacy.projects || [];
+  const clients = legacy.clients || [];
+  const staff = legacy.staff || [];
+  const termContracts = legacy.term_contracts || [];
+
+  log(`Migrating ${projects.length} projects, ${clients.length} clients…`);
+
+  // Batch-upsert projects (chunks of 20 to stay under PostgREST payload limits)
+  const projectRows = projects.map(p => ({
+    id: p.id, project: p, updated_at: new Date().toISOString(), version: 1,
+  })).filter(r => !!r.id);
+  for (let i = 0; i < projectRows.length; i += 20) {
+    const chunk = projectRows.slice(i, i + 20);
+    await sbFetchV2("POST", "/rest/v1/pms_projects?on_conflict=id", chunk, "resolution=merge-duplicates");
+    log(`Projects: ${Math.min(i + 20, projectRows.length)} / ${projectRows.length}`);
+  }
+
+  // Batch-upsert clients
+  const clientRows = clients.map(c => ({
+    id: c.id, client: c, updated_at: new Date().toISOString(), version: 1,
+  })).filter(r => !!r.id);
+  for (let i = 0; i < clientRows.length; i += 50) {
+    const chunk = clientRows.slice(i, i + 50);
+    await sbFetchV2("POST", "/rest/v1/pms_clients?on_conflict=id", chunk, "resolution=merge-duplicates");
+    log(`Clients: ${Math.min(i + 50, clientRows.length)} / ${clientRows.length}`);
+  }
+
+  // Single meta row with staff + term contracts
+  await sbFetchV2("POST", "/rest/v1/pms_meta?on_conflict=id", {
+    id: "app_meta",
+    data: { staff, termContracts },
+    updated_at: new Date().toISOString(),
+  }, "resolution=merge-duplicates");
+  log(`Meta written (staff: ${staff.length}, termContracts: ${termContracts.length})`);
+
+  await markMigrationComplete();
+  log("Migration complete.");
+  return { projects: projectRows.length, clients: clientRows.length };
+}
+
+async function markMigrationComplete() {
+  await sbFetchV2("POST", "/rest/v1/pms_meta?on_conflict=id", {
+    id: "migration_status",
+    data: { v1_complete: true, completed_at: new Date().toISOString() },
+    updated_at: new Date().toISOString(),
+  }, "resolution=merge-duplicates");
+}
+
+// ── V2 LOAD ──────────────────────────────────────────────────────────────────
+// Returns the same shape as legacy loadState() but reads from the new tables.
+// Also returns version maps so saveStateV2 can do optimistic concurrency.
+async function loadStateV2() {
+  // Parallel fetch all three tables — saves ~200ms on slower networks.
+  const [projectRows, clientRows, metaRows] = await Promise.all([
+    sbFetchV2("GET", "/rest/v1/pms_projects?select=id,project,version,updated_at"),
+    sbFetchV2("GET", "/rest/v1/pms_clients?select=id,client,version,updated_at"),
+    sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
+  ]);
+
+  const projects = (projectRows || []).map(r => r.project).filter(Boolean);
+  const clients  = (clientRows  || []).map(r => r.client).filter(Boolean);
+  const meta     = metaRows?.[0]?.data || {};
+
+  // Version maps — keyed by id, used for optimistic concurrency on next save
+  const projectVersions = new Map((projectRows || []).map(r => [r.id, r.version]));
+  const clientVersions  = new Map((clientRows  || []).map(r => [r.id, r.version]));
+
+  return {
+    projects,
+    clients,
+    staff: meta.staff || [],
+    termContracts: meta.termContracts || [],
+    _versions: { projects: projectVersions, clients: clientVersions },
+  };
+}
+
+// ── V2 SAVE — single-row writes ──────────────────────────────────────────────
+// All four below throw ConflictError on version mismatch.
+
+async function saveProjectV2(project, expectedVersion) {
+  if (!project?.id) throw new Error("saveProjectV2: project.id required");
+  const path = "/rest/v1/pms_projects?id=eq." + encodeURIComponent(project.id) +
+               "&version=eq." + (expectedVersion ?? 1);
+  const result = await sbFetchV2("PATCH", path, {
+    project,
+    version: (expectedVersion ?? 1) + 1,
+    updated_at: new Date().toISOString(),
+  });
+  if (!result || result.length === 0) {
+    // No row matched — either it doesn't exist yet, or version mismatch.
+    // Look up the cloud row to disambiguate.
+    const cloud = await sbFetchV2("GET", "/rest/v1/pms_projects?id=eq." + encodeURIComponent(project.id));
+    if (!cloud || cloud.length === 0) {
+      // First-time save — INSERT
+      await sbFetchV2("POST", "/rest/v1/pms_projects", {
+        id: project.id, project, version: 1, updated_at: new Date().toISOString(),
+      });
+      return 1;
+    }
+    throw new ConflictError(
+      "Project " + project.id + " was modified by someone else (cloud v" + cloud[0].version + ", you had v" + expectedVersion + ")",
+      "project", project.id, cloud[0]
+    );
+  }
+  return result[0].version;
+}
+
+async function saveClientV2(client, expectedVersion) {
+  if (!client?.id) throw new Error("saveClientV2: client.id required");
+  const path = "/rest/v1/pms_clients?id=eq." + encodeURIComponent(client.id) +
+               "&version=eq." + (expectedVersion ?? 1);
+  const result = await sbFetchV2("PATCH", path, {
+    client,
+    version: (expectedVersion ?? 1) + 1,
+    updated_at: new Date().toISOString(),
+  });
+  if (!result || result.length === 0) {
+    const cloud = await sbFetchV2("GET", "/rest/v1/pms_clients?id=eq." + encodeURIComponent(client.id));
+    if (!cloud || cloud.length === 0) {
+      await sbFetchV2("POST", "/rest/v1/pms_clients", {
+        id: client.id, client, version: 1, updated_at: new Date().toISOString(),
+      });
+      return 1;
+    }
+    throw new ConflictError(
+      "Client " + client.id + " was modified by someone else",
+      "client", client.id, cloud[0]
+    );
+  }
+  return result[0].version;
+}
+
+async function saveMetaV2({ staff, termContracts }) {
+  // pms_meta isn't versioned — staff/termContracts are low-write so blind upsert is fine.
+  await sbFetchV2("POST", "/rest/v1/pms_meta?on_conflict=id", {
+    id: "app_meta",
+    data: { staff: staff || [], termContracts: termContracts || [] },
+    updated_at: new Date().toISOString(),
+  }, "resolution=merge-duplicates");
+}
+
+async function deleteProjectV2(projectId) {
+  if (!projectId) return;
+  await sbFetchV2("DELETE", "/rest/v1/pms_projects?id=eq." + encodeURIComponent(projectId));
+}
+
+async function deleteClientV2(clientId) {
+  if (!clientId) return;
+  await sbFetchV2("DELETE", "/rest/v1/pms_clients?id=eq." + encodeURIComponent(clientId));
+}
+
+// ── V2 BATCH SAVE — diffs current state vs last-saved snapshot ───────────────
+// Called by the debounced auto-save effect. Only writes rows that actually
+// changed since the last successful save — plus the meta row if staff/contracts
+// changed. Returns counts so the UI can show "saved 3 projects, 1 client".
+//
+// `versions` is a Map<id, version>. After a successful write, the map is
+// mutated to track the new version for the next save.
+async function performSaveV2(state, lastSavedRef, versions) {
+  const { projects = [], clients = [], staff = [], termContracts = [] } = state;
+  const last = lastSavedRef.current || { projects: new Map(), clients: new Map(), meta: "" };
+
+  let projectsSaved = 0, clientsSaved = 0, metaSaved = false;
+  const conflicts = [];
+
+  // ── Projects ──
+  const currentProjectIds = new Set();
+  for (const p of projects) {
+    if (!p?.id) continue;
+    currentProjectIds.add(p.id);
+    const serialized = JSON.stringify(p);
+    if (last.projects.get(p.id) !== serialized) {
+      try {
+        const newVer = await saveProjectV2(p, versions.projects.get(p.id));
+        versions.projects.set(p.id, newVer);
+        last.projects.set(p.id, serialized);
+        projectsSaved++;
+      } catch (e) {
+        if (e instanceof ConflictError) conflicts.push(e);
+        else throw e;
+      }
+    }
+  }
+  // Detect deletions: any id in last.projects but not in current → delete
+  for (const id of last.projects.keys()) {
+    if (!currentProjectIds.has(id)) {
+      await deleteProjectV2(id);
+      last.projects.delete(id);
+      versions.projects.delete(id);
+    }
+  }
+
+  // ── Clients ──
+  const currentClientIds = new Set();
+  for (const c of clients) {
+    if (!c?.id) continue;
+    currentClientIds.add(c.id);
+    const serialized = JSON.stringify(c);
+    if (last.clients.get(c.id) !== serialized) {
+      try {
+        const newVer = await saveClientV2(c, versions.clients.get(c.id));
+        versions.clients.set(c.id, newVer);
+        last.clients.set(c.id, serialized);
+        clientsSaved++;
+      } catch (e) {
+        if (e instanceof ConflictError) conflicts.push(e);
+        else throw e;
+      }
+    }
+  }
+  for (const id of last.clients.keys()) {
+    if (!currentClientIds.has(id)) {
+      await deleteClientV2(id);
+      last.clients.delete(id);
+      versions.clients.delete(id);
+    }
+  }
+
+  // ── Meta (staff + termContracts) ──
+  const metaSerialized = JSON.stringify({ staff, termContracts });
+  if (last.meta !== metaSerialized) {
+    await saveMetaV2({ staff, termContracts });
+    last.meta = metaSerialized;
+    metaSaved = true;
+  }
+
+  lastSavedRef.current = last;
+  return { projectsSaved, clientsSaved, metaSaved, conflicts };
+}
+
+// ── Eager save for a single project (bypass debounce, used by Phase 1.4) ─────
+async function eagerSaveProjectV2(project, versions, lastSavedRef) {
+  if (!project?.id) return;
+  const newVer = await saveProjectV2(project, versions.projects.get(project.id));
+  versions.projects.set(project.id, newVer);
+  if (lastSavedRef?.current) {
+    lastSavedRef.current.projects.set(project.id, JSON.stringify(project));
   }
 }
 
@@ -9968,7 +10292,7 @@ function PhotosView({ project }) {
 
 const TABS = ["Overview", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Intelligence", "Photos"];
 
-function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
+function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState(project.proposalCalendarEventId ? "synced" : "idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
@@ -10132,7 +10456,7 @@ function ProjectDetail({ project, onUpdate, onBack, termContracts, clients, staf
               </Field>
             ) : (
               <Field label="Project Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
-                <SharePointFolderField project={project} onUpdate={updateField} />
+                <SharePointFolderField project={project} onUpdate={updateField} onEagerSave={onEagerSave} />
               </Field>
             )}
 
@@ -13967,7 +14291,7 @@ function ProposalFolderField({ project, onUpdate }) {
   );
 }
 
-function SharePointFolderField({ project, onUpdate }) {
+function SharePointFolderField({ project, onUpdate, onEagerSave }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
 
@@ -13985,8 +14309,25 @@ function SharePointFolderField({ project, onUpdate }) {
     try {
       const folderUrl = await createSharePointFolder(project);
       onUpdate("projectFolderUrl", folderUrl);
-      setStatus("done");
-      setMsg("\u2713 Folder created");
+      // Eager-save: don't wait for the 2-second debounce. If the user closes the
+      // tab or the network blips during that window, the folder exists in
+      // SharePoint but the project record has no link to it (orphaned folder).
+      // Calling onEagerSave forces an immediate flush to Supabase.
+      if (onEagerSave) {
+        try {
+          await onEagerSave({ ...project, projectFolderUrl: folderUrl });
+          setStatus("done");
+          setMsg("\u2713 Folder created and linked");
+        } catch (saveErr) {
+          // Folder exists in SP but link save failed \u2014 give the user a clear
+          // recovery path. The URL is also in the input field they can copy.
+          setStatus("error");
+          setMsg("\u26a0 Folder created at " + folderUrl + " but link save failed: " + saveErr.message + ". Copy the URL above; the next auto-save will retry.");
+        }
+      } else {
+        setStatus("done");
+        setMsg("\u2713 Folder created");
+      }
     } catch(e) {
       setStatus("error");
       setMsg("\u2717 " + e.message);
@@ -15487,6 +15828,14 @@ function App() {
   const pendingSave = React.useRef(null);   // bug 3 fix: timer ID in ref, not state
   const isLoaded = React.useRef(false);     // bug 1 fix: guard against save-on-load
 
+  // V2 persistence refs — populated by loadStateV2, updated by performSaveV2
+  const versionsRef = React.useRef({ projects: new Map(), clients: new Map() });
+  const lastSavedRef = React.useRef({ projects: new Map(), clients: new Map(), meta: "" });
+
+  // Migration UI state
+  const [migrationState, setMigrationState] = useState({ phase: "checking", message: "" });
+  // phase: "checking" | "backing-up" | "migrating" | "done" | "error" | "skipped"
+
   const [showDataTools, setShowDataTools] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [showBackupModal, setShowBackupModal] = useState(false);
@@ -15496,67 +15845,120 @@ function App() {
   const [cleanupMsg, setCleanupMsg] = useState("");
   const [cleanupPreview, setCleanupPreview] = useState(null);
 
-  // ── Initial load from Supabase ──
+  // ── Initial load from Supabase (V2 + migration) ──
   useEffect(() => {
     setAppStatus("loading");
-    loadState()
-      .then(s => {
-        const hasRemoteData = !!(s && (s.projects?.length || s.termContracts?.length || s.staff?.length || s.clients?.length));
+    (async () => {
+      try {
+        // 1. Migration check
+        setMigrationState({ phase: "checking", message: "Checking data layer…" });
+        const migrated = await isMigrationComplete();
+
+        if (!migrated) {
+          // 1a. Trigger automatic backup BEFORE migration (option C — safety net)
+          setMigrationState({ phase: "backing-up", message: "Saving safety backup before migration…" });
+          try {
+            await downloadPreMigrationBackup();
+          } catch (bkErr) {
+            console.warn("Pre-migration backup failed:", bkErr);
+            // Don't block migration on backup failure — log and continue.
+            // The old pms_data row is still intact as a deeper safety net.
+          }
+
+          // 1b. Run migration
+          setMigrationState({ phase: "migrating", message: "Migrating to per-project rows…" });
+          await runMigrationV1((msg) => {
+            setMigrationState({ phase: "migrating", message: msg });
+          });
+        }
+
+        // 2. Load from V2 tables
+        setMigrationState({ phase: "done", message: "" });
+        const s = await loadStateV2();
+
+        // Hydrate version maps + last-saved snapshot for the auto-save effect
+        versionsRef.current = s._versions;
+        lastSavedRef.current = {
+          projects: new Map(s.projects.map(p => [p.id, JSON.stringify(p)])),
+          clients:  new Map(s.clients.map(c => [c.id, JSON.stringify(c)])),
+          meta:     JSON.stringify({ staff: s.staff, termContracts: s.termContracts }),
+        };
+
+        // Apply local snapshot fallback ONLY if cloud is empty (first-time user
+        // or just-completed migration with empty data).
+        const hasRemoteData = !!(s.projects?.length || s.termContracts?.length || s.staff?.length || s.clients?.length);
         const localSnap = loadLocalSnapshot();
         const shouldUseLocal = !hasRemoteData && localSnap && (localSnap.projects?.length || localSnap.termContracts?.length || localSnap.staff?.length || localSnap.clients?.length);
-
         const source = shouldUseLocal ? localSnap : s;
-        if (source?.projects) setProjects(source.projects);
-        if (source?.termContracts) setTermContracts(source.termContracts);
-        if (source?.staff) setStaff(source.staff);
-        if (source?.clients) setClients(source.clients);
-        isLoaded.current = true; // bug 1 fix: mark load complete before setting idle
+
+        if (source.projects) setProjects(source.projects);
+        if (source.termContracts) setTermContracts(source.termContracts);
+        if (source.staff) setStaff(source.staff);
+        if (source.clients) setClients(source.clients);
+
+        isLoaded.current = true;
         setAppStatus("idle");
-      })
-      .catch(e => {
-        console.error("Load failed:", e);
-        if (e.message?.includes("401") || e.message?.includes("403") || e.message?.includes("interaction_required")) {
-          getToken(true).then(() => loadState()).then(s => {
-            if (s?.projects) setProjects(s.projects);
-            if (s?.termContracts) setTermContracts(s.termContracts);
-            if (s?.staff) setStaff(s.staff);
-            if (s?.clients) setClients(s.clients);
-            isLoaded.current = true;
-            setAppStatus("idle");
-          }).catch(e2 => {
-            const localSnap = loadLocalSnapshot();
-            if (localSnap) {
-              setProjects(localSnap.projects || []);
-              setTermContracts(localSnap.termContracts || []);
-              setStaff(localSnap.staff || []);
-              setClients(localSnap.clients || []);
-              isLoaded.current = true;
-              setLoadError("Cloud load failed. Restored latest local snapshot.");
-              setAppStatus("idle");
-              return;
-            }
-            setLoadError(e2.message);
-            setAppStatus("error");
-          });
-          return;
-        }
-        const localSnap = loadLocalSnapshot();
-        if (localSnap) {
-          setProjects(localSnap.projects || []);
-          setTermContracts(localSnap.termContracts || []);
-          setStaff(localSnap.staff || []);
-          setClients(localSnap.clients || []);
+      } catch (e) {
+        console.error("V2 load failed:", e);
+        // Fallback chain: try V1 load, then localStorage snapshot
+        try {
+          const s = await loadState();
+          if (s?.projects) setProjects(s.projects);
+          if (s?.termContracts) setTermContracts(s.termContracts);
+          if (s?.staff) setStaff(s.staff);
+          if (s?.clients) setClients(s.clients);
           isLoaded.current = true;
-          setLoadError("Cloud load failed. Restored latest local snapshot.");
-          setAppStatus("idle");
-          return;
+          setLoadError("V2 load failed (" + e.message + "). Showing legacy data — DO NOT EDIT until this is resolved.");
+          setAppStatus("error");
+          setMigrationState({ phase: "error", message: e.message });
+        } catch (e2) {
+          const localSnap = loadLocalSnapshot();
+          if (localSnap) {
+            setProjects(localSnap.projects || []);
+            setTermContracts(localSnap.termContracts || []);
+            setStaff(localSnap.staff || []);
+            setClients(localSnap.clients || []);
+            isLoaded.current = true;
+            setLoadError("Cloud load failed. Restored latest local snapshot. DO NOT EDIT until cloud is back.");
+            setAppStatus("error");
+            return;
+          }
+          setLoadError(e.message || "Could not load data");
+          setAppStatus("error");
         }
-        setLoadError(e.message || "Could not load data");
-        setAppStatus("error");
-      });
+      }
+    })();
   }, []);
 
-  // ── Debounced auto-save — fires 2s after last change ──
+  // Pre-migration backup — safety net before mutating cloud schema. Pulls direct
+  // from pms_data (the source of truth at migration time) and downloads as JSON.
+  async function downloadPreMigrationBackup() {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=*", {
+      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_ANON_KEY },
+    });
+    if (!res.ok) throw new Error("Pre-migration backup fetch failed: HTTP " + res.status);
+    const rows = await res.json();
+    if (!rows || rows.length === 0) return; // nothing to back up
+    const data = JSON.stringify({
+      ...rows[0],
+      _exportedAt: new Date().toISOString(),
+      _purpose: "pre-migration-v1-safety-backup",
+      _version: 4,
+    });
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `SettyPMS-PRE-MIGRATION-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    window.__pmsPreMigrationBackup = data; // fallback if download blocked
+  }
+
+  // ── Debounced auto-save (V2) — fires 2s after last change ──
+  // Only writes rows that actually changed since the last successful save,
+  // determined by performSaveV2 via JSON.stringify diff against lastSavedRef.
   useEffect(() => {
     if (!isLoaded.current) return; // bug 1 fix: don't save until initial load is done
     saveLocalSnapshot({ projects, termContracts, staff, clients });
@@ -15571,11 +15973,22 @@ function App() {
     setAppStatus("saving");
     setSaveErrorDetail("");
     try {
-      await saveState(state);
+      const result = await performSaveV2(state, lastSavedRef, versionsRef.current);
       const now = new Date();
       setLastSaved(`${now.getHours()}:${String(now.getMinutes()).padStart(2,"0")}`);
+
+      if (result.conflicts.length > 0) {
+        // Phase 5 will surface a proper modal here. For now: log + show summary
+        // so the user knows a conflict happened and which projects are affected.
+        console.warn("Save conflicts (will get UX in Phase 5):", result.conflicts);
+        setSaveErrorDetail(`⚠ ${result.conflicts.length} conflict(s) detected. ` +
+          result.conflicts.slice(0, 2).map(c => c.kind + " " + c.id).join(", ") +
+          ". Reload to see latest cloud version.");
+        setAppStatus("error");
+        return;
+      }
+
       setAppStatus("saved");
-      // Return to idle after 3s
       setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
     } catch(e) {
       console.error("Save failed:", e);
@@ -15590,21 +16003,88 @@ function App() {
 
   // ── Data tools ──
 
-  function exportBackup() {
+  // Robust backup: fetches directly from Supabase (not React state) so it works
+  // even if local state is corrupted, mid-save, or partially loaded. Drops the
+  // pretty-print (was doubling size + main-thread blocking → blank screen with
+  // 80+ projects). Wrapped in try/catch with explicit error reporting so a
+  // stringify failure no longer unmounts the React tree.
+  async function exportBackup() {
     const now = new Date();
     const ts = now.toISOString();
     const date = ts.slice(0, 10);
-    const data = JSON.stringify({ projects, termContracts, staff, clients, _exportedAt: ts, _version: 3 }, null, 2);
-    const blob = new Blob([data], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `SettyPMS-backup-${date}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    localStorage.setItem("settyPMS_lastBackup", ts);
-    setLastBackupDate(ts);
-    setBackupImportMsg({ text: "✓ Backup downloaded: SettyPMS-backup-" + date + ".json", type: "success" });
+    setBackupImportMsg({ text: "⏳ Fetching latest data from cloud…", type: "idle" });
+    try {
+      // 1. Pull authoritative copy direct from Supabase
+      const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=*", {
+        headers: {
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+        },
+      });
+      if (!res.ok) throw new Error("Cloud fetch failed: HTTP " + res.status);
+      const rows = await res.json();
+      if (!rows || rows.length === 0) throw new Error("No data row found in cloud.");
+      const cloud = rows[0];
+
+      // 2. Defer stringify to next tick so the UI can render the spinner first.
+      //    Then drop the pretty-print — pretty JSON doubles size and is the main
+      //    cause of the page going blank for large datasets.
+      await new Promise(r => setTimeout(r, 0));
+      let data;
+      try {
+        data = JSON.stringify({
+          projects:       cloud.projects       || [],
+          termContracts:  cloud.term_contracts || [],
+          staff:          cloud.staff          || [],
+          clients:        cloud.clients        || [],
+          _exportedAt:    ts,
+          _cloudUpdatedAt: cloud.updated_at || null,
+          _projectCount:  (cloud.projects || []).length,
+          _version:       4,
+        });
+      } catch (stringifyErr) {
+        // Identify which top-level array is unserializable so we can recover what we can.
+        const safe = {};
+        for (const [k, v] of Object.entries({
+          projects: cloud.projects, termContracts: cloud.term_contracts,
+          staff: cloud.staff, clients: cloud.clients,
+        })) {
+          try { JSON.stringify(v); safe[k] = v; }
+          catch { safe[k] = `[UNSERIALIZABLE — ${(v?.length ?? 0)} items skipped]`; }
+        }
+        data = JSON.stringify({ ...safe, _exportedAt: ts, _stringifyError: stringifyErr.message, _version: 4 });
+        console.warn("Backup partial — some arrays were unserializable:", stringifyErr);
+      }
+
+      const sizeMB = (data.length / 1024 / 1024).toFixed(2);
+
+      // 3. Trigger download. Append to body (some browsers require this for synthetic clicks).
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `SettyPMS-backup-${date}.json`;
+      document.body.appendChild(a);
+      a.click();
+      // Small delay before cleanup; some browsers race the revoke.
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+
+      // 4. Stash on window as fallback in case the download was silently blocked.
+      window.__pmsLastBackup = data;
+
+      localStorage.setItem("settyPMS_lastBackup", ts);
+      setLastBackupDate(ts);
+      setBackupImportMsg({
+        text: `✓ Backup downloaded: SettyPMS-backup-${date}.json (${sizeMB} MB, ${(cloud.projects||[]).length} projects). If the file didn't appear, run copy(window.__pmsLastBackup) in DevTools console and paste into a .json file.`,
+        type: "success",
+      });
+    } catch (e) {
+      console.error("exportBackup failed:", e);
+      setBackupImportMsg({
+        text: "✗ Backup failed: " + (e.message || "unknown error") + ". Open DevTools (F12) → Console for details. Try the manual recovery snippet from the docs.",
+        type: "error",
+      });
+    }
   }
 
   function exportCSV() {
@@ -15841,6 +16321,22 @@ function updateProject(updated, options = {}) {
   });
 }
 
+// Eager save: bypass the 2-second debounce. Used for high-stakes link fields
+// (projectFolderUrl, oneNoteNotebookId, teamsChannelId) where a tab close or
+// network blip in the debounce window would orphan the just-created resource.
+//
+// V2: writes only the single project row directly via eagerSaveProjectV2,
+// avoiding the dirty-diff overhead of a full performSaveV2 sweep.
+async function updateProjectAndFlush(updated) {
+  if (pendingSave.current) clearTimeout(pendingSave.current);
+  // Update React state so UI reflects the change immediately
+  const merged = projects.map(p => p.id === updated.id ? updated : p);
+  setProjects(merged);
+  saveLocalSnapshot({ projects: merged, termContracts, staff, clients });
+  // Single-row write (no diff sweep) — fastest path
+  await eagerSaveProjectV2(updated, versionsRef.current, lastSavedRef);
+}
+
   function addProject() {
     const p = newProject();
     setProjects(prev => [p, ...prev]);
@@ -15879,16 +16375,42 @@ function updateProject(updated, options = {}) {
 
 
   // ── Loading screen ──
-  if (appStatus === "loading") return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: P.bg, gap: 16 }}>
-      <style>{CSS}</style>
-      <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em" }}>
-        <span style={{ color: P.accent }}>SETTY</span>
-        <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
+  if (appStatus === "loading") {
+    // Migration-aware loading view: while migration runs, show step-by-step
+    // status so the user knows what's happening (and that they shouldn't close
+    // the tab). Falls back to the generic "signing in" message otherwise.
+    const isMigrating = ["backing-up", "migrating"].includes(migrationState.phase);
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: P.bg, gap: 16, padding: 24 }}>
+        <style>{CSS}</style>
+        <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em" }}>
+          <span style={{ color: P.accent }}>SETTY</span>
+          <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
+        </div>
+        {isMigrating ? (
+          <div style={{ background: P.card, border: `2px solid ${P.accent}`, borderRadius: 12, padding: 24, maxWidth: 540, textAlign: "center" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: P.accent, marginBottom: 12 }}>
+              🔄 One-time data layer upgrade in progress
+            </div>
+            <div style={{ fontSize: 13, color: P.text, marginBottom: 16, lineHeight: 1.5 }}>
+              Splitting projects into per-row storage to eliminate cross-tab data loss.
+              <br/><strong style={{ color: P.red }}>Please don't close this tab.</strong> This usually takes 5–10 seconds.
+            </div>
+            <div style={{ background: P.bg, borderRadius: 6, padding: "10px 14px", fontSize: 12, color: P.textMuted, fontFamily: "monospace", textAlign: "left", minHeight: 40 }}>
+              {migrationState.message || "Initializing…"}
+            </div>
+            {migrationState.phase === "backing-up" && (
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 10 }}>
+                A safety backup is being downloaded to your Downloads folder.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ color: P.textMuted, fontSize: 13 }}>⏳ Signing in to Microsoft & loading…</div>
+        )}
       </div>
-      <div style={{ color: P.textMuted, fontSize: 13 }}>⏳ Signing in to Microsoft & loading…</div>
-    </div>
-  );
+    );
+  }
 
   // ── Load error screen — show app anyway with empty state ──
   const loadErrorBanner = loadError ? (
@@ -15987,7 +16509,7 @@ function updateProject(updated, options = {}) {
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} />
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onEagerSave={updateProjectAndFlush} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} />
       )}
     </div>
 
