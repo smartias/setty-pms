@@ -1548,6 +1548,128 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody, event
   return { id: page.id, webUrl };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 4 — RECONCILE ENGINE
+// ═══════════════════════════════════════════════════════════════════════════
+// Heals projects whose folder/notebook URLs are missing by searching SharePoint
+// for an existing folder that matches the project, using multiple naming
+// variants (since folder conventions have drifted over time).
+
+// Build candidate folder names for a project. Order matters — first hit wins.
+function buildFolderNameVariants(project) {
+  const num = (project.projectNumber || "").trim();
+  const name = (project.name || "").trim();
+  if (!num && !name) return [];
+  const variants = [];
+  if (num && name) {
+    variants.push(num + " - " + name);  // Current convention: "24-117 - Project Name"
+    variants.push(num + " " + name);    // No dash:               "24-117 Project Name"
+    variants.push(name + " (" + num + ")"); // Suffix:             "Project Name (24-117)"
+    variants.push(name + " " + num);    // Reverse:               "Project Name 24-117"
+  }
+  if (name) variants.push(name);        // Number-less:            "Project Name"
+  if (num)  variants.push(num);         // Number-only:            "24-117"
+  return [...new Set(variants)];        // Dedupe
+}
+
+// Try each variant against SharePoint root. Returns the first match's webUrl,
+// or null if none found. Distinguishes 404 (try next) from real errors (throw).
+async function findExistingProjectFolder(project) {
+  const variants = buildFolderNameVariants(project);
+  if (variants.length === 0) return null;
+  const { driveId } = await resolveSpIds();
+  for (const variant of variants) {
+    try {
+      const item = await graphFetch("GET",
+        "/drives/" + driveId + "/root:/" + encodeURIComponent(variant)
+      );
+      if (item?.id && item?.webUrl) {
+        return { webUrl: item.webUrl, matchedVariant: variant };
+      }
+    } catch (e) {
+      // Graph errors typically embed the HTTP code in the message.
+      // 404 = try the next variant; anything else = real failure, surface it.
+      if (!(e.message || "").includes("404") && !(e.message || "").includes("itemNotFound")) {
+        throw new Error("SharePoint search failed for variant '" + variant + "': " + e.message);
+      }
+    }
+  }
+  return null;
+}
+
+// Look up an existing OneNote notebook (Teams-hosted) for this project.
+// Returns { id, webUrl, displayName } or null. Caller should pre-fetch the
+// full notebook list to avoid a per-project Graph call when bulk-running.
+function findExistingTeamsNotebook(project, allTeamsNotebooks) {
+  const num = (project.projectNumber || "").trim();
+  const name = (project.name || "").trim();
+  if (!name && !num) return null;
+  const targets = [
+    num && name ? num + " — " + name : null,
+    num && name ? num + " - " + name : null,
+    num && name ? num + " " + name : null,
+    name || null,
+    num || null,
+  ].filter(Boolean).map(s => s.toLowerCase());
+  for (const nb of (allTeamsNotebooks || [])) {
+    const dn = (nb.displayName || "").toLowerCase();
+    if (targets.some(t => dn === t)) {
+      const webUrl = nb.links?.oneNoteWebUrl?.href || nb.links?.oneNoteClientUrl?.href || "";
+      return { id: nb.id, webUrl, displayName: nb.displayName };
+    }
+  }
+  return null;
+}
+
+// Bulk reconcile across an array of projects. Returns:
+//   { linked: [{project, webUrl}], notFound: [project], errored: [{project, error}] }
+async function bulkReconcileFolders(projects, onProgress) {
+  const linked = [], notFound = [], errored = [];
+  let i = 0;
+  for (const p of projects) {
+    i++;
+    onProgress?.(i, projects.length, p);
+    try {
+      const result = await findExistingProjectFolder(p);
+      if (result?.webUrl) {
+        linked.push({ project: p, webUrl: result.webUrl, matchedVariant: result.matchedVariant });
+      } else {
+        notFound.push(p);
+      }
+    } catch (e) {
+      errored.push({ project: p, error: e.message || "unknown" });
+    }
+  }
+  return { linked, notFound, errored };
+}
+
+// Bulk reconcile OneNote notebooks. Fetches the team's notebook list ONCE,
+// then matches each project against it locally — avoids 80 Graph round-trips.
+async function bulkReconcileNotebooks(projects, onProgress) {
+  // Fetch all Teams notebooks in one call
+  let allNotebooks = [];
+  try {
+    const data = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks?$top=200`);
+    allNotebooks = data?.value || [];
+  } catch (e) {
+    return { linked: [], notFound: projects, errored: [{ error: "Notebook list fetch failed: " + e.message }] };
+  }
+
+  const linked = [], notFound = [];
+  let i = 0;
+  for (const p of projects) {
+    i++;
+    onProgress?.(i, projects.length, p);
+    const found = findExistingTeamsNotebook(p, allNotebooks);
+    if (found) {
+      linked.push({ project: p, notebookId: found.id, webUrl: found.webUrl, displayName: found.displayName });
+    } else {
+      notFound.push(p);
+    }
+  }
+  return { linked, notFound, errored: [] };
+}
+
 async function createSharePointFolder(project) {
   const num  = (project.projectNumber || "").trim();
   const name = (project.name || "Unnamed Project").trim();
@@ -1556,18 +1678,32 @@ async function createSharePointFolder(project) {
 
   const { siteId, driveId } = await resolveSpIds();
 
-  // Check if folder already exists
+  // Phase 4: try variant search first — if any variant matches an existing
+  // folder, link to it instead of creating a duplicate. This is the per-project
+  // path of bulk reconcile.
   let existing = null;
   try {
-    existing = await graphFetch("GET",
-      "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName)
-    );
-  } catch(e) { /* 404 = doesn't exist yet */ }
+    const found = await findExistingProjectFolder(project);
+    if (found) {
+      existing = { id: "matched-via-variant", webUrl: found.webUrl };
+    } else {
+      // No variant matched — fall back to the legacy exact-name GET (in case
+      // findExistingProjectFolder skipped this name due to a transient error)
+      existing = await graphFetch("GET",
+        "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName)
+      );
+    }
+  } catch(e) { /* 404 = doesn't exist yet, proceed to create */ }
 
   let folderId, folderUrl;
   if (existing && existing.id) {
-    folderId = existing.id;
     folderUrl = existing.webUrl;
+    if (existing.id === "matched-via-variant") {
+      // Variant match — folder exists with a different name. Just link to it;
+      // don't try to enforce the standard subfolder set on someone else's layout.
+      return folderUrl;
+    }
+    folderId = existing.id;
   } else {
     // Create the project root folder
     const result = await graphFetch("POST",
@@ -1589,20 +1725,30 @@ async function createSharePointFolder(project) {
     "07 \uD83D\uDD27 Plumbing Design",
     "08 \uD83D\uDD25 Fire Protection Design",
   ];
-  const errors = [];
+  // Distinguish 409 "already exists" (fine) from real errors. Previous code
+  // threw whenever ALL 8 errored — including the legitimate "all already
+  // exist" case after re-running on a pre-existing folder. That false-alarm
+  // "✗ Subfolders failed" is now fixed.
+  let createdCount = 0, alreadyExistedCount = 0;
+  const hardErrors = [];
   for (const sub of subfolders) {
     try {
       await graphFetch("POST",
         "/drives/" + driveId + "/items/" + folderId + "/children",
         { name: sub, folder: {} }
       );
+      createdCount++;
     } catch(e) {
-      errors.push(sub + ": " + e.message);
+      const msg = (e.message || "").toLowerCase();
+      if (msg.includes("409") || msg.includes("nameconflict") || msg.includes("already exists")) {
+        alreadyExistedCount++;
+      } else {
+        hardErrors.push(sub + ": " + e.message);
+      }
     }
   }
-  if (errors.length > 0 && errors.length === subfolders.length) {
-    // All subfolders failed — surface the first error so we can diagnose
-    throw new Error("Subfolders failed: " + errors[0]);
+  if (createdCount === 0 && alreadyExistedCount === 0 && hardErrors.length > 0) {
+    throw new Error("Could not create subfolders: " + hardErrors[0]);
   }
 
   return folderUrl;
@@ -16001,6 +16147,164 @@ function SaveBadge({ status, lastSaved, onRetry, errorDetail }) {
   );
 }
 
+// Stub for legacy reference — the original SharePoint ID lookup panel was
+// removed when IDs were hardcoded but the JSX reference remained. Renders
+// nothing rather than crashing the modal.
+function SpIdLookupPanel() { return null; }
+
+// Phase 4: Reconcile orphaned SharePoint folder + OneNote notebook links.
+// For projects with no projectFolderUrl (or no notebook), searches SP/Teams
+// for an existing folder/notebook matching the project name and links it
+// without creating duplicates. Skips projects with no exact-variant match.
+function ReconcilePanel({ projects, onUpdateProject, onEagerSaveProject }) {
+  const [phase, setPhase] = React.useState("idle"); // idle | scanning | done | error
+  const [progress, setProgress] = React.useState({ current: 0, total: 0, label: "" });
+  const [results, setResults] = React.useState(null); // { folder: {linked,notFound,errored}, notebook: {...} }
+  const [errMsg, setErrMsg] = React.useState("");
+
+  const active = (projects || []).filter(p => COALESCE_archived_false(p));
+  const missingFolder = active.filter(p => !(p.projectFolderUrl || "").trim());
+  const missingNotebook = active.filter(p =>
+    !(p.oneNoteNotebookId || "").trim() && !(p.teamsOneNoteNotebookId || "").trim()
+  );
+
+  async function runReconcile() {
+    setPhase("scanning");
+    setErrMsg("");
+    setResults(null);
+    try {
+      // 1. Folder reconcile
+      setProgress({ current: 0, total: missingFolder.length, label: "Scanning SharePoint…" });
+      const folderResult = await bulkReconcileFolders(missingFolder, (i, total, p) => {
+        setProgress({ current: i, total, label: `Folder: ${p.projectNumber || p.name}` });
+      });
+
+      // 2. Notebook reconcile
+      setProgress({ current: 0, total: missingNotebook.length, label: "Scanning Teams notebooks…" });
+      const notebookResult = await bulkReconcileNotebooks(missingNotebook, (i, total, p) => {
+        setProgress({ current: i, total, label: `Notebook: ${p.projectNumber || p.name}` });
+      });
+
+      // 3. Apply found links to projects via eager-save (one-by-one to keep version
+      //    checks honest — bulk-save would race against concurrent edits).
+      setProgress({ current: 0, total: folderResult.linked.length + notebookResult.linked.length, label: "Linking…" });
+      let applied = 0;
+      for (const { project, webUrl } of folderResult.linked) {
+        applied++;
+        setProgress(p => ({ ...p, current: applied, label: `Linking folder: ${project.projectNumber || project.name}` }));
+        try {
+          if (onEagerSaveProject) {
+            await onEagerSaveProject({ ...project, projectFolderUrl: webUrl });
+          } else {
+            onUpdateProject({ ...project, projectFolderUrl: webUrl });
+          }
+        } catch (e) {
+          console.warn("Folder link save failed for", project.id, e);
+        }
+      }
+      for (const { project, notebookId, webUrl } of notebookResult.linked) {
+        applied++;
+        setProgress(p => ({ ...p, current: applied, label: `Linking notebook: ${project.projectNumber || project.name}` }));
+        try {
+          const updated = { ...project, teamsOneNoteNotebookId: notebookId, teamsOneNoteUrl: webUrl };
+          if (onEagerSaveProject) await onEagerSaveProject(updated);
+          else onUpdateProject(updated);
+        } catch (e) {
+          console.warn("Notebook link save failed for", project.id, e);
+        }
+      }
+
+      setResults({ folder: folderResult, notebook: notebookResult });
+      setPhase("done");
+    } catch (e) {
+      console.error("Reconcile failed:", e);
+      setErrMsg(e.message || "unknown error");
+      setPhase("error");
+    }
+  }
+
+  return (
+    <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 10, padding: 18, marginBottom: 16 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>🔧 Reconcile SharePoint & OneNote Links</div>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12, lineHeight: 1.5 }}>
+        Scans SharePoint and Teams for folders/notebooks that match your projects but aren't linked yet.
+        Re-links found items in place — does <strong>not</strong> create new folders or duplicate anything.<br/>
+        <span style={{ color: P.textMuted }}>{missingFolder.length} active project{missingFolder.length === 1 ? "" : "s"} missing SharePoint folder · {missingNotebook.length} missing OneNote notebook</span>
+      </div>
+
+      {phase === "idle" && (missingFolder.length > 0 || missingNotebook.length > 0) && (
+        <Btn onClick={runReconcile}>🔍 Run Reconcile</Btn>
+      )}
+      {phase === "idle" && missingFolder.length === 0 && missingNotebook.length === 0 && (
+        <div style={{ fontSize: 12, color: P.green }}>✓ All active projects are linked.</div>
+      )}
+
+      {phase === "scanning" && (
+        <div>
+          <div style={{ fontSize: 12, color: P.accentLight, marginBottom: 6 }}>
+            ⏳ {progress.label} ({progress.current} / {progress.total})
+          </div>
+          <div style={{ background: P.border, height: 6, borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${(progress.current / Math.max(progress.total, 1)) * 100}%`, background: P.accent, transition: "width 200ms" }} />
+          </div>
+        </div>
+      )}
+
+      {phase === "error" && (
+        <div style={{ fontSize: 12, color: P.red }}>✗ {errMsg}</div>
+      )}
+
+      {phase === "done" && results && (
+        <div style={{ fontSize: 12 }}>
+          <div style={{ marginBottom: 10 }}>
+            <strong style={{ color: P.green }}>Folders linked: {results.folder.linked.length}</strong>
+            {results.folder.notFound.length > 0 && <span style={{ color: P.textMuted }}> · </span>}
+            {results.folder.notFound.length > 0 && <span style={{ color: P.yellow }}>Not found: {results.folder.notFound.length}</span>}
+            {results.folder.errored.length > 0 && <span style={{ color: P.red }}> · Errors: {results.folder.errored.length}</span>}
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <strong style={{ color: P.green }}>Notebooks linked: {results.notebook.linked.length}</strong>
+            {results.notebook.notFound.length > 0 && <span style={{ color: P.textMuted }}> · </span>}
+            {results.notebook.notFound.length > 0 && <span style={{ color: P.yellow }}>Not found: {results.notebook.notFound.length}</span>}
+          </div>
+          {results.folder.notFound.length > 0 && (
+            <details style={{ marginTop: 10 }}>
+              <summary style={{ cursor: "pointer", color: P.yellow }}>📋 {results.folder.notFound.length} folders need manual creation — show list</summary>
+              <div style={{ maxHeight: 200, overflowY: "auto", marginTop: 8, padding: 8, background: P.card, borderRadius: 6 }}>
+                {results.folder.notFound.map(p => (
+                  <div key={p.id} style={{ fontSize: 11, color: P.textMuted, padding: "2px 0" }}>
+                    {p.projectNumber || "(no #)"} — {p.name || "(no name)"}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+          {results.folder.errored.length > 0 && (
+            <details style={{ marginTop: 10 }}>
+              <summary style={{ cursor: "pointer", color: P.red }}>⚠ {results.folder.errored.length} errored — show details</summary>
+              <div style={{ maxHeight: 200, overflowY: "auto", marginTop: 8, padding: 8, background: P.card, borderRadius: 6 }}>
+                {results.folder.errored.map((e, i) => (
+                  <div key={i} style={{ fontSize: 11, color: P.red, padding: "2px 0" }}>
+                    {e.project.projectNumber || e.project.name}: {e.error}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+          <div style={{ marginTop: 12 }}>
+            <Btn variant="ghost" onClick={() => { setPhase("idle"); setResults(null); }}>Run again</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Helper used by ReconcilePanel — kept top-level so SpIdLookupPanel etc. can use it too.
+function COALESCE_archived_false(p) {
+  return p && p.archived !== true;
+}
+
 function App() {
   const [projects, setProjects] = useState([]);
   const [termContracts, setTermContracts] = useState([]);
@@ -16758,6 +17062,9 @@ async function updateProjectAndFlush(updated) {
             </div>
             <Btn onClick={exportBackup}>⬇ Download Backup</Btn>
           </div>
+
+          {/* Phase 4: Reconcile SharePoint folder + OneNote notebook links */}
+          <ReconcilePanel projects={projects} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} />
 
           {/* Import / Restore */}
           <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 10, padding: 18 }}>
