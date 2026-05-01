@@ -416,10 +416,34 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
     app.setActiveAccount(accounts[0]);
   }
 
-  const account = app.getActiveAccount() || accounts[0];
+  let account = app.getActiveAccount() || accounts[0];
 
+  // Step 0 — No cached account at all. Trigger interactive sign-in via popup.
+  // Common when: MSAL session expired completely, browser cleared cookies/storage,
+  // or this is a brand-new device. Previously the app threw a misleading
+  // "Click Connect Microsoft" error referencing a button that doesn't exist.
   if (!account) {
-    throw new Error('Not signed in to Microsoft. Click "Connect Microsoft" before using Graph features.');
+    try {
+      const r = await app.loginPopup({ scopes });
+      if (r.account) {
+        app.setActiveAccount(r.account);
+        account = r.account;
+      }
+      // loginPopup returns the access token directly — return it without
+      // doing another silent acquisition (which would just be a cache hit).
+      if (r.accessToken) return r.accessToken;
+    } catch (loginErr) {
+      const msg = (loginErr?.message || "").toLowerCase();
+      if (msg.includes("popup_window_error") || msg.includes("popup window") || msg.includes("blocked")) {
+        throw new Error("Microsoft sign-in popup was blocked. Allow popups for this site (browser address bar 🚫 icon), then retry. The app cannot sign you in without popups enabled.");
+      }
+      if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
+        throw new Error("Sign-in cancelled. Click the action again to retry.");
+      }
+      throw new Error("Microsoft sign-in failed: " + (loginErr?.message || "unknown") + ". Refresh the page and try again.");
+    }
+    // Fall through to the silent path below in the unlikely case loginPopup
+    // succeeded but didn't return a token directly.
   }
 
   // Step 1 — Try silent acquisition (uses cached token or hidden iframe refresh)
