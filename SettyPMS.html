@@ -246,6 +246,37 @@ function projectOverallPct(project) {
   return totalFee > 0 ? Math.round(earned / totalFee * 100) : 0;
 }
 
+// ─── PROJECT NUMBER NORMALIZATION ─────────────────────────────────────────────
+// Called on blur of the projectNumber input. Returns the cleaned value to write
+// back to project state. Existing data with trailing/leading whitespace will be
+// fixed lazily as users edit those projects (see also: PHASE_6 plan for a
+// one-time migration if you want to clean all existing rows in one shot).
+//
+// TODO — author this function based on Setty's project-numbering conventions.
+// Consider:
+//   • Trim leading/trailing whitespace (the obvious case)
+//   • Internal whitespace: collapse "ABC  123" → "ABC 123" (collapse repeats)
+//                         or leave alone if your team uses double-space deliberately
+//   • Tab/newline characters from copy-paste from Word/PDF (treat as whitespace)
+//   • Case normalization: "sapx246008.00" → "SAPX246008.00" if your numbers are
+//                         always uppercase. Or leave as-is to avoid fighting users.
+//   • Strip surrounding quotes if user pasted something like '"SAPX246..."'
+//
+// Keep it pure — no side effects, just input → output.
+function normalizeProjectNumber(input) {
+  if (typeof input !== "string") return input;
+  // Setty rule: project numbers NEVER contain whitespace. Strip ALL whitespace.
+  return input.replace(/\s+/g, "").replace(/^["'`]+|["'`]+$/g, "");
+}
+// Removed legacy placeholder function — original normalizeProjectNumber above is the live one.
+function _normalizeProjectNumber_legacy_unused_REMOVED(input) {
+  // (Original placeholder kept harmless to avoid syntax breakage.)
+  //   return input.replace(/[\s ]+/g, " ").trim();
+  // (collapses any whitespace runs to single space, then trims ends.
+  //    is the non-breaking space sometimes pasted from Word/PDF.)
+  return input;  // placeholder — replace with your implementation
+}
+
 // ─── DEFAULT PROJECT TEMPLATE ─────────────────────────────────────────────────
 
 function newProject(overrides = {}) {
@@ -888,6 +919,16 @@ async function loadStateV2() {
 
 async function saveProjectV2(project, expectedVersion) {
   if (!project?.id) throw new Error("saveProjectV2: project.id required");
+  // Save-time backstop: normalize projectNumber even if onBlur didn't fire
+  // (e.g., user pasted with whitespace and closed the tab before tabbing away).
+  // The onBlur handler in the input is the primary cleanup; this is the last
+  // line of defense before data hits the cloud.
+  if (project.projectNumber && typeof normalizeProjectNumber === "function") {
+    const cleaned = normalizeProjectNumber(project.projectNumber);
+    if (cleaned !== project.projectNumber) {
+      project = { ...project, projectNumber: cleaned };
+    }
+  }
   const path = "/rest/v1/pms_projects?id=eq." + encodeURIComponent(project.id) +
                "&version=eq." + (expectedVersion ?? 1);
   const result = await sbFetchV2("PATCH", path, {
@@ -11212,7 +11253,15 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
       <Card>
         {tab === "Overview" && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <Field label="Project Number"><input value={project.projectNumber || ""} onChange={e => updateField("projectNumber", e.target.value)} style={{ width: "100%" }} /></Field>
+            <Field label="Project Number"><input value={project.projectNumber || ""}
+              onChange={e => updateField("projectNumber", e.target.value)}
+              onBlur={e => {
+                // Trim on blur (not onChange) so the user can type spaces freely
+                // mid-edit; cleanup happens when they leave the field.
+                const cleaned = normalizeProjectNumber(e.target.value);
+                if (cleaned !== e.target.value) updateField("projectNumber", cleaned);
+              }}
+              style={{ width: "100%" }} /></Field>
             <Field label="Prime">
               <CompanyTypeahead
                 value={project.prime || ""}
