@@ -15,7 +15,67 @@
   // Visible version stamp — shown in the page footer + queryable from console
   // as window.__appVersion. Update this string on every deploy. Lets users
   // self-diagnose "am I on the new code?" without F12 console gymnastics.
-  window.__appVersion = "2026-05-03-fieldphotos-v2";
+  window.__appVersion = "2026-05-03-fieldphotos-v3";
+
+  // ── Auto-update check ──────────────────────────────────────────────────
+  // Critical for iOS "Add to Home Screen" web clips, which cache the HTML
+  // separately from regular Safari and largely ignore Cache-Control headers
+  // on launch. Without this check, iOS users keep running stale code for
+  // days after a deploy with no signal that anything's wrong.
+  //
+  // How it works: fetch the page's own URL with a cache-busting query
+  // string (which iOS DOES revalidate, even from a Web Clip), parse the
+  // version stamp out of the fetched HTML, compare to what's running. If
+  // different, show a banner prompting to reload.
+  async function _checkForUpdate() {
+    try {
+      const url = location.pathname + "?_v=" + Date.now();
+      const res = await fetch(url, { cache: "no-store", headers: { "Cache-Control": "no-cache" } });
+      if (!res.ok) return;
+      const text = await res.text();
+      const match = text.match(/window\.__appVersion\s*=\s*["']([^"']+)["']/);
+      const remote = match ? match[1] : null;
+      if (remote && remote !== window.__appVersion) {
+        console.warn("[updater] stale version — running:", window.__appVersion, "→ available:", remote);
+        _showUpdateBanner(remote);
+      }
+    } catch (e) {
+      // Silent fail — version check is opportunistic, not required
+      console.warn("[updater] check failed:", e.message);
+    }
+  }
+
+  function _showUpdateBanner(remoteVersion) {
+    if (document.getElementById("__updateBanner")) return; // already shown
+    const banner = document.createElement("div");
+    banner.id = "__updateBanner";
+    banner.style.cssText =
+      "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+      "background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;" +
+      "padding:10px 16px;font-family:'Segoe UI',Arial,sans-serif;" +
+      "font-size:13px;font-weight:600;display:flex;justify-content:space-between;" +
+      "align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+    banner.innerHTML =
+      '<span>🔄 New version available (' + remoteVersion + '). Reload to update.</span>' +
+      '<button id="__updateBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;' +
+      'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Reload now</button>';
+    document.body.appendChild(banner);
+    document.getElementById("__updateBtn").onclick = () => {
+      // location.reload(true) is technically deprecated but most browsers still
+      // honor it as a hard refresh. Combine with a cache-busting query string
+      // for iOS Web Clip safety.
+      const sep = location.search ? "&" : "?";
+      location.href = location.pathname + location.search + sep + "_reloaded=" + Date.now() + location.hash;
+    };
+  }
+
+  // Fire the check after the page settles (don't block initial render).
+  // Also re-check every 10 minutes while the app is foregrounded — catches
+  // mid-session deploys without forcing an unnecessary fetch on every action.
+  window.addEventListener("load", () => {
+    setTimeout(_checkForUpdate, 3000);
+    setInterval(_checkForUpdate, 10 * 60 * 1000);
+  });
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>

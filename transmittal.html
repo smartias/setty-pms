@@ -8,7 +8,48 @@
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
-  <script>window.__appVersion = "2026-05-03-transmittal-v2";</script>
+  <script>
+    window.__appVersion = "2026-05-03-transmittal-v3";
+
+    // Auto-update check (same pattern as SettyFieldPhotos.html)
+    async function _checkForUpdate() {
+      try {
+        const res = await fetch(location.pathname + "?_v=" + Date.now(),
+          { cache: "no-store", headers: { "Cache-Control": "no-cache" } });
+        if (!res.ok) return;
+        const text = await res.text();
+        const match = text.match(/window\.__appVersion\s*=\s*["']([^"']+)["']/);
+        const remote = match ? match[1] : null;
+        if (remote && remote !== window.__appVersion) {
+          console.warn("[updater] stale version — running:", window.__appVersion, "→ available:", remote);
+          _showUpdateBanner(remote);
+        }
+      } catch (e) { console.warn("[updater] check failed:", e.message); }
+    }
+    function _showUpdateBanner(remoteVersion) {
+      if (document.getElementById("__updateBanner")) return;
+      const banner = document.createElement("div");
+      banner.id = "__updateBanner";
+      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+        "background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;" +
+        "padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;" +
+        "display:flex;justify-content:space-between;align-items:center;gap:12px;" +
+        "box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+      banner.innerHTML =
+        '<span>🔄 New version available (' + remoteVersion + '). Reload to update.</span>' +
+        '<button id="__updateBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;' +
+        'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Reload now</button>';
+      document.body.appendChild(banner);
+      document.getElementById("__updateBtn").onclick = () => {
+        const sep = location.search ? "&" : "?";
+        location.href = location.pathname + location.search + sep + "_reloaded=" + Date.now() + location.hash;
+      };
+    }
+    window.addEventListener("load", () => {
+      setTimeout(_checkForUpdate, 3000);
+      setInterval(_checkForUpdate, 10 * 60 * 1000);
+    });
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js"></script>
   <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
