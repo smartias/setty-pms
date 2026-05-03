@@ -3,7 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Cache-bust: tell the browser to always revalidate this HTML on each visit
+     so a freshly-deployed file shows up immediately, not after the next cache
+     expiry. Without this, users would run stale code for hours/days after
+     a deploy until their cache happened to evict the file. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>SETTY Field Photos</title>
+<script>
+  // Visible version stamp — shown in the page footer + queryable from console
+  // as window.__appVersion. Update this string on every deploy. Lets users
+  // self-diagnose "am I on the new code?" without F12 console gymnastics.
+  window.__appVersion = "2026-05-03-fieldphotos-v2";
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
@@ -209,8 +222,16 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
     <div class="hdr-divider"></div>
     <div class="hdr-title">Field Photos</div>
     <span class="hdr-user" id="hdrUser"></span>
+    <span id="appVersion" style="font-size:10px;color:rgba(255,255,255,0.4);margin-right:8px;font-family:monospace" title="App version — useful for diagnostics. Mismatched between team members = someone has stale code."></span>
     <button class="btn-danger" onclick="signOut()">Sign Out</button>
   </header>
+  <script>
+    // Populate version stamp once DOM is ready
+    document.addEventListener("DOMContentLoaded", () => {
+      const el = document.getElementById("appVersion");
+      if (el) el.textContent = "v" + (window.__appVersion || "unknown");
+    });
+  </script>
 
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('upload',this)">&#8593; Upload</button>
@@ -571,12 +592,27 @@ function selectProject(p) {
   document.getElementById('projSearch').value = p.name;
   const card = document.getElementById('selectedProjectCard');
   card.classList.remove('hidden');
+  // PMS deep-link to the project's Overview tab — uses project ID (the internal
+  // uid) rather than project number because IDs are immutable and whitespace-safe.
+  // When the SP folder is missing, surface this link inline so the user can
+  // click straight to the right place in PMS instead of context-switching.
+  const pmsLink = `https://smartias.github.io/setty-pms/SettyPMS.html#project:${encodeURIComponent(p.id)}`;
+  const folderStatus = p.projectFolderUrl
+    ? `<small style="color:var(--dim);margin-top:2px;">&#128193; SharePoint folder linked</small>`
+    : `<small style="color:var(--red);margin-top:2px;display:block;line-height:1.5;">
+         &#9888; No SharePoint folder set up.
+         <a href="${pmsLink}" target="_blank" rel="noopener noreferrer"
+            style="color:var(--blue);text-decoration:underline;font-weight:600;">
+           Open in PMS &rarr; Overview tab
+         </a>
+         to create one, then re-pick this project here.
+       </small>`;
   card.innerHTML = `
     <div class="selected-project">
       <div class="proj-info">
         <strong>${p.name}</strong>
         <small>${p.projectNumber || ''} &bull; ${p.projectAddress || ''}</small>
-        ${p.projectFolderUrl ? `<small style="color:var(--dim);margin-top:2px;">&#128193; SharePoint folder linked</small>` : `<small style="color:var(--red);">&#9888; No SharePoint folder set up</small>`}
+        ${folderStatus}
       </div>
       <button class="btn-ghost" onclick="clearProject()" style="white-space:nowrap;">Change</button>
     </div>`;
@@ -910,7 +946,14 @@ async function putWithRetry(driveId, token, path, body, contentType) {
 // ---- Upload ----
 async function startUpload() {
   if (!selectedProject) { toast('Please select a project first.', 'error'); return; }
-  if (!selectedProject.projectFolderUrl) { toast('This project has no SharePoint folder set up yet.', 'error'); return; }
+  if (!selectedProject.projectFolderUrl) {
+    // Toast supports plain text only — also log a clickable link to the console
+    // so the user can copy the URL if they want.
+    const pmsLink = `https://smartias.github.io/setty-pms/SettyPMS.html#project:${encodeURIComponent(selectedProject.id)}`;
+    toast('This project has no SharePoint folder. Open it in PMS Overview tab to create one. (Link in console — F12)', 'error');
+    console.info('Open project in PMS to add SharePoint folder:', pmsLink);
+    return;
+  }
   if (!pendingFiles.filter(f => f.status === 'pending').length) { toast('No photos to upload.', 'error'); return; }
   const phase = document.getElementById('fPhase').value;
   const date = document.getElementById('fDate').value;
