@@ -11155,6 +11155,26 @@ function PhotosView({ project }) {
 // for: investigating the history of a specific topic on a project.
 const TABS = ["Overview", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos"];
 
+// Tab groupings — top-level "sections" the user navigates by, with the existing
+// tabs as their sub-pages. Order reflects the natural project workflow.
+// Adding/removing a sub-tab here does NOT change the rendering of that tab's
+// content (still driven by the `tab === "..."` conditionals below); it only
+// changes which section the tab nests under.
+const TAB_GROUPS = [
+  { name: "Overview",                    tabs: ["Overview"] },
+  { name: "Project Record",              tabs: ["Investigation", "Notes", "Emails"] },
+  { name: "Scope",                       tabs: ["Scope"] },
+  { name: "Fee",                         tabs: ["Fee Calculator", "Change Orders"] },
+  { name: "Team",                        tabs: ["Team"] },
+  { name: "Schedule",                    tabs: ["Schedule", "Gantt"] },
+  { name: "Contract",                    tabs: ["Contract"] },
+  { name: "Construction Administration", tabs: ["RFIs", "Submittals"] },
+  { name: "Subconsultants",              tabs: ["Subconsultants"] },
+  { name: "Financials",                  tabs: ["Financials", "Reimbursables", "Projections"] },
+  { name: "Photos",                      tabs: ["Photos"] },
+];
+const PIPELINE_HIDDEN_TABS = ["Change Orders", "RFIs", "Submittals", "Gantt"];
+
 function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState(project.proposalCalendarEventId ? "synced" : "idle"); // idle | syncing | synced | error
@@ -11279,23 +11299,57 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           sub={`Open: ${fmt(totalFee - totalInvoiced)}`} />
       </div>
 
-	      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: `1px solid ${P.border}` }}>
-	        {TABS.filter(t => !isPipeline(project) || !["Change Orders","RFIs","Submittals","Gantt"].includes(t)).map(t => {
-	          const isFeeTab = t === "Fee Calculator";
-	          const isLocked = isFeeTab && project.feeScheduleFinalized;
-          const isNotesTab = t === "Notes";
-	          return (
-	            <button key={t} onClick={() => setTab(t)}
-	              style={{ padding: "8px 16px", background: "none", border: "none", color: tab === t ? P.accentLight : P.textMuted, borderBottom: tab === t ? `2px solid ${P.accentLight}` : "2px solid transparent", fontWeight: tab === t ? 600 : 400, fontSize: 13, cursor: "pointer", marginBottom: -1, display: "flex", alignItems: "center", gap: 5 }}>
-	              {t}
-              {isNotesTab && openNoteActions > 0 && (
-                <span title={`${openNoteActions} open action item${openNoteActions !== 1 ? "s" : ""}`} style={{ fontSize: 11 }}>🚩</span>
-              )}
-              {isLocked && <span style={{ fontSize: 11 }}>🔒</span>}
-	            </button>
-	          );
-	        })}
-	      </div>
+	      {(() => {
+	        // Build the visible groups for this project: pipeline projects hide certain
+	        // sub-tabs entirely, and any group whose tabs are all hidden gets dropped.
+	        const projIsPipeline = isPipeline(project);
+	        const visibleGroups = TAB_GROUPS
+	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => !projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) }))
+	          .filter(g => g.visibleTabs.length > 0);
+	        // Highlighted section follows the active tab — single source of truth is `tab`,
+	        // so the section never falls out of sync.
+	        const currentGroup = visibleGroups.find(g => g.visibleTabs.includes(tab))
+	                          || visibleGroups.find(g => g.tabs.includes(tab))
+	                          || visibleGroups[0];
+	        const hasSubTabs = currentGroup && currentGroup.visibleTabs.length > 1;
+	        return (
+	          <>
+	            {/* Section row — top-level groups */}
+	            <div style={{ display: "flex", gap: 2, marginBottom: hasSubTabs ? 0 : 20, borderBottom: `1px solid ${P.border}`, flexWrap: "wrap" }}>
+	              {visibleGroups.map(g => {
+	                const isActive = currentGroup && currentGroup.name === g.name;
+	                return (
+	                  <button key={g.name} onClick={() => setTab(g.visibleTabs[0])}
+	                    style={{ padding: "8px 16px", background: "none", border: "none", color: isActive ? P.accentLight : P.textMuted, borderBottom: isActive ? `2px solid ${P.accentLight}` : "2px solid transparent", fontWeight: isActive ? 600 : 400, fontSize: 13, cursor: "pointer", marginBottom: -1, whiteSpace: "nowrap" }}>
+	                    {g.name}
+	                  </button>
+	                );
+	              })}
+	            </div>
+	            {/* Sub-tab row — only when the active section has more than one tab */}
+	            {hasSubTabs && (
+	              <div style={{ display: "flex", gap: 2, marginBottom: 20, paddingLeft: 8, paddingTop: 6 }}>
+	                {currentGroup.visibleTabs.map(t => {
+	                  const isFeeTab = t === "Fee Calculator";
+	                  const isLocked = isFeeTab && project.feeScheduleFinalized;
+	                  const isNotesTab = t === "Notes";
+	                  const isActive = tab === t;
+	                  return (
+	                    <button key={t} onClick={() => setTab(t)}
+	                      style={{ padding: "4px 12px", background: isActive ? P.accentLight + "22" : "transparent", border: `1px solid ${isActive ? P.accentLight : P.border}`, borderRadius: 4, color: isActive ? P.accentLight : P.textMuted, fontWeight: isActive ? 600 : 400, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+	                      {t}
+	                      {isNotesTab && openNoteActions > 0 && (
+	                        <span title={`${openNoteActions} open action item${openNoteActions !== 1 ? "s" : ""}`} style={{ fontSize: 11 }}>🚩</span>
+	                      )}
+	                      {isLocked && <span style={{ fontSize: 11 }}>🔒</span>}
+	                    </button>
+	                  );
+	                })}
+	              </div>
+	            )}
+	          </>
+	        );
+	      })()}
 
       <Card>
         {tab === "Overview" && (
