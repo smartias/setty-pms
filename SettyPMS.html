@@ -258,6 +258,24 @@ function buildSchedule(startDate, phases) {
   });
 }
 
+// Apply a new startDate to a project: rebuild phase dates and re-date billable
+// milestones to match. pctComplete, fee, name, notes, and non-billable
+// milestones are preserved. Used by both the silent Pipeline→Awarded bump and
+// the explicit Schedule-tab override.
+function projectWithRebuiltSchedule(project, newStartDate) {
+  const newPhases = buildSchedule(newStartDate, project.phases || []);
+  const phaseDatesByCode = Object.fromEntries(
+    newPhases.filter(p => p.billable && p.startDate).map(p => [p.code, { startDate: p.startDate, dueDate: p.endDate }])
+  );
+  const newMilestones = (project.milestones || []).map(m => {
+    if (m.type !== "billable" || !m.phase) return m;
+    const dates = phaseDatesByCode[m.phase];
+    if (!dates) return m;
+    return { ...m, startDate: dates.startDate, dueDate: dates.dueDate };
+  });
+  return { ...project, startDate: newStartDate, phases: newPhases, milestones: newMilestones };
+}
+
 // Milestone status auto-derived from pctComplete
 function milestoneStatus(pct) {
   if (!pct || pct === 0) return "Not Started";
@@ -3743,6 +3761,8 @@ function ScheduleView({ project, onChange, onEagerSave }) {
   const [invoicePrompt, setInvoicePrompt] = useState(null); // {milestone, newPct, invoiceAmount}
   const [cancelPrompt, setCancelPrompt] = useState(null); // milestone to cancel
   const [expandedLinks, setExpandedLinks] = useState(null); // milestone id with links panel open
+  const [showStartOverride, setShowStartOverride] = useState(false);
+  const [overrideDateInput, setOverrideDateInput] = useState(project.startDate || "");
 
   // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
@@ -4059,6 +4079,46 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 14 }}>
         Phase % complete is automatically calculated from its associated Milestone below. Update the milestone % to track progress.
       </div>
+
+      {/* Start date row + override entry point. Edits to startDate happen here
+          (not in the Fee tab) once a project is awarded — this panel is the
+          warning gate so users don't accidentally rebuild a live schedule. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: showStartOverride ? 10 : 18 }}>
+        <div style={{ fontSize: 12, color: P.textDim }}>
+          Project start date: <strong style={{ color: P.text }}>{project.startDate ? fmtDate(project.startDate) : "(not set)"}</strong>
+        </div>
+        {!showStartOverride && (
+          <button onClick={() => { setOverrideDateInput(project.startDate || new Date().toISOString().slice(0, 10)); setShowStartOverride(true); }}
+            style={{ padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer", background: "transparent", border: `1px solid ${P.border}`, color: P.textMuted }}>
+            🗓️ Override Start Date
+          </button>
+        )}
+      </div>
+
+      {showStartOverride && (
+        <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: 14, marginBottom: 18 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: P.yellow, marginBottom: 6 }}>⚠ Override Project Start Date</div>
+          <div style={{ fontSize: 12, color: P.text, marginBottom: 10, lineHeight: 1.5 }}>
+            Changing the start date <strong>rebuilds the entire schedule</strong> — every billable phase and milestone due date will be recomputed from the new start. % Complete on each milestone is preserved.
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <input type="date" value={overrideDateInput} onChange={e => setOverrideDateInput(e.target.value)} style={{ padding: "4px 8px" }} />
+            <button onClick={() => {
+                if (!overrideDateInput) return;
+                onChange(projectWithRebuiltSchedule(project, overrideDateInput));
+                setShowStartOverride(false);
+              }}
+              disabled={!overrideDateInput}
+              style={{ padding: "5px 14px", borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: overrideDateInput ? "pointer" : "not-allowed", background: P.accent, color: "#fff", border: "none", opacity: overrideDateInput ? 1 : 0.5 }}>
+              Apply &amp; Rebuild Schedule
+            </button>
+            <button onClick={() => setShowStartOverride(false)}
+              style={{ padding: "5px 14px", borderRadius: 4, fontSize: 12, cursor: "pointer", background: "transparent", color: P.textMuted, border: `1px solid ${P.border}` }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       <table style={{ marginBottom: 28 }}>
         <thead>
           <tr>
@@ -11161,13 +11221,11 @@ const TABS = ["Overview", "Investigation", "Scope", "Fee Calculator", "Team", "S
 // content (still driven by the `tab === "..."` conditionals below); it only
 // changes which section the tab nests under.
 const TAB_GROUPS = [
-  { name: "Overview",                    tabs: ["Overview"] },
+  { name: "Overview",                    tabs: ["Overview", "Scope", "Contract"] },
   { name: "Project Record",              tabs: ["Investigation", "Notes", "Emails"] },
-  { name: "Scope",                       tabs: ["Scope"] },
   { name: "Fee",                         tabs: ["Fee Calculator", "Change Orders"] },
   { name: "Team",                        tabs: ["Team"] },
   { name: "Schedule",                    tabs: ["Schedule", "Gantt"] },
-  { name: "Contract",                    tabs: ["Contract"] },
   { name: "Construction Administration", tabs: ["RFIs", "Submittals"] },
   { name: "Subconsultants",              tabs: ["Subconsultants"] },
   { name: "Financials",                  tabs: ["Financials", "Reimbursables", "Projections"] },
@@ -11184,6 +11242,23 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
+  }
+
+  // Status change with the Pipeline→Awarded auto-bump:
+  // when crossing into an awarded state with a startDate that's now in the past,
+  // silently set startDate to today and rebuild the schedule. The pipeline-phase
+  // date was a proposal estimate; the project actually starts when awarded.
+  function handleStatusChange(newStatus) {
+    const wasPipeline = isPipeline(project);
+    const willBeAwarded = AWARDED_STATUSES.includes(newStatus);
+    let next = { ...project, status: newStatus };
+    if (wasPipeline && willBeAwarded) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (!project.startDate || project.startDate < today) {
+        next = projectWithRebuiltSchedule(next, today);
+      }
+    }
+    onUpdate(next);
   }
 
   async function syncProposalDueDate() {
@@ -11271,7 +11346,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
             🔗 Copy Link
           </button>
-          <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ fontSize: 13 }}>
+          <select value={project.status} onChange={e => handleStatusChange(e.target.value)} style={{ fontSize: 13 }}>
             {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
           </select>
           <Btn small variant={project.archived ? "success" : "ghost"} onClick={() => {
