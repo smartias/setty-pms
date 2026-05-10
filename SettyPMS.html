@@ -7232,6 +7232,37 @@ function ContractView({ project, onChange, contractExpSyncState, contractExpSync
           onUpdateClient={onUpdateClient}
         />
       </Field>
+      <SectionTitle>Hourly Rate Schedule (Contracted)</SectionTitle>
+      {(project.contractRateSchedule && project.contractRateSchedule.length) ? (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
+            Snapshot taken when this project moved to an awarded status{project.contractRateScheduleLockedAt ? " on " + fmtDate(project.contractRateScheduleLockedAt) : ""}. Read-only by design — represents the rates contracted at award time, regardless of any later changes to the firm-standard schedule.
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: `1.5px solid ${P.border}` }}>
+                <th style={{ textAlign: "left", padding: "6px 10px", fontSize: 11, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Role</th>
+                <th style={{ textAlign: "right", padding: "6px 10px", fontSize: 11, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Rate ($/hr)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {project.contractRateSchedule.map((r, i) => (
+                <tr key={i} style={{ borderBottom: `1px solid ${P.border}` }}>
+                  <td style={{ padding: "7px 10px", color: P.text }}>{r.role || "—"}</td>
+                  <td style={{ padding: "7px 10px", textAlign: "right", color: P.accentLight, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                    ${Number(r.rate || 0).toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 24, padding: "14px 16px", background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 6, fontSize: 12, color: P.text, lineHeight: 1.5 }}>
+          The hourly rate schedule will be locked here automatically when this project transitions from a pipeline status to an awarded status. Edit rates per project on the <strong>Scope of Services</strong> tab while still in pipeline.
+        </div>
+      )}
+
       <SectionTitle>Contract Notes / History</SectionTitle>
       <Field label="">
         <textarea value={project.contractNotes || ""} onChange={e => setField("contractNotes", e.target.value)}
@@ -11311,6 +11342,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   // when crossing into an awarded state with a startDate that's now in the past,
   // silently set startDate to today and rebuild the schedule. The pipeline-phase
   // date was a proposal estimate; the project actually starts when awarded.
+  // Also snapshots the hourly rate schedule into contractRateSchedule so the
+  // Contract tab has a read-only record of what was contracted.
   function handleStatusChange(newStatus) {
     const wasPipeline = isPipeline(project);
     const willBeAwarded = AWARDED_STATUSES.includes(newStatus);
@@ -11319,6 +11352,17 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
       const today = new Date().toISOString().slice(0, 10);
       if (!project.startDate || project.startDate < today) {
         next = projectWithRebuiltSchedule(next, today);
+      }
+      // Lock-in the rate schedule at award time. Only set if not already
+      // snapshotted (defensive: if the project somehow re-flips Pipeline →
+      // Awarded, we don't want to overwrite the original contracted rates).
+      if (!next.contractRateSchedule || !next.contractRateSchedule.length) {
+        const sourceRates = (next.hourlyRates && next.hourlyRates.length) ? next.hourlyRates : HOURLY_RATES_DEFAULT;
+        next = {
+          ...next,
+          contractRateSchedule: sourceRates.map(r => ({ ...r })),
+          contractRateScheduleLockedAt: today,
+        };
       }
     }
     onUpdate(next);
@@ -14587,15 +14631,18 @@ function printTermsAndConditions(project) {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
     @page :first { margin-top: 0.5in; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10pt; color: #1a1a1a; background: #fff; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
     .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
     .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
     .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
     .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
-    /* Body — clean, simple typography. No fancy formatting per spec. */
-    .terms-body h1 { font-size: 14pt; font-weight: 700; color: #1F3864; margin: 0 0 14px; letter-spacing: 0.5px; }
-    .terms-body h2 { font-size: 11pt; font-weight: 700; color: #1F3864; margin: 18px 0 6px; }
-    .terms-body p { margin: 0 0 8px; line-height: 1.6; }
+    /* Body — matches SOW h1/h2/p sizes so the two documents read as siblings. */
+    .terms-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
+    .terms-body h1:first-child { margin-top: 0; }
+    .terms-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
+    .terms-body p { margin-bottom: 9px; line-height: 1.65; }
+    /* Strip rogue inline styles from project-specific edits so legacy paste
+       artifacts don't break the look. */
     .terms-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
     .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
@@ -14696,8 +14743,6 @@ function printHourlyRates(project) {
     .rates-table td { padding: 10px 12px; border-bottom: 1px solid #E7E6E6; vertical-align: top; }
     .rates-table td.role { font-weight: 500; color: #1a1a1a; width: 32%; }
     .rates-table td.rate { font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; width: 18%; text-align: right; padding-right: 24px; }
-    .footer-note { margin-top: 28px; padding: 12px 16px; background: #f8f9fb; border-left: 3px solid #2F5496; border-radius: 0 4px 4px 0; font-size: 9.5pt; line-height: 1.7; color: #44546A; }
-    .footer-note strong { color: #1F3864; font-weight: 700; }
     .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
     @media print {
@@ -14734,11 +14779,6 @@ function printHourlyRates(project) {
       <tbody>${rateRows.join("")}</tbody>
     </table>
 
-    <div class="footer-note">
-      <strong>Notes</strong><br>
-      Rates listed are effective as of the proposal date and apply to all hourly-billed services, Additional Services, and out-of-scope work performed under this Agreement. Reimbursable expenses are billed separately at 1.0 times direct cost in accordance with the Standard Terms and Conditions.
-    </div>
-
     <div class="doc-footer">
       <span>SETTY &amp; Associates, Ltd, PC &middot; Attachment B &middot; Schedule of Hourly Rates</span>
       <span>${project.name || ""} &middot; ${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
@@ -14760,18 +14800,24 @@ function ScopeView({ project, onChange }) {
   const [showRates, setShowRates] = React.useState(false);
 
   // Hourly rates — defaults to firm-standard, persists per-project edits.
+  // All edit paths gate on scopeLocked so the rate schedule locks alongside
+  // the scope and terms when the proposal is finalized.
   const rates = (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT;
   function updateRate(idx, field, val) {
+    if (scopeLocked) return;
     const next = rates.map((r, i) => i === idx ? { ...r, [field]: field === "rate" ? Number(val) || 0 : val } : r);
     onChange({ ...project, hourlyRates: next });
   }
   function addRate() {
+    if (scopeLocked) return;
     onChange({ ...project, hourlyRates: [...rates, { role: "", rate: 0 }] });
   }
   function removeRate(idx) {
+    if (scopeLocked) return;
     onChange({ ...project, hourlyRates: rates.filter((_, i) => i !== idx) });
   }
   function resetRatesToDefault() {
+    if (scopeLocked) return;
     if (!window.confirm("Reset hourly rates to the firm-standard defaults?\n\nAny project-specific rate edits will be discarded.")) return;
     onChange({ ...project, hourlyRates: HOURLY_RATES_DEFAULT.map(r => ({ ...r })) });
   }
@@ -14803,15 +14849,18 @@ function ScopeView({ project, onChange }) {
     }
   }, [showTerms]);
   function saveTerms() {
+    if (scopeLocked) return;
     const html = termsEditorRef.current ? termsEditorRef.current.innerHTML : "";
     onChange({ ...project, termsContent: html });
   }
   function resetTermsToDefault() {
+    if (scopeLocked) return;
     if (!window.confirm("Reset Terms & Conditions to the firm-wide default?\n\nAny project-specific edits will be discarded.")) return;
     if (termsEditorRef.current) termsEditorRef.current.innerHTML = TERMS_DEFAULT_HTML;
     onChange({ ...project, termsContent: TERMS_DEFAULT_HTML });
   }
   function handleTermsPaste(e) {
+    if (scopeLocked) return;
     e.preventDefault();
     const html = e.clipboardData?.getData("text/html") || "";
     const text = e.clipboardData?.getData("text/plain") || "";
@@ -15110,7 +15159,7 @@ function ScopeView({ project, onChange }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            {showTerms && <Btn variant="ghost" small onClick={resetTermsToDefault}>↻ Reset to Default</Btn>}
+            {showTerms && <Btn variant="ghost" small onClick={resetTermsToDefault} disabled={scopeLocked}>↻ Reset to Default</Btn>}
             <Btn onClick={() => printTermsAndConditions(project)}>🖨 Print Terms</Btn>
           </div>
         </div>
@@ -15118,14 +15167,19 @@ function ScopeView({ project, onChange }) {
         {showTerms && (
           <>
             <style>{`
-              .terms-editor h1 { font-size: 15px; font-weight: 700; color: #1F3864; margin: 14px 0 8px; letter-spacing: 0.3px; }
-              .terms-editor h2 { font-size: 13px; font-weight: 700; color: #1F3864; margin: 14px 0 4px; }
-              .terms-editor p  { font-size: 12.5px; line-height: 1.55; margin: 0 0 7px; color: ${P.text}; }
+              /* Match the scope editor's typography (Calibri, pt-based) so the
+                 on-screen size mirrors how it prints. p has no color rule —
+                 inherits #1a1a1a from the editor div, which keeps text readable
+                 instead of picking up the dark-theme inherited color. */
+              .terms-editor { font-family: 'Calibri', 'Trebuchet MS', sans-serif; font-size: 10pt; line-height: 1.65; }
+              .terms-editor p  { font-family: inherit; font-size: 10pt; line-height: 1.65; margin: 0 0 9px; }
+              .terms-editor h1 { font-family: inherit; font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
+              .terms-editor h2 { font-family: inherit; font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
             `}</style>
             <div
               ref={termsEditorRef}
               className="terms-editor"
-              contentEditable={true}
+              contentEditable={scopeLocked ? "false" : "true"}
               suppressContentEditableWarning={true}
               onInput={saveTerms}
               onBlur={saveTerms}
@@ -15137,12 +15191,15 @@ function ScopeView({ project, onChange }) {
                 maxHeight: 480,
                 overflowY: "auto",
                 background: "#fff",
+                color: "#1a1a1a",
                 outline: "none",
                 marginTop: 10,
+                cursor: scopeLocked ? "default" : "text",
+                opacity: scopeLocked ? 0.85 : 1,
               }}
             />
             <div style={{ marginTop: 8, fontSize: 11, color: P.textDim }}>
-              💡 Plain text. Edit anything inline; Reset to Default restores the firm-standard version. Saves automatically.
+              💡 {scopeLocked ? "Locked alongside the scope — unlock the scope to edit." : "Plain text. Edit anything inline; Reset to Default restores the firm-standard version. Saves automatically."}
             </div>
           </>
         )}
@@ -15162,13 +15219,13 @@ function ScopeView({ project, onChange }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            {showRates && <Btn variant="ghost" small onClick={resetRatesToDefault}>↻ Reset to Default</Btn>}
+            {showRates && <Btn variant="ghost" small onClick={resetRatesToDefault} disabled={scopeLocked}>↻ Reset to Default</Btn>}
             <Btn onClick={() => printHourlyRates(project)}>🖨 Print Rates</Btn>
           </div>
         </div>
 
         {showRates && (
-          <div style={{ border: `1px solid ${P.border}`, borderRadius: 6, padding: "12px 14px", marginTop: 10, background: "#fff" }}>
+          <div style={{ border: `1px solid ${P.border}`, borderRadius: 6, padding: "12px 14px", marginTop: 10, background: "#fff", opacity: scopeLocked ? 0.85 : 1 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 28px", gap: 8, alignItems: "center", fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", padding: "0 4px 6px", borderBottom: `1px solid ${P.border}` }}>
               <div>Role</div>
               <div style={{ textAlign: "right" }}>Rate ($/hr)</div>
@@ -15180,6 +15237,7 @@ function ScopeView({ project, onChange }) {
                   value={r.role || ""}
                   onChange={e => updateRate(i, "role", e.target.value)}
                   placeholder="e.g. Project Manager"
+                  disabled={scopeLocked}
                   style={{ width: "100%", fontSize: 13, padding: "5px 8px" }}
                 />
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -15188,6 +15246,7 @@ function ScopeView({ project, onChange }) {
                     type="number"
                     value={r.rate || 0}
                     onChange={e => updateRate(i, "rate", e.target.value)}
+                    disabled={scopeLocked}
                     style={{ width: "100%", fontSize: 13, padding: "5px 8px", textAlign: "right" }}
                     min="0"
                     step="1"
@@ -15195,17 +15254,18 @@ function ScopeView({ project, onChange }) {
                 </div>
                 <button
                   onClick={() => removeRate(i)}
-                  title="Remove this role"
-                  style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1 }}>
+                  disabled={scopeLocked}
+                  title={scopeLocked ? "Locked with the scope" : "Remove this role"}
+                  style={{ background: "none", border: "none", color: P.textDim, cursor: scopeLocked ? "not-allowed" : "pointer", fontSize: 16, padding: 0, lineHeight: 1, opacity: scopeLocked ? 0.4 : 1 }}>
                   ×
                 </button>
               </div>
             ))}
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${P.border}` }}>
-              <Btn variant="ghost" small onClick={addRate}>+ Add Role</Btn>
+              <Btn variant="ghost" small onClick={addRate} disabled={scopeLocked}>+ Add Role</Btn>
             </div>
             <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
-              💡 Edit role names and rates inline. Saves automatically. Print produces a clean two-column Attachment B PDF.
+              💡 {scopeLocked ? "Locked alongside the scope — unlock the scope to edit." : "Edit role names and rates inline. Saves automatically. Print produces a clean two-column Attachment B PDF."}
             </div>
           </div>
         )}
