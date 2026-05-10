@@ -7500,7 +7500,7 @@ function getProjectCompanies(project) {
   return companies;
 }
 
-function ProjectDirectoryView({ project, onChange }) {
+function ProjectDirectoryView({ project, onChange, clients }) {
   const directory = project.directory || [];
   const merged = buildMergedDirectory(project);
   const companies = getProjectCompanies(project);
@@ -7509,12 +7509,64 @@ function ProjectDirectoryView({ project, onChange }) {
   const [editId, setEditId] = React.useState(null);
   const [search, setSearch] = React.useState("");
   const [filterType, setFilterType] = React.useState("All");
+  // Picker state — typeahead over the global clients/contacts database.
+  // Users can fill the form by picking an existing contact (no re-typing) or
+  // skip the picker entirely for a brand-new contact.
+  const [pickerQ, setPickerQ] = React.useState("");
+  const [pickerJustPicked, setPickerJustPicked] = React.useState(null);
 
   function setF(field, val) { setForm(f => ({ ...f, [field]: val })); }
+
+  // Smart type-guess: match the company to project.prime / clientName / sub
+  // firms so picked contacts default to the right type without manual setting.
+  function guessTypeForCompany(companyName) {
+    const c = (companyName || "").trim().toLowerCase();
+    if (!c) return "Other";
+    if ((project.prime || "").toLowerCase() === c) return "Prime";
+    if ((project.clientName || "").toLowerCase() === c) return "Client";
+    const subFirms = (project.subconsultants || []).map(s => (s.firm || "").toLowerCase());
+    if (subFirms.includes(c)) return "Sub (Setty's)";
+    return "Other";
+  }
+
+  // Search across all clients' contacts. Returns flat list of {contact, company}.
+  // Capped to 8 hits so the dropdown stays scannable.
+  const pickerResults = React.useMemo(() => {
+    const q = pickerQ.trim().toLowerCase();
+    if (!q) return [];
+    const out = [];
+    (clients || []).forEach(client => {
+      const companyName = client.name || "";
+      (client.contacts || []).forEach(ct => {
+        const hay = ((ct.name || "") + " " + (ct.email || "") + " " + (ct.title || "") + " " + companyName).toLowerCase();
+        if (hay.includes(q)) {
+          out.push({ contact: ct, company: companyName });
+          if (out.length >= 8) return;
+        }
+      });
+    });
+    return out.slice(0, 8);
+  }, [pickerQ, clients]);
+
+  function pickFromExisting({ contact, company }) {
+    setForm({
+      ...newDirectoryEntry(),
+      name: contact.name || "",
+      title: contact.title || "",
+      email: contact.email || "",
+      phone: contact.phone || "",
+      company: company || "",
+      type: guessTypeForCompany(company),
+    });
+    setPickerJustPicked(contact.name || contact.email || company);
+    setPickerQ("");
+  }
 
   function startAdd() {
     setForm(newDirectoryEntry());
     setEditId(null);
+    setPickerQ("");
+    setPickerJustPicked(null);
     setShowForm(true);
   }
   function startEdit(c) {
@@ -7522,6 +7574,8 @@ function ProjectDirectoryView({ project, onChange }) {
     // upstream POC/Sub data). Editing a manual entry updates in place.
     setForm({ ...c, id: c._derived ? uid() : c.id });
     setEditId(c._derived ? null : c.id);
+    setPickerQ("");
+    setPickerJustPicked(null);
     setShowForm(true);
   }
   function saveContact() {
@@ -7535,6 +7589,7 @@ function ProjectDirectoryView({ project, onChange }) {
     setShowForm(false);
     setEditId(null);
     setForm(newDirectoryEntry());
+    setPickerJustPicked(null);
   }
   function removeContact(c) {
     // Pure derived entries can't be removed from this view — they live upstream.
@@ -7619,6 +7674,54 @@ function ProjectDirectoryView({ project, onChange }) {
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: P.accentLight }}>
             {editId ? "Edit Contact" : "Add Contact"}
           </div>
+
+          {/* Existing-contact picker — only when adding (not editing) */}
+          {!editId && (
+            <div style={{ marginBottom: 16, padding: 12, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, position: "relative" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>
+                Pull from existing contacts
+              </div>
+              <input
+                value={pickerQ}
+                onChange={e => { setPickerQ(e.target.value); setPickerJustPicked(null); }}
+                placeholder="Type a name, email, or company to find an existing contact…"
+                style={{ width: "100%", fontSize: 13 }}
+              />
+              {pickerJustPicked && (
+                <div style={{ marginTop: 6, fontSize: 11, color: P.green, fontWeight: 600 }}>
+                  ✓ Pulled <strong>{pickerJustPicked}</strong> into the form below — adjust type/notes if needed, then save.
+                </div>
+              )}
+              {pickerResults.length > 0 && (
+                <div style={{ position: "absolute", top: "100%", left: 12, right: 12, background: P.card, border: `1px solid ${P.accent}`, borderRadius: 6, marginTop: 4, maxHeight: 280, overflowY: "auto", zIndex: 20, boxShadow: "0 8px 24px rgba(0,0,0,0.35)" }}>
+                  {pickerResults.map((r, i) => (
+                    <div key={i} onClick={() => pickFromExisting(r)}
+                      style={{ padding: "8px 12px", cursor: "pointer", borderBottom: i < pickerResults.length - 1 ? `1px solid ${P.border}` : "none", transition: "background 0.1s" }}
+                      onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+                      onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: P.text }}>
+                        {r.contact.name || "(no name)"}
+                        {r.contact.title && <span style={{ color: P.textMuted, fontWeight: 400, marginLeft: 6 }}>· {r.contact.title}</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
+                        {r.company || "(no company)"}
+                        {r.contact.email && <span> · {r.contact.email}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {pickerQ.trim() && pickerResults.length === 0 && !pickerJustPicked && (
+                <div style={{ marginTop: 6, fontSize: 11, color: P.textDim, fontStyle: "italic" }}>
+                  No matches in your contacts database. Fill in the fields below to add as a new contact.
+                </div>
+              )}
+              <div style={{ marginTop: 6, fontSize: 11, color: P.textDim }}>
+                Or fill in the fields below for someone not yet in the database.
+              </div>
+            </div>
+          )}
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
             <Field label="Name *">
               <input value={form.name} onChange={e => setF("name", e.target.value)} style={{ width: "100%" }} placeholder="Full name" autoFocus />
