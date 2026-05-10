@@ -14448,12 +14448,202 @@ function sanitizePastedHtml(html) {
   return tmp.innerHTML;
 }
 
+// Standard Terms and Conditions — preloaded into every project's terms editor.
+// Stored under project.termsContent; users can edit per project, or reset to
+// this default. Kept as a single string constant so updates to standard terms
+// only need to happen in one place.
+const TERMS_DEFAULT_HTML = `
+<h1>STANDARD TERMS AND CONDITIONS</h1>
+
+<p>These Standard Terms and Conditions are incorporated into and form part of SETTY&rsquo;s Proposal, Agreement, or Authorization to Proceed. The fees, schedule, staffing, and scope of services proposed by SETTY are expressly based upon these Terms and Conditions.</p>
+
+<h2>1. Basis of Proposal</h2>
+<p>SETTY&rsquo;s proposal, including associated fees, schedule, staffing assumptions, and scope of services, has been developed based upon the assumptions and conditions identified in the Proposal and these Standard Terms and Conditions.</p>
+<p>If, during contract negotiations or project execution, the Client, Owner, Architect, Contractor, or another party requires SETTY to execute alternate contractual terms, subconsultant agreements, purchase orders, flow-down provisions, insurance requirements, indemnification obligations, schedule guarantees, enhanced standards of care, expanded construction administration obligations, or other conditions that materially modify the Project risk allocation, scope, schedule, or administrative requirements, SETTY reserves the right to revise its scope of services, compensation, schedule, staffing assumptions, and reimbursable expenses accordingly.</p>
+<p>If services originally proposed on a lump sum basis are subsequently required to be performed under conditions that materially increase uncertainty, coordination effort, construction duration, contractual exposure, or administrative burden, SETTY may convert portions of the work to hourly compensation.</p>
+<p>No authorization to proceed shall constitute acceptance by SETTY of terms inconsistent with these Standard Terms and Conditions unless expressly agreed to in writing by SETTY.</p>
+
+<h2>2. Compensation</h2>
+<p>Compensation for services shall be as stated in the Proposal or Agreement.</p>
+<p>Where services are provided on an hourly basis, compensation shall be billed in accordance with SETTY&rsquo;s current standard hourly rates in effect at the time services are rendered.</p>
+<p>Hourly rates are subject to annual adjustment.</p>
+<p>Services not specifically included within the agreed scope of services shall constitute Additional Services and shall be compensated separately.</p>
+<p>SETTY shall have no obligation to perform services beyond the agreed scope without written authorization.</p>
+
+<h2>3. Reimbursable Expenses</h2>
+<p>Reimbursable expenses shall be billed at 1.0 times direct cost and include reasonable project-related expenses incurred in connection with the Project, including travel, airfare, mileage, lodging, meals, tolls and parking, permit and agency fees, printing and reproduction, shipping and delivery, outside consultants, testing agencies, third-party surveyors, specialty inspections, and similar project-related expenses.</p>
+<p>Automobile mileage shall be reimbursed at $0.07 per mile.</p>
+<p>Unless otherwise requested, all deliverables shall be transmitted electronically. Hard copy reproductions requested by Client shall be reimbursed at direct cost.</p>
+
+<h2>4. Invoices and Payment</h2>
+<p>Invoices shall be submitted monthly unless otherwise agreed.</p>
+<p>Invoices are due within thirty (30) days of receipt.</p>
+<p>Amounts unpaid after thirty (30) days shall accrue interest at the rate of 1.0% per month or the maximum rate permitted by law, whichever is less.</p>
+<p>Client shall notify SETTY promptly regarding disputed invoice items so the parties may work in good faith toward resolution.</p>
+<p>Payments due under this Agreement shall not be subject to withholding, retainage, offset, backcharge, or reduction for claims unrelated to SETTY&rsquo;s services.</p>
+<p>If invoices remain unpaid after thirty (30) days, SETTY may suspend services upon written notice until payment is received. SETTY shall not be responsible for delays, damages, schedule impacts, or additional costs resulting from such suspension.</p>
+<p>If nonpayment continues for more than ninety (90) days, SETTY may terminate services without waiving any claim or right.</p>
+<p>Client agrees to compensate SETTY for reasonable costs of collection, including attorneys&rsquo; fees, court costs, expert fees, and related expenses incurred in enforcing this Agreement.</p>
+
+<h2>5. Standard of Care</h2>
+<p>SETTY shall perform its services consistent with the professional skill and care ordinarily exercised by members of the same profession practicing under similar circumstances at the same time and in the same locality.</p>
+<p>No warranty or guarantee, express or implied, is made or intended.</p>
+<p>SETTY specifically disclaims all implied warranties, including warranties of merchantability and fitness for a particular purpose.</p>
+
+<h2>6. Owner-Provided Information</h2>
+<p>Client shall furnish complete and accurate project criteria, existing documentation, surveys, reports, studies, utility information, geotechnical reports, hazardous material reports, and other information necessary for SETTY&rsquo;s performance of services.</p>
+<p>SETTY shall be entitled to rely upon the accuracy and completeness of information provided by Client, Owner, Architect, Contractor, consultants, and others without independent verification.</p>
+<p>SETTY shall not be responsible for errors, omissions, or deficiencies arising from inaccurate, incomplete, or conflicting information provided by others.</p>
+
+<h2>7. Existing Conditions and Site Observations</h2>
+<p>Any pre-design site observations by SETTY shall be limited to readily observable conditions accessible at the time of the visit.</p>
+<p>SETTY shall not be responsible for concealed, inaccessible, latent, undocumented, or hazardous conditions, nor for verification requiring demolition, destructive investigation, testing, or specialized inspection unless specifically included in the scope of services.</p>
+<p>Discovery of concealed or differing conditions may require additional services not included in the base fee.</p>
+<p>SETTY shall not be responsible for asbestos, mold, hazardous materials, contaminated materials, or environmental conditions unless specifically identified within the scope of services.</p>
+
+<h2>8. Additional Services</h2>
+<p>Services beyond the agreed scope shall constitute Additional Services.</p>
+<p>Additional Services may include owner-directed revisions, redesign caused by changed criteria, excessive permit or agency resubmissions, accelerated schedules, phased bidding, extended construction duration, excessive RFIs or submittals, value engineering revisions, redesign due to contractor substitutions, post-occupancy troubleshooting, litigation support, expert witness services, BIM coordination beyond the agreed scope, or services resulting from concealed conditions or circumstances beyond SETTY&rsquo;s control.</p>
+<p>Additional Services shall be compensated on an hourly basis unless otherwise agreed in writing.</p>
+
+<h2>9. Project Delays and Remobilization</h2>
+<p>This proposal assumes the Project will proceed in a continuous and orderly manner.</p>
+<p>If the Project is suspended, delayed, or placed on hold for more than thirty (30) calendar days after SETTY has commenced services, SETTY reserves the right to renegotiate fees and schedules, assess remobilization costs, revise staffing assumptions, and adjust compensation for inflationary or market impacts upon resumption of services.</p>
+<p>SETTY shall not be responsible for impacts resulting from delays beyond its reasonable control.</p>
+
+<h2>10. Construction Phase Services</h2>
+<p>Unless otherwise agreed, standard submittal review turnaround time shall be ten (10) business days, RFI response time shall be five (5) business days, and construction meetings or site visits shall require a minimum of five (5) business days advance notice.</p>
+<p>Expedited review services, excessive construction administration efforts, excessive submittals, multiple redesign iterations, or contractor-caused redesign efforts shall constitute Additional Services.</p>
+<p>SETTY shall not have control over, charge of, or responsibility for construction means, methods, sequences, procedures, site safety, temporary construction supports, contractor scheduling, or the acts or omissions of contractors, subcontractors, suppliers, or other project participants.</p>
+<p>SETTY&rsquo;s review of shop drawings, submittals, RFIs, and substitutions shall be for general conformance with the design intent only and shall not relieve the Contractor of responsibility for dimensions, quantities, fabrication processes, construction means and methods, or coordination of the work.</p>
+
+<h2>11. Limitation of Liability</h2>
+<p>To the fullest extent permitted by law, the total aggregate liability of SETTY and its officers, employees, agents, and consultants to Client for any and all claims, damages, losses, costs, or expenses arising out of this Agreement or the Project shall not exceed the total compensation received by SETTY under this Agreement.</p>
+<p>SETTY shall not be liable for consequential, incidental, indirect, special, exemplary, or punitive damages, including but not limited to loss of profits, loss of revenue, loss of use, loss of financing, business interruption, loss of opportunity, delay damages, or diminution in property value.</p>
+<p>SETTY shall not be responsible for costs associated with project betterment, upgrades, enhancements, or scope expansions beyond the original design intent reflected in the contract documents issued for bidding or construction.</p>
+<p>Client acknowledges that the compensation established for SETTY&rsquo;s services reflects this allocation of risk.</p>
+
+<h2>12. Termination</h2>
+<p>Either party may terminate this Agreement upon seven (7) days written notice for substantial failure of the other party to perform in accordance with the Agreement.</p>
+<p>SETTY may suspend or terminate services immediately for nonpayment, unsafe site conditions, hazardous conditions, material changes in project scope, or Client insolvency or bankruptcy.</p>
+<p>Upon suspension or termination, Client shall compensate SETTY for services performed, work in progress, reimbursable expenses, commitments incurred, and reasonable termination and remobilization costs.</p>
+<p>If requested by Client, SETTY may prepare a status summary or transition documentation as an Additional Service.</p>
+
+<h2>13. Ownership of Documents</h2>
+<p>All drawings, specifications, calculations, BIM models, electronic files, and other instruments of service prepared by SETTY shall remain the property of SETTY and shall retain all common law, statutory, and reserved rights, including copyright.</p>
+<p>Client is granted a limited license to use the instruments of service solely for construction, operation, and occupancy of the Project, provided all sums due have been paid in full.</p>
+<p>Reuse, modification, or transfer of the instruments of service without SETTY&rsquo;s written authorization shall be at Client&rsquo;s sole risk, and Client agrees to indemnify and hold harmless SETTY from claims, damages, losses, and expenses arising from unauthorized reuse.</p>
+<p>In the event electronic files are provided, SETTY makes no representation regarding compatibility with future software or systems.</p>
+<p>In the event of discrepancy, signed or sealed documents shall govern.</p>
+
+<h2>14. Insurance</h2>
+<p>SETTY shall maintain insurance coverage customary for professional engineering services, including professional liability insurance, subject to policy terms, conditions, exclusions, and market availability.</p>
+<p>Certificates of insurance will be provided upon request.</p>
+<p>Any additional insurance requirements requested by Client beyond SETTY&rsquo;s standard coverage may require adjustment to compensation.</p>
+
+<h2>15. Waiver of Subrogation</h2>
+<p>To the fullest extent permitted by law, Client waives all rights against SETTY and its consultants for damages covered by property insurance or other applicable insurance.</p>
+<p>Client shall require similar waivers from contractors and other project participants.</p>
+
+<h2>16. Indemnification</h2>
+<p>To the fullest extent permitted by law, Client shall indemnify and hold harmless SETTY and its officers, employees, and consultants from claims, damages, losses, liabilities, and expenses arising from hazardous materials, environmental contamination, contractor means and methods, site safety, inaccurate information provided by others, or the negligent acts or omissions of Client, contractors, subcontractors, suppliers, or parties not under SETTY&rsquo;s control.</p>
+<p>SETTY shall not be responsible for jobsite safety or construction means and methods.</p>
+
+<h2>17. Force Majeure</h2>
+<p>SETTY shall not be responsible for delays or failures in performance caused by circumstances beyond its reasonable control, including acts of God, labor disputes, governmental actions, utility interruptions, material shortages, pandemics, transportation delays, acts of war, civil unrest, or other unforeseen events.</p>
+<p>Schedules shall be equitably adjusted for such delays.</p>
+
+<h2>18. Non-Solicitation</h2>
+<p>During the term of this Agreement and for a period of one (1) year thereafter, Client shall not knowingly solicit for employment any SETTY employee directly involved in the Project without SETTY&rsquo;s prior written consent.</p>
+<p>This provision shall not prohibit employees from independently responding to public job postings or advertisements.</p>
+
+<h2>19. Post-Occupancy Services</h2>
+<p>Services performed after substantial completion or occupancy, including seasonal testing, troubleshooting, contractor callbacks, occupant complaints, operator training, system adjustments, or forensic investigations, are not included unless specifically identified in the Proposal.</p>
+<p>Such services shall be compensated on an hourly basis.</p>
+
+<h2>20. Relationship of Parties</h2>
+<p>SETTY is an independent contractor and not an employee, partner, joint venturer, or agent of Client.</p>
+<p>Neither party shall have authority to bind the other except as expressly provided herein.</p>
+
+<h2>21. Dispute Resolution</h2>
+<p>The parties shall endeavor to resolve disputes through good-faith negotiations prior to commencing litigation.</p>
+<p>Unless otherwise agreed in writing, venue for any legal proceeding arising out of this Agreement shall be in the state or federal courts having jurisdiction where SETTY&rsquo;s principal office is located.</p>
+
+<h2>22. Entire Agreement</h2>
+<p>These Standard Terms and Conditions are incorporated into and form part of SETTY&rsquo;s Proposal and Agreement.</p>
+<p>No purchase order, subcontract, or other document issued by Client shall modify these Terms and Conditions unless expressly accepted in writing by SETTY.</p>
+<p>These Terms and Conditions, together with the Proposal and agreed scope of services, constitute the entire agreement between the parties and supersede prior negotiations or representations.</p>
+`.trim();
+
+function printTermsAndConditions(project) {
+  const termsHtml = project.termsContent || TERMS_DEFAULT_HTML;
+  const win = window.open("", "_blank", "width=900,height=700");
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Attachment A — Terms &amp; Conditions — ${project.name || "Project"}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
+    @page :first { margin-top: 0.5in; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10pt; color: #1a1a1a; background: #fff; }
+    .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
+    /* Body — clean, simple typography. No fancy formatting per spec. */
+    .terms-body h1 { font-size: 14pt; font-weight: 700; color: #1F3864; margin: 0 0 14px; letter-spacing: 0.5px; }
+    .terms-body h2 { font-size: 11pt; font-weight: 700; color: #1F3864; margin: 18px 0 6px; }
+    .terms-body p { margin: 0 0 8px; line-height: 1.6; }
+    .terms-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
+    @media print {
+      body { background: #fff; }
+      .print-btn { display: none; }
+      .page { padding: 0; width: 100%; min-height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+  <div class="page">
+    <div class="doc-header">
+      <div>
+        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:28px;display:block;" />
+        <div style="font-size:8pt;color:#44546A;margin-top:5px;letter-spacing:0.8px;font-weight:500;">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:9px;font-size:8pt;color:#8a9bb0;line-height:1.65;">Fairfax, VA (HQ) &middot; Washington DC &middot; New York &middot; Baltimore<br>Atlanta &middot; Philadelphia &middot; Los Angeles &middot; Tampa &middot; India</div>
+      </div>
+      <div>
+        <div class="doc-title">ATTACHMENT A</div>
+        <div class="doc-sub">
+          Terms &amp; Conditions<br>
+          ${project.name || "Project"} &middot; ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+        </div>
+      </div>
+    </div>
+
+    <div class="terms-body">${termsHtml}</div>
+
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, Ltd, PC &middot; Attachment A &middot; Terms &amp; Conditions</span>
+      <span>${project.name || ""} &middot; ${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
+    </div>
+  </div>
+</body>
+</html>`);
+  win.document.close();
+}
+
 function ScopeView({ project, onChange }) {
   const editorRef = React.useRef(null);
+  const termsEditorRef = React.useRef(null);
   const [wc, setWc] = React.useState(0);
   const [showLockModal, setShowLockModal] = React.useState(false); // "lock" | "unlock" | false
   const [lockNote, setLockNote] = React.useState("");
   const [showAudit, setShowAudit] = React.useState(false);
+  const [showTerms, setShowTerms] = React.useState(false);
 
   // Paste handler — intercepts copy-paste from Word/Outlook/Gmail/etc. and
   // sanitizes the HTML to a clean structural subset before insertion.
@@ -14471,6 +14661,35 @@ function ScopeView({ project, onChange }) {
       document.execCommand("insertText", false, text);
     }
     saveContent();
+  }
+
+  // Terms editor — preloaded from TERMS_DEFAULT_HTML, persists per-project
+  // edits to project.termsContent. Same paste-sanitizer logic as the scope
+  // editor so pastes from Word/Outlook don't drag in their styling baggage.
+  React.useEffect(() => {
+    if (termsEditorRef.current && showTerms) {
+      termsEditorRef.current.innerHTML = project.termsContent || TERMS_DEFAULT_HTML;
+    }
+  }, [showTerms]);
+  function saveTerms() {
+    const html = termsEditorRef.current ? termsEditorRef.current.innerHTML : "";
+    onChange({ ...project, termsContent: html });
+  }
+  function resetTermsToDefault() {
+    if (!window.confirm("Reset Terms & Conditions to the firm-wide default?\n\nAny project-specific edits will be discarded.")) return;
+    if (termsEditorRef.current) termsEditorRef.current.innerHTML = TERMS_DEFAULT_HTML;
+    onChange({ ...project, termsContent: TERMS_DEFAULT_HTML });
+  }
+  function handleTermsPaste(e) {
+    e.preventDefault();
+    const html = e.clipboardData?.getData("text/html") || "";
+    const text = e.clipboardData?.getData("text/plain") || "";
+    if (html) {
+      document.execCommand("insertHTML", false, sanitizePastedHtml(html));
+    } else {
+      document.execCommand("insertText", false, text);
+    }
+    saveTerms();
   }
 
   const scopeLocked = project.scopeLocked || false;
@@ -14744,6 +14963,59 @@ function ScopeView({ project, onChange }) {
           )}
         </div>
       )}
+
+      {/* Terms & Conditions — preloaded firm-standard, editable per project,
+          prints as Attachment A. Collapsed by default since most projects
+          won't need to edit; one click to expand and print. */}
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${P.border}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <button onClick={() => setShowTerms(v => !v)}
+              style={{ background: "none", border: "none", color: P.text, cursor: "pointer", fontSize: 14, fontWeight: 700, padding: 0, display: "flex", alignItems: "center", gap: 6 }}>
+              {showTerms ? "▼" : "▶"} Terms &amp; Conditions
+            </button>
+            <div style={{ fontSize: 12, color: P.textDim, marginTop: 4 }}>
+              Preloaded with the firm-standard Terms & Conditions. Edit per project if needed, then print as Attachment A.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {showTerms && <Btn variant="ghost" small onClick={resetTermsToDefault}>↻ Reset to Default</Btn>}
+            <Btn onClick={() => printTermsAndConditions(project)}>🖨 Print Terms</Btn>
+          </div>
+        </div>
+
+        {showTerms && (
+          <>
+            <style>{`
+              .terms-editor h1 { font-size: 15px; font-weight: 700; color: #1F3864; margin: 14px 0 8px; letter-spacing: 0.3px; }
+              .terms-editor h2 { font-size: 13px; font-weight: 700; color: #1F3864; margin: 14px 0 4px; }
+              .terms-editor p  { font-size: 12.5px; line-height: 1.55; margin: 0 0 7px; color: ${P.text}; }
+            `}</style>
+            <div
+              ref={termsEditorRef}
+              className="terms-editor"
+              contentEditable={true}
+              suppressContentEditableWarning={true}
+              onInput={saveTerms}
+              onBlur={saveTerms}
+              onPaste={handleTermsPaste}
+              style={{
+                border: `1px solid ${P.border}`,
+                borderRadius: 6,
+                padding: "16px 20px",
+                maxHeight: 480,
+                overflowY: "auto",
+                background: "#fff",
+                outline: "none",
+                marginTop: 10,
+              }}
+            />
+            <div style={{ marginTop: 8, fontSize: 11, color: P.textDim }}>
+              💡 Plain text. Edit anything inline; Reset to Default restores the firm-standard version. Saves automatically.
+            </div>
+          </>
+        )}
+      </div>
 
       {/* Lock/Unlock modal */}
       {showLockModal && (
