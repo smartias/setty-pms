@@ -1453,6 +1453,10 @@ const SP_DRIVE_ID_HARDCODED      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1B
 // Proposals library — separate drive on the same site, for pipeline/pre-award project folders.
 // Obtained from: https://setty.sharepoint.com/sites/NYCProjects/_api/v2.0/drives
 const SP_PROPOSALS_DRIVE_ID      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BD05MwIg6LcTbBQFEDE4JKC";
+// Contract library — separate drive on the same site, for signed contracts.
+// Folder naming convention: Prime_Client_ProjectName
+// Obtained from: https://setty.sharepoint.com/sites/NYCProjects/_api/v2.0/drives
+const SP_CONTRACTS_DRIVE_ID      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BDwTLUC_kC6TYDhC8BfQTMb";
 
 let _spSiteId  = SP_SITE_ID_HARDCODED;
 let _spDriveId = SP_DRIVE_ID_HARDCODED;
@@ -1460,6 +1464,40 @@ let _spDriveId = SP_DRIVE_ID_HARDCODED;
 async function resolveSpIds() {
   // IDs are hardcoded — no Graph API call needed, no Sites.Read.All required.
   return { siteId: _spSiteId, driveId: _spDriveId };
+}
+
+// Creates a folder in the Contract Library named "Prime_Client_ProjectName".
+// Used to file signed contracts and contract documentation. Independent of
+// the Project Document Library so contract docs stay separate from working
+// design files. Requires SP_CONTRACTS_DRIVE_ID to be populated; see the
+// constant above for one-time setup instructions.
+async function createContractFolder(project) {
+  if (!SP_CONTRACTS_DRIVE_ID) {
+    throw new Error("Contract Library drive ID is not configured. Open SettyPMS.html and set SP_CONTRACTS_DRIVE_ID — see the comment above the constant for instructions.");
+  }
+  const prime  = (project.prime || "").trim();
+  const client = (project.clientName || "").trim();
+  const name   = (project.name || "").trim();
+  if (!name) throw new Error("Add a project name first.");
+
+  // Build "Prime_Client_ProjectName" — skip empty parts; dedupe when prime
+  // and client are the same string so we don't end up with "Skanska_Skanska_..."
+  const parts = [];
+  if (prime) parts.push(prime);
+  if (client && client.toLowerCase() !== prime.toLowerCase()) parts.push(client);
+  parts.push(name);
+  const folderName = parts.join("_").replace(/[\\/:*?"<>|]/g, "-").trim();
+
+  // Conflict-behavior: rename. If a folder with the same name exists, SharePoint
+  // appends a numeric suffix rather than failing — same pattern as the project
+  // library. Caller can detect duplicates by comparing returned webUrl.
+  const result = await graphFetch("POST", `/drives/${SP_CONTRACTS_DRIVE_ID}/root/children`, {
+    name: folderName,
+    folder: {},
+    "@microsoft.graph.conflictBehavior": "rename",
+  });
+  if (!result?.webUrl) throw new Error("Folder created but no URL returned.");
+  return result.webUrl;
 }
 
 // Creates a folder in the Proposals library named "[Year] — [Project Name]".
@@ -7124,7 +7162,7 @@ function ChangeOrdersView({ project, onChange }) {
 
 // ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
 
-function ContractView({ project, onChange, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts, clients, onUpdateClient }) {
+function ContractView({ project, onChange, onEagerSave, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts, clients, onUpdateClient }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
   return (
     <div>
@@ -7176,23 +7214,7 @@ function ContractView({ project, onChange, contractExpSyncState, contractExpSync
             placeholder="Prime's internal project #" style={{ width: "100%" }} />
         </Field>
         <Field label="Contract Documents (SharePoint)" style={{ gridColumn: "1 / -1" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input value={project.contractFolderUrl || ""} onChange={e => setField("contractFolderUrl", e.target.value)}
-              placeholder="Paste SharePoint folder URL…" style={{ flex: 1 }} />
-            {project.contractFolderUrl && (
-              <a href={project.contractFolderUrl} target="_blank" rel="noreferrer"
-                style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#0078d4", color: "#fff",
-                  borderRadius: 6, padding: "6px 14px", fontSize: 13, fontWeight: 600, textDecoration: "none",
-                  whiteSpace: "nowrap", border: "none", cursor: "pointer" }}>
-                📁 Open Folder
-              </a>
-            )}
-          </div>
-          {project.contractFolderUrl && (
-            <div style={{ fontSize: 11, color: P.textDim, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {project.contractFolderUrl}
-            </div>
-          )}
+          <SharePointContractFolderField project={project} onUpdate={setField} onEagerSave={onEagerSave} />
         </Field>
       </div>
       <SectionTitle>Task Order</SectionTitle>
@@ -11669,7 +11691,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
         {tab === "RFIs" && <RFIsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
         {tab === "Submittals" && <SubmittalsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
-        {tab === "Contract" && <ContractView project={project} onChange={onUpdate} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
+        {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Gantt" && <GanttView project={project} />}
@@ -16099,6 +16121,99 @@ function ProposalFolderField({ project, onUpdate }) {
       <div style={{ fontSize: 11, color: P.textDim, lineHeight: 1.5 }}>
         Stored separately from the main project library. When awarded, create a project folder on the Overview tab — the proposal folder stays as a proposal archive.
       </div>
+    </div>
+  );
+}
+
+// Mirror of SharePointFolderField but for the Contract Library — same UX
+// pattern (Create button when empty, Open + Clear when populated, eager-save
+// to avoid orphaned folders if the link save fails after creation).
+function SharePointContractFolderField({ project, onUpdate, onEagerSave }) {
+  const [status, setStatus] = React.useState("idle");
+  const [msg, setMsg] = React.useState("");
+  const url = project.contractFolderUrl || "";
+  const hasFolder = !!url;
+
+  async function create() {
+    if (!project.name) {
+      setMsg("Add a project name first.");
+      setStatus("error");
+      return;
+    }
+    setStatus("creating");
+    setMsg("");
+    try {
+      const folderUrl = await createContractFolder(project);
+      onUpdate("contractFolderUrl", folderUrl);
+      if (onEagerSave) {
+        try {
+          await onEagerSave({ ...project, contractFolderUrl: folderUrl });
+          setStatus("done");
+          setMsg("✓ Contract folder created and linked");
+        } catch (saveErr) {
+          setStatus("error");
+          setMsg("⚠ Folder created at " + folderUrl + " but link save failed: " + saveErr.message + ". Copy the URL above; the next auto-save will retry.");
+        }
+      } else {
+        setStatus("done");
+        setMsg("✓ Contract folder created");
+      }
+    } catch (e) {
+      setStatus("error");
+      setMsg("✗ " + e.message);
+    }
+  }
+
+  // Build the preview folder name for the helper text — gives users an
+  // accurate sense of what'll be created before they click.
+  const previewName = (() => {
+    const prime = (project.prime || "").trim();
+    const client = (project.clientName || "").trim();
+    const name = (project.name || "").trim();
+    const parts = [];
+    if (prime) parts.push(prime);
+    if (client && client.toLowerCase() !== prime.toLowerCase()) parts.push(client);
+    if (name) parts.push(name);
+    return parts.length ? parts.join("_") : "Prime_Client_Project Name";
+  })();
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {hasFolder ? (
+          <>
+            <input value={url} readOnly
+              style={{ flex: 1, color: P.textMuted, fontSize: 12, background: "transparent", borderColor: P.border, cursor: "default" }} />
+            <a href={url} target="_blank" rel="noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#0078d4", color: "#fff", borderRadius: 6, padding: "6px 14px", fontSize: 13, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+              📁 Open Folder
+            </a>
+            <button onClick={() => { if (window.confirm("Clear the saved contract folder URL? This won’t delete the SharePoint folder.")) onUpdate("contractFolderUrl", ""); }}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13 }}
+              title="Clear saved URL">✕</button>
+          </>
+        ) : (
+          <>
+            <input value={url} placeholder="Paste existing URL, or click Create to auto-generate…"
+              onChange={e => onUpdate("contractFolderUrl", e.target.value)}
+              style={{ flex: 1, fontSize: 13 }} />
+            <Btn variant="primary" disabled={status === "creating"} onClick={create}>
+              {status === "creating" ? "⏳ Creating…" : "📑 Create Contract Folder"}
+            </Btn>
+          </>
+        )}
+      </div>
+      {msg && (
+        <div style={{ fontSize: 11, marginTop: 4, color: status === "done" ? P.green : status === "error" ? P.red : P.textDim }}>
+          {msg}
+        </div>
+      )}
+      {!hasFolder && (
+        <div style={{ fontSize: 11, color: P.textDim, marginTop: 3 }}>
+          Creates a folder in <em>Contract Library</em> on the NYC Projects SharePoint site
+          named <strong>{previewName}</strong>
+        </div>
+      )}
     </div>
   );
 }
