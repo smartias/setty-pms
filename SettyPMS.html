@@ -13593,6 +13593,19 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     }
   }, []);
 
+  // Daily tip card — feature-discovery nudge. One per day, dismissible.
+  // Initialized once on mount; if dismissed today, stays hidden for the rest
+  // of the day (per-device).
+  const [tipState, setTipState] = React.useState(() => {
+    if (pmsIsTipDismissedToday()) return { visible: false, tip: "" };
+    const t = getPmsTipOfDay();
+    return { visible: true, tip: t.tip };
+  });
+  function dismissTip() {
+    pmsDismissTipForToday();
+    setTipState(s => ({ ...s, visible: false }));
+  }
+
   const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
   const [dashPMFilter, setDashPMFilter] = useState("All");
   const [milPMFilter, setMilPMFilter] = useState("All");
@@ -13726,6 +13739,35 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   return (
     <>
     <div style={{ padding: "24px 32px" }}>
+      {/* Daily tip card — feature-discovery nudge. One per day, dismissible.
+          Sits above the dashboard heading so it gets seen but doesn't dominate. */}
+      {tipState.visible && tipState.tip && (
+        <div style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 12,
+          background: P.accentDim,
+          border: `1px solid ${P.accent}`,
+          borderRadius: 8,
+          padding: "10px 14px",
+          marginBottom: 16,
+          fontSize: 12.5,
+          lineHeight: 1.5,
+          color: P.text,
+        }}>
+          <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>💡</span>
+          <div style={{ flex: 1 }}>
+            <span style={{ fontWeight: 700, color: P.accentLight, marginRight: 6 }}>Did you know?</span>
+            {tipState.tip}
+          </div>
+          <button onClick={dismissTip}
+            title="Dismiss for today"
+            style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0, opacity: 0.7 }}>
+            ×
+          </button>
+        </div>
+      )}
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
         <div style={{ fontSize: 22, fontWeight: 800 }}>Team Dashboard</div>
         <button onClick={() => { setShowAddMilestone(true); setAddMilMsg(""); }}
@@ -18657,6 +18699,65 @@ function pmsTimeOfDayGreeting() {
   if (h >= 19 && h < 22) return _pmsPickQuip(PMS_TIME_GREETINGS.late_evening);
   if (h >= 22)            return _pmsPickQuip(PMS_TIME_GREETINGS.late_night);
   return "🌌 Filing at " + h + ":00? You're a different kind of person. Respect.";
+}
+
+// "Did you know?" tip pool — one shown per day on the Dashboard. Solves the
+// real adoption problem that nobody reads release notes; features get found
+// through gentle nudges over weeks. Pool is intentionally varied across
+// add-in features, PMS workflows, and AEC-specific helpers so daily users
+// keep discovering things across the whole app.
+const PMS_TIPS = [
+  "Click 'Send for Review' on the Scope tab to email the team for informal sign-off before sending a proposal to the client.",
+  "Send Proposal generates a single bound PDF (SOW + Fee + Terms + Rates) plus an Outlook draft — one click, all the documents.",
+  "Pipeline projects auto-bump their start date to today when you transition them to an awarded status.",
+  "Locking the Scope of Services also locks the Terms & Conditions and Hourly Rate Schedule — they're a unit.",
+  "The hourly rate schedule snapshots into the Contract tab when a project moves to awarded — read-only after that, regardless of later rate changes.",
+  "Each project has a shareable deep link — click '🔗 Copy Link' at the top of any project to share with a teammate.",
+  "The Outlook add-in suggests the right project based on subject + sender — usually one click to file an email.",
+  "Date detection in the add-in catches 'May 18', '5/18', 'next Friday', 'by Tuesday' — much smarter than just looking for the word 'deadline'.",
+  "Click any × on a date chip in the add-in to dismiss it — it won't reappear on that email next time.",
+  "Term contracts can have their own SharePoint folder. Click 'Create Contract Folder' on the Term Contracts tab.",
+  "The Pending COs tab shows every unapproved change order across all projects in one place — useful for chasing approvals on Friday.",
+  "The dashboard filters by PM let you focus on just your own projects when the firm-wide list gets noisy.",
+  "Override the project start date from the Schedule tab if it ever needs to shift mid-project — confirms before rebuilding milestones.",
+  "Backup your project data weekly via the 🗄 Backup button — it turns red when overdue.",
+  "Reset Terms & Conditions to firm-default per project if you've made edits you no longer want.",
+  "Keep the Outlook task pane pinned (📌 in top-right) so it stays open as you switch between emails.",
+  "Cash Flow tab projects revenue based on milestone due dates and % complete — a quick look at the next 90 days.",
+  "Photos tab supports per-project image uploads — drag from File Explorer or paste from clipboard.",
+  "The Outlook add-in's 📤 Share button creates a forwardable Outlook draft from any saved email — no new permissions required.",
+  "If a project has no SharePoint folder, the add-in shows a banner with a one-click link to open the project in PMS to create one.",
+];
+
+const PMS_LAST_TIP_KEY = "setty_pms_last_tip_v1";  // { date, index }
+function getPmsTipOfDay() {
+  let last = { date: "", index: -1 };
+  try {
+    const raw = localStorage.getItem(PMS_LAST_TIP_KEY);
+    if (raw) last = JSON.parse(raw);
+  } catch {}
+  const today = new Date().toISOString().slice(0, 10);
+  if (last.date === today) {
+    // Already showed one today — return the same one (idempotent within a day)
+    return { tip: PMS_TIPS[last.index] || PMS_TIPS[0], isNew: false };
+  }
+  // Pick a new one, avoiding the most recent index so we don't repeat
+  let idx;
+  do {
+    idx = Math.floor(Math.random() * PMS_TIPS.length);
+  } while (idx === last.index && PMS_TIPS.length > 1);
+  try { localStorage.setItem(PMS_LAST_TIP_KEY, JSON.stringify({ date: today, index: idx })); } catch {}
+  return { tip: PMS_TIPS[idx], isNew: true };
+}
+
+const PMS_TIP_DISMISSED_KEY = "setty_pms_tip_dismissed_v1";
+function pmsIsTipDismissedToday() {
+  try {
+    return localStorage.getItem(PMS_TIP_DISMISSED_KEY) === new Date().toISOString().slice(0, 10);
+  } catch { return false; }
+}
+function pmsDismissTipForToday() {
+  try { localStorage.setItem(PMS_TIP_DISMISSED_KEY, new Date().toISOString().slice(0, 10)); } catch {}
 }
 
 // Once-per-day gate for the Dashboard greeting. Per-device localStorage.
