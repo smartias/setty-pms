@@ -2539,102 +2539,165 @@ function printFeeProposal(project) {
   const coTotal = changeOrders.reduce((a, c) => a + (c.fee || 0), 0);
   const totalContractFee = baseFee + coTotal;
 
-  const phaseRows = billablePhases.map((ph, i) => `
-      <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
-        <td style="font-weight:500;padding:10px 14px;">${ph.name}</td>
-        <td style="text-align:right;font-family:monospace;font-weight:600;color:#1F3864;padding:10px 14px;">$${Math.round(ph.fee).toLocaleString()}</td>
+  const phaseRows = billablePhases.map(ph => `
+      <tr>
+        <td>${ph.name}</td>
+        <td class="right">$${Math.round(ph.fee).toLocaleString()}</td>
       </tr>`).join("");
 
-  const coRows = changeOrders.length ? changeOrders.map((co, i) => `
-      <tr style="${i % 2 === 1 ? "background:#F8F8F8;" : ""}">
-        <td style="padding:10px 14px;font-weight:500;">↳ CO: ${co.name || co.number}</td>
-        <td style="text-align:right;font-family:monospace;font-weight:600;color:#1F3864;padding:10px 14px;">$${Math.round(co.fee || 0).toLocaleString()}</td>
+  const coRows = changeOrders.length ? changeOrders.map(co => `
+      <tr>
+        <td>↳ CO: ${co.name || co.number}</td>
+        <td class="right">$${Math.round(co.fee || 0).toLocaleString()}</td>
       </tr>`).join("") : "";
 
-  const html = `
+  // Self-contained print path matching the SOW's letterhead aesthetic. Doesn't
+  // route through printDocument (which Invoice/Transmittal still use) so we
+  // can match the SOW's typography and palette without affecting other docs.
+  const win = window.open("", "_blank", "width=900,height=700");
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Fee Proposal — ${project.name || "Project"}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
+    @page :first { margin-top: 0.5in; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
+    .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #CBD5E1; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
+    .meta-block { padding: 12px 16px; }
+    .meta-block:first-child { border-right: 1px solid #CBD5E1; }
+    .meta-label { font-size: 7.5pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+    .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
+    .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+
+    /* Fee table — understated. No solid navy fill on the header; just an
+       underline. Tabular numerals align the dollar amounts cleanly without
+       resorting to monospace. */
+    .fee-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10pt; }
+    .fee-table thead th { text-align: left; font-size: 8pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px; border-bottom: 1.5px solid #1F3864; background: transparent; }
+    .fee-table thead th.right { text-align: right; }
+    .fee-table tbody td { padding: 9px 12px; border-bottom: 1px solid #E7E6E6; }
+    .fee-table tbody td.right { text-align: right; font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; }
+    .fee-table tr.total td { font-weight: 700; font-size: 10.5pt; border-top: 1.5px solid #1F3864; border-bottom: 2px solid #1F3864; padding: 12px 12px; }
+
+    /* Total fee callout — replaces the giant solid-blue $X box. Subtle bordered
+       light-gray block with right-sized type. Reads as a summary line, not a banner. */
+    .total-callout { margin: 24px 0 18px; padding: 14px 18px; background: #f8f9fb; border: 1px solid #CBD5E1; border-radius: 4px; display: flex; justify-content: space-between; align-items: baseline; }
+    .total-callout .label { font-size: 9pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .08em; }
+    .total-callout .value { font-size: 16pt; font-weight: 700; color: #1F3864; font-variant-numeric: tabular-nums; }
+
+    .notes-block { margin-top: 24px; padding: 12px 16px; background: #f8f9fb; border-left: 3px solid #2F5496; border-radius: 0 4px 4px 0; font-size: 9.5pt; line-height: 1.7; color: #44546A; }
+    .notes-block strong { color: #1F3864; font-weight: 700; font-size: 10pt; }
+
+    .sig-grid { margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 36px; page-break-inside: avoid; }
+    .sig-block { border-top: 1.5px solid #1F3864; padding-top: 8px; }
+    .sig-name { font-size: 9pt; color: #1F3864; font-weight: 600; }
+    .sig-role { font-size: 8.5pt; color: #44546A; margin-top: 2px; }
+    .sig-date { margin-top: 18px; font-size: 8.5pt; color: #44546A; }
+
+    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
+    @media print {
+      body { background: #fff; }
+      .print-btn { display: none; }
+      .page { padding: 0; width: 100%; min-height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+  <div class="page">
     <div class="doc-header">
       <div>
-        ${DOC_LOGO_HTML}
+        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:28px;display:block;" />
+        <div style="font-size:8pt;color:#44546A;margin-top:5px;letter-spacing:0.8px;font-weight:500;">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:9px;font-size:8pt;color:#8a9bb0;line-height:1.65;">Fairfax, VA (HQ) &middot; Washington DC &middot; New York &middot; Baltimore<br>Atlanta &middot; Philadelphia &middot; Los Angeles &middot; Tampa &middot; India</div>
       </div>
-      <div class="doc-type-badge">
-        <div class="doc-type">FEE PROPOSAL</div>
-        <div class="doc-number">${project.name || "Project"}</div>
-        <div style="font-size:9pt;color:#44546A;margin-top:6px;">${fmtDate(new Date().toISOString().slice(0,10))}</div>
+      <div>
+        <div class="doc-title">FEE PROPOSAL</div>
+        <div class="doc-sub">
+          ${project.name || "Project"}<br>
+          ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+        </div>
       </div>
     </div>
 
-    <div class="meta-grid" style="grid-template-columns:1fr 1fr;">
+    <div class="meta-grid">
       <div class="meta-block">
         <div class="meta-label">Project</div>
         <div class="meta-value">${project.name || "—"}</div>
-        ${(project.projectAddress || project.projectCity) ? `<div style="font-size:9pt;color:#44546A;margin-top:3px;line-height:1.5;">${project.projectAddress || ""}${project.projectAddress && project.projectCity ? "<br>" : ""}${[project.projectCity, project.projectState].filter(Boolean).join(", ")}</div>` : ""}
+        ${(project.projectAddress || project.projectCity) ? '<div class="meta-sub">' + (project.projectAddress || "") + (project.projectAddress && project.projectCity ? "<br>" : "") + [project.projectCity, project.projectState].filter(Boolean).join(", ") + "</div>" : ""}
       </div>
       <div class="meta-block">
         <div class="meta-label">Client / Prime</div>
         <div class="meta-value">${project.prime || project.clientName || "—"}</div>
-        ${project.clientContact ? `<div style="font-size:9pt;color:#44546A;margin-top:3px;"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:7.5pt;">Attn:</span> ${project.clientContact}</div>` : ""}
-        ${project.primeProjectNumber ? `<div style="font-size:9pt;color:#44546A;">Prime #: ${project.primeProjectNumber}</div>` : ""}
+        ${(() => {
+          const proposalPocs = ((project.projectContacts || {}).proposal || []).filter(p => p && p.name);
+          return proposalPocs.map(poc => {
+            const emailPart = poc.email ? ' <span style="color:#8a9bb0;">&middot; ' + poc.email + '</span>' : "";
+            return '<div class="meta-sub"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:7.5pt;">Attn:</span> ' + poc.name + emailPart + '</div>';
+          }).join("");
+        })()}
+        <div class="meta-sub" style="font-style:italic;color:#8a9bb0;margin-top:6px;">Sent via email</div>
       </div>
     </div>
 
     <div class="section-heading">Fee Schedule</div>
-    <table class="line-items" style="margin-bottom:24px;">
+    <table class="fee-table">
       <thead>
         <tr>
-          <th style="padding:8px 14px;">Phase of Work</th>
-          <th style="text-align:right;padding:8px 14px;">Fee</th>
+          <th>Phase of Work</th>
+          <th class="right">Fee</th>
         </tr>
       </thead>
       <tbody>
         ${phaseRows}
         ${coRows}
-        <tr style="background:#E7E6E6;page-break-inside:avoid;page-break-before:avoid;">
-          <td style="font-weight:700;padding:10px 14px;font-size:10pt;">Total ${project.feeType || "Lump Sum"} Fee</td>
-          <td style="text-align:right;font-family:monospace;font-weight:700;color:#1F3864;padding:10px 14px;font-size:11pt;">$${Math.round(totalContractFee).toLocaleString()}</td>
+        <tr class="total">
+          <td>Total ${project.feeType || "Lump Sum"} Fee</td>
+          <td class="right">$${Math.round(totalContractFee).toLocaleString()}</td>
         </tr>
       </tbody>
     </table>
 
-    <div style="page-break-inside:avoid;">
-      <div class="amount-box">
-        <div class="amount-inner" style="min-width:260px;">
-          <div style="font-size:8pt;letter-spacing:1px;text-transform:uppercase;opacity:0.8;margin-bottom:4px;">${project.feeType || "Lump Sum"} Fee</div>
-          <div style="font-size:22pt;font-weight:800;font-family:monospace;letter-spacing:-0.5px;">$${Math.round(totalContractFee).toLocaleString()}</div>
-        </div>
-      </div>
+    <div class="total-callout">
+      <div class="label">${project.feeType || "Lump Sum"} Fee</div>
+      <div class="value">$${Math.round(totalContractFee).toLocaleString()}</div>
+    </div>
 
-      <div style="margin-top:32px;padding:16px 18px;border:1px solid #E7E6E6;border-radius:6px;font-size:9pt;color:#44546A;line-height:1.8;">
-        <strong style="color:#1F3864;font-size:9.5pt;">Notes &amp; Assumptions</strong><br>
-        This fee proposal is submitted in conjunction with the attached Scope of Services and Terms &amp; Conditions, which are incorporated herein by reference and form part of this proposal.
-        The fees listed above are based on the scope of work described in the attachment. Any modifications to the scope may result in an adjustment to the proposed fee.
-        This proposal is valid for 90 days from the date of issuance.
-      </div>
+    <div class="notes-block">
+      <strong>Notes &amp; Assumptions</strong><br>
+      This fee proposal is submitted in conjunction with the attached Scope of Services and Terms &amp; Conditions, which are incorporated herein by reference and form part of this proposal. The fees listed above are based on the scope of work described in the attachment. Any modifications to the scope may result in an adjustment to the proposed fee. This proposal is valid for 90 days from the date of issuance.
+    </div>
 
-      <div style="margin-top:36px;display:grid;grid-template-columns:1fr 1fr;gap:48px;">
-        <div>
-          <div style="border-top:1.5px solid #1F3864;padding-top:8px;">
-            <div style="font-size:9pt;color:#1F3864;font-weight:600;">SETTY &amp; Associates, LTD, PC</div>
-            <div style="font-size:8.5pt;color:#44546A;margin-top:2px;">Authorized Signature</div>
-            <div style="margin-top:18px;font-size:8.5pt;color:#44546A;">Date: _______________________</div>
-          </div>
-        </div>
-        <div>
-          <div style="border-top:1.5px solid #1F3864;padding-top:8px;">
-            <div style="font-size:9pt;color:#1F3864;font-weight:600;">${project.prime || project.clientName || "Client / Prime"}</div>
-            <div style="font-size:8.5pt;color:#44546A;margin-top:2px;">Accepted Signature</div>
-            <div style="margin-top:18px;font-size:8.5pt;color:#44546A;">Date: _______________________</div>
-          </div>
-        </div>
+    <div class="sig-grid">
+      <div class="sig-block">
+        <div class="sig-name">SETTY &amp; Associates, LTD, PC</div>
+        <div class="sig-role">Authorized Signature</div>
+        <div class="sig-date">Date: _______________________</div>
+      </div>
+      <div class="sig-block">
+        <div class="sig-name">${project.prime || project.clientName || "Client / Prime"}</div>
+        <div class="sig-role">Accepted Signature</div>
+        <div class="sig-date">Date: _______________________</div>
       </div>
     </div>
 
     <div class="doc-footer">
-      <span>SETTY &amp; Associates, LTD, PC</span>
-      <span>Fee Proposal · ${project.name || "Project"}</span>
-      <span>${fmtDate(new Date().toISOString().slice(0,10))}</span>
+      <span>SETTY &amp; Associates, Ltd, PC · Fee Proposal</span>
+      <span>${project.name || ""} · ${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
     </div>
-  `;
-  printDocument(html, "Fee Proposal — " + (project.name || "Project"));
+  </div>
+</body>
+</html>`);
+  win.document.close();
 }
 
 
@@ -14278,12 +14341,6 @@ function printScopeOfServices(project) {
     .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
     .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
     .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
-    /* Letterhead-style addressee block — surfaces the project's contact more
-       prominently than the meta-grid Attn line. */
-    .addressee { margin: 0 0 24px; padding: 14px 18px; background: #f8f9fb; border-left: 4px solid #1F3864; border-radius: 0 4px 4px 0; }
-    .addressee-label { font-size: 8pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
-    .addressee-name { font-size: 12pt; font-weight: 600; color: #1F3864; }
-    .addressee-org { font-size: 9.5pt; color: #44546A; margin-top: 2px; }
     /* Rich text content styles */
     .scope-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
     .scope-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
@@ -14313,7 +14370,7 @@ function printScopeOfServices(project) {
   <div class="page">
     <div class="doc-header">
       <div>
-        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:48px;display:block;" />
+        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:28px;display:block;" />
         <div style="font-size:8pt;color:#44546A;margin-top:5px;letter-spacing:0.8px;font-weight:500;">&amp; ASSOCIATES, LTD, PC</div>
         <div style="margin-top:9px;font-size:8pt;color:#8a9bb0;line-height:1.65;">Fairfax, VA (HQ) &middot; Washington DC &middot; New York &middot; Baltimore<br>Atlanta &middot; Philadelphia &middot; Los Angeles &middot; Tampa &middot; India</div>
       </div>
@@ -14326,14 +14383,6 @@ function printScopeOfServices(project) {
       </div>
     </div>
 
-    ${(project.clientContact || project.prime || project.clientName) ? `
-    <div class="addressee">
-      <div class="addressee-label">Addressed To</div>
-      <div class="addressee-name">${project.clientContact || project.prime || project.clientName}</div>
-      ${project.clientContact && (project.prime || project.clientName) ? '<div class="addressee-org">' + (project.prime || project.clientName) + '</div>' : ''}
-    </div>
-    ` : ''}
-
     <div class="meta-grid">
       <div class="meta-block">
         <div class="meta-label">Project</div>
@@ -14343,9 +14392,17 @@ function printScopeOfServices(project) {
       <div class="meta-block">
         <div class="meta-label">Client / Prime</div>
         <div class="meta-value">${project.prime || project.clientName || "—"}</div>
-        ${project.clientContact ? '<div class="meta-sub"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:7.5pt;">Attn:</span> ' + project.clientContact + "</div>" : ""}
-        ${project.primeProjectNumber ? '<div class="meta-sub">Prime #: ' + project.primeProjectNumber + "</div>" : ""}
-        ${project.projectManager ? '<div class="meta-sub">PM: ' + project.projectManager + "</div>" : ""}
+        ${(() => {
+          // Surface the proposal contact (name + email) below Client/Prime —
+          // that's the person the SOW is being addressed to. Multiple proposal
+          // contacts each get their own Attn line.
+          const proposalPocs = ((project.projectContacts || {}).proposal || []).filter(p => p && p.name);
+          return proposalPocs.map(poc => {
+            const emailPart = poc.email ? ' <span style="color:#8a9bb0;">&middot; ' + poc.email + '</span>' : "";
+            return '<div class="meta-sub"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:7.5pt;">Attn:</span> ' + poc.name + emailPart + '</div>';
+          }).join("");
+        })()}
+        <div class="meta-sub" style="font-style:italic;color:#8a9bb0;margin-top:6px;">Sent via email</div>
       </div>
     </div>
 
