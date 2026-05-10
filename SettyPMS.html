@@ -380,6 +380,7 @@ function newProject(overrides = {}) {
     phaseSubFees: {},
     contractExpirationDate: "",
     archived: false,
+    checklists: [],
     buildingCategory: "Office",
     squareFootage: 0,
     manualConstructionCost: 0,
@@ -7820,6 +7821,217 @@ function ProjectDirectoryView({ project, onChange, clients }) {
   );
 }
 
+// ─── PROJECT CHECKLISTS ──────────────────────────────────────────────────────
+function ProjectChecklistsView({ project, onChange }) {
+  const checklists = project.checklists || [];
+  const [showPicker, setShowPicker] = React.useState(false);
+  const [expandedId, setExpandedId] = React.useState(null);
+  const [collapsedSections, setCollapsedSections] = React.useState({}); // {instanceId+sectionName: true}
+
+  function instantiate(templateId) {
+    const tpl = CHECKLIST_TEMPLATES.find(t => t.id === templateId);
+    if (!tpl) return;
+    const inst = newChecklistInstance(tpl, { addedBy: getCurrentUser() });
+    onChange({ ...project, checklists: [...checklists, inst] });
+    setShowPicker(false);
+    setExpandedId(inst.id);
+  }
+  function deleteInstance(id) {
+    if (!window.confirm("Delete this checklist instance?\n\nAll item check state on this instance will be lost. This doesn't affect the firm-wide template.")) return;
+    onChange({ ...project, checklists: checklists.filter(c => c.id !== id) });
+    if (expandedId === id) setExpandedId(null);
+  }
+  function renameInstance(id, newName) {
+    onChange({ ...project, checklists: checklists.map(c => c.id === id ? { ...c, instanceName: newName } : c) });
+  }
+  function updateItem(instanceId, itemId, patch) {
+    const now = new Date().toISOString();
+    const user = getCurrentUser();
+    onChange({
+      ...project,
+      checklists: checklists.map(c => {
+        if (c.id !== instanceId) return c;
+        return {
+          ...c,
+          items: c.items.map(i => {
+            if (i.itemId !== itemId) return i;
+            const next = { ...i, ...patch };
+            // Stamp who/when on first transition into done.
+            if (patch.done === true && !i.done) {
+              next.checkedBy = user;
+              next.checkedAt = now;
+            }
+            // Clearing done unstamps so we don't preserve stale signatures.
+            if (patch.done === false) { next.checkedBy = ""; next.checkedAt = ""; }
+            return next;
+          }),
+        };
+      }),
+    });
+  }
+  function toggleSectionCollapse(instanceId, sectionName) {
+    const k = instanceId + "::" + sectionName;
+    setCollapsedSections(s => ({ ...s, [k]: !s[k] }));
+  }
+
+  return (
+    <div style={{ paddingBottom: 40 }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>Checklists</div>
+          <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5 }}>
+            QA / coordination checklists per project. Templates are firm-wide; each instance tracks check / N/A / notes independently.
+          </div>
+        </div>
+        <Btn variant="primary" onClick={() => setShowPicker(true)}>+ Add Checklist</Btn>
+      </div>
+
+      {/* Template picker */}
+      {showPicker && (
+        <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 10, padding: 14, marginBottom: 18 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10, color: P.accentLight }}>Pick a checklist template</div>
+          {CHECKLIST_TEMPLATES.map(tpl => {
+            const total = checklistTotalItems(tpl);
+            return (
+              <div key={tpl.id}
+                onClick={() => instantiate(tpl.id)}
+                style={{ padding: "10px 12px", border: `1px solid ${P.border}`, borderRadius: 6, marginBottom: 6, cursor: "pointer", transition: "background 0.1s, border-color 0.1s" }}
+                onMouseOver={e => { e.currentTarget.style.background = P.accentDim; e.currentTarget.style.borderColor = P.accent; }}
+                onMouseOut={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = P.border; }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{tpl.name}</div>
+                {tpl.description && <div style={{ fontSize: 12, color: P.textMuted, marginTop: 2 }}>{tpl.description}</div>}
+                <div style={{ fontSize: 11, color: P.textDim, marginTop: 4 }}>{tpl.sections.length} sections · {total} items</div>
+              </div>
+            );
+          })}
+          <div style={{ marginTop: 6 }}>
+            <Btn variant="ghost" small onClick={() => setShowPicker(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Existing instances */}
+      {checklists.length === 0 && !showPicker && (
+        <div style={{ color: P.textDim, padding: "40px 20px", textAlign: "center", fontSize: 13, lineHeight: 1.6, background: P.bg, border: `1px dashed ${P.border}`, borderRadius: 8 }}>
+          No checklists added to this project yet.<br/>Click <strong>+ Add Checklist</strong> to instantiate one from the firm-wide templates.
+        </div>
+      )}
+
+      {checklists.map(inst => {
+        const tpl = CHECKLIST_TEMPLATES.find(t => t.id === inst.templateId);
+        if (!tpl) return null; // template was removed; instance is orphaned
+        const progress = checklistInstanceProgress(inst);
+        const isOpen = expandedId === inst.id;
+        const itemStateById = Object.fromEntries((inst.items || []).map(i => [i.itemId, i]));
+        const pctDone = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
+        return (
+          <div key={inst.id} style={{ background: P.card, border: `1px solid ${progress.complete ? P.green : P.border}`, borderRadius: 10, marginBottom: 14, overflow: "hidden" }}>
+            {/* Instance header */}
+            <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 14, cursor: "pointer", borderBottom: isOpen ? `1px solid ${P.border}` : "none" }}
+              onClick={() => setExpandedId(isOpen ? null : inst.id)}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <input value={inst.instanceName || tpl.name}
+                    onClick={e => e.stopPropagation()}
+                    onChange={e => renameInstance(inst.id, e.target.value)}
+                    style={{ background: "transparent", border: "none", color: P.text, fontWeight: 700, fontSize: 14, padding: 0, flex: 1, minWidth: 200 }} />
+                  {progress.complete && <Badge color={{ bg: P.greenDim, text: P.green }} text="Complete" />}
+                </div>
+                <div style={{ fontSize: 11, color: P.textMuted, marginTop: 3 }}>
+                  {progress.done}/{progress.total} done
+                  {progress.na > 0 && <span> · {progress.na} N/A</span>}
+                  {inst.addedAt && <span style={{ color: P.textDim }}> · added {fmtDate(inst.addedAt.slice(0,10))}{inst.addedBy ? " by " + inst.addedBy : ""}</span>}
+                </div>
+                {/* Progress bar */}
+                <div style={{ marginTop: 6, height: 4, background: P.bg, borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ width: pctDone + "%", height: "100%", background: progress.complete ? P.green : P.accent, transition: "width 0.2s" }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <Btn small variant="danger" onClick={e => { e.stopPropagation(); deleteInstance(inst.id); }}>✕</Btn>
+                <span style={{ color: P.textDim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+              </div>
+            </div>
+
+            {/* Expanded item list */}
+            {isOpen && (
+              <div style={{ padding: "10px 16px 16px" }}>
+                {tpl.sections.map(sec => {
+                  const collapsedKey = inst.id + "::" + sec.name;
+                  const collapsed = !!collapsedSections[collapsedKey];
+                  const secStates = sec.items.map(it => itemStateById[it.id] || { done: false, na: false });
+                  const secDone = secStates.filter(s => s.done).length;
+                  const secNA = secStates.filter(s => s.na && !s.done).length;
+                  return (
+                    <div key={sec.name} style={{ marginBottom: 14 }}>
+                      <div onClick={() => toggleSectionCollapse(inst.id, sec.name)}
+                        style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "6px 0", borderBottom: `1px solid ${P.border}`, marginBottom: 6 }}>
+                        <span style={{ color: P.textDim, fontSize: 11 }}>{collapsed ? "▶" : "▼"}</span>
+                        <span style={{ fontWeight: 700, fontSize: 12, color: P.accentLight, textTransform: "uppercase", letterSpacing: ".05em", flex: 1 }}>{sec.name}</span>
+                        <span style={{ fontSize: 11, color: P.textDim }}>{secDone}/{sec.items.length}{secNA ? " · " + secNA + " N/A" : ""}</span>
+                      </div>
+                      {!collapsed && sec.items.map(it => {
+                        const state = itemStateById[it.id] || { done: false, na: false, note: "", checkedBy: "", checkedAt: "" };
+                        const muted = state.done || state.na;
+                        return (
+                          <div key={it.id} style={{ padding: "8px 10px", borderBottom: `1px solid ${P.border}`, opacity: muted ? 0.65 : 1, transition: "opacity 0.15s" }}>
+                            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                              <input type="checkbox" checked={!!state.done}
+                                onChange={e => updateItem(inst.id, it.id, { done: e.target.checked, na: e.target.checked ? false : state.na })}
+                                style={{ marginTop: 3, width: 16, height: 16, cursor: "pointer", flexShrink: 0 }} />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 13, lineHeight: 1.5, color: state.done ? P.textMuted : P.text, textDecoration: state.done ? "line-through" : "none" }}>
+                                  {it.text}
+                                </div>
+                                {it.details && it.details.length > 0 && (
+                                  <ul style={{ margin: "4px 0 0 18px", padding: 0, fontSize: 11.5, color: P.textMuted, lineHeight: 1.5 }}>
+                                    {it.details.map((d, i) => <li key={i} style={{ marginBottom: 1 }}>{d}</li>)}
+                                  </ul>
+                                )}
+                                {state.note && (
+                                  <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginTop: 4, padding: "4px 8px", background: P.bg, borderLeft: `2px solid ${P.accent}`, borderRadius: 2 }}>
+                                    {state.note}
+                                  </div>
+                                )}
+                                {state.checkedBy && state.checkedAt && (
+                                  <div style={{ fontSize: 10, color: P.textDim, marginTop: 3 }}>
+                                    ✓ checked by {state.checkedBy} on {fmtDate(state.checkedAt.slice(0,10))}
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
+                                <label style={{ fontSize: 10, color: state.na ? P.yellow : P.textDim, cursor: "pointer", display: "flex", alignItems: "center", gap: 3, fontWeight: state.na ? 700 : 400 }}>
+                                  <input type="checkbox" checked={!!state.na}
+                                    onChange={e => updateItem(inst.id, it.id, { na: e.target.checked, done: e.target.checked ? false : state.done })}
+                                    style={{ width: 12, height: 12, cursor: "pointer" }} />
+                                  N/A
+                                </label>
+                                <button onClick={() => {
+                                    const next = window.prompt("Note for this item:", state.note || "");
+                                    if (next !== null) updateItem(inst.id, it.id, { note: next.trim() });
+                                  }}
+                                  title={state.note ? "Edit note" : "Add note"}
+                                  style={{ background: "none", border: "none", color: state.note ? P.accentLight : P.textDim, cursor: "pointer", fontSize: 12, padding: 0 }}>
+                                  📝
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── TEAM MEMBERS ─────────────────────────────────────────────────────────────
 
 const WBS_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection"];
@@ -11866,7 +12078,7 @@ function PhotosView({ project }) {
 // and was previously buried at position 17 (between "Projections" and "Photos").
 // Renamed from "Intelligence" so the label matches what users actually use it
 // for: investigating the history of a specific topic on a project.
-const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos"];
+const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "Checklists"];
 
 // Tab groupings — top-level "sections" the user navigates by, with the existing
 // tabs as their sub-pages. Order reflects the natural project workflow.
@@ -11879,6 +12091,7 @@ const TAB_GROUPS = [
   { name: "Fee",                         tabs: ["Fee Calculator", "Change Orders"] },
   { name: "Team",                        tabs: ["Team"] },
   { name: "Schedule",                    tabs: ["Schedule", "Gantt"] },
+  { name: "QA",                          tabs: ["Checklists"] },
   { name: "Construction Administration", tabs: ["RFIs", "Submittals"] },
   { name: "Subconsultants",              tabs: ["Subconsultants"] },
   { name: "Financials",                  tabs: ["Financials", "Reimbursables", "Projections"] },
@@ -12231,6 +12444,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} clients={clients} />}
+        {tab === "Checklists" && <ProjectChecklistsView project={project} onChange={onUpdate} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Gantt" && <GanttView project={project} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
@@ -15649,6 +15863,252 @@ function printTermsAndConditions(project) {
 // Firm-standard hourly rates — preloaded into every project. Stored under
 // project.hourlyRates as [{ role, rate }, ...]. Editable per project, with a
 // reset-to-default option. Updates here only need to happen in one place.
+// ─── CHECKLIST TEMPLATES ─────────────────────────────────────────────────────
+// Firm-wide QA/QC checklist templates. Code-defined (not user-editable in PMS)
+// so checklist content stays consistent across projects. Each item has a
+// stable id so future template edits don't break per-project state.
+//
+// Each item supports:
+//  - text:    main instruction line
+//  - details: optional bullet sub-points (examples, instructions, sub-checks)
+//
+// Per-project state lives in project.checklists[].items[] keyed by item id.
+const CHECKLIST_TEMPLATES = [
+  {
+    id: "deliverable-qa",
+    name: "Deliverable QA Checklist",
+    description: "General quality control review for design submissions across MEPFP disciplines.",
+    sections: [
+      {
+        name: "General Document Verification",
+        items: [
+          { id: "qa-001", text: "Verify the project name, address, block/lot, client name, and project number match exactly on:", details: ["Cover sheet", "Title blocks", "Specifications", "Narratives", "Calculations", "Reports"] },
+          { id: "qa-002", text: "Verify all disciplines are using the same issue date and revision date." },
+          { id: "qa-003", text: "Verify all sheet numbers listed on the drawing index are included in the PDF set." },
+          { id: "qa-004", text: "Verify no sheets are duplicated, skipped, or mislabeled." },
+          { id: "qa-005", text: "Verify north arrows point in the same direction on all floor plans." },
+          { id: "qa-006", text: "Verify floor plans from all disciplines use the same orientation and architectural background." },
+          { id: "qa-007", text: "Verify all plans, sections, details, and elevations include drawing scales." },
+          { id: "qa-008", text: "Verify all required narratives, specifications, calculations, reports, and supporting documents are included in the submission package." },
+          { id: "qa-009", text: "Verify all calculations are signed, dated, and saved in the project folder." },
+          { id: "qa-010", text: "Verify project phase is correctly identified throughout the documents:", details: ["SD", "DD", "CD", "Permit", "Bid", "Record Drawings", "Bulletin", "Addendum"] },
+          { id: "qa-011", text: "Verify code versions match across all disciplines and match architect's code summary." },
+        ],
+      },
+      {
+        name: "Drawing Graphics & Presentation",
+        items: [
+          { id: "qa-020", text: "Review plotted PDF at full size and half size. Verify all text remains readable at half size.", details: ["Recommended minimum plotted text heights:", "Sheet titles: 3/16\"", "Major notes: 1/8\"", "General notes/dimensions: 3/32\" minimum"] },
+          { id: "qa-021", text: "Verify text does not overlap:", details: ["Walls", "Ductwork", "Piping", "Conduit", "Equipment", "Other text"] },
+          { id: "qa-022", text: "Verify notes and dimensions do not extend outside sheet borders." },
+          { id: "qa-023", text: "Verify lineweights are visually consistent:", details: ["Existing work lighter than new work", "Demolition distinct from new work", "Major equipment darker than background systems"] },
+          { id: "qa-024", text: "Verify hidden lines, centerlines, and demolition graphics are visually distinguishable." },
+          { id: "qa-025", text: "Verify all detail callouts reference the correct detail and sheet number." },
+          { id: "qa-026", text: "Verify section cuts and matchlines reference continuation sheets correctly." },
+          { id: "qa-027", text: "Verify all schedules fit fully within the drawing sheet and are not cut off during plotting." },
+          { id: "qa-028", text: "Verify viewport titles match the plans/details shown." },
+          { id: "qa-029", text: "Verify legends and abbreviations include all symbols used on the drawings." },
+          { id: "qa-030", text: "Verify keynote numbering is sequential and no keynote references are missing." },
+          { id: "qa-031", text: "Verify no stray drafting lines, duplicate notes, empty text boxes, visible construction geometry, or CAD artifacts remain." },
+          { id: "qa-032", text: "Search drawings/specifications for unresolved placeholders and verify they are removed or clarified:", details: ["TBD", "VERIFY", "NIC", "XXX", "Lorem Ipsum", "By Others", "Insert Here"] },
+          { id: "qa-033", text: "Verify all sheets plot correctly without:", details: ["Missing xrefs", "Shifted backgrounds", "Corrupt graphics", "Blank viewports", "Missing raster images"] },
+          { id: "qa-034", text: "Verify title blocks are complete and consistent on all sheets." },
+        ],
+      },
+      {
+        name: "Room Names / Architectural Coordination",
+        items: [
+          { id: "qa-040", text: "Verify room names and room numbers match architectural drawings exactly." },
+          { id: "qa-041", text: "Verify room usage shown on MEPFP drawings matches architectural room function.", details: ["Examples:", "Electrical rooms", "IT rooms", "Mechanical rooms", "Toilet rooms", "Storage rooms"] },
+          { id: "qa-042", text: "Verify MEPFP equipment is not located in architecturally inappropriate spaces unless intentional.", details: ["Examples:", "No electrical panels in toilet rooms", "No access panels centered in decorative ceilings", "No exposed piping in finished feature spaces unless intentional"] },
+        ],
+      },
+      {
+        name: "Equipment Coordination",
+        items: [
+          { id: "qa-050", text: "Compare MEPFP plans and verify major equipment appears in the same location on all disciplines." },
+          { id: "qa-051", text: "Verify equipment shown on one discipline has corresponding utility connections shown on other disciplines.", details: ["Examples:", "HVAC equipment → power + condensate + controls", "Pumps → power + drains + controls", "Water heaters → power/gas + venting + drains", "Fire pump → power + fire alarm + drains"] },
+          { id: "qa-052", text: "Verify equipment tags match exactly between:", details: ["Plans", "Schedules", "Details", "Specifications", "Control diagrams"] },
+          { id: "qa-053", text: "Verify all scheduled equipment appears on plans." },
+          { id: "qa-054", text: "Verify no equipment appears on plans without being included on schedules." },
+          { id: "qa-055", text: "Verify manufacturer names and basis-of-design information are coordinated throughout the documents." },
+        ],
+      },
+      {
+        name: "Electrical Voltage / Power Coordination",
+        items: [
+          { id: "qa-060", text: "Verify electrical characteristics for equipment are coordinated between mechanical/plumbing schedules and electrical drawings.", details: ["Locate equipment on the mechanical/plumbing schedule.", "Identify: Voltage, Phase, MCA, MOP/MOCP", "Locate the same equipment on electrical drawings and panel schedules.", "Verify voltages match exactly (480V → 480V panel, 208V → 120/208V panel, no 120V → 480V).", "Verify phases match: single-phase → single-phase breaker, three-phase → 3-pole breaker.", "Verify no equipment appears on mechanical/plumbing schedules without electrical connection shown.", "Verify no electrical connections exist for equipment no longer shown."] },
+          { id: "qa-061", text: "Verify disconnect switches are shown where required for major mechanical equipment." },
+          { id: "qa-062", text: "Verify electrical panel names and voltages are coordinated consistently throughout drawings." },
+          { id: "qa-063", text: "Verify electrical panels are not shown recessed into fire-rated walls unless specifically detailed and permitted." },
+        ],
+      },
+      {
+        name: "Electrical Clearances",
+        items: [
+          { id: "qa-070", text: "Verify minimum electrical working clearance in front of panels, switchboards, MCCs, transformers, and disconnects.", details: ["Minimum required clearances:", "Depth: 3'-0\" minimum", "Width: 30\" minimum or equipment width", "Headroom: 6'-6\" minimum"] },
+          { id: "qa-071", text: "Verify clearance spaces remain free of:", details: ["Piping", "Ductwork", "Equipment", "Stored items", "Door swings"] },
+          { id: "qa-072", text: "Verify no domestic water, sanitary, condensate, or unrelated piping passes above electrical equipment." },
+          { id: "qa-073", text: "Verify electrical equipment is not located:", details: ["Inside bathrooms", "Inside closets without access", "Behind doors"] },
+        ],
+      },
+      {
+        name: "Ceiling Coordination",
+        items: [
+          { id: "qa-080", text: "Overlay reflected ceiling plans and verify lighting, diffusers, sprinkler heads, speakers, cameras, access panels, and smoke detectors do not overlap." },
+          { id: "qa-081", text: "Verify sprinkler heads are not centered directly on:", details: ["Light fixtures", "Diffusers", "Ceiling speakers"] },
+          { id: "qa-082", text: "Verify access panels are not directly adjacent to lights or diffusers.", details: ["Preferred spacing: approximately 12\" minimum separation where possible"] },
+          { id: "qa-083", text: "Verify ceiling devices are centered within ceiling tiles where ACT ceilings are used." },
+          { id: "qa-084", text: "Verify ceiling-mounted devices do not conflict with:", details: ["Structural beams", "Soffits", "Decorative ceiling elements"] },
+          { id: "qa-085", text: "Verify ceiling spaces appear reasonably coordinated.", details: ["General rule:", "Large duct mains routed first / highest priority", "Smaller piping/conduit routed around larger systems"] },
+          { id: "qa-086", text: "Verify ceiling congestion does not appear physically impossible in corridors or low ceiling spaces." },
+        ],
+      },
+      {
+        name: "Equipment Access & Maintenance Clearances",
+        items: [
+          { id: "qa-090", text: "Verify all major equipment has working/service clearance.", details: ["Typical minimum clearances:", "Electrical panels: 36\" front clearance", "AHUs: 36\" service side clearance", "Pumps: 24\"-36\" around motor side", "Boilers/water heaters: 30\"-36\" front clearance"] },
+          { id: "qa-091", text: "Verify equipment doors can fully open without hitting walls or adjacent equipment." },
+          { id: "qa-092", text: "Verify filters, motors, belts, coils, and access doors can be removed without demolition." },
+          { id: "qa-093", text: "Verify access panels are provided above hard ceilings for:", details: ["Dampers", "Valves", "VAV boxes", "Fire/smoke dampers", "Cleanouts"] },
+          { id: "qa-094", text: "Verify access panel sizes are appropriate:", details: ["12\"x12\" minimum small valves/devices", "18\"x18\" preferred for VAVs/fire dampers"] },
+          { id: "qa-095", text: "Verify equipment replacement paths appear possible through:", details: ["Doors", "Corridors", "Roof hatches", "Stairs"] },
+        ],
+      },
+      {
+        name: "Shafts / Risers / Penetrations",
+        items: [
+          { id: "qa-100", text: "Verify shafts align vertically floor-to-floor." },
+          { id: "qa-101", text: "Verify shaft sizes appear sufficient for systems shown." },
+          { id: "qa-102", text: "Verify major penetrations are coordinated between disciplines." },
+          { id: "qa-103", text: "Verify penetrations are not shown through structural beams unless specifically coordinated." },
+          { id: "qa-104", text: "Verify fire-rated penetrations include:", details: ["Dampers where required", "Firestopping notes/details"] },
+        ],
+      },
+      {
+        name: "Roof Coordination",
+        items: [
+          { id: "qa-110", text: "Verify rooftop equipment locations match architectural roof plans." },
+          { id: "qa-111", text: "Verify rooftop equipment does not block:", details: ["Roof hatches", "Ladders", "Egress paths", "Roof drains"] },
+          { id: "qa-112", text: "Verify minimum walking/service path around rooftop equipment.", details: ["36\" preferred minimum"] },
+          { id: "qa-113", text: "Verify rooftop equipment does not conflict with:", details: ["Skylights", "PV arrays", "Green roofs", "Architectural screens"] },
+          { id: "qa-114", text: "Verify exhaust fans and outside air intakes are separated where possible.", details: ["10'-0\" minimum where practical"] },
+          { id: "qa-115", text: "Verify plumbing vents terminate away from outside air intakes.", details: ["10'-0\" minimum where practical"] },
+        ],
+      },
+      {
+        name: "Demolition / Renovation Coordination",
+        items: [
+          { id: "qa-120", text: "Verify demolition work is graphically distinct from new work." },
+          { id: "qa-121", text: "Verify existing, demolished, relocated, and new work are clearly identified." },
+          { id: "qa-122", text: "Verify \"existing to remain\" equipment is not shown demolished elsewhere." },
+          { id: "qa-123", text: "Verify tie-ins to existing systems are clearly identified." },
+          { id: "qa-124", text: "Verify field verification notes are included where existing conditions are uncertain." },
+          { id: "qa-125", text: "Review demolition plans and renovation notes to determine whether existing systems serving occupied areas are being modified or disconnected." },
+          { id: "qa-126", text: "Verify drawings identify if temporary systems are required during construction:", details: ["Temporary power", "Temporary HVAC", "Temporary water service", "Temporary fire protection service"] },
+          { id: "qa-127", text: "Verify planned shutdowns are identified where systems connect to existing building systems.", details: ["Examples:", "Electrical tie-ins", "Water shutdowns", "Sprinkler shutdowns", "Fire alarm tie-ins"] },
+          { id: "qa-128", text: "Verify phased work areas are clearly identified where applicable." },
+          { id: "qa-129", text: "Verify notes require contractor coordination with owner before utility shutdowns where appropriate." },
+        ],
+      },
+      {
+        name: "Drawings / Specifications Coordination",
+        items: [
+          { id: "qa-140", text: "Verify schedules match drawings:", details: ["Voltage", "Airflow", "Pipe sizes", "GPM", "BTUH", "Circuit information"] },
+          { id: "qa-141", text: "Verify drawing notes and specifications do not conflict." },
+          { id: "qa-142", text: "Verify specification section numbers and titles are correct." },
+          { id: "qa-143", text: "Verify unused specification options and placeholder text are removed." },
+          { id: "qa-144", text: "Verify delegated design items are clearly identified." },
+          { id: "qa-145", text: "Verify trade responsibility boundaries are clearly identified where scope overlap may occur." },
+          { id: "qa-146", text: "Verify alternates, allowances, deferred submittals, and owner-furnished equipment are clearly identified." },
+        ],
+      },
+      {
+        name: "Optional — NYC DOB / Agency Review Items",
+        items: [
+          { id: "qa-150", text: "Verify sheet numbering follows NYC DOB discipline conventions where applicable:", details: ["A = Architectural", "M = Mechanical", "E = Electrical", "P = Plumbing", "FP = Fire Protection", "FA = Fire Alarm", "EN = Energy"] },
+          { id: "qa-151", text: "Verify sheet numbering format is consistent throughout the set.", details: ["Example: M001.00 / M101.00 / M601.00"] },
+          { id: "qa-152", text: "Verify required NYC Special Inspections are identified in drawings or specifications." },
+          { id: "qa-153", text: "Verify Energy Code Progress Inspections are referenced where required." },
+          { id: "qa-154", text: "Verify required DOB notes are included where applicable." },
+          { id: "qa-155", text: "Verify Con Edison coordination notes are included where service modifications occur." },
+          { id: "qa-156", text: "Verify FDNY coordination notes are included where applicable." },
+          { id: "qa-157", text: "Verify agency-specific title blocks and submission requirements are included where required:", details: ["DOB", "SCA", "DASNY", "SUCF", "PANYNJ", "EDC"] },
+        ],
+      },
+      {
+        name: "Commonly Missed / High-Risk Coordination Items",
+        items: [
+          { id: "qa-200", text: "Verify room names and room numbers are consistent between all disciplines and architectural backgrounds.", details: ["Common issue: Architect updates room numbers late in project and MEP sheets are not refreshed."] },
+          { id: "qa-201", text: "Verify all equipment scheduled on plans has a tag shown next to the equipment on floor plans.", details: ["Common issue: Equipment shown graphically but not tagged, creating confusion during submittals and CA."] },
+          { id: "qa-202", text: "Verify all equipment tags shown on plans exist on schedules.", details: ["Common issue: Deleted equipment remains in schedules."] },
+          { id: "qa-203", text: "Verify no duplicate equipment tags exist.", details: ["Examples:", "Two EF-1 tags", "Duplicate panel names", "Duplicate VAV numbers"] },
+          { id: "qa-204", text: "Verify ceiling heights appear reasonable where large ductwork crosses corridors or beams.", details: ["General rule: If duct mains, piping, lighting, and structure all occupy the same space, flag for review."] },
+          { id: "qa-205", text: "Verify thermostats, switches, and wall devices are not located behind doors, casework, TVs/displays, or inside millwork.", details: ["Preferred mounting heights:", "Thermostats: approximately 48\" AFF", "Light switches: approximately 44\"-48\" AFF"] },
+          { id: "qa-206", text: "Verify access panels are shown for fire/smoke dampers, control valves, VAV boxes, cleanouts, and balancing dampers.", details: ["Common issue: Device exists above hard ceiling but no access panel shown."] },
+          { id: "qa-207", text: "Verify plumbing cleanouts are not hidden behind millwork, inside inaccessible chases, or above hard ceilings without access." },
+          { id: "qa-208", text: "Verify floor drains are located in rooms likely to require drainage.", details: ["Examples: Mechanical rooms, Boiler rooms, Pump rooms, AHU rooms", "Common issue: Equipment with condensate or relief discharge but no nearby drain."] },
+          { id: "qa-209", text: "Verify electrical panels are not blocked by:", details: ["Doors", "Casework", "Plumbing fixtures", "Ductwork"] },
+          { id: "qa-210", text: "Verify no ductwork or piping passes directly through structural beams unless intentionally coordinated." },
+          { id: "qa-211", text: "Verify fire/smoke dampers are shown where ducts pass through fire-rated walls or shafts.", details: ["Common issue: Architect changes wall rating late in project."] },
+          { id: "qa-212", text: "Verify shafts continue vertically floor-to-floor and are not accidentally offset." },
+          { id: "qa-213", text: "Verify equipment requiring outside air or exhaust connections actually has duct routing shown.", details: ["Common issue: Equipment scheduled but no duct connection shown."] },
+          { id: "qa-214", text: "Verify mechanical equipment requiring condensate drainage has condensate piping shown.", details: ["Examples: FCUs, VRF indoor units, AHUs, Split systems"] },
+          { id: "qa-215", text: "Verify roof drains, overflow drains, and plumbing vents are coordinated with rooftop equipment.", details: ["Common issue: Equipment placed directly over drain locations."] },
+          { id: "qa-216", text: "Verify rooftop equipment does not create inaccessible roof corners or block maintenance pathways." },
+          { id: "qa-217", text: "Verify louvers shown on floor plans generally align with architectural elevations.", details: ["Common issue: MEP adds louvers but elevations are never updated."] },
+          { id: "qa-218", text: "Verify electrical panel schedules are balanced reasonably between phases.", details: ["General rule: Do not allow one phase to be overloaded significantly compared to others."] },
+          { id: "qa-219", text: "Verify panel schedules do not contain spare circuits feeding equipment, duplicate circuit numbers, or empty descriptions for active circuits." },
+          { id: "qa-220", text: "Verify lighting fixture types shown on plans match fixture schedule.", details: ["Common issue: Fixture renamed on one sheet only."] },
+          { id: "qa-221", text: "Verify emergency lighting and exit signs appear in:", details: ["Exit corridors", "Stairs", "Egress paths"] },
+          { id: "qa-222", text: "Verify sprinkler heads are not shown directly centered on diffusers, light fixtures, or ceiling speakers." },
+          { id: "qa-223", text: "Verify wall-mounted devices are not placed directly on glazing, mirrors, or movable partitions." },
+          { id: "qa-224", text: "Verify all dimensions critical to MEPFP coordination are shown where needed.", details: ["Examples: Large equipment pads, Utility clearances, Shaft dimensions, Major sleeves"] },
+          { id: "qa-225", text: "Verify demolition plans clearly indicate whether existing equipment is:", details: ["Removed", "Relocated", "Reused", "Remains in place", "Common issue: Contractor confusion leading to unintended demolition."] },
+          { id: "qa-226", text: "Verify there are no disconnected systems shown graphically.", details: ["Examples:", "Ducts ending without connection", "Piping not connecting to equipment", "Conduit not terminating anywhere"] },
+          { id: "qa-227", text: "Verify all abbreviations used on drawings appear in the abbreviation list." },
+          { id: "qa-228", text: "Verify all symbols shown on drawings appear in legends." },
+          { id: "qa-229", text: "Verify equipment schedules do not contain placeholder values.", details: ["Examples: \"TBD\" airflow, \"Verify Voltage\", Missing capacities"] },
+          { id: "qa-230", text: "Verify sequence of operation references match actual equipment shown.", details: ["Common issue: Sequences copied from prior project."] },
+          { id: "qa-231", text: "Verify no notes reference incorrect project names or prior project information.", details: ["Common issue: Copied details/specifications from previous job."] },
+          { id: "qa-232", text: "Verify disciplines are using the latest architectural background.", details: ["Common issue: One discipline working from outdated floor plan."] },
+          { id: "qa-233", text: "Verify no dimensions, tags, or notes are located outside printable drawing area." },
+          { id: "qa-234", text: "Verify clouded revisions are actually revised.", details: ["Common issue: Cloud shown but no change made."] },
+          { id: "qa-235", text: "Verify all sheets have consistent spelling, capitalization, and naming conventions.", details: ["Examples: \"Elec Room\" vs \"Electrical Room\", \"Toilet Room\" vs \"Restroom\""] },
+        ],
+      },
+    ],
+  },
+];
+
+// Helpers
+function newChecklistInstance(template, overrides = {}) {
+  const items = [];
+  template.sections.forEach(sec => {
+    sec.items.forEach(it => {
+      items.push({ itemId: it.id, done: false, na: false, note: "", checkedBy: "", checkedAt: "" });
+    });
+  });
+  return {
+    id: uid(),
+    templateId: template.id,
+    instanceName: template.name,
+    addedAt: new Date().toISOString(),
+    addedBy: "",
+    items,
+    ...overrides,
+  };
+}
+function checklistTotalItems(template) {
+  return template.sections.reduce((a, s) => a + s.items.length, 0);
+}
+function checklistInstanceProgress(instance) {
+  const items = instance.items || [];
+  const done = items.filter(i => i.done).length;
+  const na = items.filter(i => i.na && !i.done).length;
+  return { done, na, total: items.length, complete: done + na === items.length && items.length > 0 };
+}
+
 const HOURLY_RATES_DEFAULT = [
   { role: "Principal",                  rate: 336 },
   { role: "Project Manager",            rate: 223 },
