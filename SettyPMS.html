@@ -7367,6 +7367,219 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
   );
 }
 
+// ─── PROJECT DIRECTORY ───────────────────────────────────────────────────────
+// Per-project address book: everyone on the project across all firms (prime,
+// client, subs, GCs, owner reps, etc.). Distinct from project.projectContacts
+// (which is Setty-relationship-typed: pm, proposal, contract POCs); the
+// directory is the flat "who's on this team" reference.
+const DIRECTORY_TYPES = ["Prime", "Client", "Architect", "GC", "Sub (Setty's)", "Sub (Other)", "Owner Rep", "Other"];
+function newDirectoryEntry(overrides = {}) {
+  return {
+    id: uid(),
+    name: "",
+    email: "",
+    phone: "",
+    title: "",
+    company: "",
+    type: "Other",
+    addedAt: new Date().toISOString(),
+    addedBy: "",
+    addedFromEmail: "",  // msgId if added via the add-in's "Add Participant" flow
+    notes: "",
+    ...overrides,
+  };
+}
+function directoryTypeColor(type) {
+  switch (type) {
+    case "Prime":         return { bg: P.accentDim, text: P.accentLight };
+    case "Client":        return { bg: P.purpleDim, text: P.purple };
+    case "Architect":     return { bg: P.greenDim,  text: P.green };
+    case "GC":            return { bg: P.yellowDim, text: P.yellow };
+    case "Sub (Setty's)": return { bg: P.redDim,    text: P.red };
+    case "Sub (Other)":   return { bg: "#1a3a3a",   text: "#5eead4" };
+    case "Owner Rep":     return { bg: "#2a1a3f",   text: "#a78bfa" };
+    default:              return { bg: P.border,    text: P.textMuted };
+  }
+}
+
+function ProjectDirectoryView({ project, onChange }) {
+  const directory = project.directory || [];
+  const [showForm, setShowForm] = React.useState(false);
+  const [form, setForm] = React.useState(newDirectoryEntry());
+  const [editId, setEditId] = React.useState(null);
+  const [search, setSearch] = React.useState("");
+  const [filterType, setFilterType] = React.useState("All");
+
+  function setF(field, val) { setForm(f => ({ ...f, [field]: val })); }
+
+  function startAdd() {
+    setForm(newDirectoryEntry());
+    setEditId(null);
+    setShowForm(true);
+  }
+  function startEdit(c) {
+    setForm({ ...c });
+    setEditId(c.id);
+    setShowForm(true);
+  }
+  function saveContact() {
+    if (!form.name.trim() && !form.email.trim()) return;
+    const next = editId
+      ? directory.map(c => c.id === editId ? { ...form, id: editId } : c)
+      : [...directory, { ...newDirectoryEntry(), ...form }];
+    onChange({ ...project, directory: next });
+    setShowForm(false);
+    setEditId(null);
+    setForm(newDirectoryEntry());
+  }
+  function removeContact(id) {
+    if (!window.confirm("Remove this contact from the project directory?\n\nThis only removes the per-project entry — it doesn't affect any other records.")) return;
+    onChange({ ...project, directory: directory.filter(c => c.id !== id) });
+  }
+
+  const filtered = directory.filter(c => {
+    if (filterType !== "All" && c.type !== filterType) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return (c.name || "").toLowerCase().includes(q)
+          || (c.company || "").toLowerCase().includes(q)
+          || (c.email || "").toLowerCase().includes(q)
+          || (c.title || "").toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  // Group by company so everyone from the same firm clusters together.
+  // Companies sorted alphabetically; entries within a company sorted by name.
+  const byCompany = {};
+  filtered.forEach(c => {
+    const key = (c.company || "").trim() || "(No Company)";
+    if (!byCompany[key]) byCompany[key] = [];
+    byCompany[key].push(c);
+  });
+  Object.values(byCompany).forEach(list => list.sort((a, b) => (a.name || "").localeCompare(b.name || "")));
+
+  return (
+    <div style={{ paddingBottom: 40 }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>Project Directory</div>
+          <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5 }}>
+            Everyone on this project — prime, client, architect, GC, subs, etc. Adds via Outlook add-in's "Add Participant" land here automatically when the email is tagged to this project.
+          </div>
+        </div>
+        <Btn variant="primary" onClick={startAdd}>+ Add Contact</Btn>
+      </div>
+
+      {/* Search + Filter */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, company, email, or title…"
+          style={{ flex: 1, minWidth: 220, fontSize: 13 }} />
+        <select value={filterType} onChange={e => setFilterType(e.target.value)} style={{ fontSize: 13 }}>
+          <option>All</option>
+          {DIRECTORY_TYPES.map(t => <option key={t}>{t}</option>)}
+        </select>
+        <span style={{ fontSize: 11, color: P.textDim }}>
+          {filtered.length} of {directory.length} {directory.length === 1 ? "contact" : "contacts"}
+        </span>
+      </div>
+
+      {/* Add/Edit form */}
+      {showForm && (
+        <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 10, padding: 18, marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: P.accentLight }}>
+            {editId ? "Edit Contact" : "Add Contact"}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <Field label="Name *">
+              <input value={form.name} onChange={e => setF("name", e.target.value)} style={{ width: "100%" }} placeholder="Full name" autoFocus />
+            </Field>
+            <Field label="Title / Role">
+              <input value={form.title} onChange={e => setF("title", e.target.value)} style={{ width: "100%" }} placeholder="e.g. Project Manager" />
+            </Field>
+            <Field label="Company / Firm">
+              <input value={form.company} onChange={e => setF("company", e.target.value)} style={{ width: "100%" }} placeholder="e.g. Skanska, Think Architecture" />
+            </Field>
+            <Field label="Type">
+              <select value={form.type} onChange={e => setF("type", e.target.value)} style={{ width: "100%" }}>
+                {DIRECTORY_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+            </Field>
+            <Field label="Email">
+              <input type="email" value={form.email} onChange={e => setF("email", e.target.value)} style={{ width: "100%" }} placeholder="email@firm.com" />
+            </Field>
+            <Field label="Phone">
+              <input value={form.phone} onChange={e => setF("phone", e.target.value)} style={{ width: "100%" }} placeholder="(212) 555-0100" />
+            </Field>
+          </div>
+          <Field label="Notes" style={{ marginBottom: 12 }}>
+            <textarea value={form.notes} onChange={e => setF("notes", e.target.value)} rows={2} style={{ width: "100%", resize: "vertical" }} placeholder="Anything worth remembering about this contact" />
+          </Field>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="success" onClick={saveContact} disabled={!form.name.trim() && !form.email.trim()}>
+              {editId ? "Save Changes" : "Add to Directory"}
+            </Btn>
+            <Btn variant="ghost" onClick={() => { setShowForm(false); setEditId(null); setForm(newDirectoryEntry()); }}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {filtered.length === 0 && (
+        <div style={{ color: P.textDim, padding: "40px 20px", textAlign: "center", fontSize: 13, lineHeight: 1.6, background: P.bg, border: `1px dashed ${P.border}`, borderRadius: 8 }}>
+          {directory.length === 0
+            ? <>No contacts in this project's directory yet.<br/>Add your first one above, or use the Outlook add-in's "Add Participant to Contacts" on a tagged email — they'll land here automatically.</>
+            : "No contacts match your search/filter."}
+        </div>
+      )}
+
+      {/* Grouped by company */}
+      {Object.keys(byCompany).sort((a, b) => {
+        // Push "(No Company)" to the end
+        if (a === "(No Company)") return 1;
+        if (b === "(No Company)") return -1;
+        return a.localeCompare(b);
+      }).map(company => (
+        <div key={company} style={{ marginBottom: 22 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8, borderBottom: `1px solid ${P.border}`, paddingBottom: 6, display: "flex", alignItems: "baseline", gap: 8 }}>
+            {company === "(No Company)" ? <span style={{ color: P.textDim }}>(No Company)</span> : company}
+            <span style={{ color: P.textDim, fontWeight: 400, fontSize: 11 }}>· {byCompany[company].length}</span>
+          </div>
+          {byCompany[company].map(c => {
+            const tc = directoryTypeColor(c.type);
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 12px", borderBottom: `1px solid ${P.border}`, transition: "background 0.1s" }}
+                onMouseOver={e => e.currentTarget.style.background = P.bg}
+                onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name || <span style={{ color: P.textDim, fontStyle: "italic" }}>(no name)</span>}</span>
+                    {c.title && <span style={{ color: P.textMuted, fontSize: 12 }}>· {c.title}</span>}
+                    <Badge color={tc} text={c.type} />
+                  </div>
+                  <div style={{ fontSize: 12, color: P.textMuted, marginTop: 3, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                    {c.email && <a href={`mailto:${c.email}`} style={{ color: P.accentLight, textDecoration: "none" }}>✉ {c.email}</a>}
+                    {c.phone && <span>📞 {c.phone}</span>}
+                    {c.addedFromEmail && <span style={{ color: P.textDim, fontSize: 11, fontStyle: "italic" }}>added from email</span>}
+                  </div>
+                  {c.notes && <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>{c.notes}</div>}
+                </div>
+                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                  <button onClick={() => startEdit(c)} title="Edit"
+                    style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: "4px 6px" }}>✏</button>
+                  <button onClick={() => removeContact(c.id)} title="Remove from this project's directory"
+                    style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✕</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── TEAM MEMBERS ─────────────────────────────────────────────────────────────
 
 const WBS_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection"];
@@ -11413,7 +11626,7 @@ function PhotosView({ project }) {
 // and was previously buried at position 17 (between "Projections" and "Photos").
 // Renamed from "Intelligence" so the label matches what users actually use it
 // for: investigating the history of a specific topic on a project.
-const TABS = ["Overview", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos"];
+const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos"];
 
 // Tab groupings — top-level "sections" the user navigates by, with the existing
 // tabs as their sub-pages. Order reflects the natural project workflow.
@@ -11421,7 +11634,7 @@ const TABS = ["Overview", "Investigation", "Scope", "Fee Calculator", "Team", "S
 // content (still driven by the `tab === "..."` conditionals below); it only
 // changes which section the tab nests under.
 const TAB_GROUPS = [
-  { name: "Overview",                    tabs: ["Overview", "Scope", "Contract"] },
+  { name: "Overview",                    tabs: ["Overview", "Directory", "Scope", "Contract"] },
   { name: "Project Record",              tabs: ["Investigation", "Notes", "Emails"] },
   { name: "Fee",                         tabs: ["Fee Calculator", "Change Orders"] },
   { name: "Team",                        tabs: ["Team"] },
@@ -11777,6 +11990,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Submittals" && <SubmittalsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
+        {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Gantt" && <GanttView project={project} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
