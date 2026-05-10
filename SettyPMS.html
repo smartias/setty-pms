@@ -1466,6 +1466,30 @@ async function resolveSpIds() {
   return { siteId: _spSiteId, driveId: _spDriveId };
 }
 
+// Creates a folder in the Contract Library for a Term Contract, named
+// "<Client>_<ContractName>". Falls back to just the name if no client set.
+// Lives in the same library as project contracts so all signed contracts
+// (term + project-level) are findable in one place.
+async function createTermContractFolderInSp(termContract) {
+  if (!SP_CONTRACTS_DRIVE_ID) {
+    throw new Error("Contract Library drive ID is not configured. Open SettyPMS.html and set SP_CONTRACTS_DRIVE_ID — see the comment above the constant for instructions.");
+  }
+  const client = (termContract.client || "").trim();
+  const name   = (termContract.name || "").trim();
+  if (!name) throw new Error("Add a contract name first.");
+  const parts = [];
+  if (client) parts.push(client);
+  parts.push(name);
+  const folderName = parts.join("_").replace(/[\\/:*?"<>|]/g, "-").trim();
+  const result = await graphFetch("POST", `/drives/${SP_CONTRACTS_DRIVE_ID}/root/children`, {
+    name: folderName,
+    folder: {},
+    "@microsoft.graph.conflictBehavior": "rename",
+  });
+  if (!result?.webUrl) throw new Error("Folder created but no URL returned.");
+  return result.webUrl;
+}
+
 // Creates a folder in the Contract Library named "Prime_Client_ProjectName".
 // Used to file signed contracts and contract documentation. Independent of
 // the Project Document Library so contract docs stay separate from working
@@ -7255,11 +7279,13 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
         />
       </Field>
       <SectionTitle>Hourly Rate Schedule (Contracted)</SectionTitle>
-      {(project.contractRateSchedule && project.contractRateSchedule.length) ? (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
-            Snapshot taken when this project moved to an awarded status{project.contractRateScheduleLockedAt ? " on " + fmtDate(project.contractRateScheduleLockedAt) : ""}. Read-only by design — represents the rates contracted at award time, regardless of any later changes to the firm-standard schedule.
-          </div>
+      {(() => {
+        const hasSnapshot = !!(project.contractRateSchedule && project.contractRateSchedule.length);
+        const isPipelineProj = isPipeline(project);
+        // Reusable rate-table renderer — used for both the locked snapshot view
+        // and the "current rates" preview shown to awarded projects that
+        // pre-date the snapshot feature.
+        const renderRateTable = (rateList) => (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: `1.5px solid ${P.border}` }}>
@@ -7268,7 +7294,7 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
               </tr>
             </thead>
             <tbody>
-              {project.contractRateSchedule.map((r, i) => (
+              {rateList.map((r, i) => (
                 <tr key={i} style={{ borderBottom: `1px solid ${P.border}` }}>
                   <td style={{ padding: "7px 10px", color: P.text }}>{r.role || "—"}</td>
                   <td style={{ padding: "7px 10px", textAlign: "right", color: P.accentLight, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
@@ -7278,12 +7304,51 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
               ))}
             </tbody>
           </table>
-        </div>
-      ) : (
-        <div style={{ marginBottom: 24, padding: "14px 16px", background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 6, fontSize: 12, color: P.text, lineHeight: 1.5 }}>
-          The hourly rate schedule will be locked here automatically when this project transitions from a pipeline status to an awarded status. Edit rates per project on the <strong>Scope of Services</strong> tab while still in pipeline.
-        </div>
-      )}
+        );
+
+        if (hasSnapshot) {
+          return (
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 12, color: P.textDim, marginBottom: 10 }}>
+                Snapshot taken when this project moved to an awarded status{project.contractRateScheduleLockedAt ? " on " + fmtDate(project.contractRateScheduleLockedAt) : ""}. Read-only by design — represents the rates contracted at award time, regardless of any later changes to the firm-standard schedule.
+              </div>
+              {renderRateTable(project.contractRateSchedule)}
+            </div>
+          );
+        }
+
+        if (isPipelineProj) {
+          return (
+            <div style={{ marginBottom: 24, padding: "14px 16px", background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 6, fontSize: 12, color: P.text, lineHeight: 1.5 }}>
+              The hourly rate schedule will be locked here automatically when this project transitions from a pipeline status to an awarded status. Edit rates per project on the <strong>Scope of Services</strong> tab while still in pipeline.
+            </div>
+          );
+        }
+
+        // Awarded but no snapshot — common for projects that were awarded
+        // before the snapshot feature shipped. Show the current rates as
+        // reference and let the user lock them with one click.
+        const currentRates = (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT;
+        const lockCurrentRates = () => {
+          const today = new Date().toISOString().slice(0, 10);
+          onChange({
+            ...project,
+            contractRateSchedule: currentRates.map(r => ({ ...r })),
+            contractRateScheduleLockedAt: today,
+          });
+        };
+        return (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ padding: "12px 14px", background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 6, fontSize: 12, color: P.text, lineHeight: 1.5, marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <strong>No contracted rate snapshot on file.</strong> The rates below are the project's current schedule (or firm default). Lock them as the contracted rates to make this read-only.
+              </div>
+              <Btn variant="success" small onClick={lockCurrentRates}>🔒 Lock as Contracted</Btn>
+            </div>
+            {renderRateTable(currentRates)}
+          </div>
+        );
+      })()}
 
       <SectionTitle>Contract Notes / History</SectionTitle>
       <Field label="">
@@ -8116,6 +8181,7 @@ function newTermContract() {
     ceilingValue: 0,
     description: "",
     notes: "",
+    folderUrl: "",
   };
 }
 
@@ -8217,6 +8283,9 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
               <input value={form.description} onChange={e => setF("description", e.target.value)} style={{ width: "100%" }} placeholder="Brief scope description" />
             </Field>
           </div>
+          <Field label="Contract Documents (SharePoint)" style={{ marginBottom: 16 }}>
+            <TermContractFolderField termContract={form} onUpdate={setF} />
+          </Field>
           <Field label="Contract Notes / History">
             <textarea value={form.notes} onChange={e => setF("notes", e.target.value)} rows={4} style={{ width: "100%", resize: "vertical" }} placeholder="Key dates, amendments, notes…" />
           </Field>
@@ -8265,6 +8334,14 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {tc.folderUrl && (
+                  <a href={tc.folderUrl} target="_blank" rel="noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    title="Open contract folder in SharePoint"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#0078d4", color: "#fff", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+                    📁 Folder
+                  </a>
+                )}
                 <Btn small variant="ghost" onClick={e => { e.stopPropagation(); startEdit(tc); }}>✏ Edit</Btn>
                 <Btn small variant="danger" onClick={e => { e.stopPropagation(); if (window.confirm("Delete this term contract?")) deleteTC(tc.id); }}>✕</Btn>
                 <span style={{ color: P.textDim, fontSize: 12 }}>{isExpanded ? "▲" : "▼"}</span>
@@ -16196,6 +16273,84 @@ function SharePointContractFolderField({ project, onUpdate, onEagerSave }) {
           <>
             <input value={url} placeholder="Paste existing URL, or click Create to auto-generate…"
               onChange={e => onUpdate("contractFolderUrl", e.target.value)}
+              style={{ flex: 1, fontSize: 13 }} />
+            <Btn variant="primary" disabled={status === "creating"} onClick={create}>
+              {status === "creating" ? "⏳ Creating…" : "📑 Create Contract Folder"}
+            </Btn>
+          </>
+        )}
+      </div>
+      {msg && (
+        <div style={{ fontSize: 11, marginTop: 4, color: status === "done" ? P.green : status === "error" ? P.red : P.textDim }}>
+          {msg}
+        </div>
+      )}
+      {!hasFolder && (
+        <div style={{ fontSize: 11, color: P.textDim, marginTop: 3 }}>
+          Creates a folder in <em>Contract Library</em> on the NYC Projects SharePoint site
+          named <strong>{previewName}</strong>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Term-contract version — same UX shape as the project contract folder field
+// but writes folderUrl into the local form state via setF (the parent commits
+// on Save Term Contract). Note the orphan-folder caveat in the helper text.
+function TermContractFolderField({ termContract, onUpdate }) {
+  const [status, setStatus] = React.useState("idle");
+  const [msg, setMsg] = React.useState("");
+  const url = termContract.folderUrl || "";
+  const hasFolder = !!url;
+
+  async function create() {
+    if (!termContract.name) {
+      setMsg("Add a contract name first.");
+      setStatus("error");
+      return;
+    }
+    setStatus("creating");
+    setMsg("");
+    try {
+      const folderUrl = await createTermContractFolderInSp(termContract);
+      onUpdate("folderUrl", folderUrl);
+      setStatus("done");
+      setMsg("✓ Folder created. Click Save Term Contract to keep the link.");
+    } catch (e) {
+      setStatus("error");
+      setMsg("✗ " + e.message);
+    }
+  }
+
+  const previewName = (() => {
+    const client = (termContract.client || "").trim();
+    const name = (termContract.name || "").trim();
+    const parts = [];
+    if (client) parts.push(client);
+    if (name) parts.push(name);
+    return parts.length ? parts.join("_") : "Client_Contract Name";
+  })();
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {hasFolder ? (
+          <>
+            <input value={url} readOnly
+              style={{ flex: 1, color: P.textMuted, fontSize: 12, background: "transparent", borderColor: P.border, cursor: "default" }} />
+            <a href={url} target="_blank" rel="noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#0078d4", color: "#fff", borderRadius: 6, padding: "6px 14px", fontSize: 13, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
+              📁 Open Folder
+            </a>
+            <button onClick={() => { if (window.confirm("Clear the saved folder URL? This won’t delete the SharePoint folder.")) onUpdate("folderUrl", ""); }}
+              style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13 }}
+              title="Clear saved URL">✕</button>
+          </>
+        ) : (
+          <>
+            <input value={url} placeholder="Paste existing URL, or click Create to auto-generate…"
+              onChange={e => onUpdate("folderUrl", e.target.value)}
               style={{ flex: 1, fontSize: 13 }} />
             <Btn variant="primary" disabled={status === "creating"} onClick={create}>
               {status === "creating" ? "⏳ Creating…" : "📑 Create Contract Folder"}
