@@ -14636,6 +14636,119 @@ function printTermsAndConditions(project) {
   win.document.close();
 }
 
+// Firm-standard hourly rates — preloaded into every project. Stored under
+// project.hourlyRates as [{ role, rate }, ...]. Editable per project, with a
+// reset-to-default option. Updates here only need to happen in one place.
+const HOURLY_RATES_DEFAULT = [
+  { role: "Principal",                  rate: 336 },
+  { role: "Project Manager",            rate: 223 },
+  { role: "Sr. Mechanical Engineer",    rate: 212 },
+  { role: "Mechanical Engineer",        rate: 183 },
+  { role: "Sr. Electrical Engineer",    rate: 223 },
+  { role: "Electrical Engineer",        rate: 183 },
+  { role: "Sr. Plumbing/FP Engineer",   rate: 212 },
+  { role: "Plumbing/FP Engineer",       rate: 183 },
+  { role: "Designer/Sr. Draftsperson",  rate: 156 },
+  { role: "CAD Draftsperson",           rate: 113 },
+  { role: "Commissioning Agent",        rate: 183 },
+  { role: "Administrative/Clerical",    rate: 107 },
+];
+
+function printHourlyRates(project) {
+  const rates = (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT;
+  // Two-column layout for the printed table — pairs roles side-by-side so the
+  // schedule fits on a single page even with 12+ entries.
+  const half = Math.ceil(rates.length / 2);
+  const leftCol = rates.slice(0, half);
+  const rightCol = rates.slice(half);
+  const rateRows = [];
+  for (let i = 0; i < half; i++) {
+    const l = leftCol[i];
+    const r = rightCol[i];
+    rateRows.push(`
+      <tr>
+        <td class="role">${l ? l.role : ""}</td>
+        <td class="rate">${l ? "$" + Number(l.rate).toFixed(2) + "/hr" : ""}</td>
+        <td class="role">${r ? r.role : ""}</td>
+        <td class="rate">${r ? "$" + Number(r.rate).toFixed(2) + "/hr" : ""}</td>
+      </tr>`);
+  }
+
+  const win = window.open("", "_blank", "width=900,height=700");
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Attachment B — Schedule of Hourly Rates — ${project.name || "Project"}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
+    @page :first { margin-top: 0.5in; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
+    .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .intro { font-size: 10pt; color: #44546A; line-height: 1.6; margin-bottom: 24px; }
+    .intro strong { color: #1F3864; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+    .rates-table { width: 100%; border-collapse: collapse; font-size: 10.5pt; }
+    .rates-table td { padding: 10px 12px; border-bottom: 1px solid #E7E6E6; vertical-align: top; }
+    .rates-table td.role { font-weight: 500; color: #1a1a1a; width: 32%; }
+    .rates-table td.rate { font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; width: 18%; text-align: right; padding-right: 24px; }
+    .footer-note { margin-top: 28px; padding: 12px 16px; background: #f8f9fb; border-left: 3px solid #2F5496; border-radius: 0 4px 4px 0; font-size: 9.5pt; line-height: 1.7; color: #44546A; }
+    .footer-note strong { color: #1F3864; font-weight: 700; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
+    @media print {
+      body { background: #fff; }
+      .print-btn { display: none; }
+      .page { padding: 0; width: 100%; min-height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+  <div class="page">
+    <div class="doc-header">
+      <div>
+        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:28px;display:block;" />
+        <div style="font-size:8pt;color:#44546A;margin-top:5px;letter-spacing:0.8px;font-weight:500;">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:9px;font-size:8pt;color:#8a9bb0;line-height:1.65;">Fairfax, VA (HQ) &middot; Washington DC &middot; New York &middot; Baltimore<br>Atlanta &middot; Philadelphia &middot; Los Angeles &middot; Tampa &middot; India</div>
+      </div>
+      <div>
+        <div class="doc-title">ATTACHMENT B</div>
+        <div class="doc-sub">
+          Schedule of Hourly Rates<br>
+          ${project.name || "Project"} &middot; ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+        </div>
+      </div>
+    </div>
+
+    <div class="intro">
+      The following hourly rates apply to services performed under this Agreement and to any Additional Services authorized in accordance with the Standard Terms and Conditions. Rates are subject to annual adjustment.
+    </div>
+
+    <div class="section-heading">Hourly Rate Schedule</div>
+    <table class="rates-table">
+      <tbody>${rateRows.join("")}</tbody>
+    </table>
+
+    <div class="footer-note">
+      <strong>Notes</strong><br>
+      Rates listed are effective as of the proposal date and apply to all hourly-billed services, Additional Services, and out-of-scope work performed under this Agreement. Reimbursable expenses are billed separately at 1.0 times direct cost in accordance with the Standard Terms and Conditions.
+    </div>
+
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, Ltd, PC &middot; Attachment B &middot; Schedule of Hourly Rates</span>
+      <span>${project.name || ""} &middot; ${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
+    </div>
+  </div>
+</body>
+</html>`);
+  win.document.close();
+}
+
 function ScopeView({ project, onChange }) {
   const editorRef = React.useRef(null);
   const termsEditorRef = React.useRef(null);
@@ -14644,6 +14757,24 @@ function ScopeView({ project, onChange }) {
   const [lockNote, setLockNote] = React.useState("");
   const [showAudit, setShowAudit] = React.useState(false);
   const [showTerms, setShowTerms] = React.useState(false);
+  const [showRates, setShowRates] = React.useState(false);
+
+  // Hourly rates — defaults to firm-standard, persists per-project edits.
+  const rates = (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT;
+  function updateRate(idx, field, val) {
+    const next = rates.map((r, i) => i === idx ? { ...r, [field]: field === "rate" ? Number(val) || 0 : val } : r);
+    onChange({ ...project, hourlyRates: next });
+  }
+  function addRate() {
+    onChange({ ...project, hourlyRates: [...rates, { role: "", rate: 0 }] });
+  }
+  function removeRate(idx) {
+    onChange({ ...project, hourlyRates: rates.filter((_, i) => i !== idx) });
+  }
+  function resetRatesToDefault() {
+    if (!window.confirm("Reset hourly rates to the firm-standard defaults?\n\nAny project-specific rate edits will be discarded.")) return;
+    onChange({ ...project, hourlyRates: HOURLY_RATES_DEFAULT.map(r => ({ ...r })) });
+  }
 
   // Paste handler — intercepts copy-paste from Word/Outlook/Gmail/etc. and
   // sanitizes the HTML to a clean structural subset before insertion.
@@ -15014,6 +15145,69 @@ function ScopeView({ project, onChange }) {
               💡 Plain text. Edit anything inline; Reset to Default restores the firm-standard version. Saves automatically.
             </div>
           </>
+        )}
+      </div>
+
+      {/* Hourly Rate Schedule — Attachment B. Same pattern as Terms: collapsed
+          by default, one-click print without expanding, editable per project. */}
+      <div style={{ marginTop: 24, paddingTop: 24, borderTop: `1px solid ${P.border}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <button onClick={() => setShowRates(v => !v)}
+              style={{ background: "none", border: "none", color: P.text, cursor: "pointer", fontSize: 14, fontWeight: 700, padding: 0, display: "flex", alignItems: "center", gap: 6 }}>
+              {showRates ? "▼" : "▶"} Hourly Rate Schedule
+            </button>
+            <div style={{ fontSize: 12, color: P.textDim, marginTop: 4 }}>
+              Preloaded with the firm-standard rates. Edit per project if needed, then print as Attachment B.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {showRates && <Btn variant="ghost" small onClick={resetRatesToDefault}>↻ Reset to Default</Btn>}
+            <Btn onClick={() => printHourlyRates(project)}>🖨 Print Rates</Btn>
+          </div>
+        </div>
+
+        {showRates && (
+          <div style={{ border: `1px solid ${P.border}`, borderRadius: 6, padding: "12px 14px", marginTop: 10, background: "#fff" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 28px", gap: 8, alignItems: "center", fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.04em", padding: "0 4px 6px", borderBottom: `1px solid ${P.border}` }}>
+              <div>Role</div>
+              <div style={{ textAlign: "right" }}>Rate ($/hr)</div>
+              <div></div>
+            </div>
+            {rates.map((r, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 130px 28px", gap: 8, alignItems: "center", padding: "5px 0" }}>
+                <input
+                  value={r.role || ""}
+                  onChange={e => updateRate(i, "role", e.target.value)}
+                  placeholder="e.g. Project Manager"
+                  style={{ width: "100%", fontSize: 13, padding: "5px 8px" }}
+                />
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ color: P.textDim, fontSize: 13 }}>$</span>
+                  <input
+                    type="number"
+                    value={r.rate || 0}
+                    onChange={e => updateRate(i, "rate", e.target.value)}
+                    style={{ width: "100%", fontSize: 13, padding: "5px 8px", textAlign: "right" }}
+                    min="0"
+                    step="1"
+                  />
+                </div>
+                <button
+                  onClick={() => removeRate(i)}
+                  title="Remove this role"
+                  style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1 }}>
+                  ×
+                </button>
+              </div>
+            ))}
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${P.border}` }}>
+              <Btn variant="ghost" small onClick={addRate}>+ Add Role</Btn>
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
+              💡 Edit role names and rates inline. Saves automatically. Print produces a clean two-column Attachment B PDF.
+            </div>
+          </div>
         )}
       </div>
 
