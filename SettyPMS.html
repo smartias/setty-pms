@@ -3988,6 +3988,13 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     { notifyTeams, debounceTeams, teamsDelay }
   );
 
+  // Celebrate the actual transition to 100% — fires once at completion, not
+  // on every re-save of an already-complete milestone. Variable-reward quip
+  // pulled from the pool so daily users see a different message each time.
+  if (field === "pctComplete" && m && (m.pctComplete || 0) < 100 && +val >= 100) {
+    pmsCelebrate(_pmsPickQuip(MILESTONE_DONE_QUIPS));
+  }
+
   if (!skipPrompt && field === "pctComplete" && +val > 0 && m && m.type === "billable" && m.fee > 0) {
     try {
       const amount = calcInvoiceAmount(m, +val, project);
@@ -13577,6 +13584,15 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
 
 
 function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSaveProject, staff }) {
+  // Once-per-day Dashboard greeting — pulls from time-of-day pools (with a
+  // Friday afternoon "go home" variant). Slight delay so the toast appears
+  // after the dashboard has rendered, not concurrently with the loading state.
+  React.useEffect(() => {
+    if (consumePmsDailyGreeting()) {
+      setTimeout(() => pmsCelebrate(pmsTimeOfDayGreeting()), 600);
+    }
+  }, []);
+
   const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
   const [dashPMFilter, setDashPMFilter] = useState("All");
   const [milPMFilter, setMilPMFilter] = useState("All");
@@ -15249,6 +15265,38 @@ function ScopeView({ project, onChange }) {
   const [showAudit, setShowAudit] = React.useState(false);
   const [showTerms, setShowTerms] = React.useState(false);
   const [showRates, setShowRates] = React.useState(false);
+  // Proposal-button feedback. Message + kind ("info" / "success" / "error").
+  // Auto-clears after a few seconds so the banner doesn't linger between sessions.
+  const [proposalMsg, setProposalMsg] = React.useState("");
+  const [proposalKind, setProposalKind] = React.useState("info");
+
+  async function handleSendForReview() {
+    setProposalMsg("⏳ Creating internal review draft…");
+    setProposalKind("info");
+    try {
+      await sendProposalForReview(project);
+      setProposalMsg("✓ Internal review draft created in your Outlook Drafts folder. Open Outlook to add recipients (PMs, principals, etc.) and send.");
+      setProposalKind("success");
+      setTimeout(() => setProposalMsg(""), 9000);
+    } catch (e) {
+      setProposalMsg("✗ " + (e.message || "Failed to create draft"));
+      setProposalKind("error");
+    }
+  }
+
+  async function handleSendProposal() {
+    setProposalMsg("⏳ Opening proposal bundle and creating draft…");
+    setProposalKind("info");
+    try {
+      await sendProposal(project);
+      setProposalMsg("✓ Done — proposal bundle opened in a new tab; draft is in your Outlook Drafts folder. Print the bundle to PDF, attach it to the draft, add the client recipient(s), and send.");
+      setProposalKind("success");
+      setTimeout(() => setProposalMsg(""), 12000);
+    } catch (e) {
+      setProposalMsg("✗ " + (e.message || "Failed to send proposal"));
+      setProposalKind("error");
+    }
+  }
 
   // Hourly rates — defaults to firm-standard, persists per-project edits.
   // All edit paths gate on scopeLocked so the rate schedule locks alongside
@@ -15460,10 +15508,10 @@ function ScopeView({ project, onChange }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Btn variant="ghost" onClick={() => sendProposalForReview(project)} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
+          <Btn variant="ghost" onClick={handleSendForReview} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
             👀 Send for Review
           </Btn>
-          <Btn variant="primary" onClick={() => sendProposal(project)} title="Open the bound proposal PDF (SOW + Fee + T&C + Rates) plus an Outlook draft with subject and body prefilled">
+          <Btn variant="primary" onClick={handleSendProposal} title="Open the bound proposal PDF (SOW + Fee + T&C + Rates) plus an Outlook draft with subject and body prefilled">
             📨 Send Proposal
           </Btn>
           {scopeLocked
@@ -15482,6 +15530,33 @@ function ScopeView({ project, onChange }) {
             by {lastLocked.user} on {fmtDate(lastLocked.date.slice(0, 10))}
             {lastLocked.note ? " · " + lastLocked.note : ""}
           </span>
+        </div>
+      )}
+
+      {/* Proposal-button feedback banner — confirms draft creation (or surfaces
+          errors), with explicit "go to Drafts" guidance so users don't wonder
+          where their email went. Auto-clears after several seconds. */}
+      {proposalMsg && (
+        <div style={{
+          marginBottom: 16,
+          padding: "12px 16px",
+          background: proposalKind === "success" ? P.greenDim : proposalKind === "error" ? P.redDim : P.accentDim,
+          border: `1px solid ${proposalKind === "success" ? P.green : proposalKind === "error" ? P.red : P.accent}`,
+          borderRadius: 8,
+          fontSize: 13,
+          color: proposalKind === "success" ? P.green : proposalKind === "error" ? P.red : P.accentLight,
+          lineHeight: 1.55,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 12,
+        }}>
+          <div>{proposalMsg}</div>
+          <button onClick={() => setProposalMsg("")}
+            title="Dismiss"
+            style={{ background: "none", border: "none", color: "inherit", opacity: 0.6, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0 }}>
+            ×
+          </button>
         </div>
       )}
 
@@ -18513,6 +18588,115 @@ function COALESCE_archived_false(p) {
   return p && p.archived !== true;
 }
 
+// ─── PMS FLAVOR PACK ─────────────────────────────────────────────────────────
+// Same personality system as the Outlook add-in: lazy-loaded canvas-confetti,
+// seasonal themes, time-of-day greetings, and milestone-completion celebrations.
+// Goals: rare + varied, never blocks main flows, zero load-time cost.
+let _pmsConfettiLoadPromise = null;
+function loadPmsConfetti() {
+  if (typeof confetti === "function") return Promise.resolve(true);
+  if (_pmsConfettiLoadPromise) return _pmsConfettiLoadPromise;
+  _pmsConfettiLoadPromise = new Promise(resolve => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js";
+    s.onload = () => resolve(true);
+    s.onerror = () => { _pmsConfettiLoadPromise = null; resolve(false); };
+    document.head.appendChild(s);
+  });
+  return _pmsConfettiLoadPromise;
+}
+
+function getPmsSeasonalConfettiOpts() {
+  if (typeof confetti !== "function") return null;
+  const d = new Date();
+  const m = d.getMonth();
+  const day = d.getDate();
+  if (m === 11) return { colors: ["#ffffff", "#e3f2fd", "#bbdefb", "#90caf9"], shapes: [confetti.shapeFromText({ text: "❄️", scalar: 2 })], scalar: 1.6 };
+  if (m === 0 && day === 1) return { colors: ["#ffd700", "#c0c0c0", "#ff6b9d", "#6bd4ff"] };
+  if (m === 1 && day === 14) return { colors: ["#ff3a7a", "#ff6b9d", "#ffb3c6", "#ffffff"], shapes: [confetti.shapeFromText({ text: "❤️", scalar: 2 })], scalar: 2 };
+  if (m === 6 && day === 4) return { colors: ["#bf0a30", "#ffffff", "#002868"], shapes: ["star", "circle"] };
+  if (m === 9 && day === 31) return { colors: ["#ff7518", "#000000", "#8a2be2", "#ffd700"] };
+  return null;
+}
+
+// Variable-reward messages for milestone completion. Same psychology as the
+// add-in's weekly milestones: random pull from a pool, so daily users see
+// something different. Picked at fire time, paired with confetti.
+const MILESTONE_DONE_QUIPS = [
+  "🎉 Milestone complete — strong work!",
+  "✅ Done. Future-You is grateful.",
+  "🏁 Milestone closed. Ship it!",
+  "🎯 Hit. On to the next.",
+  "✨ Another one in the books.",
+  "🚀 Milestone done — momentum building.",
+  "📐 Measured, marked, completed.",
+  "🏆 That's the kind of follow-through this firm runs on.",
+];
+
+const PMS_TIME_GREETINGS = {
+  morning: ["☕ Morning! Strong start.", "☕ Bright and early today.", "🌅 Good morning."],
+  late_morning: ["🥐 Mid-morning groove.", "🥐 Building momentum.", "🍵 Productive late morning."],
+  lunch: ["🥪 Lunchtime PM-ing — eat something too, ok?", "🍴 Take a break with that sandwich.", "🥗 Don't forget lunch."],
+  afternoon: ["📊 Mid-afternoon focus. Respect.", "🧘 Stand up, stretch, water?", "👀 Eyes off the screen for a sec? Then back to it."],
+  evening: ["🌅 Evening wrap-up.", "🌇 Closing the loop on today.", "🌅 End-of-day cleanup."],
+  late_evening: ["🌙 9-to-9 day? Thanks for the dedication.", "🌙 Past 7pm? Make sure dinner happened.", "🌃 Evening shift respect."],
+  late_night: ["🦉 Filing past 10pm — admirable. Sleep is also good.", "🌙 Late shift respect. Set a hard stop?", "🦉 The owl hours."],
+  friday_pm: ["🍻 Friday afternoon. Consider going home soon.", "🌴 It's Friday. The CO can wait until Monday.", "🎉 Friday afternoon. Wrap it up; weekend awaits."],
+};
+function _pmsPickQuip(pool) { return pool[Math.floor(Math.random() * pool.length)]; }
+function pmsTimeOfDayGreeting() {
+  const d = new Date();
+  const h = d.getHours();
+  const isFri = d.getDay() === 5;
+  if (isFri && h >= 14 && h < 19) return _pmsPickQuip(PMS_TIME_GREETINGS.friday_pm);
+  if (h >= 5 && h < 10)  return _pmsPickQuip(PMS_TIME_GREETINGS.morning);
+  if (h >= 10 && h < 12) return _pmsPickQuip(PMS_TIME_GREETINGS.late_morning);
+  if (h >= 12 && h < 14) return _pmsPickQuip(PMS_TIME_GREETINGS.lunch);
+  if (h >= 14 && h < 17) return _pmsPickQuip(PMS_TIME_GREETINGS.afternoon);
+  if (h >= 17 && h < 19) return _pmsPickQuip(PMS_TIME_GREETINGS.evening);
+  if (h >= 19 && h < 22) return _pmsPickQuip(PMS_TIME_GREETINGS.late_evening);
+  if (h >= 22)            return _pmsPickQuip(PMS_TIME_GREETINGS.late_night);
+  return "🌌 Filing at " + h + ":00? You're a different kind of person. Respect.";
+}
+
+// Once-per-day gate for the Dashboard greeting. Per-device localStorage.
+const PMS_LAST_GREETING_KEY = "setty_pms_last_dashboard_greeting_v1";
+function consumePmsDailyGreeting() {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const last = localStorage.getItem(PMS_LAST_GREETING_KEY);
+    if (last !== today) {
+      localStorage.setItem(PMS_LAST_GREETING_KEY, today);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+// Generic celebration trigger — toast + confetti. Used for milestone-complete
+// and the cornerstone (5-click logo) easter egg.
+function pmsCelebrate(message, options = {}) {
+  const { big = false } = options;
+  const toastEl = document.getElementById("pmsCelebrationToast");
+  if (toastEl) {
+    toastEl.textContent = message;
+    toastEl.classList.remove("show");
+    void toastEl.offsetWidth;
+    toastEl.classList.add("show");
+    clearTimeout(pmsCelebrate._t);
+    pmsCelebrate._t = setTimeout(() => toastEl.classList.remove("show"), big ? 4500 : 3000);
+  }
+  loadPmsConfetti().then(ok => {
+    if (!ok || typeof confetti !== "function") return;
+    const seasonal = getPmsSeasonalConfettiOpts() || {};
+    const base = big
+      ? { particleCount: 140, spread: 100, startVelocity: 45, origin: { y: 0.55 }, scalar: 1.2, ...seasonal }
+      : { particleCount: 70, spread: 70, startVelocity: 35, origin: { y: 0.6 }, scalar: 0.9, ...seasonal };
+    confetti(base);
+    if (big) setTimeout(() => confetti({ ...base, particleCount: 80, spread: 110, scalar: 1.0 }), 180);
+  });
+}
+
 function App() {
   const [projects, setProjects] = useState([]);
   const [termContracts, setTermContracts] = useState([]);
@@ -18534,6 +18718,26 @@ function App() {
   const [appStatus, setAppStatus] = useState("loading"); // loading | idle | saving | saved | error
   const [lastSaved, setLastSaved] = useState(null);
   const [saveErrorDetail, setSaveErrorDetail] = useState("");
+  // Cornerstone easter egg — 5 clicks on the SETTY · PMS logo within 3 seconds
+  // reveals a small credits card. Same pattern as the add-in for cross-app
+  // consistency. Counter is in a ref since it doesn't drive rendering.
+  const [showCornerstone, setShowCornerstone] = React.useState(false);
+  const _logoClicks = React.useRef(0);
+  const _logoClickTimer = React.useRef(null);
+  function handlePmsLogoClick() {
+    _logoClicks.current++;
+    clearTimeout(_logoClickTimer.current);
+    if (_logoClicks.current >= 5) {
+      _logoClicks.current = 0;
+      setShowCornerstone(true);
+      loadPmsConfetti().then(ok => {
+        if (!ok || typeof confetti !== "function") return;
+        confetti({ particleCount: 40, spread: 60, origin: { y: 0.5 }, scalar: 0.7, ...(getPmsSeasonalConfettiOpts() || {}) });
+      });
+      return;
+    }
+    _logoClickTimer.current = setTimeout(() => { _logoClicks.current = 0; }, 3000);
+  }
   const [loadError, setLoadError] = useState(null);
   const pendingSave = React.useRef(null);   // bug 3 fix: timer ID in ref, not state
   const isLoaded = React.useRef(false);     // bug 1 fix: guard against save-on-load
@@ -19381,7 +19585,10 @@ async function updateProjectAndFlush(updated) {
 
       {/* ── Nav bar ── */}
       <div style={{ background: P.card, borderBottom: `1px solid ${P.border}`, padding: "0 32px", display: "flex", alignItems: "center", gap: 24, height: 54, position: "sticky", top: 0, zIndex: 100 }}>
-        <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-.02em" }}>
+        <div
+          onClick={handlePmsLogoClick}
+          title={"v" + (window.__appVersion || "")}
+          style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-.02em", cursor: "pointer", userSelect: "none" }}>
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
@@ -19611,6 +19818,29 @@ async function updateProjectAndFlush(updated) {
         </div>
       </div>
     )}
+
+    {/* ─── Cornerstone (5-click logo easter egg) ─── */}
+    {showCornerstone && (
+      <div onClick={() => setShowCornerstone(false)}
+        style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", animation: "pmsFadeIn 0.25s ease-out" }}>
+        <div style={{ background: "#fff", borderTop: "4px solid #C00000", borderRadius: 10, padding: "24px 28px", maxWidth: 320, textAlign: "center", boxShadow: "0 16px 48px rgba(0,0,0,0.4)", animation: "pmsCardPop 0.45s cubic-bezier(0.2, 1.3, 0.4, 1)" }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: "#C00000", letterSpacing: "1.5px" }}>SETTY · PMS</div>
+          <div style={{ fontSize: 13, color: "#1a1a1a", fontStyle: "italic", marginTop: 8, lineHeight: 1.5 }}>Built with hard hats and clipboards.</div>
+          <div style={{ fontSize: 11, color: "#44546A", marginTop: 12, letterSpacing: "0.5px" }}>2026 · Setty &amp; Associates</div>
+          <div style={{ fontSize: 10, color: "#8a9bb0", marginTop: 14, textTransform: "uppercase", letterSpacing: "1px" }}>click anywhere to close</div>
+        </div>
+      </div>
+    )}
+
+    {/* ─── Celebration toast (milestone-complete, etc.) ─── */}
+    <div id="pmsCelebrationToast"
+      style={{ position: "fixed", top: 70, left: "50%", transform: "translateX(-50%) translateY(-16px) scale(0.92)", background: "linear-gradient(135deg, #ffd86b 0%, #f5a623 100%)", color: "#4a2800", fontWeight: 700, fontSize: 13, padding: "10px 20px", borderRadius: 999, boxShadow: "0 8px 22px rgba(245, 166, 35, 0.4), 0 2px 4px rgba(0, 0, 0, 0.15)", zIndex: 9998, opacity: 0, transition: "opacity 0.32s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.42s cubic-bezier(0.2, 1.4, 0.4, 1)", pointerEvents: "none", maxWidth: "calc(100% - 28px)" }} />
+
+    <style>{`
+      #pmsCelebrationToast.show { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+      @keyframes pmsFadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes pmsCardPop { from { opacity: 0; transform: scale(0.85) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+    `}</style>
     </>
   );
 }
