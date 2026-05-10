@@ -14278,6 +14278,12 @@ function printScopeOfServices(project) {
     .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
     .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
     .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+    /* Letterhead-style addressee block — surfaces the project's contact more
+       prominently than the meta-grid Attn line. */
+    .addressee { margin: 0 0 24px; padding: 14px 18px; background: #f8f9fb; border-left: 4px solid #1F3864; border-radius: 0 4px 4px 0; }
+    .addressee-label { font-size: 8pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+    .addressee-name { font-size: 12pt; font-weight: 600; color: #1F3864; }
+    .addressee-org { font-size: 9.5pt; color: #44546A; margin-top: 2px; }
     /* Rich text content styles */
     .scope-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
     .scope-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
@@ -14289,6 +14295,10 @@ function printScopeOfServices(project) {
     .scope-body strong { font-weight: 700; }
     .scope-body em { font-style: italic; }
     .scope-body u { text-decoration: underline; }
+    /* Neutralize inline styles from copy-paste — Word/Outlook injects color,
+       font-family, and background on every span. !important wins over inline
+       styles so legacy scopes also render cleanly without re-typing. */
+    .scope-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
     .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
     @media print {
@@ -14303,7 +14313,9 @@ function printScopeOfServices(project) {
   <div class="page">
     <div class="doc-header">
       <div>
-        ${DOC_LOGO_HTML}
+        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:48px;display:block;" />
+        <div style="font-size:8pt;color:#44546A;margin-top:5px;letter-spacing:0.8px;font-weight:500;">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:9px;font-size:8pt;color:#8a9bb0;line-height:1.65;">Fairfax, VA (HQ) &middot; Washington DC &middot; New York &middot; Baltimore<br>Atlanta &middot; Philadelphia &middot; Los Angeles &middot; Tampa &middot; India</div>
       </div>
       <div>
         <div class="doc-title">SCOPE OF SERVICES</div>
@@ -14313,6 +14325,14 @@ function printScopeOfServices(project) {
         </div>
       </div>
     </div>
+
+    ${(project.clientContact || project.prime || project.clientName) ? `
+    <div class="addressee">
+      <div class="addressee-label">Addressed To</div>
+      <div class="addressee-name">${project.clientContact || project.prime || project.clientName}</div>
+      ${project.clientContact && (project.prime || project.clientName) ? '<div class="addressee-org">' + (project.prime || project.clientName) + '</div>' : ''}
+    </div>
+    ` : ''}
 
     <div class="meta-grid">
       <div class="meta-block">
@@ -14341,12 +14361,60 @@ function printScopeOfServices(project) {
   win.document.close();
 }
 
+// Strips paste-time HTML down to a structural subset. Keeps paragraphs,
+// lists, headings, basic emphasis, and links — drops everything else
+// (Word/Outlook spans with inline color/font, MS Office classes, etc.).
+// Dramatically improves PDF output for users who paste from email or Word.
+function sanitizePastedHtml(html) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  const allowed = new Set(["p", "br", "ul", "ol", "li", "h1", "h2", "h3", "strong", "em", "b", "i", "u", "a"]);
+  function walk(node) {
+    if (node.nodeType === 1) {
+      const tag = node.tagName.toLowerCase();
+      if (!allowed.has(tag)) {
+        // Replace with children — keeps content, drops the disallowed tag
+        const parent = node.parentNode;
+        while (node.firstChild) parent.insertBefore(node.firstChild, node);
+        parent.removeChild(node);
+        return;
+      }
+      // Strip all attributes except href on links
+      Array.from(node.attributes).forEach(a => {
+        if (tag === "a" && a.name === "href") return;
+        node.removeAttribute(a.name);
+      });
+    }
+    Array.from(node.childNodes).forEach(walk);
+  }
+  walk(tmp);
+  return tmp.innerHTML;
+}
+
 function ScopeView({ project, onChange }) {
   const editorRef = React.useRef(null);
   const [wc, setWc] = React.useState(0);
   const [showLockModal, setShowLockModal] = React.useState(false); // "lock" | "unlock" | false
   const [lockNote, setLockNote] = React.useState("");
   const [showAudit, setShowAudit] = React.useState(false);
+
+  // Paste handler — intercepts copy-paste from Word/Outlook/Gmail/etc. and
+  // sanitizes the HTML to a clean structural subset before insertion.
+  // Without this, every paste injects its source's color/font/class baggage
+  // and the PDF ends up with rainbow fonts and Calibri mixed with Segoe.
+  function handlePaste(e) {
+    if (scopeLocked) return;
+    e.preventDefault();
+    const html = e.clipboardData?.getData("text/html") || "";
+    const text = e.clipboardData?.getData("text/plain") || "";
+    if (html) {
+      const cleaned = sanitizePastedHtml(html);
+      document.execCommand("insertHTML", false, cleaned);
+    } else {
+      document.execCommand("insertText", false, text);
+    }
+    saveContent();
+  }
 
   const scopeLocked = project.scopeLocked || false;
   const auditLog = project.scopeAuditLog || [];
@@ -14566,6 +14634,7 @@ function ScopeView({ project, onChange }) {
           contentEditable={scopeLocked ? "false" : "true"}
           suppressContentEditableWarning={true}
           onInput={saveContent}
+          onPaste={handlePaste}
           style={{
             flex: 1,
             overflowY: "auto",
