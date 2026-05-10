@@ -14435,6 +14435,358 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
 
 // ─── SCOPE OF SERVICES VIEW ───────────────────────────────────────────────────
 
+// Bundles all four proposal documents (SOW, Fee Proposal, Terms & Conditions,
+// Hourly Rate Schedule) into a single printable HTML page with page-break-before
+// between sections. One print pass produces a single bound PDF in that order —
+// easier to attach to a proposal email than four separate files. Each section
+// keeps its own letterhead so the visual hierarchy mirrors the standalone PDFs.
+function printProposalBundle(project) {
+  // ===== Fee data (mirrors printFeeProposal) =====
+  const constructionCostFP = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const calcedFee = calcSettyFee(constructionCostFP, project);
+  const baseFee = project.manualSettyFee > 0 ? project.manualSettyFee : calcedFee;
+  const phases = project.phases || [];
+  const phasedFees = buildPhaseFees(baseFee, phases);
+  const billablePhases = phasedFees.filter(p => p.billable && p.fee > 0);
+  const changeOrders = (project.changeOrders || []).filter(c => c.approved);
+  const coTotal = changeOrders.reduce((a, c) => a + (c.fee || 0), 0);
+  const totalContractFee = baseFee + coTotal;
+
+  // ===== Other content sources =====
+  const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
+  const termsHtml = project.termsContent || TERMS_DEFAULT_HTML;
+  const rates = (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT;
+
+  // ===== Reusable header builder =====
+  const headerBlock = (title, subLine1, subLine2) => `
+    <div class="doc-header">
+      <div>
+        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:28px;display:block;" />
+        <div style="font-size:8pt;color:#44546A;margin-top:5px;letter-spacing:0.8px;font-weight:500;">&amp; ASSOCIATES, LTD, PC</div>
+        <div style="margin-top:9px;font-size:8pt;color:#8a9bb0;line-height:1.65;">Fairfax, VA (HQ) &middot; Washington DC &middot; New York &middot; Baltimore<br>Atlanta &middot; Philadelphia &middot; Los Angeles &middot; Tampa &middot; India</div>
+      </div>
+      <div>
+        <div class="doc-title">${title}</div>
+        <div class="doc-sub">${subLine1}${subLine2 ? "<br>" + subLine2 : ""}</div>
+      </div>
+    </div>`;
+
+  // Project + Client/Prime meta-grid (used by SOW + Fee sections)
+  const metaGridBlock = () => {
+    const proposalPocs = ((project.projectContacts || {}).proposal || []).filter(p => p && p.name);
+    const attnLines = proposalPocs.map(poc => {
+      const emailPart = poc.email ? ' <span style="color:#8a9bb0;">&middot; ' + poc.email + '</span>' : "";
+      return '<div class="meta-sub"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:7.5pt;">Attn:</span> ' + poc.name + emailPart + '</div>';
+    }).join("");
+    return `
+    <div class="meta-grid">
+      <div class="meta-block">
+        <div class="meta-label">Project</div>
+        <div class="meta-value">${project.name || "—"}</div>
+        ${(project.projectAddress || project.projectCity) ? '<div class="meta-sub">' + (project.projectAddress || "") + (project.projectAddress && project.projectCity ? "<br>" : "") + [project.projectCity, project.projectState].filter(Boolean).join(", ") + "</div>" : ""}
+      </div>
+      <div class="meta-block">
+        <div class="meta-label">Client / Prime</div>
+        <div class="meta-value">${project.prime || project.clientName || "—"}</div>
+        ${attnLines}
+        <div class="meta-sub" style="font-style:italic;color:#8a9bb0;margin-top:6px;">Sent via email</div>
+      </div>
+    </div>`;
+  };
+
+  // Fee table rows
+  const phaseRows = billablePhases.map(ph => `
+      <tr><td>${ph.name}</td><td class="right">$${Math.round(ph.fee).toLocaleString()}</td></tr>`).join("");
+  const coRows = changeOrders.map(co => `
+      <tr><td>↳ CO: ${co.name || co.number}</td><td class="right">$${Math.round(co.fee || 0).toLocaleString()}</td></tr>`).join("");
+
+  // Rate table rows (two-column layout, paired left+right)
+  const half = Math.ceil(rates.length / 2);
+  const leftCol = rates.slice(0, half);
+  const rightCol = rates.slice(half);
+  const rateRows = [];
+  for (let i = 0; i < half; i++) {
+    const l = leftCol[i];
+    const r = rightCol[i];
+    rateRows.push(`
+      <tr>
+        <td class="role">${l ? l.role : ""}</td>
+        <td class="rate">${l ? "$" + Number(l.rate).toFixed(2) + "/hr" : ""}</td>
+        <td class="role">${r ? r.role : ""}</td>
+        <td class="rate">${r ? "$" + Number(r.rate).toFixed(2) + "/hr" : ""}</td>
+      </tr>`);
+  }
+
+  const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const monthYear = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  const win = window.open("", "_blank", "width=900,height=700");
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${project.name || "Project"} — Proposal Bundle</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
+    @page :first { margin-top: 0.5in; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
+    .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
+    .page-break { page-break-before: always; }
+
+    /* Header (shared across sections) */
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
+
+    /* Meta grid */
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #CBD5E1; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
+    .meta-block { padding: 12px 16px; }
+    .meta-block:first-child { border-right: 1px solid #CBD5E1; }
+    .meta-label { font-size: 7.5pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+    .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
+    .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+
+    /* Scope body */
+    .scope-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
+    .scope-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
+    .scope-body h3 { font-size: 10.5pt; font-weight: 700; color: #44546A; margin: 14px 0 6px; }
+    .scope-body p { margin-bottom: 9px; line-height: 1.65; }
+    .scope-body ul, .scope-body ol { margin: 6px 0 10px 22px; }
+    .scope-body li { margin-bottom: 4px; line-height: 1.6; }
+    .scope-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
+
+    /* Fee table */
+    .fee-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10pt; }
+    .fee-table thead th { text-align: left; font-size: 8pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px; border-bottom: 1.5px solid #1F3864; background: transparent; }
+    .fee-table thead th.right { text-align: right; }
+    .fee-table tbody td { padding: 9px 12px; border-bottom: 1px solid #E7E6E6; }
+    .fee-table tbody td.right { text-align: right; font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; }
+    .fee-table tr.total td { font-weight: 700; font-size: 10.5pt; border-top: 1.5px solid #1F3864; border-bottom: 2px solid #1F3864; padding: 12px 12px; }
+    .total-callout { margin: 24px 0 18px; padding: 14px 18px; background: #f8f9fb; border: 1px solid #CBD5E1; border-radius: 4px; display: flex; justify-content: space-between; align-items: baseline; }
+    .total-callout .label { font-size: 9pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .08em; }
+    .total-callout .value { font-size: 16pt; font-weight: 700; color: #1F3864; font-variant-numeric: tabular-nums; }
+    .notes-block { margin-top: 24px; padding: 12px 16px; background: #f8f9fb; border-left: 3px solid #2F5496; border-radius: 0 4px 4px 0; font-size: 9.5pt; line-height: 1.7; color: #44546A; }
+    .notes-block strong { color: #1F3864; font-weight: 700; font-size: 10pt; }
+    .sig-grid { margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 36px; page-break-inside: avoid; }
+    .sig-block { border-top: 1.5px solid #1F3864; padding-top: 8px; }
+    .sig-name { font-size: 9pt; color: #1F3864; font-weight: 600; }
+    .sig-role { font-size: 8.5pt; color: #44546A; margin-top: 2px; }
+    .sig-date { margin-top: 18px; font-size: 8.5pt; color: #44546A; }
+
+    /* Terms body */
+    .terms-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
+    .terms-body h1:first-child { margin-top: 0; }
+    .terms-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
+    .terms-body p { margin-bottom: 9px; line-height: 1.65; }
+    .terms-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
+
+    /* Rates table */
+    .rates-intro { font-size: 10pt; color: #44546A; line-height: 1.6; margin-bottom: 24px; }
+    .rates-table { width: 100%; border-collapse: collapse; font-size: 10.5pt; }
+    .rates-table td { padding: 10px 12px; border-bottom: 1px solid #E7E6E6; vertical-align: top; }
+    .rates-table td.role { font-weight: 500; color: #1a1a1a; width: 32%; }
+    .rates-table td.rate { font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; width: 18%; text-align: right; padding-right: 24px; }
+
+    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
+    @media print {
+      body { background: #fff; }
+      .print-btn { display: none; }
+      .page { padding: 0; width: 100%; min-height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+
+  <!-- Section 1: Scope of Services -->
+  <div class="page">
+    ${headerBlock("SCOPE OF SERVICES", project.name || "Project", today)}
+    ${metaGridBlock()}
+    <div class="scope-body">${scopeHtml}</div>
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, Ltd, PC &middot; Scope of Services</span>
+      <span>${project.name || ""} &middot; ${monthYear}</span>
+    </div>
+  </div>
+
+  <!-- Section 2: Fee Proposal -->
+  <div class="page page-break">
+    ${headerBlock("FEE PROPOSAL", project.name || "Project", today)}
+    ${metaGridBlock()}
+    <div class="section-heading">Fee Schedule</div>
+    <table class="fee-table">
+      <thead><tr><th>Phase of Work</th><th class="right">Fee</th></tr></thead>
+      <tbody>
+        ${phaseRows}
+        ${coRows}
+        <tr class="total"><td>Total ${project.feeType || "Lump Sum"} Fee</td><td class="right">$${Math.round(totalContractFee).toLocaleString()}</td></tr>
+      </tbody>
+    </table>
+    <div class="total-callout">
+      <div class="label">${project.feeType || "Lump Sum"} Fee</div>
+      <div class="value">$${Math.round(totalContractFee).toLocaleString()}</div>
+    </div>
+    <div class="notes-block">
+      <strong>Notes &amp; Assumptions</strong><br>
+      This fee proposal is submitted in conjunction with the attached Scope of Services and Terms &amp; Conditions, which are incorporated herein by reference and form part of this proposal. The fees listed above are based on the scope of work described in the attachment. Any modifications to the scope may result in an adjustment to the proposed fee. This proposal is valid for 90 days from the date of issuance.
+    </div>
+    <div class="sig-grid">
+      <div class="sig-block">
+        <div class="sig-name">SETTY &amp; Associates, LTD, PC</div>
+        <div class="sig-role">Authorized Signature</div>
+        <div class="sig-date">Date: _______________________</div>
+      </div>
+      <div class="sig-block">
+        <div class="sig-name">${project.prime || project.clientName || "Client / Prime"}</div>
+        <div class="sig-role">Accepted Signature</div>
+        <div class="sig-date">Date: _______________________</div>
+      </div>
+    </div>
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, Ltd, PC &middot; Fee Proposal</span>
+      <span>${project.name || ""} &middot; ${monthYear}</span>
+    </div>
+  </div>
+
+  <!-- Section 3: Attachment A — Terms & Conditions -->
+  <div class="page page-break">
+    ${headerBlock("ATTACHMENT A", "Terms &amp; Conditions", (project.name || "Project") + " &middot; " + today)}
+    <div class="terms-body">${termsHtml}</div>
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, Ltd, PC &middot; Attachment A &middot; Terms &amp; Conditions</span>
+      <span>${project.name || ""} &middot; ${monthYear}</span>
+    </div>
+  </div>
+
+  <!-- Section 4: Attachment B — Schedule of Hourly Rates -->
+  <div class="page page-break">
+    ${headerBlock("ATTACHMENT B", "Schedule of Hourly Rates", (project.name || "Project") + " &middot; " + today)}
+    <div class="rates-intro">
+      The following hourly rates apply to services performed under this Agreement and to any Additional Services authorized in accordance with the Standard Terms and Conditions. Rates are subject to annual adjustment.
+    </div>
+    <div class="section-heading">Hourly Rate Schedule</div>
+    <table class="rates-table">
+      <tbody>${rateRows.join("")}</tbody>
+    </table>
+    <div class="doc-footer">
+      <span>SETTY &amp; Associates, Ltd, PC &middot; Attachment B &middot; Schedule of Hourly Rates</span>
+      <span>${project.name || ""} &middot; ${monthYear}</span>
+    </div>
+  </div>
+</body>
+</html>`);
+  win.document.close();
+}
+
+// Internal review email — scope + fee inline (no PDF), with a deep-link back
+// to the project. Different audience than sendProposal: colleagues who'll skim
+// in their inbox and reply with thumbs-up or comments, not a client receiving
+// a formal package. Inline-styled HTML (tables, no flex/grid) so it renders
+// reliably across Outlook desktop, Outlook web, and forwarded chains.
+async function sendProposalForReview(project) {
+  const projName = project.name || "Project";
+  const projUrl  = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
+
+  // Same fee math as the bundle — keeps internal numbers in lock-step with
+  // what the external proposal would show.
+  const constructionCostFP = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const calcedFee = calcSettyFee(constructionCostFP, project);
+  const baseFee = project.manualSettyFee > 0 ? project.manualSettyFee : calcedFee;
+  const phases = project.phases || [];
+  const phasedFees = buildPhaseFees(baseFee, phases);
+  const billablePhases = phasedFees.filter(p => p.billable && p.fee > 0);
+  const changeOrders = (project.changeOrders || []).filter(c => c.approved);
+  const coTotal = changeOrders.reduce((a, c) => a + (c.fee || 0), 0);
+  const totalContractFee = baseFee + coTotal;
+
+  const phaseRows = billablePhases.map(ph => `
+      <tr>
+        <td style="padding:7px 10px;border-bottom:1px solid #E7E6E6;">${ph.name}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #E7E6E6;text-align:right;color:#1F3864;font-weight:600;">$${Math.round(ph.fee).toLocaleString()}</td>
+      </tr>`).join("");
+  const coRows = changeOrders.length ? changeOrders.map(co => `
+      <tr>
+        <td style="padding:7px 10px;border-bottom:1px solid #E7E6E6;">↳ CO: ${co.name || co.number}</td>
+        <td style="padding:7px 10px;border-bottom:1px solid #E7E6E6;text-align:right;color:#1F3864;font-weight:600;">$${Math.round(co.fee || 0).toLocaleString()}</td>
+      </tr>`).join("") : "";
+
+  const scopeHtml = project.scopeContent || "<p style='color:#888;font-style:italic;'>(No scope content entered yet.)</p>";
+
+  // Project context box — quick visual anchor + the deep link
+  const ctxLines = [];
+  if (project.projectNumber) ctxLines.push("<strong>Project #:</strong> " + project.projectNumber);
+  if (project.prime || project.clientName) ctxLines.push("<strong>Client / Prime:</strong> " + (project.prime || project.clientName));
+  if (project.projectAddress) ctxLines.push("<strong>Address:</strong> " + project.projectAddress + (project.projectCity ? ", " + project.projectCity : "") + (project.projectState ? ", " + project.projectState : ""));
+
+  const subject = `[Internal Review] ${projName} — Scope & Fee`;
+  const bodyHtml = `
+<div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:720px;line-height:1.55;">
+  <p style="margin:0 0 10px;">Hi team,</p>
+  <p style="margin:0 0 14px;">Requesting your informal review of the scope and fees for <strong>${projName}</strong> before we send to the client. Please reply with 👍 to approve, or with any comments / questions.</p>
+
+  <div style="background:#f4f5f7;border-left:3px solid #2F5496;padding:10px 14px;margin:14px 0;border-radius:0 4px 4px 0;font-size:12px;line-height:1.7;">
+    🔗 <a href="${projUrl}" style="color:#2F5496;font-weight:700;text-decoration:none;">Open in PMS →</a>
+    ${ctxLines.length ? "<br>" + ctxLines.join("<br>") : ""}
+  </div>
+
+  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid #1F3864;padding-bottom:5px;margin:20px 0 10px;">Scope of Services</div>
+  <div style="font-size:13px;line-height:1.6;">${scopeHtml}</div>
+
+  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid #1F3864;padding-bottom:5px;margin:24px 0 10px;">Fee Schedule</div>
+  <table style="border-collapse:collapse;width:100%;font-size:12.5px;margin-bottom:12px;">
+    <thead>
+      <tr>
+        <th style="text-align:left;padding:6px 10px;font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #1F3864;">Phase of Work</th>
+        <th style="text-align:right;padding:6px 10px;font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #1F3864;">Fee</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${phaseRows}
+      ${coRows}
+      <tr>
+        <td style="padding:10px;font-weight:700;border-top:1.5px solid #1F3864;border-bottom:2px solid #1F3864;font-size:13px;">Total ${project.feeType || "Lump Sum"} Fee</td>
+        <td style="padding:10px;text-align:right;font-weight:700;color:#1F3864;border-top:1.5px solid #1F3864;border-bottom:2px solid #1F3864;font-size:13px;">$${Math.round(totalContractFee).toLocaleString()}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p style="margin:20px 0 6px;font-size:12px;color:#44546A;">Full Terms &amp; Conditions and Hourly Rate Schedule are not included here — they're firm-standard. <a href="${projUrl}" style="color:#2F5496;font-weight:600;text-decoration:none;">Open the project</a> if you need to review them.</p>
+  <p style="margin:14px 0 0;">Thanks!</p>
+</div>`.trim();
+
+  await createOutlookDraft({ subject, bodyHtml });
+}
+
+// "Send Proposal" entry point — opens the bundled-PDF print window AND
+// creates an Outlook draft with the right subject line + body listing what's
+// included. The user prints the bundle to one PDF, then attaches it to the
+// draft. PDF auto-attachment isn't done because the only browser-side path
+// (html2pdf / html2canvas) produces image-based PDFs, which lose text
+// selectability — bad for a legal proposal package.
+async function sendProposal(project) {
+  const projName = project.name || "Project";
+  const subject = `${projName} Proposal`;
+  const bodyHtml = `
+    <p>Hello,</p>
+    <p>Please find attached our proposal for <strong>${projName}</strong>${project.projectAddress ? " at " + project.projectAddress : ""}, including:</p>
+    <ul>
+      <li>Scope of Services</li>
+      <li>Fee Proposal</li>
+      <li>Attachment A — Terms &amp; Conditions</li>
+      <li>Attachment B — Schedule of Hourly Rates</li>
+    </ul>
+    <p>Please review and let us know if you have any questions or would like to discuss further.</p>
+    <p>Best regards,</p>
+  `.trim();
+  // Open the bundle print window first so the user has the PDF ready when
+  // the draft opens. They print, save as PDF, switch to Outlook, attach.
+  printProposalBundle(project);
+  await createOutlookDraft({ subject, bodyHtml });
+}
+
 function printScopeOfServices(project) {
   const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
   const win = window.open("", "_blank", "width=900,height=700");
@@ -15108,6 +15460,12 @@ function ScopeView({ project, onChange }) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Btn variant="ghost" onClick={() => sendProposalForReview(project)} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
+            👀 Send for Review
+          </Btn>
+          <Btn variant="primary" onClick={() => sendProposal(project)} title="Open the bound proposal PDF (SOW + Fee + T&C + Rates) plus an Outlook draft with subject and body prefilled">
+            📨 Send Proposal
+          </Btn>
           {scopeLocked
             ? <Btn variant="warning" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}>🔓 Unlock Scope</Btn>
             : <Btn variant="success" onClick={() => { setShowLockModal("lock"); setLockNote(""); }}>🔒 Lock Scope</Btn>
