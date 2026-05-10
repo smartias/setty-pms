@@ -7822,6 +7822,33 @@ function ProjectDirectoryView({ project, onChange, clients }) {
 }
 
 // ─── PROJECT CHECKLISTS ──────────────────────────────────────────────────────
+// User-name resolution for checklist sign-offs. Tries MSAL first (the normal
+// signed-in path); if that returns "Unknown" (auth not fully wired in this
+// session), falls back to a localStorage value prompted from the user once.
+// No changes to actual authentication — purely a display name for
+// "checked by" stamps.
+const CHECKLIST_USER_NAME_KEY = "setty_pms_checklist_user_name_v1";
+function getChecklistUserName() {
+  const fromMsal = getCurrentUser();
+  if (fromMsal && fromMsal !== "Unknown") return fromMsal;
+  try {
+    const stored = localStorage.getItem(CHECKLIST_USER_NAME_KEY);
+    if (stored) return stored;
+  } catch {}
+  return "";
+}
+function setChecklistUserName(name) {
+  try { localStorage.setItem(CHECKLIST_USER_NAME_KEY, name); } catch {}
+}
+function promptForChecklistUserName() {
+  const existing = getChecklistUserName();
+  const entered = window.prompt("Your name or initials (for 'checked by' tracking on this device):", existing || "");
+  if (entered === null) return existing || "";
+  const clean = entered.trim();
+  setChecklistUserName(clean);
+  return clean;
+}
+
 function ProjectChecklistsView({ project, onChange }) {
   const checklists = project.checklists || [];
   const [showPicker, setShowPicker] = React.useState(false);
@@ -7846,7 +7873,13 @@ function ProjectChecklistsView({ project, onChange }) {
   }
   function updateItem(instanceId, itemId, patch) {
     const now = new Date().toISOString();
-    const user = getCurrentUser();
+    // Stamp checks with whoever's set as the current user. If we're transitioning
+    // INTO done and no name is available, prompt once — better than silently
+    // recording "Unknown" and forcing the user to fix it after the fact.
+    let user = getChecklistUserName();
+    if (patch.done === true && !user) {
+      user = promptForChecklistUserName();
+    }
     onChange({
       ...project,
       checklists: checklists.map(c => {
@@ -7856,12 +7889,10 @@ function ProjectChecklistsView({ project, onChange }) {
           items: c.items.map(i => {
             if (i.itemId !== itemId) return i;
             const next = { ...i, ...patch };
-            // Stamp who/when on first transition into done.
             if (patch.done === true && !i.done) {
-              next.checkedBy = user;
+              next.checkedBy = user || "";
               next.checkedAt = now;
             }
-            // Clearing done unstamps so we don't preserve stale signatures.
             if (patch.done === false) { next.checkedBy = ""; next.checkedAt = ""; }
             return next;
           }),
@@ -7957,6 +7988,22 @@ function ProjectChecklistsView({ project, onChange }) {
             {/* Expanded item list */}
             {isOpen && (
               <div style={{ padding: "10px 16px 16px" }}>
+                {/* "Checking as" indicator — shows the active reviewer name and
+                    lets them change it. Prompts on first check if not set. */}
+                {(() => {
+                  const userName = getChecklistUserName();
+                  return (
+                    <div style={{ fontSize: 11, color: P.textDim, marginBottom: 12, padding: "6px 10px", background: P.bg, borderRadius: 4, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                      <span>
+                        Checking as: <strong style={{ color: userName ? P.text : P.yellow }}>{userName || "(not set — will prompt on first check)"}</strong>
+                      </span>
+                      <button onClick={() => { promptForChecklistUserName(); /* trigger re-render via tiny no-op state churn */ setExpandedId(null); setExpandedId(inst.id); }}
+                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 11, padding: 0 }}>
+                        ✏ change
+                      </button>
+                    </div>
+                  );
+                })()}
                 {tpl.sections.map(sec => {
                   const collapsedKey = inst.id + "::" + sec.name;
                   const collapsed = !!collapsedSections[collapsedKey];
@@ -7977,9 +8024,20 @@ function ProjectChecklistsView({ project, onChange }) {
                         return (
                           <div key={it.id} style={{ padding: "8px 10px", borderBottom: `1px solid ${P.border}`, opacity: muted ? 0.65 : 1, transition: "opacity 0.15s" }}>
                             <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                              <input type="checkbox" checked={!!state.done}
-                                onChange={e => updateItem(inst.id, it.id, { done: e.target.checked, na: e.target.checked ? false : state.na })}
-                                style={{ marginTop: 3, width: 16, height: 16, cursor: "pointer", flexShrink: 0 }} />
+                              {/* State controls: checkbox + N/A grouped on the left so both
+                                  decisions are made in one place. N/A is a small pill button
+                                  that highlights yellow when active — visually distinct from
+                                  the checkbox so they don't read as the same control. */}
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, paddingTop: 1 }}>
+                                <input type="checkbox" checked={!!state.done}
+                                  onChange={e => updateItem(inst.id, it.id, { done: e.target.checked, na: e.target.checked ? false : state.na })}
+                                  style={{ width: 16, height: 16, cursor: "pointer" }} />
+                                <button onClick={() => updateItem(inst.id, it.id, { na: !state.na, done: !state.na ? false : state.done })}
+                                  title={state.na ? "Marked Not Applicable — click to clear" : "Mark Not Applicable"}
+                                  style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4, cursor: "pointer", background: state.na ? P.yellowDim : "transparent", border: `1px solid ${state.na ? P.yellow : P.border}`, color: state.na ? P.yellow : P.textDim, lineHeight: 1.2 }}>
+                                  N/A
+                                </button>
+                              </div>
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{ fontSize: 13, lineHeight: 1.5, color: state.done ? P.textMuted : P.text, textDecoration: state.done ? "line-through" : "none" }}>
                                   {it.text}
@@ -8000,22 +8058,14 @@ function ProjectChecklistsView({ project, onChange }) {
                                   </div>
                                 )}
                               </div>
-                              <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
-                                <label style={{ fontSize: 10, color: state.na ? P.yellow : P.textDim, cursor: "pointer", display: "flex", alignItems: "center", gap: 3, fontWeight: state.na ? 700 : 400 }}>
-                                  <input type="checkbox" checked={!!state.na}
-                                    onChange={e => updateItem(inst.id, it.id, { na: e.target.checked, done: e.target.checked ? false : state.done })}
-                                    style={{ width: 12, height: 12, cursor: "pointer" }} />
-                                  N/A
-                                </label>
-                                <button onClick={() => {
-                                    const next = window.prompt("Note for this item:", state.note || "");
-                                    if (next !== null) updateItem(inst.id, it.id, { note: next.trim() });
-                                  }}
-                                  title={state.note ? "Edit note" : "Add note"}
-                                  style={{ background: "none", border: "none", color: state.note ? P.accentLight : P.textDim, cursor: "pointer", fontSize: 12, padding: 0 }}>
-                                  📝
-                                </button>
-                              </div>
+                              <button onClick={() => {
+                                  const next = window.prompt("Note for this item:", state.note || "");
+                                  if (next !== null) updateItem(inst.id, it.id, { note: next.trim() });
+                                }}
+                                title={state.note ? "Edit note" : "Add note"}
+                                style={{ background: "none", border: "none", color: state.note ? P.accentLight : P.textDim, cursor: "pointer", fontSize: 14, padding: "0 2px", flexShrink: 0, alignSelf: "flex-start", marginTop: 1 }}>
+                                📝
+                              </button>
                             </div>
                           </div>
                         );
