@@ -7402,8 +7402,108 @@ function directoryTypeColor(type) {
   }
 }
 
+// Builds the merged directory: project.directory (manual entries) overlaid on
+// auto-derived entries from project.projectContacts (PM / Proposal / Contract /
+// Accounting POCs) and project.subconsultants. Dedupes by lowercase email so a
+// person who appears in two sources isn't shown twice. Manual entries win over
+// derived ones — editing a derived entry effectively "promotes" it to manual.
+function buildMergedDirectory(project) {
+  const map = new Map();
+  const keyFor = c => (c.email || "").toLowerCase().trim() || ("nokey:" + (c.id || Math.random()));
+
+  // 1. POC contacts (PM, Proposal, Contract, Accounting)
+  const pcLabels = { pm: "PM POC", proposal: "Proposal POC", contract: "Contract POC", accounting: "Accounting POC" };
+  const pcContacts = project.projectContacts || {};
+  Object.entries(pcLabels).forEach(([key, label]) => {
+    (pcContacts[key] || []).forEach(poc => {
+      if (!poc.name && !poc.email) return;
+      const k = keyFor(poc);
+      const existing = map.get(k);
+      if (existing) {
+        existing._sources = [...(existing._sources || []), label];
+        return;
+      }
+      // Default the company to prime/client; user can override by promoting to manual.
+      const defaultCompany = project.prime || project.clientName || "";
+      const defaultType = project.prime ? "Prime" : "Client";
+      map.set(k, {
+        id: "derived-poc-" + key + "-" + poc.id,
+        name: poc.name || "",
+        title: poc.title || label,
+        email: poc.email || "",
+        phone: poc.phone || "",
+        company: defaultCompany,
+        type: defaultType,
+        notes: "",
+        _derived: true,
+        _sources: [label],
+      });
+    });
+  });
+
+  // 2. Subconsultants — each becomes a person entry under the sub firm.
+  (project.subconsultants || []).forEach(sub => {
+    if (!sub.contact && !sub.email && !sub.firm) return;
+    const k = keyFor({ email: sub.email, id: "sub:" + sub.id });
+    const existing = map.get(k);
+    if (existing) {
+      existing._sources = [...(existing._sources || []), "Subconsultant"];
+      return;
+    }
+    map.set(k, {
+      id: "derived-sub-" + sub.id,
+      name: sub.contact || "",
+      title: sub.discipline || "",
+      email: sub.email || "",
+      phone: sub.phone || "",
+      company: sub.firm || "",
+      type: "Sub (Setty's)",
+      notes: "",
+      _derived: true,
+      _sources: ["Subconsultant"],
+    });
+  });
+
+  // 3. Overlay manual entries — these win over derived ones with the same email.
+  // Provenance from the derived source is preserved on the override so the user
+  // can still see "originally from PM POC" even after editing.
+  (project.directory || []).forEach(c => {
+    const k = keyFor(c);
+    const existing = map.get(k);
+    if (existing && existing._derived) {
+      map.set(k, { ...c, _derived: false, _sources: existing._sources, _wasDerived: true });
+    } else {
+      map.set(k, c);
+    }
+  });
+
+  return Array.from(map.values());
+}
+
+// All companies on the project — Prime, Client (if different), every unique
+// subconsultant firm. Returns [{ name, role }] for the header summary row.
+function getProjectCompanies(project) {
+  const companies = [];
+  const seen = new Set();
+  function push(name, role) {
+    if (!name) return;
+    const t = name.trim();
+    if (!t) return;
+    const k = t.toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    companies.push({ name: t, role });
+  }
+  push(project.prime, "Prime");
+  push(project.clientName, "Client");
+  (project.subconsultants || []).forEach(sub => push(sub.firm, "Sub"));
+  return companies;
+}
+
 function ProjectDirectoryView({ project, onChange }) {
   const directory = project.directory || [];
+  const merged = buildMergedDirectory(project);
+  const companies = getProjectCompanies(project);
   const [showForm, setShowForm] = React.useState(false);
   const [form, setForm] = React.useState(newDirectoryEntry());
   const [editId, setEditId] = React.useState(null);
@@ -7418,26 +7518,35 @@ function ProjectDirectoryView({ project, onChange }) {
     setShowForm(true);
   }
   function startEdit(c) {
-    setForm({ ...c });
-    setEditId(c.id);
+    // Editing a derived entry creates a new manual override (won't touch the
+    // upstream POC/Sub data). Editing a manual entry updates in place.
+    setForm({ ...c, id: c._derived ? uid() : c.id });
+    setEditId(c._derived ? null : c.id);
     setShowForm(true);
   }
   function saveContact() {
     if (!form.name.trim() && !form.email.trim()) return;
+    const clean = { ...form };
+    delete clean._derived; delete clean._sources; delete clean._wasDerived;
     const next = editId
-      ? directory.map(c => c.id === editId ? { ...form, id: editId } : c)
-      : [...directory, { ...newDirectoryEntry(), ...form }];
+      ? directory.map(c => c.id === editId ? { ...clean, id: editId } : c)
+      : [...directory, { ...newDirectoryEntry(), ...clean }];
     onChange({ ...project, directory: next });
     setShowForm(false);
     setEditId(null);
     setForm(newDirectoryEntry());
   }
-  function removeContact(id) {
-    if (!window.confirm("Remove this contact from the project directory?\n\nThis only removes the per-project entry — it doesn't affect any other records.")) return;
-    onChange({ ...project, directory: directory.filter(c => c.id !== id) });
+  function removeContact(c) {
+    // Pure derived entries can't be removed from this view — they live upstream.
+    if (c._derived) {
+      window.alert("This contact is auto-rolled from " + (c._sources || []).join(", ") + ".\n\nTo remove it, edit the source (Overview tab POCs or Subconsultants tab).\n\nYou can also click ✏ to make a project-specific copy here, then edit/remove that copy independently.");
+      return;
+    }
+    if (!window.confirm("Remove this contact from the project directory?\n\nThis removes only the per-project entry. Auto-rolled contacts (PM/Proposal/Contract POCs, subs) are unaffected.")) return;
+    onChange({ ...project, directory: directory.filter(x => x.id !== c.id) });
   }
 
-  const filtered = directory.filter(c => {
+  const filtered = merged.filter(c => {
     if (filterType !== "All" && c.type !== filterType) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -7466,11 +7575,30 @@ function ProjectDirectoryView({ project, onChange }) {
         <div>
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>Project Directory</div>
           <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5 }}>
-            Everyone on this project — prime, client, architect, GC, subs, etc. Adds via Outlook add-in's "Add Participant" land here automatically when the email is tagged to this project.
+            Everyone on this project — prime, client, architect, GC, subs, etc. Auto-rolls PM/Proposal/Contract POCs and subconsultants; the Outlook add-in adds participants too when emails are tagged.
           </div>
         </div>
         <Btn variant="primary" onClick={startAdd}>+ Add Contact</Btn>
       </div>
+
+      {/* Companies on Project summary — always visible so the firm structure
+          is clear even before any individual contacts are added. */}
+      {companies.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16, padding: "10px 12px", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em", marginRight: 4, alignSelf: "center" }}>
+            Companies on project:
+          </span>
+          {companies.map((co, i) => {
+            const tc = directoryTypeColor(co.role === "Sub" ? "Sub (Setty's)" : co.role);
+            return (
+              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, padding: "3px 9px", background: tc.bg, border: `1px solid ${tc.text}`, borderRadius: 999 }}>
+                <span style={{ color: tc.text, fontWeight: 700, fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em" }}>{co.role}</span>
+                <span style={{ color: P.text, fontWeight: 500 }}>{co.name}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {/* Search + Filter */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
@@ -7481,7 +7609,7 @@ function ProjectDirectoryView({ project, onChange }) {
           {DIRECTORY_TYPES.map(t => <option key={t}>{t}</option>)}
         </select>
         <span style={{ fontSize: 11, color: P.textDim }}>
-          {filtered.length} of {directory.length} {directory.length === 1 ? "contact" : "contacts"}
+          {filtered.length} of {merged.length} {merged.length === 1 ? "contact" : "contacts"}
         </span>
       </div>
 
@@ -7528,8 +7656,8 @@ function ProjectDirectoryView({ project, onChange }) {
       {/* Empty state */}
       {filtered.length === 0 && (
         <div style={{ color: P.textDim, padding: "40px 20px", textAlign: "center", fontSize: 13, lineHeight: 1.6, background: P.bg, border: `1px dashed ${P.border}`, borderRadius: 8 }}>
-          {directory.length === 0
-            ? <>No contacts in this project's directory yet.<br/>Add your first one above, or use the Outlook add-in's "Add Participant to Contacts" on a tagged email — they'll land here automatically.</>
+          {merged.length === 0
+            ? <>No contacts in this project's directory yet.<br/>Add PM, Proposal, or Contract POCs on the Overview tab — they'll auto-roll here. Or click <strong>+ Add Contact</strong> above to add anyone else manually.</>
             : "No contacts match your search/filter."}
         </div>
       )}
@@ -7548,6 +7676,7 @@ function ProjectDirectoryView({ project, onChange }) {
           </div>
           {byCompany[company].map(c => {
             const tc = directoryTypeColor(c.type);
+            const sources = c._sources || [];
             return (
               <div key={c.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 12px", borderBottom: `1px solid ${P.border}`, transition: "background 0.1s" }}
                 onMouseOver={e => e.currentTarget.style.background = P.bg}
@@ -7557,6 +7686,12 @@ function ProjectDirectoryView({ project, onChange }) {
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name || <span style={{ color: P.textDim, fontStyle: "italic" }}>(no name)</span>}</span>
                     {c.title && <span style={{ color: P.textMuted, fontSize: 12 }}>· {c.title}</span>}
                     <Badge color={tc} text={c.type} />
+                    {sources.map((s, i) => (
+                      <span key={i} title={c._derived ? "Auto-rolled from " + s : "Originally from " + s}
+                        style={{ fontSize: 9.5, fontWeight: 600, padding: "1px 6px", borderRadius: 999, background: c._derived ? P.bg : "transparent", color: P.textDim, border: `1px solid ${P.border}`, textTransform: "uppercase", letterSpacing: ".04em" }}>
+                        {c._derived ? "↻ " : "✎ "}{s}
+                      </span>
+                    ))}
                   </div>
                   <div style={{ fontSize: 12, color: P.textMuted, marginTop: 3, display: "flex", gap: 14, flexWrap: "wrap" }}>
                     {c.email && <a href={`mailto:${c.email}`} style={{ color: P.accentLight, textDecoration: "none" }}>✉ {c.email}</a>}
@@ -7566,10 +7701,12 @@ function ProjectDirectoryView({ project, onChange }) {
                   {c.notes && <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>{c.notes}</div>}
                 </div>
                 <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                  <button onClick={() => startEdit(c)} title="Edit"
+                  <button onClick={() => startEdit(c)}
+                    title={c._derived ? "Make a project-specific copy of this contact (lets you edit independently of the source)" : "Edit"}
                     style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: "4px 6px" }}>✏</button>
-                  <button onClick={() => removeContact(c.id)} title="Remove from this project's directory"
-                    style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 14, padding: "4px 6px" }}>✕</button>
+                  <button onClick={() => removeContact(c)}
+                    title={c._derived ? "Auto-rolled — edit at source to remove" : "Remove from this project's directory"}
+                    style={{ background: "none", border: "none", color: c._derived ? P.textDim : P.red, cursor: c._derived ? "help" : "pointer", fontSize: 14, padding: "4px 6px", opacity: c._derived ? 0.4 : 1 }}>✕</button>
                 </div>
               </div>
             );
@@ -11990,7 +12127,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Submittals" && <SubmittalsView project={project} onChange={onUpdate} staff={staff} clients={clients} />}
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
-        {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} />}
+        {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} clients={clients} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Gantt" && <GanttView project={project} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
