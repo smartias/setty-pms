@@ -7664,8 +7664,50 @@ function ProjectDirectoryView({ project, onChange, clients }) {
   // skip the picker entirely for a brand-new contact.
   const [pickerQ, setPickerQ] = React.useState("");
   const [pickerJustPicked, setPickerJustPicked] = React.useState(null);
+  // Tracks which contact's button was just clicked for copy feedback.
+  // Shape: { id, kind: "email" | "block" } or null. Auto-clears after 1.5s.
+  const [justCopied, setJustCopied] = React.useState(null);
 
   function setF(field, val) { setForm(f => ({ ...f, [field]: val })); }
+
+  // Build the letter-style block: each non-empty field on its own line, in
+  // the order users naturally read an addressee header (Name → Company → Title → Email).
+  // Phone is intentionally omitted from the block — most letter usage doesn't
+  // include it inline, and adding it would push body text down. If you want
+  // phone included regularly, tell me and I'll add it.
+  function buildContactBlock(c) {
+    return [c.name, c.company, c.title, c.email]
+      .map(s => (s || "").trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+  async function copyToClipboard(text, contactId, kind) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setJustCopied({ id: contactId, kind });
+      setTimeout(() => {
+        // Only clear if this is still the current copy state — prevents an
+        // earlier copy from wiping a later one mid-flight.
+        setJustCopied(curr => (curr && curr.id === contactId && curr.kind === kind) ? null : curr);
+      }, 1500);
+    } catch (e) {
+      // navigator.clipboard requires HTTPS or localhost. If it fails, fall
+      // back to the legacy execCommand path. Most modern browsers support
+      // both, so this is belt-and-suspenders.
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setJustCopied({ id: contactId, kind });
+        setTimeout(() => setJustCopied(curr => (curr && curr.id === contactId && curr.kind === kind) ? null : curr), 1500);
+      } catch {}
+    }
+  }
 
   // Smart type-guess: match the company to project.prime / clientName / sub
   // firms so picked contacts default to the right type without manual setting.
@@ -7946,14 +7988,34 @@ function ProjectDirectoryView({ project, onChange, clients }) {
                       </span>
                     ))}
                   </div>
-                  <div style={{ fontSize: 12, color: P.textMuted, marginTop: 3, display: "flex", gap: 14, flexWrap: "wrap" }}>
-                    {c.email && <a href={`mailto:${c.email}`} style={{ color: P.accentLight, textDecoration: "none" }}>✉ {c.email}</a>}
+                  <div style={{ fontSize: 12, color: P.textMuted, marginTop: 3, display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+                    {c.email && (() => {
+                      const isCopied = justCopied && justCopied.id === c.id && justCopied.kind === "email";
+                      return (
+                        <span
+                          onClick={() => copyToClipboard(c.email, c.id, "email")}
+                          title="Click to copy email address"
+                          style={{ color: isCopied ? P.green : P.accentLight, cursor: "pointer", userSelect: "none", transition: "color 0.15s" }}>
+                          {isCopied ? "✓ Copied!" : "✉ " + c.email}
+                        </span>
+                      );
+                    })()}
                     {c.phone && <span>📞 {c.phone}</span>}
                     {c.addedFromEmail && <span style={{ color: P.textDim, fontSize: 11, fontStyle: "italic" }}>added from email</span>}
                   </div>
                   {c.notes && <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>{c.notes}</div>}
                 </div>
-                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
+                  {(() => {
+                    const isCopied = justCopied && justCopied.id === c.id && justCopied.kind === "block";
+                    return (
+                      <button onClick={() => copyToClipboard(buildContactBlock(c), c.id, "block")}
+                        title="Copy Name / Company / Title / Email as a letter-style block"
+                        style={{ background: "none", border: "none", color: isCopied ? P.green : P.textDim, cursor: "pointer", fontSize: 13, padding: "4px 8px", fontWeight: isCopied ? 700 : 400, transition: "color 0.15s" }}>
+                        {isCopied ? "✓" : "📋"}
+                      </button>
+                    );
+                  })()}
                   <button onClick={() => startEdit(c)}
                     title={c._derived ? "Make a project-specific copy of this contact (lets you edit independently of the source)" : "Edit"}
                     style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: "4px 6px" }}>✏</button>
