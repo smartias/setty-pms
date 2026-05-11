@@ -1446,7 +1446,7 @@ function Modal({ title, onClose, children, wide }) {
 // The form intentionally collects only the fields that are awkward to discover
 // inside the detail page tabs. Everything else (PM, fee, address, etc.) is
 // filled in on the detail page where the right context is visible.
-function NewProjectModal({ onClose, onCreate }) {
+function NewProjectModal({ onClose, onCreate, clients = [] }) {
   const [name,          setName]          = React.useState("");
   const [status,        setStatus]        = React.useState("Proposal Due");
   const [projectNumber, setProjectNumber] = React.useState("");
@@ -1475,8 +1475,18 @@ function NewProjectModal({ onClose, onCreate }) {
   const labelStyle = { display: "block", fontSize: 11, color: P.textDim, marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 };
   const fieldStyle = { marginBottom: 14 };
 
+  const firmOptions = React.useMemo(() => {
+    const names = Array.from(new Set(clients.map(c => (c.name || "").trim()).filter(Boolean))).sort();
+    if (!names.includes("Setty")) names.unshift("Setty");
+    return names;
+  }, [clients]);
+
   return (
     <Modal title="New Project" onClose={onClose}>
+      <datalist id="newProjectFirmOptions">
+        {firmOptions.map(n => <option key={n} value={n} />)}
+      </datalist>
+
       <div style={fieldStyle}>
         <label style={labelStyle}>Project Name *</label>
         <input autoFocus value={name} onChange={e => setName(e.target.value)} style={inputStyle}
@@ -1503,6 +1513,7 @@ function NewProjectModal({ onClose, onCreate }) {
         <div>
           <label style={labelStyle}>Prime *</label>
           <input value={prime} onChange={e => setPrime(e.target.value)} style={inputStyle}
+            list="newProjectFirmOptions"
             placeholder="Setty (if we're prime) or other firm" />
           <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4 }}>
             Who holds the prime contract with the owner. Defaults to Setty.
@@ -1511,6 +1522,7 @@ function NewProjectModal({ onClose, onCreate }) {
         <div>
           <label style={labelStyle}>Client *</label>
           <input value={clientName} onChange={e => setClientName(e.target.value)} style={inputStyle}
+            list="newProjectFirmOptions"
             placeholder={prime.trim().toLowerCase() === "setty" ? "Project owner" : "Prime firm or owner you report to"} />
           <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4 }}>
             {prime.trim().toLowerCase() === "setty"
@@ -14474,6 +14486,17 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   const [addMilForm, setAddMilForm] = useState({ name: "", dueDate: "", notes: "" });
   const [addMilMsg, setAddMilMsg] = useState("");
   const [dashInvoicePrompt, setDashInvoicePrompt] = useState(null);
+  // IDs of milestones the user just marked complete — kept visible for a few
+  // seconds (exempt from the past-due-and-completed filter) so the row doesn't
+  // teleport away the moment the invoice modal opens. Gives the user a visual
+  // confirmation, a chance to undo, and an anchor point for context.
+  const [justCompleted, setJustCompleted] = useState(() => new Set());
+  function markJustCompleted(id) {
+    setJustCompleted(prev => { const next = new Set(prev); next.add(id); return next; });
+    setTimeout(() => {
+      setJustCompleted(prev => { const next = new Set(prev); next.delete(id); return next; });
+    }, 5000);
+  }
   const [showCAInvoice, setShowCAInvoice] = useState(false);
   const [caInvoiceState, setCAInvoiceState] = useState({}); // projId -> {amount, desc, milestoneId, include, status, msg}
   const [dashRfiModal, setDashRfiModal] = useState(null);    // { item, project }
@@ -15138,7 +15161,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Progress</th><th>Notes</th><th>Project Status</th><th style={{width:44}}>📅</th></tr>
           </thead>
           <tbody>
-            {allMilestones.filter(m => !(!["rfi","submittal"].includes(m.type) && m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
+            {allMilestones.filter(m => (justCompleted.has(m.id) || !(!["rfi","submittal"].includes(m.type) && m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100)) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
               const mst = milestoneStatus(m.pctComplete);
 	              const projStatus = m.projectStatus || "Not Started";
 	              const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
@@ -15153,11 +15176,15 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   x.id === m.id ? { ...x, [field]: val } : x
                 );
                 onUpdateProject({ ...proj, milestones: newMilestones });
+                if (field === "pctComplete" && +val >= 100 && (m.pctComplete || 0) < 100) {
+                  markJustCompleted(m.id);
+                }
                 if (!skipPrompt && field === "pctComplete" && +val > 0 && m.type === "billable" && m.fee > 0) {
                   const amount = calcInvoiceAmount(m, +val, proj);
                   if (amount > 0) setDashInvoicePrompt({ milestone: m, project: proj, newPct: +val, invoiceAmount: amount });
                 }
               }
+              const isJustCompleted = justCompleted.has(m.id);
               function updateProjectStatus(newStatus) {
                 const proj = projects.find(p => p.id === m.projectId);
                 if (!proj) return;
@@ -15165,9 +15192,14 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
               }
 
               return (
-                <tr key={m.id}>
+                <tr key={m.id} style={isJustCompleted ? {
+                  background: P.greenDim,
+                  transition: "background 4s ease-out, opacity 4s ease-out",
+                  opacity: 0.55,
+                } : undefined}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      {isJustCompleted && <span style={{ color: P.green, fontWeight: 700, fontSize: 13, marginRight: 2 }} title="Just marked complete">✓</span>}
 	                      <button onClick={() => onNavigateToProject(m.projectId)}
 	                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left" }}
 	                        onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"}
@@ -20839,7 +20871,7 @@ async function updateProjectAndFlush(updated) {
       )}
 
       {showNewProjectModal && (
-        <NewProjectModal onClose={() => setShowNewProjectModal(false)} onCreate={createProjectFromForm} />
+        <NewProjectModal onClose={() => setShowNewProjectModal(false)} onCreate={createProjectFromForm} clients={clients} />
       )}
 
       {(view === "list" || view === "archive") && (
