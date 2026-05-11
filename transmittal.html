@@ -53,6 +53,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js"></script>
   <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script>
     // Verify docx loaded correctly
     window.addEventListener("load", () => {
@@ -398,8 +399,10 @@
     <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn btn-green" id="generateBtn">📄 Generate Transmittal (.docx)</button>
       <button class="btn btn-primary" id="saveToSpBtn">💾 Save to SharePoint Folder</button>
+      <button class="btn btn-primary" id="zipBtn">📦 Package Drawings as ZIP</button>
     </div>
     <div class="status" id="generateStatus"></div>
+    <div class="status" id="zipStatus"></div>
   </div>
 
 </div>
@@ -428,6 +431,7 @@ let msalAccount = null;
 let folderUrl = "";
 let resolvedDriveId = null;
 let resolvedFolderPath = null;
+let folderFiles = []; // raw Graph driveItems for the drawings in this folder (used for ZIP packaging)
 let sheets = [];
 let generatedBlob = null;
 let generatedFileName = "";
@@ -775,13 +779,14 @@ async function loadFolder() {
     setStatus("loadStatus", "info", "⏳ Reading files in folder…");
 
     const filesRes = await graphFetch("GET",
-      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=name,lastModifiedDateTime,size`,
+      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=name,lastModifiedDateTime,size,@microsoft.graph.downloadUrl`,
       null, token
     );
 
     const files = (filesRes.value || []).filter(f =>
       !f.folder && /\.(pdf|dwg|rvt|dgn|dxf)$/i.test(f.name)
     );
+    folderFiles = files; // keep for ZIP packaging
 
     if (files.length === 0) {
       setStatus("loadStatus", "warn", "⚠ No drawing files found in this folder. Only PDF, DWG, RVT, DGN, and DXF files are listed. You can add rows manually.");
@@ -979,6 +984,83 @@ document.getElementById("sortBtn").onclick = () => {
 // ─── GENERATE DOCX ────────────────────────────────────────────────────────────
 document.getElementById("generateBtn").onclick = generateDocx;
 document.getElementById("saveToSpBtn").onclick = saveToSharePoint;
+document.getElementById("zipBtn").onclick = packageAsZip;
+
+// ─── PACKAGE DRAWINGS AS ZIP ──────────────────────────────────────────────────
+// Bundles every drawing file (.pdf/.dwg/.rvt/.dgn/.dxf) found in the folder into
+// a single .zip and triggers a browser download. No SharePoint upload — the
+// user attaches the resulting zip to email or uploads it manually.
+async function packageAsZip() {
+  const btn = document.getElementById("zipBtn");
+  setStatus("zipStatus", "", "");
+
+  if (!folderFiles.length) {
+    setStatus("zipStatus", "error", "✗ Load a folder with drawing files first.");
+    return;
+  }
+  if (typeof JSZip === "undefined") {
+    setStatus("zipStatus", "error", "✗ ZIP library failed to load. Check your internet connection.");
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const archiveName = buildArchiveFileName();
+    const zip = new JSZip();
+
+    let done = 0;
+    for (const f of folderFiles) {
+      setStatus("zipStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${folderFiles.length})…`);
+      // downloadUrl is a pre-authed, time-limited URL — no auth header needed
+      const url = f["@microsoft.graph.downloadUrl"];
+      if (!url) throw new Error(`No download URL for ${f.name} — folder may need to be reloaded.`);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`Failed to download ${f.name}: HTTP ${resp.status}`);
+      zip.file(f.name, await resp.blob());
+      done++;
+    }
+
+    setStatus("zipStatus", "info", "⏳ Compressing…");
+    const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+    saveAs(blob, archiveName); // file-saver, already loaded for the .docx export
+
+    setStatus("zipStatus", "success", `✓ "${archiveName}" downloaded (${done} file${done !== 1 ? "s" : ""}).`);
+  } catch(e) {
+    setStatus("zipStatus", "error", "✗ " + e.message);
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─── ARCHIVE FILENAME ─────────────────────────────────────────────────────────
+// TODO (YOU): Decide how the .zip should be named. The URL params already give
+// you these globals to work with:
+//   • project           — project name      (e.g. "Bronx Library HVAC Upgrade")
+//   • (URL param) number — project number   (e.g. "25-042")
+//   • (URL param) client — client name      (e.g. "NYC DDC")
+//   • resolvedFolderPath — folder path under the document library
+//                          (e.g. "25-042 Bronx Library/Drawings/Outgoing/2026-05-11 Issued for Bid")
+//
+// AEC convention typically wants something like:
+//   "25-042_Bronx-Library_Issued-for-Bid_2026-05-11.zip"
+//
+// Tradeoffs to think about:
+//   • Project number first → sorts naturally in a Downloads folder
+//   • Trailing date → recipient can tell which package is newest at a glance
+//   • Spaces vs hyphens → hyphens are safer across email/Windows/Mac
+//   • If the folder name already contains the date/phase, reusing it is
+//     reliable; if it doesn't, you have to invent one (today's date is the
+//     safe fallback).
+//
+// Write ~5–10 lines below. Pull project number/client from the URL params
+// (see how `folderUrl` is read near the top of the file for the pattern), and
+// return a string ending in ".zip". Keep filename-illegal chars out:
+//   replace /[\\/:*?"<>|]/g with "-"
+function buildArchiveFileName() {
+  // TODO: implement
+  return "drawings.zip";
+}
 
 async function generateDocx() {
   const included = sheets.filter(s => s.include);
