@@ -2689,7 +2689,7 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
     + (email.cc ? "<strong>CC:</strong> " + email.cc + "<br>" : "")
     + "</div>";
   const fullHtml = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>" + (email.subject || "Email") + "</title></head><body>"
-    + header + (liveBodyHtml || email.bodyText || "(No body content)") + "</body></html>";
+    + header + (liveBodyHtml || email.bodyText || "<p style='color:#666;font-style:italic;padding:8px 12px;background:#f5f5f5;border-left:3px solid #ccc;'>No body content &mdash; this email may be a system notification, share invite, or attachment-only message.</p>") + "</body></html>";
   await uploadFile("email.html", fullHtml, "text/html");
 
   // 2. Save attachments
