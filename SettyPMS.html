@@ -1522,7 +1522,7 @@ function NewProjectModal({ onClose, onCreate }) {
 
       {isProposal && (
         <div style={fieldStyle}>
-          <label style={labelStyle}>Proposal Due Date *</label>
+          <label style={labelStyle}>Proposal Due Date</label>
           <input type="date" value={proposalDueDate} onChange={e => setProposalDueDate(e.target.value)} style={{ ...inputStyle, width: 200 }} />
         </div>
       )}
@@ -1567,9 +1567,6 @@ function validateNewProject({ name, status, projectNumber, prime, clientName, pr
   if (!name.trim())       return { error: "Project Name is required." };
   if (!prime.trim())      return { error: "Prime is required." };
   if (!clientName.trim()) return { error: "Client is required." };
-  if (PIPELINE_STATUSES.includes(status) && !proposalDueDate) {
-    return { error: "Proposal Due Date is required for pipeline projects." };
-  }
   if (!PIPELINE_STATUSES.includes(status) && !projectNumber.trim()) {
     return { error: "Project Number is required once a project is awarded." };
   }
