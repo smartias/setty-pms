@@ -1437,6 +1437,146 @@ function Modal({ title, onClose, children, wide }) {
   );
 }
 
+// ─── NEW PROJECT MODAL ────────────────────────────────────────────────────────
+// Pre-flight intake form shown when "+ New Project" is clicked from anywhere
+// (dashboard, list, pipeline, archive empty-state). Captures the essentials up
+// front so the user lands on the detail page with the project already named
+// and categorized — instead of an unlabeled "New Project" row to fix later.
+//
+// The form intentionally collects only the fields that are awkward to discover
+// inside the detail page tabs. Everything else (PM, fee, address, etc.) is
+// filled in on the detail page where the right context is visible.
+function NewProjectModal({ onClose, onCreate }) {
+  const [name,          setName]          = React.useState("");
+  const [status,        setStatus]        = React.useState("Proposal Due");
+  const [projectNumber, setProjectNumber] = React.useState("");
+  const [prime,         setPrime]         = React.useState("Setty");
+  const [clientName,    setClientName]    = React.useState("");
+  const [proposalDueDate, setProposalDueDate] = React.useState("");
+  const [error,         setError]         = React.useState("");
+
+  const allStatuses = [...PIPELINE_STATUSES, ...PROJECT_STATUSES];
+  const isProposal  = PIPELINE_STATUSES.includes(status);
+
+  function handleCreate() {
+    const result = validateNewProject({ name, status, projectNumber, prime, clientName, proposalDueDate });
+    if (result.error) { setError(result.error); return; }
+    onCreate({
+      name: name.trim(),
+      status,
+      projectNumber: projectNumber.trim(),
+      prime: prime.trim(),
+      clientName: clientName.trim(),
+      proposalDueDate: isProposal ? proposalDueDate : "",
+    });
+  }
+
+  const inputStyle = { padding: "8px 10px", border: `1px solid ${P.border}`, borderRadius: 6, background: P.bg, color: P.text, fontSize: 13, width: "100%" };
+  const labelStyle = { display: "block", fontSize: 11, color: P.textDim, marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 };
+  const fieldStyle = { marginBottom: 14 };
+
+  return (
+    <Modal title="New Project" onClose={onClose}>
+      <div style={fieldStyle}>
+        <label style={labelStyle}>Project Name *</label>
+        <input autoFocus value={name} onChange={e => setName(e.target.value)} style={inputStyle}
+          placeholder="e.g. Bronx Library HVAC Upgrade" />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+        <div>
+          <label style={labelStyle}>Status *</label>
+          <select value={status} onChange={e => setStatus(e.target.value)} style={inputStyle}>
+            {allStatuses.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>
+            Project Number {isProposal ? <span style={{ color: P.textMuted, textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>(assigned after award)</span> : "*"}
+          </label>
+          <input value={projectNumber} onChange={e => setProjectNumber(e.target.value)} style={inputStyle}
+            placeholder="e.g. 25-042" />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+        <div>
+          <label style={labelStyle}>Prime *</label>
+          <input value={prime} onChange={e => setPrime(e.target.value)} style={inputStyle}
+            placeholder="Setty (if we're prime) or other firm" />
+          <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4 }}>
+            Who holds the prime contract with the owner. Defaults to Setty.
+          </div>
+        </div>
+        <div>
+          <label style={labelStyle}>Client *</label>
+          <input value={clientName} onChange={e => setClientName(e.target.value)} style={inputStyle}
+            placeholder={prime.trim().toLowerCase() === "setty" ? "Project owner" : "Prime firm or owner you report to"} />
+          <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4 }}>
+            {prime.trim().toLowerCase() === "setty"
+              ? "Setty is prime → Client is the project owner."
+              : "Setty is a sub → Client is usually the Prime."}
+          </div>
+        </div>
+      </div>
+
+      {isProposal && (
+        <div style={fieldStyle}>
+          <label style={labelStyle}>Proposal Due Date *</label>
+          <input type="date" value={proposalDueDate} onChange={e => setProposalDueDate(e.target.value)} style={{ ...inputStyle, width: 200 }} />
+        </div>
+      )}
+
+      {error && (
+        <div style={{ background: P.redDim, color: P.red, border: `1px solid ${P.red}`, padding: "8px 12px", borderRadius: 6, fontSize: 13, marginBottom: 14 }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+        <Btn small variant="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn small onClick={handleCreate}>Create Project</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── NEW PROJECT VALIDATION ───────────────────────────────────────────────────
+// TODO (YOU): This is where your firm's domain rules live. Right now it only
+// checks that required fields aren't blank — that's the floor, not the ceiling.
+//
+// You have access to: { name, status, projectNumber, prime, clientName, proposalDueDate }
+// Return { error: "..." } on failure, { error: null } (or {}) on success.
+//
+// Things worth deciding (each is a 1–3 line addition):
+//   1. Project number format — do Setty numbers always look like "25-042"
+//      (YY-NNN)? If so, enforce /^\d{2}-\d{3}$/ when status is not pipeline.
+//      Catches typos like "25_042" or "25042" before they hit the corpus.
+//   2. Duplicate project numbers — should two awarded projects with number
+//      "25-042" be allowed? You'd need to pass `existingProjects` in to check.
+//      (Tell me and I'll wire it through.)
+//   3. Proposal due date sanity — should it reject dates in the past?
+//      Probably yes for new entries, but you may sometimes back-date a
+//      proposal you forgot to log. Soft warning vs hard block is a judgment
+//      call.
+//   4. Prime/Client mismatch — if Prime is "Setty", does the Client need to
+//      be something other than "Setty" too? (I.e., we don't sub to ourselves.)
+//
+// Edit this function with whichever rules match how your firm actually works.
+function validateNewProject({ name, status, projectNumber, prime, clientName, proposalDueDate }) {
+  if (!name.trim())       return { error: "Project Name is required." };
+  if (!prime.trim())      return { error: "Prime is required." };
+  if (!clientName.trim()) return { error: "Client is required." };
+  if (PIPELINE_STATUSES.includes(status) && !proposalDueDate) {
+    return { error: "Proposal Due Date is required for pipeline projects." };
+  }
+  if (!PIPELINE_STATUSES.includes(status) && !projectNumber.trim()) {
+    return { error: "Project Number is required once a project is awarded." };
+  }
+  // TODO: add your rules here
+  return { error: null };
+}
+
 
 // ─── OUTLOOK DRAFT EMAIL ──────────────────────────────────────────────────────
 
@@ -20560,9 +20700,15 @@ async function updateProjectAndFlush(updated) {
   await eagerSaveProjectV2(updated, versionsRef.current, lastSavedRef);
 }
 
-  function addProject() {
-    const p = newProject();
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+
+  function addProject() { setShowNewProjectModal(true); }
+
+  function createProjectFromForm(fields) {
+    const p = newProject(fields);
+    Object.assign(p, fields); // newProject() may not honor all overrides — apply explicitly
     setProjects(prev => [p, ...prev]);
+    setShowNewProjectModal(false);
     setView(`project:${p.id}`);
   }
 
@@ -20692,7 +20838,11 @@ async function updateProjectAndFlush(updated) {
       {view === "pendingcos" && <PendingCOsView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
 
       {view === "pipeline" && (
-        <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={() => { const p = newProject(); setProjects(prev => [p, ...prev]); setView(`project:${p.id}`); }} onUpdateProject={updateProject} />
+        <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={addProject} onUpdateProject={updateProject} />
+      )}
+
+      {showNewProjectModal && (
+        <NewProjectModal onClose={() => setShowNewProjectModal(false)} onCreate={createProjectFromForm} />
       )}
 
       {(view === "list" || view === "archive") && (
