@@ -115,6 +115,17 @@
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js"></script>
   <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+  <script>
+    // Point pdf.js at its matching worker bundle. Without this, rendering a
+    // PDF page throws "No GlobalWorkerOptions.workerSrc specified."
+    window.addEventListener("load", () => {
+      if (window.pdfjsLib) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js";
+      }
+    });
+  </script>
   <script>
     // Sanity check: docx CDN must be reachable for Word export to work.
     window.addEventListener("load", () => {
@@ -229,7 +240,7 @@
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
     <h2 style="margin:0;">Key Plans</h2>
     <button class="btn" id="addPlanBtn">+ Add Plan</button>
-    <input type="file" id="addPlanFile" accept="image/*" style="display:none;" />
+    <input type="file" id="addPlanFile" accept="image/*,application/pdf" style="display:none;" />
   </div>
   <div id="plansList" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:10px;"></div>
   <div class="meta-line" style="margin-top:8px;">Add one plan per floor (e.g. "Level 2", "Roof"). Items can be placed on a plan via the "Place" button in the items list.</div>
@@ -709,17 +720,60 @@ document.getElementById("addPlanFile").onchange = async (e) => {
   if (label === null) { e.target.value = ""; return; }
   label = (label || "").trim() || ("Plan " + (plans.length + 1));
   try {
-    const dataUrl = await readFileAsDataUrl(f);
+    const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
+    let dataUrl;
+    if (isPdf) {
+      dataUrl = await renderPdfPageToDataUrl(f);
+      if (!dataUrl) { e.target.value = ""; return; } // user cancelled page picker
+    } else {
+      dataUrl = await readFileAsDataUrl(f);
+    }
     const plan = { id: uid(), label, imageDataUrl: dataUrl, addedBy: (msalAccount?.name || ""), addedAt: new Date().toISOString() };
     plans.push(plan);
     lastUsedPlanId = plan.id;
     renderPlans();
     saveReport({ silent: true });
   } catch (err) {
-    setGlobalStatus("error", "Couldn't read plan image: " + err.message);
+    setGlobalStatus("error", "Couldn't read plan: " + err.message);
   }
   e.target.value = "";
 };
+
+// PDF → PNG data URL via pdf.js. Prompts for a page number on multi-page
+// PDFs (AEC drawing sets are 50+ pages; users almost always know the sheet).
+// Renders at a target width that's readable for pin placement without
+// blowing up the report's storage size.
+async function renderPdfPageToDataUrl(file) {
+  if (!window.pdfjsLib) throw new Error("PDF library not loaded — refresh and retry.");
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let pageNum = 1;
+  if (pdf.numPages > 1) {
+    const input = window.prompt(`This PDF has ${pdf.numPages} pages. Which page is the plan?`, "1");
+    if (input === null) return null;
+    const parsed = parseInt(input, 10);
+    if (!isFinite(parsed) || parsed < 1 || parsed > pdf.numPages) {
+      throw new Error(`Page must be a number between 1 and ${pdf.numPages}.`);
+    }
+    pageNum = parsed;
+  }
+  const page = await pdf.getPage(pageNum);
+  // Render at a scale that hits ~2000px on the long edge — readable for pin
+  // placement on letter-sized sheets, still manageable file size as PNG.
+  const baseViewport = page.getViewport({ scale: 1 });
+  const TARGET_LONG_EDGE = 2000;
+  const scale = TARGET_LONG_EDGE / Math.max(baseViewport.width, baseViewport.height);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width  = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+  const ctx = canvas.getContext("2d");
+  // White background so PDFs with transparent backgrounds render properly.
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return canvas.toDataURL("image/png");
+}
 
 function deletePlan(planId) {
   const plan = plans.find(p => p.id === planId);
@@ -832,7 +886,7 @@ function renderPlacementCanvas() {
   const sub = document.getElementById("placementSub");
   const activeItem = items.find(i => i.id === placementActiveItemId);
   sub.innerHTML = activeItem
-    ? `Active: <b style="color:var(--text)">${escapeHtml(numberByItemId[activeItem.id] || "")} — ${escapeHtml(activeItem.description.slice(0, 60))}</b> · click on the plan to drop or move the pin. Click a different pin below to switch items.`
+    ? `Active: <b style="color:var(--text)">${escapeHtml(numberByItemId[activeItem.id] || "")} — ${escapeHtml(activeItem.description.slice(0, 60))}</b> · click the plan to drop/move the pin · drag the small white dot to set the camera direction.`
     : 'Pick an item from the sidebar to set its location.';
 
   // Layout: sidebar (items list) + canvas
@@ -874,23 +928,43 @@ function renderPlacementCanvas() {
   img.draggable = false;
   positioner.appendChild(img);
 
-  // Drop pins for all placed items
+  // Drop pins (and their direction arrows + rotation handles) for all placed items
   itemsOnPlan.forEach(it => {
     if (it.pin?.x == null || it.pin?.y == null) return;
-    const pin = document.createElement("div");
     const isActive = it.id === placementActiveItemId;
+    const PIN_PX  = 30;          // pin diameter
+    const ARROW_PX = 38;         // length from pin center to handle
+    const dir = (it.pin.direction == null) ? null : it.pin.direction; // radians, 0 = east, π/2 = south (CSS-y)
+
+    // Container so direction arrow + handle share the pin's coordinate origin.
+    const group = document.createElement("div");
+    group.style.cssText = `position:absolute; left:${(it.pin.x * 100).toFixed(2)}%; top:${(it.pin.y * 100).toFixed(2)}%; transform:translate(-50%, -50%); width:0; height:0;`;
+
+    // Direction arrow (only drawn if direction is set). SVG triangle pointing
+    // outward; the group is rotated so dir=0 means right (east).
+    if (dir != null) {
+      const arrowWrap = document.createElement("div");
+      arrowWrap.style.cssText = `position:absolute; left:0; top:0; transform:rotate(${dir}rad); transform-origin:0 0; pointer-events:none;`;
+      // Triangle from the pin edge outward to a tip at ARROW_PX.
+      arrowWrap.innerHTML = `
+        <svg width="${ARROW_PX + 14}" height="20" style="position:absolute; left:${PIN_PX/2 - 2}px; top:-10px; overflow:visible;" viewBox="0 0 ${ARROW_PX + 14} 20">
+          <polygon points="0,7 ${ARROW_PX - 4},7 ${ARROW_PX - 4},2 ${ARROW_PX + 10},10 ${ARROW_PX - 4},18 ${ARROW_PX - 4},13 0,13" fill="${isActive ? "#3B82F6" : "#1F3864"}" stroke="#fff" stroke-width="1.5" />
+        </svg>`;
+      group.appendChild(arrowWrap);
+    }
+
+    // The pin itself (numbered circle).
+    const pin = document.createElement("div");
     pin.textContent = numberByItemId[it.id] || "";
     pin.style.cssText = `
-      position:absolute; left:${(it.pin.x * 100).toFixed(2)}%; top:${(it.pin.y * 100).toFixed(2)}%;
-      transform:translate(-50%, -50%);
-      width:30px; height:30px; border-radius:50%;
+      position:absolute; left:0; top:0; transform:translate(-50%, -50%);
+      width:${PIN_PX}px; height:${PIN_PX}px; border-radius:50%;
       background:${isActive ? "#3B82F6" : "#1F3864"}; color:white;
       display:flex; align-items:center; justify-content:center;
       font-family:'JetBrains Mono',monospace; font-weight:700; font-size:10px;
       border:2px solid white; box-shadow:0 2px 6px rgba(0,0,0,.4);
       cursor:move; user-select:none;`;
     pin.onclick = (ev) => { ev.stopPropagation(); placementActiveItemId = it.id; renderPlacementCanvas(); };
-    // Drag-to-nudge
     pin.onpointerdown = (ev) => {
       ev.preventDefault();
       pin.setPointerCapture(ev.pointerId);
@@ -899,14 +973,54 @@ function renderPlacementCanvas() {
         const x = clamp((mv.clientX - rect.left) / rect.width, 0, 1);
         const y = clamp((mv.clientY - rect.top) / rect.height, 0, 1);
         it.pin.x = x; it.pin.y = y;
-        pin.style.left = (x * 100).toFixed(2) + "%";
-        pin.style.top  = (y * 100).toFixed(2) + "%";
+        group.style.left = (x * 100).toFixed(2) + "%";
+        group.style.top  = (y * 100).toFixed(2) + "%";
       };
       const onUp = () => { pin.removeEventListener("pointermove", onMove); pin.removeEventListener("pointerup", onUp); };
       pin.addEventListener("pointermove", onMove);
       pin.addEventListener("pointerup", onUp);
     };
-    positioner.appendChild(pin);
+    group.appendChild(pin);
+
+    // Rotation handle — small dot offset in the current direction (or east if
+    // unset). Drag it around the pin to set/change the camera direction.
+    const handleAngle = (dir == null) ? 0 : dir;
+    const handle = document.createElement("div");
+    handle.title = "Drag to set camera direction (where the photo was facing)";
+    handle.style.cssText = `
+      position:absolute; left:${Math.cos(handleAngle) * ARROW_PX}px; top:${Math.sin(handleAngle) * ARROW_PX}px;
+      transform:translate(-50%, -50%);
+      width:14px; height:14px; border-radius:50%;
+      background:${dir == null ? "rgba(255,255,255,0.7)" : "#FFFFFF"};
+      border:2px solid ${isActive ? "#3B82F6" : "#1F3864"};
+      cursor:grab; box-shadow:0 1px 3px rgba(0,0,0,.4);`;
+    handle.onpointerdown = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      handle.setPointerCapture(ev.pointerId);
+      handle.style.cursor = "grabbing";
+      const onMove = (mv) => {
+        // Compute new direction from pin center to mouse, in radians.
+        const rect = img.getBoundingClientRect();
+        const px = it.pin.x * rect.width;
+        const py = it.pin.y * rect.height;
+        const mx = mv.clientX - rect.left;
+        const my = mv.clientY - rect.top;
+        const angle = Math.atan2(my - py, mx - px);
+        it.pin.direction = angle;
+        renderPlacementCanvas();
+      };
+      const onUp = () => {
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        handle.style.cursor = "grab";
+      };
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+    };
+    // Only show the handle for the active item (less visual clutter).
+    if (isActive) group.appendChild(handle);
+
+    positioner.appendChild(group);
   });
 
   // Click anywhere on plan to (re)place active item
@@ -1317,7 +1431,7 @@ async function generateWordDoc(report) {
   const {
     Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
     Header, AlignmentType, BorderStyle, WidthType, ShadingType,
-    VerticalAlign, ImageRun, PageOrientation,
+    VerticalAlign, ImageRun, PageOrientation, PageBreak,
   } = docxLib;
 
   const NAVY = "1F3864", RED = "C00000", GRAY = "44546A", LIGHT = "E7E6E6", WHITE = "FFFFFF";
@@ -1393,23 +1507,35 @@ async function generateWordDoc(report) {
   // ── Composite each plan with its pins (canvas → PNG) for the keyplan pages.
   // Pin numbers use the same scheme as the on-screen render so the contractor
   // can flip between the keyplan and the Observations list seamlessly.
+  // These are appended in a SEPARATE landscape section at the end of the doc.
   const numberByItemId = computeItemNumbers();
   const planBlocks = [];
+  // Landscape page width at letter size with 0.5" margins ≈ 9.5" → ≈ 912px @ 96dpi.
+  // Cap so big-aspect plans don't blow out the height.
+  const LANDSCAPE_TARGET_W = 912;
   for (const plan of (report.plans || [])) {
     const pinsOnPlan = (report.items || []).filter(it => it.pin?.planId === plan.id && it.pin.x != null && it.pin.y != null);
     try {
       const composited = await compositePlanWithPins(plan, pinsOnPlan, numberByItemId);
+      // Page break between plans so each gets its own landscape page.
+      if (planBlocks.length > 0) {
+        planBlocks.push(new Paragraph({ children: [new PageBreak()] }));
+      }
       planBlocks.push(new Paragraph({
-        spacing: { before: 240, after: 80 },
+        spacing: { before: 0, after: 120 },
         children: [new TextRun({ text: "KEY PLAN — " + plan.label.toUpperCase(), font: "Calibri", size: 22, bold: true, color: NAVY })],
       }));
-      planBlocks.push(new Paragraph({ children: [new ImageRun({
-        data: composited,
-        // Fit to roughly the printable page width (≈ 6.5" at 96 DPI ≈ 624px).
-        // docx ImageRun expects pixels for transformation.width/height.
-        transformation: { width: 624, height: Math.round(624 * (plan._aspect || 0.75)) },
-        type: "png",
-      })]}));
+      // Scale to fit the landscape page; if the plan is very tall, cap height
+      // to ~6.5" (≈ 624px) and let the width shrink to maintain aspect.
+      const aspect = plan._aspect || 0.75;
+      let imgW = LANDSCAPE_TARGET_W;
+      let imgH = Math.round(LANDSCAPE_TARGET_W * aspect);
+      const MAX_H = 624;
+      if (imgH > MAX_H) { imgH = MAX_H; imgW = Math.round(MAX_H / aspect); }
+      planBlocks.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new ImageRun({ data: composited, transformation: { width: imgW, height: imgH }, type: "png" })],
+      }));
     } catch (e) {
       planBlocks.push(new Paragraph({ children: [new TextRun({ text: `(Could not render key plan "${plan.label}": ${e.message})`, font: "Calibri", size: 18, italics: true, color: GRAY })] }));
     }
@@ -1466,31 +1592,50 @@ async function generateWordDoc(report) {
     });
   });
 
-  const doc = new Document({
-    creator: "SETTY", title: "Site Report",
-    sections: [{
-      headers: {
-        default: new Header({
-          children: [new Paragraph({
-            alignment: AlignmentType.LEFT,
-            children: logoImageRun
-              ? [logoImageRun, new TextRun({ text: "    SITE REPORT", font: "Calibri", size: 18, bold: true, color: NAVY })]
-              : [new TextRun({ text: "SETTY    SITE REPORT", font: "Calibri", size: 20, bold: true, color: NAVY })],
-          })],
-        }),
+  // Header builder shared between portrait and landscape sections so every
+  // page (cover, observations, keyplans) gets the same Setty mark.
+  function buildHeader() {
+    return new Header({
+      children: [new Paragraph({
+        alignment: AlignmentType.LEFT,
+        children: logoImageRun
+          ? [logoImageRun, new TextRun({ text: "    SITE REPORT", font: "Calibri", size: 18, bold: true, color: NAVY })]
+          : [new TextRun({ text: "SETTY    SITE REPORT", font: "Calibri", size: 20, bold: true, color: NAVY })],
+      })],
+    });
+  }
+
+  const sections = [{
+    // Portrait section — cover, info, general notes, observations.
+    headers: { default: buildHeader() },
+    children: [
+      new Paragraph({ children: [new TextRun({ text: "Setty and Associates, Ltd", font: "Calibri", size: 16, color: GRAY })] }),
+      new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "Consulting Engineers · New York · Washington DC", font: "Calibri", size: 16, color: GRAY })] }),
+      new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "SITE REPORT", font: "Calibri", size: 28, bold: true, color: RED })] }),
+      infoTable,
+      ...generalNotesBlock,
+      new Paragraph({ spacing: { before: 240, after: 80 }, children: [new TextRun({ text: "Observations", font: "Calibri", size: 24, bold: true, color: NAVY })] }),
+      ...itemBlocks,
+    ],
+  }];
+
+  // Landscape section at the end — one page per keyplan. Wide architectural
+  // sheets get the full page width this way; the rest of the report stays
+  // in normal portrait orientation.
+  if (planBlocks.length > 0) {
+    sections.push({
+      properties: {
+        page: {
+          size: { orientation: PageOrientation.LANDSCAPE },
+          margin: { top: 720, bottom: 720, left: 720, right: 720 }, // 0.5"
+        },
       },
-      children: [
-        new Paragraph({ children: [new TextRun({ text: "Setty and Associates, Ltd", font: "Calibri", size: 16, color: GRAY })] }),
-        new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "Consulting Engineers · New York · Washington DC", font: "Calibri", size: 16, color: GRAY })] }),
-        new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "SITE REPORT", font: "Calibri", size: 28, bold: true, color: RED })] }),
-        infoTable,
-        ...generalNotesBlock,
-        ...planBlocks,
-        new Paragraph({ spacing: { before: 240, after: 80 }, children: [new TextRun({ text: "Observations", font: "Calibri", size: 24, bold: true, color: NAVY })] }),
-        ...itemBlocks,
-      ],
-    }],
-  });
+      headers: { default: buildHeader() },
+      children: planBlocks,
+    });
+  }
+
+  const doc = new Document({ creator: "SETTY", title: "Site Report", sections });
 
   const blob = await Packer.toBlob(doc);
   const safeNum = (project.projectNumber || "").replace(/[\\/:*?"<>|]/g, "-").trim();
@@ -1534,17 +1679,45 @@ async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
   pinnedItems.forEach(it => {
     const x = it.pin.x * w;
     const y = it.pin.y * h;
-    // Drop shadow
+    const dir = (it.pin.direction == null) ? null : it.pin.direction; // radians
+
+    // ── Direction arrow (drawn FIRST so the pin sits over its base) ──
+    if (dir != null) {
+      const arrowLen = pinR * 1.7;
+      const arrowHead = pinR * 0.55;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(dir);
+      // Shadow
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.beginPath();
+      ctx.moveTo(pinR * 0.85 + 2, -arrowHead * 0.55 + 2);
+      ctx.lineTo(pinR * 0.85 + arrowLen + 2, 0 + 2);
+      ctx.lineTo(pinR * 0.85 + 2, arrowHead * 0.55 + 2);
+      ctx.closePath();
+      ctx.fill();
+      // Arrow body
+      ctx.fillStyle = "#1F3864";
+      ctx.strokeStyle = "#FFFFFF";
+      ctx.lineWidth = Math.max(2, pinR * 0.12);
+      ctx.beginPath();
+      ctx.moveTo(pinR * 0.85, -arrowHead * 0.55);
+      ctx.lineTo(pinR * 0.85 + arrowLen, 0);
+      ctx.lineTo(pinR * 0.85, arrowHead * 0.55);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ── Pin circle (with shadow, fill, ring, number) ──
     ctx.fillStyle = "rgba(0,0,0,0.35)";
     ctx.beginPath(); ctx.arc(x + 2, y + 2, pinR, 0, Math.PI * 2); ctx.fill();
-    // Pin circle
     ctx.fillStyle = "#1F3864";
     ctx.beginPath(); ctx.arc(x, y, pinR, 0, Math.PI * 2); ctx.fill();
-    // White ring
     ctx.strokeStyle = "#FFFFFF";
     ctx.lineWidth = Math.max(2, pinR * 0.12);
     ctx.beginPath(); ctx.arc(x, y, pinR, 0, Math.PI * 2); ctx.stroke();
-    // Number text
     ctx.fillStyle = "#FFFFFF";
     ctx.fillText(numberByItemId[it.id] || "?", x, y);
   });
