@@ -1169,6 +1169,12 @@ function setPickedPhoto(dataUrl) {
     setAddStatus("error", "Photo is very large; consider resizing before adding.");
   }
 }
+
+// Indirection so the project-photos picker can route the chosen photo to
+// either the Add Item form (default) or the Edit Item form. After a pick,
+// the callback resets back to the default so subsequent opens don't leak
+// state from a stale edit session.
+let pickedPhotoCallback = setPickedPhoto;
 function clearPickedPhoto() {
   pickedPhotoDataUrl = null;
   document.getElementById("photoPreview").style.display = "none";
@@ -1351,7 +1357,10 @@ async function pickFromProjectPhoto(file) {
       r.onerror = () => reject(new Error("Read failed"));
       r.readAsDataURL(blob);
     });
-    setPickedPhoto(dataUrl);
+    // Route to whichever form requested the pick (Add Item by default, or
+    // the Edit form via a temporary override set in editReplacePhotoFromProject).
+    pickedPhotoCallback(dataUrl);
+    pickedPhotoCallback = setPickedPhoto; // reset to default after use
     document.getElementById("photoPickerModal").style.display = "none";
   } catch (e) {
     sub.textContent = "Couldn't load that photo: " + e.message;
@@ -1372,6 +1381,71 @@ function removeItem(id) {
   items = items.filter(i => i.id !== id);
   renderItems();
   saveReport({ silent: true });
+}
+
+// ── EDIT MODE ──
+// One item at a time can be in edit mode. The form mutates a deep-cloned
+// `editingItem`; on Save we replace the live entry, on Cancel we just drop
+// the clone — original is untouched even if the user typed wildly.
+let editingItem = null;
+let editingItemOrigPlanId = null;  // captured at edit start; if the plan
+                                    // changes, we must reset pin coords
+                                    // (different image → percentage coords
+                                    // don't translate).
+
+function startEditItem(id) {
+  const it = items.find(i => i.id === id);
+  if (!it) return;
+  editingItem = JSON.parse(JSON.stringify(it));
+  editingItemOrigPlanId = it.pin?.planId || null;
+  renderItems();
+}
+
+function cancelEditItem() {
+  editingItem = null;
+  editingItemOrigPlanId = null;
+  renderItems();
+}
+
+function commitEditItem() {
+  if (!editingItem) return;
+  items = items.map(i => i.id === editingItem.id ? editingItem : i);
+  editingItem = null;
+  editingItemOrigPlanId = null;
+  renderItems();
+  saveReport({ silent: true });
+}
+
+// Photo handling inside the edit form. Each replace-via-file uses a freshly
+// created hidden input so multiple consecutive edits don't collide on a
+// shared one. The user can also clear the photo entirely.
+function editReplacePhotoFromFile() {
+  if (!editingItem) return;
+  const f = document.createElement("input");
+  f.type = "file"; f.accept = "image/*";
+  f.onchange = async () => {
+    const file = f.files && f.files[0];
+    if (!file) return;
+    try { editingItem.photoDataUrl = await readFileAsDataUrl(file); renderItems(); }
+    catch (e) { alert("Couldn't read photo: " + e.message); }
+  };
+  f.click();
+}
+function editReplacePhotoFromProject() {
+  if (!editingItem) return;
+  // Route the next pick from the project-photos modal into the edit form
+  // instead of the Add Item form's pickedPhotoDataUrl.
+  pickedPhotoCallback = (dataUrl) => {
+    if (!editingItem) return;
+    editingItem.photoDataUrl = dataUrl;
+    renderItems();
+  };
+  openProjectPhotosPicker();
+}
+function editClearPhoto() {
+  if (!editingItem) return;
+  editingItem.photoDataUrl = null;
+  renderItems();
 }
 
 // ─── RENDER ──────────────────────────────────────────────────────────────────
@@ -1406,13 +1480,16 @@ function renderItems() {
 }
 
 function renderItemRow(item, indexWithinDiscipline) {
+  const num = numberForItem(item, indexWithinDiscipline);
+  // Branch into edit mode if this item is the one being edited.
+  if (editingItem && editingItem.id === item.id) {
+    return renderItemEditForm(num);
+  }
   const row = document.createElement("div");
   row.className = "item-row";
-  const num = numberForItem(item, indexWithinDiscipline);
   const photoHtml = item.photoDataUrl
     ? `<img src="${item.photoDataUrl}" class="item-photo" alt="" />`
     : `<div class="item-photo-empty">no photo</div>`;
-  // Pin status string: "Level 2 · ✓ placed", "Level 2 · ⚐ Place", or empty.
   let pinHtml = "";
   if (item.pin?.planId) {
     const plan = plans.find(p => p.id === item.pin.planId);
@@ -1436,11 +1513,104 @@ function renderItemRow(item, indexWithinDiscipline) {
     </div>
     <div class="item-actions">
       ${photoHtml}
+      <button class="icon-btn no-print" title="Edit" data-edit="${item.id}" style="color:var(--accent-light);">✎</button>
       <button class="icon-btn no-print" title="Remove" data-remove="${item.id}">✕</button>
     </div>`;
+  row.querySelector("[data-edit]")?.addEventListener("click", () => startEditItem(item.id));
   row.querySelector("[data-remove]")?.addEventListener("click", () => removeItem(item.id));
   row.querySelector("[data-place]")?.addEventListener("click", () => openPlacementForItem(item.id));
   return row;
+}
+
+// Inline edit form. Replaces the item row while editing. Uses the local
+// `editingItem` clone so canceling cleanly reverts. Plan changes invalidate
+// pin coords (different image → coords don't translate).
+function renderItemEditForm(num) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "border:1px solid var(--blue); background:var(--card); border-radius:8px; padding:12px; margin-bottom:8px;";
+
+  const planOptions = ['<option value="">— No plan —</option>']
+    .concat(plans.map(p => `<option value="${p.id}"${editingItem.pin?.planId === p.id ? " selected" : ""}>${escapeHtml(p.label)}</option>`))
+    .join("");
+
+  const photoPreview = editingItem.photoDataUrl
+    ? `<img src="${editingItem.photoDataUrl}" style="width:80px; height:60px; object-fit:cover; border-radius:4px; border:1px solid var(--border);" />`
+    : `<div style="width:80px; height:60px; display:flex; align-items:center; justify-content:center; background:var(--border); border-radius:4px; color:var(--muted); font-size:10px;">no photo</div>`;
+
+  wrap.innerHTML = `
+    <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+      <span class="item-num">${num}</span>
+      <span style="font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em;">Editing item</span>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:8px;">
+      <div>
+        <label>Discipline</label>
+        <select data-field="discipline">
+          <option${editingItem.discipline === "Architectural" ? " selected" : ""}>Architectural</option>
+          <option${editingItem.discipline === "Structural" ? " selected" : ""}>Structural</option>
+          <option${editingItem.discipline === "Mechanical" ? " selected" : ""}>Mechanical</option>
+          <option${editingItem.discipline === "Electrical" ? " selected" : ""}>Electrical</option>
+          <option${editingItem.discipline === "Plumbing" ? " selected" : ""}>Plumbing</option>
+          <option${editingItem.discipline === "Fire Protection" ? " selected" : ""}>Fire Protection</option>
+          <option${editingItem.discipline === "Civil" ? " selected" : ""}>Civil</option>
+          <option${editingItem.discipline === "Technology" ? " selected" : ""}>Technology</option>
+          <option${editingItem.discipline === "Other" ? " selected" : ""}>Other</option>
+        </select>
+      </div>
+      <div><label>Location / Room</label><input data-field="location" value="${escapeHtml(editingItem.location || "")}" /></div>
+      <div><label>By</label><input data-field="enteredBy" value="${escapeHtml(editingItem.enteredBy || "")}" /></div>
+    </div>
+    <div style="margin-bottom:8px;"><label>Description</label><textarea data-field="description" rows="2">${escapeHtml(editingItem.description || "")}</textarea></div>
+    <div style="margin-bottom:8px;"><label>Notes</label><input data-field="notes" value="${escapeHtml(editingItem.notes || "")}" /></div>
+    <div style="display:grid; grid-template-columns:1fr 2fr; gap:8px; margin-bottom:10px;">
+      <div>
+        <label>Plan</label>
+        <select data-field="planId">${planOptions}</select>
+      </div>
+      <div>
+        <label>Photo</label>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          ${photoPreview}
+          <button type="button" class="btn btn-ghost" data-action="photoFile">📷 Replace</button>
+          <button type="button" class="btn btn-ghost" data-action="photoProject">🖼 Project</button>
+          ${editingItem.photoDataUrl ? '<button type="button" class="btn btn-ghost" data-action="photoClear" style="color:var(--red);">✕ Clear</button>' : ""}
+        </div>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button type="button" class="btn btn-ghost" data-action="cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" data-action="save">💾 Save Changes</button>
+    </div>`;
+
+  // Wire field bindings — each input mutates the editingItem clone directly.
+  wrap.querySelectorAll("[data-field]").forEach(el => {
+    const field = el.dataset.field;
+    el.addEventListener("input", () => {
+      if (field === "planId") {
+        const newPlanId = el.value || null;
+        if (!newPlanId) {
+          editingItem.pin = null;
+        } else if (newPlanId !== editingItemOrigPlanId) {
+          // Plan changed — old coords don't make sense on a different image.
+          editingItem.pin = { planId: newPlanId, x: null, y: null };
+        } else {
+          // Back to original plan — restore original pin if it had coords.
+          const orig = items.find(i => i.id === editingItem.id);
+          editingItem.pin = orig?.pin ? { ...orig.pin } : { planId: newPlanId, x: null, y: null };
+        }
+      } else {
+        editingItem[field] = el.value;
+      }
+    });
+  });
+
+  wrap.querySelector('[data-action="photoFile"]').onclick    = editReplacePhotoFromFile;
+  wrap.querySelector('[data-action="photoProject"]').onclick = editReplacePhotoFromProject;
+  wrap.querySelector('[data-action="photoClear"]')?.addEventListener("click", editClearPhoto);
+  wrap.querySelector('[data-action="cancel"]').onclick = cancelEditItem;
+  wrap.querySelector('[data-action="save"]').onclick   = commitEditItem;
+
+  return wrap;
 }
 
 function cssEscape(s) { return s.replace(/[^a-zA-Z0-9_-]/g, "_"); }
