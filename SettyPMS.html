@@ -17472,7 +17472,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     if ((c.contacts||[]).some(ct => ct.name.toLowerCase().includes(q) || ct.email.toLowerCase().includes(q))) return true;
     if (getCompanyTypes(c).some(t => t.toLowerCase().includes(q))) return true;
     return false;
-  });
+  }).sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
 
   // Single shared chip style — the discipline list is long enough that
   // per-type colors would just become noise. Active = accent, idle = muted.
@@ -17604,8 +17604,8 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
-          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Client & Prime Directory</div>
-          <div style={{ fontSize: 13, color: P.textMuted }}>{clients.length} compan{clients.length !== 1 ? "ies" : "y"} · auto-suggest on project Overview tab</div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Global Directory</div>
+          <div style={{ fontSize: 13, color: P.textMuted }}>{clients.length} compan{clients.length !== 1 ? "ies" : "y"} · sorted A→Z · auto-suggests on project Overview & Subs tabs</div>
         </div>
         <Btn onClick={startNew}>+ Add Company</Btn>
       </div>
@@ -21254,7 +21254,7 @@ async function updateProjectAndFlush(updated) {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Cash Flow", key: "cashflow" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Staff", key: "staff" }, { label: "Clients", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Staff", key: "staff" }, { label: "Global Directory", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
