@@ -693,6 +693,9 @@ document.getElementById("addItemBtn").onclick = async () => {
   setAddStatus("success", "Item added.");
   setTimeout(() => setAddStatus("", ""), 1200);
   renderItems();
+  // Auto-save so items stick across navigation. Silent so the status bar
+  // updates ("Last saved …") without interrupting flow with a banner.
+  saveReport({ silent: true });
 };
 
 // ─── PLANS (CRUD + render) ───────────────────────────────────────────────────
@@ -711,6 +714,7 @@ document.getElementById("addPlanFile").onchange = async (e) => {
     plans.push(plan);
     lastUsedPlanId = plan.id;
     renderPlans();
+    saveReport({ silent: true });
   } catch (err) {
     setGlobalStatus("error", "Couldn't read plan image: " + err.message);
   }
@@ -731,6 +735,7 @@ function deletePlan(planId) {
   if (lastUsedPlanId === planId) lastUsedPlanId = "";
   renderPlans();
   renderItems();
+  saveReport({ silent: true });
 }
 
 function renderPlans() {
@@ -803,6 +808,9 @@ document.getElementById("placementCloseBtn").onclick = () => {
   document.getElementById("placementModal").style.display = "none";
   placementActiveItemId = null;
   renderPlans(); renderItems();
+  // Persist pin placements made in the modal so dragging / dropping pins
+  // doesn't get lost on navigation. Silent so it doesn't shout at the user.
+  saveReport({ silent: true });
 };
 document.getElementById("placementClearBtn").onclick = () => {
   if (!placementActiveItemId) return;
@@ -1117,6 +1125,7 @@ function removeItem(id) {
   if (!window.confirm("Remove this item?")) return;
   items = items.filter(i => i.id !== id);
   renderItems();
+  saveReport({ silent: true });
 }
 
 // ─── RENDER ──────────────────────────────────────────────────────────────────
@@ -1198,10 +1207,11 @@ function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, c => ({ "&": "&amp
 // when someone marks the report complete via completeAndGenerate().
 document.getElementById("saveBtn").onclick = () => saveReport();
 
-async function saveReport() {
-  if (!selectedProject) { setGlobalStatus("error", "Select a project first."); return false; }
+async function saveReport(opts) {
+  const silent = opts && opts.silent;
+  if (!selectedProject) { if (!silent) setGlobalStatus("error", "Select a project first."); return false; }
   const visitDate = document.getElementById("visitDate").value;
-  if (!visitDate) { setGlobalStatus("error", "Set a visit date first."); return false; }
+  if (!visitDate) { if (!silent) setGlobalStatus("error", "Set a visit date first."); return false; }
 
   const nowIso = new Date().toISOString();
   const report = {
@@ -1216,7 +1226,7 @@ async function saveReport() {
     updatedAt:    nowIso,
   };
 
-  setGlobalStatus("info", "⏳ Saving report data…");
+  if (!silent) setGlobalStatus("info", "⏳ Saving report data…");
   try {
     if (!reportId) {
       reportId = uid();
@@ -1241,9 +1251,10 @@ async function saveReport() {
       reportUpdatedAt = nowIso;
     }
     renderStatus();
-    setGlobalStatus("success", "✓ Saved at " + new Date().toLocaleTimeString());
+    if (!silent) setGlobalStatus("success", "✓ Saved at " + new Date().toLocaleTimeString());
     return true;
   } catch (e) {
+    // Errors always show — silent only suppresses the "saving / saved" chatter.
     setGlobalStatus("error", "Save failed: " + e.message);
     return false;
   }
