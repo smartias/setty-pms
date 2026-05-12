@@ -1012,7 +1012,9 @@ async function generateWordDoc(report) {
       infoRow("Address",        addrParts.join(", ")),
       infoRow("Visit Date",     new Date(report.visitDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })),
       infoRow("Conditions",     report.weather),
-      infoRow("Status",         report.status === "complete" ? "Complete" : "In Progress (Draft)"),
+      // Status (in-progress vs. complete) is intentionally NOT included here —
+      // the Word doc is outward-facing (contractor-bound) and shouldn't expose
+      // internal workflow state. Status lives only in the in-app status bar.
     ],
   });
 
