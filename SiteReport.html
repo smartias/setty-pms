@@ -982,42 +982,52 @@ function renderPlacementCanvas() {
     };
     group.appendChild(pin);
 
-    // Rotation handle — small dot offset in the current direction (or east if
-    // unset). Drag it around the pin to set/change the camera direction.
+    // Rotation handle — sits ~55px out from the pin, big enough to be a real
+    // hit target (~32px including border). Background yellow with a ↻ glyph
+    // when direction is unset, so the user can SEE there's something to drag.
     const handleAngle = (dir == null) ? 0 : dir;
+    const HANDLE_OFFSET = 55;
+    const HANDLE_PX = 32;
     const handle = document.createElement("div");
-    handle.title = "Drag to set camera direction (where the photo was facing)";
+    handle.title = "Drag around the pin to set the camera direction (which way the photo was facing).";
     handle.style.cssText = `
-      position:absolute; left:${Math.cos(handleAngle) * ARROW_PX}px; top:${Math.sin(handleAngle) * ARROW_PX}px;
+      position:absolute;
+      left:${Math.cos(handleAngle) * HANDLE_OFFSET}px;
+      top:${Math.sin(handleAngle) * HANDLE_OFFSET}px;
       transform:translate(-50%, -50%);
-      width:14px; height:14px; border-radius:50%;
-      background:${dir == null ? "rgba(255,255,255,0.7)" : "#FFFFFF"};
+      width:${HANDLE_PX}px; height:${HANDLE_PX}px; border-radius:50%;
+      background:${dir == null ? "#F59E0B" : "#FFFFFF"};
       border:2px solid ${isActive ? "#3B82F6" : "#1F3864"};
-      cursor:grab; box-shadow:0 1px 3px rgba(0,0,0,.4);`;
+      cursor:grab; box-shadow:0 2px 8px rgba(0,0,0,.5);
+      display:flex; align-items:center; justify-content:center;
+      font-size:16px; font-weight:700; color:${dir == null ? "white" : "#1F3864"};
+      user-select:none;
+      touch-action:none; z-index:10;`;
+    handle.textContent = "↻";
     handle.onpointerdown = (ev) => {
       ev.preventDefault(); ev.stopPropagation();
       handle.setPointerCapture(ev.pointerId);
       handle.style.cursor = "grabbing";
       const onMove = (mv) => {
-        // Compute new direction from pin center to mouse, in radians.
+        // Compute new direction from pin center to pointer, in radians.
         const rect = img.getBoundingClientRect();
         const px = it.pin.x * rect.width;
         const py = it.pin.y * rect.height;
-        const mx = mv.clientX - rect.left;
-        const my = mv.clientY - rect.top;
-        const angle = Math.atan2(my - py, mx - px);
+        const angle = Math.atan2(mv.clientY - rect.top - py, mv.clientX - rect.left - px);
         it.pin.direction = angle;
         renderPlacementCanvas();
       };
       const onUp = () => {
         handle.removeEventListener("pointermove", onMove);
         handle.removeEventListener("pointerup", onUp);
-        handle.style.cursor = "grab";
+        handle.removeEventListener("pointercancel", onUp);
       };
       handle.addEventListener("pointermove", onMove);
       handle.addEventListener("pointerup", onUp);
+      handle.addEventListener("pointercancel", onUp);
     };
-    // Only show the handle for the active item (less visual clutter).
+    // Only show the handle for the active item — multiple visible handles on
+    // a busy plan get confusing fast and trample each other's hit areas.
     if (isActive) group.appendChild(handle);
 
     positioner.appendChild(group);
