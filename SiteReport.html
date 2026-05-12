@@ -1393,30 +1393,29 @@ function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, c => ({ "&": "&amp
 // This is what multi-user collaboration uses: anyone editing can save mid-walk
 // without producing a noisy .docx every time. The Word/SP fan-out only happens
 // when someone marks the report complete via completeAndGenerate().
-document.getElementById("saveBtn").onclick = () => saveReport();
+document.getElementById("saveBtn").onclick = async () => {
+  // Inline feedback on the button itself — the status banner lives at the
+  // bottom of the page and is too far from the click to feel responsive.
+  const btn = document.getElementById("saveBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ Saving…";
+  const ok = await saveReport();
+  btn.disabled = false;
+  btn.textContent = ok ? "✓ Saved" : "✗ Failed";
+  setTimeout(() => { btn.textContent = "💾 Save"; }, 1500);
+};
 
-// Serialize saves so two auto-saves don't race. The race symptom was a
-// confusing "Report modified elsewhere" error fired by the user's OWN
-// previous in-flight save, not a real conflict — JS only bumps
-// reportVersion AFTER the PATCH returns, so two rapid saves both PATCH
-// with the same stale version. Serialization eliminates the race.
-let saveInFlight = false;
-let saveAgainAfter = false;
-async function saveReport(opts) {
-  if (saveInFlight) { saveAgainAfter = true; return false; }
-  saveInFlight = true;
-  try {
-    return await doSaveReport(opts);
-  } finally {
-    saveInFlight = false;
-    if (saveAgainAfter) {
-      saveAgainAfter = false;
-      // Defer so the current call's await chain unwinds before we re-enter.
-      // The coalesced follow-up picks up every change made during the prior
-      // save's in-flight window in one combined write.
-      setTimeout(() => saveReport(opts), 0);
-    }
-  }
+// Serialize saves via a promise chain. Each call gets its OWN promise that
+// resolves to its own save's true/false result, so callers (including the
+// Save button) get accurate per-call feedback. Subsequent calls wait for
+// the previous to finish, so they always see the up-to-date reportVersion
+// and never collide with their own auto-save.
+let saveChain = Promise.resolve(true);
+function saveReport(opts) {
+  // The error-branch handler keeps the chain alive after any rejection so
+  // a transient failure doesn't permanently break auto-save.
+  saveChain = saveChain.then(() => doSaveReport(opts), () => doSaveReport(opts));
+  return saveChain;
 }
 
 async function doSaveReport(opts) {
