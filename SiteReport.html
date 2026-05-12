@@ -234,6 +234,7 @@
     </div>
     <ul style="margin: 0; padding-left: 18px; font-size: 13px; color: var(--dim); line-height: 1.7;">
       <li><span style="color:var(--text);">Add photos</span> from the project's existing field-photo gallery, or take new ones on your phone/tablet.</li>
+      <li><span style="color:var(--text);">New photos are auto-saved</span> to the project's <em>Photos</em> library on SharePoint, so they show up alongside Field Photos captures and don't have to be uploaded twice.</li>
       <li><span style="color:var(--text);">Tag items by discipline and location</span>, and place pins on uploaded floor plans to create a <strong style="color:var(--text);">photo key plan</strong> — with direction arrows showing where each photo was taken from.</li>
       <li><span style="color:var(--text);">Generate a client-ready Word report</span> with one click — automatically saved into the project's SharePoint folder under <em>04 🏗 Site Field Reports</em>, organized by visit date.</li>
     </ul>
@@ -789,7 +790,10 @@ document.getElementById("addItemBtn").onclick = async () => {
   const pin = planId ? { planId, x: null, y: null } : null;
   if (planId) lastUsedPlanId = planId;
 
-  const newItem = { id: uid(), discipline, location, description, notes, photoDataUrl: pickedPhotoDataUrl, enteredBy, pin };
+  // Mark new captures as needing a SharePoint push. Picks from the project
+  // gallery are already on SharePoint, so they skip the upload.
+  const pendingUpload = (pickedPhotoDataUrl && pickedPhotoSource === "new");
+  const newItem = { id: uid(), discipline, location, description, notes, photoDataUrl: pickedPhotoDataUrl, enteredBy, pin, pendingUpload };
   items.push(newItem);
   document.getElementById("newLocation").value = "";
   document.getElementById("newDescription").value = "";
@@ -806,6 +810,9 @@ document.getElementById("addItemBtn").onclick = async () => {
   // Auto-save so items stick across navigation. Silent so the status bar
   // updates ("Last saved …") without interrupting flow with a banner.
   saveReport({ silent: true });
+  // Fire-and-forget SharePoint upload for any items still flagged
+  // pendingUpload. Doesn't block the add-item workflow.
+  processPendingUploads();
 };
 
 // ─── PLANS (CRUD + render) ───────────────────────────────────────────────────
@@ -1197,8 +1204,14 @@ function setPickedPhoto(dataUrl) {
 // the callback resets back to the default so subsequent opens don't leak
 // state from a stale edit session.
 let pickedPhotoCallback = setPickedPhoto;
+// Tracks where the currently-picked photo came from:
+//   "new"     — captured/uploaded via 📷 Photo (needs SharePoint upload)
+//   "project" — picked from 🖼 Project Photos (already on SharePoint)
+//   null      — no photo picked
+let pickedPhotoSource = null;
 function clearPickedPhoto() {
   pickedPhotoDataUrl = null;
+  pickedPhotoSource = null;
   document.getElementById("photoPreview").style.display = "none";
   document.getElementById("photoPreviewImg").src = "";
   document.getElementById("newPhoto").value = "";
@@ -1210,7 +1223,10 @@ document.getElementById("capturePhotoBtn").onclick = () =>
 document.getElementById("newPhoto").onchange = async (e) => {
   const f = e.target.files && e.target.files[0];
   if (!f) return;
-  try { setPickedPhoto(await readFileAsDataUrl(f)); }
+  try {
+    pickedPhotoSource = "new"; // captured/uploaded → needs SharePoint push
+    setPickedPhoto(await readFileAsDataUrl(f));
+  }
   catch (err) { setAddStatus("error", "Could not read photo: " + err.message); }
 };
 
@@ -1381,6 +1397,7 @@ async function pickFromProjectPhoto(file) {
     });
     // Route to whichever form requested the pick (Add Item by default, or
     // the Edit form via a temporary override set in editReplacePhotoFromProject).
+    pickedPhotoSource = "project"; // already in SharePoint — no re-upload
     pickedPhotoCallback(dataUrl);
     pickedPhotoCallback = setPickedPhoto; // reset to default after use
     document.getElementById("photoPickerModal").style.display = "none";
@@ -1436,6 +1453,8 @@ function commitEditItem() {
   editingItemOrigPlanId = null;
   renderItems();
   saveReport({ silent: true });
+  // If the edit replaced the photo with a new capture, push it to SharePoint.
+  processPendingUploads();
 }
 
 // Photo handling inside the edit form. Each replace-via-file uses a freshly
@@ -1448,7 +1467,13 @@ function editReplacePhotoFromFile() {
   f.onchange = async () => {
     const file = f.files && f.files[0];
     if (!file) return;
-    try { editingItem.photoDataUrl = await readFileAsDataUrl(file); renderItems(); }
+    try {
+      editingItem.photoDataUrl = await readFileAsDataUrl(file);
+      editingItem.pendingUpload = true;   // new capture → needs SharePoint push
+      delete editingItem.uploadedAt;
+      delete editingItem.uploadedPath;
+      renderItems();
+    }
     catch (e) { alert("Couldn't read photo: " + e.message); }
   };
   f.click();
@@ -1460,6 +1485,9 @@ function editReplacePhotoFromProject() {
   pickedPhotoCallback = (dataUrl) => {
     if (!editingItem) return;
     editingItem.photoDataUrl = dataUrl;
+    editingItem.pendingUpload = false;  // already in SharePoint
+    delete editingItem.uploadedAt;
+    delete editingItem.uploadedPath;
     renderItems();
   };
   openProjectPhotosPicker();
@@ -1467,6 +1495,9 @@ function editReplacePhotoFromProject() {
 function editClearPhoto() {
   if (!editingItem) return;
   editingItem.photoDataUrl = null;
+  editingItem.pendingUpload = false;
+  delete editingItem.uploadedAt;
+  delete editingItem.uploadedPath;
   renderItems();
 }
 
@@ -1994,6 +2025,105 @@ async function generateWordDoc(report) {
   const safeNum = (project.projectNumber || "").replace(/[\\/:*?"<>|]/g, "-").trim();
   const filename = (safeNum ? safeNum + "_" : "") + "SiteReport_" + report.visitDate + ".docx";
   return { blob, filename };
+}
+
+// ─── PHOTO UPLOAD TO SHAREPOINT ──────────────────────────────────────────────
+// New photos captured / uploaded inside Site Reports get pushed to the
+// project's Photos folder so they appear in the Field Photos gallery
+// alongside captures from SettyFieldPhotos.html. Uploads are async — they
+// don't block the add-item workflow; a `pendingUpload` flag on each item
+// tracks which ones still need pushing so they can be retried later.
+
+// Sanitize a string for use as a SharePoint filename. Removes path-illegal
+// characters, collapses whitespace, trims, and caps length to keep URLs
+// readable when listed in the folder UI.
+function sanitizeFilename(s) {
+  return (s || "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+// Compress a data URL to a JPEG blob at the given quality + max-width. 80%
+// quality at 2000px is the sweet spot for site photos — visibly identical to
+// the original on screen / in print, ~5x smaller in storage. The compression
+// happens in a canvas so EXIF metadata is dropped (no concern about device
+// location data ending up on SharePoint).
+async function compressDataUrl(dataUrl, quality = 0.8, maxWidth = 2000) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxWidth / img.naturalWidth);
+      const w = Math.round(img.naturalWidth * scale);
+      const h = Math.round(img.naturalHeight * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Compress failed")), "image/jpeg", quality);
+    };
+    img.onerror = () => reject(new Error("Image load failed"));
+    img.src = dataUrl;
+  });
+}
+
+// Push one item's photo to <projectFolder>/Photos/<YYYY-MM-DD> Site Report Photos/<filename>
+// Filename: "<item-number> <location>.jpg" — descriptive, matches what shows
+// in the on-screen items list. Random suffix prevents collisions when two
+// items share the same number+location (rare but possible mid-edit).
+async function uploadSiteReportPhoto(item) {
+  if (!selectedProject?.projectFolderUrl) return false;
+  if (!item.photoDataUrl || !item.pendingUpload) return false;
+  const visitDate = document.getElementById("visitDate").value;
+  if (!visitDate) return false;
+  try {
+    const numberByItemId = computeItemNumbers();
+    const num = numberByItemId[item.id] || "item";
+    const loc = sanitizeFilename(item.location);
+    const baseName = loc ? `${num} ${loc}` : num;
+    const suffix = item.id.slice(0, 4);
+    const filename = `${sanitizeFilename(baseName)} (${suffix}).jpg`;
+    const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+    const photosRoot   = await ensureFolder(folderSegment, "Photos");
+    const sessionLabel = `${visitDate} Site Report Photos`;
+    const sessionPath  = await ensureFolder(photosRoot, sessionLabel);
+    const targetPath   = sessionPath + "/" + filename;
+    const blob = await compressDataUrl(item.photoDataUrl, 0.8, 2000);
+    const buf  = await blob.arrayBuffer();
+    await graphFetch(
+      "PUT",
+      `/drives/${DRIVE_ID}/root:/${encodePath(targetPath)}:/content`,
+      buf,
+      "image/jpeg"
+    );
+    item.pendingUpload = false;
+    item.uploadedAt    = new Date().toISOString();
+    item.uploadedPath  = targetPath;
+    return true;
+  } catch (e) {
+    // Leave pendingUpload true so a subsequent call retries. Failures here
+    // are non-fatal — the photo is still embedded in the report (base64), so
+    // the Word export and on-screen display work regardless.
+    console.warn("[uploadSiteReportPhoto]", e.message);
+    return false;
+  }
+}
+
+// Sequentially upload any pendingUpload items. Sequential (not parallel) so
+// we don't slam SharePoint with concurrent writes from a 20-item batch.
+let uploadsRunning = false;
+async function processPendingUploads() {
+  if (uploadsRunning) return;
+  uploadsRunning = true;
+  try {
+    let savedAny = false;
+    for (const it of items) {
+      if (it.pendingUpload && it.photoDataUrl) {
+        const ok = await uploadSiteReportPhoto(it);
+        if (ok) savedAny = true;
+      }
+    }
+    if (savedAny) saveReport({ silent: true });
+  } finally {
+    uploadsRunning = false;
+  }
 }
 
 // ─── KEYPLAN COMPOSITING ─────────────────────────────────────────────────────
