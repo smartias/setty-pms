@@ -93,6 +93,61 @@
     .status.error   { background: #450a0a; color: var(--red); }
     .status.success { background: #064e3b; color: var(--green); }
 
+    /* ─── Mobile / tablet (≤ 768px wide) ───
+       The site report is used in the field — phones and tablets matter. The
+       desktop layout assumes wide screens; on narrower viewports we stack
+       grids, enlarge hit targets, and let modals use the full screen so a
+       tablet user isn't fighting tiny columns. */
+    @media (max-width: 768px) {
+      body { padding: 12px 14px 60px; }
+      h1 { font-size: 19px; }
+      .header-bar { gap: 8px; }
+      .header-user { display: none; } /* save space; the user can see it via Sign out */
+
+      /* Stack any 2- or 3-column grids the page declares. */
+      .grid-2, .grid-3 { grid-template-columns: 1fr !important; }
+
+      /* The "Add Item" form uses an inline grid-template-columns rule, so
+         override it via attribute selector targeting our specific layout. */
+      #addItemCard > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+
+      /* Buttons + inputs get bigger hit targets. iOS hint: anything < 44px
+         feels fiddly with a thumb. */
+      .btn, button { padding: 9px 14px; font-size: 14px; min-height: 40px; }
+      input, select, textarea { font-size: 16px; padding: 9px 11px; } /* 16px prevents iOS auto-zoom on focus */
+      .icon-btn { min-height: 28px; min-width: 28px; padding: 4px 8px; font-size: 16px; }
+
+      /* Cards a touch tighter. */
+      .card { padding: 14px; margin-bottom: 12px; }
+
+      /* Item row: shrink the numbered column and let description span more. */
+      .item-row { grid-template-columns: 44px 90px 1fr 70px; gap: 8px; padding: 8px; }
+      .item-num { font-size: 12px; }
+      .item-photo, .item-photo-empty { width: 70px; height: 52px; }
+
+      /* Plans card thumbnails — keep them readable but not huge. */
+      #plansList { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+
+      /* Photo-picker modal: drop to 2 columns at most on a phone, give it
+         all the screen we can. */
+      #photoPickerModal { padding: 0; }
+      #photoPickerModal > div { max-height: 100vh; border-radius: 0; }
+      #photoPickerGrid > div > div[style*="grid-template-columns"],
+      #photoPickerGrid { /* outer container has no grid itself; inner ones do */ }
+      #photoPickerGrid div[style*="grid-template-columns"][style*="minmax(150px"] {
+        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)) !important;
+      }
+
+      /* Placement modal: use full viewport, stack sidebar above the plan
+         canvas so the canvas gets the lion's share of vertical space. */
+      #placementModal { padding: 0; }
+      #placementModal > div { max-height: 100vh; border-radius: 0; }
+      #placementCanvasWrap > div { flex-direction: column !important; }
+      #placementCanvasWrap > div > div:first-child { /* sidebar */
+        width: 100% !important; max-height: 160px; overflow-x: auto;
+      }
+    }
+
     /* ─── Print stylesheet ─── */
     @media print {
       @page { margin: 0.5in; }
@@ -272,10 +327,13 @@
     <div>
       <label>Photo (optional)</label>
       <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-        <button type="button" class="btn" id="capturePhotoBtn" title="Open camera on phone/tablet, or pick a file on desktop">📷 Take / Choose</button>
+        <button type="button" class="btn" id="capturePhotoBtn" title="Take a new photo or pick one from your device — mobile shows both options">📷 Photo</button>
         <button type="button" class="btn btn-ghost" id="pickProjectPhotoBtn" title="Pick from this project's field photos">🖼 Project Photos</button>
-        <!-- Hidden file inputs; capture="environment" opens the rear camera on mobile. -->
-        <input type="file" id="newPhoto" accept="image/*" capture="environment" style="display:none;" />
+        <!-- No `capture` attribute: mobile browsers will offer Camera + Photo
+             Library as a native chooser. With capture set, iOS/Android skip
+             the chooser and go straight to the camera, which the user wanted
+             to avoid. -->
+        <input type="file" id="newPhoto" accept="image/*" style="display:none;" />
       </div>
       <div id="photoPreview" style="display:none; margin-top:8px; position:relative; width:120px;">
         <img id="photoPreviewImg" style="width:120px; height:90px; object-fit:cover; border-radius:6px; border:1px solid var(--border);" />
