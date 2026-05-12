@@ -12788,6 +12788,17 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           })()}
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {/* Opens the Site Reports tool scoped to this project — landing
+              page filters in-progress reports for it, and "+ New Report"
+              skips the project picker. */}
+          <a
+            href={`https://smartias.github.io/setty-pms/SiteReport.html?project=${encodeURIComponent(project.id)}`}
+            target="_blank" rel="noreferrer"
+            title="Open Site Reports for this project (new tab)"
+            style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.textDim, fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap", textDecoration: "none" }}>
+            📋 Site Reports <span style={{ fontSize: 10, opacity: 0.7 }}>↗</span>
+          </a>
           <button
             title="Copy link to this project"
             onClick={() => {
@@ -21260,6 +21271,14 @@ async function updateProjectAndFlush(updated) {
             {label}
           </button>
         ))}
+        {/* Site Reports lives in its own page (SiteReport.html) — opens in a
+            new tab. Visually distinguished from the SPA tabs with the ↗ glyph. */}
+        <a href="https://smartias.github.io/setty-pms/SiteReport.html"
+          target="_blank" rel="noreferrer"
+          title="Open Site Reports tool (separate page)"
+          style={{ color: P.textMuted, fontSize: 13, textDecoration: "none", padding: "4px 0" }}>
+          📋 Site Reports <span style={{ fontSize: 10, opacity: 0.7 }}>↗</span>
+        </a>
         <div style={{ flex: 1 }} />
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
         {(() => {
