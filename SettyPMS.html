@@ -18531,7 +18531,18 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
 
   const url = project.projectFolderUrl || "";
   const hasFolder = !!url;
-  const hasNotebook = !!(project.teamsOneNoteUrl || project.oneNoteUrl);
+  const currentNoteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
+  const installedNoteUrl = project.shortcutsNoteUrl || "";
+  // The button is hidden when shortcuts are "current" — installed once AND
+  // the OneNote URL we installed matches what the project currently has.
+  // If the user links a notebook AFTER the initial install, the URLs no
+  // longer match and the button reappears (relabeled "Refresh") so they
+  // can pick up the new shortcut without it nagging in the meantime.
+  const shortcutsCurrent = !!project.shortcutsInstalledAt && installedNoteUrl === currentNoteUrl;
+  const showShortcutsButton = hasFolder && !shortcutsCurrent;
+  const shortcutBtnLabel = project.shortcutsInstalledAt
+    ? "📌 Refresh Shortcuts"
+    : "📌 Install Shortcuts (OneNote · PMS)";
 
   async function installShortcuts() {
     setScStatus("installing");
@@ -18540,7 +18551,17 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
       const installed = await installProjectShortcuts(project);
       setScStatus("done");
       setScMsg("✓ Installed: " + installed.join(", ")
-        + (!hasNotebook ? " (OneNote notebook not linked yet — re-run after linking to add it)" : ""));
+        + (!currentNoteUrl ? " (OneNote not linked yet — re-run after linking)" : ""));
+      // Eager-save so the button hides immediately — going through the
+      // debounced auto-save would leave it visible for ~2 seconds and feel
+      // unresponsive.
+      const patch = {
+        ...project,
+        shortcutsInstalledAt: new Date().toISOString(),
+        shortcutsNoteUrl: currentNoteUrl,
+      };
+      if (onEagerSave) await onEagerSave(patch);
+      else onUpdate("shortcutsInstalledAt", patch.shortcutsInstalledAt);
     } catch (e) {
       setScStatus("error");
       setScMsg("✗ " + e.message);
@@ -18625,13 +18646,13 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
           named <strong>{[(project.projectNumber || "").trim(), (project.name || "").trim()].filter(Boolean).join(" - ") || "Project Number - Project Name"}</strong>
         </div>
       )}
-      {hasFolder && (
+      {showShortcutsButton && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
           <button onClick={installShortcuts} disabled={scStatus === "installing"}
-            title="Add .url shortcuts to the OneNote notebook and PMS project page at the root of this SharePoint folder. Safe to re-run — overwrites existing shortcuts."
+            title="Add .url shortcuts to the OneNote notebook and PMS project page at the root of this SharePoint folder. Auto-hides once installed; reappears if the notebook URL changes."
             style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6,
               color: P.textDim, cursor: scStatus === "installing" ? "wait" : "pointer", fontSize: 11, padding: "4px 10px", whiteSpace: "nowrap" }}>
-            {scStatus === "installing" ? "⏳ Installing…" : "📌 Install Shortcuts (OneNote · PMS)"}
+            {scStatus === "installing" ? "⏳ Installing…" : shortcutBtnLabel}
           </button>
           {scMsg && (
             <span style={{ fontSize: 11, color: scStatus === "done" ? P.green : scStatus === "error" ? P.red : P.textDim }}>
