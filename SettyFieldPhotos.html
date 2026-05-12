@@ -283,6 +283,13 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
     <div class="hdr-title">Field Photos</div>
     <span class="hdr-user" id="hdrUser"></span>
     <span id="appVersion" style="font-size:10px;color:rgba(255,255,255,0.4);margin-right:8px;font-family:monospace" title="App version — useful for diagnostics. Mismatched between team members = someone has stale code."></span>
+    <!-- Cross-link to the Site Reports tool. Same Microsoft auth via shared
+         MSAL client ID, so signing in once works for both pages. -->
+    <a href="https://smartias.github.io/setty-pms/SiteReport.html" target="_blank" rel="noreferrer"
+       style="color:rgba(255,255,255,.85); text-decoration:none; font-size:13px; font-weight:600; padding:6px 10px; border:1px solid rgba(255,255,255,.25); border-radius:6px; margin-right:6px;"
+       title="Open the Site Reports tool (new tab)">
+      📋 Site Reports <span style="font-size:10px; opacity:.7;">↗</span>
+    </a>
     <button class="btn-danger" onclick="signOut()">Sign Out</button>
   </header>
   <script>
