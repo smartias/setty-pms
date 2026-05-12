@@ -1927,6 +1927,22 @@ function buildEmailMetadataFooter(metadata) {
   return `<div style="margin-top:32px;padding-top:8px;border-top:1px solid #e8e8e8;font-family:sans-serif;font-size:10px;color:#bbb">${fields} · ${metadata.date}</div>`;
 }
 
+// Convert Graph's dateTime (e.g. "2026-05-11T21:30:00.0000000", treated as
+// UTC by Graph but with no trailing Z) into an ISO-like string in the user's
+// LOCAL timezone, without a timezone designator. OneNote renders the value of
+// <meta name="created"> as-is, so the local wall-clock string is what we want.
+// Without this conversion, a 5:30 PM ET meeting would display as 9:30 PM —
+// the UTC value rendered without conversion.
+function toOneNoteCreatedLocal(dtString) {
+  if (!dtString) return null;
+  const hasZone = /[Zz]|[+\-]\d\d:?\d\d$/.test(dtString);
+  const isoUtc = hasZone ? dtString : dtString + "Z";
+  const d = new Date(isoUtc);
+  if (isNaN(d.getTime())) return null;
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 // ── OneNote helpers (hardened) ───────────────────────────────────────────────
 // HTML-escape title / metadata so OneNote doesn't choke on `<`, `>`, `&` in
 // project names or note titles. Body HTML is intentionally NOT escaped — that's
@@ -1997,7 +2013,10 @@ async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, 
   const token = await getTokenForScopes(ONENOTE_SCOPES);
   const metaBlock = metadata ? buildOneNoteMetadataHtml(metadata) : "";
   const safeTitle = escapeOneNoteText(title);
-  const pageHtml = `<!DOCTYPE html><html><head><title>${safeTitle}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${metaBlock}${htmlBody}</body></html>`;
+  // toOneNoteCreatedLocal fixes the UTC-as-local rendering bug; fallback to
+  // a fresh local timestamp if no event date was provided.
+  const createdMeta = toOneNoteCreatedLocal(eventDate) || toOneNoteCreatedLocal(new Date().toISOString()) || new Date().toISOString();
+  const pageHtml = `<!DOCTYPE html><html><head><title>${safeTitle}</title><meta name="created" content="${createdMeta}" /></head><body>${metaBlock}${htmlBody}</body></html>`;
   const page = await postOneNotePageWithRetry(
     `https://graph.microsoft.com/v1.0/groups/${TEAMS_TEAM_ID}/onenote/sections/${section.id}/pages`,
     token, pageHtml
@@ -2014,7 +2033,10 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody, event
   const token = await getTokenForScopes(ONENOTE_SCOPES);
   const metaBlock = metadata ? buildOneNoteMetadataHtml(metadata) : "";
   const safeTitle = escapeOneNoteText(title);
-  const pageHtml = `<!DOCTYPE html><html><head><title>${safeTitle}</title><meta name="created" content="${eventDate || new Date().toISOString()}" /></head><body>${metaBlock}${htmlBody}</body></html>`;
+  // toOneNoteCreatedLocal fixes the UTC-as-local rendering bug; fallback to
+  // a fresh local timestamp if no event date was provided.
+  const createdMeta = toOneNoteCreatedLocal(eventDate) || toOneNoteCreatedLocal(new Date().toISOString()) || new Date().toISOString();
+  const pageHtml = `<!DOCTYPE html><html><head><title>${safeTitle}</title><meta name="created" content="${createdMeta}" /></head><body>${metaBlock}${htmlBody}</body></html>`;
   const page = await postOneNotePageWithRetry(
     `https://graph.microsoft.com/v1.0/sites/${siteId}/onenote/sections/${section.id}/pages`,
     token, pageHtml
@@ -13976,12 +13998,16 @@ function CalendarImportPanel({ project, onImport }) {
           const preview = ev.bodyPreview ? ev.bodyPreview.trim().slice(0, 500) : "";
           const tdStyle = "padding:6px 12px";
           const thStyle = "padding:6px 12px;font-weight:bold;background:#f0f0f0";
+          // The bodyPreview row used to live here, but it duplicated the
+          // structured table above (attendees) and the Discussion / Decisions
+          // / Action Items sections below — typical meeting-invite bodies
+          // contain that boilerplate with empty actual content. The full
+          // invite body is still preserved in the PMS note record itself.
           const pageHtml = "<h1>" + title + "</h1>"
             + "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
             + (dtFmt ? "<tr><td style='" + thStyle + ";width:140px'>Date</td><td style='" + tdStyle + "'>" + dtFmt + "</td></tr>" : "")
             + (loc ? "<tr><td style='" + thStyle + "'>Location</td><td style='" + tdStyle + "'>" + loc + "</td></tr>" : "")
             + (atts ? "<tr><td style='" + thStyle + "'>Attendees</td><td style='" + tdStyle + "'>" + atts + "</td></tr>" : "")
-            + (preview ? "<tr><td style='" + thStyle + "'>Agenda / Notes</td><td style='" + tdStyle + "'>" + preview + "</td></tr>" : "")
             + "</table>"
             + "<h2>Discussion</h2><p>&nbsp;</p>"
             + "<h2>Decisions</h2><p>&nbsp;</p>"
