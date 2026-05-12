@@ -2391,29 +2391,31 @@ async function writeProjectShortcut(driveId, folderName, shortcutFileName, targe
   return res.json();
 }
 
-// Resolve the email address for a project's Teams channel. Channels don't
-// have an email until someone (admin OR member with right permissions)
-// asks for one — `provisionEmail` is the Graph API that does this. We try
-// to read the existing email first (idempotent — won't re-provision), and
-// only call provisionEmail if no email exists yet.
+// Resolve the email address for a project's Teams channel via READ-ONLY
+// Graph access. PMS doesn't request the ChannelSettings.ReadWrite.All
+// scope that `provisionEmail` would need — too much consent friction for
+// what's a one-time-per-channel admin action.
 //
-// Returns the email string, or "" if no channel is configured / the call
-// fails. Cache the result on `project.teamsChannelEmail` so we don't go
-// back to Graph for every render or shortcut install.
+// Path: GET the channel; if it already has an email, return it. If it
+// doesn't, throw a friendly error telling the user how to provision one
+// in Teams (channel "..." menu → "Get email address"). After they do
+// that once, the next click here succeeds.
 async function resolveChannelEmail(project) {
   if (!project.teamsChannelId) return "";
   try {
     const ch = await graphFetch("GET",
       `/teams/${TEAMS_TEAM_ID}/channels/${project.teamsChannelId}?$select=email,displayName`);
     if (ch?.email) return ch.email;
-  } catch (e) { console.warn("[resolveChannelEmail GET]", e.message); }
-  try {
-    const result = await graphFetch("POST",
-      `/teams/${TEAMS_TEAM_ID}/channels/${project.teamsChannelId}/provisionEmail`);
-    return result?.email || "";
+    throw new Error("__NO_EMAIL__");
   } catch (e) {
-    console.warn("[resolveChannelEmail provision]", e.message);
-    return "";
+    if (e.message === "__NO_EMAIL__") {
+      throw new Error('Channel has no email yet. Open the channel in Teams → click "⋯" next to the channel name → "Get email address" → "Copy". That provisions it; the next click here will read it automatically.');
+    }
+    const m = (e.message || "").toLowerCase();
+    if (m.includes("404") || m.includes("not found")) {
+      throw new Error("Channel not found via Graph — confirm Teams Notifications are enabled on this project.");
+    }
+    throw new Error("Graph: " + e.message);
   }
 }
 
@@ -18011,8 +18013,11 @@ function TeamsNotificationsField({ project, onUpdate }) {
     try {
       let email = project.teamsChannelEmail || "";
       if (!email) {
+        // resolveChannelEmail now throws with a specific error message
+        // (permission denied / not found / private channel / etc.) so we
+        // can show the user what's actually wrong instead of a generic blank.
         email = await resolveChannelEmail(project);
-        if (!email) throw new Error("Couldn't get a channel email — channel may not allow it.");
+        if (!email) throw new Error("No email returned from Graph.");
         onUpdate({ ...project, teamsChannelEmail: email });
       }
       await navigator.clipboard.writeText(email);
