@@ -148,6 +148,15 @@ function isAwarded(p)  { return !isPipeline(p); }
 
 function uid() { return Math.random().toString(36).slice(2,10); }
 
+// Whether a firm name refers to Setty. Substring match so "Setty",
+// "Setty and Associates", "Setty & Associates", "Setty Engineering",
+// etc., all resolve to us. Keeps the contracting-chain detection and
+// "Setty is prime" logic from breaking on legal-name variants stored
+// in the Global Directory.
+function isSettyFirm(name) {
+  return !!(name && name.toLowerCase().includes("setty"));
+}
+
 function addWorkDays(startDate, days) {
   let d = new Date(startDate);
   let count = 0;
@@ -1525,8 +1534,8 @@ function NewProjectModal({ onClose, onCreate, clients = [] }) {
           <div style={{ display: "flex", gap: 6 }}>
             <input value={clientName} onChange={e => setClientName(e.target.value)} style={inputStyle}
               list="newProjectFirmOptions"
-              placeholder={prime.trim().toLowerCase() === "setty" ? "Project owner" : "Prime firm, or the sub that hires us"} />
-            {!clientName.trim() && prime.trim() && prime.trim().toLowerCase() !== "setty" && (
+              placeholder={isSettyFirm(prime) ? "Project owner" : "Prime firm, or the sub that hires us"} />
+            {!clientName.trim() && prime.trim() && !isSettyFirm(prime) && (
               <button type="button" onClick={() => setClientName(prime.trim())}
                 title="Use the Prime as Client (single-tier sub — the most common case)"
                 style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "0 10px", whiteSpace: "nowrap" }}>
@@ -1535,7 +1544,7 @@ function NewProjectModal({ onClose, onCreate, clients = [] }) {
             )}
           </div>
           <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, lineHeight: 1.4 }}>
-            {prime.trim().toLowerCase() === "setty"
+            {isSettyFirm(prime)
               ? "Setty is the prime → Client is whoever holds our contract (usually the project owner)."
               : "Whoever Setty contracts with directly. Usually = Prime (1-tier sub). For 2nd-tier subs, the Client is itself a sub to the Prime — enter the intermediate firm here."}
           </div>
@@ -12614,8 +12623,14 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             // expands to a full chain otherwise. Clickable to inline-edit.
             const prime  = (project.prime || "").trim();
             const client = (project.clientName || "").trim();
-            const subs   = (project.subconsultants || []).map(s => (s.firm || "").trim()).filter(Boolean);
-            const isSettyPrime = prime.toLowerCase() === "setty";
+            // Defensive: drop any sub whose firm name matches Setty so we
+            // never render Setty as our own subconsultant (happens if the
+            // Global Directory has a "Setty …" entry that gets accidentally
+            // selected as a sub firm).
+            const subs   = (project.subconsultants || [])
+              .map(s => (s.firm || "").trim())
+              .filter(name => name && !isSettyFirm(name));
+            const isSettyPrime = isSettyFirm(prime);
             const sameClientPrime = prime && client && prime.toLowerCase() === client.toLowerCase();
             const isSecondTier = !isSettyPrime && prime && client && !sameClientPrime;
             const chip = (label, value, tone, onClick) => (
@@ -12911,7 +12926,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                   placeholder="Firm that contracts Setty directly"
                   onAddClient={onAddClient}
                 />
-                {!(project.clientName || "").trim() && (project.prime || "").trim() && (project.prime || "").trim().toLowerCase() !== "setty" && (
+                {!(project.clientName || "").trim() && (project.prime || "").trim() && !isSettyFirm(project.prime) && (
                   <button type="button" onClick={() => updateField("clientName", (project.prime || "").trim())}
                     title="Use the Prime as Client (most common — 1-tier sub)"
                     style={{ marginTop: 6, background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
