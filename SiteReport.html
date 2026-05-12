@@ -225,10 +225,21 @@
   <div class="meta-line" style="margin-top:8px;">Attendees per discipline roll up automatically from the "By" field on each item.</div>
 </div>
 
+<!-- Plans (key plans for pinning items) -->
+<div class="card no-print" id="plansCard" style="display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <h2 style="margin:0;">Key Plans</h2>
+    <button class="btn" id="addPlanBtn">+ Add Plan</button>
+    <input type="file" id="addPlanFile" accept="image/*" style="display:none;" />
+  </div>
+  <div id="plansList" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:10px;"></div>
+  <div class="meta-line" style="margin-top:8px;">Add one plan per floor (e.g. "Level 2", "Roof"). Items can be placed on a plan via the "Place" button in the items list.</div>
+</div>
+
 <!-- Add item -->
 <div class="card no-print" id="addItemCard" style="display:none;">
   <h2>Add Item</h2>
-  <div style="display:grid; grid-template-columns:1.2fr 1.2fr 1fr 1fr; gap:12px;">
+  <div style="display:grid; grid-template-columns:1.2fr 1.2fr 1fr 1fr 1fr; gap:12px;">
     <div>
       <label>Discipline</label>
       <select id="newDiscipline">
@@ -244,6 +255,9 @@
       </select>
     </div>
     <div><label>Location / Room</label><input id="newLocation" placeholder="e.g. Rm 304, RTU-1 Roof, Stair B Lvl 2" /></div>
+    <div><label>Plan (optional)</label>
+      <select id="newPlanId"><option value="">— No plan yet —</option></select>
+    </div>
     <div><label>By</label><input id="newEnteredBy" placeholder="Your initials / name" title="Defaults to you. Edit if logging on someone else's behalf." /></div>
     <div>
       <label>Photo (optional)</label>
@@ -271,6 +285,23 @@
 <div id="itemsList"></div>
 
 <div class="status info no-print" id="globalStatus" style="display:none; margin-top: 16px;"></div>
+
+<!-- Pin Placement Modal (key-plan pin picker) -->
+<div id="placementModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:600; align-items:center; justify-content:center; padding:24px;">
+  <div style="background:var(--card); border:1px solid var(--border); border-radius:12px; max-width:1200px; width:100%; max-height:94vh; display:flex; flex-direction:column; box-shadow:0 12px 48px rgba(0,0,0,.6);">
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border); gap:12px;">
+      <div>
+        <div style="font-size:15px; font-weight:700;" id="placementTitle">Place Pin</div>
+        <div id="placementSub" style="font-size:11px; color:var(--dim); margin-top:2px;">Click anywhere on the plan to drop the pin. Drag an existing pin to nudge it.</div>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button class="btn btn-ghost" id="placementClearBtn" title="Remove this item's pin from this plan">Clear Pin</button>
+        <button class="btn btn-ghost" id="placementCloseBtn">Done</button>
+      </div>
+    </div>
+    <div id="placementCanvasWrap" style="flex:1; overflow:auto; padding:12px; display:flex; align-items:center; justify-content:center; background:var(--bg);"></div>
+  </div>
+</div>
 
 <!-- Project Photos Picker Modal -->
 <div id="photoPickerModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:500; align-items:flex-start; justify-content:center; padding:40px 20px; overflow-y:auto;">
@@ -333,10 +364,17 @@ let selectedProject = null;
 // The item's display number is computed on render, not stored. Numbers depend
 // on whatever rule lives in nextNumberFor() below.
 let items = [];
+// plans: array of { id, label, imageDataUrl, addedBy, addedAt }
+// Each item may carry { pin: { planId, x, y } } where x/y are percentages
+// 0..1 of the plan image — survives any rescale on render/export.
+let plans = [];
 let reportId = null;      // populated after first save (PK in pms_site_reports)
 let reportVersion = 0;    // optimistic-concurrency version
 let reportStatus = "in_progress"; // "in_progress" | "complete"
 let reportUpdatedAt = null;       // ISO timestamp from the last save
+// "Last-used plan" sticky state: the next item the user adds defaults to the
+// plan they most recently used. Sequential pinning on one floor stays fast.
+let lastUsedPlanId = "";
 // The single "currently-selected" photo for the Add Item form. Set by both
 // the file-input change and the project-photos picker; cleared on Add or
 // by the × button. Always a data URL or null.
@@ -444,7 +482,7 @@ function showLanding() {
   loadAndRenderReportsList();
 }
 function hideAllReportViews() {
-  ["landingCard","projectPickerCard","statusBar","projectHeaderCard","visitCard","addItemCard"].forEach(id => {
+  ["landingCard","projectPickerCard","statusBar","projectHeaderCard","visitCard","plansCard","addItemCard"].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display = "none";
   });
   document.getElementById("itemsList").innerHTML = "";
@@ -480,7 +518,8 @@ document.getElementById("refreshBtn").onclick = () => { if (reportId) loadExisti
 document.getElementById("completeBtn").onclick = toggleComplete;
 
 function resetReportState() {
-  items = []; reportId = null; reportVersion = 0; reportStatus = "in_progress"; reportUpdatedAt = null;
+  items = []; plans = []; reportId = null; reportVersion = 0; reportStatus = "in_progress"; reportUpdatedAt = null;
+  lastUsedPlanId = "";
   selectedProject = null;
 }
 
@@ -548,6 +587,7 @@ async function loadExistingReportById(id, silent) {
     reportUpdatedAt = row.updated_at;
     reportStatus = r.status || "in_progress";
     items = r.items || [];
+    plans = r.plans || [];
     const project = pmsProjects.find(p => p.id === row.project_id);
     if (!project) { setGlobalStatus("error", "Project for this report was not found."); return; }
     selectProject(project);
@@ -555,6 +595,7 @@ async function loadExistingReportById(id, silent) {
     if (r.weather)      document.getElementById("weather").value = r.weather;
     if (r.generalNotes) document.getElementById("generalNotes").value = r.generalNotes;
     renderStatus();
+    renderPlans();
     renderItems();
     // Sync URL so a reload re-opens the same report.
     const newUrl = location.pathname + "?report=" + encodeURIComponent(reportId);
@@ -572,8 +613,10 @@ function selectProject(project) {
   document.getElementById("statusBar").style.display = "flex";
   document.getElementById("projectHeaderCard").style.display = "block";
   document.getElementById("visitCard").style.display = "block";
+  document.getElementById("plansCard").style.display = "block";
   document.getElementById("addItemCard").style.display = "block";
   renderStatus();
+  renderPlans();
   // Default the "By" field to the current user's first name so the typical
   // case (logging your own items) requires no extra typing.
   const me = (msalAccount?.name || "").split(/\s+/)[0] || "";
@@ -621,10 +664,22 @@ document.getElementById("addItemBtn").onclick = async () => {
 
   if (!description) { setAddStatus("error", "Description is required."); return; }
 
-  items.push({ id: uid(), discipline, location, description, notes, photoDataUrl: pickedPhotoDataUrl, enteredBy });
+  // Plan: stored as { planId, x, y } on the item. x/y default to null until
+  // the user actually places the pin via the placement modal. An item with a
+  // planId but null x/y is "assigned to a plan, not yet positioned" — shown
+  // as ⚐ Place needed in the items list.
+  const planId = document.getElementById("newPlanId").value || null;
+  const pin = planId ? { planId, x: null, y: null } : null;
+  if (planId) lastUsedPlanId = planId;
+
+  const newItem = { id: uid(), discipline, location, description, notes, photoDataUrl: pickedPhotoDataUrl, enteredBy, pin };
+  items.push(newItem);
   document.getElementById("newLocation").value = "";
   document.getElementById("newDescription").value = "";
   document.getElementById("newNotes").value = "";
+  // Re-default the plan select to the most-recently-used plan so sequential
+  // pinning on one floor stays fast.
+  document.getElementById("newPlanId").value = lastUsedPlanId;
   // Intentionally NOT clearing newEnteredBy — same person typically adds
   // several items in a row, so retaining the value cuts typing.
   clearPickedPhoto();
@@ -632,6 +687,244 @@ document.getElementById("addItemBtn").onclick = async () => {
   setTimeout(() => setAddStatus("", ""), 1200);
   renderItems();
 };
+
+// ─── PLANS (CRUD + render) ───────────────────────────────────────────────────
+document.getElementById("addPlanBtn").onclick = () =>
+  document.getElementById("addPlanFile").click();
+
+document.getElementById("addPlanFile").onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  let label = window.prompt("Plan label (e.g. \"Level 2\", \"Roof\", \"Basement Mech\"):", "");
+  if (label === null) { e.target.value = ""; return; }
+  label = (label || "").trim() || ("Plan " + (plans.length + 1));
+  try {
+    const dataUrl = await readFileAsDataUrl(f);
+    const plan = { id: uid(), label, imageDataUrl: dataUrl, addedBy: (msalAccount?.name || ""), addedAt: new Date().toISOString() };
+    plans.push(plan);
+    lastUsedPlanId = plan.id;
+    renderPlans();
+  } catch (err) {
+    setGlobalStatus("error", "Couldn't read plan image: " + err.message);
+  }
+  e.target.value = "";
+};
+
+function deletePlan(planId) {
+  const plan = plans.find(p => p.id === planId);
+  if (!plan) return;
+  const pinnedCount = items.filter(i => i.pin && i.pin.planId === planId).length;
+  const msg = pinnedCount > 0
+    ? `Remove plan "${plan.label}"? ${pinnedCount} item${pinnedCount===1?"":"s"} pinned on it will lose their pin (the items stay).`
+    : `Remove plan "${plan.label}"?`;
+  if (!window.confirm(msg)) return;
+  plans = plans.filter(p => p.id !== planId);
+  // Unassign pins that referenced this plan; preserve the items themselves.
+  items = items.map(i => (i.pin && i.pin.planId === planId) ? { ...i, pin: null } : i);
+  if (lastUsedPlanId === planId) lastUsedPlanId = "";
+  renderPlans();
+  renderItems();
+}
+
+function renderPlans() {
+  // Refresh the dropdown in the Add Item form.
+  const sel = document.getElementById("newPlanId");
+  sel.innerHTML = '<option value="">— No plan yet —</option>';
+  plans.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.id; opt.textContent = p.label;
+    sel.appendChild(opt);
+  });
+  sel.value = lastUsedPlanId;
+
+  // Refresh the plans card list.
+  const list = document.getElementById("plansList");
+  list.innerHTML = "";
+  if (plans.length === 0) {
+    list.innerHTML = '<div style="color:var(--dim); font-size:13px; padding:8px 0;">No plans yet. Add one for each floor or area covered by the visit.</div>';
+    return;
+  }
+  plans.forEach(plan => {
+    const pinned = items.filter(i => i.pin && i.pin.planId === plan.id).length;
+    const card = document.createElement("div");
+    card.style.cssText = "background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow:hidden;";
+    card.innerHTML = `
+      <div style="aspect-ratio:4/3; background:var(--border); cursor:pointer;" title="Click to open placement view">
+        <img src="${plan.imageDataUrl}" style="width:100%; height:100%; object-fit:contain; background:#fff;" />
+      </div>
+      <div style="padding:8px 10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+          <div style="font-weight:600; font-size:12px; color:var(--text); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(plan.label)}</div>
+          <button class="icon-btn" title="Remove plan" data-del="${plan.id}">✕</button>
+        </div>
+        <div style="font-size:10px; color:var(--dim); margin-top:2px;">${pinned} item${pinned===1?"":"s"} pinned</div>
+      </div>`;
+    card.querySelector("[data-del]").onclick = (ev) => { ev.stopPropagation(); deletePlan(plan.id); };
+    card.querySelector("img").onclick = () => openPlacementForPlan(plan.id);
+    list.appendChild(card);
+  });
+}
+
+// ─── PIN PLACEMENT MODAL ─────────────────────────────────────────────────────
+let placementActiveItemId = null;
+let placementActivePlanId = null;
+
+function openPlacementForItem(itemId) {
+  const item = items.find(i => i.id === itemId);
+  if (!item) return;
+  if (!item.pin?.planId) { alert("Assign a plan to this item first (use the Plan select when adding, or re-add)."); return; }
+  placementActiveItemId = itemId;
+  placementActivePlanId = item.pin.planId;
+  openPlacementModal();
+}
+function openPlacementForPlan(planId) {
+  placementActivePlanId = planId;
+  // Auto-select the first item assigned to this plan that hasn't been placed yet.
+  const first = items.find(i => i.pin?.planId === planId && (i.pin.x == null || i.pin.y == null));
+  placementActiveItemId = first ? first.id : null;
+  openPlacementModal();
+}
+
+function openPlacementModal() {
+  const plan = plans.find(p => p.id === placementActivePlanId);
+  if (!plan) return;
+  document.getElementById("placementModal").style.display = "flex";
+  document.getElementById("placementTitle").textContent = "Place on plan: " + plan.label;
+  renderPlacementCanvas();
+}
+document.getElementById("placementCloseBtn").onclick = () => {
+  document.getElementById("placementModal").style.display = "none";
+  placementActiveItemId = null;
+  renderPlans(); renderItems();
+};
+document.getElementById("placementClearBtn").onclick = () => {
+  if (!placementActiveItemId) return;
+  const it = items.find(i => i.id === placementActiveItemId);
+  if (it && it.pin) { it.pin.x = null; it.pin.y = null; }
+  renderPlacementCanvas();
+};
+
+function renderPlacementCanvas() {
+  const plan = plans.find(p => p.id === placementActivePlanId);
+  const wrap = document.getElementById("placementCanvasWrap");
+  wrap.innerHTML = "";
+  if (!plan) return;
+
+  // Build a number-by-itemId map matching the on-screen numbering scheme.
+  const numberByItemId = computeItemNumbers();
+
+  const itemsOnPlan = items.filter(i => i.pin?.planId === plan.id);
+  const sub = document.getElementById("placementSub");
+  const activeItem = items.find(i => i.id === placementActiveItemId);
+  sub.innerHTML = activeItem
+    ? `Active: <b style="color:var(--text)">${escapeHtml(numberByItemId[activeItem.id] || "")} — ${escapeHtml(activeItem.description.slice(0, 60))}</b> · click on the plan to drop or move the pin. Click a different pin below to switch items.`
+    : 'Pick an item from the sidebar to set its location.';
+
+  // Layout: sidebar (items list) + canvas
+  const layout = document.createElement("div");
+  layout.style.cssText = "display:flex; gap:12px; align-items:flex-start; width:100%; max-width:100%;";
+
+  // Sidebar
+  const side = document.createElement("div");
+  side.style.cssText = "width:240px; max-height:70vh; overflow-y:auto; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px;";
+  side.innerHTML = `<div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); padding:4px 6px 8px;">Items on this plan</div>`;
+  if (itemsOnPlan.length === 0) {
+    side.innerHTML += `<div style="color:var(--dim); font-size:12px; padding:6px;">No items assigned to this plan yet. Use the Plan select when adding items.</div>`;
+  } else {
+    itemsOnPlan.forEach(it => {
+      const isActive = it.id === placementActiveItemId;
+      const placed = it.pin && it.pin.x != null && it.pin.y != null;
+      const row = document.createElement("div");
+      row.style.cssText = `padding:6px 8px; border-radius:6px; cursor:pointer; margin-bottom:4px; ${isActive ? "background:var(--accent-dim); border:1px solid var(--blue);" : "border:1px solid transparent;"}`;
+      row.onclick = () => { placementActiveItemId = it.id; renderPlacementCanvas(); };
+      row.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:700; color:#60a5fa; font-size:12px;">${escapeHtml(numberByItemId[it.id] || "")}</div>
+          <div style="font-size:10px; color:${placed ? "var(--green)" : "var(--yellow)"};">${placed ? "✓ placed" : "⚐ unplaced"}</div>
+        </div>
+        <div style="font-size:11px; color:var(--text); margin-top:2px; line-height:1.3; max-height:30px; overflow:hidden;">${escapeHtml(it.description.slice(0, 60))}</div>`;
+      side.appendChild(row);
+    });
+  }
+  layout.appendChild(side);
+
+  // Canvas container
+  const canvasBox = document.createElement("div");
+  canvasBox.style.cssText = "flex:1; position:relative; max-height:75vh; overflow:auto; background:#fff; border:1px solid var(--border); border-radius:8px;";
+  const positioner = document.createElement("div");
+  positioner.style.cssText = "position:relative; display:inline-block;";
+  const img = document.createElement("img");
+  img.src = plan.imageDataUrl;
+  img.style.cssText = "display:block; max-width:100%; height:auto;";
+  img.draggable = false;
+  positioner.appendChild(img);
+
+  // Drop pins for all placed items
+  itemsOnPlan.forEach(it => {
+    if (it.pin?.x == null || it.pin?.y == null) return;
+    const pin = document.createElement("div");
+    const isActive = it.id === placementActiveItemId;
+    pin.textContent = numberByItemId[it.id] || "";
+    pin.style.cssText = `
+      position:absolute; left:${(it.pin.x * 100).toFixed(2)}%; top:${(it.pin.y * 100).toFixed(2)}%;
+      transform:translate(-50%, -50%);
+      width:30px; height:30px; border-radius:50%;
+      background:${isActive ? "#3B82F6" : "#1F3864"}; color:white;
+      display:flex; align-items:center; justify-content:center;
+      font-family:'JetBrains Mono',monospace; font-weight:700; font-size:10px;
+      border:2px solid white; box-shadow:0 2px 6px rgba(0,0,0,.4);
+      cursor:move; user-select:none;`;
+    pin.onclick = (ev) => { ev.stopPropagation(); placementActiveItemId = it.id; renderPlacementCanvas(); };
+    // Drag-to-nudge
+    pin.onpointerdown = (ev) => {
+      ev.preventDefault();
+      pin.setPointerCapture(ev.pointerId);
+      const onMove = (mv) => {
+        const rect = img.getBoundingClientRect();
+        const x = clamp((mv.clientX - rect.left) / rect.width, 0, 1);
+        const y = clamp((mv.clientY - rect.top) / rect.height, 0, 1);
+        it.pin.x = x; it.pin.y = y;
+        pin.style.left = (x * 100).toFixed(2) + "%";
+        pin.style.top  = (y * 100).toFixed(2) + "%";
+      };
+      const onUp = () => { pin.removeEventListener("pointermove", onMove); pin.removeEventListener("pointerup", onUp); };
+      pin.addEventListener("pointermove", onMove);
+      pin.addEventListener("pointerup", onUp);
+    };
+    positioner.appendChild(pin);
+  });
+
+  // Click anywhere on plan to (re)place active item
+  positioner.onclick = (ev) => {
+    if (!placementActiveItemId) return;
+    const it = items.find(i => i.id === placementActiveItemId);
+    if (!it) return;
+    const rect = img.getBoundingClientRect();
+    const x = clamp((ev.clientX - rect.left) / rect.width, 0, 1);
+    const y = clamp((ev.clientY - rect.top) / rect.height, 0, 1);
+    if (!it.pin) it.pin = { planId: placementActivePlanId, x: null, y: null };
+    it.pin.x = x; it.pin.y = y;
+    renderPlacementCanvas();
+  };
+
+  canvasBox.appendChild(positioner);
+  layout.appendChild(canvasBox);
+  wrap.appendChild(layout);
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// Compute display number per item (matches the on-screen render). Used by the
+// placement modal AND the Word export so the same M-3 shows up everywhere.
+function computeItemNumbers() {
+  const map = {};
+  const byDiscipline = {};
+  items.forEach(i => { (byDiscipline[i.discipline] = byDiscipline[i.discipline] || []).push(i); });
+  DISCIPLINE_ORDER.forEach(disc => {
+    (byDiscipline[disc] || []).forEach((it, idx) => { map[it.id] = numberForItem(it, idx); });
+  });
+  return map;
+}
 
 // ─── PHOTO PICKER WIREUP ─────────────────────────────────────────────────────
 function setPickedPhoto(dataUrl) {
@@ -857,19 +1150,34 @@ function renderItemRow(item, indexWithinDiscipline) {
   const photoHtml = item.photoDataUrl
     ? `<img src="${item.photoDataUrl}" class="item-photo" alt="" />`
     : `<div class="item-photo-empty">no photo</div>`;
+  // Pin status string: "Level 2 · ✓ placed", "Level 2 · ⚐ Place", or empty.
+  let pinHtml = "";
+  if (item.pin?.planId) {
+    const plan = plans.find(p => p.id === item.pin.planId);
+    const placed = item.pin.x != null && item.pin.y != null;
+    pinHtml = `
+      <button class="icon-btn no-print" title="${placed ? "Move pin on " + (plan?.label || "plan") : "Place pin on " + (plan?.label || "plan")}" data-place="${item.id}"
+        style="color:${placed ? "var(--green)" : "var(--yellow)"}; font-size:11px; font-weight:600; padding:0;">
+        ${placed ? "📍 " + escapeHtml(plan?.label || "plan") : "⚐ Place on " + escapeHtml(plan?.label || "plan")}
+      </button>`;
+  }
   row.innerHTML = `
     <div class="item-num">${num}</div>
     <div class="item-loc">${escapeHtml(item.location || "—")}</div>
     <div>
       <div class="item-desc">${escapeHtml(item.description || "")}</div>
       ${item.notes ? `<div style="font-size: 11px; color: var(--dim); margin-top: 3px; font-style: italic;">${escapeHtml(item.notes)}</div>` : ""}
-      ${item.enteredBy ? `<div style="font-size: 10px; color: var(--muted); margin-top: 3px;">— ${escapeHtml(item.enteredBy)}</div>` : ""}
+      <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+        ${item.enteredBy ? `<span style="font-size: 10px; color: var(--muted);">— ${escapeHtml(item.enteredBy)}</span>` : ""}
+        ${pinHtml}
+      </div>
     </div>
     <div class="item-actions">
       ${photoHtml}
       <button class="icon-btn no-print" title="Remove" data-remove="${item.id}">✕</button>
     </div>`;
   row.querySelector("[data-remove]")?.addEventListener("click", () => removeItem(item.id));
+  row.querySelector("[data-place]")?.addEventListener("click", () => openPlacementForItem(item.id));
   return row;
 }
 
@@ -900,6 +1208,7 @@ async function saveReport() {
     generalNotes: document.getElementById("generalNotes").value.trim(),
     status:       reportStatus,
     items,
+    plans,
     createdBy:    msalAccount.username || msalAccount.name || "",
     updatedAt:    nowIso,
   };
@@ -1039,6 +1348,31 @@ async function generateWordDoc(report) {
     return "jpg";
   }
 
+  // ── Composite each plan with its pins (canvas → PNG) for the keyplan pages.
+  // Pin numbers use the same scheme as the on-screen render so the contractor
+  // can flip between the keyplan and the Observations list seamlessly.
+  const numberByItemId = computeItemNumbers();
+  const planBlocks = [];
+  for (const plan of (report.plans || [])) {
+    const pinsOnPlan = (report.items || []).filter(it => it.pin?.planId === plan.id && it.pin.x != null && it.pin.y != null);
+    try {
+      const composited = await compositePlanWithPins(plan, pinsOnPlan, numberByItemId);
+      planBlocks.push(new Paragraph({
+        spacing: { before: 240, after: 80 },
+        children: [new TextRun({ text: "KEY PLAN — " + plan.label.toUpperCase(), font: "Calibri", size: 22, bold: true, color: NAVY })],
+      }));
+      planBlocks.push(new Paragraph({ children: [new ImageRun({
+        data: composited,
+        // Fit to roughly the printable page width (≈ 6.5" at 96 DPI ≈ 624px).
+        // docx ImageRun expects pixels for transformation.width/height.
+        transformation: { width: 624, height: Math.round(624 * (plan._aspect || 0.75)) },
+        type: "png",
+      })]}));
+    } catch (e) {
+      planBlocks.push(new Paragraph({ children: [new TextRun({ text: `(Could not render key plan "${plan.label}": ${e.message})`, font: "Calibri", size: 18, italics: true, color: GRAY })] }));
+    }
+  }
+
   const itemBlocks = [];
   const byDiscipline = {};
   report.items.forEach(i => { (byDiscipline[i.discipline] = byDiscipline[i.discipline] || []).push(i); });
@@ -1109,6 +1443,7 @@ async function generateWordDoc(report) {
         new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "SITE REPORT", font: "Calibri", size: 28, bold: true, color: RED })] }),
         infoTable,
         ...generalNotesBlock,
+        ...planBlocks,
         new Paragraph({ spacing: { before: 240, after: 80 }, children: [new TextRun({ text: "Observations", font: "Calibri", size: 24, bold: true, color: NAVY })] }),
         ...itemBlocks,
       ],
@@ -1119,6 +1454,68 @@ async function generateWordDoc(report) {
   const safeNum = (project.projectNumber || "").replace(/[\\/:*?"<>|]/g, "-").trim();
   const filename = (safeNum ? safeNum + "_" : "") + "SiteReport_" + report.visitDate + ".docx";
   return { blob, filename };
+}
+
+// ─── KEYPLAN COMPOSITING ─────────────────────────────────────────────────────
+// Loads the plan image into an off-screen canvas, draws numbered pin circles
+// at each item's percentage coords, exports the result as a PNG ArrayBuffer
+// suitable for docx ImageRun. We also stash the image's aspect ratio on the
+// plan object so the Word export sizes the embedded image correctly.
+async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error("Plan image failed to load"));
+    i.src = plan.imageDataUrl;
+  });
+
+  // Scale to a reasonable max width to keep the docx size manageable. 1600px
+  // is plenty for an 8.5" letter page at print resolution.
+  const MAX_W = 1600;
+  const scale = Math.min(1, MAX_W / img.naturalWidth);
+  const w = Math.round(img.naturalWidth * scale);
+  const h = Math.round(img.naturalHeight * scale);
+  plan._aspect = h / w; // used to size the ImageRun in the docx
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, w, h);
+
+  // Pin styling — scales with image so it stays readable on both small and
+  // large plans. Roughly 1.6% of width, clamped to [22, 60] px.
+  const pinR = Math.max(22, Math.min(60, w * 0.016));
+  ctx.font = `bold ${Math.round(pinR * 0.7)}px "Segoe UI", Arial, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  pinnedItems.forEach(it => {
+    const x = it.pin.x * w;
+    const y = it.pin.y * h;
+    // Drop shadow
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.beginPath(); ctx.arc(x + 2, y + 2, pinR, 0, Math.PI * 2); ctx.fill();
+    // Pin circle
+    ctx.fillStyle = "#1F3864";
+    ctx.beginPath(); ctx.arc(x, y, pinR, 0, Math.PI * 2); ctx.fill();
+    // White ring
+    ctx.strokeStyle = "#FFFFFF";
+    ctx.lineWidth = Math.max(2, pinR * 0.12);
+    ctx.beginPath(); ctx.arc(x, y, pinR, 0, Math.PI * 2); ctx.stroke();
+    // Number text
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillText(numberByItemId[it.id] || "?", x, y);
+  });
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (!blob) return reject(new Error("Canvas export failed"));
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Read failed"));
+      reader.readAsArrayBuffer(blob);
+    }, "image/png");
+  });
 }
 
 // ─── SHAREPOINT UPLOAD ───────────────────────────────────────────────────────
