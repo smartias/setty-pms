@@ -144,8 +144,7 @@
   </div>
   <div style="display:flex; gap:10px; align-items:center;">
     <span class="header-user" id="headerUser"></span>
-    <button class="btn" id="printBtn">🖨 Print / PDF</button>
-    <button class="btn" id="saveBtn">💾 Save Report</button>
+    <button class="btn" id="saveBtn">💾 Save</button>
     <button class="btn btn-ghost" id="signOutBtn" style="display:none;">Sign out</button>
   </div>
 </div>
@@ -185,7 +184,7 @@
   <div style="display:flex; gap:8px;">
     <button class="btn btn-ghost" id="backToListBtn" title="Back to in-progress list">← All Reports</button>
     <button class="btn btn-ghost" id="refreshBtn" title="Pull the latest from Supabase (use before editing if a colleague may have changed things)">↻ Refresh</button>
-    <button class="btn" id="completeBtn">✓ Mark Complete</button>
+    <button class="btn btn-primary" id="completeBtn">✓ Complete &amp; Generate Word Document Report</button>
   </div>
 </div>
 
@@ -194,7 +193,7 @@
   <div class="print-cover">
     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:20px; margin-bottom:8px;">
       <div>
-        <div style="font-size: 9pt; color: #44546A; text-transform: uppercase; letter-spacing: .06em;">SETTY &amp; ASSOCIATES INTERNATIONAL, LTD.</div>
+        <div style="font-size: 9pt; color: #44546A; text-transform: uppercase; letter-spacing: .06em;">Setty and Associates, Ltd</div>
         <div style="font-size: 9pt; color: #44546A;">Consulting Engineers · New York · Washington DC</div>
       </div>
       <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" style="height:32px; object-fit:contain;" onerror="this.style.display='none'" />
@@ -515,7 +514,13 @@ document.getElementById("backToListBtn").onclick = () => {
 };
 document.getElementById("showCompletedToggle").onchange = loadAndRenderReportsList;
 document.getElementById("refreshBtn").onclick = () => { if (reportId) loadExistingReportById(reportId, /*silent=*/ false); };
-document.getElementById("completeBtn").onclick = toggleComplete;
+document.getElementById("completeBtn").onclick = () => {
+  // When status is "complete," this button is the Reopen action.
+  // When in progress, it's "Complete & Generate Word Document Report":
+  // marks complete, persists, then generates Word + uploads to SharePoint.
+  if (reportStatus === "complete") reopenReport();
+  else completeAndGenerate();
+};
 
 function resetReportState() {
   items = []; plans = []; reportId = null; reportVersion = 0; reportStatus = "in_progress"; reportUpdatedAt = null;
@@ -640,18 +645,20 @@ function renderStatus() {
   const btn  = document.getElementById("completeBtn");
   if (reportStatus === "complete") {
     pill.className = "pill pill-green"; pill.textContent = "Complete";
-    btn.textContent = "↺ Reopen";
+    btn.innerHTML = "↺ Reopen";
+    btn.className = "btn";
   } else {
     pill.className = "pill pill-yellow"; pill.textContent = "In Progress";
-    btn.textContent = "✓ Mark Complete";
+    btn.innerHTML = "✓ Complete &amp; Generate Word Document Report";
+    btn.className = "btn btn-primary";
   }
   last.textContent = reportUpdatedAt ? "Last saved " + new Date(reportUpdatedAt).toLocaleString() : "Unsaved";
 }
 
-async function toggleComplete() {
-  reportStatus = (reportStatus === "complete") ? "in_progress" : "complete";
+async function reopenReport() {
+  reportStatus = "in_progress";
   renderStatus();
-  await saveReport(); // persist the status change with the same flow
+  await saveReport(); // data-only save (no Word regen on reopen)
 }
 
 // ─── ADD ITEM ────────────────────────────────────────────────────────────────
@@ -1184,21 +1191,17 @@ function renderItemRow(item, indexWithinDiscipline) {
 function cssEscape(s) { return s.replace(/[^a-zA-Z0-9_-]/g, "_"); }
 function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
-// ─── SAVE ────────────────────────────────────────────────────────────────────
-// Save flow does THREE things in sequence, each independently reportable:
-//   1. Persist the report record to pms_site_reports (data backup).
-//   2. Generate a Word document with Setty branding + items + photos.
-//   3. Upload the .docx to <projectFolder>/04 Site Field Reports/<YYYY-MM-DD>/
-//
-// If steps 2/3 fail (offline, missing project folder, docx CDN down), step 1
-// still succeeds — the data is safe and the user can re-run save to retry the
-// Word export.
-document.getElementById("saveBtn").onclick = saveReport;
+// ─── SAVE (data only) ────────────────────────────────────────────────────────
+// Plain "Save" — persists the report record to Supabase. No Word, no SharePoint.
+// This is what multi-user collaboration uses: anyone editing can save mid-walk
+// without producing a noisy .docx every time. The Word/SP fan-out only happens
+// when someone marks the report complete via completeAndGenerate().
+document.getElementById("saveBtn").onclick = () => saveReport();
 
 async function saveReport() {
-  if (!selectedProject) { setGlobalStatus("error", "Select a project first."); return; }
+  if (!selectedProject) { setGlobalStatus("error", "Select a project first."); return false; }
   const visitDate = document.getElementById("visitDate").value;
-  if (!visitDate) { setGlobalStatus("error", "Set a visit date first."); return; }
+  if (!visitDate) { setGlobalStatus("error", "Set a visit date first."); return false; }
 
   const nowIso = new Date().toISOString();
   const report = {
@@ -1213,7 +1216,6 @@ async function saveReport() {
     updatedAt:    nowIso,
   };
 
-  // ── Step 1: Supabase ──
   setGlobalStatus("info", "⏳ Saving report data…");
   try {
     if (!reportId) {
@@ -1239,33 +1241,62 @@ async function saveReport() {
       reportUpdatedAt = nowIso;
     }
     renderStatus();
+    setGlobalStatus("success", "✓ Saved at " + new Date().toLocaleTimeString());
+    return true;
   } catch (e) {
     setGlobalStatus("error", "Save failed: " + e.message);
+    return false;
+  }
+}
+
+// ─── COMPLETE & GENERATE (finalization flow) ─────────────────────────────────
+// The terminal action: mark complete, persist, generate the Word doc, upload
+// to <projectFolder>/04 Site Field Reports/<YYYY-MM-DD>/. Each step is
+// independently reportable so a SharePoint failure doesn't lose the data.
+async function completeAndGenerate() {
+  if (!selectedProject) { setGlobalStatus("error", "Select a project first."); return; }
+  const visitDate = document.getElementById("visitDate").value;
+  if (!visitDate) { setGlobalStatus("error", "Set a visit date first."); return; }
+  if (!window.confirm("Mark this report complete and generate the Word document? Subsequent edits require Reopening it first.")) return;
+
+  // Set status before saving so it's persisted in the same Supabase write.
+  reportStatus = "complete";
+  const saved = await saveReport();
+  if (!saved) {
+    // Roll back local status if the save failed so the UI doesn't lie.
+    reportStatus = "in_progress";
+    renderStatus();
     return;
   }
 
-  // ── Step 2: Word doc ──
+  const report = {
+    visitDate,
+    weather:      document.getElementById("weather").value.trim(),
+    generalNotes: document.getElementById("generalNotes").value.trim(),
+    status:       reportStatus,
+    items, plans,
+  };
+
   let blob, filename;
   try {
     setGlobalStatus("info", "⏳ Generating Word document…");
     ({ blob, filename } = await generateWordDoc(report));
-    saveAs(blob, filename);  // auto-download a copy
+    saveAs(blob, filename);
   } catch (e) {
-    setGlobalStatus("error", "Data saved, but Word generation failed: " + e.message);
+    setGlobalStatus("error", "Marked complete + saved, but Word generation failed: " + e.message);
     return;
   }
 
-  // ── Step 3: SharePoint upload ──
   if (!selectedProject.projectFolderUrl) {
-    setGlobalStatus("success", "✓ Saved · Word doc downloaded. (No SharePoint folder set on this project — link one in PMS to enable auto-upload.)");
+    setGlobalStatus("success", "✓ Complete · Word doc downloaded. (No SharePoint folder set on this project — link one in PMS to enable auto-upload.)");
     return;
   }
   try {
     setGlobalStatus("info", "⏳ Uploading to SharePoint…");
     const uploadedPath = await uploadWordToSharePoint(blob, filename, visitDate);
-    setGlobalStatus("success", "✓ Saved · Uploaded to " + uploadedPath);
+    setGlobalStatus("success", "✓ Complete · Uploaded to " + uploadedPath);
   } catch (e) {
-    setGlobalStatus("error", "Data + Word saved, but SharePoint upload failed: " + e.message);
+    setGlobalStatus("error", "Complete + Word saved, but SharePoint upload failed: " + e.message);
   }
 }
 
@@ -1438,7 +1469,7 @@ async function generateWordDoc(report) {
         }),
       },
       children: [
-        new Paragraph({ children: [new TextRun({ text: "SETTY & ASSOCIATES INTERNATIONAL, LTD.", font: "Calibri", size: 16, color: GRAY })] }),
+        new Paragraph({ children: [new TextRun({ text: "Setty and Associates, Ltd", font: "Calibri", size: 16, color: GRAY })] }),
         new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "Consulting Engineers · New York · Washington DC", font: "Calibri", size: 16, color: GRAY })] }),
         new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "SITE REPORT", font: "Calibri", size: 28, bold: true, color: RED })] }),
         infoTable,
@@ -1537,7 +1568,6 @@ async function uploadWordToSharePoint(blob, filename, visitDate) {
   return targetPath;
 }
 
-document.getElementById("printBtn").onclick = () => window.print();
 
 // ─── STATUS HELPERS ──────────────────────────────────────────────────────────
 function setGlobalStatus(kind, msg) {
