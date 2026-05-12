@@ -2391,9 +2391,42 @@ async function writeProjectShortcut(driveId, folderName, shortcutFileName, targe
   return res.json();
 }
 
-// Install the two project shortcuts (OneNote notebook + PMS deep link) into
-// the project's SharePoint folder root. Skips OneNote if a notebook hasn't
-// been linked yet. Returns a list of installed shortcut names for status UI.
+// Per-type emoji prefix for external-link shortcut filenames. Helps users
+// scan the folder root by spotting the icon for "BIM 360" vs "Procore" etc.
+const LINK_TYPE_ICONS = {
+  "BIM 360":       "🏗",
+  "Matterport":    "🏠",
+  "Client FTP":    "📁",
+  "Procore":       "🔨",
+  "Client Portal": "🌐",
+  "Network Folder": "🗂",  // not installed as .url (UNC paths don't open in browsers)
+  "Other":         "🔗",
+};
+
+// Strip path-illegal characters and collapse whitespace so a user-typed
+// label maps cleanly to a SharePoint filename.
+function sanitizeShortcutName(s) {
+  return (s || "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 70);
+}
+
+// Stable fingerprint of all installable shortcuts for this project. Used by
+// the SharePointFolderField to detect whether the installed set is out of
+// date (new external link, removed link, notebook URL changed, etc.) and
+// resurface the button when needed.
+function projectShortcutFingerprint(project) {
+  const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
+  const ext = (project.externalLinks || [])
+    .filter(l => l && l.url)
+    .map(l => (l.id || "") + ":" + (l.label || "") + ":" + l.url)
+    .sort()
+    .join("|");
+  return noteUrl + "::" + ext;
+}
+
+// Install all project shortcuts (OneNote notebook + PMS deep link + every
+// external link) into the project's SharePoint folder root. Network Folder
+// links are skipped because UNC paths can't live inside a .url file. Returns
+// a list of installed shortcut names for status UI.
 async function installProjectShortcuts(project) {
   if (!project.projectFolderUrl) throw new Error("Project folder isn't set up yet — create the SharePoint folder first.");
   const { driveId } = await resolveSpIds();
@@ -2411,6 +2444,27 @@ async function installProjectShortcuts(project) {
   const pmsUrl = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
   await writeProjectShortcut(driveId, folderName, "🔗 PMS Project.url", pmsUrl);
   installed.push("PMS Project");
+
+  // External project links (BIM 360, Procore, Matterport, Network Folder,
+  // etc.). Filename is "<icon> <label-or-type>.url" so the folder root reads
+  // like a launchpad. Network Folder links use the UNC path as the URL —
+  // this opens File Explorer to the share when clicked from a OneDrive-
+  // synced copy of the project folder. (In the SharePoint web UI clicks
+  // through .url files with UNC targets are blocked by browser security;
+  // that's the synced-folder caveat surfaced in the success message.)
+  for (const link of (project.externalLinks || [])) {
+    if (!link || !link.url) continue;
+    const icon = LINK_TYPE_ICONS[link.type] || LINK_TYPE_ICONS["Other"];
+    const baseName = sanitizeShortcutName(link.label || link.type || "Link");
+    const fileName = `${icon} ${baseName}.url`;
+    try {
+      await writeProjectShortcut(driveId, folderName, fileName, link.url);
+      installed.push(baseName);
+    } catch (e) {
+      // One bad link shouldn't tank the rest — log and continue.
+      console.warn("[shortcuts] " + baseName + " failed: " + e.message);
+    }
+  }
 
   return installed;
 }
@@ -18531,18 +18585,17 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
 
   const url = project.projectFolderUrl || "";
   const hasFolder = !!url;
-  const currentNoteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
-  const installedNoteUrl = project.shortcutsNoteUrl || "";
-  // The button is hidden when shortcuts are "current" — installed once AND
-  // the OneNote URL we installed matches what the project currently has.
-  // If the user links a notebook AFTER the initial install, the URLs no
-  // longer match and the button reappears (relabeled "Refresh") so they
-  // can pick up the new shortcut without it nagging in the meantime.
-  const shortcutsCurrent = !!project.shortcutsInstalledAt && installedNoteUrl === currentNoteUrl;
+  const currentFingerprint = projectShortcutFingerprint(project);
+  const installedFingerprint = project.shortcutsFingerprint || "";
+  // Fingerprint covers OneNote URL AND every external link's id/label/url.
+  // Adding, editing, or removing any link makes the fingerprint drift from
+  // the saved value, which resurfaces the button as "Refresh Shortcuts".
+  const shortcutsCurrent = !!project.shortcutsInstalledAt && installedFingerprint === currentFingerprint;
   const showShortcutsButton = hasFolder && !shortcutsCurrent;
   const shortcutBtnLabel = project.shortcutsInstalledAt
     ? "📌 Refresh Shortcuts"
-    : "📌 Install Shortcuts (OneNote · PMS)";
+    : "📌 Install Shortcuts";
+  const currentNoteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
 
   async function installShortcuts() {
     setScStatus("installing");
@@ -18550,15 +18603,16 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
     try {
       const installed = await installProjectShortcuts(project);
       setScStatus("done");
-      setScMsg("✓ Installed: " + installed.join(", ")
+      setScMsg("✓ Installed " + installed.length + " shortcut" + (installed.length === 1 ? "" : "s")
         + (!currentNoteUrl ? " (OneNote not linked yet — re-run after linking)" : ""));
       // Eager-save so the button hides immediately — going through the
       // debounced auto-save would leave it visible for ~2 seconds and feel
-      // unresponsive.
+      // unresponsive. Persist the current fingerprint so future link adds
+      // / edits flip the button back on automatically.
       const patch = {
         ...project,
         shortcutsInstalledAt: new Date().toISOString(),
-        shortcutsNoteUrl: currentNoteUrl,
+        shortcutsFingerprint: currentFingerprint,
       };
       if (onEagerSave) await onEagerSave(patch);
       else onUpdate("shortcutsInstalledAt", patch.shortcutsInstalledAt);
