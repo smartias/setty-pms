@@ -940,18 +940,17 @@ function renderPlacementCanvas() {
     const group = document.createElement("div");
     group.style.cssText = `position:absolute; left:${(it.pin.x * 100).toFixed(2)}%; top:${(it.pin.y * 100).toFixed(2)}%; transform:translate(-50%, -50%); width:0; height:0;`;
 
-    // Direction arrow (only drawn if direction is set). SVG triangle pointing
-    // outward; the group is rotated so dir=0 means right (east).
-    if (dir != null) {
-      const arrowWrap = document.createElement("div");
-      arrowWrap.style.cssText = `position:absolute; left:0; top:0; transform:rotate(${dir}rad); transform-origin:0 0; pointer-events:none;`;
-      // Triangle from the pin edge outward to a tip at ARROW_PX.
-      arrowWrap.innerHTML = `
-        <svg width="${ARROW_PX + 14}" height="20" style="position:absolute; left:${PIN_PX/2 - 2}px; top:-10px; overflow:visible;" viewBox="0 0 ${ARROW_PX + 14} 20">
-          <polygon points="0,7 ${ARROW_PX - 4},7 ${ARROW_PX - 4},2 ${ARROW_PX + 10},10 ${ARROW_PX - 4},18 ${ARROW_PX - 4},13 0,13" fill="${isActive ? "#3B82F6" : "#1F3864"}" stroke="#fff" stroke-width="1.5" />
-        </svg>`;
-      group.appendChild(arrowWrap);
-    }
+    // Direction arrow. Always created so we can mutate it live during drag
+    // (kept hidden until a direction is actually set). Group rotated so dir=0
+    // means east. Stored on the group element so the handle's drag handler
+    // can update it without rebuilding the DOM.
+    const arrowWrap = document.createElement("div");
+    arrowWrap.style.cssText = `position:absolute; left:0; top:0; transform:rotate(${dir == null ? 0 : dir}rad); transform-origin:0 0; pointer-events:none; opacity:${dir == null ? 0 : 1}; transition:opacity .12s;`;
+    arrowWrap.innerHTML = `
+      <svg width="${ARROW_PX + 14}" height="20" style="position:absolute; left:${PIN_PX/2 - 2}px; top:-10px; overflow:visible;" viewBox="0 0 ${ARROW_PX + 14} 20">
+        <polygon points="0,7 ${ARROW_PX - 4},7 ${ARROW_PX - 4},2 ${ARROW_PX + 10},10 ${ARROW_PX - 4},18 ${ARROW_PX - 4},13 0,13" fill="${isActive ? "#3B82F6" : "#1F3864"}" stroke="#fff" stroke-width="1.5" />
+      </svg>`;
+    group.appendChild(arrowWrap);
 
     // The pin itself (numbered circle).
     const pin = document.createElement("div");
@@ -1008,19 +1007,31 @@ function renderPlacementCanvas() {
       ev.preventDefault(); ev.stopPropagation();
       handle.setPointerCapture(ev.pointerId);
       handle.style.cursor = "grabbing";
+      // Mutate the arrow + handle position directly during the drag. Calling
+      // renderPlacementCanvas() mid-drag would tear down this handle node and
+      // pointer capture would orphan on the dead element — the bug that made
+      // the rotation only "stick" for a few degrees.
       const onMove = (mv) => {
-        // Compute new direction from pin center to pointer, in radians.
         const rect = img.getBoundingClientRect();
         const px = it.pin.x * rect.width;
         const py = it.pin.y * rect.height;
         const angle = Math.atan2(mv.clientY - rect.top - py, mv.clientX - rect.left - px);
         it.pin.direction = angle;
-        renderPlacementCanvas();
+        // Live DOM updates — no re-render. Position handle + rotate arrow.
+        arrowWrap.style.transform = `rotate(${angle}rad)`;
+        arrowWrap.style.opacity = "1";
+        handle.style.left = (Math.cos(angle) * HANDLE_OFFSET) + "px";
+        handle.style.top  = (Math.sin(angle) * HANDLE_OFFSET) + "px";
+        handle.style.background = "#FFFFFF";
+        handle.style.color = "#1F3864";
       };
       const onUp = () => {
         handle.removeEventListener("pointermove", onMove);
         handle.removeEventListener("pointerup", onUp);
         handle.removeEventListener("pointercancel", onUp);
+        handle.style.cursor = "grab";
+        // Final clean render so colors / inactive arrows refresh correctly.
+        renderPlacementCanvas();
       };
       handle.addEventListener("pointermove", onMove);
       handle.addEventListener("pointerup", onUp);
