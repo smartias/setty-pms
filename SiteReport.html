@@ -2066,12 +2066,16 @@ async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
 }
 
 // ─── SHAREPOINT UPLOAD ───────────────────────────────────────────────────────
-// Path: <projectFolder>/04 Site Field Reports/<YYYY-MM-DD>/<filename>
-// Each visit date gets its own folder so multiple visits to the same project
-// don't collide; same-day re-saves overwrite (conflictBehavior=replace).
+// Path: <projectFolder>/<Reports folder>/<YYYY-MM-DD>/<filename>
+// The reports folder is matched flexibly so existing folders named
+// "04 Site Field Reports", "04 - Site Field Reports", "04_Site Field Report",
+// etc. all get REUSED instead of triggering duplicate-folder creation. Graph's
+// `conflictBehavior: fail` only matches exact name + case, so without this
+// lookup, minor naming variants on the user's SharePoint produced a second
+// folder alongside the original.
 async function uploadWordToSharePoint(blob, filename, visitDate) {
   const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
-  const reportsRoot = await ensureFolder(folderSegment, "04 Site Field Reports");
+  const reportsRoot = await findOrCreateReportsFolder(folderSegment);
   const visitFolder = await ensureFolder(reportsRoot, visitDate);
   const targetPath  = visitFolder + "/" + filename;
   const arrayBuffer = await blob.arrayBuffer();
@@ -2082,6 +2086,49 @@ async function uploadWordToSharePoint(blob, filename, visitDate) {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   );
   return targetPath;
+}
+
+// Canonical PMS folder name (includes the 🏗 emoji that PMS uses when it
+// creates the project folder structure at setup time). The emoji matters —
+// without it, a duplicate ASCII-only folder gets created alongside the
+// emoji-named original.
+const REPORTS_FOLDER_NAME = "04 🏗 Site Field Reports";
+
+// Look for the reports sub-folder under the project. Tries an exact-name
+// match first (the canonical PMS folder), then a fuzzy pattern match for
+// projects where someone renamed it. If multiple matches, prefer one
+// containing non-ASCII (emoji = likely PMS-created) over plain ASCII.
+async function findOrCreateReportsFolder(projectFolder) {
+  const PATTERN = /\bsite\s*[-._\s]?\s*field\s*[-._\s]?\s*reports?\b/i;
+  try {
+    const children = await graphFetch("GET",
+      `/drives/${DRIVE_ID}/root:/${encodePath(projectFolder)}:/children?$select=id,name,folder&$top=200`);
+    if (children?.value) {
+      // Exact canonical match wins outright.
+      const canonical = children.value.find(item => item.folder && item.name === REPORTS_FOLDER_NAME);
+      if (canonical) return projectFolder + "/" + canonical.name;
+      // Otherwise fuzzy match — prefer folders containing emoji/non-ASCII,
+      // since those are the PMS-created originals.
+      const matches = children.value.filter(item => item.folder && PATTERN.test(item.name || ""));
+      if (matches.length > 0) {
+        matches.sort((a, b) => {
+          const aHasEmoji = /[^\x00-\x7F]/.test(a.name) ? 0 : 1;
+          const bHasEmoji = /[^\x00-\x7F]/.test(b.name) ? 0 : 1;
+          if (aHasEmoji !== bHasEmoji) return aHasEmoji - bHasEmoji;
+          const aHas04 = /^0?4\b/.test(a.name) ? 0 : 1;
+          const bHas04 = /^0?4\b/.test(b.name) ? 0 : 1;
+          return aHas04 - bHas04 || a.name.localeCompare(b.name);
+        });
+        return projectFolder + "/" + matches[0].name;
+      }
+    }
+  } catch (e) {
+    // Listing failed (permissions / network) — fall through to creating
+    // the canonical folder. Better a working upload than a hard error.
+    console.warn("[findOrCreateReportsFolder] listing failed:", e.message);
+  }
+  // Truly missing — create with the canonical PMS name (including emoji).
+  return ensureFolder(projectFolder, REPORTS_FOLDER_NAME);
 }
 
 
