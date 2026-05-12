@@ -10879,7 +10879,43 @@ const SUB_DISCIPLINES = ["Civil", "Structural", "Geotechnical", "Landscape", "Fa
   "Acoustics", "AV/IT", "Security", "Vertical Transport/Elevators", "Lighting Design",
   "Commissioning", "LEED/Sustainability", "Kitchen/Food Service", "Medical Equipment", "Other"];
 
-function SubsView({ project, onChange }) {
+// Contact-name typeahead for the Subconsultant row. Filters to contacts at
+// the chosen firm (passed via `contactsAtFirm`) — picking auto-fills email
+// and phone. Plain free-text edits still work for one-off names not in the
+// global directory.
+function SubContactTypeahead({ value, contactsAtFirm, onPick, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const q = (value || "").toLowerCase();
+  const matches = (contactsAtFirm || [])
+    .filter(c => !q || (c.name || "").toLowerCase().includes(q) || (c.email || "").toLowerCase().includes(q))
+    .slice(0, 6);
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value || ""}
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={contactsAtFirm && contactsAtFirm.length ? "Contact name… (firm's contacts)" : "Contact name…"}
+        style={{ width: "100%" }} />
+      {open && matches.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 220, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
+          {matches.map(ct => (
+            <div key={ct.id} onMouseDown={() => { onPick(ct); setOpen(false); }}
+              style={{ padding: "7px 10px", cursor: "pointer", borderBottom: "1px solid " + P.border, fontSize: 12 }}
+              onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+              onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+              <div style={{ fontWeight: 600 }}>{ct.name || "(no name)"}</div>
+              {(ct.title || ct.email) && <div style={{ color: P.textDim, fontSize: 11 }}>{[ct.title, ct.email].filter(Boolean).join(" · ")}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubsView({ project, onChange, clients, onAddClient }) {
   const subs = project.subconsultants || [];
   const phases = (project.phases || []).filter(p => p.billable && p.fee > 0);
 
@@ -10894,6 +10930,15 @@ function SubsView({ project, onChange }) {
 
   function updateSub(id, updates) {
     onChange({ ...project, subconsultants: subs.map(s => s.id === id ? { ...s, ...updates } : s) });
+  }
+
+  // Contacts at the sub firm (case-insensitive match). Used to drive the
+  // Contact-name typeahead so picking a known contact auto-fills email/phone.
+  function contactsAtFirm(firmName) {
+    const target = (firmName || "").trim().toLowerCase();
+    if (!target) return [];
+    const co = (clients || []).find(c => (c.name || "").trim().toLowerCase() === target);
+    return (co && co.contacts) || [];
   }
 
   function updateSubPhase(subId, phaseCode, val) {
@@ -10922,8 +10967,9 @@ function SubsView({ project, onChange }) {
       <SectionTitle action={<Btn small onClick={addSub} variant="ghost">+ Add Sub</Btn>}>
         Subconsultants
       </SectionTitle>
-      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16, lineHeight: 1.5 }}>
         Track sub fees per phase. Sub fees are additive to Setty's fee and shown in the total project cost.
+        <br />Firm + contact lookups pull from the <strong style={{ color: P.textMuted }}>Global Directory</strong>; each sub added here also appears automatically in this project's <strong style={{ color: P.textMuted }}>Directory</strong> tab.
       </div>
 
       {/* KPI bar */}
@@ -10947,7 +10993,14 @@ function SubsView({ project, onChange }) {
                 {/* Header row */}
                 <div style={{ display: "grid", gridTemplateColumns: "2fr 1.5fr 1.5fr 1fr 1fr auto", gap: 12, alignItems: "end", marginBottom: 16 }}>
                   <Field label="Firm Name" style={{ marginBottom: 0 }}>
-                    <input value={sub.firm} onChange={e => updateSub(sub.id, { firm: e.target.value })} placeholder="Firm name…" style={{ width: "100%" }} />
+                    <CompanyTypeahead
+                      value={sub.firm || ""}
+                      onChange={val => updateSub(sub.id, { firm: val })}
+                      clients={clients}
+                      filter="any"
+                      placeholder="Firm name… (looks up Global Directory)"
+                      onAddClient={onAddClient}
+                    />
                   </Field>
                   <Field label="Discipline" style={{ marginBottom: 0 }}>
                     <select value={sub.discipline} onChange={e => updateSub(sub.id, { discipline: e.target.value })} style={{ width: "100%" }}>
@@ -10955,7 +11008,12 @@ function SubsView({ project, onChange }) {
                     </select>
                   </Field>
                   <Field label="Contact" style={{ marginBottom: 0 }}>
-                    <input value={sub.contact || ""} onChange={e => updateSub(sub.id, { contact: e.target.value })} placeholder="Contact name…" style={{ width: "100%" }} />
+                    <SubContactTypeahead
+                      value={sub.contact || ""}
+                      contactsAtFirm={contactsAtFirm(sub.firm)}
+                      onPick={ct => updateSub(sub.id, { contact: ct.name || "", email: ct.email || sub.email || "", phone: ct.phone || sub.phone || "" })}
+                      onChange={val => updateSub(sub.id, { contact: val })}
+                    />
                   </Field>
                   <Field label="Email" style={{ marginBottom: 0 }}>
                     <input value={sub.email || ""} onChange={e => updateSub(sub.id, { email: e.target.value })} placeholder="email@firm.com" style={{ width: "100%" }} />
@@ -12442,6 +12500,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
   const [contractExpSyncState, setContractExpSyncState] = useState("idle");
   const [contractExpSyncMsg, setContractExpSyncMsg] = useState("");
+  // Inline edit toggle for the contracting-chain widget in the header.
+  const [editChain, setEditChain] = useState(false);
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
@@ -12549,17 +12609,22 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           </div>
           {(() => {
             // Contracting chain: shows who Setty answers to and who holds the
-            // prime contract. Collapses to one node when Client = Prime
-            // (1-tier sub) and expands to a full chain otherwise.
+            // prime contract, plus any subconsultants Setty hires below us.
+            // Collapses to one node when Client = Prime (1-tier sub) and
+            // expands to a full chain otherwise. Clickable to inline-edit.
             const prime  = (project.prime || "").trim();
             const client = (project.clientName || "").trim();
-            if (!prime && !client) return null;
+            const subs   = (project.subconsultants || []).map(s => (s.firm || "").trim()).filter(Boolean);
             const isSettyPrime = prime.toLowerCase() === "setty";
-            const same = prime && client && prime.toLowerCase() === client.toLowerCase();
-            const chip = (label, value, tone) => (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 6,
-                background: tone.bg, color: tone.text, border: `1px solid ${tone.border}`, fontSize: 11, fontWeight: 600 }}>
-                <span style={{ opacity: 0.7, fontWeight: 500, textTransform: "uppercase", letterSpacing: ".04em", fontSize: 9.5 }}>{label}</span>
+            const sameClientPrime = prime && client && prime.toLowerCase() === client.toLowerCase();
+            const isSecondTier = !isSettyPrime && prime && client && !sameClientPrime;
+            const chip = (label, value, tone, onClick) => (
+              <span onClick={onClick}
+                title={onClick ? "Click to edit" : undefined}
+                style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 6,
+                  background: tone.bg, color: tone.text, border: `1px solid ${tone.border}`, fontSize: 11, fontWeight: 600,
+                  cursor: onClick ? "pointer" : "default" }}>
+                {label && <span style={{ opacity: 0.7, fontWeight: 500, textTransform: "uppercase", letterSpacing: ".04em", fontSize: 9.5 }}>{label}</span>}
                 {value}
               </span>
             );
@@ -12567,28 +12632,87 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             const primeTone  = { bg: P.purpleDim, text: P.purple,      border: P.purple };
             const clientTone = { bg: P.accentDim, text: P.accentLight, border: P.accent };
             const settyTone  = { bg: P.greenDim,  text: P.green,       border: P.green };
+            const subTone    = { bg: P.bg,        text: P.textMuted,   border: P.border };
+            const openEditor = () => setEditChain(true);
+            // No data yet? Show a "Set up contracting chain" prompt instead of nothing.
+            if (!prime && !client && subs.length === 0 && !editChain) {
+              return (
+                <div style={{ marginTop: 8 }}>
+                  <button onClick={openEditor}
+                    style={{ background: "transparent", border: `1px dashed ${P.border}`, borderRadius: 6, color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
+                    + Set up contracting chain
+                  </button>
+                </div>
+              );
+            }
+            const settyLabel = isSecondTier ? "2nd-tier Sub" : "Sub";
             return (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                {isSettyPrime ? (
-                  <>
-                    {chip("Owner", client || "—", clientTone)}
-                    {arrow}
-                    {chip("Prime / Setty", "Setty", settyTone)}
-                  </>
-                ) : same ? (
-                  <>
-                    {chip("Prime · Client", prime, primeTone)}
-                    {arrow}
-                    {chip("Setty", "Sub", settyTone)}
-                  </>
-                ) : (
-                  <>
-                    {prime && chip("Prime", prime, primeTone)}
-                    {prime && client && arrow}
-                    {client && chip("Client", client, clientTone)}
-                    {(prime || client) && arrow}
-                    {chip("Setty", "Sub", settyTone)}
-                  </>
+              <div style={{ marginTop: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {isSettyPrime ? (
+                    <>
+                      {chip("Client", client || "—", clientTone, openEditor)}
+                      {arrow}
+                      {chip("", "Setty", settyTone)}
+                    </>
+                  ) : sameClientPrime ? (
+                    <>
+                      {chip("Prime · Client", prime, primeTone, openEditor)}
+                      {arrow}
+                      {chip(settyLabel, "Setty", settyTone)}
+                    </>
+                  ) : (
+                    <>
+                      {prime && chip("Prime", prime, primeTone, openEditor)}
+                      {prime && (client || true) && arrow}
+                      {chip("Client", client || "—", clientTone, openEditor)}
+                      {arrow}
+                      {chip(settyLabel, "Setty", settyTone)}
+                    </>
+                  )}
+                  {subs.length > 0 && (
+                    <>
+                      {arrow}
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                        {subs.slice(0, 4).map(name => (
+                          <span key={name} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 6,
+                            background: subTone.bg, color: subTone.text, border: `1px solid ${subTone.border}`, fontSize: 11 }}>
+                            {name}
+                          </span>
+                        ))}
+                        {subs.length > 4 && (
+                          <span style={{ fontSize: 11, color: P.textDim }} title={subs.join(", ")}>+{subs.length - 4} more</span>
+                        )}
+                      </div>
+                    </>
+                  )}
+                  <button onClick={() => setEditChain(v => !v)}
+                    title={editChain ? "Close editor" : "Edit chain"}
+                    style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12, padding: "2px 6px", marginLeft: 2 }}>
+                    {editChain ? "×" : "✎"}
+                  </button>
+                </div>
+                {editChain && (
+                  <div style={{ marginTop: 8, padding: 12, background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, maxWidth: 620 }}>
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Prime</div>
+                      <CompanyTypeahead value={project.prime || ""} onChange={v => updateField("prime", v)} clients={clients} filter="prime" placeholder="Top-of-chain firm" onAddClient={onAddClient} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Client {isSettyPrime ? "(typically the Owner)" : "(who hires Setty)"}</div>
+                      <CompanyTypeahead value={project.clientName || ""} onChange={v => updateField("clientName", v)} clients={clients} filter="client" placeholder={isSettyPrime ? "Project owner" : "Direct client"} onAddClient={onAddClient} />
+                      {!isSettyPrime && !(project.clientName || "").trim() && (project.prime || "").trim() && (
+                        <button type="button" onClick={() => updateField("clientName", (project.prime || "").trim())}
+                          style={{ marginTop: 5, background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "2px 9px" }}>
+                          ↑ Same as Prime
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ gridColumn: "1/-1", fontSize: 11, color: P.textDim, lineHeight: 1.4 }}>
+                      Subconsultants Setty hires appear automatically from the Team/Subs tab — manage them there.
+                      {isSecondTier && <span style={{ display: "block", marginTop: 4, color: P.yellow }}>2nd-tier detected — Client is a sub to the Prime.</span>}
+                    </div>
+                  </div>
                 )}
               </div>
             );
@@ -12831,7 +12955,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         )}
         {tab === "Fee Calculator" && <FeeCalculator project={project} onChange={onUpdate} />}
         {tab === "Schedule" && <ScheduleView project={project} onChange={onUpdate} onEagerSave={onEagerSave} />}
-        {tab === "Subconsultants" && <SubsView project={project} onChange={onUpdate} />}
+        {tab === "Subconsultants" && <SubsView project={project} onChange={onUpdate} clients={clients} onAddClient={onAddClient} />}
         {tab === "Projections" && <ProjectionsView project={project} />}
         {tab === "Financials" && <FinancialsView project={project} onChange={onUpdate} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Change Orders" && <ChangeOrdersView project={project} onChange={onUpdate} />}
