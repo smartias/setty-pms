@@ -194,7 +194,7 @@
   </div>
   <div style="display:flex; gap:8px;">
     <button class="btn btn-ghost" id="backToListBtn" title="Back to in-progress list">← All Reports</button>
-    <button class="btn btn-ghost" id="refreshBtn" title="Pull the latest from Supabase (use before editing if a colleague may have changed things)">↻ Refresh</button>
+    <button class="btn btn-ghost" id="refreshBtn" title="Reload this report from the server. Use this if a coworker edited it in another tab, or after a save-conflict error.">↻ Refresh</button>
     <button class="btn btn-primary" id="completeBtn">✓ Complete &amp; Generate Word Document Report</button>
   </div>
 </div>
@@ -1372,7 +1372,31 @@ function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, c => ({ "&": "&amp
 // when someone marks the report complete via completeAndGenerate().
 document.getElementById("saveBtn").onclick = () => saveReport();
 
+// Serialize saves so two auto-saves don't race. The race symptom was a
+// confusing "Report modified elsewhere" error fired by the user's OWN
+// previous in-flight save, not a real conflict — JS only bumps
+// reportVersion AFTER the PATCH returns, so two rapid saves both PATCH
+// with the same stale version. Serialization eliminates the race.
+let saveInFlight = false;
+let saveAgainAfter = false;
 async function saveReport(opts) {
+  if (saveInFlight) { saveAgainAfter = true; return false; }
+  saveInFlight = true;
+  try {
+    return await doSaveReport(opts);
+  } finally {
+    saveInFlight = false;
+    if (saveAgainAfter) {
+      saveAgainAfter = false;
+      // Defer so the current call's await chain unwinds before we re-enter.
+      // The coalesced follow-up picks up every change made during the prior
+      // save's in-flight window in one combined write.
+      setTimeout(() => saveReport(opts), 0);
+    }
+  }
+}
+
+async function doSaveReport(opts) {
   const silent = opts && opts.silent;
   if (!selectedProject) { if (!silent) setGlobalStatus("error", "Select a project first."); return false; }
   const visitDate = document.getElementById("visitDate").value;
@@ -1411,7 +1435,13 @@ async function saveReport(opts) {
       });
       if (!res.ok) throw new Error("PATCH HTTP " + res.status + " — " + (await res.text()));
       const result = await res.json();
-      if (!result || result.length === 0) throw new Error("Report modified elsewhere. Click ↻ Refresh to pull the latest, then re-save.");
+      if (!result || result.length === 0) {
+        // The server's version didn't match ours — somebody else (or this
+        // report opened in another browser tab) saved a newer version. The
+        // safe move is to load theirs and ask the user to redo their edits;
+        // silently overwriting would lose the other person's changes.
+        throw new Error('This report was updated in another tab or by a coworker. Click "↻ Refresh" at the top to load the latest version — any edits you made since the last "Last saved" timestamp will need to be re-entered.');
+      }
       reportVersion += 1;
       reportUpdatedAt = nowIso;
     }
