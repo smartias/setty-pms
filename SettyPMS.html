@@ -2415,12 +2415,13 @@ function sanitizeShortcutName(s) {
 // resurface the button when needed.
 function projectShortcutFingerprint(project) {
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
+  const teamsFolderUrl = project.teamsChannelFolderUrl || "";
   const ext = (project.externalLinks || [])
     .filter(l => l && l.url)
     .map(l => (l.id || "") + ":" + (l.label || "") + ":" + l.url)
     .sort()
     .join("|");
-  return noteUrl + "::" + ext;
+  return noteUrl + "::" + teamsFolderUrl + "::" + ext;
 }
 
 // Install all project shortcuts (OneNote notebook + PMS deep link + every
@@ -2444,6 +2445,17 @@ async function installProjectShortcuts(project) {
   const pmsUrl = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
   await writeProjectShortcut(driveId, folderName, "🔗 PMS Project.url", pmsUrl);
   installed.push("PMS Project");
+
+  // Teams channel's auto-created document library — the "Files" tab on the
+  // Teams channel, intended for working files / chat-attached docs. Distinct
+  // from the project's main SharePoint folder (which we're putting this
+  // shortcut INTO), so users have a one-click bridge from the formal project
+  // folder to the informal working-files area.
+  const teamsFolderUrl = project.teamsChannelFolderUrl || "";
+  if (teamsFolderUrl) {
+    await writeProjectShortcut(driveId, folderName, "💬 Teams Chat - Working Files.url", teamsFolderUrl);
+    installed.push("Teams Chat / Working Files");
+  }
 
   // External project links (BIM 360, Procore, Matterport, Network Folder,
   // etc.). Filename is "<icon> <label-or-type>.url" so the folder root reads
