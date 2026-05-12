@@ -7572,7 +7572,7 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
 // client, subs, GCs, owner reps, etc.). Distinct from project.projectContacts
 // (which is Setty-relationship-typed: pm, proposal, contract POCs); the
 // directory is the flat "who's on this team" reference.
-const DIRECTORY_TYPES = ["Prime", "Client", "Architect", "GC", "Sub (Setty's)", "Sub (Other)", "Owner Rep", "Other"];
+const DIRECTORY_TYPES = ["Prime", "Client", "SUB (to Setty)", "Sub (to other)", "Trade Contractor", "Vendor", "Owner Rep", "Construction Manager", "General Contractor", "Other"];
 function newDirectoryEntry(overrides = {}) {
   return {
     id: uid(),
@@ -7591,14 +7591,16 @@ function newDirectoryEntry(overrides = {}) {
 }
 function directoryTypeColor(type) {
   switch (type) {
-    case "Prime":         return { bg: P.accentDim, text: P.accentLight };
-    case "Client":        return { bg: P.purpleDim, text: P.purple };
-    case "Architect":     return { bg: P.greenDim,  text: P.green };
-    case "GC":            return { bg: P.yellowDim, text: P.yellow };
-    case "Sub (Setty's)": return { bg: P.redDim,    text: P.red };
-    case "Sub (Other)":   return { bg: "#1a3a3a",   text: "#5eead4" };
-    case "Owner Rep":     return { bg: "#2a1a3f",   text: "#a78bfa" };
-    default:              return { bg: P.border,    text: P.textMuted };
+    case "Prime":                 return { bg: P.accentDim, text: P.accentLight };
+    case "Client":                return { bg: P.purpleDim, text: P.purple };
+    case "SUB (to Setty)":        return { bg: P.redDim,    text: P.red };
+    case "Sub (to other)":        return { bg: "#1a3a3a",   text: "#5eead4" };
+    case "Trade Contractor":      return { bg: P.yellowDim, text: P.yellow };
+    case "Vendor":                return { bg: "#3a2a1a",   text: "#fcd34d" };
+    case "Owner Rep":             return { bg: "#2a1a3f",   text: "#a78bfa" };
+    case "Construction Manager":  return { bg: P.greenDim,  text: P.green };
+    case "General Contractor":    return { bg: "#1e3a5f",   text: "#7dd3fc" };
+    default:                      return { bg: P.border,    text: P.textMuted };
   }
 }
 
@@ -7657,7 +7659,7 @@ function buildMergedDirectory(project) {
       email: sub.email || "",
       phone: sub.phone || "",
       company: sub.firm || "",
-      type: "Sub (Setty's)",
+      type: "SUB (to Setty)",
       notes: "",
       _derived: true,
       _sources: ["Subconsultant"],
@@ -7767,7 +7769,7 @@ function ProjectDirectoryView({ project, onChange, clients }) {
     if ((project.prime || "").toLowerCase() === c) return "Prime";
     if ((project.clientName || "").toLowerCase() === c) return "Client";
     const subFirms = (project.subconsultants || []).map(s => (s.firm || "").toLowerCase());
-    if (subFirms.includes(c)) return "Sub (Setty's)";
+    if (subFirms.includes(c)) return "SUB (to Setty)";
     return "Other";
   }
 
@@ -17131,11 +17133,30 @@ function newContact(overrides) {
 
 const CONTACT_ROLES = ["Owner", "Owner's Representative", "Developer", "Architect", "Engineer", "Construction Manager", "GC", "Agency", "Inspector", "PM", "Legal", "Accounting", "Other"];
 
+// Global "what kind of firm is this" taxonomy. Multi-choice: a single firm
+// can be both, e.g., MEPFP Engineer + Specialty Consultant. Distinct from the
+// per-project DIRECTORY_TYPES (Prime/Client/Sub/etc.) which describes the
+// firm's relationship to one specific project.
+const GLOBAL_COMPANY_TYPES = [
+  "Architect", "Agency", "Developer", "Trade Contractor", "Vendor",
+  "Structural Engineer", "Cost Estimator", "Construction Manager",
+  "General Contractor", "Environmental", "MEPFP Engineer",
+  "Specialty Consultant", "Code/Permit Consultant", "Civil Engineer",
+];
+
+// Normalize legacy single-string `type` into the new `types[]` array.
+// Old values ("Client" / "Prime/GC" / "Both") don't map to the new
+// discipline taxonomy, so we drop them — users will retag as they edit.
+function getCompanyTypes(c) {
+  if (Array.isArray(c.types)) return c.types;
+  return [];
+}
+
 function newClient(overrides) {
   return {
     id: uid(),
     name: "",
-    type: "Client",
+    types: [],
     contacts: [],
     ...overrides,
   };
@@ -17165,18 +17186,19 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     onUpdateClients(clients.filter(c => c.id !== id));
   }
 
-  const filtered = clients.filter(c =>
-    !search ||
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    (c.contacts||[]).some(ct => ct.name.toLowerCase().includes(search.toLowerCase()) || ct.email.toLowerCase().includes(search.toLowerCase())) ||
-    (c.type || "").toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = clients.filter(c => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    if (c.name.toLowerCase().includes(q)) return true;
+    if ((c.contacts||[]).some(ct => ct.name.toLowerCase().includes(q) || ct.email.toLowerCase().includes(q))) return true;
+    if (getCompanyTypes(c).some(t => t.toLowerCase().includes(q))) return true;
+    return false;
+  });
 
-  const TYPE_COLORS = {
-    "Client":    { bg: P.accentDim, text: P.accentLight },
-    "Prime/GC":  { bg: P.purpleDim, text: P.purple },
-    "Both":      { bg: P.greenDim,  text: P.green },
-  };
+  // Single shared chip style — the discipline list is long enough that
+  // per-type colors would just become noise. Active = accent, idle = muted.
+  const TYPE_CHIP_ACTIVE = { bg: P.accentDim, text: P.accentLight, border: P.accent };
+  const TYPE_CHIP_IDLE   = { bg: "transparent", text: P.textDim, border: P.border };
 
   function addContact() {
     setForm({ ...form, contacts: [...(form.contacts||[]), newContact()] });
@@ -17205,21 +17227,24 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                 placeholder="e.g. Acme Construction" style={{ width: "100%" }} autoFocus />
             </Field>
             <Field label="Type">
-              <div style={{ display: "flex", gap: 8 }}>
-                {["Client", "Prime/GC", "Both"].map(t => {
-                  const on = form.type === t;
-                  const tc = TYPE_COLORS[t];
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {GLOBAL_COMPANY_TYPES.map(t => {
+                  const selected = getCompanyTypes(form);
+                  const on = selected.includes(t);
+                  const chip = on ? TYPE_CHIP_ACTIVE : TYPE_CHIP_IDLE;
                   return (
-                    <button key={t} onClick={() => setForm({ ...form, type: t })}
-                      style={{ padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
-                        background: on ? tc.bg : "transparent", color: on ? tc.text : P.textDim,
-                        border: "1px solid " + (on ? tc.text : P.border) }}>
+                    <button key={t} onClick={() => {
+                      const next = on ? selected.filter(x => x !== t) : [...selected, t];
+                      setForm({ ...form, types: next });
+                    }}
+                      style={{ padding: "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        background: chip.bg, color: chip.text, border: "1px solid " + chip.border }}>
                       {t}
                     </button>
                   );
                 })}
               </div>
-              <div style={{ fontSize: 11, color: P.textDim, marginTop: 5 }}>Controls which typeahead fields this company appears in on projects.</div>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>Pick all that apply — a firm can be both, e.g. MEPFP Engineer + Specialty Consultant.</div>
             </Field>
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add Company" : "Save Changes"}</Btn>
@@ -17334,13 +17359,19 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
           </thead>
           <tbody>
             {filtered.map(c => {
-              const tc = TYPE_COLORS[c.type] || TYPE_COLORS["Client"];
+              const types = getCompanyTypes(c);
               const contacts = c.contacts || [];
               const primary = contacts[0];
               return (
                 <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => startEdit(c)}>
                   <td style={{ fontWeight: 600 }}>{c.name}</td>
-                  <td><Badge color={tc} text={c.type || "Client"} /></td>
+                  <td>
+                    {types.length === 0
+                      ? <span style={{ color: P.textDim, fontSize: 12 }}>—</span>
+                      : <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                          {types.map(t => <Badge key={t} color={TYPE_CHIP_ACTIVE} text={t} />)}
+                        </div>}
+                  </td>
                   <td style={{ color: P.textMuted }}>{contacts.length || "—"}</td>
                   <td style={{ color: P.textMuted, fontSize: 12 }}>{primary ? primary.name + (primary.role ? " · " + primary.role : "") : "—"}</td>
                   <td style={{ fontSize: 12 }} onClick={e => e.stopPropagation()}>
@@ -17409,20 +17440,24 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
         </Field>
 
         <Field label="Type">
-          <div style={{ display: "flex", gap: 8 }}>
-            {["Client", "Prime/GC", "Both"].map(t => {
-              const on = form.type === t;
-              const colors = { "Client": { bg: P.accentDim, text: P.accentLight }, "Prime/GC": { bg: P.purpleDim, text: P.purple }, "Both": { bg: P.greenDim, text: P.green } };
-              const tc = colors[t];
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {GLOBAL_COMPANY_TYPES.map(t => {
+              const selected = Array.isArray(form.types) ? form.types : [];
+              const on = selected.includes(t);
               return (
-                <button key={t} onClick={() => setForm({ ...form, type: t })}
-                  style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
-                    background: on ? tc.bg : "transparent", color: on ? tc.text : P.textDim, border: "1px solid " + (on ? tc.text : P.border) }}>
+                <button key={t} onClick={() => {
+                  const next = on ? selected.filter(x => x !== t) : [...selected, t];
+                  setForm({ ...form, types: next });
+                }}
+                  style={{ padding: "4px 11px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                    background: on ? P.accentDim : "transparent", color: on ? P.accentLight : P.textDim,
+                    border: "1px solid " + (on ? P.accent : P.border) }}>
                   {t}
                 </button>
               );
             })}
           </div>
+          <div style={{ fontSize: 11, color: P.textDim, marginTop: 5 }}>Pick all that apply.</div>
         </Field>
 
         <div style={{ borderTop: "1px solid " + P.border, paddingTop: 16, marginTop: 4, marginBottom: 16 }}>
@@ -18418,8 +18453,10 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAdd
   const [showModal, setShowModal] = React.useState(false);
   const matches = React.useMemo(() => {
     const q = (value || "").toLowerCase();
+    // Discipline-based global types (Architect, MEPFP Engineer, etc.) don't
+    // map cleanly to Client vs. Prime — any firm could play either role on a
+    // given project — so the typeahead is no longer type-gated.
     return (clients || [])
-      .filter(c => filter === "client" ? (c.type === "Client" || c.type === "Both") : (c.type === "Prime/GC" || c.type === "Both"))
       .filter(c => !q || c.name.toLowerCase().includes(q) || (c.contacts||[]).some(ct => ct.name.toLowerCase().includes(q)))
       .slice(0, 8);
   }, [clients, value, filter]);
