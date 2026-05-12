@@ -4023,6 +4023,17 @@ function DatePicker({ value, onChange, disabled, style }) {
 }
 
 
+// TODO(you): style the post-edit highlight. Returns an inline-style object
+// applied to a milestone <tr> for ~1.5s after the user blurs the date input.
+// The row may have just jumped to a new sorted position; this is the cue
+// that helps the user follow it. See the request below for trade-offs.
+function rowHighlightStyle(isRecentlyEdited) {
+  if (!isRecentlyEdited) return undefined;
+  // Replace this stub with your choice — see palette `P` for theme colors
+  // (e.g. P.accentDim for a blue wash, P.greenDim for a "saved" cue).
+  return { background: "rgba(255, 255, 0, 0.15)", transition: "background 800ms ease-out" };
+}
+
 function ScheduleView({ project, onChange, onEagerSave }) {
   const phases = project.phases || [];
   const milestones = project.milestones || [];
@@ -4038,6 +4049,14 @@ function ScheduleView({ project, onChange, onEagerSave }) {
   const [expandedLinks, setExpandedLinks] = useState(null); // milestone id with links panel open
   const [showStartOverride, setShowStartOverride] = useState(false);
   const [overrideDateInput, setOverrideDateInput] = useState(project.startDate || "");
+
+  // Freeze the sorted order while a due-date input is focused so the row
+  // doesn't jump around mid-edit. Snapshot ids on focus, release on blur.
+  // `recentlyEditedId` flags which row just changed so we can briefly
+  // highlight it post-blur — the row may reorder, and users need help
+  // tracking where it went.
+  const [frozenOrder, setFrozenOrder] = useState(null); // array of milestone ids, or null
+  const [recentlyEditedId, setRecentlyEditedId] = useState(null);
 
   // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
@@ -4562,6 +4581,15 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
             </tr>
           )}
           {[...milestones.filter(m => !m.cancelled)].sort((a, b) => {
+              if (frozenOrder) {
+                const ia = frozenOrder.indexOf(a.id);
+                const ib = frozenOrder.indexOf(b.id);
+                // New rows added mid-edit fall to the end, in date order
+                if (ia === -1 && ib === -1) return (a.dueDate || "") > (b.dueDate || "") ? 1 : -1;
+                if (ia === -1) return 1;
+                if (ib === -1) return -1;
+                return ia - ib;
+              }
               if (!a.dueDate && !b.dueDate) return 0;
               if (!a.dueDate) return 1;
               if (!b.dueDate) return -1;
@@ -4570,9 +4598,15 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
             const autoStatus = milestoneStatus(m.pctComplete);
             const statusColor = MILESTONE_STATUS_COLORS[autoStatus] || MILESTONE_STATUS_COLORS["Not Started"];
             const typeColor = m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple };
+            const isRecentlyEdited = recentlyEditedId === m.id;
+            // TODO(you): define how a row should look right after the user
+            // finishes editing its date and the list re-sorts. The row may
+            // jump to a new position — the highlight is what helps the user
+            // visually track where it landed. Return an inline style object.
+            const highlightStyle = rowHighlightStyle(isRecentlyEdited);
             return (
               <React.Fragment key={m.id}>
-              <tr>
+              <tr style={highlightStyle}>
                 <td><Badge color={typeColor} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
                 <td>
                   {m.type === "billable" && project.feeScheduleFinalized
@@ -4588,6 +4622,22 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                 <td>
                   <input type="date" value={m.dueDate || ""}
                     disabled={(m.pctComplete || 0) >= 100}
+                    onFocus={() => {
+                      if (!frozenOrder) {
+                        const ids = [...milestones.filter(x => !x.cancelled)].sort((a, b) => {
+                          if (!a.dueDate && !b.dueDate) return 0;
+                          if (!a.dueDate) return 1;
+                          if (!b.dueDate) return -1;
+                          return a.dueDate > b.dueDate ? 1 : -1;
+                        }).map(x => x.id);
+                        setFrozenOrder(ids);
+                      }
+                    }}
+                    onBlur={() => {
+                      setFrozenOrder(null);
+                      setRecentlyEditedId(m.id);
+                      setTimeout(() => setRecentlyEditedId(id => id === m.id ? null : id), 1500);
+                    }}
                     onChange={e => updateMilestone(m.id, "dueDate", e.target.value, false, { debounceTeams: true, teamsDelay: 1000 })}
                     style={(m.pctComplete || 0) >= 100 ? { background: "#3a3a3a", color: "#888", borderColor: "transparent", cursor: "not-allowed" } : {}} />
                 </td>
