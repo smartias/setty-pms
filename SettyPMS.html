@@ -14011,36 +14011,57 @@ function CalendarImportPanel({ project, onImport }) {
           const atts = fmtAttendees(ev);
           const loc = ev.location?.displayName || "";
           const preview = ev.bodyPreview ? ev.bodyPreview.trim().slice(0, 500) : "";
-          const tdStyle = "padding:6px 12px";
-          const thStyle = "padding:6px 12px;font-weight:bold;background:#f0f0f0";
-          // Page layout decisions:
-          //   - No H1 title — the OneNote page name (from <title>) already
-          //     shows the meeting subject at the top of the page.
-          //   - No Type / Attendees rows — Type duplicates the section name,
-          //     and the comma-separated attendee list duplicates the bulleted
-          //     list that's in the Notes cell below.
+          // Print-friendly typography: Calibri (the Word/Outlook default),
+          // 11pt body, navy headings, max-width 7.5in so the content stays
+          // within letter-size margins when printed or copy-pasted to email.
+          const NAVY = "#1F3864";
+          const TEXT_DARK = "#222";
+          const GRAY_BORDER = "#BFBFBF";
+          const GRAY_LIGHT = "#F2F2F2";
+          const tdStyle = "padding:6px 12px;font-size:11pt;border:1px solid " + GRAY_BORDER;
+          const thStyle = tdStyle + ";font-weight:bold;background:" + GRAY_LIGHT;
+          const h2Style = "font-family:Calibri,Arial,sans-serif;font-size:14pt;color:" + NAVY + ";border-bottom:1px solid " + GRAY_BORDER + ";padding-bottom:2px;margin-top:18px;margin-bottom:8px";
+          // Layout decisions:
+          //   - Wrap everything in a 7.5in max-width container so the body
+          //     looks like a letter-sized document when printed / pasted into
+          //     email as meeting minutes.
+          //   - "Meeting Minutes" H1 + project subtitle + meeting subject —
+          //     stand-alone identification when the page leaves OneNote.
+          //   - No Date row — the date is already inside the Notes block's
+          //     Meeting details section, and "Tuesday, May 12, 2026" plus
+          //     "Start: 5/12/2026, 2:00:00 PM" was redundant.
           //   - Notes cell preserves the bodyPreview (Meeting details +
-          //     bulleted attendees) with the auto-generated "Summary:" /
-          //     "Action items:" boilerplate stripped — those duplicate the
-          //     Discussion / Action Items sections below the table.
+          //     bulleted attendees) with auto "Summary:" / "Action items:"
+          //     placeholders stripped — those duplicate the H2 sections.
           const cleanedPreview = stripMeetingBoilerplate(preview);
+          const safeTitle  = escapeOneNoteText(title);
+          const safeProjNo = escapeOneNoteText(project.projectNumber || "");
+          const safeProjNm = escapeOneNoteText(project.name || "");
+          const projSubtitle = (safeProjNo || safeProjNm)
+            ? "<div style='font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#44546A;letter-spacing:.04em;text-transform:uppercase;margin:0 0 4px'>"
+              + safeProjNo + (safeProjNo && safeProjNm ? " · " : "") + safeProjNm + "</div>"
+            : "";
           const pageHtml = ""
-            + "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
-            + (dtFmt ? "<tr><td style='" + thStyle + ";width:140px'>Date</td><td style='" + tdStyle + "'>" + dtFmt + "</td></tr>" : "")
-            + (loc ? "<tr><td style='" + thStyle + "'>Location</td><td style='" + tdStyle + "'>" + loc + "</td></tr>" : "")
-            + (cleanedPreview ? "<tr><td style='" + thStyle + "'>Notes</td><td style='" + tdStyle + "'><pre style='font-family:inherit;white-space:pre-wrap;margin:0'>" + cleanedPreview + "</pre></td></tr>" : "")
+            + "<div style='max-width:7.5in;font-family:Calibri,Arial,sans-serif;font-size:11pt;color:" + TEXT_DARK + ";line-height:1.5'>"
+            + projSubtitle
+            + "<h1 style='font-family:Calibri,Arial,sans-serif;font-size:20pt;color:" + NAVY + ";margin:0 0 6px;padding-bottom:6px;border-bottom:2px solid " + NAVY + "'>Meeting Minutes</h1>"
+            + "<div style='font-family:Calibri,Arial,sans-serif;font-size:13pt;font-weight:600;color:" + NAVY + ";margin-bottom:14px'>" + safeTitle + "</div>"
+            + "<table style='border-collapse:collapse;width:100%;font-family:Calibri,Arial,sans-serif;margin-bottom:14px'>"
+            + (loc ? "<tr><td style='" + thStyle + ";width:120px'>Location</td><td style='" + tdStyle + "'>" + loc + "</td></tr>" : "")
+            + (cleanedPreview ? "<tr><td style='" + thStyle + ";width:120px;vertical-align:top'>Notes</td><td style='" + tdStyle + "'><pre style='font-family:Calibri,Arial,sans-serif;font-size:11pt;white-space:pre-wrap;margin:0;color:" + TEXT_DARK + "'>" + cleanedPreview + "</pre></td></tr>" : "")
             + "</table>"
-            + "<h2>Discussion</h2><p>&nbsp;</p>"
-            + "<h2>Decisions</h2><p>&nbsp;</p>"
-            + "<h2>Action Items</h2>"
-            + "<table style='border-collapse:collapse;width:100%'>"
-            + "<tr style='background:#f0f0f0'>"
-              + "<th style='" + tdStyle + ";text-align:left'>Item</th>"
-              + "<th style='" + tdStyle + ";text-align:left'>Owner</th>"
-              + "<th style='" + tdStyle + ";text-align:left'>Due</th>"
+            + "<h2 style='" + h2Style + "'>Discussion</h2><p>&nbsp;</p>"
+            + "<h2 style='" + h2Style + "'>Decisions</h2><p>&nbsp;</p>"
+            + "<h2 style='" + h2Style + "'>Action Items</h2>"
+            + "<table style='border-collapse:collapse;width:100%;font-family:Calibri,Arial,sans-serif;font-size:11pt;margin-top:6px'>"
+            + "<tr style='background:" + NAVY + ";color:#fff'>"
+              + "<th style='padding:6px 12px;text-align:left;font-weight:600;border:1px solid " + NAVY + "'>Item</th>"
+              + "<th style='padding:6px 12px;text-align:left;font-weight:600;border:1px solid " + NAVY + "'>Owner</th>"
+              + "<th style='padding:6px 12px;text-align:left;font-weight:600;border:1px solid " + NAVY + "'>Due</th>"
             + "</tr>"
             + "<tr><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td><td style='" + tdStyle + "'>&nbsp;</td></tr>"
-            + "</table>";
+            + "</table>"
+            + "</div>";
           const { sectionName, docType } = getNoteSection(cat);
           const noteMeta = buildPmsMetadata(project, docType, { date: (dt || "").slice(0, 10) || undefined });
           const page = useTeamsNB
