@@ -2441,6 +2441,12 @@ function sanitizeShortcutName(s) {
 // the SharePointFolderField to detect whether the installed set is out of
 // date (new external link, removed link, notebook URL changed, etc.) and
 // resurface the button when needed.
+// Version tag baked into the fingerprint. Bump it when the install function
+// gains new always-installed shortcuts (Site Report / Field Photos etc.) so
+// projects that previously installed an older shortcut set see the
+// "Refresh Shortcuts" button reappear — otherwise their stale fingerprint
+// would still match and they'd never pick up the new entries.
+const SHORTCUT_INSTALL_VERSION = "v2";
 function projectShortcutFingerprint(project) {
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
@@ -2450,7 +2456,7 @@ function projectShortcutFingerprint(project) {
     .map(l => (l.id || "") + ":" + (l.label || "") + ":" + l.url)
     .sort()
     .join("|");
-  return noteUrl + "::" + teamsFolderUrl + "::" + channelEmail + "::" + ext;
+  return SHORTCUT_INSTALL_VERSION + "::" + noteUrl + "::" + teamsFolderUrl + "::" + channelEmail + "::" + ext;
 }
 
 // Install all project shortcuts (OneNote notebook + PMS deep link + every
@@ -2474,6 +2480,18 @@ async function installProjectShortcuts(project) {
   const pmsUrl = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
   await writeProjectShortcut(driveId, folderName, "🔗 PMS Project.url", pmsUrl);
   installed.push("PMS Project");
+
+  // Site Report tool, project-scoped — landing page filters to this project,
+  // and "+ New Report" skips the project picker.
+  const siteReportUrl = "https://smartias.github.io/setty-pms/SiteReport.html?project=" + encodeURIComponent(project.id);
+  await writeProjectShortcut(driveId, folderName, "📋 Site Report Generator.url", siteReportUrl);
+  installed.push("Site Report Generator");
+
+  // Field Photos uploader. Not project-scoped via URL param (the tool lists
+  // all projects with SharePoint folders); just a deep link to the app.
+  const fieldPhotosUrl = "https://smartias.github.io/setty-pms/SettyFieldPhotos.html";
+  await writeProjectShortcut(driveId, folderName, "📸 Field Photos.url", fieldPhotosUrl);
+  installed.push("Field Photos");
 
   // Teams channel's auto-created document library — the "Files" tab on the
   // Teams channel, intended for working files / chat-attached docs. Distinct
