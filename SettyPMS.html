@@ -2391,6 +2391,32 @@ async function writeProjectShortcut(driveId, folderName, shortcutFileName, targe
   return res.json();
 }
 
+// Resolve the email address for a project's Teams channel. Channels don't
+// have an email until someone (admin OR member with right permissions)
+// asks for one — `provisionEmail` is the Graph API that does this. We try
+// to read the existing email first (idempotent — won't re-provision), and
+// only call provisionEmail if no email exists yet.
+//
+// Returns the email string, or "" if no channel is configured / the call
+// fails. Cache the result on `project.teamsChannelEmail` so we don't go
+// back to Graph for every render or shortcut install.
+async function resolveChannelEmail(project) {
+  if (!project.teamsChannelId) return "";
+  try {
+    const ch = await graphFetch("GET",
+      `/teams/${TEAMS_TEAM_ID}/channels/${project.teamsChannelId}?$select=email,displayName`);
+    if (ch?.email) return ch.email;
+  } catch (e) { console.warn("[resolveChannelEmail GET]", e.message); }
+  try {
+    const result = await graphFetch("POST",
+      `/teams/${TEAMS_TEAM_ID}/channels/${project.teamsChannelId}/provisionEmail`);
+    return result?.email || "";
+  } catch (e) {
+    console.warn("[resolveChannelEmail provision]", e.message);
+    return "";
+  }
+}
+
 // Per-type emoji prefix for external-link shortcut filenames. Helps users
 // scan the folder root by spotting the icon for "BIM 360" vs "Procore" etc.
 const LINK_TYPE_ICONS = {
@@ -2416,12 +2442,13 @@ function sanitizeShortcutName(s) {
 function projectShortcutFingerprint(project) {
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
+  const channelEmail = project.teamsChannelEmail || "";
   const ext = (project.externalLinks || [])
     .filter(l => l && l.url)
     .map(l => (l.id || "") + ":" + (l.label || "") + ":" + l.url)
     .sort()
     .join("|");
-  return noteUrl + "::" + teamsFolderUrl + "::" + ext;
+  return noteUrl + "::" + teamsFolderUrl + "::" + channelEmail + "::" + ext;
 }
 
 // Install all project shortcuts (OneNote notebook + PMS deep link + every
@@ -2457,6 +2484,20 @@ async function installProjectShortcuts(project) {
     installed.push("Teams Chat / Working Files");
   }
 
+  // Channel email: resolve via Graph if we haven't already. mailto: shortcuts
+  // open a fresh Outlook draft addressed to the channel — anyone who emails
+  // it has their message posted into the Teams channel as a thread. That's
+  // the lowest-friction onramp for users who default to email over chat.
+  let resolvedChannelEmail = project.teamsChannelEmail || "";
+  if (project.teamsChannelId && !resolvedChannelEmail) {
+    try { resolvedChannelEmail = await resolveChannelEmail(project); }
+    catch (e) { console.warn("[shortcuts] channel email lookup failed:", e.message); }
+  }
+  if (resolvedChannelEmail) {
+    await writeProjectShortcut(driveId, folderName, "💌 Email Project Channel.url", "mailto:" + resolvedChannelEmail);
+    installed.push("Email Project Channel");
+  }
+
   // External project links (BIM 360, Procore, Matterport, Network Folder,
   // etc.). Filename is "<icon> <label-or-type>.url" so the folder root reads
   // like a launchpad. Network Folder links use the UNC path as the URL —
@@ -2478,7 +2519,10 @@ async function installProjectShortcuts(project) {
     }
   }
 
-  return installed;
+  // Return resolvedChannelEmail so the caller can cache it on the project
+  // record — provisionEmail is a one-time per-channel action we shouldn't
+  // repeat on every install.
+  return { installed, resolvedChannelEmail };
 }
 
 async function createSharePointFolder(project) {
@@ -17951,8 +17995,35 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
 function TeamsNotificationsField({ project, onUpdate }) {
   const [status, setStatus]   = React.useState("idle"); // idle | creating | error | done
   const [msg,    setMsg]      = React.useState("");
+  const [emailCopyState, setEmailCopyState] = React.useState("idle"); // idle | resolving | copied | error
+  const [emailCopyMsg,   setEmailCopyMsg]   = React.useState("");
   const enabled   = !!project.teamsNotificationsEnabled;
   const channelId = project.teamsChannelId || "";
+
+  // Copy the channel's auto-provisioned email address to the clipboard.
+  // Anything emailed there posts as a thread in the channel — the easiest
+  // onramp for people who default to email over chat. Resolves via Graph
+  // (provisions an email if the channel doesn't have one yet) and caches
+  // the result on the project so subsequent clicks are instant.
+  async function copyChannelEmail() {
+    setEmailCopyState("resolving");
+    setEmailCopyMsg("");
+    try {
+      let email = project.teamsChannelEmail || "";
+      if (!email) {
+        email = await resolveChannelEmail(project);
+        if (!email) throw new Error("Couldn't get a channel email — channel may not allow it.");
+        onUpdate({ ...project, teamsChannelEmail: email });
+      }
+      await navigator.clipboard.writeText(email);
+      setEmailCopyState("copied");
+      setEmailCopyMsg("✓ Copied: " + email);
+      setTimeout(() => { setEmailCopyState("idle"); setEmailCopyMsg(""); }, 4000);
+    } catch (e) {
+      setEmailCopyState("error");
+      setEmailCopyMsg("✗ " + e.message);
+    }
+  }
 
   const channelUrl = channelId
     ? `https://teams.microsoft.com/l/channel/${encodeURIComponent(channelId)}/conversations?groupId=${TEAMS_TEAM_ID}&tenantId=f374c024-71c2-48b6-8420-076fff97327c`
@@ -18055,15 +18126,32 @@ function TeamsNotificationsField({ project, onUpdate }) {
         )}
       </div>
 
-      {/* Channel link */}
+      {/* Channel link + Copy Channel Email */}
       {enabled && channelUrl && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 18 }}>💬</span>
-          <a href={channelUrl} target="_blank" rel="noopener noreferrer"
-            style={{ fontSize: 12, color: "#2F5496", fontWeight: 600 }}>
-            Open project channel in Teams
-          </a>
-          <span style={{ fontSize: 11, color: P.textDim }}>— {project.projectNumber || project.name}</span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 18 }}>💬</span>
+            <a href={channelUrl} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 12, color: "#2F5496", fontWeight: 600 }}>
+              Open project channel in Teams
+            </a>
+            <span style={{ fontSize: 11, color: P.textDim }}>— {project.projectNumber || project.name}</span>
+            {/* Teams brand purple. Anything emailed to the resolved address
+                lands in the channel as a thread — the easiest path for users
+                who prefer email over chat. */}
+            <button onClick={copyChannelEmail} disabled={emailCopyState === "resolving"}
+              title="Copy the channel's email address. Anything emailed there posts to the Teams channel as a thread."
+              style={{ background: "#6264A7", color: "#fff", border: "none", borderRadius: 6,
+                padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: emailCopyState === "resolving" ? "wait" : "pointer", whiteSpace: "nowrap", marginLeft: "auto" }}>
+              {emailCopyState === "resolving" ? "⏳ Resolving…" : "💌 Copy Channel Email"}
+            </button>
+          </div>
+          {emailCopyMsg && (
+            <div style={{ fontSize: 11, paddingLeft: 26,
+              color: emailCopyState === "copied" ? "#375623" : emailCopyState === "error" ? P.red : P.textDim }}>
+              {emailCopyMsg}
+            </div>
+          )}
         </div>
       )}
 
@@ -18613,21 +18701,25 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
     setScStatus("installing");
     setScMsg("");
     try {
-      const installed = await installProjectShortcuts(project);
+      const { installed, resolvedChannelEmail } = await installProjectShortcuts(project);
       setScStatus("done");
       setScMsg("✓ Installed " + installed.length + " shortcut" + (installed.length === 1 ? "" : "s")
         + (!currentNoteUrl ? " (OneNote not linked yet — re-run after linking)" : ""));
-      // Eager-save so the button hides immediately — going through the
-      // debounced auto-save would leave it visible for ~2 seconds and feel
-      // unresponsive. Persist the current fingerprint so future link adds
-      // / edits flip the button back on automatically.
-      const patch = {
+      // Project state to persist: install timestamp, fingerprint (so the
+      // button hides automatically), AND the channel email if we just
+      // resolved one (avoids re-provisioning on the next install).
+      const patchedProject = {
         ...project,
         shortcutsInstalledAt: new Date().toISOString(),
-        shortcutsFingerprint: currentFingerprint,
+        teamsChannelEmail: resolvedChannelEmail || project.teamsChannelEmail || "",
       };
-      if (onEagerSave) await onEagerSave(patch);
-      else onUpdate("shortcutsInstalledAt", patch.shortcutsInstalledAt);
+      // Recompute the fingerprint AFTER patching teamsChannelEmail so the
+      // saved fingerprint reflects the channel email we just installed
+      // (otherwise the next render sees email-now-set + email-not-in-fp
+      // and immediately re-shows the button).
+      patchedProject.shortcutsFingerprint = projectShortcutFingerprint(patchedProject);
+      if (onEagerSave) await onEagerSave(patchedProject);
+      else onUpdate("shortcutsInstalledAt", patchedProject.shortcutsInstalledAt);
     } catch (e) {
       setScStatus("error");
       setScMsg("✗ " + e.message);
