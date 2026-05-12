@@ -2446,102 +2446,109 @@ function sanitizeShortcutName(s) {
 // projects that previously installed an older shortcut set see the
 // "Refresh Shortcuts" button reappear — otherwise their stale fingerprint
 // would still match and they'd never pick up the new entries.
-const SHORTCUT_INSTALL_VERSION = "v2";
+const SHORTCUT_INSTALL_VERSION = "v4";
 function projectShortcutFingerprint(project) {
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
   const channelEmail = project.teamsChannelEmail || "";
+  // Proposal + contracts folders contribute a shortcut each when set up.
+  // Tracking both in the fingerprint means setting either one up after the
+  // initial install resurfaces the Refresh button so the entry can be added.
+  const proposalFolder = project.proposalFolderUrl || "";
+  const contractFolder = project.contractFolderUrl || "";
   const ext = (project.externalLinks || [])
     .filter(l => l && l.url)
     .map(l => (l.id || "") + ":" + (l.label || "") + ":" + l.url)
     .sort()
     .join("|");
-  return SHORTCUT_INSTALL_VERSION + "::" + noteUrl + "::" + teamsFolderUrl + "::" + channelEmail + "::" + ext;
+  return SHORTCUT_INSTALL_VERSION + "::" + noteUrl + "::" + teamsFolderUrl + "::" + channelEmail
+    + "::" + proposalFolder + "::" + contractFolder + "::" + ext;
 }
 
-// Install all project shortcuts (OneNote notebook + PMS deep link + every
-// external link) into the project's SharePoint folder root. Network Folder
-// links are skipped because UNC paths can't live inside a .url file. Returns
-// a list of installed shortcut names for status UI.
+// Install all project shortcuts (OneNote notebook + PMS deep link + tools +
+// every external link) into each of the project's SharePoint folder roots.
+// If a separate proposal folder is configured (project.proposalFolderUrl
+// distinct from projectFolderUrl), shortcuts are duplicated into it too —
+// proposal stage users get the same launchpad as project execution users.
+// Returns a deduped list of installed shortcut labels + the resolved
+// channel email (so the caller can cache it on the project record).
 async function installProjectShortcuts(project) {
   if (!project.projectFolderUrl) throw new Error("Project folder isn't set up yet — create the SharePoint folder first.");
   const { driveId } = await resolveSpIds();
-  const folderName = decodeURIComponent(project.projectFolderUrl.split("/").pop());
-  const installed = [];
 
-  // OneNote notebook (Teams notebook preferred; falls back to legacy SP-linked)
+  // ── Step 1: build the shortcut list once. Each entry: {name, url, label} ──
+  const shortcuts = [];
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
-  if (noteUrl) {
-    await writeProjectShortcut(driveId, folderName, "📓 OneNote Notebook.url", noteUrl);
-    installed.push("OneNote Notebook");
-  }
+  if (noteUrl) shortcuts.push({ name: "📓 OneNote Notebook.url", url: noteUrl, label: "OneNote Notebook" });
 
-  // PMS deep link — opens the project directly in SettyPMS via hash route.
-  const pmsUrl = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
-  await writeProjectShortcut(driveId, folderName, "🔗 PMS Project.url", pmsUrl);
-  installed.push("PMS Project");
+  shortcuts.push({
+    name: "🔗 PMS Project.url",
+    url: "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id,
+    label: "PMS Project",
+  });
+  shortcuts.push({
+    name: "📋 Site Report Generator.url",
+    url: "https://smartias.github.io/setty-pms/SiteReport.html?project=" + encodeURIComponent(project.id),
+    label: "Site Report Generator",
+  });
+  shortcuts.push({
+    name: "📸 Field Photos.url",
+    url: "https://smartias.github.io/setty-pms/SettyFieldPhotos.html",
+    label: "Field Photos",
+  });
 
-  // Site Report tool, project-scoped — landing page filters to this project,
-  // and "+ New Report" skips the project picker.
-  const siteReportUrl = "https://smartias.github.io/setty-pms/SiteReport.html?project=" + encodeURIComponent(project.id);
-  await writeProjectShortcut(driveId, folderName, "📋 Site Report Generator.url", siteReportUrl);
-  installed.push("Site Report Generator");
-
-  // Field Photos uploader. Not project-scoped via URL param (the tool lists
-  // all projects with SharePoint folders); just a deep link to the app.
-  const fieldPhotosUrl = "https://smartias.github.io/setty-pms/SettyFieldPhotos.html";
-  await writeProjectShortcut(driveId, folderName, "📸 Field Photos.url", fieldPhotosUrl);
-  installed.push("Field Photos");
-
-  // Teams channel's auto-created document library — the "Files" tab on the
-  // Teams channel, intended for working files / chat-attached docs. Distinct
-  // from the project's main SharePoint folder (which we're putting this
-  // shortcut INTO), so users have a one-click bridge from the formal project
-  // folder to the informal working-files area.
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
   if (teamsFolderUrl) {
-    await writeProjectShortcut(driveId, folderName, "💬 Teams Chat - Working Files.url", teamsFolderUrl);
-    installed.push("Teams Chat / Working Files");
+    shortcuts.push({ name: "💬 Teams Chat - Working Files.url", url: teamsFolderUrl, label: "Teams Chat / Working Files" });
   }
 
-  // Channel email: resolve via Graph if we haven't already. mailto: shortcuts
-  // open a fresh Outlook draft addressed to the channel — anyone who emails
-  // it has their message posted into the Teams channel as a thread. That's
-  // the lowest-friction onramp for users who default to email over chat.
+  // Proposal folder (typically used during the pipeline / marketing stage,
+  // distinct from the awarded project folder). When present, drop a shortcut
+  // *to* it inside the main project folder so users coming from the awarded
+  // side have one click back to the proposal materials.
+  if (project.proposalFolderUrl && project.proposalFolderUrl !== project.projectFolderUrl) {
+    shortcuts.push({ name: "📂 Proposal Folder.url", url: project.proposalFolderUrl, label: "Proposal Folder" });
+  }
+  // Contracts folder — lives separately for projects whose signed contracts
+  // are managed in a different SharePoint location. Same "bridge from main
+  // folder" model as the proposal shortcut.
+  if (project.contractFolderUrl && project.contractFolderUrl !== project.projectFolderUrl) {
+    shortcuts.push({ name: "📜 Contracts Folder.url", url: project.contractFolderUrl, label: "Contracts Folder" });
+  }
+
+  // Channel email: read-only resolution (no provisionEmail — avoids consent).
   let resolvedChannelEmail = project.teamsChannelEmail || "";
   if (project.teamsChannelId && !resolvedChannelEmail) {
     try { resolvedChannelEmail = await resolveChannelEmail(project); }
     catch (e) { console.warn("[shortcuts] channel email lookup failed:", e.message); }
   }
   if (resolvedChannelEmail) {
-    await writeProjectShortcut(driveId, folderName, "💌 Email Project Channel.url", "mailto:" + resolvedChannelEmail);
-    installed.push("Email Project Channel");
+    shortcuts.push({ name: "💌 Email Project Channel.url", url: "mailto:" + resolvedChannelEmail, label: "Email Project Channel" });
   }
 
-  // External project links (BIM 360, Procore, Matterport, Network Folder,
-  // etc.). Filename is "<icon> <label-or-type>.url" so the folder root reads
-  // like a launchpad. Network Folder links use the UNC path as the URL —
-  // this opens File Explorer to the share when clicked from a OneDrive-
-  // synced copy of the project folder. (In the SharePoint web UI clicks
-  // through .url files with UNC targets are blocked by browser security;
-  // that's the synced-folder caveat surfaced in the success message.)
+  // External project links (BIM 360, Procore, Matterport, Network Folder…).
+  // Network Folder UNC paths work in a .url file and open File Explorer when
+  // clicked from a OneDrive-synced copy of the project folder.
   for (const link of (project.externalLinks || [])) {
     if (!link || !link.url) continue;
     const icon = LINK_TYPE_ICONS[link.type] || LINK_TYPE_ICONS["Other"];
     const baseName = sanitizeShortcutName(link.label || link.type || "Link");
-    const fileName = `${icon} ${baseName}.url`;
+    shortcuts.push({ name: `${icon} ${baseName}.url`, url: link.url, label: baseName });
+  }
+
+  // ── Step 2: write all shortcuts into the main project folder root ──
+  const folderName = decodeURIComponent(project.projectFolderUrl.split("/").pop());
+  const installed = [];
+  for (const sc of shortcuts) {
     try {
-      await writeProjectShortcut(driveId, folderName, fileName, link.url);
-      installed.push(baseName);
+      await writeProjectShortcut(driveId, folderName, sc.name, sc.url);
+      installed.push(sc.label);
     } catch (e) {
-      // One bad link shouldn't tank the rest — log and continue.
-      console.warn("[shortcuts] " + baseName + " failed: " + e.message);
+      // One bad shortcut shouldn't tank the rest — log and continue.
+      console.warn("[shortcuts] " + sc.label + " failed: " + e.message);
     }
   }
 
-  // Return resolvedChannelEmail so the caller can cache it on the project
-  // record — provisionEmail is a one-time per-channel action we shouldn't
-  // repeat on every install.
   return { installed, resolvedChannelEmail };
 }
 
