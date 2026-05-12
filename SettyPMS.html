@@ -7608,6 +7608,39 @@ function newDirectoryEntry(overrides = {}) {
     ...overrides,
   };
 }
+// Auto-derived roles for a company on this project. Prime/Client/SUB (to Setty)
+// are read straight from project fields and can't be hand-edited here — the
+// source of truth is the Overview tab (prime, clientName) and the
+// Subconsultants tab. Returns an array because a single firm may be both
+// Prime AND Client (1-tier sub case).
+function getCompanyAutoRoles(companyName, project) {
+  const co = (companyName || "").trim().toLowerCase();
+  if (!co) return [];
+  const roles = [];
+  if ((project.prime || "").trim().toLowerCase() === co) roles.push("Prime");
+  if ((project.clientName || "").trim().toLowerCase() === co) roles.push("Client");
+  const subFirms = (project.subconsultants || []).map(s => (s.firm || "").trim().toLowerCase());
+  if (subFirms.includes(co)) roles.push("SUB (to Setty)");
+  return roles;
+}
+
+// Resolved role(s) for a company: auto-derived if any apply, else the
+// project-stored override (or "Other" as the default). Always returns an
+// array so the renderer can treat single and dual roles uniformly.
+function getCompanyRoles(companyName, project) {
+  const auto = getCompanyAutoRoles(companyName, project);
+  if (auto.length > 0) return auto;
+  const key = (companyName || "").trim().toLowerCase();
+  const stored = key ? ((project.directoryCompanyTypes || {})[key] || null) : null;
+  return [stored || "Other"];
+}
+
+// Roles available in the company-level type override picker. Excludes the
+// three auto-derived types — those are owned by their source fields.
+const COMPANY_TYPE_OPTIONS = DIRECTORY_TYPES.filter(t =>
+  t !== "Prime" && t !== "Client" && t !== "SUB (to Setty)"
+);
+
 function directoryTypeColor(type) {
   switch (type) {
     case "Prime":                 return { bg: P.accentDim, text: P.accentLight };
@@ -7864,8 +7897,18 @@ function ProjectDirectoryView({ project, onChange, clients }) {
     onChange({ ...project, directory: directory.filter(x => x.id !== c.id) });
   }
 
+  function setCompanyType(companyName, newType) {
+    const key = (companyName || "").trim().toLowerCase();
+    if (!key) return;
+    const map = { ...(project.directoryCompanyTypes || {}), [key]: newType };
+    onChange({ ...project, directoryCompanyTypes: map });
+  }
+
   const filtered = merged.filter(c => {
-    if (filterType !== "All" && c.type !== filterType) return false;
+    if (filterType !== "All") {
+      const roles = getCompanyRoles(c.company, project);
+      if (!roles.includes(filterType)) return false;
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       return (c.name || "").toLowerCase().includes(q)
@@ -7995,11 +8038,6 @@ function ProjectDirectoryView({ project, onChange, clients }) {
             <Field label="Company / Firm">
               <input value={form.company} onChange={e => setF("company", e.target.value)} style={{ width: "100%" }} placeholder="e.g. Skanska, Think Architecture" />
             </Field>
-            <Field label="Type">
-              <select value={form.type} onChange={e => setF("type", e.target.value)} style={{ width: "100%" }}>
-                {DIRECTORY_TYPES.map(t => <option key={t}>{t}</option>)}
-              </select>
-            </Field>
             <Field label="Email">
               <input type="email" value={form.email} onChange={e => setF("email", e.target.value)} style={{ width: "100%" }} placeholder="email@firm.com" />
             </Field>
@@ -8036,20 +8074,44 @@ function ProjectDirectoryView({ project, onChange, clients }) {
         return a.localeCompare(b);
       }).map(company => (
         <div key={company} style={{ marginBottom: 22 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8, borderBottom: `1px solid ${P.border}`, paddingBottom: 6, display: "flex", alignItems: "baseline", gap: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8, borderBottom: `1px solid ${P.border}`, paddingBottom: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {company === "(No Company)" ? <span style={{ color: P.textDim }}>(No Company)</span> : company}
             <span style={{ color: P.textDim, fontWeight: 400, fontSize: 11 }}>· {byCompany[company].length}</span>
+            {(() => {
+              if (company === "(No Company)") return null;
+              const autoRoles = getCompanyAutoRoles(company, project);
+              if (autoRoles.length > 0) {
+                // Auto-derived — read-only badges. Source of truth lives in
+                // project.prime / clientName / subconsultants.
+                return autoRoles.map(r => {
+                  const tc = directoryTypeColor(r);
+                  return (
+                    <span key={r} title={`Auto-derived from project ${r === "SUB (to Setty)" ? "Subconsultants tab" : "Overview tab"}`}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 8px", borderRadius: 10,
+                        background: tc.bg, color: tc.text, border: `1px solid ${tc.text}`,
+                        fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                      {r} <span style={{ opacity: 0.6, fontSize: 9 }}>· auto</span>
+                    </span>
+                  );
+                });
+              }
+              // Editable — defaults to "Other" until the user picks something
+              // else. Persisted on project.directoryCompanyTypes (lowercased key).
+              const current = getCompanyRoles(company, project)[0];
+              const tc = directoryTypeColor(current);
+              return (
+                <select value={current} onChange={e => setCompanyType(company, e.target.value)}
+                  title="Set this company's role on this project"
+                  style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em",
+                    padding: "1px 6px", borderRadius: 10, background: tc.bg, color: tc.text,
+                    border: `1px solid ${tc.text}`, cursor: "pointer" }}>
+                  {COMPANY_TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              );
+            })()}
           </div>
           {byCompany[company].map(c => {
-            const tc = directoryTypeColor(c.type);
             const sources = c._sources || [];
-            // Dual-role detection: this entry's company matches BOTH the
-            // project's Prime and Client. Common when Setty is a 1-tier sub
-            // to an architect who is both Client and Prime.
-            const coLc     = (c.company || "").trim().toLowerCase();
-            const primeLc  = (project.prime || "").trim().toLowerCase();
-            const clientLc = (project.clientName || "").trim().toLowerCase();
-            const dualPrimeClient = coLc && primeLc && clientLc && coLc === primeLc && coLc === clientLc;
             return (
               <div key={c.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 12px", borderBottom: `1px solid ${P.border}`, transition: "background 0.1s" }}
                 onMouseOver={e => e.currentTarget.style.background = P.bg}
@@ -8058,14 +8120,6 @@ function ProjectDirectoryView({ project, onChange, clients }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name || <span style={{ color: P.textDim, fontStyle: "italic" }}>(no name)</span>}</span>
                     {c.title && <span style={{ color: P.textMuted, fontSize: 12 }}>· {c.title}</span>}
-                    {dualPrimeClient ? (
-                      <>
-                        <Badge color={directoryTypeColor("Prime")}  text="Prime"  />
-                        <Badge color={directoryTypeColor("Client")} text="Client" />
-                      </>
-                    ) : (
-                      <Badge color={tc} text={c.type} />
-                    )}
                     {sources.map((s, i) => (
                       <span key={i} title={c._derived ? "Auto-rolled from " + s : "Originally from " + s}
                         style={{ fontSize: 9.5, fontWeight: 600, padding: "1px 6px", borderRadius: 999, background: c._derived ? P.bg : "transparent", color: P.textDim, border: `1px solid ${P.border}`, textTransform: "uppercase", letterSpacing: ".04em" }}>
