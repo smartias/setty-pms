@@ -288,10 +288,15 @@
 
 <script>
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
+// Same tenant + client ID used by transmittal.html and SettyFieldPhotos.html —
+// share the Azure AD app registration so users get single sign-on across all
+// Setty tools and the same redirect-URI allowlist applies.
+const TENANT_ID      = "f374c024-71c2-48b6-8420-076fff97327c";
+const MSAL_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301";
 const MSAL_CONFIG = {
   auth: {
-    clientId: "fd62989e-c4ca-4e92-8c14-25c34a4f0c83",
-    authority: "https://login.microsoftonline.com/2406b76a-c64c-4cc2-bcdc-a83d0091d62c",
+    clientId: MSAL_CLIENT_ID,
+    authority: "https://login.microsoftonline.com/" + TENANT_ID,
     redirectUri: window.location.origin + window.location.pathname,
   },
   cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
