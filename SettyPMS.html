@@ -1900,10 +1900,13 @@ async function writeSharePointMetadataSidecar(driveId, folderPath, metadata) {
 
 // Prepend to OneNote page HTML.
 // Hidden comment = machine-readable by AI/search. Badge strip = human-readable.
+// docType intentionally NOT shown as a visible badge — it duplicates the
+// OneNote section the page already lives in (e.g. "Client Meetings"), and
+// users reported it as visual clutter. Still preserved in the hidden
+// pms-metadata comment so AI/search/automation tools can read it.
 function buildOneNoteMetadataHtml(metadata) {
   const badge = [
     metadata.projectNumber && `<span style="background:#003865;color:#fff;padding:2px 8px;border-radius:3px;font-size:11px;margin-right:6px">${metadata.projectNumber}</span>`,
-    metadata.docType       && `<span style="background:#e8edf2;color:#003865;padding:2px 8px;border-radius:3px;font-size:11px;margin-right:6px">${metadata.docType}</span>`,
     metadata.phase         && `<span style="background:#e8edf2;color:#555;padding:2px 8px;border-radius:3px;font-size:11px;margin-right:6px">${metadata.phase}</span>`,
     metadata.client        && `<span style="background:#e8edf2;color:#555;padding:2px 8px;border-radius:3px;font-size:11px">${metadata.client}</span>`,
   ].filter(Boolean).join("");
@@ -1913,6 +1916,18 @@ function buildOneNoteMetadataHtml(metadata) {
   <span style="float:right;font-size:10px;color:#999">${metadata.createdBy} · ${metadata.date}</span>
   <div style="clear:both"></div>
 </div>`;
+}
+
+// Strip the "Summary:" / "Action items:" placeholder lines from a Teams
+// meeting invite's bodyPreview. Teams auto-fills these as headers that the
+// invite organizer is supposed to populate; almost no one does, so they
+// show up as empty labels that duplicate the Discussion / Action Items
+// sections we render farther down the page.
+function stripMeetingBoilerplate(text) {
+  if (!text) return "";
+  const i = text.search(/\n\s*Summary\s*:/i);
+  if (i >= 0) return text.slice(0, i).trim();
+  return text.trim();
 }
 
 // Appended to Outlook draft body — small, unobtrusive filing reference.
@@ -13998,16 +14013,22 @@ function CalendarImportPanel({ project, onImport }) {
           const preview = ev.bodyPreview ? ev.bodyPreview.trim().slice(0, 500) : "";
           const tdStyle = "padding:6px 12px";
           const thStyle = "padding:6px 12px;font-weight:bold;background:#f0f0f0";
-          // The bodyPreview row used to live here, but it duplicated the
-          // structured table above (attendees) and the Discussion / Decisions
-          // / Action Items sections below — typical meeting-invite bodies
-          // contain that boilerplate with empty actual content. The full
-          // invite body is still preserved in the PMS note record itself.
-          const pageHtml = "<h1>" + title + "</h1>"
+          // Page layout decisions:
+          //   - No H1 title — the OneNote page name (from <title>) already
+          //     shows the meeting subject at the top of the page.
+          //   - No Type / Attendees rows — Type duplicates the section name,
+          //     and the comma-separated attendee list duplicates the bulleted
+          //     list that's in the Notes cell below.
+          //   - Notes cell preserves the bodyPreview (Meeting details +
+          //     bulleted attendees) with the auto-generated "Summary:" /
+          //     "Action items:" boilerplate stripped — those duplicate the
+          //     Discussion / Action Items sections below the table.
+          const cleanedPreview = stripMeetingBoilerplate(preview);
+          const pageHtml = ""
             + "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
             + (dtFmt ? "<tr><td style='" + thStyle + ";width:140px'>Date</td><td style='" + tdStyle + "'>" + dtFmt + "</td></tr>" : "")
             + (loc ? "<tr><td style='" + thStyle + "'>Location</td><td style='" + tdStyle + "'>" + loc + "</td></tr>" : "")
-            + (atts ? "<tr><td style='" + thStyle + "'>Attendees</td><td style='" + tdStyle + "'>" + atts + "</td></tr>" : "")
+            + (cleanedPreview ? "<tr><td style='" + thStyle + "'>Notes</td><td style='" + tdStyle + "'><pre style='font-family:inherit;white-space:pre-wrap;margin:0'>" + cleanedPreview + "</pre></td></tr>" : "")
             + "</table>"
             + "<h2>Discussion</h2><p>&nbsp;</p>"
             + "<h2>Decisions</h2><p>&nbsp;</p>"
