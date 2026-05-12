@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+  <meta http-equiv="Pragma" content="no-cache"/>
+  <meta http-equiv="Expires" content="0"/>
+  <title>Setty — Site Report</title>
+  <script>
+    window.__appVersion = "2026-05-12-sitereport-v1";
+
+    // Auto-update banner — same pattern as transmittal.html / SettyFieldPhotos.
+    async function _checkForUpdate() {
+      try {
+        const res = await fetch(location.pathname + "?_v=" + Date.now(),
+          { cache: "no-store", headers: { "Cache-Control": "no-cache" } });
+        if (!res.ok) return;
+        const text = await res.text();
+        const match = text.match(/window\.__appVersion\s*=\s*["']([^"']+)["']/);
+        const remote = match ? match[1] : null;
+        if (remote && remote !== window.__appVersion) _showUpdateBanner(remote);
+      } catch (e) { console.warn("[updater]", e.message); }
+    }
+    function _showUpdateBanner(remote) {
+      if (document.getElementById("__updateBanner")) return;
+      const banner = document.createElement("div");
+      banner.id = "__updateBanner";
+      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+      banner.innerHTML = '<span>🔄 New version available (' + remote + '). Reload to update.</span><button id="__updateBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Reload now</button>';
+      document.body.appendChild(banner);
+      document.getElementById("__updateBtn").onclick = () => location.reload();
+    }
+    window.addEventListener("load", () => {
+      setTimeout(_checkForUpdate, 3000);
+      setInterval(_checkForUpdate, 10 * 60 * 1000);
+    });
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --navy: #1F3864;
+      --blue: #3B82F6;
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --dim: #94a3b8;
+      --muted: #64748b;
+      --green: #10b981;
+      --yellow: #f59e0b;
+      --red: #ef4444;
+      --accent-dim: #1e3a5f;
+    }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 20px 24px 60px; }
+    h1 { font-size: 22px; font-weight: 800; margin-bottom: 4px; }
+    h2 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 22px 0 10px; }
+    label { font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
+    input, select, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit; width: 100%; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--blue); }
+    textarea { resize: vertical; }
+    button { font-family: inherit; cursor: pointer; }
+    .btn { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
+    .btn:hover { background: #233; }
+    .btn-primary { background: var(--blue); color: white; border-color: var(--blue); }
+    .btn-danger { background: transparent; color: var(--red); border-color: var(--red); }
+    .btn-ghost { background: transparent; color: var(--dim); border-color: var(--border); }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
+    .header-user { font-size: 12px; color: var(--dim); }
+    .sign-in-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px; z-index: 100; padding: 40px; text-align: center; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .pill-blue   { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); }
+    .pill-green  { background: #064e3b; color: var(--green); border: 1px solid var(--green); }
+    .pill-yellow { background: #451a03; color: var(--yellow); border: 1px solid var(--yellow); }
+    .item-row { display: grid; grid-template-columns: 56px 110px 1fr 80px; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--bg); align-items: start; }
+    .item-num { font-family: 'JetBrains Mono', 'Consolas', monospace; font-weight: 700; color: #60a5fa; font-size: 13px; }
+    .item-loc { font-size: 12px; color: var(--text); }
+    .item-desc { font-size: 13px; line-height: 1.5; }
+    .item-photo { width: 80px; height: 60px; object-fit: cover; border-radius: 4px; background: var(--border); cursor: pointer; }
+    .item-photo-empty { width: 80px; height: 60px; display: flex; align-items: center; justify-content: center; background: var(--border); border-radius: 4px; color: var(--muted); font-size: 10px; }
+    .item-actions { display: flex; gap: 6px; justify-content: flex-end; }
+    .icon-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 14px; padding: 2px 4px; }
+    .icon-btn:hover { color: var(--red); }
+    .disc-section { margin-bottom: 22px; }
+    .disc-header { font-size: 12px; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 6px; display: flex; gap: 8px; align-items: baseline; }
+    .disc-count { color: var(--dim); font-weight: 400; }
+    .meta-line { font-size: 13px; color: var(--dim); margin-top: 4px; }
+    .status { font-size: 12px; padding: 6px 10px; border-radius: 6px; }
+    .status.info    { background: var(--accent-dim); color: #60a5fa; }
+    .status.error   { background: #450a0a; color: var(--red); }
+    .status.success { background: #064e3b; color: var(--green); }
+
+    /* ─── Print stylesheet ─── */
+    @media print {
+      @page { margin: 0.5in; }
+      body { background: white; color: black; padding: 0; font-size: 11pt; }
+      .no-print, .header-bar, .btn, button { display: none !important; }
+      .card { background: white; border: none; padding: 0; margin: 0 0 12px; box-shadow: none; }
+      h1 { font-size: 18pt; color: #1F3864; }
+      h2 { color: #44546A; font-size: 10pt; }
+      label { color: #44546A; }
+      .disc-header { color: #1F3864; border-bottom: 2px solid #1F3864; }
+      .item-row { background: white; border: 1px solid #ccc; page-break-inside: avoid; }
+      .item-num { color: #1F3864; }
+      .item-photo { width: 90px; height: 68px; }
+      .meta-line, .item-loc, .item-desc { color: black; }
+      input, select, textarea { border: none; background: white; color: black; padding: 0; }
+      .print-cover { display: block; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #1F3864; }
+    }
+    .print-cover { display: none; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
+</head>
+<body>
+
+<!-- Sign-in overlay -->
+<div class="sign-in-overlay" id="signInOverlay">
+  <div style="font-size: 22px; font-weight: 700;">SETTY Site Report</div>
+  <div style="color: var(--dim); max-width: 420px;">Sign in with your Setty Microsoft account to load project info and generate site reports.</div>
+  <button class="btn btn-primary" id="signInBtn">Sign in</button>
+</div>
+
+<!-- Header bar -->
+<div class="header-bar no-print">
+  <div>
+    <h1>Site Report</h1>
+    <div style="font-size: 12px; color: var(--dim);">Single-visit punchlist · grouped by discipline · printable</div>
+  </div>
+  <div style="display:flex; gap:10px; align-items:center;">
+    <span class="header-user" id="headerUser"></span>
+    <button class="btn" id="printBtn">🖨 Print / PDF</button>
+    <button class="btn" id="saveBtn">💾 Save Report</button>
+    <button class="btn btn-ghost" id="signOutBtn" style="display:none;">Sign out</button>
+  </div>
+</div>
+
+<!-- Project selector (visible only when no ?project= or project not found) -->
+<div class="card no-print" id="projectPickerCard" style="display:none;">
+  <label>Project</label>
+  <select id="projectPicker"><option value="">— Select a project —</option></select>
+  <div class="meta-line">Pass <code>?project=&lt;id&gt;</code> in the URL from PMS to pre-select.</div>
+</div>
+
+<!-- Project header (auto-filled from PMS) -->
+<div class="card" id="projectHeaderCard" style="display:none;">
+  <div class="print-cover">
+    <div style="font-size: 10pt; color: #44546A; text-transform: uppercase; letter-spacing: .05em;">Site Report</div>
+    <div id="coverProjectName" style="font-size: 16pt; font-weight: 700; color: #1F3864;"></div>
+    <div id="coverProjectNumber" style="font-size: 11pt; color: #44546A;"></div>
+  </div>
+  <h2>Project</h2>
+  <div class="grid-2">
+    <div><label>Project Name</label><input id="projectName" readonly /></div>
+    <div><label>Project Number</label><input id="projectNumber" readonly /></div>
+    <div><label>Client</label><input id="clientName" readonly /></div>
+    <div><label>Prime</label><input id="primeName" readonly /></div>
+    <div style="grid-column: 1/-1;"><label>Address</label><input id="projectAddress" readonly /></div>
+  </div>
+</div>
+
+<!-- Visit metadata -->
+<div class="card" id="visitCard" style="display:none;">
+  <h2>Visit</h2>
+  <div class="grid-3">
+    <div><label>Visit Date</label><input type="date" id="visitDate" /></div>
+    <div><label>Visited By</label><input id="visitedBy" placeholder="e.g. M. Arias, J. Smith" /></div>
+    <div><label>Weather / Conditions</label><input id="weather" placeholder="e.g. 65°F, clear" /></div>
+  </div>
+  <div style="margin-top: 10px;"><label>General Notes</label><textarea id="generalNotes" rows="2" placeholder="Anything to note before the item list…"></textarea></div>
+</div>
+
+<!-- Add item -->
+<div class="card no-print" id="addItemCard" style="display:none;">
+  <h2>Add Item</h2>
+  <div class="grid-3">
+    <div>
+      <label>Discipline</label>
+      <select id="newDiscipline">
+        <option>Architectural</option>
+        <option>Structural</option>
+        <option selected>Mechanical</option>
+        <option>Electrical</option>
+        <option>Plumbing</option>
+        <option>Fire Protection</option>
+        <option>Civil</option>
+        <option>Technology</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <div><label>Location / Room</label><input id="newLocation" placeholder="e.g. Rm 304, RTU-1 Roof, Stair B Lvl 2" /></div>
+    <div>
+      <label>Photo (optional)</label>
+      <input type="file" id="newPhoto" accept="image/*" />
+    </div>
+  </div>
+  <div style="margin-top: 10px;"><label>Description</label><textarea id="newDescription" rows="2" placeholder="The punchlist item itself…"></textarea></div>
+  <div style="margin-top: 10px;"><label>Notes (optional)</label><input id="newNotes" placeholder="Supplemental notes" /></div>
+  <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center;">
+    <button class="btn btn-primary" id="addItemBtn">+ Add Item</button>
+    <span class="status info" id="addItemStatus" style="display:none;"></span>
+  </div>
+</div>
+
+<!-- Items list (grouped by discipline) -->
+<div id="itemsList"></div>
+
+<div class="status info no-print" id="globalStatus" style="display:none; margin-top: 16px;"></div>
+
+<script>
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+const MSAL_CONFIG = {
+  auth: {
+    clientId: "fd62989e-c4ca-4e92-8c14-25c34a4f0c83",
+    authority: "https://login.microsoftonline.com/2406b76a-c64c-4cc2-bcdc-a83d0091d62c",
+    redirectUri: window.location.origin + window.location.pathname,
+  },
+  cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
+  system: { allowNativeBroker: false },
+};
+const LOGIN_SCOPES = ["User.Read", "openid", "profile"];
+const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
+const SB_HEADERS = { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPABASE_ANON, "Content-Type": "application/json" };
+
+// Standard AEC discipline prefixes used for per-discipline item numbers.
+const DISCIPLINE_PREFIX = {
+  "Architectural": "A",
+  "Structural": "S",
+  "Mechanical": "M",
+  "Electrical": "E",
+  "Plumbing": "P",
+  "Fire Protection": "FP",
+  "Civil": "C",
+  "Technology": "T",
+  "Other": "O",
+};
+const DISCIPLINE_ORDER = ["Architectural", "Structural", "Mechanical", "Electrical", "Plumbing", "Fire Protection", "Civil", "Technology", "Other"];
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let msalApp = null;
+let msalAccount = null;
+let pmsProjects = [];
+let selectedProject = null;
+// items: array of { id, discipline, location, description, notes, photoDataUrl }
+// The item's display number is computed on render, not stored. Numbers depend
+// on whatever rule lives in nextNumberFor() below.
+let items = [];
+let reportId = null;      // populated after first save (PK in pms_site_reports)
+let reportVersion = 0;    // optimistic-concurrency version
+
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+// ─── NUMBERING ───────────────────────────────────────────────────────────────
+// TODO(you): decide how per-discipline numbers behave on delete/reorder.
+//
+// Returns the *display number* for an item of the given discipline at the
+// given index within the items array. Called per item on render — so changing
+// this function changes the entire list's numbering scheme.
+//
+// Tradeoffs to choose between:
+//
+//   A. SEQUENTIAL BY INSERTION ORDER, GAPS PRESERVED
+//      - If items added M-1, M-2, M-3 and you delete M-2, the others stay
+//        M-1 and M-3 (M-2 is "gone").
+//      - Numbers never change after an item is created — feels stable, easy
+//        to reference in conversations ("look at M-3").
+//      - Requires storing the number on the item at create time.
+//
+//   B. COMPACT, RENUMBERED ON DELETE/REORDER (the default below)
+//      - Delete M-2 and the old M-3 becomes the new M-2. Always 1..N per
+//        discipline with no gaps.
+//      - Always clean to read; never confusing on a fresh print.
+//      - BUT: numbers shift, so a contractor referencing "M-2" mid-edit may
+//        be talking about the wrong item.
+//
+//   C. HYBRID: stable while editing, recompact on "Issue"
+//      - Best of both, more code.
+//
+// The default below is (B) — compact and renumbered. Rewrite this to switch.
+function numberForItem(item, indexWithinDiscipline) {
+  const prefix = DISCIPLINE_PREFIX[item.discipline] || "X";
+  return prefix + "-" + (indexWithinDiscipline + 1);
+}
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
+(async function init() {
+  document.getElementById("visitDate").value = new Date().toISOString().slice(0, 10);
+
+  msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalApp.initialize();
+  try {
+    const response = await msalApp.handleRedirectPromise();
+    if (response?.account) { msalAccount = response.account; onSignedIn(); return; }
+  } catch (e) {}
+  const accounts = msalApp.getAllAccounts();
+  if (accounts.length > 0) { msalAccount = accounts[0]; onSignedIn(); return; }
+})();
+
+document.getElementById("signInBtn").onclick = async () => {
+  try {
+    const res = await msalApp.loginPopup({ scopes: LOGIN_SCOPES });
+    if (res?.account) { msalAccount = res.account; onSignedIn(); }
+  } catch (e) { setGlobalStatus("error", "Sign-in failed: " + e.message); }
+};
+
+document.getElementById("signOutBtn").onclick = async () => {
+  await msalApp.logoutPopup();
+  location.reload();
+};
+
+function onSignedIn() {
+  document.getElementById("signInOverlay").style.display = "none";
+  document.getElementById("signOutBtn").style.display = "inline-block";
+  document.getElementById("headerUser").textContent = msalAccount.name || msalAccount.username;
+  loadProjects();
+}
+
+// ─── DATA LOAD ───────────────────────────────────────────────────────────────
+async function loadProjects() {
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project", { headers: SB_HEADERS });
+    if (!res.ok) throw new Error("pms_projects GET HTTP " + res.status);
+    const rows = await res.json();
+    pmsProjects = (rows || []).map(r => r.project).filter(p => p && !p.archived);
+    onProjectsLoaded();
+  } catch (e) {
+    setGlobalStatus("error", "Could not load projects: " + e.message);
+  }
+}
+
+function onProjectsLoaded() {
+  // 1. Resolve from ?project= query param if present.
+  const params = new URLSearchParams(window.location.search);
+  const wanted = params.get("project");
+  const reportParam = params.get("report");
+  if (wanted) {
+    const match = pmsProjects.find(p => p.id === wanted);
+    if (match) {
+      selectProject(match);
+      if (reportParam) loadExistingReport(reportParam);
+      return;
+    }
+  }
+  // 2. No match → show the picker, populated alphabetically.
+  const picker = document.getElementById("projectPicker");
+  const sorted = [...pmsProjects].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  sorted.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = (p.projectNumber ? p.projectNumber + " — " : "") + (p.name || "(unnamed)");
+    picker.appendChild(opt);
+  });
+  picker.onchange = () => {
+    const match = pmsProjects.find(p => p.id === picker.value);
+    if (match) selectProject(match);
+  };
+  document.getElementById("projectPickerCard").style.display = "block";
+}
+
+function selectProject(project) {
+  selectedProject = project;
+  document.getElementById("projectPickerCard").style.display = "none";
+  document.getElementById("projectHeaderCard").style.display = "block";
+  document.getElementById("visitCard").style.display = "block";
+  document.getElementById("addItemCard").style.display = "block";
+  document.getElementById("projectName").value = project.name || "";
+  document.getElementById("projectNumber").value = project.projectNumber || "";
+  document.getElementById("clientName").value = project.clientName || "";
+  document.getElementById("primeName").value = project.prime || "";
+  const addrParts = [project.projectAddress, project.projectCity, project.projectState].filter(Boolean);
+  document.getElementById("projectAddress").value = addrParts.join(", ");
+  document.getElementById("coverProjectName").textContent = project.name || "";
+  document.getElementById("coverProjectNumber").textContent = project.projectNumber ? "Project #: " + project.projectNumber : "";
+  renderItems();
+}
+
+async function loadExistingReport(reportId) {
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_site_reports?id=eq." + encodeURIComponent(reportId) + "&select=id,report,version", { headers: SB_HEADERS });
+    if (!res.ok) return;
+    const rows = await res.json();
+    if (!rows || rows.length === 0) return;
+    const row = rows[0];
+    reportId = row.id;
+    reportVersion = row.version;
+    const r = row.report || {};
+    if (r.visitDate) document.getElementById("visitDate").value = r.visitDate;
+    if (r.visitedBy) document.getElementById("visitedBy").value = r.visitedBy;
+    if (r.weather)   document.getElementById("weather").value = r.weather;
+    if (r.generalNotes) document.getElementById("generalNotes").value = r.generalNotes;
+    items = r.items || [];
+    renderItems();
+  } catch (e) { console.warn("[load existing report]", e.message); }
+}
+
+// ─── ADD ITEM ────────────────────────────────────────────────────────────────
+document.getElementById("addItemBtn").onclick = async () => {
+  const discipline  = document.getElementById("newDiscipline").value;
+  const location    = document.getElementById("newLocation").value.trim();
+  const description = document.getElementById("newDescription").value.trim();
+  const notes       = document.getElementById("newNotes").value.trim();
+  const fileInput   = document.getElementById("newPhoto");
+
+  if (!description) { setAddStatus("error", "Description is required."); return; }
+
+  let photoDataUrl = null;
+  if (fileInput.files && fileInput.files[0]) {
+    try {
+      photoDataUrl = await readFileAsDataUrl(fileInput.files[0]);
+      // Photos can be large — quick warning if over ~3 MB so users compress.
+      if (photoDataUrl.length > 4 * 1024 * 1024) {
+        setAddStatus("error", "Photo is very large; consider resizing first.");
+      }
+    } catch (e) { setAddStatus("error", "Could not read photo: " + e.message); return; }
+  }
+
+  items.push({ id: uid(), discipline, location, description, notes, photoDataUrl });
+  document.getElementById("newLocation").value = "";
+  document.getElementById("newDescription").value = "";
+  document.getElementById("newNotes").value = "";
+  fileInput.value = "";
+  setAddStatus("success", "Item added.");
+  setTimeout(() => setAddStatus("", ""), 1200);
+  renderItems();
+};
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error(reader.error?.message || "Read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function removeItem(id) {
+  if (!window.confirm("Remove this item?")) return;
+  items = items.filter(i => i.id !== id);
+  renderItems();
+}
+
+// ─── RENDER ──────────────────────────────────────────────────────────────────
+function renderItems() {
+  const root = document.getElementById("itemsList");
+  root.innerHTML = "";
+  if (items.length === 0) {
+    root.innerHTML = '<div class="card" style="text-align:center; color: var(--dim); font-size: 13px;">No items yet. Use the form above to add the first one.</div>';
+    return;
+  }
+  // Group by discipline (preserve standard ordering).
+  const byDiscipline = {};
+  items.forEach(i => {
+    if (!byDiscipline[i.discipline]) byDiscipline[i.discipline] = [];
+    byDiscipline[i.discipline].push(i);
+  });
+  DISCIPLINE_ORDER.forEach(disc => {
+    const list = byDiscipline[disc];
+    if (!list || list.length === 0) return;
+    const section = document.createElement("div");
+    section.className = "disc-section";
+    section.innerHTML = `
+      <div class="disc-header">${disc} <span class="disc-count">· ${list.length}</span></div>
+      <div id="disc-${cssEscape(disc)}"></div>`;
+    root.appendChild(section);
+    const inner = section.querySelector("#disc-" + cssEscape(disc));
+    list.forEach((it, idx) => inner.appendChild(renderItemRow(it, idx)));
+  });
+}
+
+function renderItemRow(item, indexWithinDiscipline) {
+  const row = document.createElement("div");
+  row.className = "item-row";
+  const num = numberForItem(item, indexWithinDiscipline);
+  const photoHtml = item.photoDataUrl
+    ? `<img src="${item.photoDataUrl}" class="item-photo" alt="" />`
+    : `<div class="item-photo-empty">no photo</div>`;
+  row.innerHTML = `
+    <div class="item-num">${num}</div>
+    <div class="item-loc">${escapeHtml(item.location || "—")}</div>
+    <div>
+      <div class="item-desc">${escapeHtml(item.description || "")}</div>
+      ${item.notes ? `<div style="font-size: 11px; color: var(--dim); margin-top: 3px; font-style: italic;">${escapeHtml(item.notes)}</div>` : ""}
+    </div>
+    <div class="item-actions">
+      ${photoHtml}
+      <button class="icon-btn no-print" title="Remove" data-remove="${item.id}">✕</button>
+    </div>`;
+  row.querySelector("[data-remove]")?.addEventListener("click", () => removeItem(item.id));
+  return row;
+}
+
+function cssEscape(s) { return s.replace(/[^a-zA-Z0-9_-]/g, "_"); }
+function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+// ─── SAVE ────────────────────────────────────────────────────────────────────
+document.getElementById("saveBtn").onclick = saveReport;
+
+async function saveReport() {
+  if (!selectedProject) { setGlobalStatus("error", "Select a project first."); return; }
+  const report = {
+    projectId:    selectedProject.id,
+    visitDate:    document.getElementById("visitDate").value,
+    visitedBy:    document.getElementById("visitedBy").value.trim(),
+    weather:      document.getElementById("weather").value.trim(),
+    generalNotes: document.getElementById("generalNotes").value.trim(),
+    items,
+    createdBy:    msalAccount.username || msalAccount.name || "",
+    updatedAt:    new Date().toISOString(),
+  };
+  try {
+    if (!reportId) {
+      // INSERT
+      reportId = uid();
+      const res = await fetch(SUPABASE_URL + "/rest/v1/pms_site_reports", {
+        method: "POST", headers: { ...SB_HEADERS, "Prefer": "return=representation" },
+        body: JSON.stringify({ id: reportId, project_id: selectedProject.id, report, version: 1, updated_at: new Date().toISOString() }),
+      });
+      if (!res.ok) throw new Error("INSERT HTTP " + res.status + " — " + (await res.text()));
+      reportVersion = 1;
+      const newUrl = location.pathname + "?project=" + encodeURIComponent(selectedProject.id) + "&report=" + encodeURIComponent(reportId);
+      window.history.replaceState({}, "", newUrl);
+    } else {
+      // PATCH with optimistic version check
+      const res = await fetch(SUPABASE_URL + "/rest/v1/pms_site_reports?id=eq." + encodeURIComponent(reportId) + "&version=eq." + reportVersion, {
+        method: "PATCH", headers: { ...SB_HEADERS, "Prefer": "return=representation" },
+        body: JSON.stringify({ report, version: reportVersion + 1, updated_at: new Date().toISOString() }),
+      });
+      if (!res.ok) throw new Error("PATCH HTTP " + res.status + " — " + (await res.text()));
+      const result = await res.json();
+      if (!result || result.length === 0) throw new Error("Report modified by someone else. Reload to merge.");
+      reportVersion += 1;
+    }
+    setGlobalStatus("success", "Saved at " + new Date().toLocaleTimeString());
+  } catch (e) {
+    setGlobalStatus("error", "Save failed: " + e.message);
+  }
+}
+
+document.getElementById("printBtn").onclick = () => window.print();
+
+// ─── STATUS HELPERS ──────────────────────────────────────────────────────────
+function setGlobalStatus(kind, msg) {
+  const el = document.getElementById("globalStatus");
+  if (!msg) { el.style.display = "none"; return; }
+  el.style.display = "inline-block";
+  el.className = "status " + (kind || "info");
+  el.textContent = msg;
+}
+function setAddStatus(kind, msg) {
+  const el = document.getElementById("addItemStatus");
+  if (!msg) { el.style.display = "none"; return; }
+  el.style.display = "inline-block";
+  el.className = "status " + (kind || "info");
+  el.textContent = msg;
+}
+</script>
+</body>
+</html>
