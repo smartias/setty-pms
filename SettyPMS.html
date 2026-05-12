@@ -1511,23 +1511,33 @@ function NewProjectModal({ onClose, onCreate, clients = [] }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
         <div>
-          <label style={labelStyle}>Prime *</label>
+          <label style={labelStyle}>Prime (top of contracting chain) *</label>
           <input value={prime} onChange={e => setPrime(e.target.value)} style={inputStyle}
             list="newProjectFirmOptions"
-            placeholder="Setty (if we're prime) or other firm" />
-          <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4 }}>
-            Who holds the prime contract with the owner. Defaults to Setty.
+            placeholder="Setty (if we're prime) or top-level firm on contract" />
+          <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, lineHeight: 1.4 }}>
+            The firm holding the contract directly with the project owner. The chain is{" "}
+            <em>Owner → Prime → (possible intermediate sub) → Setty</em>.
           </div>
         </div>
         <div>
-          <label style={labelStyle}>Client *</label>
-          <input value={clientName} onChange={e => setClientName(e.target.value)} style={inputStyle}
-            list="newProjectFirmOptions"
-            placeholder={prime.trim().toLowerCase() === "setty" ? "Project owner" : "Prime firm or owner you report to"} />
-          <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4 }}>
+          <label style={labelStyle}>Client (who hires Setty) *</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={clientName} onChange={e => setClientName(e.target.value)} style={inputStyle}
+              list="newProjectFirmOptions"
+              placeholder={prime.trim().toLowerCase() === "setty" ? "Project owner" : "Prime firm, or the sub that hires us"} />
+            {!clientName.trim() && prime.trim() && prime.trim().toLowerCase() !== "setty" && (
+              <button type="button" onClick={() => setClientName(prime.trim())}
+                title="Use the Prime as Client (single-tier sub — the most common case)"
+                style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "0 10px", whiteSpace: "nowrap" }}>
+                ↑ Same as Prime
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, lineHeight: 1.4 }}>
             {prime.trim().toLowerCase() === "setty"
-              ? "Setty is prime → Client is the project owner."
-              : "Setty is a sub → Client is usually the Prime."}
+              ? "Setty is the prime → Client is whoever holds our contract (usually the project owner)."
+              : "Whoever Setty contracts with directly. Usually = Prime (1-tier sub). For 2nd-tier subs, the Client is itself a sub to the Prime — enter the intermediate firm here."}
           </div>
         </div>
       </div>
@@ -8024,6 +8034,13 @@ function ProjectDirectoryView({ project, onChange, clients }) {
           {byCompany[company].map(c => {
             const tc = directoryTypeColor(c.type);
             const sources = c._sources || [];
+            // Dual-role detection: this entry's company matches BOTH the
+            // project's Prime and Client. Common when Setty is a 1-tier sub
+            // to an architect who is both Client and Prime.
+            const coLc     = (c.company || "").trim().toLowerCase();
+            const primeLc  = (project.prime || "").trim().toLowerCase();
+            const clientLc = (project.clientName || "").trim().toLowerCase();
+            const dualPrimeClient = coLc && primeLc && clientLc && coLc === primeLc && coLc === clientLc;
             return (
               <div key={c.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 12px", borderBottom: `1px solid ${P.border}`, transition: "background 0.1s" }}
                 onMouseOver={e => e.currentTarget.style.background = P.bg}
@@ -8032,7 +8049,14 @@ function ProjectDirectoryView({ project, onChange, clients }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name || <span style={{ color: P.textDim, fontStyle: "italic" }}>(no name)</span>}</span>
                     {c.title && <span style={{ color: P.textMuted, fontSize: 12 }}>· {c.title}</span>}
-                    <Badge color={tc} text={c.type} />
+                    {dualPrimeClient ? (
+                      <>
+                        <Badge color={directoryTypeColor("Prime")}  text="Prime"  />
+                        <Badge color={directoryTypeColor("Client")} text="Client" />
+                      </>
+                    ) : (
+                      <Badge color={tc} text={c.type} />
+                    )}
                     {sources.map((s, i) => (
                       <span key={i} title={c._derived ? "Auto-rolled from " + s : "Originally from " + s}
                         style={{ fontSize: 9.5, fontWeight: 600, padding: "1px 6px", borderRadius: 999, background: c._derived ? P.bg : "transparent", color: P.textDim, border: `1px solid ${P.border}`, textTransform: "uppercase", letterSpacing: ".04em" }}>
@@ -12523,6 +12547,52 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           <div style={{ color: P.textMuted, fontSize: 13 }}>
             {project.projectNumber}{project.projectManager ? ` · PM: ${project.projectManager}` : ""}
           </div>
+          {(() => {
+            // Contracting chain: shows who Setty answers to and who holds the
+            // prime contract. Collapses to one node when Client = Prime
+            // (1-tier sub) and expands to a full chain otherwise.
+            const prime  = (project.prime || "").trim();
+            const client = (project.clientName || "").trim();
+            if (!prime && !client) return null;
+            const isSettyPrime = prime.toLowerCase() === "setty";
+            const same = prime && client && prime.toLowerCase() === client.toLowerCase();
+            const chip = (label, value, tone) => (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 6,
+                background: tone.bg, color: tone.text, border: `1px solid ${tone.border}`, fontSize: 11, fontWeight: 600 }}>
+                <span style={{ opacity: 0.7, fontWeight: 500, textTransform: "uppercase", letterSpacing: ".04em", fontSize: 9.5 }}>{label}</span>
+                {value}
+              </span>
+            );
+            const arrow = <span style={{ color: P.textDim, fontSize: 11 }}>→</span>;
+            const primeTone  = { bg: P.purpleDim, text: P.purple,      border: P.purple };
+            const clientTone = { bg: P.accentDim, text: P.accentLight, border: P.accent };
+            const settyTone  = { bg: P.greenDim,  text: P.green,       border: P.green };
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                {isSettyPrime ? (
+                  <>
+                    {chip("Owner", client || "—", clientTone)}
+                    {arrow}
+                    {chip("Prime / Setty", "Setty", settyTone)}
+                  </>
+                ) : same ? (
+                  <>
+                    {chip("Prime · Client", prime, primeTone)}
+                    {arrow}
+                    {chip("Setty", "Sub", settyTone)}
+                  </>
+                ) : (
+                  <>
+                    {prime && chip("Prime", prime, primeTone)}
+                    {prime && client && arrow}
+                    {client && chip("Client", client, clientTone)}
+                    {(prime || client) && arrow}
+                    {chip("Setty", "Sub", settyTone)}
+                  </>
+                )}
+              </div>
+            );
+          })()}
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <button
@@ -12630,15 +12700,18 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                 if (cleaned !== e.target.value) updateField("projectNumber", cleaned);
               }}
               style={{ width: "100%" }} /></Field>
-            <Field label="Prime">
+            <Field label="Prime (top of contracting chain)">
               <CompanyTypeahead
                 value={project.prime || ""}
                 onChange={val => updateField("prime", val)}
                 clients={clients}
                 filter="prime"
-                placeholder="Type to search primes / GCs…"
+                placeholder="Top-level firm on the contract with the owner"
                 onAddClient={onAddClient}
               />
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 4, lineHeight: 1.4 }}>
+                The firm holding the prime contract with the project owner. Chain: <em>Owner → Prime → (possible intermediate sub) → Setty</em>.
+              </div>
             </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
 
@@ -12705,15 +12778,25 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </select>
             </Field>
             {isPipeline(project) && (<>
-              <Field label="Client Name">
+              <Field label="Client (who hires Setty)">
                 <CompanyTypeahead
                   value={project.clientName || ""}
                   onChange={val => updateField("clientName", val)}
                   clients={clients}
                   filter="client"
-                  placeholder="Type to search clients…"
+                  placeholder="Firm that contracts Setty directly"
                   onAddClient={onAddClient}
                 />
+                {!(project.clientName || "").trim() && (project.prime || "").trim() && (project.prime || "").trim().toLowerCase() !== "setty" && (
+                  <button type="button" onClick={() => updateField("clientName", (project.prime || "").trim())}
+                    title="Use the Prime as Client (most common — 1-tier sub)"
+                    style={{ marginTop: 6, background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
+                    ↑ Same as Prime
+                  </button>
+                )}
+                <div style={{ fontSize: 11, color: P.textDim, marginTop: 4, lineHeight: 1.4 }}>
+                  Whoever Setty contracts with directly. Usually = Prime (1-tier sub). For 2nd-tier subs, the Client is itself a sub to the Prime.
+                </div>
               </Field>
               <Field label="Proposal Due Date">
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -17128,10 +17211,13 @@ function ScopeView({ project, onChange }) {
 // ─── CLIENT & PRIME DIRECTORY ─────────────────────────────────────────────────
 
 function newContact(overrides) {
-  return { id: uid(), name: "", title: "", role: "Owner", phone: "", email: "", lastContacted: "", notes: "", ...overrides };
+  return { id: uid(), name: "", title: "", phone: "", email: "", lastContacted: "", notes: "", ...overrides };
 }
 
-const CONTACT_ROLES = ["Owner", "Owner's Representative", "Developer", "Architect", "Engineer", "Construction Manager", "GC", "Agency", "Inspector", "PM", "Legal", "Accounting", "Other"];
+// CONTACT_ROLES removed — per-contact role replaced by free-text Title.
+// Firm-level discipline now lives on the global company (`types[]`); the
+// per-project relationship lives on the directory entry (`type` from
+// DIRECTORY_TYPES). A separate per-contact role added no useful signal.
 
 // Global "what kind of firm is this" taxonomy. Multi-choice: a single firm
 // can be both, e.g., MEPFP Engineer + Specialty Consultant. Distinct from the
@@ -17297,14 +17383,6 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                   <Field label="Title" style={{ marginBottom: 8 }}>
                     <input value={ct.title||""} onChange={e => updateContact(ct.id, { title: e.target.value })} placeholder="e.g. Project Manager" style={{ width: "100%" }} />
                   </Field>
-                  <Field label="Role" style={{ marginBottom: 8 }}>
-                    <select value={ct.role||"Other"} onChange={e => updateContact(ct.id, { role: e.target.value })} style={{ width: "100%" }}>
-                      {CONTACT_ROLES.map(r => <option key={r}>{r}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Last Contacted" style={{ marginBottom: 8 }}>
-                    <input type="date" value={ct.lastContacted||""} onChange={e => updateContact(ct.id, { lastContacted: e.target.value })} style={{ width: "100%" }} />
-                  </Field>
                   <Field label="Email" style={{ marginBottom: 8 }}>
                     <input type="email" value={ct.email||""} onChange={e => updateContact(ct.id, { email: e.target.value })} placeholder="email@firm.com" style={{ width: "100%" }} />
                   </Field>
@@ -17315,7 +17393,10 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                     <input value={ct.notes||""} onChange={e => updateContact(ct.id, { notes: e.target.value })} placeholder="Any notes…" style={{ width: "100%" }} />
                   </Field>
                 </div>
-                <div style={{ textAlign: "right", marginTop: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+                  <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>
+                    {ct.lastContacted ? "Last contacted: " + ct.lastContacted + " (auto-updated when captured via Outlook add-in)" : "Last contacted: — (auto-fills when this contact is captured via the Outlook add-in)"}
+                  </div>
                   <Btn small variant="danger" onClick={() => removeContact(ct.id)}>Remove</Btn>
                 </div>
               </div>
@@ -17373,7 +17454,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                         </div>}
                   </td>
                   <td style={{ color: P.textMuted }}>{contacts.length || "—"}</td>
-                  <td style={{ color: P.textMuted, fontSize: 12 }}>{primary ? primary.name + (primary.role ? " · " + primary.role : "") : "—"}</td>
+                  <td style={{ color: P.textMuted, fontSize: 12 }}>{primary ? primary.name + (primary.title ? " · " + primary.title : "") : "—"}</td>
                   <td style={{ fontSize: 12 }} onClick={e => e.stopPropagation()}>
                     {(() => {
                       const linked = (projects||[]).filter(p => !p.archived && (p.client === c.name || p.prime === c.name));
@@ -17414,13 +17495,14 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
   const [form, setForm] = React.useState({ name: prefill || "", type: filter === "client" ? "Client" : "Prime/GC", contacts: [] });
   const [contactName, setContactName] = React.useState("");
   const [contactEmail, setContactEmail] = React.useState("");
-  const [contactRole, setContactRole] = React.useState("Owner");
+  // Repurposed: was per-contact "role" picker; now a free-text Title input.
+  const [contactRole, setContactRole] = React.useState("");
 
   function save() {
     if (!form.name.trim()) return;
     const company = newClient({
       ...form,
-      contacts: contactName.trim() ? [newContact({ name: contactName.trim(), email: contactEmail.trim(), role: contactRole })] : [],
+      contacts: contactName.trim() ? [newContact({ name: contactName.trim(), email: contactEmail.trim(), title: contactRole.trim() })] : [],
     });
     onSave(company);
   }
@@ -17466,10 +17548,8 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
             <Field label="Name" style={{ marginBottom: 8 }}>
               <input value={contactName} onChange={e => setContactName(e.target.value)} placeholder="Full name" style={{ width: "100%" }} />
             </Field>
-            <Field label="Role" style={{ marginBottom: 8 }}>
-              <select value={contactRole} onChange={e => setContactRole(e.target.value)} style={{ width: "100%" }}>
-                {CONTACT_ROLES.map(r => <option key={r}>{r}</option>)}
-              </select>
+            <Field label="Title" style={{ marginBottom: 8 }}>
+              <input value={contactRole} onChange={e => setContactRole(e.target.value)} placeholder="e.g. Project Manager" style={{ width: "100%" }} />
             </Field>
             <Field label="Email" style={{ gridColumn: "1/-1", marginBottom: 0 }}>
               <input type="email" value={contactEmail} onChange={e => setContactEmail(e.target.value)} placeholder="email@company.com" style={{ width: "100%" }} />
@@ -18318,7 +18398,7 @@ function POCSection({ pocList, onChange, clients, companyName, onUpdateClient })
                   onMouseOver={e => e.currentTarget.style.background = P.accentDim}
                   onMouseOut={e => e.currentTarget.style.background = "transparent"}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{ct.name}</div>
-                  {(ct.title || ct.role) && <div style={{ fontSize: 11, color: P.textDim }}>{ct.title || ct.role}</div>}
+                  {ct.title && <div style={{ fontSize: 11, color: P.textDim }}>{ct.title}</div>}
                   {ct.email && <div style={{ fontSize: 11, color: P.textDim }}>{ct.email}</div>}
                 </div>
               ))}
@@ -18403,7 +18483,7 @@ function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClien
               onMouseOver={e => e.currentTarget.style.background = P.accentDim}
               onMouseOut={e => e.currentTarget.style.background = "transparent"}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>{ct.name}</div>
-              {(ct.title || ct.role) && <div style={{ fontSize: 11, color: P.textDim }}>{[ct.title, ct.role].filter(Boolean).join(" · ")}</div>}
+              {ct.title && <div style={{ fontSize: 11, color: P.textDim }}>{ct.title}</div>}
               {ct.email && <div style={{ fontSize: 11, color: P.textDim }}>{ct.email}</div>}
             </div>
           ))}
@@ -18491,7 +18571,7 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAdd
               <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
               {(c.contacts||[]).length > 0 && (
                 <div style={{ fontSize: 11, color: P.textDim }}>
-                  {c.contacts[0].name || ""}{c.contacts[0].name && c.contacts[0].role ? " · " + c.contacts[0].role : ""}
+                  {c.contacts[0].name || ""}{c.contacts[0].name && c.contacts[0].title ? " · " + c.contacts[0].title : ""}
                 </div>
               )}
             </div>
