@@ -365,6 +365,25 @@ const DISCIPLINE_PREFIX = {
 };
 const DISCIPLINE_ORDER = ["Architectural", "Structural", "Mechanical", "Electrical", "Plumbing", "Fire Protection", "Civil", "Technology", "Other"];
 
+// Pin color per discipline. Chosen for high contrast against typical
+// architectural plan backgrounds (off-white / light gray) and good
+// distinguishability between disciplines on a busy keyplan. All shades are
+// dark enough to carry white text legibly.
+const DISCIPLINE_PIN_COLOR = {
+  "Architectural":   "#111827", // near-black
+  "Structural":      "#92400E", // rust
+  "Mechanical":      "#C2410C", // orange
+  "Electrical":      "#CA8A04", // amber/gold
+  "Plumbing":        "#1E40AF", // deep blue
+  "Fire Protection": "#DC2626", // red
+  "Civil":           "#15803D", // green
+  "Technology":      "#6B21A8", // purple
+  "Other":           "#4B5563", // gray
+};
+function pinColorFor(item) {
+  return DISCIPLINE_PIN_COLOR[item.discipline] || DISCIPLINE_PIN_COLOR["Other"];
+}
+
 // ─── STATE ───────────────────────────────────────────────────────────────────
 let msalApp = null;
 let msalAccount = null;
@@ -935,6 +954,10 @@ function renderPlacementCanvas() {
     const PIN_PX  = 30;          // pin diameter
     const ARROW_PX = 38;         // length from pin center to handle
     const dir = (it.pin.direction == null) ? null : it.pin.direction; // radians, 0 = east, π/2 = south (CSS-y)
+    // Discipline-based color. Active pin gets the accent blue so the user
+    // can tell at a glance which pin they're currently editing.
+    const discColor = pinColorFor(it);
+    const pinColor  = isActive ? "#3B82F6" : discColor;
 
     // Container so direction arrow + handle share the pin's coordinate origin.
     const group = document.createElement("div");
@@ -948,7 +971,7 @@ function renderPlacementCanvas() {
     arrowWrap.style.cssText = `position:absolute; left:0; top:0; transform:rotate(${dir == null ? 0 : dir}rad); transform-origin:0 0; pointer-events:none; opacity:${dir == null ? 0 : 1}; transition:opacity .12s;`;
     arrowWrap.innerHTML = `
       <svg width="${ARROW_PX + 14}" height="20" style="position:absolute; left:${PIN_PX/2 - 2}px; top:-10px; overflow:visible;" viewBox="0 0 ${ARROW_PX + 14} 20">
-        <polygon points="0,7 ${ARROW_PX - 4},7 ${ARROW_PX - 4},2 ${ARROW_PX + 10},10 ${ARROW_PX - 4},18 ${ARROW_PX - 4},13 0,13" fill="${isActive ? "#3B82F6" : "#1F3864"}" stroke="#fff" stroke-width="1.5" />
+        <polygon points="0,7 ${ARROW_PX - 4},7 ${ARROW_PX - 4},2 ${ARROW_PX + 10},10 ${ARROW_PX - 4},18 ${ARROW_PX - 4},13 0,13" fill="${pinColor}" stroke="#fff" stroke-width="1.5" />
       </svg>`;
     group.appendChild(arrowWrap);
 
@@ -958,7 +981,7 @@ function renderPlacementCanvas() {
     pin.style.cssText = `
       position:absolute; left:0; top:0; transform:translate(-50%, -50%);
       width:${PIN_PX}px; height:${PIN_PX}px; border-radius:50%;
-      background:${isActive ? "#3B82F6" : "#1F3864"}; color:white;
+      background:${pinColor}; color:white;
       display:flex; align-items:center; justify-content:center;
       font-family:'JetBrains Mono',monospace; font-weight:700; font-size:10px;
       border:2px solid white; box-shadow:0 2px 6px rgba(0,0,0,.4);
@@ -996,7 +1019,7 @@ function renderPlacementCanvas() {
       transform:translate(-50%, -50%);
       width:${HANDLE_PX}px; height:${HANDLE_PX}px; border-radius:50%;
       background:${dir == null ? "#F59E0B" : "#FFFFFF"};
-      border:2px solid ${isActive ? "#3B82F6" : "#1F3864"};
+      border:2px solid ${pinColor};
       cursor:grab; box-shadow:0 2px 8px rgba(0,0,0,.5);
       display:flex; align-items:center; justify-content:center;
       font-size:16px; font-weight:700; color:${dir == null ? "white" : "#1F3864"};
@@ -1548,19 +1571,18 @@ async function generateWordDoc(report) {
   const project = selectedProject;
   const addrParts = [project.projectAddress, project.projectCity, project.projectState].filter(Boolean);
 
-  // Cover info table
+  // Info table — project name lives in the header now, so it's not repeated
+  // here. Status (in-progress vs. complete) is intentionally NOT included —
+  // the Word doc is outward-facing (contractor-bound) and shouldn't expose
+  // internal workflow state. Status lives only in the in-app status bar.
   const infoTable = new Table({
     width: { size: 9360, type: WidthType.DXA },
     rows: [
-      infoRow("Project",        project.name || ""),
       infoRow("Project Number", project.projectNumber || ""),
       infoRow("Client",         project.clientName || project.prime || ""),
       infoRow("Address",        addrParts.join(", ")),
       infoRow("Visit Date",     new Date(report.visitDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })),
       infoRow("Conditions",     report.weather),
-      // Status (in-progress vs. complete) is intentionally NOT included here —
-      // the Word doc is outward-facing (contractor-bound) and shouldn't expose
-      // internal workflow state. Status lives only in the in-app status bar.
     ],
   });
 
@@ -1674,25 +1696,25 @@ async function generateWordDoc(report) {
   });
 
   // Header builder shared between portrait and landscape sections so every
-  // page (cover, observations, keyplans) gets the same Setty mark.
+  // page (observations + keyplans) gets the same Setty mark and project
+  // title. The project name lives here (instead of duplicated in the body)
+  // so the title is always visible at the top of every page.
+  const projectTitleText = (project.name || "").trim();
   function buildHeader() {
-    return new Header({
-      children: [new Paragraph({
-        alignment: AlignmentType.LEFT,
-        children: logoImageRun
-          ? [logoImageRun, new TextRun({ text: "    SITE REPORT", font: "Calibri", size: 18, bold: true, color: NAVY })]
-          : [new TextRun({ text: "SETTY    SITE REPORT", font: "Calibri", size: 20, bold: true, color: NAVY })],
-      })],
-    });
+    const titleRuns = logoImageRun
+      ? [logoImageRun, new TextRun({ text: "    SITE REPORT", font: "Calibri", size: 22, bold: true, color: NAVY })]
+      : [new TextRun({ text: "SETTY    SITE REPORT", font: "Calibri", size: 22, bold: true, color: NAVY })];
+    if (projectTitleText) {
+      titleRuns.push(new TextRun({ text: "  —  " + projectTitleText, font: "Calibri", size: 22, bold: true, color: GRAY }));
+    }
+    return new Header({ children: [new Paragraph({ alignment: AlignmentType.LEFT, children: titleRuns })] });
   }
 
   const sections = [{
-    // Portrait section — cover, info, general notes, observations.
+    // Portrait section — firm name, info table, general notes, observations.
     headers: { default: buildHeader() },
     children: [
-      new Paragraph({ children: [new TextRun({ text: "Setty and Associates, Ltd", font: "Calibri", size: 16, color: GRAY })] }),
-      new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "Consulting Engineers · New York · Washington DC", font: "Calibri", size: 16, color: GRAY })] }),
-      new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "SITE REPORT", font: "Calibri", size: 28, bold: true, color: RED })] }),
+      new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "Setty and Associates, Ltd", font: "Calibri", size: 16, color: GRAY })] }),
       infoTable,
       ...generalNotesBlock,
       new Paragraph({ spacing: { before: 240, after: 80 }, children: [new TextRun({ text: "Observations", font: "Calibri", size: 24, bold: true, color: NAVY })] }),
@@ -1761,6 +1783,7 @@ async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
     const x = it.pin.x * w;
     const y = it.pin.y * h;
     const dir = (it.pin.direction == null) ? null : it.pin.direction; // radians
+    const color = pinColorFor(it); // discipline-coded color
 
     // ── Direction arrow (drawn FIRST so the pin sits over its base) ──
     if (dir != null) {
@@ -1778,7 +1801,7 @@ async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
       ctx.closePath();
       ctx.fill();
       // Arrow body
-      ctx.fillStyle = "#1F3864";
+      ctx.fillStyle = color;
       ctx.strokeStyle = "#FFFFFF";
       ctx.lineWidth = Math.max(2, pinR * 0.12);
       ctx.beginPath();
@@ -1791,10 +1814,10 @@ async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
       ctx.restore();
     }
 
-    // ── Pin circle (with shadow, fill, ring, number) ──
+    // ── Pin circle (with shadow, discipline fill, ring, number) ──
     ctx.fillStyle = "rgba(0,0,0,0.35)";
     ctx.beginPath(); ctx.arc(x + 2, y + 2, pinR, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#1F3864";
+    ctx.fillStyle = color;
     ctx.beginPath(); ctx.arc(x, y, pinR, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "#FFFFFF";
     ctx.lineWidth = Math.max(2, pinR * 0.12);
