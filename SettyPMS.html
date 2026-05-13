@@ -1364,6 +1364,157 @@ const CSS = `
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
 
+function TemplatesPanel({ project }) {
+  const [items,       setItems]       = React.useState(null);
+  const [err,         setErr]         = React.useState("");
+  const [working,     setWorking]     = React.useState({});
+  const [done,        setDone]        = React.useState({});   // { [id]: url }
+  const [errMap,      setErrMap]      = React.useState({});
+  const [folders,     setFolders]     = React.useState({});   // { [folderId]: items[] | "loading" }
+  const [openFolders, setOpenFolders] = React.useState({});
+
+  React.useEffect(() => { load(); }, []);
+
+  async function load() {
+    setErr(""); setItems(null);
+    try {
+      const driveId = await getTemplatesDriveId();
+      const res     = await graphFetch("GET", `/drives/${driveId}/root/children?$top=100&$orderby=name asc`);
+      setItems((res?.value || []).map(i => ({ ...i, _driveId: driveId })));
+    } catch(e) { setErr(e.message); setItems([]); }
+  }
+
+  async function loadFolder(folder) {
+    if (folders[folder.id] !== undefined) {
+      setOpenFolders(prev => ({ ...prev, [folder.id]: !prev[folder.id] }));
+      return;
+    }
+    setOpenFolders(prev => ({ ...prev, [folder.id]: true }));
+    setFolders(prev => ({ ...prev, [folder.id]: "loading" }));
+    try {
+      const res = await graphFetch("GET", `/drives/${folder._driveId}/items/${folder.id}/children?$top=100&$orderby=name asc`);
+      setFolders(prev => ({ ...prev, [folder.id]: (res?.value || []).map(i => ({ ...i, _driveId: folder._driveId })) }));
+    } catch(e) { setFolders(prev => ({ ...prev, [folder.id]: [] })); }
+  }
+
+  async function handleCreate(tpl) {
+    const id = tpl.id;
+    setWorking(prev => ({ ...prev, [id]: true }));
+    setErrMap(prev => ({ ...prev, [id]: "" }));
+    try {
+      const isKickoff   = /kick.?off/i.test(tpl.name);
+      const isChecklist = /checklist/i.test(tpl.name);
+      const hasNB       = !!(project.teamsOneNoteNotebookId || project.oneNoteNotebookId);
+
+      let url = "";
+      if ((isKickoff || isChecklist) && hasNB) {
+        const body    = isKickoff ? buildKickoffHtml(project) : buildChecklistHtml(tpl.name, project);
+        const title   = isKickoff
+          ? `Kick-Off — ${project.name}`
+          : `${tpl.name.replace(/\.[^.]+$/, "")} — ${project.name}`;
+        const section = isKickoff ? "Kick-Off Meetings" : "Checklists";
+        url = await createTemplateOneNotePage(project, title, body, section);
+      } else {
+        url = await copyTemplateToTeamsSP(tpl, project);
+      }
+      setDone(prev => ({ ...prev, [id]: url }));
+    } catch(e) {
+      setErrMap(prev => ({ ...prev, [id]: e.message }));
+    }
+    setWorking(prev => ({ ...prev, [id]: false }));
+  }
+
+  function fileIcon(name) {
+    if (/kick.?off/i.test(name))        return "🤝";
+    if (/checklist/i.test(name))        return "✅";
+    if (/\.docx?$/i.test(name))         return "📝";
+    if (/\.xlsx?$/i.test(name))         return "📊";
+    if (/\.pptx?$/i.test(name))         return "📊";
+    if (/\.pdf$/i.test(name))           return "📄";
+    return "📄";
+  }
+
+  function actionLabel(tpl) {
+    const hasNB = !!(project.teamsOneNoteNotebookId || project.oneNoteNotebookId);
+    if (/kick.?off/i.test(tpl.name) && hasNB)   return "Create OneNote Page";
+    if (/checklist/i.test(tpl.name) && hasNB)   return "Create OneNote Checklist";
+    return "Copy to Project Files";
+  }
+
+  function TemplateCard({ tpl }) {
+    const isWorking = !!working[tpl.id];
+    const url       = done[tpl.id];
+    const isDone    = !!url;
+    const errMsg    = errMap[tpl.id];
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 10px",
+        borderRadius: 6, border: "1px solid " + (isDone ? P.green : P.border),
+        background: isDone ? P.greenDim : P.bg }}>
+        <span style={{ fontSize: 17, flexShrink: 0 }}>{fileIcon(tpl.name)}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: P.text,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {tpl.name.replace(/\.[^.]+$/, "")}
+          </div>
+          {isDone && url && (
+            <a href={url} target="_blank" rel="noopener noreferrer"
+              style={{ fontSize: 11, color: P.accentLight }}>Open ↗</a>
+          )}
+          {errMsg && <div style={{ fontSize: 10, color: P.red, marginTop: 2 }}>{errMsg}</div>}
+        </div>
+        <button onClick={() => isDone ? window.open(url, "_blank") : handleCreate(tpl)}
+          disabled={isWorking}
+          style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5, cursor: isWorking ? "default" : "pointer",
+            border: "1px solid " + (isDone ? P.green : P.accent),
+            background: isDone ? P.green : P.accentDim,
+            color: isDone ? "#fff" : P.accentLight,
+            whiteSpace: "nowrap", flexShrink: 0, opacity: isWorking ? 0.6 : 1 }}>
+          {isWorking ? "⏳" : isDone ? "✓ Open" : `+ ${actionLabel(tpl)}`}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {err && <div style={{ color: P.red, fontSize: 12, marginBottom: 8 }}>⚠ {err}</div>}
+      {items === null && !err && (
+        <div style={{ color: P.textDim, fontSize: 12 }}>Loading templates…</div>
+      )}
+      {items !== null && items.length === 0 && !err && (
+        <div style={{ color: P.textDim, fontSize: 12 }}>No templates found in the Templates site.</div>
+      )}
+      {items !== null && items.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          {items.map(item => {
+            if (item.folder) {
+              const isOpen  = !!openFolders[item.id];
+              const kids    = folders[item.id];
+              return (
+                <div key={item.id}>
+                  <div onClick={() => loadFolder(item)} style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "5px 4px",
+                    cursor: "pointer", userSelect: "none", color: P.textDim, fontSize: 12 }}>
+                    <span style={{ fontSize: 10 }}>{isOpen ? "▾" : "▸"}</span>
+                    <span style={{ fontWeight: 700, color: P.text }}>📁 {item.name}</span>
+                  </div>
+                  {isOpen && (
+                    <div style={{ paddingLeft: 14, display: "flex", flexDirection: "column", gap: 5, marginBottom: 4 }}>
+                      {kids === "loading" && <div style={{ color: P.textDim, fontSize: 11 }}>Loading…</div>}
+                      {Array.isArray(kids) && kids.filter(c => c.file).map(c => <TemplateCard key={c.id} tpl={c} />)}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            return item.file ? <TemplateCard key={item.id} tpl={item} /> : null;
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Badge({ color, text }) {
   const c = color || { bg: P.border, text: P.textMuted };
   return (
@@ -1629,6 +1780,10 @@ const SP_CONTRACTS_DRIVE_ID      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1B
 
 let _spSiteId  = SP_SITE_ID_HARDCODED;
 let _spDriveId = SP_DRIVE_ID_HARDCODED;
+
+// Cached drive IDs for Templates feature
+let _teamsDriveId    = null; // Teams group drive (/groups/{teamId}/drive)
+let _templatesDriveId = null; // setty.sharepoint.com/sites/Templates Documents library
 
 async function resolveSpIds() {
   // IDs are hardcoded — no Graph API call needed, no Sites.Read.All required.
@@ -2061,6 +2216,155 @@ async function createOneNotePage(notebookId, sectionName, title, htmlBody, event
     || page.webUrl
     || "";
   return { id: page.id, webUrl };
+}
+
+// ─── TEMPLATES FEATURE ────────────────────────────────────────────────────────
+
+async function getTeamsDriveId() {
+  if (_teamsDriveId) return _teamsDriveId;
+  const drive = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/drive`);
+  _teamsDriveId = drive.id;
+  return _teamsDriveId;
+}
+
+async function getTemplatesDriveId() {
+  if (_templatesDriveId) return _templatesDriveId;
+  const site   = await graphFetch("GET", "/sites/setty.sharepoint.com:/sites/Templates");
+  const drives = await graphFetch("GET", `/sites/${site.id}/drives`);
+  const doc    = (drives?.value || []).find(d => d.name === "Documents") || drives?.value?.[0];
+  if (!doc) throw new Error("Could not find Templates document library.");
+  _templatesDriveId = doc.id;
+  return _templatesDriveId;
+}
+
+async function copyTemplateToTeamsSP(tpl, project) {
+  const teamsDriveId = await getTeamsDriveId();
+  const folderName = [project.projectNumber, project.name]
+    .filter(Boolean).join(" - ")
+    .replace(/[/\\?*<>:|"]/g, " ").replace(/\s+/g, " ").trim().slice(0, 128);
+
+  // Ensure project subfolder exists (409 = already exists, ignore)
+  try {
+    await graphFetch("POST", `/drives/${teamsDriveId}/root/children`, {
+      name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail"
+    });
+  } catch(e) { /* folder already exists */ }
+
+  // Download template via pre-auth URL or Graph /content
+  let blob;
+  if (tpl["@microsoft.graph.downloadUrl"]) {
+    const res = await fetch(tpl["@microsoft.graph.downloadUrl"]);
+    blob = await res.blob();
+  } else {
+    const token = await getToken();
+    const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${tpl._driveId}/items/${tpl.id}/content`, {
+      headers: { Authorization: "Bearer " + token }
+    });
+    blob = await res.blob();
+  }
+
+  const today    = new Date().toISOString().slice(0, 10);
+  const ext      = (tpl.name.match(/\.[^.]+$/) || [""])[0];
+  const base     = tpl.name.replace(/\.[^.]+$/, "");
+  const destName = `${today} - ${base}${ext}`;
+  const buf      = await blob.arrayBuffer();
+
+  const result = await graphFetch("PUT",
+    `/drives/${teamsDriveId}/root:/${encodeURIComponent(folderName)}/${encodeURIComponent(destName)}:/content`,
+    new Uint8Array(buf)
+  );
+  return result?.webUrl || "";
+}
+
+async function createTemplateOneNotePage(project, title, htmlBody, sectionName) {
+  const useTeams   = !!project.teamsOneNoteNotebookId;
+  const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId;
+  if (!notebookId) throw new Error("No OneNote notebook linked to this project — add it in the Overview tab.");
+  const baseUrl = useTeams
+    ? `/groups/${TEAMS_TEAM_ID}/onenote`
+    : `/sites/${_spSiteId}/onenote`;
+  const section    = await ensureOneNoteSection(baseUrl, notebookId, sectionName);
+  const safeTitle  = escapeOneNoteText(title);
+  const now        = new Date().toISOString();
+  const pageHtml   = `<!DOCTYPE html><html><head><title>${safeTitle}</title><meta name="created" content="${now}" /></head><body>${htmlBody}</body></html>`;
+  const token      = await getTokenForScopes(ONENOTE_SCOPES);
+  const page       = await postOneNotePageWithRetry(
+    `https://graph.microsoft.com/v1.0${baseUrl}/sections/${section.id}/pages`,
+    token, pageHtml
+  );
+  return page?.links?.oneNoteWebUrl?.href || page?.links?.oneNoteClientUrl?.href || page?.webUrl || "";
+}
+
+function buildKickoffHtml(project) {
+  const e      = escapeOneNoteText;
+  const client = e(project.prime || project.clientName || "(Not set)");
+  const pm     = e((project.projectContacts?.pm || [])[0]?.displayName || project.projectManager || "(Not assigned)");
+  const addr   = [project.projectAddress, project.projectCity, project.projectState].filter(Boolean).map(e).join(", ") || "(Not set)";
+  const today  = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const scope  = project.scopeContent
+    ? `<p style="font-family:Calibri,sans-serif;font-size:11pt">${e(project.scopeContent).replace(/\n/g, "<br/>")}</p>`
+    : `<p style="font-family:Calibri,sans-serif;font-size:11pt;color:#888;font-style:italic">Scope not yet entered — add in the PMS Scope tab.</p>`;
+  const meta   = buildOneNoteMetadataHtml({ projectNumber: project.projectNumber || "", client, createdBy: "PMS Templates", date: today });
+
+  const row = (label, val, dark) =>
+    `<tr><td style="font-weight:bold;background:${dark ? "#003865" : "#f0f4f8"};color:${dark ? "#fff" : "inherit"};padding:8px;width:180px">${label}</td><td style="padding:8px">${val}</td></tr>`;
+
+  return `${meta}
+<h1 style="font-family:Calibri,sans-serif;color:#003865">${e(project.name)} — Kick-Off Meeting</h1>
+<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
+  ${row("Project Name",    e(project.name),                        true)}
+  ${row("Project Number",  e(project.projectNumber || "(TBD)"),    false)}
+  ${row("Client / Prime",  client,                                 true)}
+  ${row("Project Manager", pm,                                     false)}
+  ${row("Fee Type",        e(project.feeType || "Lump Sum"),       true)}
+  ${row("Address",         addr,                                   false)}
+  ${row("Meeting Date",    today,                                  true)}
+</table>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Scope of Work</h2>
+${scope}
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Attendees</h2>
+<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
+  <tr style="background:#003865;color:#fff"><th>Name</th><th>Company</th><th>Title / Role</th><th>Email</th></tr>
+  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+</table>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Discussion</h2>
+<p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Action Items</h2>
+<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
+<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
+<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
+<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
+<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Next Steps</h2>
+<p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>`;
+}
+
+function buildChecklistHtml(templateName, project) {
+  const e      = escapeOneNoteText;
+  const title  = templateName.replace(/\.[^.]+$/, "");
+  const client = e(project.prime || project.clientName || "(Not set)");
+  const today  = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  const meta   = buildOneNoteMetadataHtml({ projectNumber: project.projectNumber || "", client, createdBy: "PMS Templates", date: today });
+  const boxes  = Array(10).fill(null).map(() =>
+    `<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>`).join("\n");
+  return `${meta}
+<h1 style="font-family:Calibri,sans-serif;color:#003865">${e(title)} — ${e(project.name)}</h1>
+<p style="font-family:Calibri,sans-serif;font-size:11pt"><b>Project:</b> ${e(project.name)} &nbsp;|&nbsp; <b>#:</b> ${e(project.projectNumber || "TBD")} &nbsp;|&nbsp; <b>Client:</b> ${client} &nbsp;|&nbsp; <b>Date:</b> ${today}</p>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865">Checklist</h2>
+${boxes}
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865">Notes</h2>
+<p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -13107,6 +13411,9 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </Field>
               <Field label="Teams Notifications" style={{ gridColumn: "1 / -1" }}>
                 <TeamsNotificationsField project={project} onUpdate={onUpdate} />
+              </Field>
+              <Field label="Templates" style={{ gridColumn: "1 / -1" }}>
+                <TemplatesPanel project={project} />
               </Field>
             </>)}
 
