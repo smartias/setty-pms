@@ -156,9 +156,10 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 .file-thumb .remove-btn { position: absolute; top: 3px; right: 3px; background: rgba(0,0,0,.7); color: white; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .file-thumb .fname { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.65); font-size: 9px; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: white; }
 .file-thumb .status-icon { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; display: flex; align-items: center; justify-content: center; }
-.status-icon.ok { background: var(--green); }
+.status-icon.ok  { background: var(--green); }
 .status-icon.err { background: var(--red); }
-.status-icon.pending { background: var(--dim); }
+.status-icon.uploading { background: var(--blue); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* Form grid */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
@@ -770,8 +771,12 @@ function generateVideoThumbnail(file) {
     video.muted = true;
     video.playsInline = true;
     const url = URL.createObjectURL(file);
+    // Safety net: if onseeked never fires (unsupported codec, very short clip,
+    // mobile browser quirk) resolve with null so the upload still proceeds.
+    const bail = setTimeout(() => { URL.revokeObjectURL(url); resolve(null); }, 3000);
     video.src = url;
     video.onseeked = () => {
+      clearTimeout(bail);
       const canvas = document.createElement('canvas');
       canvas.width  = video.videoWidth  || 320;
       canvas.height = video.videoHeight || 240;
@@ -779,8 +784,11 @@ function generateVideoThumbnail(file) {
       URL.revokeObjectURL(url);
       resolve(canvas.toDataURL('image/jpeg', 0.7));
     };
-    video.onloadedmetadata = () => { video.currentTime = 1; };
-    video.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    video.onloadedmetadata = () => {
+      // Seek to 10% of duration (not hard-coded 1s) so very short clips work too
+      video.currentTime = Math.min(1, video.duration * 0.1 || 0);
+    };
+    video.onerror = () => { clearTimeout(bail); URL.revokeObjectURL(url); resolve(null); };
   });
 }
 
@@ -816,8 +824,9 @@ function renderPreviews() {
   pendingFiles.forEach((pf, i) => {
     const div = document.createElement('div');
     div.className = 'file-thumb';
-    const statusIcon = pf.status === 'ok' ? '<div class="status-icon ok">&#10003;</div>' :
-                       pf.status === 'err' ? '<div class="status-icon err">&#33;</div>' : '';
+    const statusIcon = pf.status === 'ok'       ? '<div class="status-icon ok" title="Uploaded">&#10003;</div>' :
+                       pf.status === 'err'      ? '<div class="status-icon err" title="Upload failed — click × to remove">&#33;</div>' :
+                       pf.status === 'uploading' ? '<div class="status-icon uploading" title="Uploading…">&#8635;</div>' : '';
     div.innerHTML = `
       ${statusIcon}
       ${pf.previewUrl
@@ -825,7 +834,7 @@ function renderPreviews() {
         : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:28px;">&#127910;</div>`}
       ${pf.isVideo ? `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.55);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;pointer-events:none;">&#9654;</div>` : ''}
       <div class="fname">${pf.file.name}</div>
-      ${pf.status === 'pending' ? `<button class="remove-btn" onclick="removeFile(${i})">&#215;</button>` : ''}`;
+      ${pf.status !== 'ok' && pf.status !== 'uploading' ? `<button class="remove-btn" onclick="removeFile(${i})" title="Remove">&#215;</button>` : ''}`;
     wrap.appendChild(div);
   });
 }
@@ -1059,6 +1068,8 @@ async function startUpload() {
     for (let i = 0; i < toUpload.length; i++) {
       const pf = toUpload[i];
       try {
+        pf.status = 'uploading';
+        renderPreviews();
         let fname = pf.file.name
           .replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg')
           .replace(/[^a-zA-Z0-9._\- ]/g, '_');
@@ -1122,27 +1133,51 @@ async function startUpload() {
     const metaBytes = new TextEncoder().encode(JSON.stringify(metadata, null, 2));
     await graphFetch('PUT', `/drives/${DRIVE_ID}/root:/${encodePath(uploadFolder)}/_pms-metadata.json:/content`, metaBytes);
 
-    setProgress(total + 2, 'Done!');
-    document.getElementById('progressBar').style.width = '100%';
-    document.getElementById('progressBar').style.background = 'var(--green)';
-    document.getElementById('progressTitle').textContent = 'Upload complete!';
-
     const okCount = toUpload.filter(f => f.status === 'ok').length;
     const errCount = toUpload.filter(f => f.status === 'err').length;
-    toast(`${okCount} photo${okCount !== 1 ? 's' : ''} uploaded${errCount ? ` (${errCount} failed)` : ''}!`, 'success');
 
-    // Clean up successes
+    // Build a direct link to the session folder in SharePoint
+    const sessionFolderName = uploadFolder.split('/').pop();
+    const spFolderUrl = selectedProject.projectFolderUrl + '/Photos/' + sessionFolderName;
+
+    document.getElementById('progressBar').style.width = '100%';
+    document.getElementById('progressBar').style.background = 'var(--green)';
+    document.getElementById('progressTitle').innerHTML =
+      `&#10003; ${okCount} photo${okCount !== 1 ? 's' : ''} uploaded` +
+      (errCount ? ` &mdash; <span style="color:var(--red)">${errCount} failed (see red thumbnails below)</span>` : '') +
+      ` &mdash; <a href="${spFolderUrl}" target="_blank" rel="noopener noreferrer"
+          style="color:#fff;text-decoration:underline;font-weight:600;">View in SharePoint &rarr;</a>`;
+    document.getElementById('progressCount').textContent = '';
+    document.getElementById('progressLabel').textContent = errCount
+      ? 'Failed photos are still in the queue — remove them with × or fix the issue and retry.'
+      : 'Successful uploads cleared below. Click the link to verify in SharePoint.';
+
+    if (errCount) {
+      toast(`${okCount} uploaded, ${errCount} failed — see red thumbnails.`, errCount === total ? 'error' : 'success');
+    } else {
+      toast(`${okCount} photo${okCount !== 1 ? 's' : ''} uploaded! ✓`, 'success');
+    }
+
+    // Remove successful uploads from the queue; leave failed ones so user can see/clear them
     setTimeout(() => {
       pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
       renderPreviews();
-      prog.classList.add('hidden');
-      document.getElementById('progressBar').style.background = 'var(--blue)';
+      // Keep the progress bar visible if there are still failed files; otherwise hide it
+      if (!pendingFiles.some(f => f.status === 'err')) {
+        prog.classList.add('hidden');
+        document.getElementById('progressBar').style.background = 'var(--blue)';
+      }
       document.getElementById('uploadBtn').disabled = false;
-    }, 2500);
+    }, 3000);
 
   } catch(e) {
+    // Clean up any files that succeeded before the error (e.g. metadata write failed)
+    // so they don't get stranded in the queue with no remove button.
+    pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
+    renderPreviews();
     toast('Upload failed: ' + e.message, 'error');
     prog.classList.add('hidden');
+    document.getElementById('progressBar').style.background = 'var(--blue)';
     document.getElementById('uploadBtn').disabled = false;
   }
 }
