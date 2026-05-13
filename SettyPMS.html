@@ -12292,40 +12292,27 @@ function InvestigationView({ project }) {
 
 // ─── PHOTOS ───────────────────────────────────────────────────────────────────
 
-function PhotoThumb({ item, meta, folderName }) {
+function PhotoThumb({ item, meta, folderName, onClick }) {
   const [hovered, setHovered] = React.useState(false);
 
-  // Derive date, phase, location from folder name
-  // Formats: "YYYY-MM-DD - Phase" or "YYYY-MM-DD - Phase - Location"
-  const parts         = folderName ? folderName.split(' - ') : [];
-  const parsedDate    = (parts[0] || '').trim();
-  const parsedPhase   = (parts[1] || '').trim();
-  const parsedLocation= parts.slice(2).join(' - ').trim();
-
+  const parts          = folderName ? folderName.split(' - ') : [];
+  const parsedDate     = (parts[0] || '').trim();
+  const parsedPhase    = (parts[1] || '').trim();
+  const parsedLocation = parts.slice(2).join(' - ').trim();
 
   const SKIP = new Set(["_schema", "source", "docType"]);
-
-  // Helper: is a value worth displaying?
   function hasVal(v) {
     return v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
   }
 
-  // Build the field list manually so date/phase always appear when we have any info
   const fields = [];
-
-  // Date — sidecar wins, folder name is fallback
-  const dateVal = (meta && hasVal(meta.date)) ? meta.date : parsedDate;
-  if (hasVal(dateVal)) fields.push({ label: "Date", value: String(dateVal) });
-
-  // Phase — sidecar wins, folder name is fallback
-  const phaseVal = (meta && hasVal(meta.phase)) ? meta.phase : parsedPhase;
-  if (hasVal(phaseVal)) fields.push({ label: "Phase", value: String(phaseVal) });
-
-  // Location — sidecar wins, folder name segment is fallback
+  const dateVal     = (meta && hasVal(meta.date))     ? meta.date     : parsedDate;
+  const phaseVal    = (meta && hasVal(meta.phase))    ? meta.phase    : parsedPhase;
   const locationVal = (meta && hasVal(meta.location)) ? meta.location : parsedLocation;
-  if (hasVal(locationVal)) fields.push({ label: "Location / Floor", value: String(locationVal) });
+  if (hasVal(dateVal))     fields.push({ label: "Date",            value: String(dateVal) });
+  if (hasVal(phaseVal))    fields.push({ label: "Phase",           value: String(phaseVal) });
+  if (hasVal(locationVal)) fields.push({ label: "Location / Floor",value: String(locationVal) });
 
-  // Remaining known fields straight from the sidecar
   const REST = [
     { key: "system",        label: "System" },
     { key: "address",       label: "Site Address" },
@@ -12344,11 +12331,9 @@ function PhotoThumb({ item, meta, folderName }) {
       const v = meta[key];
       if (!hasVal(v)) return;
       const display = (key === "uploadedAt" && typeof v === "string" && v.length > 10)
-        ? v.slice(0, 10)
-        : Array.isArray(v) ? v.join(", ") : String(v);
+        ? v.slice(0, 10) : Array.isArray(v) ? v.join(", ") : String(v);
       fields.push({ label, value: display });
     });
-    // Any sidecar keys not in REST and not skipped
     const knownKeys = new Set([...REST.map(r => r.key), "date", "phase"]);
     Object.keys(meta).forEach(k => {
       if (knownKeys.has(k) || SKIP.has(k) || !hasVal(meta[k])) return;
@@ -12360,17 +12345,31 @@ function PhotoThumb({ item, meta, folderName }) {
     <div style={{ position: "relative" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}>
-      <a href={item.webUrl} target="_blank" rel="noopener noreferrer"
-        style={{ display: "block", borderRadius: 6, overflow: "hidden", border: "1px solid " + (hovered ? P.accent : P.border), textDecoration: "none", transition: "border-color 0.15s" }}>
+      {/* Main tile — click opens lightbox */}
+      <div onClick={onClick} style={{
+        display: "block", borderRadius: 6, overflow: "hidden", cursor: "pointer",
+        border: "1px solid " + (hovered ? P.accent : P.border), transition: "border-color 0.15s",
+      }}>
         <div style={{ aspectRatio: "1", overflow: "hidden", background: P.card }}>
           <img src={item["@microsoft.graph.downloadUrl"]} alt={item.name}
-            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transition: "transform 0.2s", transform: hovered ? "scale(1.04)" : "scale(1)" }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block",
+              transition: "transform 0.2s", transform: hovered ? "scale(1.04)" : "scale(1)" }}
             onError={e => { e.target.style.display = "none"; }} />
         </div>
-        <div style={{ padding: "4px 8px", fontSize: 10, color: P.textDim, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", background: P.card }}>
+        <div style={{ padding: "4px 8px", fontSize: 10, color: P.textDim, whiteSpace: "nowrap",
+          overflow: "hidden", textOverflow: "ellipsis", background: P.card }}>
           {item.name}
         </div>
-      </a>
+      </div>
+      {/* SharePoint escape hatch — visible on hover, doesn't open lightbox */}
+      {hovered && (
+        <a href={item.webUrl} target="_blank" rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()} title="Open in SharePoint"
+          style={{ position: "absolute", top: 5, right: 5, background: "rgba(0,0,0,0.68)",
+            color: "#fff", borderRadius: 4, fontSize: 9, padding: "2px 6px",
+            textDecoration: "none", lineHeight: 1.6, fontWeight: 600 }}>SP ↗</a>
+      )}
+      {/* Hover metadata card */}
       {hovered && fields.length > 0 && (
         <div style={{
           position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)",
@@ -12380,7 +12379,8 @@ function PhotoThumb({ item, meta, folderName }) {
         }}>
           {fields.map(({ label, value }) => (
             <div key={label} style={{ marginBottom: 7 }}>
-              <div style={{ fontSize: 9, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 2 }}>{label}</div>
+              <div style={{ fontSize: 9, fontWeight: 700, color: P.textDim, textTransform: "uppercase",
+                letterSpacing: "0.6px", marginBottom: 2 }}>{label}</div>
               <div style={{ fontSize: 11, color: P.text, lineHeight: 1.45 }}>{value}</div>
             </div>
           ))}
@@ -12391,119 +12391,29 @@ function PhotoThumb({ item, meta, folderName }) {
 }
 
 function PhotosView({ project }) {
-  const PHASES  = ["Existing Conditions","Demo / Abatement","Rough-In","Construction Progress","Commissioning","Substantial Completion","Punch List","Final / Completed"];
-  const SYSTEMS = ["General","Mechanical / HVAC","Electrical","Plumbing","Fire Protection","MEP Combined","Exterior / Envelope","Structural","Architectural","Site / Civil","Coordination"];
+  const PHASE_COLORS = {
+    "Existing Conditions":    "#64748b",
+    "Demo / Abatement":       "#dc2626",
+    "Rough-In":               "#d97706",
+    "Construction Progress":  "#2563eb",
+    "Commissioning":          "#7c3aed",
+    "Substantial Completion": "#059669",
+    "Punch List":             "#db2777",
+    "Final / Completed":      "#16a34a",
+  };
 
-  const [subTab,    setSubTab]    = React.useState("upload");
-  const [files,     setFiles]     = React.useState([]);   // { id, file, preview }
-  const [dragging,  setDragging]  = React.useState(false);
-  const [meta,      setMeta]      = React.useState({
-    date: new Date().toISOString().slice(0,10), phase: "", system: "",
-    location: "", photographer: "", notes: "", tags: "",
-  });
-  const [quality,   setQuality]   = React.useState(80);
-  const [maxWidth,  setMaxWidth]  = React.useState(2000);
-  const [uploading, setUploading] = React.useState(false);
-  const [progress,  setProgress]  = React.useState({ done: 0, total: 0, label: "" });
-  const [uploadMsg, setUploadMsg] = React.useState(null);
-
-  // Gallery
-  const [groups,    setGroups]    = React.useState(null);  // null = not yet loaded
-  const [expanded,  setExpanded]  = React.useState({});   // { folderId: [items] | "loading" }
-  const [galleryErr,setGalleryErr]= React.useState("");
+  const [groups,     setGroups]     = React.useState(null);
+  const [expanded,   setExpanded]   = React.useState({});
+  const [galleryErr, setGalleryErr] = React.useState("");
+  const [phaseFilter,setPhaseFilter]= React.useState("");
+  const [searchQ,    setSearchQ]    = React.useState("");
+  const [sortDir,    setSortDir]    = React.useState("desc");
+  const [lb,         setLb]         = React.useState(null); // null | { items, index, meta, folderName }
 
   function getProjFolderName() {
     if (!project.projectFolderUrl) return null;
     const parts = project.projectFolderUrl.split("/");
     return decodeURIComponent(parts[parts.length - 1]);
-  }
-
-  async function ensureSpSubfolder(driveId, parent, name) {
-    try {
-      await graphFetch("POST", `/drives/${driveId}/root:/${encodeURIComponent(parent)}:/children`,
-        { name, folder: {}, "@microsoft.graph.conflictBehavior": "replace" });
-    } catch(e) {}
-    return parent + "/" + name;
-  }
-
-  function compressImage(file, q, mw) {
-    return new Promise(resolve => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      img.onload = () => {
-        let w = img.naturalWidth, h = img.naturalHeight;
-        if (mw > 0 && w > mw) { h = Math.round(h * mw / w); w = mw; }
-        const canvas = document.createElement("canvas");
-        canvas.width = w; canvas.height = h;
-        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-        URL.revokeObjectURL(url);
-        canvas.toBlob(blob => resolve(blob), "image/jpeg", q / 100);
-      };
-      img.src = url;
-    });
-  }
-
-  function addFiles(fileList) {
-    const incoming = Array.from(fileList)
-      .filter(f => f.type.startsWith("image/"))
-      .map(f => ({ id: Math.random().toString(36).slice(2), file: f, preview: URL.createObjectURL(f) }));
-    setFiles(prev => [...prev, ...incoming]);
-  }
-
-  function removeFile(id) {
-    setFiles(prev => {
-      const f = prev.find(x => x.id === id);
-      if (f) URL.revokeObjectURL(f.preview);
-      return prev.filter(x => x.id !== id);
-    });
-  }
-
-  async function handleUpload() {
-    const projFolderName = getProjFolderName();
-    if (!projFolderName) { setUploadMsg({ ok: false, text: "No SharePoint folder — create one on the Overview tab first." }); return; }
-    if (!files.length) return;
-
-    setUploading(true); setUploadMsg(null);
-    setProgress({ done: 0, total: files.length, label: "Preparing…" });
-
-    try {
-      const { driveId } = await resolveSpIds();
-      const datePart  = meta.date || new Date().toISOString().slice(0,10);
-      const phasePart = meta.phase ? " - " + meta.phase : "";
-      const subfolderName = (datePart + phasePart).replace(/[/:*?"<>|]/g, "-").trim();
-
-      const photosRoot   = await ensureSpSubfolder(driveId, projFolderName, "Photos");
-      const targetFolder = await ensureSpSubfolder(driveId, photosRoot, subfolderName);
-      const encodedFolder = targetFolder.split("/").map(encodeURIComponent).join("/");
-
-      let done = 0;
-      for (const item of files) {
-        setProgress({ done, total: files.length, label: `Uploading ${item.file.name}…` });
-        const blob  = await compressImage(item.file, quality, maxWidth);
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const safeName = item.file.name.replace(/[/:*?"<>|]/g, "-");
-        await graphFetch("PUT", `/drives/${driveId}/root:/${encodedFolder}/${encodeURIComponent(safeName)}:/content`, bytes);
-        done++;
-        setProgress({ done, total: files.length, label: `Uploaded ${done} / ${files.length}` });
-      }
-
-      await writeSharePointMetadataSidecar(driveId, targetFolder, buildPmsMetadata(project, PMS_DOC_TYPES.SITE_PHOTO, {
-        date: meta.date,
-        phase: meta.phase, system: meta.system, location: meta.location,
-        photographer: meta.photographer, notes: meta.notes,
-        tags: meta.tags.split(",").map(t => t.trim()).filter(Boolean),
-        photoCount: files.length,
-      }));
-
-      setUploadMsg({ ok: true, text: `✓ ${files.length} photo${files.length !== 1 ? "s" : ""} saved to Photos / ${subfolderName}` });
-      files.forEach(f => URL.revokeObjectURL(f.preview));
-      setFiles([]);
-    } catch(e) {
-      setUploadMsg({ ok: false, text: "Upload failed: " + e.message });
-    } finally {
-      setUploading(false);
-      setProgress({ done: 0, total: 0, label: "" });
-    }
   }
 
   async function loadGallery() {
@@ -12513,7 +12423,7 @@ function PhotosView({ project }) {
     try {
       const { driveId } = await resolveSpIds();
       const enc = encodeURIComponent(projFolderName);
-      const res = await graphFetch("GET", `/drives/${driveId}/root:/${enc}/Photos:/children?$top=100&$orderby=name desc`);
+      const res = await graphFetch("GET", `/drives/${driveId}/root:/${enc}/Photos:/children?$top=200&$orderby=name desc`);
       setGroups((res?.value || []).filter(i => i.folder));
     } catch(e) {
       if (!e.message || e.message.includes("404")) { setGroups([]); }
@@ -12528,242 +12438,268 @@ function PhotosView({ project }) {
       const res = await graphFetch("GET", `/drives/${driveId}/items/${folder.id}/children?$top=200`);
       const all   = res?.value || [];
       const items = all.filter(i => i.file && /\.(jpg|jpeg|png|webp|heic)$/i.test(i.name));
-      // Fetch and parse the sidecar for this folder — one read, shared across all thumbnails
-      let meta = null;
+      let sidecarMeta = null;
       const sidecar = all.find(i => i.name === "_pms-metadata.json");
       if (sidecar?.["@microsoft.graph.downloadUrl"]) {
         try {
           const r = await fetch(sidecar["@microsoft.graph.downloadUrl"]);
-          if (r.ok) meta = await r.json();
+          if (r.ok) sidecarMeta = await r.json();
         } catch(e) {}
       }
-      setExpanded(prev => ({ ...prev, [folder.id]: { items, meta } }));
+      setExpanded(prev => ({ ...prev, [folder.id]: { items, meta: sidecarMeta } }));
     } catch(e) {
       setExpanded(prev => ({ ...prev, [folder.id]: { items: [], meta: null } }));
     }
   }
 
-  React.useEffect(() => {
-    if (subTab === "gallery" && groups === null) loadGallery();
-  }, [subTab]);
+  function expandAll() {
+    (groups || []).forEach(folder => {
+      if (!expanded[folder.id]) loadGroupItems(folder);
+    });
+  }
 
-  const inputStyle = { padding: "7px 10px", border: "1px solid " + P.border, borderRadius: 4, background: P.card, color: P.text, fontSize: 13, width: "100%" };
+  function collapseAll() { setExpanded({}); }
+
+  function openLightbox(folder, itemIndex) {
+    const g = expanded[folder.id];
+    if (!g || g === "loading" || !g.items?.length) return;
+    setLb({ items: g.items, index: itemIndex, meta: g.meta, folderName: folder.name });
+  }
+
+  // Auto-load on mount
+  React.useEffect(() => { if (groups === null) loadGallery(); }, []);
+
+  // Keyboard navigation for lightbox
+  React.useEffect(() => {
+    if (!lb) return;
+    const onKey = e => {
+      if (e.key === "Escape")      setLb(null);
+      if (e.key === "ArrowRight")  setLb(p => p ? { ...p, index: (p.index + 1) % p.items.length } : null);
+      if (e.key === "ArrowLeft")   setLb(p => p ? { ...p, index: (p.index - 1 + p.items.length) % p.items.length } : null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [!!lb]);
+
+  // Unique phases present in loaded folders — for the filter dropdown
+  const availablePhases = React.useMemo(() => {
+    if (!groups) return [];
+    const seen = new Set();
+    groups.forEach(g => { const p = (g.name.split(" - ")[1] || "").trim(); if (p) seen.add(p); });
+    return [...seen].sort();
+  }, [groups]);
+
+  // Filtered + sorted view of groups
+  const visibleGroups = React.useMemo(() => {
+    let gs = groups || [];
+    if (phaseFilter) gs = gs.filter(g => g.name.includes(phaseFilter));
+    if (searchQ) { const q = searchQ.toLowerCase(); gs = gs.filter(g => g.name.toLowerCase().includes(q)); }
+    return [...gs].sort((a, b) => sortDir === "desc" ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name));
+  }, [groups, phaseFilter, searchQ, sortDir]);
+
+  const totalFolders      = groups ? groups.length : 0;
+  const approxPhotoCount  = groups ? groups.reduce((s, g) => s + Math.max(0, (g.folder?.childCount ?? 1) - 1), 0) : 0;
+  const hasAnyExpanded    = Object.keys(expanded).length > 0;
+  const ctrlStyle         = { padding: "6px 10px", border: "1px solid " + P.border, borderRadius: 5, background: P.card, color: P.text, fontSize: 12 };
+  const ghostBtn          = { padding: "6px 12px", background: "transparent", border: "1px solid " + P.border, borderRadius: 5, fontSize: 12, cursor: "pointer", color: P.textDim };
 
   return (
-    <div>
-      {/* Sub-tab bar */}
-      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "1px solid " + P.border }}>
-        {[["upload","Upload & Tag"],["gallery","Gallery"]].map(([key, label]) => (
-          <button key={key} onClick={() => setSubTab(key)} style={{
-            padding: "8px 20px", border: "none", background: "none", cursor: "pointer", fontSize: 13,
-            fontWeight: subTab === key ? 600 : 400,
-            color: subTab === key ? P.accentLight : P.textDim,
-            borderBottom: subTab === key ? "2px solid " + P.accent : "2px solid transparent",
-            marginBottom: -1,
-          }}>{label}</button>
-        ))}
-      </div>
+    <div style={{ position: "relative" }}>
 
-      {/* ── UPLOAD TAB ── */}
-      {subTab === "upload" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          {/* Drop zone */}
-          <div
-            onDragOver={e => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={e => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}
-            onClick={() => document.getElementById("pms-photo-input").click()}
-            style={{
-              border: "2px dashed " + (dragging ? P.accent : P.border), borderRadius: 8,
-              padding: "36px 20px", textAlign: "center", cursor: "pointer",
-              background: dragging ? P.accentDim : P.bg, transition: "all 0.15s",
-            }}
-          >
-            <input id="pms-photo-input" type="file" accept="image/*" multiple style={{ display: "none" }}
-              onChange={e => { addFiles(e.target.files); e.target.value = ""; }} />
-            <div style={{ fontSize: 36, marginBottom: 8, opacity: 0.4 }}>📷</div>
-            <div style={{ color: P.text, fontSize: 14, marginBottom: 4 }}>Click to browse or drag photos here</div>
-            <div style={{ color: P.textDim, fontSize: 12 }}>JPG, PNG, WEBP — compression happens locally, nothing sent to an external server</div>
-          </div>
-
-          {/* Preview thumbnails */}
-          {files.length > 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10 }}>
-              {files.map(f => (
-                <div key={f.id} style={{ position: "relative", aspectRatio: "1", borderRadius: 6, overflow: "hidden", border: "1px solid " + P.border }}>
-                  <img src={f.preview} alt={f.file.name} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.65)", color: "#fff", fontSize: 9, padding: "3px 6px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {f.file.name}
-                  </div>
-                  <button onClick={e => { e.stopPropagation(); removeFile(f.id); }} style={{
-                    position: "absolute", top: 4, right: 4, width: 20, height: 20, borderRadius: "50%",
-                    background: "rgba(200,0,0,0.85)", border: "none", color: "#fff", fontSize: 11,
-                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                  }}>✕</button>
+      {/* ── Lightbox ── */}
+      {lb && lb.items.length > 0 && (() => {
+        const item   = lb.items[lb.index];
+        const parts  = (lb.folderName || "").split(" - ");
+        const m      = lb.meta || {};
+        const lbFields = [
+          { label: "Date",         value: m.date     || (parts[0] || "").trim() },
+          { label: "Phase",        value: m.phase    || (parts[1] || "").trim() },
+          { label: "Location",     value: m.location || parts.slice(2).join(" - ").trim() },
+          { label: "System",       value: m.system },
+          { label: "Photographer", value: m.photographer },
+          { label: "Notes",        value: m.notes },
+          { label: "Tags",         value: Array.isArray(m.tags) ? m.tags.join(", ") : m.tags },
+        ].filter(f => f.value);
+        return (
+          <div onClick={e => { if (e.target === e.currentTarget) setLb(null); }} style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.93)",
+            zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", gap: 16,
+          }}>
+            {/* Close */}
+            <button onClick={() => setLb(null)} style={{
+              position: "absolute", top: 14, right: 14,
+              background: "rgba(255,255,255,0.1)", border: "none", color: "#fff",
+              borderRadius: "50%", width: 38, height: 38, fontSize: 20, cursor: "pointer", lineHeight: 1,
+            }}>✕</button>
+            {/* Prev / Next */}
+            {lb.items.length > 1 && (
+              <button onClick={() => setLb(p => ({ ...p, index: (p.index - 1 + p.items.length) % p.items.length }))} style={{
+                position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)",
+                background: "rgba(255,255,255,0.1)", border: "none", color: "#fff",
+                borderRadius: "50%", width: 46, height: 46, fontSize: 26, cursor: "pointer", lineHeight: 1,
+              }}>‹</button>
+            )}
+            {lb.items.length > 1 && (
+              <button onClick={() => setLb(p => ({ ...p, index: (p.index + 1) % p.items.length }))} style={{
+                position: "absolute", right: 290, top: "50%", transform: "translateY(-50%)",
+                background: "rgba(255,255,255,0.1)", border: "none", color: "#fff",
+                borderRadius: "50%", width: 46, height: 46, fontSize: 26, cursor: "pointer", lineHeight: 1,
+              }}>›</button>
+            )}
+            {/* Image */}
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "20px 0 20px 20px", maxHeight: "100vh" }}>
+              <img src={item["@microsoft.graph.downloadUrl"]} alt={item.name}
+                style={{ maxWidth: "100%", maxHeight: "92vh", objectFit: "contain", borderRadius: 4, display: "block" }} />
+            </div>
+            {/* Sidebar */}
+            <div style={{ width: 260, flexShrink: 0, height: "100vh", overflowY: "auto",
+              background: P.card, borderLeft: "1px solid " + P.border, padding: "56px 18px 24px" }}>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, wordBreak: "break-word", color: P.text }}>{item.name}</div>
+              <div style={{ fontSize: 11, color: P.textDim, marginBottom: 18 }}>{lb.index + 1} / {lb.items.length}</div>
+              {lbFields.map(({ label, value }) => (
+                <div key={label} style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3 }}>{label}</div>
+                  <div style={{ fontSize: 12, color: P.text, lineHeight: 1.5 }}>{value}</div>
                 </div>
               ))}
-            </div>
-          )}
-
-          {/* Metadata */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
-            {[
-              { label: "Date Taken",      key: "date",         type: "date" },
-              { label: "Photographer",    key: "photographer", type: "text", placeholder: "e.g. Sara Arias" },
-              { label: "Location / Floor",key: "location",     type: "text", placeholder: "e.g. Penthouse, 4th Floor" },
-            ].map(({ label, key, type, placeholder }) => (
-              <label key={key} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</span>
-                <input type={type} value={meta[key]} placeholder={placeholder || ""}
-                  onChange={e => setMeta(m => ({ ...m, [key]: e.target.value }))} style={inputStyle} />
-              </label>
-            ))}
-            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Phase</span>
-              <select value={meta.phase} onChange={e => setMeta(m => ({ ...m, phase: e.target.value }))} style={inputStyle}>
-                <option value="">— Select —</option>
-                {PHASES.map(p => <option key={p}>{p}</option>)}
-              </select>
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>System Type</span>
-              <select value={meta.system} onChange={e => setMeta(m => ({ ...m, system: e.target.value }))} style={inputStyle}>
-                <option value="">— Select —</option>
-                {SYSTEMS.map(s => <option key={s}>{s}</option>)}
-              </select>
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Tags</span>
-              <input type="text" value={meta.tags} placeholder="coordination issue, exposed MEP, rooftop"
-                onChange={e => setMeta(m => ({ ...m, tags: e.target.value }))} style={inputStyle} />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 5, gridColumn: "1 / -1" }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Notes</span>
-              <textarea value={meta.notes} rows={3}
-                placeholder="Describe what's shown — field observations, coordination issues, conditions found…"
-                onChange={e => setMeta(m => ({ ...m, notes: e.target.value }))}
-                style={{ ...inputStyle, resize: "vertical" }} />
-            </label>
-          </div>
-
-          {/* Compression options */}
-          <div style={{ display: "flex", gap: 28, alignItems: "center", flexWrap: "wrap", padding: "12px 16px", background: P.card, borderRadius: 6, border: "1px solid " + P.border }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>JPEG Quality</span>
-              <input type="range" min={40} max={95} value={quality} onChange={e => setQuality(+e.target.value)}
-                style={{ width: 120, accentColor: P.accent }} />
-              <span style={{ fontWeight: 700, color: P.accentLight, minWidth: 28, fontSize: 14 }}>{quality}</span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.5px" }}>Max Width</span>
-              <select value={maxWidth} onChange={e => setMaxWidth(+e.target.value)}
-                style={{ padding: "6px 10px", border: "1px solid " + P.border, borderRadius: 4, background: P.bg, color: P.text, fontSize: 13 }}>
-                <option value={0}>No resize</option>
-                <option value={2000}>2000 px</option>
-                <option value={1600}>1600 px</option>
-                <option value={1200}>1200 px</option>
-                <option value={800}>800 px</option>
-              </select>
-            </div>
-            <span style={{ fontSize: 12, color: P.textDim }}>All processing is local — nothing sent to an external server.</span>
-          </div>
-
-          {/* Actions */}
-          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <button onClick={handleUpload} disabled={uploading || !files.length} style={{
-              padding: "9px 22px", background: P.accent, color: "#fff", border: "none", borderRadius: 6,
-              fontWeight: 600, fontSize: 13, cursor: files.length && !uploading ? "pointer" : "not-allowed",
-              opacity: uploading || !files.length ? 0.5 : 1,
-            }}>
-              {uploading ? "Uploading…" : `Compress & Upload${files.length ? " (" + files.length + ")" : ""}`}
-            </button>
-            {files.length > 0 && !uploading && (
-              <button onClick={() => { files.forEach(f => URL.revokeObjectURL(f.preview)); setFiles([]); }}
-                style={{ padding: "9px 18px", background: "transparent", border: "1px solid " + P.border, borderRadius: 6, fontSize: 13, cursor: "pointer", color: P.text }}>
-                Clear
-              </button>
-            )}
-            {uploadMsg && (
-              <span style={{ fontSize: 12, color: uploadMsg.ok ? P.green : P.red }}>{uploadMsg.text}</span>
-            )}
-          </div>
-
-          {uploading && (
-            <div>
-              <div style={{ height: 6, background: P.border, borderRadius: 3, overflow: "hidden" }}>
-                <div style={{ height: "100%", background: P.accent, borderRadius: 3, transition: "width 0.2s",
-                  width: progress.total ? (progress.done / progress.total * 100) + "%" : "0%" }} />
+              <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid " + P.border, display: "flex", flexDirection: "column", gap: 10 }}>
+                <a href={item.webUrl} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 12, color: P.accentLight, textDecoration: "none" }}>Open in SharePoint ↗</a>
+                <a href={item["@microsoft.graph.downloadUrl"]} download={item.name}
+                  style={{ fontSize: 12, color: P.accentLight, textDecoration: "none" }}>Download full-res ↓</a>
               </div>
-              <div style={{ fontSize: 12, color: P.textDim, marginTop: 5 }}>{progress.label}</div>
             </div>
-          )}
+          </div>
+        );
+      })()}
+
+      {/* ── Header bar ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        {groups !== null && (
+          <span style={{ fontSize: 12, color: P.textDim }}>
+            {totalFolders} folder{totalFolders !== 1 ? "s" : ""} · ~{approxPhotoCount} photo{approxPhotoCount !== 1 ? "s" : ""}
+          </span>
+        )}
+        <div style={{ flex: 1 }} />
+        <a href="https://smartias.github.io/setty-pms/SettyFieldPhotos.html" target="_blank" rel="noopener noreferrer"
+          style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "7px 14px",
+            background: P.accent, color: "#fff", borderRadius: 6, fontSize: 12, fontWeight: 600,
+            textDecoration: "none", whiteSpace: "nowrap" }}>
+          📷 Upload Photos ↗
+        </a>
+        {project.projectFolderUrl && (
+          <a href={project.projectFolderUrl + "/Photos"} target="_blank" rel="noopener noreferrer"
+            style={{ fontSize: 12, color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
+            SharePoint ↗
+          </a>
+        )}
+        <button onClick={() => { setGroups(null); setExpanded({}); setPhaseFilter(""); setSearchQ(""); loadGallery(); }}
+          style={ghostBtn}>↺ Refresh</button>
+      </div>
+
+      {/* ── Filter / sort bar ── */}
+      {groups !== null && groups.length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={phaseFilter} onChange={e => setPhaseFilter(e.target.value)} style={ctrlStyle}>
+            <option value="">All phases</option>
+            {availablePhases.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <input type="text" value={searchQ} onChange={e => setSearchQ(e.target.value)}
+            placeholder="Search folders…"
+            style={{ ...ctrlStyle, minWidth: 150 }} />
+          <select value={sortDir} onChange={e => setSortDir(e.target.value)} style={ctrlStyle}>
+            <option value="desc">Newest first</option>
+            <option value="asc">Oldest first</option>
+          </select>
+          <div style={{ flex: 1 }} />
+          <button onClick={expandAll}   style={ghostBtn}>Expand all</button>
+          {hasAnyExpanded && <button onClick={collapseAll} style={ghostBtn}>Collapse all</button>}
         </div>
       )}
 
-      {/* ── GALLERY TAB ── */}
-      {subTab === "gallery" && (
-        <div>
-          {/* Link to Photos folder in SharePoint */}
-          {project.projectFolderUrl && (
-            <div style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
-              <a href={project.projectFolderUrl + "/Photos"} target="_blank" rel="noopener noreferrer"
-                style={{ fontSize: 12, color: P.accentLight, textDecoration: "none" }}>
-                Open Photos folder in SharePoint ↗
-              </a>
+      {/* ── States ── */}
+      {groups === null && <div style={{ textAlign: "center", padding: 56, color: P.textDim }}>Loading gallery…</div>}
+      {galleryErr && <div style={{ color: P.red, fontSize: 13, marginBottom: 12 }}>Error: {galleryErr}</div>}
+      {groups !== null && groups.length === 0 && !galleryErr && (
+        <div style={{ textAlign: "center", padding: 56, color: P.textDim,
+          border: "1px dashed " + P.border, borderRadius: 10 }}>
+          <div style={{ fontSize: 42, marginBottom: 12, opacity: 0.3 }}>📷</div>
+          <div style={{ marginBottom: 16, fontSize: 14 }}>No photos uploaded yet for this project.</div>
+          <a href="https://smartias.github.io/setty-pms/SettyFieldPhotos.html" target="_blank" rel="noopener noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "9px 18px",
+              background: P.accent, color: "#fff", borderRadius: 6, fontSize: 13,
+              fontWeight: 600, textDecoration: "none" }}>
+            📷 Open Field Photos App ↗
+          </a>
+        </div>
+      )}
+      {groups !== null && groups.length > 0 && visibleGroups.length === 0 && (
+        <div style={{ textAlign: "center", padding: 32, color: P.textDim, fontSize: 13 }}>
+          No folders match your filters.{" "}
+          <button onClick={() => { setPhaseFilter(""); setSearchQ(""); }}
+            style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13 }}>
+            Clear filters
+          </button>
+        </div>
+      )}
+
+      {/* ── Folder list ── */}
+      {visibleGroups.map(folder => {
+        const groupItems  = expanded[folder.id];
+        const isOpen      = groupItems !== undefined;
+        const phase       = (folder.name.split(" - ")[1] || "").trim();
+        const phaseColor  = PHASE_COLORS[phase] || P.accent;
+        const photoCount  = groupItems && groupItems !== "loading"
+          ? groupItems.items?.length
+          : Math.max(0, (folder.folder?.childCount ?? 1) - 1);
+
+        return (
+          <div key={folder.id} style={{ marginBottom: 10, border: "1px solid " + P.border, borderRadius: 8, overflow: "hidden" }}>
+            {/* Folder header */}
+            <div
+              onClick={() => isOpen
+                ? setExpanded(prev => { const n = {...prev}; delete n[folder.id]; return n; })
+                : loadGroupItems(folder)}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                cursor: "pointer", background: P.card, userSelect: "none",
+                borderBottom: isOpen ? "1px solid " + P.border : "none" }}
+            >
+              <span style={{ color: P.textDim, fontSize: 11, width: 10, flexShrink: 0 }}>{isOpen ? "▾" : "▸"}</span>
+              {phase && (
+                <span style={{ background: phaseColor + "22", color: phaseColor, fontSize: 10, fontWeight: 700,
+                  padding: "2px 8px", borderRadius: 99, whiteSpace: "nowrap",
+                  border: "1px solid " + phaseColor + "44", flexShrink: 0 }}>{phase}</span>
+              )}
+              <span style={{ fontWeight: 600, fontSize: 13, color: P.text, flex: 1,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{folder.name}</span>
+              <span style={{ fontSize: 11, color: P.textDim, whiteSpace: "nowrap", flexShrink: 0 }}>
+                {photoCount} photo{photoCount !== 1 ? "s" : ""}
+              </span>
             </div>
-          )}
-          {groups === null && <div style={{ textAlign: "center", padding: 48, color: P.textDim }}>Loading gallery…</div>}
-          {galleryErr && <div style={{ color: P.red, fontSize: 13, marginBottom: 12 }}>Error: {galleryErr}</div>}
-          {groups !== null && groups.length === 0 && !galleryErr && (
-            <div style={{ textAlign: "center", padding: 56, color: P.textDim }}>
-              <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>📷</div>
-              <div>No photos uploaded yet. Use Upload &amp; Tag to add photos.</div>
-            </div>
-          )}
-          {groups !== null && groups.map(folder => {
-            const groupItems = expanded[folder.id];
-            const isOpen = groupItems !== undefined;
-            return (
-              <div key={folder.id} style={{ marginBottom: 14, border: "1px solid " + P.border, borderRadius: 8 }}>
-                <div
-                  onClick={() => isOpen
-                    ? setExpanded(prev => { const n = {...prev}; delete n[folder.id]; return n; })
-                    : loadGroupItems(folder)
-                  }
-                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", background: P.card, userSelect: "none", borderRadius: isOpen ? "8px 8px 0 0" : "8px" }}
-                >
-                  <span style={{ color: P.textDim }}>{isOpen ? "▾" : "▸"}</span>
-                  <span style={{ fontWeight: 600, fontSize: 13, color: P.text }}>📁 {folder.name}</span>
-                  <span style={{ fontSize: 12, color: P.textDim, marginLeft: "auto" }}>
-                    {folder.folder?.childCount ?? "?"} items
-                  </span>
-                </div>
-                {isOpen && (
-                  <div style={{ padding: 16, borderTop: "1px solid " + P.border, background: P.bg, borderRadius: "0 0 8px 8px", overflow: "visible" }}>
-                    {groupItems === "loading" && <div style={{ color: P.textDim, fontSize: 13 }}>Loading…</div>}
-                    {groupItems !== "loading" && groupItems?.items?.length === 0 && (
-                      <div style={{ color: P.textDim, fontSize: 13 }}>No image files found in this folder.</div>
-                    )}
-                    {groupItems !== "loading" && groupItems?.items?.length > 0 && (
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10, overflow: "visible" }}>
-                        {groupItems.items.map(item => (
-                          <PhotoThumb key={item.id} item={item} meta={groupItems.meta} folderName={folder.name} />
-                        ))}
-                      </div>
-                    )}
+
+            {/* Folder contents */}
+            {isOpen && (
+              <div style={{ padding: 14, background: P.bg }}>
+                {groupItems === "loading" && (
+                  <div style={{ color: P.textDim, fontSize: 13, padding: "10px 0" }}>Loading…</div>
+                )}
+                {groupItems !== "loading" && groupItems?.items?.length === 0 && (
+                  <div style={{ color: P.textDim, fontSize: 13 }}>No image files in this folder.</div>
+                )}
+                {groupItems !== "loading" && groupItems?.items?.length > 0 && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10, overflow: "visible" }}>
+                    {groupItems.items.map((item, idx) => (
+                      <PhotoThumb key={item.id} item={item}
+                        meta={groupItems.meta} folderName={folder.name}
+                        onClick={() => openLightbox(folder, idx)} />
+                    ))}
                   </div>
                 )}
               </div>
-            );
-          })}
-          {groups !== null && groups.length > 0 && (
-            <button onClick={() => { setGroups(null); setExpanded({}); loadGallery(); }}
-              style={{ marginTop: 4, padding: "7px 16px", background: "transparent", border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, cursor: "pointer", color: P.textDim }}>
-              Refresh
-            </button>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
