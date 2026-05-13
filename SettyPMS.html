@@ -12342,7 +12342,7 @@ function PhotoThumb({ item, meta, folderName, onClick }) {
   }
 
   return (
-    <div style={{ position: "relative" }}
+    <div style={{ position: "relative", zIndex: hovered ? 50 : "auto" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}>
       {/* Main tile — click opens lightbox */}
@@ -12654,7 +12654,7 @@ function PhotosView({ project }) {
           : Math.max(0, (folder.folder?.childCount ?? 1) - 1);
 
         return (
-          <div key={folder.id} style={{ marginBottom: 10, border: "1px solid " + P.border, borderRadius: 8, overflow: "hidden" }}>
+          <div key={folder.id} style={{ marginBottom: 10, border: "1px solid " + P.border, borderRadius: 8 }}>
             {/* Folder header */}
             <div
               onClick={() => isOpen
@@ -12662,6 +12662,7 @@ function PhotosView({ project }) {
                 : loadGroupItems(folder)}
               style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
                 cursor: "pointer", background: P.card, userSelect: "none",
+                borderRadius: isOpen ? "8px 8px 0 0" : 8,
                 borderBottom: isOpen ? "1px solid " + P.border : "none" }}
             >
               <span style={{ color: P.textDim, fontSize: 11, width: 10, flexShrink: 0 }}>{isOpen ? "▾" : "▸"}</span>
@@ -12679,7 +12680,7 @@ function PhotosView({ project }) {
 
             {/* Folder contents */}
             {isOpen && (
-              <div style={{ padding: 14, background: P.bg }}>
+              <div style={{ padding: 14, background: P.bg, borderRadius: "0 0 8px 8px" }}>
                 {groupItems === "loading" && (
                   <div style={{ color: P.textDim, fontSize: 13, padding: "10px 0" }}>Loading…</div>
                 )}
