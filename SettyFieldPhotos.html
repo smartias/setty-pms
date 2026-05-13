@@ -866,8 +866,16 @@ async function compressBlob(blob, quality, maxWidth) {
 async function normalizeToBlob(file, quality, maxWidth) {
   let blob = file;
   if (file.type === 'image/heic' || file.type === 'image/heif' || /\.heic$/i.test(file.name) || /\.heif$/i.test(file.name)) {
-    blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
-    if (Array.isArray(blob)) blob = blob[0];
+    try {
+      blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+      if (Array.isArray(blob)) blob = blob[0];
+    } catch(e) {
+      // heic2any can't decode this variant (HDR, newer codec, etc.).
+      // Return the raw file — caller detects this via identity check and
+      // uploads as-is; SharePoint renders HEIC natively.
+      console.warn('HEIC conversion failed, uploading raw:', file.name);
+      return file;
+    }
   }
   return compressBlob(blob, quality, maxWidth);
 }
@@ -1070,35 +1078,37 @@ async function startUpload() {
       try {
         pf.status = 'uploading';
         renderPreviews();
-        let fname = pf.file.name
-          .replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg')
-          .replace(/[^a-zA-Z0-9._\- ]/g, '_');
 
         if (pf.isVideo) {
           // Videos: no compression, use chunked session upload
+          const fname = pf.file.name.replace(/[^a-zA-Z0-9._\- ]/g, '_');
           setProgress(i + 1, `Uploading video ${fname}...`);
           await uploadWithSession(uploadFolder, fname, pf.file, pct => {
             document.getElementById('progressBar').style.width =
               Math.round(((i + pct) / (total + 2)) * 100) + '%';
           });
         } else {
-          // Images: compress then upload
+          // Images: compress then upload.
+          // HEIC files that heic2any can't convert fall back to raw upload —
+          // SharePoint renders HEIC natively so they'll display fine.
           setProgress(i + 1, `Compressing ${pf.file.name}...`);
           const compressed = await normalizeToBlob(pf.file, quality, maxWidth);
+          const isRawHeic  = compressed === pf.file; // heic2any fell back
+          const mimeType   = isRawHeic ? 'image/heic' : 'image/jpeg';
+          let fname = pf.file.name.replace(/[^a-zA-Z0-9._\- ]/g, '_');
+          if (!isRawHeic) fname = fname.replace(/\.heic$/i, '.jpg').replace(/\.heif$/i, '.jpg');
           const buf = await compressed.arrayBuffer();
           setProgress(i + 1, `Uploading ${fname}...`);
-          // Use session for large images too (> 4 MB)
+          // Use session upload for large files (> 4 MB)
           if (buf.byteLength > 4 * 1024 * 1024) {
-            const blob = new Blob([buf], { type: 'image/jpeg' });
+            const blob = new Blob([buf], { type: mimeType });
             await uploadWithSession(uploadFolder, fname, blob, () => {});
           } else {
-            // Small images use a single PUT — but with retry, so a transient
-            // 429/503 doesn't kill that photo's upload (and force the user
-            // to re-queue it). Critical on mobile networks.
+            // Small files use a single PUT with retry — critical on mobile networks.
             const token = await getToken();
             await putWithRetry(DRIVE_ID, token,
               encodePath(uploadFolder) + '/' + encodeURIComponent(fname),
-              buf, 'image/jpeg');
+              buf, mimeType);
           }
         }
         pf.status = 'ok';
