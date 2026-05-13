@@ -2270,23 +2270,14 @@ function buildKickoffHtml(project) {
   </tr>`;
 
   return `
-<div style="text-align:center;margin-bottom:12px">
-  <p style="font-family:Calibri,sans-serif;font-size:18pt;font-weight:bold;color:#cc0000;margin:0">SETTY</p>
-  <p style="font-family:Calibri,sans-serif;font-size:13pt;font-style:italic;margin:4px 0">INTERNAL KICKOFF MEETING FORM</p>
-</div>
+<p style="font-family:Calibri,sans-serif;font-size:18pt;font-weight:bold;color:#cc0000;text-align:center;margin:0">SETTY</p>
+<p style="font-family:Calibri,sans-serif;font-size:13pt;font-style:italic;text-align:center;margin:4px 0 14px">INTERNAL KICKOFF MEETING FORM</p>
 
-<table cellpadding="4" cellspacing="0" style="width:100%;font-family:Calibri,sans-serif;font-size:11pt;margin-bottom:12px">
-  <tr>
-    <td style="width:50%"><i><b>Project Name:</b></i> &nbsp;${e(project.name)}</td>
-    <td><i><b>PM:</b></i> &nbsp;${pm}</td>
-  </tr>
-  <tr>
-    <td><i><b>Project Number:</b></i> &nbsp;${e(project.projectNumber || "(TBD)")}</td>
-    <td><i><b>Date:</b></i> &nbsp;${today}</td>
-  </tr>
-</table>
+<p style="font-family:Calibri,sans-serif;font-size:11pt;margin:2px 0"><i><b>Project Name:</b></i>&nbsp;&nbsp;${e(project.name)}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<i><b>PM:</b></i>&nbsp;&nbsp;${pm}</p>
+<p style="font-family:Calibri,sans-serif;font-size:11pt;margin:2px 0 14px"><i><b>Project Number:</b></i>&nbsp;&nbsp;${e(project.projectNumber || "(TBD)")}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<i><b>Date:</b></i>&nbsp;&nbsp;${today}</p>
 
-<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Calibri,sans-serif;font-size:11pt">
+  <col width="40" /><col width="620" />
   ${row(1, "Project team<br/>(PM, M/E/P/FP, QA/QC)",
     `<p ${cs}>&nbsp;</p><p ${cs}>&nbsp;</p><p ${cs}>&nbsp;</p>`)}
   ${row(2, "Project overview",
@@ -2296,8 +2287,29 @@ function buildKickoffHtml(project) {
      <p ${cs}>• [Complexity]</p>
      <p ${cs}>• [Risks]</p>
      <p ${cs}>• [Interdependencies]</p>`)}
-  ${row(3, "Client &amp; Client requirements",
-    `<p ${cs}><b>Client / Prime:</b> ${client}</p><p ${cs}>&nbsp;</p><p ${cs}>&nbsp;</p>`)}
+  ${row(3, "Client &amp; Client requirements", (() => {
+    const prime      = e(project.prime || "");
+    const clientName = e(project.clientName || "");
+    const isSettyPrime    = isSettyFirm(project.prime || "");
+    const sameClientPrime = prime && clientName && prime.toLowerCase() === clientName.toLowerCase();
+    const isSecondTier    = !isSettyPrime && prime && clientName && !sameClientPrime;
+    const subs = (project.subconsultants || []).map(s => (s.firm || "").trim()).filter(n => n && !isSettyFirm(n));
+
+    let chainHtml = "";
+    if (isSettyPrime) {
+      chainHtml = `<p ${cs}><b>Prime (Setty):</b> Setty &amp; Associates</p><p ${cs}><b>Client / Owner:</b> ${clientName || "(Not set)"}</p>`;
+    } else if (sameClientPrime) {
+      chainHtml = `<p ${cs}><b>Prime · Client (1-tier sub):</b> ${prime || "(Not set)"}</p>`;
+    } else {
+      chainHtml = `<p ${cs}><b>Prime:</b> ${prime || "(Not set)"}</p><p ${cs}><b>Client (contracts Setty directly):</b> ${clientName || "(Not set)"}</p>`;
+      if (isSecondTier) chainHtml += `<p ${cs} style="color:#888;font-style:italic">2nd-tier sub — Client is a sub to the Prime</p>`;
+    }
+    if (subs.length) {
+      chainHtml += `<p ${cs}><b>Subconsultants (hired by Setty):</b> ${subs.map(s => e(s)).join(", ")}</p>`;
+    }
+    chainHtml += `<p ${cs}>&nbsp;</p>`;
+    return chainHtml;
+  })())}
   ${row(4, "Project milestones &amp; schedule", milestonesHtml)}
   ${row(5, "Scope of work and services", scopeHtml)}
   ${row(6, "Procurement and subcontracting plan",
