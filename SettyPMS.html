@@ -2174,7 +2174,7 @@ async function getTemplatesDriveId() {
   if (_templatesDriveId) return _templatesDriveId;
   const site   = await graphFetch("GET", "/sites/setty.sharepoint.com:/sites/Templates");
   const drives = await graphFetch("GET", `/sites/${site.id}/drives`);
-  const doc    = (drives?.value || []).find(d => d.name === "Documents") || drives?.value?.[0];
+  const doc    = (drives?.value || []).find(d => d.name === "Template Library") || (drives?.value || []).find(d => d.name === "Documents") || drives?.value?.[0];
   if (!doc) throw new Error("Could not find Templates document library.");
   _templatesDriveId = doc.id;
   return _templatesDriveId;
@@ -2242,53 +2242,77 @@ function buildKickoffHtml(project) {
   const e      = escapeOneNoteText;
   const client = e(project.prime || project.clientName || "(Not set)");
   const pm     = e((project.projectContacts?.pm || [])[0]?.displayName || project.projectManager || "(Not assigned)");
-  const addr   = [project.projectAddress, project.projectCity, project.projectState].filter(Boolean).map(e).join(", ") || "(Not set)";
-  const today  = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-  const scope  = project.scopeContent
-    ? `<p style="font-family:Calibri,sans-serif;font-size:11pt">${e(project.scopeContent).replace(/\n/g, "<br/>")}</p>`
-    : `<p style="font-family:Calibri,sans-serif;font-size:11pt;color:#888;font-style:italic">Scope not yet entered — add in the PMS Scope tab.</p>`;
-  const meta   = buildOneNoteMetadataHtml({ projectNumber: project.projectNumber || "", client, createdBy: "PMS Templates", date: today });
+  const today  = new Date().toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" });
 
-  const row = (label, val, dark) =>
-    `<tr><td style="font-weight:bold;background:${dark ? "#003865" : "#f0f4f8"};color:${dark ? "#fff" : "inherit"};padding:8px;width:180px">${label}</td><td style="padding:8px">${val}</td></tr>`;
+  // Scope — stored as HTML, clean <div> wrappers for OneNote
+  const scopeHtml = project.scopeContent
+    ? project.scopeContent
+        .replace(/<div([^>]*)>/gi, '<p style="margin:2px 0;font-family:Calibri,sans-serif;font-size:11pt">')
+        .replace(/<\/div>/gi, "</p>")
+        .replace(/(<p[^>]*>)\s*(&nbsp;|\s)*<\/p>/gi, "")
+        .replace(/&nbsp;/g, " ")
+    : `<p style="color:#888;font-style:italic;font-family:Calibri,sans-serif">[Scope not yet entered — add in the PMS Scope tab]</p>`;
 
-  return `${meta}
-<h1 style="font-family:Calibri,sans-serif;color:#003865">${e(project.name)} — Kick-Off Meeting</h1>
-<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
-  ${row("Project Name",    e(project.name),                        true)}
-  ${row("Project Number",  e(project.projectNumber || "(TBD)"),    false)}
-  ${row("Client / Prime",  client,                                 true)}
-  ${row("Project Manager", pm,                                     false)}
-  ${row("Fee Type",        e(project.feeType || "Lump Sum"),       true)}
-  ${row("Address",         addr,                                   false)}
-  ${row("Meeting Date",    today,                                  true)}
+  // Milestones — pull from project if available
+  const milestones = (project.milestones || []).filter(m => m.name && m.dueDate).slice(0, 10);
+  const milestonesHtml = milestones.length
+    ? milestones.map(m => `<p style="margin:2px 0;font-family:Calibri,sans-serif;font-size:11pt">• ${e(m.name)} — ${e(m.dueDate)}</p>`).join("")
+    : `<p style="color:#888;font-style:italic;font-family:Calibri,sans-serif">[Insert Milestones &amp; Schedule]</p>`;
+
+  const cs  = `style="font-family:Calibri,sans-serif;font-size:11pt"`;
+  const num = `style="font-weight:bold;font-style:italic;vertical-align:top;text-align:center;padding:8px 10px;font-family:Calibri,sans-serif;font-size:11pt;width:28px;border:1px solid #000"`;
+  const td  = `style="vertical-align:top;padding:8px;font-family:Calibri,sans-serif;font-size:11pt;border:1px solid #000"`;
+  const th  = (label) => `<p style="font-weight:bold;font-style:italic;margin:0 0 6px 0;font-family:Calibri,sans-serif;font-size:11pt">${label}</p>`;
+
+  const row = (n, label, content) => `<tr>
+    <td ${num}>${n}</td>
+    <td ${td}>${th(label)}${content}</td>
+  </tr>`;
+
+  return `
+<div style="text-align:center;margin-bottom:12px">
+  <p style="font-family:Calibri,sans-serif;font-size:18pt;font-weight:bold;color:#cc0000;margin:0">SETTY</p>
+  <p style="font-family:Calibri,sans-serif;font-size:13pt;font-style:italic;margin:4px 0">INTERNAL KICKOFF MEETING FORM</p>
+</div>
+
+<table cellpadding="4" cellspacing="0" style="width:100%;font-family:Calibri,sans-serif;font-size:11pt;margin-bottom:12px">
+  <tr>
+    <td style="width:50%"><i><b>Project Name:</b></i> &nbsp;${e(project.name)}</td>
+    <td><i><b>PM:</b></i> &nbsp;${pm}</td>
+  </tr>
+  <tr>
+    <td><i><b>Project Number:</b></i> &nbsp;${e(project.projectNumber || "(TBD)")}</td>
+    <td><i><b>Date:</b></i> &nbsp;${today}</td>
+  </tr>
 </table>
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Scope of Work</h2>
-${scope}
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Attendees</h2>
-<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
-  <tr style="background:#003865;color:#fff"><th>Name</th><th>Company</th><th>Title / Role</th><th>Email</th></tr>
-  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-  <tr><td style="height:28px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-</table>
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Discussion</h2>
-<p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Action Items</h2>
-<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
-<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
-<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
-<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
-<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Next Steps</h2>
-<p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>`;
+
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
+  ${row(1, "Project team<br/>(PM, M/E/P/FP, QA/QC)",
+    `<p ${cs}>&nbsp;</p><p ${cs}>&nbsp;</p><p ${cs}>&nbsp;</p>`)}
+  ${row(2, "Project overview",
+    `<p ${cs}>• [Introduction]</p>
+     <p ${cs}>• [Goals and objectives]</p>
+     <p ${cs}>• [Budget]</p>
+     <p ${cs}>• [Complexity]</p>
+     <p ${cs}>• [Risks]</p>
+     <p ${cs}>• [Interdependencies]</p>`)}
+  ${row(3, "Client &amp; Client requirements",
+    `<p ${cs}><b>Client / Prime:</b> ${client}</p><p ${cs}>&nbsp;</p><p ${cs}>&nbsp;</p>`)}
+  ${row(4, "Project milestones &amp; schedule", milestonesHtml)}
+  ${row(5, "Scope of work and services", scopeHtml)}
+  ${row(6, "Procurement and subcontracting plan",
+    `<p style="color:#888;font-style:italic;font-family:Calibri,sans-serif">[Insert Procurement and subcontracting plan]</p><p ${cs}>&nbsp;</p>`)}
+  ${row(7, "All the required information from the client",
+    `<p style="color:#888;font-style:italic;font-family:Calibri,sans-serif">[Insert all required information from the client]</p><p ${cs}>&nbsp;</p>`)}
+  ${row(8, "Action items (next steps)",
+    `<p data-tag="to-do" ${cs}>&nbsp;</p>
+     <p data-tag="to-do" ${cs}>&nbsp;</p>
+     <p data-tag="to-do" ${cs}>&nbsp;</p>
+     <p data-tag="to-do" ${cs}>&nbsp;</p>
+     <p data-tag="to-do" ${cs}>&nbsp;</p>`)}
+  ${row(9, "Project record management",
+    `<p style="color:#888;font-style:italic;font-family:Calibri,sans-serif">[Insert Project Record Management]</p><p ${cs}>&nbsp;</p>`)}
+</table>`;
 }
 
 function buildChecklistHtml(templateName, project) {
