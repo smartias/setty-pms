@@ -1364,153 +1364,96 @@ const CSS = `
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
 
+// Curated template list — add/remove entries here as the team's library grows.
+// action "onenote": generates a page from project data and posts to the linked notebook.
+// action "copy":    searches the Templates SP site for the file and copies it to the
+//                   project's Teams SharePoint folder.
+const SETTY_TEMPLATES = [
+  { key: "kickoff",     label: "Kick-Off Form",                             icon: "🤝", action: "onenote", section: "Kick-Off Meetings",   search: "Kick off Form" },
+  { key: "pcm",         label: "Project Coordination Meeting Agenda",        icon: "📋", action: "onenote", section: "Meeting Notes",        search: "Project Coordination Meeting" },
+  { key: "comment",     label: "Comment Response Template SA",               icon: "📝", action: "copy",    search: "Comment Response" },
+  { key: "esi",         label: "Engineers Supplemental Instructions SA",     icon: "📝", action: "copy",    search: "Engineers Supplemental" },
+  { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead" },
+];
+
 function TemplatesPanel({ project }) {
-  const [items,       setItems]       = React.useState(null);
-  const [err,         setErr]         = React.useState("");
-  const [working,     setWorking]     = React.useState({});
-  const [done,        setDone]        = React.useState({});   // { [id]: url }
-  const [errMap,      setErrMap]      = React.useState({});
-  const [folders,     setFolders]     = React.useState({});   // { [folderId]: items[] | "loading" }
-  const [openFolders, setOpenFolders] = React.useState({});
+  const [working, setWorking] = React.useState({});  // { [key]: bool }
+  const [done,    setDone]    = React.useState({});  // { [key]: url }
+  const [errMap,  setErrMap]  = React.useState({});  // { [key]: string }
 
-  React.useEffect(() => { load(); }, []);
+  const hasNB = !!(project.teamsOneNoteNotebookId || project.oneNoteNotebookId);
 
-  async function load() {
-    setErr(""); setItems(null);
-    try {
-      const driveId = await getTemplatesDriveId();
-      const res     = await graphFetch("GET", `/drives/${driveId}/root/children?$top=100&$orderby=name asc`);
-      setItems((res?.value || []).map(i => ({ ...i, _driveId: driveId })));
-    } catch(e) { setErr(e.message); setItems([]); }
-  }
-
-  async function loadFolder(folder) {
-    if (folders[folder.id] !== undefined) {
-      setOpenFolders(prev => ({ ...prev, [folder.id]: !prev[folder.id] }));
-      return;
-    }
-    setOpenFolders(prev => ({ ...prev, [folder.id]: true }));
-    setFolders(prev => ({ ...prev, [folder.id]: "loading" }));
-    try {
-      const res = await graphFetch("GET", `/drives/${folder._driveId}/items/${folder.id}/children?$top=100&$orderby=name asc`);
-      setFolders(prev => ({ ...prev, [folder.id]: (res?.value || []).map(i => ({ ...i, _driveId: folder._driveId })) }));
-    } catch(e) { setFolders(prev => ({ ...prev, [folder.id]: [] })); }
+  async function findTemplateFile(searchTerm) {
+    const driveId = await getTemplatesDriveId();
+    const res = await graphFetch("GET", `/drives/${driveId}/root/search(q='${encodeURIComponent(searchTerm)}')?$top=10`);
+    const files = (res?.value || []).filter(i => i.file);
+    if (!files.length) throw new Error(`Template not found in SharePoint: "${searchTerm}"`);
+    // Pick the closest match by name
+    const term = searchTerm.toLowerCase();
+    const match = files.find(f => f.name.toLowerCase().includes(term)) || files[0];
+    return { ...match, _driveId: driveId };
   }
 
   async function handleCreate(tpl) {
-    const id = tpl.id;
-    setWorking(prev => ({ ...prev, [id]: true }));
-    setErrMap(prev => ({ ...prev, [id]: "" }));
+    setWorking(prev => ({ ...prev, [tpl.key]: true }));
+    setErrMap(prev => ({ ...prev, [tpl.key]: "" }));
     try {
-      const isKickoff   = /kick.?off/i.test(tpl.name);
-      const isChecklist = /checklist/i.test(tpl.name);
-      const hasNB       = !!(project.teamsOneNoteNotebookId || project.oneNoteNotebookId);
-
       let url = "";
-      if ((isKickoff || isChecklist) && hasNB) {
-        const body    = isKickoff ? buildKickoffHtml(project) : buildChecklistHtml(tpl.name, project);
-        const title   = isKickoff
-          ? `Kick-Off — ${project.name}`
-          : `${tpl.name.replace(/\.[^.]+$/, "")} — ${project.name}`;
-        const section = isKickoff ? "Kick-Off Meetings" : "Checklists";
-        url = await createTemplateOneNotePage(project, title, body, section);
+      if (tpl.action === "onenote") {
+        if (!hasNB) throw new Error("Link a OneNote notebook to this project first (the 'OneNote via Teams' field above).");
+        const body    = tpl.key === "kickoff" ? buildKickoffHtml(project) : buildPCMHtml(project);
+        const title   = tpl.key === "kickoff"
+          ? `Kick-Off Meeting — ${project.name}`
+          : `PCM Agenda — ${project.name} — ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+        url = await createTemplateOneNotePage(project, title, body, tpl.section);
       } else {
-        url = await copyTemplateToTeamsSP(tpl, project);
+        const file = await findTemplateFile(tpl.search);
+        url = await copyTemplateToTeamsSP(file, project);
       }
-      setDone(prev => ({ ...prev, [id]: url }));
+      setDone(prev => ({ ...prev, [tpl.key]: url }));
     } catch(e) {
-      setErrMap(prev => ({ ...prev, [id]: e.message }));
+      setErrMap(prev => ({ ...prev, [tpl.key]: e.message }));
     }
-    setWorking(prev => ({ ...prev, [id]: false }));
-  }
-
-  function fileIcon(name) {
-    if (/kick.?off/i.test(name))        return "🤝";
-    if (/checklist/i.test(name))        return "✅";
-    if (/\.docx?$/i.test(name))         return "📝";
-    if (/\.xlsx?$/i.test(name))         return "📊";
-    if (/\.pptx?$/i.test(name))         return "📊";
-    if (/\.pdf$/i.test(name))           return "📄";
-    return "📄";
-  }
-
-  function actionLabel(tpl) {
-    const hasNB = !!(project.teamsOneNoteNotebookId || project.oneNoteNotebookId);
-    if (/kick.?off/i.test(tpl.name) && hasNB)   return "Create OneNote Page";
-    if (/checklist/i.test(tpl.name) && hasNB)   return "Create OneNote Checklist";
-    return "Copy to Project Files";
-  }
-
-  function TemplateCard({ tpl }) {
-    const isWorking = !!working[tpl.id];
-    const url       = done[tpl.id];
-    const isDone    = !!url;
-    const errMsg    = errMap[tpl.id];
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 10px",
-        borderRadius: 6, border: "1px solid " + (isDone ? P.green : P.border),
-        background: isDone ? P.greenDim : P.bg }}>
-        <span style={{ fontSize: 17, flexShrink: 0 }}>{fileIcon(tpl.name)}</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: P.text,
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {tpl.name.replace(/\.[^.]+$/, "")}
-          </div>
-          {isDone && url && (
-            <a href={url} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 11, color: P.accentLight }}>Open ↗</a>
-          )}
-          {errMsg && <div style={{ fontSize: 10, color: P.red, marginTop: 2 }}>{errMsg}</div>}
-        </div>
-        <button onClick={() => isDone ? window.open(url, "_blank") : handleCreate(tpl)}
-          disabled={isWorking}
-          style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5, cursor: isWorking ? "default" : "pointer",
-            border: "1px solid " + (isDone ? P.green : P.accent),
-            background: isDone ? P.green : P.accentDim,
-            color: isDone ? "#fff" : P.accentLight,
-            whiteSpace: "nowrap", flexShrink: 0, opacity: isWorking ? 0.6 : 1 }}>
-          {isWorking ? "⏳" : isDone ? "✓ Open" : `+ ${actionLabel(tpl)}`}
-        </button>
-      </div>
-    );
+    setWorking(prev => ({ ...prev, [tpl.key]: false }));
   }
 
   return (
-    <div>
-      {err && <div style={{ color: P.red, fontSize: 12, marginBottom: 8 }}>⚠ {err}</div>}
-      {items === null && !err && (
-        <div style={{ color: P.textDim, fontSize: 12 }}>Loading templates…</div>
-      )}
-      {items !== null && items.length === 0 && !err && (
-        <div style={{ color: P.textDim, fontSize: 12 }}>No templates found in the Templates site.</div>
-      )}
-      {items !== null && items.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-          {items.map(item => {
-            if (item.folder) {
-              const isOpen  = !!openFolders[item.id];
-              const kids    = folders[item.id];
-              return (
-                <div key={item.id}>
-                  <div onClick={() => loadFolder(item)} style={{
-                    display: "flex", alignItems: "center", gap: 6, padding: "5px 4px",
-                    cursor: "pointer", userSelect: "none", color: P.textDim, fontSize: 12 }}>
-                    <span style={{ fontSize: 10 }}>{isOpen ? "▾" : "▸"}</span>
-                    <span style={{ fontWeight: 700, color: P.text }}>📁 {item.name}</span>
-                  </div>
-                  {isOpen && (
-                    <div style={{ paddingLeft: 14, display: "flex", flexDirection: "column", gap: 5, marginBottom: 4 }}>
-                      {kids === "loading" && <div style={{ color: P.textDim, fontSize: 11 }}>Loading…</div>}
-                      {Array.isArray(kids) && kids.filter(c => c.file).map(c => <TemplateCard key={c.id} tpl={c} />)}
-                    </div>
-                  )}
-                </div>
-              );
-            }
-            return item.file ? <TemplateCard key={item.id} tpl={item} /> : null;
-          })}
-        </div>
-      )}
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      {SETTY_TEMPLATES.map(tpl => {
+        const isWorking = !!working[tpl.key];
+        const url       = done[tpl.key];
+        const isDone    = !!url;
+        const errMsg    = errMap[tpl.key];
+        const btnLabel  = tpl.action === "onenote" ? "Create OneNote Page" : "Copy to Project Files";
+        return (
+          <div key={tpl.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 10px",
+            borderRadius: 6, border: "1px solid " + (isDone ? P.green : errMsg ? P.red : P.border),
+            background: isDone ? P.greenDim : P.bg }}>
+            <span style={{ fontSize: 17, flexShrink: 0 }}>{tpl.icon}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{tpl.label}</div>
+              <div style={{ fontSize: 10, color: P.textDim, marginTop: 1 }}>
+                {tpl.action === "onenote" ? "→ OneNote" : "→ Teams SharePoint"}
+              </div>
+              {isDone && url && (
+                <a href={url} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 11, color: P.accentLight }}>Open ↗</a>
+              )}
+              {errMsg && <div style={{ fontSize: 10, color: P.red, marginTop: 2 }}>{errMsg}</div>}
+            </div>
+            <button onClick={() => isDone ? window.open(url, "_blank") : handleCreate(tpl)}
+              disabled={isWorking}
+              style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5,
+                cursor: isWorking ? "default" : "pointer",
+                border: "1px solid " + (isDone ? P.green : P.accent),
+                background: isDone ? P.green : P.accentDim,
+                color: isDone ? "#fff" : P.accentLight,
+                whiteSpace: "nowrap", flexShrink: 0, opacity: isWorking ? 0.6 : 1 }}>
+              {isWorking ? "⏳" : isDone ? "✓ Open" : `+ ${btnLabel}`}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2365,6 +2308,56 @@ ${boxes}
 <br/>
 <h2 style="font-family:Calibri,sans-serif;color:#003865">Notes</h2>
 <p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>`;
+}
+
+function buildPCMHtml(project) {
+  const e      = escapeOneNoteText;
+  const client = e(project.prime || project.clientName || "(Not set)");
+  const pm     = e((project.projectContacts?.pm || [])[0]?.displayName || project.projectManager || "(Not assigned)");
+  const today  = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const meta   = buildOneNoteMetadataHtml({ projectNumber: project.projectNumber || "", client, createdBy: "PMS Templates", date: today });
+  const agendaItems = [
+    "Review of previous meeting action items",
+    "Schedule update",
+    "RFI / Submittal status",
+    "Construction progress",
+    "Open issues",
+    "Other business",
+  ].map((item, i) => `<p style="font-family:Calibri,sans-serif;font-size:11pt">${i + 1}. ${item}</p>`).join("\n");
+  const boxes = Array(6).fill(null).map(() =>
+    `<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>`).join("\n");
+
+  return `${meta}
+<h1 style="font-family:Calibri,sans-serif;color:#003865">Project Coordination Meeting — ${e(project.name)}</h1>
+<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
+  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:8px;width:160px">Project</td><td style="padding:8px">${e(project.name)}</td></tr>
+  <tr><td style="font-weight:bold;background:#f0f4f8;padding:8px">Project #</td><td style="padding:8px">${e(project.projectNumber || "TBD")}</td></tr>
+  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:8px">Client / Prime</td><td style="padding:8px">${client}</td></tr>
+  <tr><td style="font-weight:bold;background:#f0f4f8;padding:8px">Project Manager</td><td style="padding:8px">${pm}</td></tr>
+  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:8px">Date</td><td style="padding:8px">${today}</td></tr>
+  <tr><td style="font-weight:bold;background:#f0f4f8;padding:8px">Location / Call-in</td><td style="padding:8px">&nbsp;</td></tr>
+</table>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Attendees</h2>
+<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
+  <tr style="background:#003865;color:#fff"><th>Name</th><th>Company</th><th>Title / Role</th></tr>
+  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+</table>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Agenda</h2>
+${agendaItems}
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Discussion Notes</h2>
+<p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Action Items</h2>
+${boxes}
+<br/>
+<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Next Meeting</h2>
+<p style="font-family:Calibri,sans-serif"><b>Date / Time:</b> &nbsp;&nbsp;&nbsp; <b>Location:</b></p>`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
