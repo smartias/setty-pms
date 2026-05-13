@@ -1373,15 +1373,21 @@ const CSS = `
 const SETTY_TEMPLATES = [
   { key: "kickoff",     label: "Kick-Off Form",                             icon: "🤝", action: "onenote", section: "Internal Meetings", search: "Kick off Form",               reusable: false },
   { key: "pcm",         label: "Project Coordination Meeting Agenda",        icon: "📋", action: "onenote", section: "Internal Meetings", search: "Project Coordination Meeting", reusable: true  },
-  { key: "comment",     label: "Comment Response Template SA",               icon: "📝", action: "copy",    search: "Comment Response",                                            reusable: true  },
-  { key: "esi",         label: "Engineers Supplemental Instructions SA",     icon: "📝", action: "copy",    search: "Engineers Supplemental",                                      reusable: true  },
-  { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead",                                                  reusable: true  },
+  { key: "comment",     label: "Comment Response Template SA",               icon: "📝", action: "copy",    search: "Comment Response",     copyLabel: "Comment Response", reusable: true  },
+  { key: "esi",         label: "Engineers Supplemental Instructions SA",     icon: "📝", action: "copy",    search: "Engineers Supplemental", copyLabel: "ESI",              reusable: true  },
+  { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead",             copyLabel: "Letter",           reusable: true  },
 ];
 
 function TemplatesPanel({ project }) {
-  const [working, setWorking] = React.useState({});  // { [key]: bool }
-  const [done,    setDone]    = React.useState({});  // { [key]: url }
-  const [errMap,  setErrMap]  = React.useState({});  // { [key]: string }
+  const storageKey = `pms_tpl_links_${project.id}`;
+
+  function loadPersistedLinks() {
+    try { return JSON.parse(localStorage.getItem(storageKey) || "{}"); } catch { return {}; }
+  }
+
+  const [working, setWorking] = React.useState({});
+  const [done,    setDone]    = React.useState(loadPersistedLinks);
+  const [errMap,  setErrMap]  = React.useState({});
 
   const hasNB = !!(project.teamsOneNoteNotebookId || project.oneNoteNotebookId);
 
@@ -1412,7 +1418,11 @@ function TemplatesPanel({ project }) {
         const file = await findTemplateFile(tpl.search);
         url = await copyTemplateToTeamsSP(file, project);
       }
-      setDone(prev => ({ ...prev, [tpl.key]: url }));
+      setDone(prev => {
+        const next = { ...prev, [tpl.key]: url };
+        try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
+        return next;
+      });
     } catch(e) {
       setErrMap(prev => ({ ...prev, [tpl.key]: e.message }));
     }
@@ -2222,8 +2232,9 @@ async function copyTemplateToTeamsSP(tpl, project) {
 
   const today    = new Date().toISOString().slice(0, 10);
   const ext      = (tpl.name.match(/\.[^.]+$/) || [""])[0];
-  const base     = tpl.name.replace(/\.[^.]+$/, "");
-  const destName = `${today} - ${base}${ext}`;
+  const label    = tpl.copyLabel || tpl.name.replace(/\.[^.]+$/, "");
+  const projName = (project.name || "").replace(/[/\\?*<>:|"]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+  const destName = `${today} ${projName} _${label}${ext}`;
   const buf      = await blob.arrayBuffer();
 
   const result = await graphFetch("PUT",
