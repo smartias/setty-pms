@@ -1368,12 +1368,14 @@ const CSS = `
 // action "onenote": generates a page from project data and posts to the linked notebook.
 // action "copy":    searches the Templates SP site for the file and copies it to the
 //                   project's Teams SharePoint folder.
+// reusable: true  → button stays active after first use (multiple copies per project lifecycle)
+// reusable: false → button locks to "Open" after first use (one-time per project)
 const SETTY_TEMPLATES = [
-  { key: "kickoff",     label: "Kick-Off Form",                             icon: "🤝", action: "onenote", section: "Kick-Off Meetings",   search: "Kick off Form" },
-  { key: "pcm",         label: "Project Coordination Meeting Agenda",        icon: "📋", action: "onenote", section: "Meeting Notes",        search: "Project Coordination Meeting" },
-  { key: "comment",     label: "Comment Response Template SA",               icon: "📝", action: "copy",    search: "Comment Response" },
-  { key: "esi",         label: "Engineers Supplemental Instructions SA",     icon: "📝", action: "copy",    search: "Engineers Supplemental" },
-  { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead" },
+  { key: "kickoff",     label: "Kick-Off Form",                             icon: "🤝", action: "onenote", section: "Internal Meetings", search: "Kick off Form",               reusable: false },
+  { key: "pcm",         label: "Project Coordination Meeting Agenda",        icon: "📋", action: "onenote", section: "Internal Meetings", search: "Project Coordination Meeting", reusable: true  },
+  { key: "comment",     label: "Comment Response Template SA",               icon: "📝", action: "copy",    search: "Comment Response",                                            reusable: true  },
+  { key: "esi",         label: "Engineers Supplemental Instructions SA",     icon: "📝", action: "copy",    search: "Engineers Supplemental",                                      reusable: true  },
+  { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead",                                                  reusable: true  },
 ];
 
 function TemplatesPanel({ project }) {
@@ -1420,15 +1422,16 @@ function TemplatesPanel({ project }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
       {SETTY_TEMPLATES.map(tpl => {
-        const isWorking = !!working[tpl.key];
-        const url       = done[tpl.key];
-        const isDone    = !!url;
-        const errMsg    = errMap[tpl.key];
-        const btnLabel  = tpl.action === "onenote" ? "Create OneNote Page" : "Copy to Project Files";
+        const isWorking  = !!working[tpl.key];
+        const url        = done[tpl.key];
+        const isDone     = !!url;
+        const isLocked   = isDone && !tpl.reusable;
+        const errMsg     = errMap[tpl.key];
+        const btnLabel   = tpl.action === "onenote" ? "Create OneNote Page" : "Copy to Project Files";
         return (
           <div key={tpl.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 10px",
-            borderRadius: 6, border: "1px solid " + (isDone ? P.green : errMsg ? P.red : P.border),
-            background: isDone ? P.greenDim : P.bg }}>
+            borderRadius: 6, border: "1px solid " + (isLocked ? P.green : errMsg ? P.red : P.border),
+            background: isLocked ? P.greenDim : P.bg }}>
             <span style={{ fontSize: 17, flexShrink: 0 }}>{tpl.icon}</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{tpl.label}</div>
@@ -1437,20 +1440,31 @@ function TemplatesPanel({ project }) {
               </div>
               {isDone && url && (
                 <a href={url} target="_blank" rel="noopener noreferrer"
-                  style={{ fontSize: 11, color: P.accentLight }}>Open ↗</a>
+                  style={{ fontSize: 11, color: P.accentLight }}>
+                  {tpl.reusable ? "Last created ↗" : "Open ↗"}
+                </a>
               )}
               {errMsg && <div style={{ fontSize: 10, color: P.red, marginTop: 2 }}>{errMsg}</div>}
             </div>
-            <button onClick={() => isDone ? window.open(url, "_blank") : handleCreate(tpl)}
-              disabled={isWorking}
-              style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5,
-                cursor: isWorking ? "default" : "pointer",
-                border: "1px solid " + (isDone ? P.green : P.accent),
-                background: isDone ? P.green : P.accentDim,
-                color: isDone ? "#fff" : P.accentLight,
-                whiteSpace: "nowrap", flexShrink: 0, opacity: isWorking ? 0.6 : 1 }}>
-              {isWorking ? "⏳" : isDone ? "✓ Open" : `+ ${btnLabel}`}
-            </button>
+            {isLocked ? (
+              <button onClick={() => window.open(url, "_blank")}
+                style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5,
+                  cursor: "pointer", border: "1px solid " + P.green,
+                  background: P.green, color: "#fff",
+                  whiteSpace: "nowrap", flexShrink: 0 }}>
+                ✓ Open
+              </button>
+            ) : (
+              <button onClick={() => handleCreate(tpl)}
+                disabled={isWorking}
+                style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5,
+                  cursor: isWorking ? "default" : "pointer",
+                  border: "1px solid " + P.accent,
+                  background: P.accentDim, color: P.accentLight,
+                  whiteSpace: "nowrap", flexShrink: 0, opacity: isWorking ? 0.6 : 1 }}>
+                {isWorking ? "⏳" : `+ ${btnLabel}`}
+              </button>
+            )}
           </div>
         );
       })}
@@ -2347,53 +2361,131 @@ ${boxes}
 }
 
 function buildPCMHtml(project) {
-  const e      = escapeOneNoteText;
-  const client = e(project.prime || project.clientName || "(Not set)");
-  const pm     = e((project.projectContacts?.pm || [])[0]?.displayName || project.projectManager || "(Not assigned)");
-  const today  = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
-  const meta   = buildOneNoteMetadataHtml({ projectNumber: project.projectNumber || "", client, createdBy: "PMS Templates", date: today });
-  const agendaItems = [
-    "Review of previous meeting action items",
-    "Schedule update",
-    "RFI / Submittal status",
-    "Construction progress",
-    "Open issues",
-    "Other business",
-  ].map((item, i) => `<p style="font-family:Calibri,sans-serif;font-size:11pt">${i + 1}. ${item}</p>`).join("\n");
-  const boxes = Array(6).fill(null).map(() =>
-    `<p data-tag="to-do" style="font-family:Calibri,sans-serif">&nbsp;</p>`).join("\n");
+  const e   = escapeOneNoteText;
+  const pm  = e((project.projectContacts?.pm || [])[0]?.displayName || project.projectManager || "(Not assigned)");
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
 
-  return `${meta}
-<h1 style="font-family:Calibri,sans-serif;color:#003865">Project Coordination Meeting — ${e(project.name)}</h1>
-<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
-  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:8px;width:160px">Project</td><td style="padding:8px">${e(project.name)}</td></tr>
-  <tr><td style="font-weight:bold;background:#f0f4f8;padding:8px">Project #</td><td style="padding:8px">${e(project.projectNumber || "TBD")}</td></tr>
-  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:8px">Client / Prime</td><td style="padding:8px">${client}</td></tr>
-  <tr><td style="font-weight:bold;background:#f0f4f8;padding:8px">Project Manager</td><td style="padding:8px">${pm}</td></tr>
-  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:8px">Date</td><td style="padding:8px">${today}</td></tr>
-  <tr><td style="font-weight:bold;background:#f0f4f8;padding:8px">Location / Call-in</td><td style="padding:8px">&nbsp;</td></tr>
+  const h2 = txt => `<h2 style="font-family:Calibri,sans-serif;font-size:13pt;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px;margin-top:16px">${txt}</h2>`;
+  const h3 = txt => `<h3 style="font-family:Calibri,sans-serif;font-size:11pt;font-weight:bold;color:#003865;margin:10px 0 2px 0">${txt}</h3>`;
+  const li  = txt => `<p style="font-family:Calibri,sans-serif;font-size:11pt;margin:1px 0 1px 20px">· ${txt}</p>`;
+  const todo = txt => `<p data-tag="to-do" style="font-family:Calibri,sans-serif;font-size:11pt;margin:2px 0">${txt}</p>`;
+  const blankRow = `<tr><td style="height:26px;font-family:Calibri,sans-serif;font-size:11pt;padding:4px">&nbsp;</td><td style="padding:4px">&nbsp;</td><td style="padding:4px">&nbsp;</td><td style="padding:4px">&nbsp;</td></tr>`;
+
+  return `
+<h1 style="font-family:Calibri,sans-serif;font-size:16pt;color:#003865">Cross-Disciplinary MEP Coordination Meeting Agenda</h1>
+
+${h2("Meeting Information")}
+<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-family:Calibri,sans-serif;font-size:11pt">
+  <colgroup><col width="160"/><col width="500"/></colgroup>
+  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:6px 10px">Project</td><td style="padding:6px 10px">${e(project.name || "(Not set)")}</td></tr>
+  <tr><td style="font-weight:bold;background:#f0f4f8;padding:6px 10px">Project #</td><td style="padding:6px 10px">${e(project.projectNumber || "TBD")}</td></tr>
+  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:6px 10px">Date</td><td style="padding:6px 10px">${today}</td></tr>
+  <tr><td style="font-weight:bold;background:#f0f4f8;padding:6px 10px">Time</td><td style="padding:6px 10px">&nbsp;</td></tr>
+  <tr><td style="font-weight:bold;background:#003865;color:#fff;padding:6px 10px">Location</td><td style="padding:6px 10px">&nbsp;</td></tr>
+  <tr><td style="font-weight:bold;background:#f0f4f8;padding:6px 10px">Meeting Lead</td><td style="padding:6px 10px">${pm}</td></tr>
 </table>
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Attendees</h2>
-<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;font-family:Calibri,sans-serif;font-size:11pt">
-  <tr style="background:#003865;color:#fff"><th>Name</th><th>Company</th><th>Title / Role</th></tr>
-  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
-  <tr><td style="height:26px">&nbsp;</td><td>&nbsp;</td><td>&nbsp;</td></tr>
+
+${h2("Meeting Objectives")}
+${li("Review critical coordination areas between disciplines")}
+${li("Identify and resolve potential conflicts before finalizing construction documents")}
+${li("Establish clear ownership of coordination items")}
+${li("Document decisions and action items for implementation")}
+
+${h2("Pre-Meeting Requirements")}
+${li("BIM team to run preliminary clash detection report")}
+${li("Each discipline to review the MEP Coordination Punchlist Checklist")}
+
+${h2("Agenda Items")}
+
+${h3("1. Introduction and Project Status")}
+${li("Project schedule update")}
+${li("Current design phase and upcoming milestones")}
+${li("Review of previous coordination meeting action items")}
+
+${h3("2. BIM / Clash Detection Review")}
+${li("Presentation of current coordination model")}
+${li("Review of major clash areas")}
+${li("Discussion of clash resolution strategies")}
+${li("Assignment of clash resolution responsibilities")}
+
+${h3("3. Ceiling Coordination")}
+${li("Review of critical ceiling areas with limited plenum space")}
+${li("Discipline priority in congested areas")}
+${li("Ceiling mounted equipment locations and conflicts")}
+${li("Light fixture coordination with diffusers and sprinklers")}
+${li("Access panel requirements and locations")}
+
+${h3("4. Vertical Shaft and Wall Coordination")}
+${li("Review of shaft space allocations")}
+${li("Wall ratings and penetration requirements")}
+${li("Fire/smoke damper locations")}
+${li("Riser coordination between floors")}
+${li("Structural penetration requirements")}
+
+${h3("5. Equipment and Clearance Review")}
+${li("Major equipment placement and service clearances")}
+${li("Equipment pad sizes and locations")}
+${li("Door swing conflicts with equipment")}
+${li("Removal/replacement pathways")}
+${li("Wall-mounted equipment coordination")}
+
+${h3("6. Architectural Coordination Issues")}
+${li("Plumbing fixture locations vs. architectural layouts")}
+${li("Diffuser/grille placement vs. ceiling plans")}
+${li("Wall thickness adequacy for embedded systems")}
+${li("Millwork/casework with MEP connections")}
+${li("Finished ceiling heights vs. required plenum space")}
+
+${h3("7. System Routing Strategies")}
+${li("Main duct and pipe routing conflicts")}
+${li("Cable tray and conduit pathways")}
+${li("Crossing points requiring special coordination")}
+${li("Sloped piping requirements")}
+${li("Expansion/contraction provisions")}
+
+${h3("8. Special Areas Focus")}
+${li("IT/MDF/IDF rooms")}
+${li("Mechanical rooms")}
+${li("Electrical rooms")}
+${li("Medical/specialized equipment areas")}
+${li("Entry points for major services")}
+${li("Areas with previous RFI history on similar projects")}
+
+${h3("9. Documentation Standards")}
+${li("Required coordination details")}
+${li("Section views needed")}
+${li("Dimensioning standards")}
+${li("Coordination notes on drawings")}
+${li("Specification coordination")}
+
+${h3("10. Action Items and Responsibilities")}
+${li("Review and assignment of all action items")}
+${li("Deadlines for resolution of identified conflicts")}
+${li("Schedule for follow-up coordination meetings")}
+${li("Process for documenting resolved items")}
+
+${h2("Action Items")}
+<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-family:Calibri,sans-serif;font-size:11pt">
+  <colgroup><col width="280"/><col width="160"/><col width="100"/><col width="120"/></colgroup>
+  <tr style="background:#003865;color:#fff">
+    <th style="padding:6px 10px;font-weight:bold">Action Item</th>
+    <th style="padding:6px 10px;font-weight:bold">Responsible Party</th>
+    <th style="padding:6px 10px;font-weight:bold">Due Date</th>
+    <th style="padding:6px 10px;font-weight:bold">Status</th>
+  </tr>
+  ${blankRow}${blankRow}${blankRow}${blankRow}${blankRow}${blankRow}
 </table>
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Agenda</h2>
-${agendaItems}
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Discussion Notes</h2>
-<p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p><p style="font-family:Calibri,sans-serif">&nbsp;</p>
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Action Items</h2>
-${boxes}
-<br/>
-<h2 style="font-family:Calibri,sans-serif;color:#003865;border-bottom:2px solid #003865;padding-bottom:4px">Next Meeting</h2>
-<p style="font-family:Calibri,sans-serif"><b>Date / Time:</b> &nbsp;&nbsp;&nbsp; <b>Location:</b></p>`;
+
+${h2("Post-Meeting Deliverables")}
+${todo("Meeting minutes with all decisions documented")}
+${todo("Updated coordination action item list with responsible parties")}
+${todo("Revised clash detection report after implementing changes")}
+${todo("Updated drawing set reflecting coordination decisions")}
+${todo("Schedule for discipline-specific follow-up meetings as needed")}
+
+${h2("Next Meeting")}
+<p style="font-family:Calibri,sans-serif;font-size:11pt"><b>Date / Time:</b> &nbsp;&nbsp;&nbsp;&nbsp; <b>Location:</b></p>
+`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
