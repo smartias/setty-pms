@@ -1375,7 +1375,9 @@ const EMAIL_TEMPLATES = [
     key: "asa",
     label: "Additional Service Auth",
     subject: "Scope Clarification and Request for Additional Service Authorization – [Project Name]",
-    body: `As the project advances, we've identified a task that appears to fall outside the scope of our current agreement dated [Contract Date]. We're bringing it to your attention to ensure alignment before proceeding and to maintain clear communication regarding project scope.
+    body: `Dear [Client Contact],
+
+As the project advances, we've identified a task that appears to fall outside the scope of our current agreement dated [Contract Date]. We're bringing it to your attention to ensure alignment before proceeding and to maintain clear communication regarding project scope.
 
 Service Item Identified:
 [Concise description – e.g., "Additional coordination for revised electrical layouts at Level 2 due to tenant design changes."]
@@ -1397,7 +1399,7 @@ Setty
     key: "intro",
     label: "Project Introduction",
     subject: "Project Introduction – [Project Name]",
-    body: `Dear [Client Name],
+    body: `Dear [Client Contact],
 
 On behalf of our entire team, we would like to thank you for the opportunity to work with you on the [Project Name] project. We are excited to be part of the team and look forward to supporting the project's success from start to finish.
 
@@ -1405,10 +1407,7 @@ I will be serving as the Project Manager and primary point of contact for the pr
 
 Below is the core project team and their respective disciplines:
 
-[Name] – [Discipline/Role] – [Email]
-[Name] – [Discipline/Role] – [Email]
-[Name] – [Discipline/Role] – [Email]
-[Name] – [Discipline/Role] – [Email]
+[Team Members]
 
 Our goal is to provide responsive communication, proactive coordination, and a smooth project experience throughout the duration of the work.
 
@@ -1426,7 +1425,7 @@ Setty
     key: "onhold",
     label: "Project On Hold",
     subject: "Project On Hold – Pending Outstanding Items – [Project Name]",
-    body: `Dear [Client Name],
+    body: `Dear [Client Contact],
 
 I hope you are doing well.
 
@@ -1452,9 +1451,9 @@ Setty
     key: "sitesurvey",
     label: "Site Survey Request",
     subject: "Site Survey Scheduling – [Project Name]",
-    body: `Dear Client,
+    body: `Dear [Client Contact],
 
-Our team would like to schedule our site survey for the [Project Name] Project. The pre-design site survey is a critical step for our team; it's crucial that we begin our work with the most accurate and complete view of the existing systems. Below are some of the critical components of our site visit to keep in mind as we schedule the work.
+Our team would like to schedule our site survey for the [Project Name] project. The pre-design site survey is a critical step for our team; it's crucial that we begin our work with the most accurate and complete view of the existing systems. Below are some of the critical components of our site visit to keep in mind as we schedule the work.
 
 1 – Existing Plans:
 Before our team visits the site, we want to verify first that we have every available existing Mechanical, Electrical, Plumbing and Fire Protection Drawing, especially any that might contain riser and one line diagrams and mechanical spaces. If there are any studies, maintenance records or other documentation on the existing systems that could be made available to us to review prior to being onsite, that will be incredibly valuable. In addition, if you have an "AS-BUILT" architectural plan and RCP from any recent site verification work, please share that with us — we can use it to take field notes and denote any critical dimensions. If sufficient existing information is not available, we should discuss options for additional site investigation time for this project and the limits of our investigations.
@@ -1593,14 +1592,28 @@ function TemplatesPanel({ project }) {
               return (
                 <button key={et.key}
                   onClick={() => {
-                    const clientName = project.clientName || project.prime || "[Client Name]";
-                    const projectName = project.name || "[Project Name]";
-                    const pm = (project.projectContacts?.pm || [])[0]?.displayName || project.projectManager || "[Your Name]";
+                    const clientName    = project.clientName || project.prime || "[Client Name]";
+                    const projectName   = project.name || "[Project Name]";
+                    const pmPocs            = project.projectContacts?.pm || [];
+                    const fullContactName   = pmPocs[0]?.name || project.clientContact || "";
+                    const clientContact     = fullContactName
+                      ? fullContactName.trim().split(/\s+/)[0]
+                      : "[Client Contact]";
+                    const settyPm       = (project.teamMembers || []).find(m => m.role === "Project Manager")?.name
+                                       || project.projectManager || "[Your Name]";
+                    const teamLines     = (project.teamMembers || [])
+                      .filter(m => m.name)
+                      .map(m => {
+                        const disc = (m.disciplines || []).join(", ") || m.role || "[Discipline]";
+                        return `${m.name} – ${disc} – [Email]`;
+                      }).join("\n") || "[Name] – [Discipline/Role] – [Email]";
                     function fill(s) {
                       return s
                         .replace(/\[Client Name\]/g, clientName)
+                        .replace(/\[Client Contact\]/g, clientContact)
                         .replace(/\[Project Name\]/g, projectName)
-                        .replace(/\[Your Name\]/g, pm);
+                        .replace(/\[Your Name\]/g, settyPm)
+                        .replace(/\[Team Members\]/g, teamLines);
                     }
                     const text = `Subject: ${fill(et.subject)}\n\n${fill(et.body)}`;
                     navigator.clipboard.writeText(text).then(() => {
