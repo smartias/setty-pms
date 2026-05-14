@@ -1372,6 +1372,30 @@ const CSS = `
 // reusable: false → button locks to "Open" after first use (one-time per project)
 const EMAIL_TEMPLATES = [
   {
+    key: "schedule",
+    label: "Schedule Update",
+    subject: "Project Schedule – [Project Name]",
+    body: `Dear [Client Contact],
+
+I hope this message finds you well. I wanted to take a moment to share the current project schedule for [Project Name], along with our anticipated milestone dates. Keeping you informed and aligned throughout the project is a priority for our team, and we want to ensure you have full visibility into where things stand.
+
+Below is a summary of the key project milestones:
+
+[Schedule]
+
+Please note that these dates represent our current projections and may be subject to adjustment based on project conditions, design coordination needs, or information received. We will keep you informed of any changes as they arise.
+
+If you have any questions about the schedule, would like to discuss timeline adjustments, or need additional detail on any of the upcoming milestones, please don't hesitate to reach out. We're here to support a smooth and successful project delivery.
+
+Thank you for your continued partnership — we truly value the opportunity to work with you on this project.
+
+Warm regards,
+[Your Name]
+[Your Title]
+Setty
+[Phone Number] | [Email Address]`,
+  },
+  {
     key: "asa",
     label: "Additional Service Auth",
     subject: "Scope Clarification and Request for Additional Service Authorization – [Project Name]",
@@ -1607,13 +1631,22 @@ function TemplatesPanel({ project }) {
                         const disc = (m.disciplines || []).join(", ") || m.role || "[Discipline]";
                         return `${m.name} – ${disc} – [Email]`;
                       }).join("\n") || "[Name] – [Discipline/Role] – [Email]";
+                    const scheduleLines = (project.milestones || [])
+                      .filter(m => m.name && m.dueDate && !m.cancelled)
+                      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+                      .map(m => {
+                        const d = new Date(m.dueDate + "T12:00:00");
+                        const formatted = d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+                        return `  • ${m.name}: ${formatted}`;
+                      }).join("\n") || "  • [No milestones entered — add dates in the Schedule tab]";
                     function fill(s) {
                       return s
                         .replace(/\[Client Name\]/g, clientName)
                         .replace(/\[Client Contact\]/g, clientContact)
                         .replace(/\[Project Name\]/g, projectName)
                         .replace(/\[Your Name\]/g, settyPm)
-                        .replace(/\[Team Members\]/g, teamLines);
+                        .replace(/\[Team Members\]/g, teamLines)
+                        .replace(/\[Schedule\]/g, scheduleLines);
                     }
                     const text = `Subject: ${fill(et.subject)}\n\n${fill(et.body)}`;
                     navigator.clipboard.writeText(text).then(() => {
