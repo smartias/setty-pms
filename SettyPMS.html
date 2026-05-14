@@ -1396,30 +1396,6 @@ Setty
 [Phone Number] | [Email Address]`,
   },
   {
-    key: "asa",
-    label: "Additional Service Auth",
-    subject: "Scope Clarification and Request for Additional Service Authorization – [Project Name]",
-    body: `Dear [Client Contact],
-
-As the project advances, we've identified a task that appears to fall outside the scope of our current agreement dated [Contract Date]. We're bringing it to your attention to ensure alignment before proceeding and to maintain clear communication regarding project scope.
-
-Service Item Identified:
-[Concise description – e.g., "Additional coordination for revised electrical layouts at Level 2 due to tenant design changes."]
-
-Estimated Effort and Fee:
-[Insert – e.g., "$2,500 lump sum" or "Hourly, not to exceed $3,000 at standard billing rates."]
-
-We're raising this now to keep things aligned and moving efficiently. We'd appreciate your confirmation before we proceed, and we'll include the item in a formal amendment or summary of changes for documentation at a later stage.
-
-Let me know if you'd like to talk through any of this—we're happy to adjust as needed to support project goals.
-
-Warm regards,
-[Your Name]
-[Your Title]
-Setty
-[Phone Number] | [Email Address]`,
-  },
-  {
     key: "intro",
     label: "Project Introduction",
     subject: "Project Introduction – [Project Name]",
@@ -7955,7 +7931,53 @@ function ChangeOrdersView({ project, onChange }) {
   const cos = project.changeOrders || [];
   const [emailingId, setEmailingId] = React.useState(null);
   const [emailMsgs, setEmailMsgs] = React.useState({});
-  const [expandedScope, setExpandedScope] = React.useState(null); // coId with open editor
+  const [expandedScope, setExpandedScope] = React.useState(null);
+  const [copiedCo, setCopiedCo] = React.useState(null); // coId briefly shown as "Copied"
+
+  function copyASAEmail(co) {
+    const pmPocs        = project.projectContacts?.pm || [];
+    const fullName      = pmPocs[0]?.name || project.clientContact || "";
+    const clientFirst   = fullName ? fullName.trim().split(/\s+/)[0] : "[Client Contact]";
+    const settyPm       = (project.teamMembers || []).find(m => m.role === "Project Manager")?.name
+                       || project.projectManager || "[Your Name]";
+    const contractDate  = project.contractDate
+      ? new Date(project.contractDate + "T12:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+      : "[Contract Date]";
+    const scopeText     = (co.scope || "")
+      .replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim()
+      || "[Scope not entered]";
+    const coFee         = (co.milestones || []).reduce((a, m) => a + (m.fee || 0), 0) || co.fee || 0;
+    const feeText       = coFee > 0
+      ? "$" + coFee.toLocaleString("en-US") + " lump sum"
+      : "[Fee not entered]";
+
+    const text = `Subject: Scope Clarification and Request for Additional Service Authorization – ${project.name || "[Project Name]"}
+
+Dear ${clientFirst},
+
+As the project advances, we've identified a task that appears to fall outside the scope of our current agreement dated ${contractDate}. We're bringing it to your attention to ensure alignment before proceeding and to maintain clear communication regarding project scope.
+
+Service Item Identified:
+${co.name ? co.name + (scopeText ? " — " + scopeText : "") : scopeText}
+
+Estimated Effort and Fee:
+${feeText}
+
+We're raising this now to keep things aligned and moving efficiently. We'd appreciate your confirmation before we proceed, and we'll include the item in a formal amendment or summary of changes for documentation at a later stage.
+
+Let me know if you'd like to talk through any of this — we're happy to adjust as needed to support project goals.
+
+Warm regards,
+${settyPm}
+[Your Title]
+Setty
+[Phone Number] | [Email Address]`;
+
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedCo(co.id);
+      setTimeout(() => setCopiedCo(null), 2000);
+    });
+  }
 
   function setCoMsg(id, status, msg) {
     setEmailMsgs(prev => ({ ...prev, [id]: { status, msg } }));
@@ -8218,6 +8240,10 @@ function ChangeOrdersView({ project, onChange }) {
                       <Btn small variant="ghost" onClick={() => printChangeOrder(co, project, cos)}>🖨 PDF</Btn>
                       <Btn small variant="ghost" disabled={emailingId === co.id} onClick={() => emailCO(co)}>
                         {emailingId === co.id ? "⏳" : "✉ Send"}
+                      </Btn>
+                      <Btn small variant="ghost" onClick={() => copyASAEmail(co)}
+                        style={copiedCo === co.id ? { borderColor: P.green, color: P.green } : {}}>
+                        {copiedCo === co.id ? "✓ Copied" : "📋 ASA Email"}
                       </Btn>
                       <Btn small variant="danger" onClick={() => {
                         const msg = co.approved
