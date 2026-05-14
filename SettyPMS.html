@@ -1480,7 +1480,7 @@ const SETTY_TEMPLATES = [
   { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead",             copyLabel: "Letter",           reusable: true  },
 ];
 
-function TemplatesPanel({ project }) {
+function TemplatesPanel({ project, staff }) {
   const storageKey = `pms_tpl_links_${project.id}`;
 
   function loadPersistedLinks() {
@@ -1601,11 +1601,14 @@ function TemplatesPanel({ project }) {
                       : "[Client Contact]";
                     const settyPm       = (project.teamMembers || []).find(m => m.role === "Project Manager")?.name
                                        || project.projectManager || "[Your Name]";
+                    const staffDir      = staff || [];
                     const teamLines     = (project.teamMembers || [])
                       .filter(m => m.name)
                       .map(m => {
-                        const disc = (m.disciplines || []).join(", ") || m.role || "[Discipline]";
-                        return `${m.name} – ${disc} – [Email]`;
+                        const disc       = (m.disciplines || []).join(", ") || m.role || "[Discipline]";
+                        const staffEntry = staffDir.find(s => s.name && s.name.toLowerCase() === m.name.toLowerCase());
+                        const email      = staffEntry?.email || "[Email]";
+                        return `${m.name} – ${disc} – ${email}`;
                       }).join("\n") || "[Name] – [Discipline/Role] – [Email]";
                     const scheduleLines = (project.milestones || [])
                       .filter(m => m.name && m.dueDate && !m.cancelled)
@@ -13760,7 +13763,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                 <TeamsNotificationsField project={project} onUpdate={onUpdate} />
               </Field>
               <Field label="Templates" style={{ gridColumn: "1 / -1" }}>
-                <TemplatesPanel project={project} />
+                <TemplatesPanel project={project} staff={staff} />
               </Field>
             </>)}
 
