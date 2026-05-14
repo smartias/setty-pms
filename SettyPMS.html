@@ -1593,7 +1593,16 @@ function TemplatesPanel({ project }) {
               return (
                 <button key={et.key}
                   onClick={() => {
-                    const text = `Subject: ${et.subject}\n\n${et.body}`;
+                    const clientName = project.clientName || project.prime || "[Client Name]";
+                    const projectName = project.name || "[Project Name]";
+                    const pm = (project.projectContacts?.pm || [])[0]?.displayName || project.projectManager || "[Your Name]";
+                    function fill(s) {
+                      return s
+                        .replace(/\[Client Name\]/g, clientName)
+                        .replace(/\[Project Name\]/g, projectName)
+                        .replace(/\[Your Name\]/g, pm);
+                    }
+                    const text = `Subject: ${fill(et.subject)}\n\n${fill(et.body)}`;
                     navigator.clipboard.writeText(text).then(() => {
                       setCopied(et.key);
                       setTimeout(() => setCopied(null), 2000);
