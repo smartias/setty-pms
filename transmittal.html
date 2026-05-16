@@ -1392,15 +1392,20 @@ async function sendToClient() {
   btn.disabled = true;
   try {
     // ── 1. Build the zip (all folder files + transmittal cover) ─────────────
+    // Use authenticated /content endpoint rather than @microsoft.graph.downloadUrl —
+    // the latter is a pre-signed CDN URL that expires ~1 hour after the folder was
+    // loaded, which silently broke sends triggered later in the same session.
     const zip = new JSZip();
     let totalBytes = 0;
+    const downloadToken = await getToken();
 
     for (let i = 0; i < folderFiles.length; i++) {
       const f = folderFiles[i];
       setStatus("sendStatus", "info", `⏳ Adding ${f.name} (${i + 1}/${folderFiles.length})…`);
-      const url = f["@microsoft.graph.downloadUrl"];
-      if (!url) throw new Error(`No download URL for ${f.name} — reload the folder.`);
-      const resp = await fetch(url);
+      const resp = await fetch(
+        `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${f.id}/content`,
+        { headers: { "Authorization": "Bearer " + downloadToken } }
+      );
       if (!resp.ok) throw new Error(`Download failed for ${f.name}: HTTP ${resp.status}`);
       const blob = await resp.blob();
       totalBytes += blob.size;
