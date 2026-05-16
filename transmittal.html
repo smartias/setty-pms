@@ -168,6 +168,8 @@
     .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
     .btn-ghost:hover:not(:disabled) { background: var(--card); color: var(--text); }
     .btn-red { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
+    .btn-send { background: #7c2d12; color: #fed7aa; border: 1px solid #9a3412; }
+    .btn-send:hover:not(:disabled) { background: #9a3412; }
 
     /* Status */
     .status {
@@ -400,9 +402,11 @@
       <button class="btn btn-green" id="generateBtn">📄 Generate Transmittal (.docx)</button>
       <button class="btn btn-primary" id="saveToSpBtn">💾 Save to SharePoint Folder</button>
       <button class="btn btn-primary" id="zipBtn">📦 Package Drawings as ZIP</button>
+      <button class="btn btn-send" id="sendToClientBtn">📨 Send to Client</button>
     </div>
     <div class="status" id="generateStatus"></div>
     <div class="status" id="zipStatus"></div>
+    <div class="status" id="sendStatus"></div>
   </div>
 
 </div>
@@ -419,7 +423,7 @@ const MSAL_CONFIG = {
   cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
   system: { allowNativeBroker: false },
 };
-const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All"];
+const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"];
 const LOGIN_SCOPES  = ["User.Read", "openid", "profile"];
 const SP_DRIVE_ID   = "b!your-drive-id"; // resolved at runtime
 const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
@@ -1058,8 +1062,11 @@ async function packageAsZip() {
 // return a string ending in ".zip". Keep filename-illegal chars out:
 //   replace /[\\/:*?"<>|]/g with "-"
 function buildArchiveFileName() {
-  // TODO: implement
-  return "drawings.zip";
+  const number = (document.getElementById("projectNumber").value || "").trim();
+  const milestone = (resolvedFolderPath || "").split("/").pop() || "transmittal";
+  const date = new Date().toISOString().slice(0, 10);
+  const safe = s => s.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-");
+  return [safe(number), safe(milestone), date].filter(Boolean).join("_") + ".zip";
 }
 
 async function generateDocx() {
@@ -1338,6 +1345,286 @@ async function saveToSharePoint() {
   } catch(e) {
     setStatus("generateStatus", "error", "✗ " + e.message);
   }
+}
+
+// ─── SEND TO CLIENT ───────────────────────────────────────────────────────────
+// Bundles all folder files + the generated transmittal .docx into one .zip,
+// uploads it to the Outgoing folder, creates an anonymous time-limited download
+// link, logs the send to the "Transmittals Sent" SharePoint list, and opens an
+// Outlook compose window pre-filled with the link.
+//
+// Architecture decision: each file is shareable in this library but the folder
+// itself isn't (governance policy on the Project Document Library). Zipping
+// everything into one shareable file is the workaround that also gives clients
+// a cleaner one-click download UX.
+
+const TRANSMITTALS_AUDIT_LIST = "Transmittals Sent";
+const ANONYMOUS_LINK_EXPIRY_DAYS = 30;
+
+document.getElementById("sendToClientBtn").onclick = sendToClient;
+
+async function sendToClient() {
+  const btn = document.getElementById("sendToClientBtn");
+  setStatus("sendStatus", "", "");
+
+  // ── Validate prerequisites ────────────────────────────────────────────────
+  if (!folderFiles.length) {
+    setStatus("sendStatus", "error", "✗ Load a folder with files first.");
+    return;
+  }
+  if (!generatedBlob) {
+    setStatus("sendStatus", "error", "✗ Click 'Generate Transmittal (.docx)' first — the cover sheet must be in memory.");
+    return;
+  }
+  if (typeof JSZip === "undefined") {
+    setStatus("sendStatus", "error", "✗ ZIP library failed to load.");
+    return;
+  }
+  const recipientEmail = (document.getElementById("recipientEmail").value || "").trim();
+  if (!recipientEmail || !recipientEmail.includes("@")) {
+    setStatus("sendStatus", "error", "✗ Enter a valid recipient email.");
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    // ── 1. Build the zip (all folder files + transmittal cover) ─────────────
+    const zip = new JSZip();
+    let totalBytes = 0;
+
+    for (let i = 0; i < folderFiles.length; i++) {
+      const f = folderFiles[i];
+      setStatus("sendStatus", "info", `⏳ Adding ${f.name} (${i + 1}/${folderFiles.length})…`);
+      const url = f["@microsoft.graph.downloadUrl"];
+      if (!url) throw new Error(`No download URL for ${f.name} — reload the folder.`);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`Download failed for ${f.name}: HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      totalBytes += blob.size;
+      zip.file(f.name, blob);
+    }
+    // Include the transmittal cover docx (already in memory after Generate)
+    zip.file(generatedFileName, generatedBlob);
+    totalBytes += generatedBlob.size;
+
+    setStatus("sendStatus", "info", "⏳ Compressing…");
+    const zipBlob = await zip.generateAsync({
+      type: "blob",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
+    });
+    const zipName = buildArchiveFileName();
+
+    // ── 2. Upload zip via chunked upload session (handles files >4MB) ───────
+    setStatus("sendStatus", "info", `⏳ Uploading ${(zipBlob.size / 1024 / 1024).toFixed(1)} MB to SharePoint…`);
+    const uploadedItem = await uploadLargeFileToFolder(zipBlob, zipName);
+
+    // ── 3. Create anonymous 30-day view link ────────────────────────────────
+    setStatus("sendStatus", "info", "⏳ Creating share link…");
+    const linkInfo = await createAnonymousLink(uploadedItem.id);
+
+    // ── 4. Append audit row to Transmittals Sent list (non-fatal) ───────────
+    setStatus("sendStatus", "info", "⏳ Logging transmittal…");
+    try {
+      await appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmail, totalBytes, zipName });
+    } catch (auditErr) {
+      console.warn("Audit log write failed (non-fatal):", auditErr);
+      setStatus("sendStatus", "warn", "⚠ Email is ready but audit log write failed — copy the link manually if needed: " + linkInfo.link.webUrl);
+      // Continue — the email is still useful even if the audit row didn't write.
+    }
+
+    // ── 5. Open Outlook compose with pre-filled email ───────────────────────
+    const mailtoUrl = buildMailtoUrl({
+      recipientEmail,
+      linkUrl: linkInfo.link.webUrl,
+      expiryDate: linkInfo.expirationDateTime,
+    });
+    window.location.href = mailtoUrl;
+
+    setStatus("sendStatus", "success",
+      `✓ Package uploaded (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB). ` +
+      `Outlook draft open — review and click Send. Link expires ${new Date(linkInfo.expirationDateTime).toLocaleDateString()}.`);
+  } catch (e) {
+    setStatus("sendStatus", "error", "✗ " + e.message);
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─── CHUNKED UPLOAD ───────────────────────────────────────────────────────────
+// Graph's simple PUT /content has a 4MB ceiling — fine for the cover .docx but
+// not for a zip containing PDFs of drawing sets. Upload sessions handle any
+// size by chunking, returning the final driveItem when the last chunk lands.
+async function uploadLargeFileToFolder(blob, fileName) {
+  const token = await getToken();
+  const sessionPath = `/drives/${resolvedDriveId}/root:/${encodeURIComponent(resolvedFolderPath)}/${encodeURIComponent(fileName)}:/createUploadSession`;
+
+  const sessionRes = await fetch("https://graph.microsoft.com/v1.0" + sessionPath, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "replace" } }),
+  });
+  if (!sessionRes.ok) {
+    throw new Error("Upload session creation failed: HTTP " + sessionRes.status + " — " + (await sessionRes.text()).slice(0, 200));
+  }
+  const { uploadUrl } = await sessionRes.json();
+  if (!uploadUrl) throw new Error("Upload session response missing uploadUrl");
+
+  // Chunks must be multiples of 320 KiB except the last. 10 MiB is the
+  // sweet spot — large enough to avoid round-trip overhead, small enough
+  // that a failed chunk doesn't waste much retransmission.
+  const CHUNK_SIZE = 10 * 1024 * 1024;
+  const size = blob.size;
+  let uploadedItem = null;
+
+  for (let start = 0; start < size; start += CHUNK_SIZE) {
+    const end = Math.min(start + CHUNK_SIZE, size) - 1;
+    const chunk = blob.slice(start, end + 1);
+    // NOTE: no Authorization header on chunk PUTs — uploadUrl is pre-authed.
+    const chunkRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Range": `bytes ${start}-${end}/${size}` },
+      body: chunk,
+    });
+    if (!chunkRes.ok) {
+      throw new Error(`Chunk upload failed at byte ${start}: HTTP ${chunkRes.status}`);
+    }
+    if (chunkRes.status === 200 || chunkRes.status === 201) {
+      uploadedItem = await chunkRes.json();
+    }
+    // 202 = chunk accepted, more to come; loop continues.
+  }
+  if (!uploadedItem) throw new Error("Upload completed but no driveItem returned");
+  return uploadedItem;
+}
+
+// ─── CREATE ANONYMOUS LINK ────────────────────────────────────────────────────
+async function createAnonymousLink(itemId) {
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + ANONYMOUS_LINK_EXPIRY_DAYS);
+  const expirationDateTime = expiry.toISOString();
+
+  const linkRes = await graphFetch("POST",
+    `/drives/${resolvedDriveId}/items/${itemId}/createLink`,
+    {
+      type: "view",
+      scope: "anonymous",
+      expirationDateTime,
+    }
+  );
+  return { ...linkRes, expirationDateTime };
+}
+
+// ─── AUDIT LOG ────────────────────────────────────────────────────────────────
+// Writes one row per send to the "Transmittals Sent" SharePoint list on the
+// NYC Projects site. Schema must match the column names exactly (see CLAUDE
+// conversation for the column list).
+async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmail, totalBytes, zipName }) {
+  const projectName = document.getElementById("projectName").value || "";
+  const projectNumber = document.getElementById("projectNumber").value || "";
+  const milestoneName = (resolvedFolderPath || "").split("/").pop() || "";
+  const senderUpn = msalAccount?.username || "";
+  const senderName = msalAccount?.name || senderUpn;
+  const customMessage = ""; // Reserved for future UI field (textarea above Send button)
+
+  // FilesIncluded as newline-separated text — preserves the exact list
+  // sent even if files are later renamed/deleted in SharePoint.
+  const filesIncluded = folderFiles.map(f => f.name).concat([generatedFileName]).join("\n");
+
+  const fields = {
+    Title: `${projectNumber || "—"} - ${milestoneName}`.slice(0, 255),
+    ProjectNumber: projectNumber,
+    ProjectName: projectName,
+    MilestoneName: milestoneName,
+    RecipientEmails: recipientEmail,
+    ZipFileName: zipName,
+    AnonymousLink: linkInfo.link.webUrl, // SharePoint accepts plain URL string for Hyperlink column via Graph
+    LinkExpiry: linkInfo.expirationDateTime,
+    FilesIncluded: filesIncluded,
+    FileCount: folderFiles.length + 1,
+    TotalSizeMB: Number((totalBytes / 1024 / 1024).toFixed(2)),
+    SenderUPN: senderUpn,
+    SenderDisplayName: senderName,
+    OutgoingFolderUrl: folderUrl ? decodeURIComponent(folderUrl) : "",
+    CustomMessage: customMessage,
+    Status: "Sent",
+  };
+
+  // Path notation works without needing the siteId resolved separately.
+  const path = `/sites/setty.sharepoint.com:/sites/NYCProjects:/lists/${encodeURIComponent(TRANSMITTALS_AUDIT_LIST)}/items`;
+  await graphFetch("POST", path, { fields });
+}
+
+// ─── MAILTO ASSEMBLY ──────────────────────────────────────────────────────────
+function buildMailtoUrl({ recipientEmail, linkUrl, expiryDate }) {
+  const projectName   = document.getElementById("projectName").value || "";
+  const projectNumber = document.getElementById("projectNumber").value || "";
+  const recipientName = document.getElementById("recipientName").value || "";
+  const issuedFor     = document.getElementById("issuedFor").value || "";
+  const fileList      = folderFiles.map(f => f.name);
+  const expiryFormatted = new Date(expiryDate).toLocaleDateString("en-US", {
+    year: "numeric", month: "short", day: "numeric",
+  });
+
+  const { subject, body } = buildEmailBody({
+    projectName, projectNumber, recipientName, issuedFor,
+    linkUrl, expiryDate: expiryFormatted, fileList,
+  });
+
+  // mailto: URLs encode the body in the query string. Outlook (desktop and
+  // web) handle several KB of body comfortably. If fileList ever pushes
+  // the URL past ~2000 chars, some mail clients truncate — keep buildEmailBody
+  // concise if listing all files inline.
+  return "mailto:" + encodeURIComponent(recipientEmail) +
+         "?subject=" + encodeURIComponent(subject) +
+         "&body="    + encodeURIComponent(body);
+}
+
+// ─── EMAIL BODY (YOU WRITE THIS) ──────────────────────────────────────────────
+// TODO (YOU): This is the email your client sees. It's the firm's voice —
+// formal vs. casual, what boilerplate is expected, what AEC transmittal
+// conventions matter to your clients.
+//
+// You have these inputs:
+//   • projectName     — e.g. "Hunter College SPARC"
+//   • projectNumber   — e.g. "SAPX246006"
+//   • recipientName   — e.g. "John Smith"  (may be empty if user didn't fill it)
+//   • issuedFor       — e.g. "Issued for Bid", "Issued for Construction", etc.
+//   • linkUrl         — the anonymous SharePoint link (clients click to download)
+//   • expiryDate      — formatted string, e.g. "Jun 15, 2026"
+//   • fileList        — array of file names included in the zip (excludes the cover docx)
+//
+// Return { subject, body } — both plain text strings. The body becomes the
+// email body verbatim; mailto: doesn't support HTML, so use plain text only.
+// Line breaks: use "\n".
+//
+// Things to think about:
+//   • Subject line — recipients filter by this. Most AEC firms use:
+//     "[ProjectNumber] [ProjectName] — [IssuedFor] — Transmittal [Date]"
+//     so it sorts and filters cleanly.
+//   • Body length — short and skimmable wins for clients who get many emails.
+//     A bullet list of files inline is helpful but pushes the mailto URL longer.
+//   • Boilerplate worth including:
+//       - "Please confirm receipt" (AEC convention; creates a paper trail)
+//       - Link expiration notice ("Link expires {expiryDate}")
+//       - Contact for issues ("Reply to this email if the link doesn't work")
+//   • Signature — leave OFF. Outlook auto-appends your signature when the
+//     compose window opens, so anything you add here will appear *above* it.
+//
+// Write 15-25 lines. Look at an actual transmittal email your team has sent
+// recently for the right tone and required boilerplate.
+function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, linkUrl, expiryDate, fileList }) {
+  const projectLabel = [projectNumber, projectName].filter(Boolean).join(" — ");
+  const greeting = recipientName ? `Hi ${recipientName},` : "Hi,";
+  return {
+    subject: `${projectLabel} — ${issuedFor}`,
+    body:
+      `${greeting}\n\n` +
+      `${issuedFor} package for ${projectLabel}:\n\n` +
+      `${linkUrl}\n\n` +
+      `Link expires ${expiryDate}.`,
+  };
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
