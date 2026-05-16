@@ -1550,14 +1550,18 @@ async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmai
     MilestoneName: milestoneName,
     RecipientEmails: recipientEmail,
     ZipFileName: zipName,
-    AnonymousLink: linkInfo.link.webUrl, // SharePoint accepts plain URL string for Hyperlink column via Graph
+    // Hyperlink columns require { Url, Description } object form via Graph —
+    // plain strings cause SharePoint to return HTTP 500 generalException.
+    AnonymousLink: { Url: linkInfo.link.webUrl, Description: zipName },
     LinkExpiry: linkInfo.expirationDateTime,
     FilesIncluded: filesIncluded,
     FileCount: folderFiles.length + 1,
     TotalSizeMB: Number((totalBytes / 1024 / 1024).toFixed(2)),
     SenderUPN: senderUpn,
     SenderDisplayName: senderName,
-    OutgoingFolderUrl: folderUrl ? decodeURIComponent(folderUrl) : "",
+    OutgoingFolderUrl: folderUrl
+      ? { Url: decodeURIComponent(folderUrl), Description: "Source folder" }
+      : null,
     CustomMessage: customMessage,
     Status: "Sent",
   };
