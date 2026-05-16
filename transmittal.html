@@ -1275,7 +1275,7 @@ async function generateDocx() {
               infoRow("Date:", dateDisplay),
               infoRow("Transmittal No.:", txNo),
               infoRow("Issued For:", issuedFor),
-              ...(spFolderUrl ? [infoRowLink("SharePoint:", spFolderUrl, "Open Document Folder ↗")] : []),
+              infoRow("Sent Via:", "Email"),
             ]
           }),
 
