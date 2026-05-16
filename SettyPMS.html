@@ -5915,9 +5915,9 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                       }} />
                     {m.outgoingFolderUrl && (
                       <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(m.outgoingFolderUrl)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}`}
-                        target="_blank" rel="noreferrer" title="Generate Sheet List & Transmittal"
+                        target="_blank" rel="noreferrer" title="Open transmittal: generate sheet list, package files, and draft client email"
                         style={{ display:"inline-flex",alignItems:"center",gap:3,background:"#14532d",color:"#4ade80",borderRadius:5,fontSize:11,fontWeight:600,padding:"3px 7px",textDecoration:"none",whiteSpace:"nowrap",border:"1px solid #166534" }}>
-                        📄 TX
+                        ✉️ Transmit
                       </a>
                     )}
                     {m.type === "billable" && (
@@ -16018,7 +16018,7 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
         📂 Open
       </a>
       <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}`}
-        target="_blank" rel="noreferrer" title="Generate Sheet List & Transmittal"
+        target="_blank" rel="noreferrer" title="Open transmittal: generate sheet list, package files, and draft client email"
         style={{ display:"inline-flex",alignItems:"center",gap:3,background:"#14532d",color:"#4ade80",borderRadius:5,fontSize:11,fontWeight:600,padding:"3px 7px",textDecoration:"none",whiteSpace:"nowrap",border:"1px solid #166534" }}>
         📄 TX
       </a>
