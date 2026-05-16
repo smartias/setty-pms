@@ -604,6 +604,42 @@ function sanitizeTeamsChannelName(name) {
   return cleaned || "New Channel";
 }
 
+// ─── TRANSIENT-FAILURE RETRY HELPER ──────────────────────────────────────────
+// Single shared exponential-backoff wrapper used by sbFetch/sbFetchV2/graphFetch.
+// Retries network failures, 429, 503, 504. Honors Retry-After when given.
+// Capped at 15s per wait to keep the UI responsive.
+//
+// Returns the final Response (or throws if all attempts fail / non-retryable).
+async function fetchWithRetry(url, init, opts = {}) {
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const label = opts.label || "fetch";
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.status === 429 || res.status === 503 || res.status === 504) {
+        if (attempt === maxAttempts) return res; // let caller surface error
+        const retryAfter = parseInt(res.headers.get("Retry-After") || "0", 10);
+        const wait = retryAfter > 0
+          ? Math.min(15000, retryAfter * 1000)
+          : Math.min(15000, 500 * Math.pow(2, attempt));
+        console.warn(`[retry:${label}] ${res.status} — waiting ${wait}ms (attempt ${attempt}/${maxAttempts})`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      return res;
+    } catch (e) {
+      // Network failure (TypeError: Failed to fetch, offline, DNS, etc.)
+      lastErr = e;
+      if (attempt === maxAttempts) throw e;
+      const wait = Math.min(15000, 500 * Math.pow(2, attempt));
+      console.warn(`[retry:${label}] network error — waiting ${wait}ms (attempt ${attempt}/${maxAttempts}): ${e.message}`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw lastErr || new Error(`${label}: exhausted retries`);
+}
+
 async function graphFetch(method, path, body, token, scopes = GRAPH_SCOPES) {
   const t = token || await getTokenForScopes(scopes);
   const isBytes = body instanceof Uint8Array;
@@ -621,11 +657,11 @@ async function graphFetch(method, path, body, token, scopes = GRAPH_SCOPES) {
     }
   }
 
-  const makeReq = (tok) => fetch(GRAPH_BASE + path, {
+  const makeReq = (tok) => fetchWithRetry(GRAPH_BASE + path, {
     method,
     headers: { ...headers, Authorization: "Bearer " + tok },
     ...(reqBody !== undefined ? { body: reqBody } : {}),
-  });
+  }, { label: "graph " + method });
 
   let resp = await makeReq(t);
 
@@ -656,11 +692,11 @@ async function sbFetch(method, path, body) {
     "Content-Type": "application/json",
     "Prefer": method === "POST" ? "resolution=merge-duplicates,return=minimal" : "return=minimal",
   };
-  const res = await fetch(SUPABASE_URL + path, {
+  const res = await fetchWithRetry(SUPABASE_URL + path, {
     method,
     headers,
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  }, { label: "sb " + method });
   if (!res.ok) {
     const txt = await res.text();
     throw new Error("Supabase " + res.status + ": " + txt.slice(0, 300));
@@ -827,11 +863,11 @@ async function sbFetchV2(method, path, body, extraPrefer = "") {
     "Content-Type": "application/json",
     "Prefer": "return=representation" + (extraPrefer ? "," + extraPrefer : ""),
   };
-  const res = await fetch(SUPABASE_URL + path, {
+  const res = await fetchWithRetry(SUPABASE_URL + path, {
     method,
     headers,
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  }, { label: "sbV2 " + method });
   if (!res.ok) {
     const txt = await res.text();
     throw new Error("Supabase " + method + " " + res.status + ": " + txt.slice(0, 300));
@@ -902,6 +938,42 @@ async function withMigrationLock(runner, onWait) {
   }
 }
 
+// Byte-aware batched upsert. Computes serialized size up front and chunks
+// at a payload ceiling (default 900KB) rather than a fixed row count, so
+// one fat project can't sink a whole batch. If the server still returns
+// 413 we halve the chunk size and retry that slice — never below 1 row.
+async function batchUpsertByBytes(rows, path, initialChunkSize, onProgress) {
+  if (!rows || rows.length === 0) return;
+  const MAX_BYTES = 900 * 1024;
+  let i = 0;
+  let chunkSize = initialChunkSize;
+  while (i < rows.length) {
+    // Build a chunk up to MAX_BYTES OR chunkSize, whichever fires first.
+    let chunk = [];
+    let bytes = 2; // for "[]"
+    while (chunk.length < chunkSize && i + chunk.length < rows.length) {
+      const rowJson = JSON.stringify(rows[i + chunk.length]);
+      const addedBytes = rowJson.length + (chunk.length ? 1 : 0); // comma
+      if (chunk.length > 0 && bytes + addedBytes > MAX_BYTES) break;
+      chunk.push(rows[i + chunk.length]);
+      bytes += addedBytes;
+    }
+    try {
+      await sbFetchV2("POST", path, chunk, "resolution=merge-duplicates");
+      i += chunk.length;
+      onProgress?.(i, rows.length);
+    } catch (e) {
+      const msg = String(e?.message || "");
+      if (/\b413\b|payload too large/i.test(msg) && chunkSize > 1) {
+        chunkSize = Math.max(1, Math.floor(chunkSize / 2));
+        console.warn(`[migration] 413 — halving chunk size to ${chunkSize}`);
+        continue; // retry same i with smaller chunk
+      }
+      throw e;
+    }
+  }
+}
+
 async function runMigrationV1(progressCb) {
   const log = (msg) => { console.log("[migration]", msg); progressCb?.(msg); };
 
@@ -920,25 +992,22 @@ async function runMigrationV1(progressCb) {
 
   log(`Migrating ${projects.length} projects, ${clients.length} clients…`);
 
-  // Batch-upsert projects (chunks of 20 to stay under PostgREST payload limits)
-  const projectRows = projects.map(p => ({
-    id: p.id, project: p, updated_at: new Date().toISOString(), version: 1,
-  })).filter(r => !!r.id);
-  for (let i = 0; i < projectRows.length; i += 20) {
-    const chunk = projectRows.slice(i, i + 20);
-    await sbFetchV2("POST", "/rest/v1/pms_projects?on_conflict=id", chunk, "resolution=merge-duplicates");
-    log(`Projects: ${Math.min(i + 20, projectRows.length)} / ${projectRows.length}`);
-  }
-
-  // Batch-upsert clients
-  const clientRows = clients.map(c => ({
-    id: c.id, client: c, updated_at: new Date().toISOString(), version: 1,
-  })).filter(r => !!r.id);
-  for (let i = 0; i < clientRows.length; i += 50) {
-    const chunk = clientRows.slice(i, i + 50);
-    await sbFetchV2("POST", "/rest/v1/pms_clients?on_conflict=id", chunk, "resolution=merge-duplicates");
-    log(`Clients: ${Math.min(i + 50, clientRows.length)} / ${clientRows.length}`);
-  }
+  // Byte-aware batch upsert: keeps each POST body under ~900KB so a single
+  // project with hundreds of milestones (or fat embedded HTML on notes)
+  // can't push PostgREST past its payload ceiling. Falls back from chunk
+  // size of N to N/2 if a 413 ever surfaces; never below 1 item.
+  await batchUpsertByBytes(
+    projects.map(p => ({ id: p.id, project: p, updated_at: new Date().toISOString(), version: 1 })).filter(r => !!r.id),
+    "/rest/v1/pms_projects?on_conflict=id",
+    20,
+    (done, total) => log(`Projects: ${done} / ${total}`)
+  );
+  await batchUpsertByBytes(
+    clients.map(c => ({ id: c.id, client: c, updated_at: new Date().toISOString(), version: 1 })).filter(r => !!r.id),
+    "/rest/v1/pms_clients?on_conflict=id",
+    50,
+    (done, total) => log(`Clients: ${done} / ${total}`)
+  );
 
   // Single meta row with staff + term contracts
   await sbFetchV2("POST", "/rest/v1/pms_meta?on_conflict=id", {
@@ -1081,6 +1150,13 @@ async function deleteClientV2(clientId) {
 //
 // `versions` is a Map<id, version>. After a successful write, the map is
 // mutated to track the new version for the next save.
+// WeakMap caches: project/client object identity → its JSON. React keeps
+// references stable across renders for unchanged rows, so this lets us skip
+// re-stringifying 99% of rows on a typical save (e.g., editing one project
+// among 200 means 199 cache hits, 1 miss). Memory auto-reclaimed on GC.
+const _projectJsonCache = new WeakMap();
+const _clientJsonCache = new WeakMap();
+
 async function performSaveV2(state, lastSavedRef, versions) {
   const { projects = [], clients = [], staff = [], termContracts = [] } = state;
   const last = lastSavedRef.current || { projects: new Map(), clients: new Map(), meta: "" };
@@ -1093,7 +1169,12 @@ async function performSaveV2(state, lastSavedRef, versions) {
   for (const p of projects) {
     if (!p?.id) continue;
     currentProjectIds.add(p.id);
-    const serialized = JSON.stringify(p);
+    // Identity-keyed cache: if this exact object was stringified before, reuse it.
+    let serialized = _projectJsonCache.get(p);
+    if (serialized === undefined) {
+      serialized = JSON.stringify(p);
+      _projectJsonCache.set(p, serialized);
+    }
     if (last.projects.get(p.id) !== serialized) {
       try {
         const newVer = await saveProjectV2(p, versions.projects.get(p.id));
@@ -1120,7 +1201,11 @@ async function performSaveV2(state, lastSavedRef, versions) {
   for (const c of clients) {
     if (!c?.id) continue;
     currentClientIds.add(c.id);
-    const serialized = JSON.stringify(c);
+    let serialized = _clientJsonCache.get(c);
+    if (serialized === undefined) {
+      serialized = JSON.stringify(c);
+      _clientJsonCache.set(c, serialized);
+    }
     if (last.clients.get(c.id) !== serialized) {
       try {
         const newVer = await saveClientV2(c, versions.clients.get(c.id));
@@ -1631,7 +1716,7 @@ function TemplatesPanel({ project, staff }) {
                     navigator.clipboard.writeText(text).then(() => {
                       setCopied(et.key);
                       setTimeout(() => setCopied(null), 2000);
-                    });
+                    }).catch(() => alert("Could not copy — please copy manually:\n\n" + text));
                   }}
                   style={{ padding: "5px 13px", fontSize: 11, borderRadius: 5, cursor: "pointer",
                     border: "1px solid " + (isCopied ? P.green : P.border),
@@ -1923,6 +2008,232 @@ let _templatesDriveId = null; // setty.sharepoint.com/sites/Templates Documents 
 async function resolveSpIds() {
   // IDs are hardcoded — no Graph API call needed, no Sites.Read.All required.
   return { siteId: _spSiteId, driveId: _spDriveId };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FILING INTEGRITY: RECONCILE SWEEP (Phase 4)
+// ═══════════════════════════════════════════════════════════════════════════
+// Walks pms_filing_log, checks each SharePoint folder still has the files the
+// add-in said it uploaded, and surfaces any mismatches in the Filing Health
+// panel. Catches drift over time: manual deletes, past bugs, anything where
+// the SharePoint reality drifted from the recorded intent.
+//
+// Each finding has a `kind`: "ok" | "missing-folder" | "missing-file" |
+// "size-mismatch" | "hash-mismatch" | "verify-skipped".
+
+const FILING_LOG_TABLE_PMS = "pms_filing_log";
+
+// Fetch recent filing log rows. Default scope: last 90 days, success/partial
+// rows only (we don't need to re-check known failures). Capped at 2000 to keep
+// the request lightweight; if you have higher volume, the reconcile can page.
+async function fetchFilingLogForReconcile(daysBack = 90) {
+  const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+  // We pull both 'success' and 'partial' (partial = some files uploaded);
+  // 'failed' rows have nothing to verify on SharePoint.
+  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
+    "?select=id,created_at,project_id,msg_id,operation,sp_folder_url,files,email_subject,status" +
+    "&created_at=gte." + encodeURIComponent(sinceIso) +
+    "&status=in.(success,partial,verified)" +
+    "&order=created_at.desc&limit=2000";
+  const res = await fetchWithRetry(url, {
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+    },
+  }, { label: "sb filing-log reconcile", maxAttempts: 2 });
+  if (!res.ok) throw new Error("filing-log fetch HTTP " + res.status);
+  return res.json();
+}
+
+// Convert a SharePoint webUrl into a drive-relative path. The audit log stores
+// full webUrls (https://setty.sharepoint.com/sites/.../Documents/<path>). To GET
+// the folder via /drives/{id}/root:/{path}, we need the part AFTER the document
+// library root. We strip everything up to "/Documents/" (or the alt library
+// names you use). Returns null if we can't decode it.
+function spWebUrlToDrivePath(webUrl) {
+  if (!webUrl || typeof webUrl !== "string") return null;
+  try {
+    const u = new URL(webUrl);
+    const path = decodeURIComponent(u.pathname);
+    // Match "/sites/<site>/<library>/" prefix and drop everything before it.
+    const m = path.match(/\/sites\/[^/]+\/(?:[^/]+\/)?(.*)$/);
+    if (m && m[1]) return m[1];
+    return null;
+  } catch { return null; }
+}
+
+// quickXorHash implementation (matches the add-in's). Used when SharePoint
+// returns only quickXorHash in the file metadata.
+async function quickXorHashBase64Pms(bytes) {
+  if (!bytes || bytes.length === 0) return "";
+  const SHIFT = 11, WIDTH_BITS = 160, WIDTH_BYTES = 20;
+  const lanes = new Uint32Array(5);
+  let shiftSoFar = 0, lengthSoFar = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const currentShift = shiftSoFar;
+    const lane = Math.floor(currentShift / 32) % 5;
+    const offset = currentShift % 32;
+    const next = (lane + 1) % 5;
+    const b = bytes[i];
+    lanes[lane] = (lanes[lane] ^ (b << offset)) >>> 0;
+    if (offset > 24) lanes[next] = (lanes[next] ^ (b >>> (32 - offset))) >>> 0;
+    shiftSoFar = (shiftSoFar + SHIFT) % WIDTH_BITS;
+    lengthSoFar++;
+  }
+  const out = new Uint8Array(WIDTH_BYTES);
+  for (let i = 0; i < 5; i++) {
+    out[i*4+0] = (lanes[i] >>>  0) & 0xff;
+    out[i*4+1] = (lanes[i] >>>  8) & 0xff;
+    out[i*4+2] = (lanes[i] >>> 16) & 0xff;
+    out[i*4+3] = (lanes[i] >>> 24) & 0xff;
+  }
+  let len = lengthSoFar;
+  for (let i = 0; i < 8; i++) {
+    out[WIDTH_BYTES - 8 + i] ^= (len & 0xff);
+    len = Math.floor(len / 256);
+  }
+  let bin = "";
+  for (let i = 0; i < out.length; i++) bin += String.fromCharCode(out[i]);
+  return btoa(bin);
+}
+
+// Verify a single filing-log row against the live SharePoint state.
+// Returns an array of findings — one per file checked. Each finding:
+//   { logId, project_id, sp_folder_url, fileName, kind, detail }
+// Kinds: "ok", "missing-folder", "missing-file", "size-mismatch",
+//        "hash-mismatch", "verify-skipped".
+async function verifyFilingLogEntry(entry, opts = {}) {
+  const findings = [];
+  const sp_folder_url = entry.sp_folder_url;
+  if (!sp_folder_url) {
+    // Entry didn't claim a SharePoint folder — nothing to verify.
+    return findings;
+  }
+  const files = Array.isArray(entry.files) ? entry.files : [];
+  if (files.length === 0) return findings; // no recorded files — skip
+
+  const { driveId } = await resolveSpIds();
+  const drivePath = spWebUrlToDrivePath(sp_folder_url);
+  if (!drivePath) {
+    findings.push({
+      logId: entry.id, project_id: entry.project_id, sp_folder_url,
+      fileName: "(folder)", kind: "verify-skipped",
+      detail: "could not decode SharePoint webUrl into a drive path",
+    });
+    return findings;
+  }
+
+  // List the folder children (single GET — much cheaper than one GET per file).
+  let children;
+  try {
+    const res = await graphFetch("GET",
+      `/drives/${driveId}/root:/${encodePathForReconcile(drivePath)}:/children?select=name,size,file`);
+    children = res?.value || null;
+  } catch (e) {
+    if (/Graph 404/.test(e.message)) {
+      findings.push({
+        logId: entry.id, project_id: entry.project_id, sp_folder_url,
+        fileName: "(folder)", kind: "missing-folder",
+        detail: "folder not found at expected SharePoint path",
+      });
+      return findings;
+    }
+    findings.push({
+      logId: entry.id, project_id: entry.project_id, sp_folder_url,
+      fileName: "(folder)", kind: "verify-skipped",
+      detail: "list HTTP error: " + e.message.slice(0, 100),
+    });
+    return findings;
+  }
+  if (!children) {
+    findings.push({
+      logId: entry.id, project_id: entry.project_id, sp_folder_url,
+      fileName: "(folder)", kind: "missing-folder",
+      detail: "folder list returned null",
+    });
+    return findings;
+  }
+
+  // Build a name → child map for O(1) lookup
+  const byName = new Map();
+  for (const c of children) byName.set(c.name, c);
+
+  for (const expected of files) {
+    const child = byName.get(expected.name);
+    if (!child) {
+      findings.push({
+        logId: entry.id, project_id: entry.project_id, sp_folder_url,
+        fileName: expected.name, kind: "missing-file",
+        detail: `expected ${expected.size} bytes; not found in folder`,
+      });
+      continue;
+    }
+    // Size check first — fastest
+    if (typeof expected.size === "number" && expected.size > 0 && child.size !== expected.size) {
+      findings.push({
+        logId: entry.id, project_id: entry.project_id, sp_folder_url,
+        fileName: expected.name, kind: "size-mismatch",
+        detail: `expected ${expected.size} bytes, SharePoint has ${child.size}`,
+      });
+      continue;
+    }
+    // If audit log stored a verified hash, optionally re-fetch + re-hash.
+    // We only do this on opt-in (opts.deepHash) since downloading every file
+    // is expensive — the size check catches most drift.
+    if (opts.deepHash && expected.verifiedHash && child.file?.hashes) {
+      const algo = expected.verifiedAlgo || "sha256";
+      const remoteHash =
+        algo === "sha256"  ? child.file.hashes.sha256Hash    :
+        algo === "sha1"    ? child.file.hashes.sha1Hash      :
+        algo === "quickXor"? child.file.hashes.quickXorHash  : null;
+      if (remoteHash && String(remoteHash).toUpperCase() !== String(expected.verifiedHash).toUpperCase()) {
+        findings.push({
+          logId: entry.id, project_id: entry.project_id, sp_folder_url,
+          fileName: expected.name, kind: "hash-mismatch",
+          detail: `${algo} mismatch: log=${expected.verifiedHash.slice(0,12)}… SharePoint=${String(remoteHash).slice(0,12)}…`,
+        });
+        continue;
+      }
+    }
+    findings.push({
+      logId: entry.id, project_id: entry.project_id, sp_folder_url,
+      fileName: expected.name, kind: "ok",
+      detail: `${child.size} bytes, verified`,
+    });
+  }
+  return findings;
+}
+
+function encodePathForReconcile(path) {
+  return String(path || "").split("/").filter(Boolean).map(p => encodeURIComponent(p)).join("/");
+}
+
+// Orchestrator: walks recent filing log, verifies each entry, returns summary.
+// Bounded concurrency (4 parallel folder-checks) so a big sweep doesn't flood
+// Graph. Returns { totalChecked, ok, problems[] }.
+async function runFilingReconcile({ daysBack = 90, deepHash = false, onProgress } = {}) {
+  const entries = await fetchFilingLogForReconcile(daysBack);
+  const problems = [];
+  let okCount = 0;
+  let done = 0;
+  const CONCURRENCY = 4;
+  for (let i = 0; i < entries.length; i += CONCURRENCY) {
+    const batch = entries.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(batch.map(e => verifyFilingLogEntry(e, { deepHash })));
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        for (const f of r.value) {
+          if (f.kind === "ok") okCount++;
+          else problems.push(f);
+        }
+      } else {
+        problems.push({ kind: "verify-skipped", detail: r.reason?.message || "unknown", fileName: "(batch)", project_id: "", sp_folder_url: "" });
+      }
+    }
+    done += batch.length;
+    onProgress?.(done, entries.length);
+  }
+  return { totalChecked: entries.length, okCount, problems };
 }
 
 // Creates a folder in the Contract Library for a Term Contract, named
@@ -2285,8 +2596,36 @@ async function ensureOneNoteSection(baseUrl, notebookId, sectionName) {
   throw new Error("Could not find or create OneNote section: " + sectionName);
 }
 
-// POST a page with retry on 429 (Graph throttles OneNote aggressively).
+// In-memory idempotency cache for OneNote page creation.
+// Key: cheap hash of {url + html-prefix} — collides only if two identical
+// requests fire in the same tab within the TTL. Value: { pageId, webUrl }.
+// Prevents duplicate pages when a 5xx response masks a successful server-side
+// create (the retry would otherwise post the same page twice).
+const _oneNotePageCache = new Map();
+const ONENOTE_DEDUP_TTL_MS = 5 * 60 * 1000;
+
+function _hashOneNoteReq(url, html) {
+  // FNV-1a-ish — fast, good enough for collision avoidance within a session.
+  let h = 2166136261;
+  const s = url + "|" + html.slice(0, 2000); // title + meta + first chunk is plenty
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+// POST a page with retry on 429/503 + idempotency dedup. Two-call invariant:
+// the same (url, html) pair within ONENOTE_DEDUP_TTL_MS returns the cached
+// page record instead of posting again. Crucial for the retry path where a
+// 502/504 may have masked a successful POST.
 async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 3) {
+  const key = _hashOneNoteReq(url, pageHtml);
+  const cached = _oneNotePageCache.get(key);
+  if (cached && (Date.now() - cached.at) < ONENOTE_DEDUP_TTL_MS) {
+    console.log("[OneNote] idempotency cache hit — skipping duplicate POST");
+    return cached.page;
+  }
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const res = await fetch(url, {
@@ -2294,13 +2633,22 @@ async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 3) {
       headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
       body: pageHtml,
     });
-    if (res.ok) return res.json();
+    if (res.ok) {
+      const page = await res.json();
+      _oneNotePageCache.set(key, { page, at: Date.now() });
+      // Best-effort cleanup: prune any entry older than 2× TTL on each insert.
+      if (_oneNotePageCache.size > 200) {
+        const cutoff = Date.now() - 2 * ONENOTE_DEDUP_TTL_MS;
+        for (const [k, v] of _oneNotePageCache) if (v.at < cutoff) _oneNotePageCache.delete(k);
+      }
+      return page;
+    }
 
     const errText = await res.text().catch(() => "");
     if (res.status === 429 || res.status === 503) {
       // Honor Retry-After if Graph provides it; otherwise exponential backoff
       const retryAfter = parseInt(res.headers.get("Retry-After") || "0", 10);
-      const wait = retryAfter > 0 ? retryAfter * 1000 : Math.min(15000, 1000 * Math.pow(2, attempt));
+      const wait = retryAfter > 0 ? Math.min(15000, retryAfter * 1000) : Math.min(15000, 1000 * Math.pow(2, attempt));
       console.warn("[OneNote] " + res.status + " — retrying in " + wait + "ms (attempt " + attempt + "/" + maxAttempts + ")");
       await new Promise(r => setTimeout(r, wait));
       lastErr = new Error("OneNote throttled (HTTP " + res.status + ")");
@@ -7979,7 +8327,7 @@ Setty
     navigator.clipboard.writeText(text).then(() => {
       setCopiedCo(co.id);
       setTimeout(() => setCopiedCo(null), 2000);
-    });
+    }).catch(() => alert("Could not copy to clipboard — please copy manually:\n\n" + text));
   }
 
   function setCoMsg(id, status, msg) {
@@ -21408,6 +21756,12 @@ function App() {
   const [showDataTools, setShowDataTools] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [showBackupModal, setShowBackupModal] = useState(false);
+  // Filing-integrity state — populated by an automatic reconcile sweep run
+  // shortly after load. `null` means "not yet run"; otherwise it's the
+  // summary { totalChecked, okCount, problems[] }.
+  const [filingHealth, setFilingHealth] = useState(null);
+  const [filingHealthRunning, setFilingHealthRunning] = useState(false);
+  const [showFilingHealthModal, setShowFilingHealthModal] = useState(false);
   const [backupImportMsg, setBackupImportMsg] = useState({ text: "", type: "idle" });
   const [backupImportPreview, setBackupImportPreview] = useState(null); // { parsed, projCount, tcCount, staffCount, clientCount, exportedAt }
   const [lastBackupDate, setLastBackupDate] = useState(() => localStorage.getItem("settyPMS_lastBackup") || null);
@@ -21539,6 +21893,52 @@ function App() {
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
     window.__pmsPreMigrationBackup = data; // fallback if download blocked
+  }
+
+  // ── Filing-integrity reconcile: runs 5s after load completes ──
+  // Cheap (~1 GET per recent filing entry, capped at 4 concurrent). Surfaces
+  // any drift between what the add-in reported saving and what's actually in
+  // SharePoint right now. Auto-opens a modal if problems are found; otherwise
+  // silent and accessible via the "Filing Health" toolbar button.
+  useEffect(() => {
+    if (!isLoaded.current) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (cancelled || filingHealthRunning) return;
+      setFilingHealthRunning(true);
+      try {
+        const result = await runFilingReconcile({ daysBack: 90, deepHash: false });
+        if (cancelled) return;
+        setFilingHealth(result);
+        if (result.problems.length > 0) {
+          console.warn(`[filing-reconcile] ${result.problems.length} problem(s) found across ${result.totalChecked} recent filings`);
+        }
+      } catch (e) {
+        console.warn("[filing-reconcile] sweep failed:", e.message);
+        setFilingHealth({ totalChecked: 0, okCount: 0, problems: [], error: e.message });
+      } finally {
+        if (!cancelled) setFilingHealthRunning(false);
+      }
+    }, 5000);
+    return () => { cancelled = true; clearTimeout(t); };
+    // Re-run when load completes (isLoaded.current flips true mid-effect, but
+    // appStatus moves "loading" → "idle" which we can observe).
+  }, [appStatus]);
+
+  async function runFilingHealthManually(deepHash = false) {
+    if (filingHealthRunning) return;
+    setFilingHealthRunning(true);
+    setFilingHealth(null);
+    try {
+      const result = await runFilingReconcile({ daysBack: 90, deepHash });
+      setFilingHealth(result);
+      setShowFilingHealthModal(true);
+    } catch (e) {
+      setFilingHealth({ totalChecked: 0, okCount: 0, problems: [], error: e.message });
+      setShowFilingHealthModal(true);
+    } finally {
+      setFilingHealthRunning(false);
+    }
   }
 
   // ── Debounced auto-save (V2) — fires 2s after last change ──
@@ -22265,6 +22665,27 @@ async function updateProjectAndFlush(updated) {
             </Btn>
           );
         })()}
+        {(() => {
+          // Filing Health button — green dot when reconcile finds no problems,
+          // red dot + count when it finds something. Loading spinner during sweep.
+          const hasProblems = filingHealth && filingHealth.problems && filingHealth.problems.length > 0;
+          const ranOk = filingHealth && !filingHealth.error && !hasProblems && filingHealth.totalChecked > 0;
+          const dotColor = hasProblems ? P.red : ranOk ? P.green : P.textMuted;
+          const label = filingHealthRunning ? "⟳ Checking…"
+                      : hasProblems         ? `📁 Filing (${filingHealth.problems.length})`
+                      :                       "📁 Filing";
+          return (
+            <Btn small variant={hasProblems ? "primary" : "ghost"}
+              onClick={() => setShowFilingHealthModal(true)}
+              title="Filing integrity health — verifies SharePoint files match recorded saves"
+              style={{ position: "relative" }}>
+              {filingHealth && (
+                <span style={{ position: "absolute", top: -4, right: -4, width: 8, height: 8, borderRadius: "50%", background: dotColor }} />
+              )}
+              {label}
+            </Btn>
+          );
+        })()}
         <Btn small variant="ghost" onClick={exportCSV}>⬇ CSV</Btn>
         <Btn small onClick={addProject}>+ New Project</Btn>
       </div>
@@ -22361,6 +22782,136 @@ async function updateProjectAndFlush(updated) {
             {networkRetry.error.slice(0, 100)}
           </div>
         )}
+      </div>
+    )}
+
+    {/* Filing Health Modal — shows reconcile sweep results */}
+    {showFilingHealthModal && (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 4000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+        onClick={e => { if (e.target === e.currentTarget) setShowFilingHealthModal(false); }}>
+        <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 14, padding: 28, width: 720, maxWidth: "95vw", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>📁 Filing Integrity Health</div>
+              <div style={{ fontSize: 12, color: P.textDim, marginTop: 3 }}>
+                Compares the add-in's filing log against what's actually in SharePoint right now.
+              </div>
+            </div>
+            <button onClick={() => setShowFilingHealthModal(false)} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20 }}>✕</button>
+          </div>
+
+          {/* Status / summary */}
+          {filingHealthRunning ? (
+            <div style={{ padding: "24px 0", textAlign: "center", color: P.textDim }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>⟳</div>
+              <div>Running reconcile sweep…</div>
+              <div style={{ fontSize: 11, marginTop: 6, opacity: 0.7 }}>Walks recent filings and checks each SharePoint folder.</div>
+            </div>
+          ) : !filingHealth ? (
+            <div style={{ padding: "24px 0", textAlign: "center", color: P.textDim }}>
+              <div>Not run yet. Click below to start.</div>
+            </div>
+          ) : filingHealth.error ? (
+            <div style={{ padding: "16px", background: P.redDim, color: P.red, border: "1px solid " + P.red, borderRadius: 6 }}>
+              <strong>Sweep failed:</strong> {filingHealth.error}
+            </div>
+          ) : (
+            <>
+              {/* Summary tiles */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 18 }}>
+                <div style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 6, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: P.textDim, textTransform: "uppercase", letterSpacing: "0.05em" }}>Files checked</div>
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>{filingHealth.okCount + filingHealth.problems.length}</div>
+                </div>
+                <div style={{ background: P.greenDim, border: "1px solid " + P.green, borderRadius: 6, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: P.green, textTransform: "uppercase", letterSpacing: "0.05em" }}>Verified clean</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: P.green }}>{filingHealth.okCount}</div>
+                </div>
+                <div style={{ background: filingHealth.problems.length > 0 ? P.redDim : P.bg, border: "1px solid " + (filingHealth.problems.length > 0 ? P.red : P.border), borderRadius: 6, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, color: filingHealth.problems.length > 0 ? P.red : P.textDim, textTransform: "uppercase", letterSpacing: "0.05em" }}>Problems</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: filingHealth.problems.length > 0 ? P.red : P.text }}>{filingHealth.problems.length}</div>
+                </div>
+              </div>
+
+              {/* Problems list */}
+              {filingHealth.problems.length > 0 ? (
+                <div style={{ overflowY: "auto", flex: 1, border: "1px solid " + P.border, borderRadius: 6 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead style={{ background: P.bg, position: "sticky", top: 0 }}>
+                      <tr>
+                        <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "1px solid " + P.border }}>Kind</th>
+                        <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "1px solid " + P.border }}>File</th>
+                        <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "1px solid " + P.border }}>Project</th>
+                        <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "1px solid " + P.border }}>Detail</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filingHealth.problems.slice(0, 200).map((p, i) => {
+                        const proj = projects.find(pr => pr.id === p.project_id);
+                        const kindColor =
+                          p.kind === "missing-folder" ? P.red :
+                          p.kind === "missing-file"   ? P.red :
+                          p.kind === "size-mismatch"  ? P.red :
+                          p.kind === "hash-mismatch"  ? P.red :
+                                                         P.textMuted;
+                        return (
+                          <tr key={i} style={{ borderBottom: "1px solid " + P.border }}>
+                            <td style={{ padding: "6px 12px" }}>
+                              <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, background: kindColor === P.red ? P.redDim : P.bg, color: kindColor, fontSize: 11, fontWeight: 600 }}>
+                                {p.kind}
+                              </span>
+                            </td>
+                            <td style={{ padding: "6px 12px", fontFamily: "monospace", fontSize: 11 }}>{p.fileName}</td>
+                            <td style={{ padding: "6px 12px" }}>
+                              {proj ? (
+                                <a href="#" onClick={e => { e.preventDefault(); setView(`project:${proj.id}`); setShowFilingHealthModal(false); }}
+                                  style={{ color: P.accentLight, textDecoration: "none" }}>
+                                  {proj.projectNumber || proj.name || p.project_id}
+                                </a>
+                              ) : (
+                                <span style={{ color: P.textDim, fontFamily: "monospace", fontSize: 11 }}>{p.project_id.slice(0, 8)}…</span>
+                              )}
+                            </td>
+                            <td style={{ padding: "6px 12px", color: P.textDim }}>
+                              {p.detail}
+                              {p.sp_folder_url && (
+                                <a href={p.sp_folder_url} target="_blank" rel="noreferrer" style={{ marginLeft: 8, color: P.accentLight, fontSize: 11 }}>open folder ↗</a>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {filingHealth.problems.length > 200 && (
+                    <div style={{ padding: "8px 12px", textAlign: "center", color: P.textDim, fontSize: 11 }}>
+                      Showing first 200 of {filingHealth.problems.length} problems.
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ padding: "32px", textAlign: "center", color: P.green, background: P.greenDim, border: "1px solid " + P.green, borderRadius: 6 }}>
+                  <div style={{ fontSize: 28, marginBottom: 6 }}>✓</div>
+                  <div style={{ fontWeight: 700 }}>All clear</div>
+                  <div style={{ fontSize: 12, marginTop: 4, opacity: 0.85 }}>
+                    Every recent filing is present in SharePoint with matching size.
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Footer actions */}
+          <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 11, color: P.textDim }}>
+              Quick check verifies file size only · Deep check downloads and re-hashes each file (slow but thorough)
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn small variant="ghost" onClick={() => runFilingHealthManually(false)} disabled={filingHealthRunning}>↻ Quick re-check</Btn>
+              <Btn small onClick={() => runFilingHealthManually(true)} disabled={filingHealthRunning}>🔬 Deep hash check</Btn>
+            </div>
+          </div>
+        </div>
       </div>
     )}
 
