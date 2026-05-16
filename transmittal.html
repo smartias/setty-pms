@@ -786,7 +786,7 @@ async function loadFolder() {
     setStatus("loadStatus", "info", "⏳ Reading files in folder…");
 
     const filesRes = await graphFetch("GET",
-      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=name,lastModifiedDateTime,size,@microsoft.graph.downloadUrl`,
+      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=id,name,lastModifiedDateTime,size,file,folder,@microsoft.graph.downloadUrl`,
       null, token
     );
 
@@ -1015,13 +1015,16 @@ async function packageAsZip() {
     const archiveName = buildArchiveFileName();
     const zip = new JSZip();
 
+    // Auth-based /content endpoint — never expires, unlike @microsoft.graph.downloadUrl
+    // which is a pre-signed CDN URL with a ~1-hour TTL that goes stale silently.
+    const downloadToken = await getToken();
     let done = 0;
     for (const f of folderFiles) {
       setStatus("zipStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${folderFiles.length})…`);
-      // downloadUrl is a pre-authed, time-limited URL — no auth header needed
-      const url = f["@microsoft.graph.downloadUrl"];
-      if (!url) throw new Error(`No download URL for ${f.name} — folder may need to be reloaded.`);
-      const resp = await fetch(url);
+      const resp = await fetch(
+        `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${f.id}/content`,
+        { headers: { "Authorization": "Bearer " + downloadToken } }
+      );
       if (!resp.ok) throw new Error(`Failed to download ${f.name}: HTTP ${resp.status}`);
       zip.file(f.name, await resp.blob());
       done++;
