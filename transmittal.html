@@ -605,7 +605,8 @@ function updateRecipientFromProject() {
   document.getElementById("recipientName").value = "";
   document.getElementById("recipientEmail").value = "";
 
-  console.log("[TX] updateRecipientFromProject: projNum='" + projNum + "' proj=" + (proj ? proj.name : "null") + " type=" + type);
+  console.log("[TX] updateRecipientFromProject: projNum='" + projNum + "' proj=" + (proj ? proj.name : "null") + " type=" + type +
+    (proj ? " | proj.client='" + (proj.client || "") + "' proj.prime='" + (proj.prime || "") + "' subs=" + ((proj.subconsultants || []).length) : ""));
 
   let company = "";
   let contacts = [];
