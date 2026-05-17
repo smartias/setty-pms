@@ -320,7 +320,7 @@
         <label>Issuing To</label>
         <select id="recipientType" onchange="onRecipientTypeChange()">
           <option value="client">Client</option>
-          <option value="owner">Owner</option>
+          <option value="prime">Prime</option>
           <option value="subconsultant">Sub Consultant</option>
         </select>
       </div>
@@ -606,14 +606,17 @@ function updateRecipientFromProject() {
   document.getElementById("recipientEmail").value = "";
 
   console.log("[TX] updateRecipientFromProject: projNum='" + projNum + "' proj=" + (proj ? proj.name : "null") + " type=" + type +
-    (proj ? " | proj.client='" + (proj.client || "") + "' proj.prime='" + (proj.prime || "") + "' subs=" + ((proj.subconsultants || []).length) : ""));
+    (proj ? " | clientName='" + (proj.clientName || "") + "' client='" + (proj.client || "") + "' prime='" + (proj.prime || "") + "' subs=" + ((proj.subconsultants || []).length) : ""));
 
   let company = "";
   let contacts = [];
 
   if (type === "client") {
-    // Client = the contracting party / who Setty bills (project.client)
-    company = proj ? (proj.client || "") : "";
+    // Client = the end customer / who Setty has a contract with.
+    // The stored field is `clientName` (see PMS schema). `client` is only
+    // present on derived metadata objects, not stored project records, so
+    // we read clientName first and fall back to `client` for safety.
+    company = proj ? (proj.clientName || proj.client || "") : "";
     companyEl.value = company;
 
     if (company) {
@@ -638,11 +641,10 @@ function updateRecipientFromProject() {
       });
     }
 
-  } else if (type === "owner") {
-    // Owner = entity above Setty in the contract chain (prime/architect we
-    // contract under). Falls back to project.client when no separate prime
-    // is recorded.
-    company = proj ? (proj.prime || proj.primeContractor || proj.client || "") : "";
+  } else if (type === "prime") {
+    // Prime = the entity Setty is contracted under (project.prime), when Setty
+    // is a sub-consultant. Distinct from Client (who Setty bills).
+    company = proj ? (proj.prime || proj.primeContractor || "") : "";
     companyEl.value = company;
 
     if (proj) {
@@ -1139,7 +1141,7 @@ async function generateDocx() {
     const recipientCompany = document.getElementById("recipientCompany").value.trim() || "";
     const recipientTypeVal = document.getElementById("recipientType").value;
     const recipientTypeLabel =
-      recipientTypeVal === "owner"         ? "Owner" :
+      recipientTypeVal === "prime"         ? "Prime" :
       recipientTypeVal === "subconsultant" ? "Sub Consultant" :
                                              "Client";
     const clientName = recipientCompany; // used in info table
