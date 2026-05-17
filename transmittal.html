@@ -315,8 +315,9 @@
       <div>
         <label>Issuing To</label>
         <select id="recipientType" onchange="onRecipientTypeChange()">
-          <option value="owner">Owner / Agency</option>
-          <option value="prime">Prime / Architect</option>
+          <option value="client">Client</option>
+          <option value="owner">Owner</option>
+          <option value="subconsultant">Sub Consultant</option>
         </select>
       </div>
       <div>
@@ -597,48 +598,11 @@ function updateRecipientFromProject() {
   let company = "";
   let contacts = [];
 
-  if (type === "owner") {
-    // Owner = the public agency/client on the project
+  if (type === "client") {
+    // Client = the contracting party / who Setty bills (project.client)
     company = proj ? (proj.client || "") : "";
     companyEl.value = company;
 
-    // Find contacts — search client directory for matching company name
-    if (company) {
-      const tokens = company.toLowerCase().split(/[\s\/,&]+/).filter(t => t.length > 2);
-      pmsClients.forEach(cl => {
-        const clName = (cl.name || "").toLowerCase();
-        const matches = tokens.some(t => clName.includes(t));
-        if (matches) {
-          (cl.contacts || []).forEach(c => {
-            if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
-          });
-        }
-      });
-    }
-    // Also pull project-level client POCs
-    if (proj) {
-      const pocs = proj.projectContacts || {};
-      (pocs.client || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
-      });
-    }
-
-  } else {
-    // Prime/Architect = who Setty is contracted to (prime field on project)
-    company = proj ? (proj.prime || proj.primeContractor || "") : "";
-    companyEl.value = company;
-
-    // Pull from project PM POCs (these are prime contacts)
-    if (proj) {
-      const pocs = proj.projectContacts || {};
-      (pocs.pm || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
-      });
-      (pocs.other || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
-      });
-    }
-    // Also search client directory for matching prime name
     if (company) {
       const tokens = company.toLowerCase().split(/[\s\/,&]+/).filter(t => t.length > 2);
       pmsClients.forEach(cl => {
@@ -650,6 +614,69 @@ function updateRecipientFromProject() {
         }
       });
     }
+    // Project-level client/contract POCs
+    if (proj) {
+      const pocs = proj.projectContacts || {};
+      (pocs.client || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
+      });
+      (pocs.contract || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
+      });
+    }
+
+  } else if (type === "owner") {
+    // Owner = entity above Setty in the contract chain (prime/architect we
+    // contract under). Falls back to project.client when no separate prime
+    // is recorded.
+    company = proj ? (proj.prime || proj.primeContractor || proj.client || "") : "";
+    companyEl.value = company;
+
+    if (proj) {
+      const pocs = proj.projectContacts || {};
+      (pocs.pm || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
+      });
+      (pocs.contract || []).forEach(c => {
+        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
+      });
+    }
+    if (company) {
+      const tokens = company.toLowerCase().split(/[\s\/,&]+/).filter(t => t.length > 2);
+      pmsClients.forEach(cl => {
+        const clName = (cl.name || "").toLowerCase();
+        if (tokens.some(t => clName.includes(t))) {
+          (cl.contacts || []).forEach(c => {
+            if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
+          });
+        }
+      });
+    }
+
+  } else if (type === "subconsultant") {
+    // Sub Consultant = consultants Setty has hired (project.subconsultants[]).
+    // No single "company" — leave blank if multiple subs, set to the firm
+    // when there's only one. Picking a contact auto-fills the firm via
+    // onContactSelected().
+    const subs = (proj && proj.subconsultants) || [];
+    company = subs.length === 1 ? (subs[0].firm || "") : "";
+    companyEl.value = company;
+
+    subs.forEach(s => {
+      if (s.contact) {
+        contacts.push({ name: s.contact, email: s.email || "", company: s.firm || "" });
+      }
+      const firmName = (s.firm || "").trim().toLowerCase();
+      if (firmName) {
+        pmsClients.forEach(cl => {
+          if ((cl.name || "").trim().toLowerCase() === firmName) {
+            (cl.contacts || []).forEach(c => {
+              if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
+            });
+          }
+        });
+      }
+    });
   }
 
   console.log("[TX] company='" + company + "' contacts before fallback:", contacts.length);
@@ -1098,7 +1125,10 @@ async function generateDocx() {
     const recipientEmail = document.getElementById("recipientEmail").value.trim() || "";
     const recipientCompany = document.getElementById("recipientCompany").value.trim() || "";
     const recipientTypeVal = document.getElementById("recipientType").value;
-    const recipientTypeLabel = recipientTypeVal === "prime" ? "Prime / Architect" : "Owner / Agency";
+    const recipientTypeLabel =
+      recipientTypeVal === "owner"         ? "Owner" :
+      recipientTypeVal === "subconsultant" ? "Sub Consultant" :
+                                             "Client";
     const clientName = recipientCompany; // used in info table
     const txDate = document.getElementById("transmittalDate").value || new Date().toISOString().slice(0,10);
     const issuedFor = document.getElementById("issuedFor").value;
