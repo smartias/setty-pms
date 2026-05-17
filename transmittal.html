@@ -615,100 +615,52 @@ function updateRecipientFromProject() {
   let company = "";
   let contacts = [];
 
+  // Returns all contacts from the global directory whose firm name matches
+  // (case-insensitive, trimmed). Strict match — no fuzzy token matching.
+  function directoryContactsFor(companyName) {
+    const target = (companyName || "").trim().toLowerCase();
+    if (!target) return [];
+    const out = [];
+    pmsClients.forEach(cl => {
+      if ((cl.name || "").trim().toLowerCase() === target) {
+        (cl.contacts || []).forEach(c => {
+          if (c.name) out.push({ name: c.name, email: c.email || "", company: cl.name });
+        });
+      }
+    });
+    return out;
+  }
+
   if (type === "client") {
-    // Client = the end customer / who Setty has a contract with.
-    // The stored field is `clientName` (see PMS schema). `client` is only
-    // present on derived metadata objects, not stored project records, so
-    // we read clientName first and fall back to `client` for safety.
+    // Client = the end customer Setty has a contract with. The stored field
+    // is `clientName` (PMS schema); `client` is only on derived metadata
+    // objects, so read clientName first and fall back to `client` for safety.
     company = proj ? (proj.clientName || proj.client || "") : "";
     companyEl.value = company;
-
-    if (company) {
-      const tokens = company.toLowerCase().split(/[\s\/,&]+/).filter(t => t.length > 2);
-      pmsClients.forEach(cl => {
-        const clName = (cl.name || "").toLowerCase();
-        if (tokens.some(t => clName.includes(t))) {
-          (cl.contacts || []).forEach(c => {
-            if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
-          });
-        }
-      });
-    }
-    // Project-level client/contract POCs
-    if (proj) {
-      const pocs = proj.projectContacts || {};
-      (pocs.client || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
-      });
-      (pocs.contract || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
-      });
-    }
+    contacts = directoryContactsFor(company);
 
   } else if (type === "prime") {
     // Prime = the entity Setty is contracted under (project.prime), when Setty
     // is a sub-consultant. Distinct from Client (who Setty bills).
     company = proj ? (proj.prime || proj.primeContractor || "") : "";
     companyEl.value = company;
-
-    if (proj) {
-      const pocs = proj.projectContacts || {};
-      (pocs.pm || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
-      });
-      (pocs.contract || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company });
-      });
-    }
-    if (company) {
-      const tokens = company.toLowerCase().split(/[\s\/,&]+/).filter(t => t.length > 2);
-      pmsClients.forEach(cl => {
-        const clName = (cl.name || "").toLowerCase();
-        if (tokens.some(t => clName.includes(t))) {
-          (cl.contacts || []).forEach(c => {
-            if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
-          });
-        }
-      });
-    }
+    contacts = directoryContactsFor(company);
 
   } else if (type === "subconsultant") {
     // Sub Consultant = consultants Setty has hired (project.subconsultants[]).
-    // No single "company" — leave blank if multiple subs, set to the firm
-    // when there's only one. Picking a contact auto-fills the firm via
-    // onContactSelected().
+    // No single "company" — leave blank when multiple, set to the firm when
+    // there's only one. Picking a contact auto-fills the firm via
+    // onContactSelected(). Contacts pulled from each sub's firm in the
+    // global directory.
     const subs = (proj && proj.subconsultants) || [];
     company = subs.length === 1 ? (subs[0].firm || "") : "";
     companyEl.value = company;
-
     subs.forEach(s => {
-      if (s.contact) {
-        contacts.push({ name: s.contact, email: s.email || "", company: s.firm || "" });
-      }
-      const firmName = (s.firm || "").trim().toLowerCase();
-      if (firmName) {
-        pmsClients.forEach(cl => {
-          if ((cl.name || "").trim().toLowerCase() === firmName) {
-            (cl.contacts || []).forEach(c => {
-              if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name });
-            });
-          }
-        });
-      }
+      contacts = contacts.concat(directoryContactsFor(s.firm));
     });
   }
 
-  console.log("[TX] company='" + company + "' contacts before fallback:", contacts.length);
-
-  // If still no contacts, show full client directory as fallback
-  if (contacts.length === 0) {
-    pmsClients.forEach(cl => {
-      (cl.contacts || []).forEach(c => {
-        if (c.name) contacts.push({ name: c.name, email: c.email || "", company: cl.name || "" });
-      });
-    });
-    console.log("[TX] fallback contacts:", contacts.length);
-  }
+  console.log("[TX] company='" + company + "' contacts:", contacts.length);
 
   // Deduplicate by name+email
   const seen = new Set();
