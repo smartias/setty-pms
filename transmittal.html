@@ -170,6 +170,10 @@
     .btn-red { background: #450a0a; color: #f87171; border: 1px solid #7f1d1d; }
     .btn-send { background: #7c2d12; color: #fed7aa; border: 1px solid #9a3412; }
     .btn-send:hover:not(:disabled) { background: #9a3412; }
+    .step-label {
+      font-size: 11px; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
+    }
 
     /* Status */
     .status {
@@ -399,14 +403,22 @@
 
     <div class="status" id="parseStatus"></div>
 
-    <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap">
-      <button class="btn btn-green" id="generateBtn">📄 Generate Transmittal (.docx)</button>
-      <button class="btn btn-primary" id="saveToSpBtn">💾 Save to SharePoint Folder</button>
-      <button class="btn btn-primary" id="zipBtn">📦 Package Drawings as ZIP</button>
-      <button class="btn btn-send" id="sendToClientBtn" title="Zips files, uploads to SharePoint, creates a 30-day share link, then opens an Outlook draft for you to review.">✉️ Package &amp; Draft Email</button>
-    </div>
-    <div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5">
-      ↑ <strong>Package &amp; Draft Email</strong> zips the files, uploads to SharePoint, creates a 30-day share link, then opens an Outlook draft for you to review — nothing is sent automatically.
+    <div style="margin-top:20px;display:flex;flex-direction:column;gap:14px">
+      <div>
+        <div class="step-label">Step 1 — Required</div>
+        <button class="btn btn-green" id="generateBtn">1. 📄 Generate Transmittal (.docx)</button>
+      </div>
+      <div>
+        <div class="step-label">Step 2 — Choose one delivery option</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="saveToSpBtn" disabled title="Generate the transmittal first">2a. 💾 Save .docx to SharePoint</button>
+          <button class="btn btn-primary" id="zipBtn" disabled title="Generate the transmittal first">2b. 📦 Download ZIP only</button>
+          <button class="btn btn-send" id="sendToClientBtn" disabled title="Generate the transmittal first">2c. ✉️ Package &amp; Draft Email</button>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5">
+          <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow: zips the drawings + cover, uploads to SharePoint, creates a 30-day share link, then opens an Outlook draft for you to review. Nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
+        </div>
+      </div>
     </div>
     <div class="status" id="generateStatus"></div>
     <div class="status" id="zipStatus"></div>
@@ -1352,7 +1364,12 @@ async function generateDocx() {
 
     // Auto-download
     saveAs(buffer, generatedFileName);
-    setStatus("generateStatus", "success", `✓ "${generatedFileName}" downloaded. Click "Save to SharePoint" to also save it to the folder.`);
+    // Unlock Step 2 actions now that the cover docx exists in memory
+    ["saveToSpBtn", "zipBtn", "sendToClientBtn"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.disabled = false; el.removeAttribute("title"); }
+    });
+    setStatus("generateStatus", "success", `✓ "${generatedFileName}" downloaded. Step 2 actions are now unlocked below.`);
 
   } catch(e) {
     setStatus("generateStatus", "error", "✗ " + e.message);
