@@ -580,7 +580,11 @@ async function loadPmsData() {
     console.log("[TX] Loaded:", pmsProjects.length, "projects,", pmsClients.length, "clients (source:", pRows.length > 0 ? "V2" : "legacy", ")");
     if (pmsProjects.length === 0) console.warn("[TX] WARNING: pmsProjects is empty — check Supabase tables");
 
-    // STEP 2: NOW populate recipient with project number already in the field
+    // STEP 2: NOW populate recipient with project number already in the field.
+    // Explicitly reset the dropdown to "client" first — browsers cache the last
+    // <select> value across reloads, which would otherwise route us into the
+    // wrong branch on the initial autofill.
+    document.getElementById("recipientType").value = "client";
     updateRecipientFromProject();
   } catch(e) {
     console.warn("Could not load PMS data:", e.message);
