@@ -8,7 +8,7 @@
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
-  <script>window.__appVersion = "2026-05-05-ux-v1";</script>
+  <script>window.__appVersion = "2026-05-11-rename-fix";</script>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   <script src="msal-browser.min.js"></script>
   <!-- pako: zlib in JS — compresses email HTML bodies before storing in Supabase -->
@@ -162,6 +162,15 @@
     .btn-teal:hover:not(:disabled)    { background: #cdebe1; }
     .btn-orange  { background: var(--warn-bg); color: var(--warn); border-color: #f1d875; }
     .btn-orange:hover:not(:disabled)  { background: #ffeaa3; }
+    /* Microsoft-branded action buttons. Solid fills (vs the soft pastel
+       variants above) so they read as primary "this opens a Microsoft app"
+       affordances — matches the visual weight of the Teams / OneNote logos. */
+    .btn-onenote { background: #7719AA; color: #fff; border-color: #7719AA; }
+    .btn-onenote:hover:not(:disabled) { background: #5e147f; }
+    .btn-teams   { background: #6264A7; color: #fff; border-color: #6264A7; }
+    .btn-teams:hover:not(:disabled)   { background: #4f519e; }
+    .btn-teams-sent { background: #107c41; color: #fff; border-color: #107c41; }
+    .btn-teams-sent:hover:not(:disabled) { background: #0d6435; }
     .divider {
       border: none;
       border-top: 1px solid var(--border);
@@ -176,6 +185,36 @@
       margin-bottom: 4px;
     }
     .save-row .btn { margin-bottom: 0; }
+    /* Quick text + templates grid — 2x2, compact, copies to clipboard */
+    .quick-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      margin-bottom: 6px;
+    }
+    .btn-quick {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 11px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      text-align: center;
+      line-height: 1.2;
+      min-height: 28px;
+      font-family: inherit;
+    }
+    .btn-quick:hover:not(:disabled) { background: var(--surface-2); border-color: var(--primary); }
+    .btn-quick:disabled { opacity: 0.5; cursor: not-allowed; }
+    .quick-section-label {
+      font-size: 10px;
+      color: var(--text-soft);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 8px 0 4px;
+      font-weight: 600;
+    }
     .save-row-caption {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -702,6 +741,11 @@
     <a id="oneNoteLinkAnchor" href="#" target="_blank" style="font-size:13px;font-weight:600;color:var(--primary);text-decoration:none;">Open in OneNote →</a>
   </div>
 
+  <!-- "Already logged as RFI / Submittal" chip row. Populated by
+       refreshLoggedArtifactChips() based on RFI/Submittal records whose
+       sourceItemId matches the current email. Empty by default. -->
+  <div id="loggedAsArtifactChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
+
   <!-- Primary action zone — the 80/20 actions, always visible.
        Twin-save row: SharePoint (email + attachments) and Project Record (email body copy). -->
   <div class="save-row">
@@ -723,7 +767,8 @@
       <a id="scSharePointLink" href="#" style="display:none;">📂 Open SharePoint folder →</a>
     </div>
   </div>
-  <button class="btn btn-secondary" id="logNoteBtn">📝 Log as Note</button>
+  <button class="btn btn-onenote" id="logNoteBtn">📓 Log as Note</button>
+  <button class="btn btn-teams" id="sendToTeamsBtn">💬 Send to Teams Channel</button>
   <button class="btn btn-secondary" id="newActionItemBtn">✅ New Action Item</button>
 
   <!-- More — collapsed by default; persists open state in localStorage -->
@@ -739,6 +784,28 @@
       <button class="btn btn-ghost" id="openDashboardBtn">📊 Open PMS Dashboard</button>
     </div>
   </details>
+
+  <!-- Quick text + templates — copy text to clipboard for pasting into a reply.
+       Wrapped in #quickTemplatesSection so the JS guard can show/hide it as a
+       single unit. Only visible in Compose mode (Reply / Forward / New) since
+       that's the only context where the templates are useful. -->
+  <div id="quickTemplatesSection">
+    <div class="quick-section-label">✉ Quick text</div>
+    <div class="quick-grid">
+      <button class="btn-quick" data-tpl="ack">Received</button>
+      <button class="btn-quick" data-tpl="attached">Attached</button>
+      <button class="btn-quick" data-tpl="checking-schedule">Checking schedule</button>
+      <button class="btn-quick" data-tpl="fee-schedule">Fee Schedule</button>
+    </div>
+    <div class="quick-section-label">✉ Templates</div>
+    <div class="quick-grid">
+      <button class="btn-quick" data-tpl="schedule-update">✉ Schedule Update</button>
+      <button class="btn-quick" data-tpl="intro">✉ Project Introduction</button>
+      <button class="btn-quick" data-tpl="onhold">✉ Project On Hold</button>
+      <button class="btn-quick" data-tpl="sitesurvey">✉ Site Survey Request</button>
+    </div>
+    <div id="quickTextStatus" class="status" style="display:none"></div>
+  </div>
 </div>
 
 <!-- Note View -->
@@ -789,6 +856,8 @@
 
   <div id="rfiNewForm">
     <div class="section-title">New RFI</div>
+    <label>RFI Number <span style="color:#64748b;font-weight:400;font-size:10px;">(auto-suggested — overwrite if assigned by contractor)</span></label>
+    <input type="text" id="rfiNumber" placeholder="e.g. RFI-001 or external number"/>
     <label>Title</label>
     <input type="text" id="rfiTitle" placeholder="RFI subject / description"/>
     <label>Discipline</label>
@@ -804,8 +873,21 @@
     </select>
     <label>From (GC / Prime)</label>
     <input type="text" id="rfiFrom" placeholder="Contractor name"/>
-    <label>Notes / Question</label>
-    <textarea id="rfiNotes" rows="3" placeholder="RFI question or description…"></textarea>
+    <label>Received Via</label>
+    <select id="rfiReceivedVia">
+      <option value="Email">Email</option>
+      <option value="Procore">Procore</option>
+      <option value="ACC">ACC</option>
+      <option value="Other">Other</option>
+    </select>
+    <label>Assigned To <span style="color:#64748b;font-weight:400;font-size:10px;" id="rfiAssignHint"></span></label>
+    <select id="rfiAssignedTo">
+      <option value="">— Unassigned —</option>
+    </select>
+    <label>Full Question / Description</label>
+    <textarea id="rfiDescription" rows="4" placeholder="Full RFI question text — what's being asked, what's the issue, what response is needed…"></textarea>
+    <label>Internal Notes <span style="color:#64748b;font-weight:400;font-size:10px;">(optional)</span></label>
+    <textarea id="rfiNotes" rows="2" placeholder="Internal notes — context for your team, not the contractor"></textarea>
     <div id="rfiStatus" class="status-msg"></div>
     <button class="btn btn-blue" id="saveRfiBtn">💾 Log New RFI</button>
   </div>
@@ -832,6 +914,8 @@
 
   <div id="subNewForm">
     <div class="section-title">New Submittal</div>
+    <label>Submittal Number <span style="color:#64748b;font-weight:400;font-size:10px;">(auto-suggested — overwrite if assigned by contractor)</span></label>
+    <input type="text" id="subNumber" placeholder="e.g. SUB-001 or external number"/>
     <label>Spec Section</label>
     <input type="text" id="subSpec" placeholder="e.g. 23 05 00"/>
     <label>Description</label>
@@ -844,11 +928,26 @@
       <option>Plumbing</option>
       <option>Fire Protection</option>
       <option>General</option>
+      <option>Architectural</option>
+      <option>Structural</option>
     </select>
     <label>From (GC / Prime)</label>
     <input type="text" id="subFrom" placeholder="Contractor name"/>
-    <label>Notes</label>
-    <textarea id="subNotes" rows="2" placeholder="Notes…"></textarea>
+    <label>Received Via</label>
+    <select id="subReceivedVia">
+      <option value="Email">Email</option>
+      <option value="Procore">Procore</option>
+      <option value="ACC">ACC</option>
+      <option value="Other">Other</option>
+    </select>
+    <label>Assigned To <span style="color:#64748b;font-weight:400;font-size:10px;" id="subAssignHint"></span></label>
+    <select id="subAssignedTo">
+      <option value="">— Unassigned —</option>
+    </select>
+    <label>Full Description / Scope</label>
+    <textarea id="subFullDescription" rows="4" placeholder="What's being submitted, what needs to be reviewed, special requirements…"></textarea>
+    <label>Internal Notes <span style="color:#64748b;font-weight:400;font-size:10px;">(optional)</span></label>
+    <textarea id="subNotes" rows="2" placeholder="Internal notes — context for your team"></textarea>
     <div id="subStatus" class="status-msg"></div>
     <button class="btn btn-purple" id="saveSubBtn">💾 Log New Submittal</button>
   </div>
@@ -911,13 +1010,6 @@
   <input type="text" id="contactEmail"/>
   <label>Phone</label>
   <input type="text" id="contactPhone"/>
-  <label>Type</label>
-  <select id="contactType">
-    <option value="Client">Client</option>
-    <option value="Prime">Prime / GC</option>
-    <option value="Sub">Subconsultant</option>
-    <option value="Other">Other</option>
-  </select>
   <label>Save to</label>
   <select id="contactSaveTo">
     <option value="client">Client / Company Directory</option>
