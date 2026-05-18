@@ -17086,8 +17086,12 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
         newPct={dashInvoicePrompt.newPct}
         invoiceAmount={dashInvoicePrompt.invoiceAmount}
         onLogInvoice={inv => {
-          const proj = dashInvoicePrompt.project;
-          onUpdateProject({ ...proj, invoices: [...(proj.invoices || []), inv] });
+          // Read the fresh project from current state — `dashInvoicePrompt.project`
+          // was snapshotted before the pctComplete update was applied, so using it
+          // here would clobber the 100% mark. Fall back to the snapshot only if
+          // the project somehow no longer exists.
+          const freshProj = projects.find(p => p.id === dashInvoicePrompt.project.id) || dashInvoicePrompt.project;
+          onUpdateProject({ ...freshProj, invoices: [...(freshProj.invoices || []), inv] });
         }}
         onClose={() => setDashInvoicePrompt(null)}
       />
