@@ -439,7 +439,7 @@ const MSAL_CONFIG = {
   cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
   system: { allowNativeBroker: false },
 };
-const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All"];
+const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All", "Mail.ReadWrite"];
 const LOGIN_SCOPES  = ["User.Read", "openid", "profile"];
 const SP_DRIVE_ID   = "b!your-drive-id"; // resolved at runtime
 const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
@@ -1502,13 +1502,16 @@ async function sendToClient() {
       // Continue — the email is still useful even if the audit row didn't write.
     }
 
-    // ── 5. Open Outlook compose with pre-filled email ───────────────────────
-    const mailtoUrl = buildMailtoUrl({
+    // ── 5. Create an Outlook draft via Graph (HTML body so the share URL can
+    //       hide behind a readable label) and open it for review. ─────────────
+    setStatus("sendStatus", "info", "⏳ Creating Outlook draft…");
+    const draft = await createOutlookDraft({
       recipientEmail,
       linkUrl: linkInfo.link.webUrl,
+      linkLabel: zipName.replace(/\.zip$/i, ""),
       expiryDate: linkInfo.expirationDateTime,
     });
-    window.location.href = mailtoUrl;
+    window.open(draft.webLink, "_blank");
 
     setStatus("sendStatus", "success",
       `✓ Package uploaded (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB). ` +
@@ -1635,7 +1638,15 @@ async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmai
 }
 
 // ─── MAILTO ASSEMBLY ──────────────────────────────────────────────────────────
-function buildMailtoUrl({ recipientEmail, linkUrl, expiryDate }) {
+// Creates an Outlook draft via Graph and returns the draft object (whose
+// `webLink` opens the compose window in Outlook on the Web). HTML body lets
+// us hide the long SharePoint share URL behind a readable label.
+//
+// Trade-off vs. the old mailto: flow: Outlook's auto-signature insertion
+// fires only for client-originated drafts, so Graph-created drafts arrive
+// signature-less. You'll type/paste your signature in the draft before
+// sending. (This was an intentional choice for cleaner link display.)
+async function createOutlookDraft({ recipientEmail, linkUrl, linkLabel, expiryDate }) {
   const projectName   = document.getElementById("projectName").value || "";
   const projectNumber = document.getElementById("projectNumber").value || "";
   const recipientName = document.getElementById("recipientName").value || "";
@@ -1645,62 +1656,50 @@ function buildMailtoUrl({ recipientEmail, linkUrl, expiryDate }) {
     year: "numeric", month: "short", day: "numeric",
   });
 
-  const { subject, body } = buildEmailBody({
+  const { subject, html } = buildEmailBody({
     projectName, projectNumber, recipientName, issuedFor,
-    linkUrl, expiryDate: expiryFormatted, fileList,
+    linkUrl, linkLabel, expiryDate: expiryFormatted, fileList,
   });
 
-  // mailto: URLs encode the body in the query string. Outlook (desktop and
-  // web) handle several KB of body comfortably. If fileList ever pushes
-  // the URL past ~2000 chars, some mail clients truncate — keep buildEmailBody
-  // concise if listing all files inline.
-  return "mailto:" + encodeURIComponent(recipientEmail) +
-         "?subject=" + encodeURIComponent(subject) +
-         "&body="    + encodeURIComponent(body);
+  return await graphFetch("POST", "/me/messages", {
+    subject,
+    body: { contentType: "HTML", content: html },
+    toRecipients: [{ emailAddress: { address: recipientEmail } }],
+  });
 }
 
 // ─── EMAIL BODY (YOU WRITE THIS) ──────────────────────────────────────────────
-// TODO (YOU): This is the email your client sees. It's the firm's voice —
-// formal vs. casual, what boilerplate is expected, what AEC transmittal
-// conventions matter to your clients.
+// This is the email your client sees. Returns HTML now — drafts are created
+// via Graph (Outlook), so the share URL can hide behind a readable link label
+// instead of dumping the full SharePoint path inline.
 //
-// You have these inputs:
+// Inputs:
 //   • projectName     — e.g. "Hunter College SPARC"
 //   • projectNumber   — e.g. "SAPX246006"
-//   • recipientName   — e.g. "John Smith"  (may be empty if user didn't fill it)
-//   • issuedFor       — e.g. "Issued for Bid", "Issued for Construction", etc.
-//   • linkUrl         — the anonymous SharePoint link (clients click to download)
+//   • recipientName   — e.g. "John Smith"  (may be empty)
+//   • issuedFor       — e.g. "Issued for Bid", "Issued for Construction"
+//   • linkUrl         — the anonymous SharePoint link (long; goes in href only)
+//   • linkLabel       — the visible text for the link (defaults to the zip name)
 //   • expiryDate      — formatted string, e.g. "Jun 15, 2026"
-//   • fileList        — array of file names included in the zip (excludes the cover docx)
+//   • fileList        — array of file names in the zip (excludes the cover docx)
 //
-// Return { subject, body } — both plain text strings. The body becomes the
-// email body verbatim; mailto: doesn't support HTML, so use plain text only.
-// Line breaks: use "\n".
+// Return { subject, html }. HTML is safe to use freely (your own content) —
+// just remember to use <br> for line breaks and HTML-escape anything that
+// could legitimately contain user-supplied "<" or "&" if you ever wire those
+// in (project names are typed by your team so this is low risk today).
 //
-// Things to think about:
-//   • Subject line — recipients filter by this. Most AEC firms use:
-//     "[ProjectNumber] [ProjectName] — [IssuedFor] — Transmittal [Date]"
-//     so it sorts and filters cleanly.
-//   • Body length — short and skimmable wins for clients who get many emails.
-//     A bullet list of files inline is helpful but pushes the mailto URL longer.
-//   • Boilerplate worth including:
-//       - "Please confirm receipt" (AEC convention; creates a paper trail)
-//       - Link expiration notice ("Link expires {expiryDate}")
-//       - Contact for issues ("Reply to this email if the link doesn't work")
-//   • Signature — leave OFF. Outlook auto-appends your signature when the
-//     compose window opens, so anything you add here will appear *above* it.
-//
-// Write 15-25 lines. Look at an actual transmittal email your team has sent
-// recently for the right tone and required boilerplate.
-function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, linkUrl, expiryDate, fileList }) {
+// Signature — leave OFF. Graph-created drafts don't auto-append your Outlook
+// signature; you'll add it in the compose window before sending.
+function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, linkUrl, linkLabel, expiryDate, fileList }) {
   const projectLabel = [projectNumber, projectName].filter(Boolean).join(" — ");
   const greeting = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const label = linkLabel || "Download package";
   return {
     subject: `${projectLabel} — ${issuedFor}`,
-    body:
-      `${greeting}\n\n` +
-      `${issuedFor} package for ${projectLabel}:\n\n` +
-      `${linkUrl}\n\n` +
+    html:
+      `${greeting}<br><br>` +
+      `${issuedFor} package for ${projectLabel}:<br><br>` +
+      `<a href="${linkUrl}">${label}</a><br><br>` +
       `Link expires ${expiryDate}.`,
   };
 }
