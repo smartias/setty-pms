@@ -458,11 +458,61 @@ let generatedFileName = "";
 let pmsClients = []; // loaded from Supabase
 let pmsProjects = []; // loaded from Supabase
 
+// Project + milestone identity from URL, used by the filing-log writer below
+// so PMS can show a "generated" indicator on the milestone chip after a
+// distribution action (save-to-SP / ZIP / send-email) completes.
+let pmsProjectId = "";
+let pmsMilestoneId = "";
+
+// ─── FILING LOG WRITER ──────────────────────────────────────────────────────
+// Records a successful transmittal generation/distribution event into the
+// shared pms_filing_log table. PMS reads this on load to render the chip in
+// its "generated" state. Fire-and-forget — a logging failure must never
+// affect the user's perception that their generation worked.
+async function logTransmittalGenerated(distributionKind, extra = {}) {
+  if (!pmsProjectId) return; // legacy callers from non-PMS context: nothing to log against
+  const folderUrlDecoded = decodeURIComponent(folderUrl || "");
+  const subject = (document.getElementById("transmittalNo")?.value || "") +
+                  " · " +
+                  (document.getElementById("projectName")?.value || "");
+  const row = {
+    project_id:    pmsProjectId,
+    msg_id:        pmsMilestoneId ? ("milestone:" + pmsMilestoneId) : null,
+    operation:     "transmittal-generated",
+    sp_folder_url: folderUrlDecoded || null,
+    files:         {
+      distributionKind, // "save-sp" | "zip" | "send-email"
+      transmittalNumber: document.getElementById("transmittalNo")?.value || "",
+      generatedAt: new Date().toISOString(),
+      ...extra,
+    },
+    email_subject: subject,
+    status:        "success",
+  };
+  try {
+    await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log", {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_ANON,
+        "Authorization": "Bearer " + SUPABASE_ANON,
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+  } catch (e) {
+    // Non-fatal — generation succeeded; this is just the PMS feedback signal.
+    console.warn("[transmittal] filing-log write failed (non-fatal):", e.message);
+  }
+}
+
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 (async function init() {
   // Read folder URL from query param
   const params = new URLSearchParams(window.location.search);
   folderUrl = params.get("folder") || "";
+  pmsProjectId   = params.get("projectId")   || "";
+  pmsMilestoneId = params.get("milestoneId") || "";
   if (folderUrl) {
     document.getElementById("folderUrlDisplay").textContent = decodeURIComponent(folderUrl);
     // Try to pre-fill project info from folder name
@@ -1033,6 +1083,7 @@ async function packageAsZip() {
     saveAs(blob, archiveName); // file-saver, already loaded for the .docx export
 
     setStatus("zipStatus", "success", `✓ "${archiveName}" downloaded (${done} file${done !== 1 ? "s" : ""}).`);
+    void logTransmittalGenerated("zip", { archiveName, fileCount: done });
   } catch(e) {
     setStatus("zipStatus", "error", "✗ " + e.message);
     console.error(e);
@@ -1354,6 +1405,7 @@ async function saveToSharePoint() {
     });
     if (!res.ok) throw new Error("Upload failed: " + res.status);
     setStatus("generateStatus", "success", `✓ Saved to SharePoint folder as "${generatedFileName}"`);
+    void logTransmittalGenerated("save-sp", { docxFileName: generatedFileName });
   } catch(e) {
     setStatus("generateStatus", "error", "✗ " + e.message);
   }
@@ -1461,6 +1513,11 @@ async function sendToClient() {
     setStatus("sendStatus", "success",
       `✓ Package uploaded (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB). ` +
       `Outlook draft open — review and click Send. Link expires ${new Date(linkInfo.expirationDateTime).toLocaleDateString()}.`);
+    void logTransmittalGenerated("send-email", {
+      recipientEmail,
+      packageSizeMB: +(zipBlob.size / 1024 / 1024).toFixed(2),
+      linkExpiresAt: linkInfo.expirationDateTime,
+    });
   } catch (e) {
     setStatus("sendStatus", "error", "✗ " + e.message);
     console.error(e);

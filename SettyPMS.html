@@ -2236,6 +2236,63 @@ async function runFilingReconcile({ daysBack = 90, deepHash = false, onProgress 
   return { totalChecked: entries.length, okCount, problems };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// TRANSMITTAL STATUS LOOKUP
+// ═══════════════════════════════════════════════════════════════════════════
+// Reads `pms_filing_log` rows with operation = 'transmittal-generated' so the
+// schedule + dashboard chips can show a subtle ✓ on milestones whose transmittal
+// has already been distributed (saved to SP, ZIP'd, or emailed to client).
+//
+// transmittal.html writes one row per distribution action, with:
+//   msg_id        = "milestone:<milestoneId>"   (so PMS can index by milestone)
+//   sp_folder_url = the outgoing folder URL     (backup index by folder)
+//   files.distributionKind = "save-sp" | "zip" | "send-email"
+//
+// We return a Map keyed by milestoneId with { lastAt, kinds: Set }. The chip
+// uses lastAt for the relative timestamp tooltip and kinds for tooltip detail.
+
+async function fetchTransmittalStatusMap(daysBack = 365) {
+  const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
+    "?select=msg_id,sp_folder_url,files,created_at" +
+    "&operation=eq.transmittal-generated" +
+    "&created_at=gte." + encodeURIComponent(sinceIso) +
+    "&order=created_at.desc&limit=2000";
+  try {
+    const res = await fetchWithRetry(url, {
+      headers: {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+      },
+    }, { label: "sb transmittal-status fetch", maxAttempts: 2 });
+    if (!res.ok) return new Map();
+    const rows = await res.json();
+    const map = new Map();
+    for (const r of rows || []) {
+      // Extract milestoneId from msg_id (format: "milestone:<id>") or fall back
+      // to sp_folder_url for legacy entries that didn't carry milestoneId.
+      const m = r.msg_id?.match(/^milestone:(.+)$/);
+      const key = m ? m[1] : null;
+      const folderKey = r.sp_folder_url || null;
+      const ts = new Date(r.created_at).getTime();
+      const kind = r.files?.distributionKind || "generated";
+      const recordKey = key || folderKey;
+      if (!recordKey) continue;
+      const existing = map.get(recordKey);
+      if (!existing) {
+        map.set(recordKey, { lastAt: ts, kinds: new Set([kind]) });
+      } else {
+        existing.lastAt = Math.max(existing.lastAt, ts);
+        existing.kinds.add(kind);
+      }
+    }
+    return map;
+  } catch (e) {
+    console.warn("[transmittal-status] fetch failed (non-fatal):", e.message);
+    return new Map();
+  }
+}
+
 // Creates a folder in the Contract Library for a Term Contract, named
 // "<Client>_<ContractName>". Falls back to just the name if no client set.
 // Lives in the same library as project contracts so all signed contracts
@@ -5914,11 +5971,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                         }
                       }} />
                     {m.outgoingFolderUrl && (
-                      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(m.outgoingFolderUrl)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}`}
-                        target="_blank" rel="noreferrer" title="Open transmittal: generate sheet list, package files, and draft client email"
-                        style={{ display:"inline-flex",alignItems:"center",gap:3,background:"#14532d",color:"#4ade80",borderRadius:5,fontSize:11,fontWeight:600,padding:"3px 7px",textDecoration:"none",whiteSpace:"nowrap",border:"1px solid #166534" }}>
-                        ✉️ Transmit
-                      </a>
+                      <TransmittalChip project={project} milestone={m} />
                     )}
                     {m.type === "billable" && (
                       <Btn small variant="danger"
@@ -16003,6 +16056,48 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
 
+// Context for the transmittal-status map so chips deep in Dashboard / Schedule
+// trees can read it without prop-drilling. App provides the value; chips
+// consume it.
+const TransmittalStatusContext = React.createContext(new Map());
+
+// Shared chip for "open transmittal generator" links. Used by both the Schedule
+// tab (next to the document-set folder URL) and the Dashboard's milestone row.
+// Reads the transmittal map from context (keyed by milestone.id OR
+// outgoingFolderUrl) to decide whether to show the muted "✓ generated" state.
+// Always remains clickable so the user can regenerate.
+function TransmittalChip({ project, milestone }) {
+  const transmittalMap = React.useContext(TransmittalStatusContext);
+  const url = milestone?.outgoingFolderUrl;
+  if (!url) return null;
+  const status = transmittalMap?.get(milestone.id) || transmittalMap?.get(url) || null;
+  const generated = !!status;
+  // Build a tooltip that explains the state. Includes relative time + distribution
+  // kinds so the user can tell at a glance whether it was emailed vs just zipped.
+  function relTime(ms) {
+    const diff = Date.now() - ms;
+    if (diff < 60_000) return "just now";
+    if (diff < 3_600_000) return Math.floor(diff / 60_000) + "m ago";
+    if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + "h ago";
+    return Math.floor(diff / 86_400_000) + "d ago";
+  }
+  const kindLabel = (k) => k === "save-sp" ? "saved to SP" : k === "zip" ? "ZIP downloaded" : k === "send-email" ? "emailed" : k;
+  const kindsList = status ? Array.from(status.kinds).map(kindLabel).join(", ") : "";
+  const tooltip = generated
+    ? `Last generated ${relTime(status.lastAt)} (${kindsList}) — click to regenerate`
+    : "Open transmittal: generate sheet list, package files, and draft client email";
+  const href = `https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}&projectId=${encodeURIComponent(project.id||"")}&milestoneId=${encodeURIComponent(milestone.id||"")}`;
+  // Muted style on generated, vivid style on not-yet. Both clickable.
+  const style = generated
+    ? { display: "inline-flex", alignItems: "center", gap: 3, background: "#0f2a17", color: "#86d9a8", borderRadius: 5, fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap", border: "1px solid #0f3b21", opacity: 0.85 }
+    : { display: "inline-flex", alignItems: "center", gap: 3, background: "#14532d", color: "#4ade80", borderRadius: 5, fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap", border: "1px solid #166534" };
+  return (
+    <a href={href} target="_blank" rel="noreferrer" title={tooltip} style={style}>
+      {generated ? "✓ TX" : "📄 TX"}
+    </a>
+  );
+}
+
 function DashMilestoneSpBtn({ milestone, project, onSave }) {
   const [spSt, setSpSt] = React.useState("idle");
   const [errMsg, setErrMsg] = React.useState("");  // hotfix: surface real error
@@ -16017,11 +16112,7 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
           textDecoration: "none", whiteSpace: "nowrap" }}>
         📂 Open
       </a>
-      <a href={`https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}`}
-        target="_blank" rel="noreferrer" title="Open transmittal: generate sheet list, package files, and draft client email"
-        style={{ display:"inline-flex",alignItems:"center",gap:3,background:"#14532d",color:"#4ade80",borderRadius:5,fontSize:11,fontWeight:600,padding:"3px 7px",textDecoration:"none",whiteSpace:"nowrap",border:"1px solid #166534" }}>
-        📄 TX
-      </a>
+      <TransmittalChip project={project} milestone={milestone} />
     </div>
   );
   const tooltip = !project.projectFolderUrl
@@ -21762,6 +21853,11 @@ function App() {
   const [filingHealth, setFilingHealth] = useState(null);
   const [filingHealthRunning, setFilingHealthRunning] = useState(false);
   const [showFilingHealthModal, setShowFilingHealthModal] = useState(false);
+  // Transmittal status map: key = milestone.id OR outgoingFolderUrl → { lastAt, kinds: Set }.
+  // Populated by an effect after load + refreshed when the window regains focus
+  // (so returning to the PMS tab after running transmittal.html shows the ✓
+  // immediately without needing a manual reload).
+  const [transmittalMap, setTransmittalMap] = useState(new Map());
   const [backupImportMsg, setBackupImportMsg] = useState({ text: "", type: "idle" });
   const [backupImportPreview, setBackupImportPreview] = useState(null); // { parsed, projCount, tcCount, staffCount, clientCount, exportedAt }
   const [lastBackupDate, setLastBackupDate] = useState(() => localStorage.getItem("settyPMS_lastBackup") || null);
@@ -21894,6 +21990,26 @@ function App() {
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
     window.__pmsPreMigrationBackup = data; // fallback if download blocked
   }
+
+  // ── Transmittal-status fetch: cheap single-table query, kicks off on load
+  //    and re-fires whenever the window regains focus (so coming back from
+  //    transmittal.html refreshes the chips without a manual reload). ──
+  useEffect(() => {
+    if (!isLoaded.current) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const m = await fetchTransmittalStatusMap(365);
+        if (!cancelled) setTransmittalMap(m);
+      } catch (e) {
+        console.warn("[transmittal-status] refresh failed:", e.message);
+      }
+    };
+    refresh();
+    const onFocus = () => { refresh(); };
+    window.addEventListener("focus", onFocus);
+    return () => { cancelled = true; window.removeEventListener("focus", onFocus); };
+  }, [appStatus]);
 
   // ── Filing-integrity reconcile: runs 5s after load completes ──
   // Cheap (~1 GET per recent filing entry, capped at 4 concurrent). Surfaces
@@ -22619,7 +22735,7 @@ async function updateProjectAndFlush(updated) {
   ) : null;
 
   return (
-    <>
+    <TransmittalStatusContext.Provider value={transmittalMap}>
     <div style={{ minHeight: "100vh", background: P.bg }}>
       <style>{CSS}</style>
 
@@ -23050,7 +23166,7 @@ async function updateProjectAndFlush(updated) {
       @keyframes pmsFadeIn { from { opacity: 0; } to { opacity: 1; } }
       @keyframes pmsCardPop { from { opacity: 0; transform: scale(0.85) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
     `}</style>
-    </>
+    </TransmittalStatusContext.Provider>
   );
 }
 
