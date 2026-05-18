@@ -1508,7 +1508,6 @@ async function sendToClient() {
     const draft = await createOutlookDraft({
       recipientEmail,
       linkUrl: linkInfo.link.webUrl,
-      linkLabel: zipName.replace(/\.zip$/i, ""),
       expiryDate: linkInfo.expirationDateTime,
     });
     window.open(draft.webLink, "_blank");
@@ -1646,7 +1645,7 @@ async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmai
 // fires only for client-originated drafts, so Graph-created drafts arrive
 // signature-less. You'll type/paste your signature in the draft before
 // sending. (This was an intentional choice for cleaner link display.)
-async function createOutlookDraft({ recipientEmail, linkUrl, linkLabel, expiryDate }) {
+async function createOutlookDraft({ recipientEmail, linkUrl, expiryDate }) {
   const projectName   = document.getElementById("projectName").value || "";
   const projectNumber = document.getElementById("projectNumber").value || "";
   const recipientName = document.getElementById("recipientName").value || "";
@@ -1658,7 +1657,7 @@ async function createOutlookDraft({ recipientEmail, linkUrl, linkLabel, expiryDa
 
   const { subject, html } = buildEmailBody({
     projectName, projectNumber, recipientName, issuedFor,
-    linkUrl, linkLabel, expiryDate: expiryFormatted, fileList,
+    linkUrl, expiryDate: expiryFormatted, fileList,
   });
 
   return await graphFetch("POST", "/me/messages", {
@@ -1691,15 +1690,20 @@ async function createOutlookDraft({ recipientEmail, linkUrl, linkLabel, expiryDa
 // Signature — leave OFF. Graph-created drafts don't auto-append your Outlook
 // signature; you'll add it in the compose window before sending.
 function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, linkUrl, linkLabel, expiryDate, fileList }) {
-  const projectLabel = [projectNumber, projectName].filter(Boolean).join(" — ");
-  const greeting = recipientName ? `Hi ${recipientName},` : "Hi,";
-  const label = linkLabel || "Download package";
+  // First name only — "Chris Hardy" → "Chris". Clients don't need the formal full name.
+  const firstName = (recipientName || "").trim().split(/\s+/)[0];
+  const greeting = firstName ? `Hi ${firstName},` : "Hi,";
+  // Single client-facing identifier used in subject + link label, e.g.
+  // "Comment Responses_2026-05-18". Project number / name stay on our side
+  // (subject of the audit log, file in SharePoint) but aren't pushed at the client.
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const packageLabel = `${issuedFor}_${todayISO}`;
   return {
-    subject: `${projectLabel} — ${issuedFor}`,
+    subject: packageLabel,
     html:
       `${greeting}<br><br>` +
-      `${issuedFor} package for ${projectLabel}:<br><br>` +
-      `<a href="${linkUrl}">${label}</a><br><br>` +
+      `${issuedFor} package:<br><br>` +
+      `<a href="${linkUrl}">${packageLabel}</a><br><br>` +
       `Link expires ${expiryDate}.`,
   };
 }
