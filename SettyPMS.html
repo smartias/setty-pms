@@ -16200,6 +16200,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   // after blur so users can track where it landed in the sort.
   const [frozenOrder, setFrozenOrder] = useState(null);
   const [recentlyEditedId, setRecentlyEditedId] = useState(null);
+  const [focusedNotesId, setFocusedNotesId] = useState(null);
   function markJustCompleted(id) {
     setJustCompleted(prev => { const next = new Set(prev); next.add(id); return next; });
     setTimeout(() => {
@@ -16867,7 +16868,17 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
         </div>
         <table>
           <thead>
-            <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Progress</th><th>Notes</th><th>Project Status</th><th style={{width:44}}>📅</th></tr>
+            <tr style={{ position: "sticky", top: 54, zIndex: 50 }}>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Project</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>PM</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Milestone</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Type</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Due</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Progress</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Notes</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Project Status</th>
+              <th style={{ position: "sticky", top: 54, zIndex: 50, width: 44 }}>📅</th>
+            </tr>
           </thead>
           <tbody>
             {allMilestones.filter(m => (justCompleted.has(m.id) || !(!["rfi","submittal"].includes(m.type) && (m.pctComplete || 0) >= 100)) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => {
@@ -17007,7 +17018,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   <td>
                     <input value={m.notes || ""} placeholder="Notes…"
                       onChange={e => updateMilestoneField("notes", e.target.value)}
-                      style={{ width: 160, fontSize: 12 }} />
+                      onFocus={() => setFocusedNotesId(m.id)}
+                      onBlur={() => setFocusedNotesId(id => id === m.id ? null : id)}
+                      style={{ width: focusedNotesId === m.id ? 360 : 160, fontSize: 12, transition: "width 180ms ease-out" }} />
                   </td>
                   <td>
                     <select value={projStatus} onChange={e => updateProjectStatus(e.target.value)}
