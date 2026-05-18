@@ -16176,7 +16176,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     setTipState(s => ({ ...s, visible: false }));
   }
 
-  const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost");
+  const allActive = projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled" && p.status !== "Lost" && p.status !== "On Hold");
   const [dashPMFilter, setDashPMFilter] = useState("All");
   const [milPMFilter, setMilPMFilter] = useState("All");
   const allPMs = useMemo(() => ["All", ...new Set(allActive.map(p => p.projectManager).filter(Boolean)).values()], [allActive]);
@@ -16194,6 +16194,12 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   // teleport away the moment the invoice modal opens. Gives the user a visual
   // confirmation, a chance to undo, and an anchor point for context.
   const [justCompleted, setJustCompleted] = useState(() => new Set());
+  // Freeze sort order while a due-date input is focused so the row doesn't
+  // jump mid-edit when the user clicks a new month/year. Mirrors the
+  // Schedule tab pattern. `recentlyEditedId` briefly highlights the row
+  // after blur so users can track where it landed in the sort.
+  const [frozenOrder, setFrozenOrder] = useState(null);
+  const [recentlyEditedId, setRecentlyEditedId] = useState(null);
   function markJustCompleted(id) {
     setJustCompleted(prev => { const next = new Set(prev); next.add(id); return next; });
     setTimeout(() => {
@@ -16864,7 +16870,17 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             <tr><th>Project</th><th>PM</th><th>Milestone</th><th>Type</th><th>Due</th><th>Progress</th><th>Notes</th><th>Project Status</th><th style={{width:44}}>📅</th></tr>
           </thead>
           <tbody>
-            {allMilestones.filter(m => (justCompleted.has(m.id) || !(!["rfi","submittal"].includes(m.type) && m.dueDate && new Date(m.dueDate + "T00:00:00") < now && (m.pctComplete || 0) >= 100)) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(m => {
+            {allMilestones.filter(m => (justCompleted.has(m.id) || !(!["rfi","submittal"].includes(m.type) && (m.pctComplete || 0) >= 100)) && (milPMFilter === "All" || m.pm === milPMFilter)).sort((a, b) => {
+              if (frozenOrder) {
+                const ia = frozenOrder.indexOf(a.id);
+                const ib = frozenOrder.indexOf(b.id);
+                if (ia === -1 && ib === -1) return (a.dueDate || "") > (b.dueDate || "") ? 1 : -1;
+                if (ia === -1) return 1;
+                if (ib === -1) return -1;
+                return ia - ib;
+              }
+              return (a.dueDate || "") > (b.dueDate || "") ? 1 : -1;
+            }).map(m => {
               const mst = milestoneStatus(m.pctComplete);
 	              const projStatus = m.projectStatus || "Not Started";
 	              const projStatusColor = STATUS_COLORS[projStatus] || STATUS_COLORS["Not Started"];
@@ -16888,6 +16904,8 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 }
               }
               const isJustCompleted = justCompleted.has(m.id);
+              const isRecentlyEdited = recentlyEditedId === m.id;
+              const editedStyle = rowHighlightStyle(isRecentlyEdited);
               function updateProjectStatus(newStatus) {
                 const proj = projects.find(p => p.id === m.projectId);
                 if (!proj) return;
@@ -16899,7 +16917,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   background: P.greenDim,
                   transition: "background 4s ease-out, opacity 4s ease-out",
                   opacity: 0.55,
-                } : undefined}>
+                } : editedStyle}>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                       {isJustCompleted && <span style={{ color: P.green, fontWeight: 700, fontSize: 13, marginRight: 2 }} title="Just marked complete">✓</span>}
@@ -16943,6 +16961,19 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   </td>
                   <td>
                     <input type="date" value={m.dueDate || ""}
+                      onFocus={() => {
+                        if (["rfi","submittal"].includes(m.type)) return;
+                        if (!frozenOrder) {
+                          const ids = [...allMilestones].sort((a, b) => (a.dueDate || "") > (b.dueDate || "") ? 1 : -1).map(x => x.id);
+                          setFrozenOrder(ids);
+                        }
+                      }}
+                      onBlur={() => {
+                        if (["rfi","submittal"].includes(m.type)) return;
+                        setFrozenOrder(null);
+                        setRecentlyEditedId(m.id);
+                        setTimeout(() => setRecentlyEditedId(id => id === m.id ? null : id), 1500);
+                      }}
                       onChange={e => !["rfi","submittal"].includes(m.type) && updateMilestoneField("dueDate", e.target.value)}
                       readOnly={["rfi","submittal"].includes(m.type)}
                       style={{ fontFamily: "JetBrains Mono", fontSize: 12, width: 130,
