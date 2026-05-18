@@ -2158,15 +2158,65 @@ async function verifyFilingLogEntry(entry, opts = {}) {
   const byName = new Map();
   for (const c of children) byName.set(c.name, c);
 
+  // Fallback for legacy audit-log entries (logged before the per-email-
+  // subfolder fix) that pointed at the artifact root or /IN. If a file isn't
+  // directly under drivePath, scan one level deeper into /IN/<date subject>
+  // subfolders. This auto-resolves old "missing-file" findings without
+  // needing a database migration.
+  let fallbackChildrenByName = null;
+  async function buildFallbackIndex() {
+    if (fallbackChildrenByName) return fallbackChildrenByName;
+    fallbackChildrenByName = new Map();
+    // Try drivePath/IN first (if drivePath doesn't already end with IN), then
+    // walk into each subfolder under IN and merge the file lists. Best-effort —
+    // we silently skip any GET that fails.
+    const candidates = [];
+    if (!drivePath.endsWith("/IN") && !drivePath.endsWith("/IN/")) {
+      candidates.push(drivePath + "/IN");
+    }
+    candidates.push(drivePath); // also re-scan the original path (deep subfolders)
+    for (const base of candidates) {
+      try {
+        const baseRes = await graphFetch("GET",
+          `/drives/${driveId}/root:/${encodePathForReconcile(base)}:/children?select=name,size,file,folder`);
+        const baseChildren = baseRes?.value || [];
+        for (const c of baseChildren) {
+          if (c.file) {
+            // Direct file — record it
+            if (!fallbackChildrenByName.has(c.name)) fallbackChildrenByName.set(c.name, c);
+          } else if (c.folder) {
+            // Subfolder — peek one level deeper
+            try {
+              const subRes = await graphFetch("GET",
+                `/drives/${driveId}/root:/${encodePathForReconcile(base + "/" + c.name)}:/children?select=name,size,file`);
+              for (const sc of (subRes?.value || [])) {
+                if (sc.file && !fallbackChildrenByName.has(sc.name)) {
+                  fallbackChildrenByName.set(sc.name, sc);
+                }
+              }
+            } catch { /* skip subfolder errors */ }
+          }
+        }
+      } catch { /* skip base errors */ }
+    }
+    return fallbackChildrenByName;
+  }
+
   for (const expected of files) {
-    const child = byName.get(expected.name);
+    let child = byName.get(expected.name);
     if (!child) {
-      findings.push({
-        logId: entry.id, project_id: entry.project_id, sp_folder_url,
-        fileName: expected.name, kind: "missing-file",
-        detail: `expected ${expected.size} bytes; not found in folder`,
-      });
-      continue;
+      // Try the /IN/<subfolder> fallback before reporting missing
+      const fallback = await buildFallbackIndex();
+      child = fallback.get(expected.name);
+      if (!child) {
+        findings.push({
+          logId: entry.id, project_id: entry.project_id, sp_folder_url,
+          fileName: expected.name, kind: "missing-file",
+          detail: `expected ${expected.size} bytes; not found in folder or /IN subfolders`,
+        });
+        continue;
+      }
+      // Found via fallback — treat as OK (with a note in detail)
     }
     // Size check first — fastest
     if (typeof expected.size === "number" && expected.size > 0 && child.size !== expected.size) {
