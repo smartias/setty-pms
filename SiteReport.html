@@ -170,16 +170,16 @@
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js"></script>
   <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"
+    onerror="(function(){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.js';s.onload=function(){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.js';};document.head.appendChild(s);})()">
+  </script>
   <script>
     // Point pdf.js at its matching worker bundle. Without this, rendering a
     // PDF page throws "No GlobalWorkerOptions.workerSrc specified."
-    window.addEventListener("load", () => {
-      if (window.pdfjsLib) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc =
-          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js";
-      }
-    });
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js";
+    }
   </script>
   <script>
     // Sanity check: docx CDN must be reachable for Word export to work.
