@@ -9094,6 +9094,14 @@ function getProjectCompanies(project) {
   push(project.prime, "Prime");
   push(project.clientName, "Client");
   (project.subconsultants || []).forEach(sub => push(sub.firm, "Sub"));
+  // Companies appearing on per-project directory entries — typically added via
+  // the Outlook add-in's "Add Participant to Contacts" flow. Their formal role
+  // on the project isn't always known yet, so use the entry's `type` if set,
+  // falling back to "Other". Dedup against Prime/Client/Sub already handled
+  // by the seen-set above.
+  (project.directory || []).forEach(d => {
+    if (d.company) push(d.company, d.type && d.type !== "Other" ? d.type : "Other");
+  });
   return companies;
 }
 
