@@ -390,7 +390,7 @@
           <option>Record Set</option>
           <option>Preliminary Review</option>
           <option>Design Development Review</option>
-          <option>Sent via Email</option>
+          <option>For your Information and Use</option>
         </select>
       </div>
       <div></div>
@@ -1362,8 +1362,10 @@ async function generateDocx() {
       });
     }
 
-    // Data cell helper
-    function dataCell(text, width, isEven, bold = false, color = "000000") {
+    // Data cell helper. `size` is in half-points (DOCX convention): 20 = 10pt
+    // body text, 16 = 8pt for compact columns like Discipline where the full
+    // word ("Architectural") needs to fit without crowding the row.
+    function dataCell(text, width, isEven, bold = false, color = "000000", size = 20) {
       return new TableCell({
         width: { size: width, type: WidthType.DXA },
         borders: cellBorders,
@@ -1371,22 +1373,28 @@ async function generateDocx() {
         margins: { top: 60, bottom: 60, left: 120, right: 120 },
         verticalAlign: VerticalAlign.CENTER,
         children: [new Paragraph({
-          children: [new TextRun({ text: text || "—", font: "Calibri", size: 20, bold, color })]
+          children: [new TextRun({ text: text || "—", font: "Calibri", size, bold, color })]
         })]
       });
     }
 
     // Column widths (total = 9360 DXA for 1" margins US Letter)
     const COL = [480, 1200, 4080, 960, 1200, 1440]; // check, disc, title, rev, date (no check col in docx)
-    const COL_DOCX = [1200, 4800, 960, 1200, 1200]; // disc, sheet no, title, rev, date — total 9360
+    // Discipline column widened to fit spelled-out names ("Architectural").
+    // Sheet No. shrunk since typical values are short (e.g. "M-101").
+    // Document column gets the freed-up space so long titles wrap less.
+    const COL_DOCX = [1620, 720, 5880, 540, 600]; // disc, sheet no, document, rev, date — total 9360
 
     // Sheet rows
     const sheetRows = included.map((s, i) => {
       const isEven = i % 2 === 1;
-      const dc = discCode(s.discipline);
+      // Spell out the discipline ("General" not "G"). mapDiscipline handles
+      // both full-name inputs ("General" → "General") and code inputs ("G"
+      // → "General"), so legacy sheet data still resolves correctly.
+      const discFull = mapDiscipline(s.discipline);
       return new TableRow({
         children: [
-          dataCell(dc, COL_DOCX[0], isEven, true, BLUE),
+          dataCell(discFull, COL_DOCX[0], isEven, false, BLUE, 16),
           dataCell(s.sheetNo, COL_DOCX[1], isEven, true),
           dataCell(s.title, COL_DOCX[2], isEven),
           dataCell(s.revision, COL_DOCX[3], isEven, false, GRAY),
@@ -1471,11 +1479,10 @@ async function generateDocx() {
                 border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: RED, space: 1 } },
                 spacing: { after: 120 },
                 children: [
-                  ...(logoImageRun ? [logoImageRun, new TextRun({ text: "    ", font: "Calibri", size: 20 })] : [
+                  ...(logoImageRun ? [logoImageRun] : [
                     new TextRun({ text: "SETTY", font: "Calibri", size: 28, bold: true, color: RED }),
-                    new TextRun({ text: "  & Associates    ", font: "Calibri", size: 18, color: GRAY }),
+                    new TextRun({ text: "  & Associates", font: "Calibri", size: 18, color: GRAY }),
                   ]),
-                  new TextRun({ text: "Sheet List & Transmittal", font: "Calibri", size: 18, color: GRAY }),
                 ]
               })
             ]
@@ -1514,14 +1521,12 @@ async function generateDocx() {
                   ).join("; "))]
                 : []),
               infoRow("Date:", dateDisplay),
-              infoRow("Transmittal No.:", txNo),
               infoRow("Issued For:", issuedFor),
-              infoRow("Sent Via:", "Email"),
             ]
           }),
 
           new Paragraph({ spacing: { before: 200, after: 160 },
-            children: [new TextRun({ text: "DRAWING SCHEDULE", font: "Calibri", size: 24, bold: true, color: NAVY })]
+            children: [new TextRun({ text: "TRANSMITTED DOCUMENTS", font: "Calibri", size: 24, bold: true, color: NAVY })]
           }),
 
           // Sheet table
@@ -1532,9 +1537,9 @@ async function generateDocx() {
               new TableRow({
                 tableHeader: true,
                 children: [
-                  headerCell("DISC.", COL_DOCX[0]),
+                  headerCell("DISCIPLINE", COL_DOCX[0]),
                   headerCell("SHEET NO.", COL_DOCX[1]),
-                  headerCell("SHEET TITLE", COL_DOCX[2]),
+                  headerCell("DOCUMENT", COL_DOCX[2]),
                   headerCell("REV.", COL_DOCX[3]),
                   headerCell("DATE", COL_DOCX[4]),
                 ]
@@ -1841,13 +1846,16 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, expiryDat
   const recipientName = document.getElementById("recipientName").value || "";
   const issuedFor     = document.getElementById("issuedFor").value || "";
   const fileList      = folderFiles.map(f => f.name);
+  // Same selection the DOCX renders — gives the email body a mirrored table
+  // so the recipient can see what's in the package without opening the docx.
+  const includedSheets = (sheets || []).filter(s => s.include);
   const expiryFormatted = new Date(expiryDate).toLocaleDateString("en-US", {
     year: "numeric", month: "short", day: "numeric",
   });
 
   const { subject, html } = buildEmailBody({
     projectName, projectNumber, recipientName, issuedFor,
-    linkUrl, expiryDate: expiryFormatted, fileList,
+    linkUrl, expiryDate: expiryFormatted, fileList, includedSheets,
   });
 
   const payload = {
@@ -1886,7 +1894,7 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, expiryDat
 //
 // Signature — leave OFF. Graph-created drafts don't auto-append your Outlook
 // signature; you'll add it in the compose window before sending.
-function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, linkUrl, linkLabel, expiryDate, fileList }) {
+function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, linkUrl, linkLabel, expiryDate, fileList, includedSheets }) {
   // First name only — "Chris Hardy" → "Chris". Clients don't need the formal full name.
   const firstName = (recipientName || "").trim().split(/\s+/)[0];
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
@@ -1895,13 +1903,52 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
   // (subject of the audit log, file in SharePoint) but aren't pushed at the client.
   const todayISO = new Date().toISOString().slice(0, 10);
   const packageLabel = `${issuedFor}_${todayISO}`;
+
+  // Mirror of the DOCX "Transmitted Documents" table — gives the recipient an
+  // at-a-glance manifest without opening the cover doc. Inline styles
+  // throughout: Outlook/Gmail/Apple Mail all strip <style> blocks, so every
+  // visual property has to live on the element. HTML-escape the cell values
+  // since file metadata can legitimately contain "<", "&", etc.
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  let tableHtml = "";
+  if (includedSheets && includedSheets.length) {
+    const th = `style="background:#1F3864;color:#fff;font-family:Calibri,Arial,sans-serif;font-size:11px;font-weight:bold;text-align:left;padding:6px 8px;border:1px solid #1F3864;"`;
+    const tdBase = `font-family:Calibri,Arial,sans-serif;font-size:11px;padding:5px 8px;border:1px solid #d0d7e2;vertical-align:top;`;
+    const rows = includedSheets.map((s, i) => {
+      const bg = i % 2 === 1 ? "#f8f8f8" : "#ffffff";
+      const td = (text, extra = "") => `<td style="${tdBase}background:${bg};${extra}">${esc(text || "—")}</td>`;
+      return `<tr>` +
+        td(mapDiscipline(s.discipline), "color:#2E5395;font-size:10px;") +
+        td(s.sheetNo) +
+        td(s.title) +
+        td(s.revision, "color:#666;") +
+        td(s.date, "color:#666;") +
+        `</tr>`;
+    }).join("");
+    tableHtml =
+      `<table cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:8px 0 16px 0;width:100%;max-width:720px;">` +
+      `<thead><tr>` +
+        `<th ${th}>DISCIPLINE</th>` +
+        `<th ${th}>SHEET NO.</th>` +
+        `<th ${th}>DOCUMENT</th>` +
+        `<th ${th}>REV.</th>` +
+        `<th ${th}>DATE</th>` +
+      `</tr></thead>` +
+      `<tbody>${rows}</tbody>` +
+      `</table>`;
+  }
+
   return {
     subject: packageLabel,
     html:
       `${greeting}<br><br>` +
       `${issuedFor} package:<br><br>` +
       `<a href="${linkUrl}">${packageLabel}</a><br><br>` +
-      `Link expires ${expiryDate}.`,
+      `Link expires ${expiryDate}.<br><br>` +
+      tableHtml,
   };
 }
 
