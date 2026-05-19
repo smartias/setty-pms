@@ -215,7 +215,14 @@
       padding: 2px 7px;
       border-radius: 4px;
       white-space: nowrap;
+      /* Discipline is auto-detected from the filename pattern but can be
+         changed — clicking the badge swaps it for a select dropdown. The
+         cursor + hover state advertise that, since the affordance otherwise
+         looks like a static label. */
+      cursor: pointer;
+      transition: filter 0.1s;
     }
+    .disc-badge:hover { filter: brightness(1.2); outline: 1px solid #475569; }
     .disc-M { background: #1a2a3a; color: #60b4ff; }
     .disc-E { background: #2a1a3a; color: #c084fc; }
     .disc-P { background: #1a3a2a; color: #34d399; }
@@ -1171,7 +1178,7 @@ function renderTable() {
     tr.innerHTML = `
       <td><input type="checkbox" ${s.include ? "checked" : ""} onchange="sheets[${i}].include=this.checked;updateCount()"/></td>
       <td>
-        <span class="disc-badge disc-${dc}">${dc}</span>
+        <span class="disc-badge disc-${dc}" title="Click to change discipline">${dc}</span>
         <select style="display:none" onchange="sheets[${i}].discipline=this.value;renderTable()">
           ${["Mechanical","Electrical","Plumbing","Fire Protection","General","Architectural","Structural","Civil"].map(d =>
             `<option ${d === s.discipline ? "selected" : ""}>${d}</option>`
@@ -1849,12 +1856,18 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, expiryDat
   // Same selection the DOCX renders — gives the email body a mirrored table
   // so the recipient can see what's in the package without opening the docx.
   const includedSheets = (sheets || []).filter(s => s.include);
+  // Milestone = last segment of the SharePoint folder path (e.g.
+  // "2026-05-11 Issued for Bid" inside ".../Drawings/Outgoing/..."). Used in
+  // the subject + link label so the recipient sees a consistent identifier
+  // across the file name, audit log, and email. Falls back to issuedFor for
+  // ad-hoc transmittals where no folder is selected.
+  const milestone = (resolvedFolderPath || "").split("/").pop() || issuedFor || "Transmittal";
   const expiryFormatted = new Date(expiryDate).toLocaleDateString("en-US", {
     year: "numeric", month: "short", day: "numeric",
   });
 
   const { subject, html } = buildEmailBody({
-    projectName, projectNumber, recipientName, issuedFor,
+    projectName, projectNumber, recipientName, issuedFor, milestone,
     linkUrl, expiryDate: expiryFormatted, fileList, includedSheets,
   });
 
@@ -1894,15 +1907,18 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, expiryDat
 //
 // Signature — leave OFF. Graph-created drafts don't auto-append your Outlook
 // signature; you'll add it in the compose window before sending.
-function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, linkUrl, linkLabel, expiryDate, fileList, includedSheets }) {
+function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, milestone, linkUrl, linkLabel, expiryDate, fileList, includedSheets }) {
   // First name only — "Chris Hardy" → "Chris". Clients don't need the formal full name.
   const firstName = (recipientName || "").trim().split(/\s+/)[0];
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
-  // Single client-facing identifier used in subject + link label, e.g.
-  // "Comment Responses_2026-05-18". Project number / name stay on our side
-  // (subject of the audit log, file in SharePoint) but aren't pushed at the client.
+  // Naming scheme:
+  //   subject  = "ProjectName_Milestone_Transmittal"
+  //   linkText = "ProjectName_Milestone_Date"
+  // Skip blank pieces so a missing project name doesn't leave a leading "_".
   const todayISO = new Date().toISOString().slice(0, 10);
-  const packageLabel = `${issuedFor}_${todayISO}`;
+  const base = [projectName, milestone].filter(Boolean).join("_");
+  const subjectLine  = (base ? base + "_" : "") + "Transmittal";
+  const packageLabel = (base ? base + "_" : "") + todayISO;
 
   // Mirror of the DOCX "Transmitted Documents" table — gives the recipient an
   // at-a-glance manifest without opening the cover doc. Inline styles
@@ -1942,7 +1958,7 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
   }
 
   return {
-    subject: packageLabel,
+    subject: subjectLine,
     html:
       `${greeting}<br><br>` +
       `${issuedFor} package:<br><br>` +
