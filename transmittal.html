@@ -319,9 +319,9 @@
       <div>
         <label>Issuing To</label>
         <select id="recipientType" onchange="onRecipientTypeChange()">
-          <option value="client">Client</option>
-          <option value="prime">Prime</option>
-          <option value="subconsultant">Sub Consultant</option>
+          <!-- Populated by populateRecipientCompanies() — lists every company
+               on the selected project (client + prime + subconsultants),
+               defaulting to the client. -->
         </select>
       </div>
       <div>
@@ -630,11 +630,10 @@ async function loadPmsData() {
     console.log("[TX] Loaded:", pmsProjects.length, "projects,", pmsClients.length, "clients (source:", pRows.length > 0 ? "V2" : "legacy", ")");
     if (pmsProjects.length === 0) console.warn("[TX] WARNING: pmsProjects is empty — check Supabase tables");
 
-    // STEP 2: NOW populate recipient with project number already in the field.
-    // Explicitly reset the dropdown to "client" first — browsers cache the last
-    // <select> value across reloads, which would otherwise route us into the
-    // wrong branch on the initial autofill.
-    document.getElementById("recipientType").value = "client";
+    // STEP 2: populate recipient with project number already in the field.
+    // populateRecipientCompanies (inside updateRecipientFromProject) rebuilds
+    // the dropdown from the project's companies and defaults to client, so
+    // we don't need a separate browser-cache reset anymore.
     updateRecipientFromProject();
   } catch(e) {
     console.warn("Could not load PMS data:", e.message);
@@ -643,74 +642,88 @@ async function loadPmsData() {
 
 // Called when type changes or project number changes
 function onRecipientTypeChange() {
-  updateRecipientFromProject();
+  // User picked a different company — keep the dropdown intact, just refresh
+  // the contact list for the new selection.
+  applyRecipientCompanySelection();
 }
 
-function updateRecipientFromProject() {
+// Returns all contacts from the global directory whose firm name matches
+// (case-insensitive, trimmed). Strict match — no fuzzy token matching.
+function directoryContactsFor(companyName) {
+  const target = (companyName || "").trim().toLowerCase();
+  if (!target) return [];
+  const out = [];
+  pmsClients.forEach(cl => {
+    if ((cl.name || "").trim().toLowerCase() === target) {
+      (cl.contacts || []).forEach(c => {
+        if (c.name) out.push({ name: c.name, email: c.email || "", company: cl.name });
+      });
+    }
+  });
+  return out;
+}
+
+// Best-effort role label for a given company on a given project. Used in the
+// DOCX info table (e.g. "Client:" vs "Prime:" vs "Sub Consultant:").
+function getCompanyRole(proj, company) {
+  if (!proj || !company) return "Recipient";
+  const c = company.trim().toLowerCase();
+  if (c && c === (proj.clientName || proj.client || "").trim().toLowerCase()) return "Client";
+  if (c && c === (proj.prime || proj.primeContractor || "").trim().toLowerCase()) return "Prime";
+  if ((proj.subconsultants || []).some(s => (s.firm || "").trim().toLowerCase() === c)) return "Sub Consultant";
+  return "Recipient";
+}
+
+// Rebuild the Issuing To dropdown from the project's companies (client + prime
+// + subconsultants), deduped. Defaults the selection to the client.
+function populateRecipientCompanies(proj) {
+  const typeSel = document.getElementById("recipientType");
+  const companies = [];
+  if (proj) {
+    if (proj.clientName || proj.client) companies.push((proj.clientName || proj.client).trim());
+    if (proj.prime || proj.primeContractor) companies.push((proj.prime || proj.primeContractor).trim());
+    (proj.subconsultants || []).forEach(s => {
+      if (s.firm) companies.push(s.firm.trim());
+    });
+  }
+  const seen = new Set();
+  const unique = companies.filter(c => {
+    const k = (c || "").toLowerCase();
+    if (!c || seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  typeSel.innerHTML = unique.length
+    ? unique.map(c => `<option value="${c.replace(/"/g, "&quot;")}">${c}</option>`).join("")
+    : `<option value="">— No companies on project —</option>`;
+  // Default to client — preserves the original behavior even though the
+  // dropdown now also offers prime + subs.
+  const defaultCompany = proj ? (proj.clientName || proj.client || unique[0] || "") : "";
+  if (defaultCompany && unique.includes(defaultCompany)) {
+    typeSel.value = defaultCompany;
+  }
+}
+
+// Reads the currently-selected company from the dropdown, fills the read-only
+// company field, and rebuilds the contact list for that company.
+function applyRecipientCompanySelection() {
   const projNum = document.getElementById("projectNumber").value.trim();
   const proj = pmsProjects.find(p => p.projectNumber === projNum) || null;
-  const type = document.getElementById("recipientType").value;
+  const typeSel = document.getElementById("recipientType");
   const companyEl = document.getElementById("recipientCompany");
   const contactSelect = document.getElementById("recipientContact");
 
-  // Clear previous
-  companyEl.value = "";
+  // Clear contact-side fields. Company text field gets set from the dropdown below.
   contactSelect.innerHTML = "<option value=''>— Select contact —</option>";
   document.getElementById("recipientName").value = "";
   document.getElementById("recipientEmail").value = "";
 
-  console.log("[TX] updateRecipientFromProject: projNum='" + projNum + "' proj=" + (proj ? proj.name : "null") + " type=" + type +
-    (proj ? " | clientName='" + (proj.clientName || "") + "' client='" + (proj.client || "") + "' prime='" + (proj.prime || "") + "' subs=" + ((proj.subconsultants || []).length) : ""));
+  const company = typeSel.value || "";
+  companyEl.value = company;
 
-  let company = "";
-  let contacts = [];
+  console.log("[TX] applyRecipientCompanySelection: projNum='" + projNum + "' proj=" +
+    (proj ? proj.name : "null") + " selected='" + company + "'");
 
-  // Returns all contacts from the global directory whose firm name matches
-  // (case-insensitive, trimmed). Strict match — no fuzzy token matching.
-  function directoryContactsFor(companyName) {
-    const target = (companyName || "").trim().toLowerCase();
-    if (!target) return [];
-    const out = [];
-    pmsClients.forEach(cl => {
-      if ((cl.name || "").trim().toLowerCase() === target) {
-        (cl.contacts || []).forEach(c => {
-          if (c.name) out.push({ name: c.name, email: c.email || "", company: cl.name });
-        });
-      }
-    });
-    return out;
-  }
-
-  if (type === "client") {
-    // Client = the end customer Setty has a contract with. The stored field
-    // is `clientName` (PMS schema); `client` is only on derived metadata
-    // objects, so read clientName first and fall back to `client` for safety.
-    company = proj ? (proj.clientName || proj.client || "") : "";
-    companyEl.value = company;
-    contacts = directoryContactsFor(company);
-
-  } else if (type === "prime") {
-    // Prime = the entity Setty is contracted under (project.prime), when Setty
-    // is a sub-consultant. Distinct from Client (who Setty bills).
-    company = proj ? (proj.prime || proj.primeContractor || "") : "";
-    companyEl.value = company;
-    contacts = directoryContactsFor(company);
-
-  } else if (type === "subconsultant") {
-    // Sub Consultant = consultants Setty has hired (project.subconsultants[]).
-    // No single "company" — leave blank when multiple, set to the firm when
-    // there's only one. Picking a contact auto-fills the firm via
-    // onContactSelected(). Contacts pulled from each sub's firm in the
-    // global directory.
-    const subs = (proj && proj.subconsultants) || [];
-    company = subs.length === 1 ? (subs[0].firm || "") : "";
-    companyEl.value = company;
-    subs.forEach(s => {
-      contacts = contacts.concat(directoryContactsFor(s.firm));
-    });
-  }
-
-  console.log("[TX] company='" + company + "' contacts:", contacts.length);
+  let contacts = directoryContactsFor(company);
 
   // Deduplicate by name+email
   const seen = new Set();
@@ -732,6 +745,15 @@ function updateRecipientFromProject() {
     contactSelect.selectedIndex = 1;
     onContactSelected();
   }
+}
+
+// Combined entry point for "project changed": rebuild the company dropdown
+// (defaulting to client) AND populate contacts for the default selection.
+function updateRecipientFromProject() {
+  const projNum = document.getElementById("projectNumber").value.trim();
+  const proj = pmsProjects.find(p => p.projectNumber === projNum) || null;
+  populateRecipientCompanies(proj);
+  applyRecipientCompanySelection();
 }
 
 function populateRecipientDropdown() {
@@ -1146,11 +1168,13 @@ async function generateDocx() {
     const recipientName = document.getElementById("recipientName").value.trim() || "";
     const recipientEmail = document.getElementById("recipientEmail").value.trim() || "";
     const recipientCompany = document.getElementById("recipientCompany").value.trim() || "";
-    const recipientTypeVal = document.getElementById("recipientType").value;
-    const recipientTypeLabel =
-      recipientTypeVal === "prime"         ? "Prime" :
-      recipientTypeVal === "subconsultant" ? "Sub Consultant" :
-                                             "Client";
+    // Role label is derived from the selected company's relationship to the
+    // project (client / prime / sub) — the dropdown now stores company names
+    // directly, not type buckets.
+    const projForLabel = pmsProjects.find(
+      p => p.projectNumber === document.getElementById("projectNumber").value.trim()
+    );
+    const recipientTypeLabel = getCompanyRole(projForLabel, recipientCompany);
     const clientName = recipientCompany; // used in info table
     const txDate = document.getElementById("transmittalDate").value || new Date().toISOString().slice(0,10);
     const issuedFor = document.getElementById("issuedFor").value;
