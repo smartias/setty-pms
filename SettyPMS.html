@@ -14093,6 +14093,20 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
             🔗 Copy Link
           </button>
+          {/* Ad-hoc transmittal — launches transmittal.html with project context but
+              no folder/milestone. User picks a SharePoint folder via the existing
+              Load Files button. For one-off transmittals (correspondence, misc docs)
+              that aren't tied to a milestone deliverable. */}
+          <a
+            href={`https://smartias.github.io/setty-pms/transmittal.html?project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||project.clientName||"")}&projectId=${encodeURIComponent(project.id||"")}`}
+            target="_blank"
+            rel="noreferrer"
+            title="Open a blank transmittal for this project — not tied to a milestone. You'll point it at any SharePoint folder when it loads."
+            style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap",
+              textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+            📄 Ad-hoc Transmittal
+          </a>
           <select value={project.status} onChange={e => handleStatusChange(e.target.value)} style={{ fontSize: 13 }}>
             {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
           </select>
