@@ -349,6 +349,35 @@
       </div>
       <div></div>
     </div>
+
+    <!-- CC picker. Lets the user CC multiple people from any project company.
+         Same data source as the To dropdown (project companies + directory),
+         and the same contact lookup against the global directory. Picked
+         recipients render as removable chips below; an empty list means no
+         CC line is added to the DOCX or the Outlook draft. -->
+    <div class="form-row">
+      <div>
+        <label>CC Company</label>
+        <select id="ccCompany" onchange="onCcCompanyChange()">
+          <option value="">— Pick a company —</option>
+        </select>
+      </div>
+      <div>
+        <label>CC Contact</label>
+        <select id="ccContact">
+          <option value="">— Pick a contact —</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row" style="margin-top:-4px;margin-bottom:8px;">
+      <div>
+        <button type="button" class="btn btn-ghost" id="addCcBtn" onclick="addCcRecipient()"
+          style="padding:4px 10px;font-size:12px;">+ Add to CC</button>
+      </div>
+      <div></div>
+    </div>
+    <div id="ccChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;"></div>
+
     <div class="form-row">
       <div>
         <label>Issued For</label>
@@ -685,6 +714,13 @@ function populateRecipientCompanies(proj) {
     (proj.subconsultants || []).forEach(s => {
       if (s.firm) companies.push(s.firm.trim());
     });
+    // Companies pulled in from per-project directory entries — e.g. contacts
+    // added via the Outlook add-in's "Add Participant to Contacts" flow.
+    // Lets the user transmit to firms that aren't formally a sub/prime/client
+    // but are still active on the project.
+    (proj.directory || []).forEach(d => {
+      if (d.company) companies.push(d.company.trim());
+    });
   }
   const seen = new Set();
   const unique = companies.filter(c => {
@@ -754,6 +790,126 @@ function updateRecipientFromProject() {
   const proj = pmsProjects.find(p => p.projectNumber === projNum) || null;
   populateRecipientCompanies(proj);
   applyRecipientCompanySelection();
+  // CC picker shares the project-company list. Reset the CC array — recipients
+  // from a previous project shouldn't carry over silently.
+  ccRecipients = [];
+  populateCcCompanies(proj);
+  renderCcChips();
+}
+
+// ─── CC RECIPIENTS ────────────────────────────────────────────────────────────
+// State: list of { name, email, company } added via the CC picker. Empty list
+// means no CC line in the DOCX and no ccRecipients in the Outlook draft.
+let ccRecipients = [];
+
+// Populates the CC Company dropdown with the same companies the To dropdown
+// offers (client + prime + subconsultants + directory). Defaults to the empty
+// placeholder so the user actively picks who to CC.
+function populateCcCompanies(proj) {
+  const sel = document.getElementById("ccCompany");
+  if (!sel) return;
+  const companies = [];
+  if (proj) {
+    if (proj.clientName || proj.client) companies.push((proj.clientName || proj.client).trim());
+    if (proj.prime || proj.primeContractor) companies.push((proj.prime || proj.primeContractor).trim());
+    (proj.subconsultants || []).forEach(s => {
+      if (s.firm) companies.push(s.firm.trim());
+    });
+    (proj.directory || []).forEach(d => {
+      if (d.company) companies.push(d.company.trim());
+    });
+  }
+  const seen = new Set();
+  const unique = companies.filter(c => {
+    const k = (c || "").toLowerCase();
+    if (!c || seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  sel.innerHTML = `<option value="">— Pick a company —</option>` +
+    unique.map(c => `<option value="${c.replace(/"/g, "&quot;")}">${c}</option>`).join("");
+  // Reset contact list whenever companies change.
+  document.getElementById("ccContact").innerHTML = `<option value="">— Pick a contact —</option>`;
+}
+
+// When CC company changes, populate the CC Contact dropdown from the global
+// directory (same lookup path the To picker uses).
+function onCcCompanyChange() {
+  const company = document.getElementById("ccCompany").value || "";
+  const contactSel = document.getElementById("ccContact");
+  contactSel.innerHTML = `<option value="">— Pick a contact —</option>`;
+  if (!company) return;
+  let contacts = directoryContactsFor(company);
+  // Dedupe by name+email
+  const seen = new Set();
+  contacts = contacts.filter(c => {
+    const key = (c.name + c.email).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  contacts.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = JSON.stringify(c);
+    opt.textContent = c.name + (c.email ? " — " + c.email : "");
+    contactSel.appendChild(opt);
+  });
+}
+
+// Push the currently-selected CC contact onto the chip list. Dedupe by email
+// (case-insensitive); name-only entries are allowed but can stack since
+// they're harder to disambiguate.
+function addCcRecipient() {
+  const company = document.getElementById("ccCompany").value || "";
+  const contactRaw = document.getElementById("ccContact").value || "";
+  if (!contactRaw) {
+    setStatus("loadStatus", "warn", "Pick a CC contact first.");
+    return;
+  }
+  let c;
+  try { c = JSON.parse(contactRaw); } catch { return; }
+  if (!c?.email && !c?.name) return;
+  const emailLc = (c.email || "").toLowerCase();
+  if (emailLc && ccRecipients.some(r => (r.email || "").toLowerCase() === emailLc)) {
+    setStatus("loadStatus", "info", c.email + " is already on the CC list.");
+    return;
+  }
+  ccRecipients.push({
+    name:    c.name || "",
+    email:   c.email || "",
+    company: c.company || company || "",
+  });
+  // Reset the picker so the user can immediately add another from a different company.
+  document.getElementById("ccCompany").value = "";
+  document.getElementById("ccContact").innerHTML = `<option value="">— Pick a contact —</option>`;
+  renderCcChips();
+  setStatus("loadStatus", "", "");
+}
+
+function removeCcRecipient(idx) {
+  if (idx < 0 || idx >= ccRecipients.length) return;
+  ccRecipients.splice(idx, 1);
+  renderCcChips();
+}
+
+function renderCcChips() {
+  const container = document.getElementById("ccChips");
+  if (!container) return;
+  if (ccRecipients.length === 0) {
+    container.innerHTML = "";
+    container.style.display = "none";
+    return;
+  }
+  container.style.display = "flex";
+  container.innerHTML = ccRecipients.map((r, i) => {
+    const label = (r.name || r.email || "(no name)") +
+      (r.company ? ` · ${r.company}` : "") +
+      (r.email && r.name ? ` <${r.email}>` : "");
+    const safeLabel = label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `<span style="display:inline-flex;align-items:center;gap:6px;background:#1a2030;border:1px solid #334155;color:#cbd5e1;font-size:12px;padding:4px 8px;border-radius:14px;">
+      <span>${safeLabel}</span>
+      <button type="button" onclick="removeCcRecipient(${i})" title="Remove"
+        style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:14px;line-height:1;padding:0;">✕</button>
+    </span>`;
+  }).join("");
 }
 
 function populateRecipientDropdown() {
@@ -1348,6 +1504,15 @@ async function generateDocx() {
               infoRow("Project No.:", projectNumber),
               ...(recipientCompany ? [infoRow(recipientTypeLabel + ":", recipientCompany)] : []),
               ...(recipientName ? [infoRow("Attn:", recipientName + (recipientEmail ? "  |  " + recipientEmail : ""))] : []),
+              // CC line — only rendered when at least one CC recipient was added.
+              // Format: "Name (Company); Other Name (Other Company)". Email
+              // addresses live in the Outlook draft header; including them in
+              // the DOCX would push the row width past the table column.
+              ...(ccRecipients && ccRecipients.length
+                ? [infoRow("CC:", ccRecipients.map(r =>
+                    (r.name || r.email || "(no name)") + (r.company ? ` (${r.company})` : "")
+                  ).join("; "))]
+                : []),
               infoRow("Date:", dateDisplay),
               infoRow("Transmittal No.:", txNo),
               infoRow("Issued For:", issuedFor),
@@ -1531,6 +1696,7 @@ async function sendToClient() {
     setStatus("sendStatus", "info", "⏳ Creating Outlook draft…");
     const draft = await createOutlookDraft({
       recipientEmail,
+      ccEmails: (ccRecipients || []).map(r => r.email).filter(Boolean),
       linkUrl: linkInfo.link.webUrl,
       expiryDate: linkInfo.expirationDateTime,
     });
@@ -1669,7 +1835,7 @@ async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmai
 // fires only for client-originated drafts, so Graph-created drafts arrive
 // signature-less. You'll type/paste your signature in the draft before
 // sending. (This was an intentional choice for cleaner link display.)
-async function createOutlookDraft({ recipientEmail, linkUrl, expiryDate }) {
+async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, expiryDate }) {
   const projectName   = document.getElementById("projectName").value || "";
   const projectNumber = document.getElementById("projectNumber").value || "";
   const recipientName = document.getElementById("recipientName").value || "";
@@ -1684,11 +1850,18 @@ async function createOutlookDraft({ recipientEmail, linkUrl, expiryDate }) {
     linkUrl, expiryDate: expiryFormatted, fileList,
   });
 
-  return await graphFetch("POST", "/me/messages", {
+  const payload = {
     subject,
     body: { contentType: "HTML", content: html },
     toRecipients: [{ emailAddress: { address: recipientEmail } }],
-  });
+  };
+  // Only attach ccRecipients when there are actual addresses — passing an
+  // empty array works but clutters the Graph payload for the common no-CC case.
+  const cleanCcEmails = (ccEmails || []).filter(e => e && e.includes("@"));
+  if (cleanCcEmails.length) {
+    payload.ccRecipients = cleanCcEmails.map(addr => ({ emailAddress: { address: addr } }));
+  }
+  return await graphFetch("POST", "/me/messages", payload);
 }
 
 // ─── EMAIL BODY (YOU WRITE THIS) ──────────────────────────────────────────────
