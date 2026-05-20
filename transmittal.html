@@ -461,6 +461,16 @@
     <div class="status" id="sendStatus"></div>
   </div>
 
+  <!-- Transmittal History — record-keeping view of past sends for this
+       project, read from the "Transmittals Sent" SharePoint list. -->
+  <div class="card" id="historyCard">
+    <div class="card-title">🗂️ Transmittal History
+      <span class="count-badge" id="historyCount"></span>
+    </div>
+    <div class="status" id="historyStatus"></div>
+    <div id="historyTableWrap" style="overflow-x:auto"></div>
+  </div>
+
 </div>
 
 <script>
@@ -671,6 +681,8 @@ async function loadPmsData() {
     // the dropdown from the project's companies and defaults to client, so
     // we don't need a separate browser-cache reset anymore.
     updateRecipientFromProject();
+    // Load the record-keeping history panel for this project.
+    void loadTransmittalHistory();
   } catch(e) {
     console.warn("Could not load PMS data:", e.message);
   }
@@ -1251,9 +1263,21 @@ async function packageAsZip() {
     // Auth-based /content endpoint — never expires, unlike @microsoft.graph.downloadUrl
     // which is a pre-signed CDN URL with a ~1-hour TTL that goes stale silently.
     const downloadToken = await getToken();
+    // Restrict the zip to files whose sheet row is still checked. Without this,
+    // unchecking (or X'ing) a row would remove it from the cover docx but leave
+    // it in the package — confusing because the checkbox label implies the file
+    // is excluded. parseFilename stores `filename` on each sheet, so the map is
+    // exact (no fuzzy matching on stem/extension).
+    const includedFilenames = new Set((sheets || []).filter(s => s.include && s.filename).map(s => s.filename));
+    const filesToZip = folderFiles.filter(f => includedFilenames.has(f.name));
+    if (filesToZip.length === 0) {
+      setStatus("zipStatus", "error", "✗ No files selected — check at least one row before downloading the ZIP.");
+      btn.disabled = false;
+      return;
+    }
     let done = 0;
-    for (const f of folderFiles) {
-      setStatus("zipStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${folderFiles.length})…`);
+    for (const f of filesToZip) {
+      setStatus("zipStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${filesToZip.length})…`);
       const resp = await fetch(
         `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${f.id}/content`,
         { headers: { "Authorization": "Bearer " + downloadToken } }
@@ -1661,9 +1685,17 @@ async function sendToClient() {
     let totalBytes = 0;
     const downloadToken = await getToken();
 
-    for (let i = 0; i < folderFiles.length; i++) {
-      const f = folderFiles[i];
-      setStatus("sendStatus", "info", `⏳ Adding ${f.name} (${i + 1}/${folderFiles.length})…`);
+    // Same include-filter the download-ZIP path uses — keep the package in
+    // sync with the cover docx. See the comment in zipFiles() for the why.
+    const includedFilenames = new Set((sheets || []).filter(s => s.include && s.filename).map(s => s.filename));
+    const filesToZip = folderFiles.filter(f => includedFilenames.has(f.name));
+    if (filesToZip.length === 0) {
+      throw new Error("No files selected — check at least one row before sending.");
+    }
+
+    for (let i = 0; i < filesToZip.length; i++) {
+      const f = filesToZip[i];
+      setStatus("sendStatus", "info", `⏳ Adding ${f.name} (${i + 1}/${filesToZip.length})…`);
       const resp = await fetch(
         `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${f.id}/content`,
         { headers: { "Authorization": "Bearer " + downloadToken } }
@@ -1702,6 +1734,8 @@ async function sendToClient() {
       setStatus("sendStatus", "warn", "⚠ Email is ready but audit log write failed — copy the link manually if needed: " + linkInfo.link.webUrl);
       // Continue — the email is still useful even if the audit row didn't write.
     }
+    // Refresh the history panel so a successful send shows up immediately.
+    void loadTransmittalHistory();
 
     // ── 5. Create an Outlook draft via Graph (HTML body so the share URL can
     //       hide behind a readable label) and open it for review. ─────────────
@@ -1804,38 +1838,139 @@ async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmai
   const milestoneName = (resolvedFolderPath || "").split("/").pop() || "";
   const senderUpn = msalAccount?.username || "";
   const senderName = msalAccount?.name || senderUpn;
-  const customMessage = ""; // Reserved for future UI field (textarea above Send button)
+
+  // Recipient line — primary plus any CC, labeled so the record shows who
+  // was copied. CC list comes from the ccRecipients picker.
+  const ccEmails = (ccRecipients || []).map(r => r.email).filter(Boolean);
+  const recipientEmails = ccEmails.length
+    ? `To: ${recipientEmail}\nCC: ${ccEmails.join(", ")}`
+    : recipientEmail;
 
   // FilesIncluded as newline-separated text — preserves the exact list
   // sent even if files are later renamed/deleted in SharePoint.
   const filesIncluded = folderFiles.map(f => f.name).concat([generatedFileName]).join("\n");
+
+  // SharePoint DateTime columns can reject ISO strings carrying millisecond
+  // precision — strip ".123Z" down to "Z".
+  const linkExpiry = (linkInfo.expirationDateTime || "").replace(/\.\d{3}Z$/, "Z");
 
   const fields = {
     Title: `${projectNumber || "—"} - ${milestoneName}`.slice(0, 255),
     ProjectNumber: projectNumber,
     ProjectName: projectName,
     MilestoneName: milestoneName,
-    RecipientEmails: recipientEmail,
+    RecipientEmails: recipientEmails,
     ZipFileName: zipName,
-    // Hyperlink columns require { Url, Description } object form via Graph —
-    // plain strings cause SharePoint to return HTTP 500 generalException.
+    // Hyperlink columns require { Url, Description } object form via Graph.
     AnonymousLink: { Url: linkInfo.link.webUrl, Description: zipName },
-    LinkExpiry: linkInfo.expirationDateTime,
+    LinkExpiry: linkExpiry,
     FilesIncluded: filesIncluded,
     FileCount: folderFiles.length + 1,
     TotalSizeMB: Number((totalBytes / 1024 / 1024).toFixed(2)),
     SenderUPN: senderUpn,
     SenderDisplayName: senderName,
-    OutgoingFolderUrl: folderUrl
-      ? { Url: decodeURIComponent(folderUrl), Description: "Source folder" }
-      : null,
-    CustomMessage: customMessage,
+    CustomMessage: "",
     Status: "Sent",
   };
+  // Only include the Hyperlink column when we actually have a URL — passing
+  // an explicit null can trigger HTTP 400 invalidRequest on a typed column.
+  if (folderUrl) {
+    fields.OutgoingFolderUrl = { Url: decodeURIComponent(folderUrl), Description: "Source folder" };
+  }
 
-  // Path notation works without needing the siteId resolved separately.
-  const path = `/sites/setty.sharepoint.com:/sites/NYCProjects:/lists/${encodeURIComponent(TRANSMITTALS_AUDIT_LIST)}/items`;
-  await graphFetch("POST", path, { fields });
+  // Direct fetch (not graphFetch) so we capture the FULL Graph error body —
+  // graphFetch truncates to 200 chars, which hides which field was rejected.
+  const token = await getToken();
+  const url = "https://graph.microsoft.com/v1.0/sites/setty.sharepoint.com:/sites/NYCProjects:/lists/" +
+    encodeURIComponent(TRANSMITTALS_AUDIT_LIST) + "/items";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ fields }),
+  });
+  if (!res.ok) {
+    const fullError = await res.text();
+    console.error("[TX] Audit row write failed — HTTP " + res.status);
+    console.error("[TX] Full Graph response:", fullError);
+    console.error("[TX] Fields payload sent:", JSON.stringify(fields, null, 2));
+    throw new Error("Audit row HTTP " + res.status + " — full error logged to console");
+  }
+  return res.json();
+}
+
+// ─── TRANSMITTAL HISTORY ──────────────────────────────────────────────────────
+// Reads the "Transmittals Sent" SharePoint list, filters to the current
+// project, and renders past sends as a record-keeping table. Read-only —
+// independent of the audit-write path, so it works even while that's broken.
+async function loadTransmittalHistory() {
+  const projNum = (document.getElementById("projectNumber").value || "").trim();
+  const wrap    = document.getElementById("historyTableWrap");
+  const countEl = document.getElementById("historyCount");
+
+  if (!projNum) {
+    setStatus("historyStatus", "info", "Load a project to see its transmittal history.");
+    return;
+  }
+  setStatus("historyStatus", "info", "⏳ Loading transmittal history…");
+  try {
+    const token = await getToken();
+    // Fetch the list with all fields expanded; filter client-side by project.
+    // Fine for a moderate-size log — avoids needing an indexed column.
+    const url = "https://graph.microsoft.com/v1.0/sites/setty.sharepoint.com:/sites/NYCProjects:/lists/" +
+      encodeURIComponent(TRANSMITTALS_AUDIT_LIST) + "/items?$expand=fields&$top=500";
+    const res = await fetch(url, { headers: { "Authorization": "Bearer " + token } });
+    if (!res.ok) throw new Error("HTTP " + res.status + " — list may not exist yet");
+    const data = await res.json();
+
+    const items = (data.value || [])
+      .filter(it => (((it.fields || {}).ProjectNumber) || "").trim() === projNum)
+      .sort((a, b) => (b.createdDateTime || "").localeCompare(a.createdDateTime || ""));
+
+    countEl.textContent = items.length ? items.length + " logged" : "";
+    if (!items.length) {
+      setStatus("historyStatus", "info", "No transmittals logged for this project yet.");
+      wrap.innerHTML = "";
+      return;
+    }
+    setStatus("historyStatus", "", "");
+    wrap.innerHTML = renderHistoryTable(items);
+  } catch (e) {
+    setStatus("historyStatus", "error", "✗ Could not load history: " + e.message);
+    wrap.innerHTML = "";
+  }
+}
+
+function renderHistoryTable(items) {
+  const esc = s => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const head =
+    '<table class="sheet-table"><thead><tr>' +
+    '<th>Date</th><th>Milestone</th><th>Recipients</th><th>Files</th>' +
+    '<th>Download</th><th>Sent By</th><th>Status</th>' +
+    '</tr></thead><tbody>';
+  const body = items.map(it => {
+    const f = it.fields || {};
+    const date = (it.createdDateTime || "").slice(0, 10);
+    // Hyperlink columns read back as { Url, Description }; tolerate a bare string too.
+    const linkUrl = f.AnonymousLink && (f.AnonymousLink.Url || typeof f.AnonymousLink === "string")
+      ? (f.AnonymousLink.Url || f.AnonymousLink) : "";
+    const expired = f.LinkExpiry && new Date(f.LinkExpiry) < new Date();
+    const downloadCell = !linkUrl
+      ? "—"
+      : expired
+        ? '<span style="color:var(--muted)">link expired</span>'
+        : '<a href="' + esc(linkUrl) + '" target="_blank" style="color:var(--blue)">Download ↗</a>';
+    return '<tr>' +
+      '<td>' + esc(date) + '</td>' +
+      '<td>' + esc(f.MilestoneName) + '</td>' +
+      '<td style="white-space:pre-line">' + esc(f.RecipientEmails) + '</td>' +
+      '<td>' + esc(f.FileCount) + '</td>' +
+      '<td>' + downloadCell + '</td>' +
+      '<td>' + esc(f.SenderDisplayName || f.SenderUPN) + '</td>' +
+      '<td>' + esc(f.Status) + '</td>' +
+      '</tr>';
+  }).join("");
+  return head + body + '</tbody></table>';
 }
 
 // ─── MAILTO ASSEMBLY ──────────────────────────────────────────────────────────
