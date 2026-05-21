@@ -559,36 +559,45 @@ async function logTransmittalGenerated(distributionKind, extra = {}) {
   folderUrl = params.get("folder") || "";
   pmsProjectId   = params.get("projectId")   || "";
   pmsMilestoneId = params.get("milestoneId") || "";
-  if (folderUrl) {
-    document.getElementById("folderUrlDisplay").textContent = decodeURIComponent(folderUrl);
-    // Try to pre-fill project info from folder name
-    const parts = decodeURIComponent(folderUrl).split("/");
-    const folderName = parts[parts.length - 1];
-    const match = folderName.match(/^([A-Z]+\d+[\w.]+)\s*[-–]\s*(.+)$/);
-    if (match) {
-      document.getElementById("projectNumber").value = match[1];
-      document.getElementById("projectName").value = match[2];
+  // Pre-fill form fields from URL params. Wrapped in try/catch so a missing
+  // DOM element (e.g. after a UI change) cannot abort init before MSAL is
+  // created — that would leave the sign-in button unable to authenticate.
+  try {
+    if (folderUrl) {
+      document.getElementById("folderUrlDisplay").textContent = decodeURIComponent(folderUrl);
+      // Try to pre-fill project info from folder name
+      const parts = decodeURIComponent(folderUrl).split("/");
+      const folderName = parts[parts.length - 1];
+      const match = folderName.match(/^([A-Z]+\d+[\w.]+)\s*[-–]\s*(.+)$/);
+      if (match) {
+        document.getElementById("projectNumber").value = match[1];
+        document.getElementById("projectName").value = match[2];
+        document.getElementById("transmittalNo").value = "T-001";
+      }
+    }
+    // Also read project info passed from PMS
+    const projectParam = params.get("project");
+    const numberParam  = params.get("number");
+    const clientParam  = params.get("client");
+    if (projectParam && !document.getElementById("projectName").value)
+      document.getElementById("projectName").value = decodeURIComponent(projectParam);
+    if (numberParam && !document.getElementById("projectNumber").value)
+      document.getElementById("projectNumber").value = decodeURIComponent(numberParam);
+    // The clientName input was removed in the recipient-UI redesign — guard
+    // against its absence so the client= URL param doesn't crash init.
+    const clientEl = document.getElementById("clientName");
+    if (clientParam && clientEl) clientEl.value = decodeURIComponent(clientParam);
+    if (numberParam || projectParam) {
+      // Auto-generate transmittal number
       document.getElementById("transmittalNo").value = "T-001";
     }
+    // Set today's date
+    document.getElementById("transmittalDate").value = new Date().toISOString().slice(0, 10);
+  } catch (prefillErr) {
+    console.warn("[transmittal] init prefill error (non-fatal):", prefillErr);
   }
-  // Also read project info passed from PMS
-  const projectParam = params.get("project");
-  const numberParam = params.get("number");
-  const clientParam = params.get("client");
-  if (projectParam && !document.getElementById("projectName").value)
-    document.getElementById("projectName").value = decodeURIComponent(projectParam);
-  if (numberParam && !document.getElementById("projectNumber").value)
-    document.getElementById("projectNumber").value = decodeURIComponent(numberParam);
-  if (clientParam)
-    document.getElementById("clientName").value = decodeURIComponent(clientParam);
-  if (numberParam || projectParam) {
-    // Auto-generate transmittal number
-    document.getElementById("transmittalNo").value = "T-001";
-  }
-  // Set today's date
-  document.getElementById("transmittalDate").value = new Date().toISOString().slice(0, 10);
 
-  // Init MSAL
+  // Init MSAL — always runs, even if the prefill above hit a missing element.
   msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalApp.initialize();
   try {
