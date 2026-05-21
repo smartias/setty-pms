@@ -20571,25 +20571,58 @@ function TimesheetHelper({ staff, projects, onClose }) {
   }, [staffProjects, staffName, period, month, year]);
 
   // ── Calendar helpers ───────────────────────────────────────────────────────
-  const GENERIC_KW = new Set(["the","a","an","of","for","and","or","at","in","on","to","by","with","from","new","york","city","nyc","building","phase","design","engineering","services","meeting","call","coordination","review"]);
-  function projectKeywords(p) {
-    return ((p.projectNumber || "") + " " + (p.name || ""))
-      .split(/[\s\-\/,()&]+/)
-      .map(w => w.replace(/[^a-zA-Z0-9]/g,"").toLowerCase())
-      .filter(w => w.length >= 3 && !GENERIC_KW.has(w));
+  // Project matching mirrors the Outlook add-in's suggestProjects(): weighted
+  // signals (project # in subject, distinctive name tokens, acronyms) instead
+  // of a flat substring count, so the two tools guess consistently.
+  const TS_MATCH_STOPWORDS = new Set([
+    "the","and","of","for","at","to","a","an","or","by","on","in","with",
+    "re","fwd","fw","project","renovation","reno","new","update","updated",
+    "phase","building","bldg","floor","fl","st","ave","road","rd",
+    "meeting","call","sync","review","coordination","nyc","city","york",
+  ]);
+  function tsTokenize(s) {
+    return (s || "")
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter(t => t && t.length >= 2 && !TS_MATCH_STOPWORDS.has(t));
+  }
+  // Every contiguous 2+ word slice's initials — "BAT Climate Innovation Hub"
+  // yields bc, bci, bcih, ci, cih, ih… so "BCI" in a subject still matches.
+  function tsAcronyms(name) {
+    const words = (name || "").split(/\s+/).filter(Boolean);
+    const out = new Set();
+    for (let i = 0; i < words.length; i++) {
+      for (let j = i + 2; j <= words.length; j++) {
+        const acro = words.slice(i, j).map(w => w.charAt(0).toLowerCase()).join("");
+        if (acro.length >= 2 && acro.length <= 6 && /^[a-z]+$/.test(acro)) out.add(acro);
+      }
+    }
+    return out;
   }
   function matchEventToProject(subject) {
-    const subj = subject.toLowerCase();
+    const subj = (subject || "").toLowerCase();
+    if (!subj) return null;
+    const subjTokens = new Set(tsTokenize(subj));
     let best = null, bestScore = 0;
     for (const p of staffProjects) {
-      const score = projectKeywords(p).filter(kw => subj.includes(kw)).length;
+      let score = 0;
+      const projNum = String(p.projectNumber || "").toLowerCase().trim();
+      if (projNum && subj.includes(projNum)) score += 10;            // project # in subject
+      const tokenHits = tsTokenize(p.name || "").filter(t => subjTokens.has(t)).length;
+      score += tokenHits * 2;                                        // distinctive name words
+      if ([...tsAcronyms(p.name || "")].some(a => subjTokens.has(a))) score += 3; // acronym
       if (score > bestScore) { bestScore = score; best = p; }
     }
-    return bestScore >= 1 ? best : null;
+    return bestScore >= 2 ? best : null;
   }
   function eventHours(ev) {
-    const s = new Date(ev.start?.dateTime || ev.start?.date);
-    const e = new Date(ev.end?.dateTime   || ev.end?.date);
+    // All-day events (milestones, holidays, OOO) span a full calendar day on
+    // the Graph API — counting their real duration adds 24h per event. Treat
+    // any all-day item as a nominal 1 hour.
+    if (ev.isAllDay || !ev.start?.dateTime || !ev.end?.dateTime) return 1;
+    const s = new Date(ev.start.dateTime);
+    const e = new Date(ev.end.dateTime);
     if (!s || !e || isNaN(s) || isNaN(e)) return 0;
     return Math.round((e - s) / 36000) / 100;
   }
@@ -20610,7 +20643,7 @@ function TimesheetHelper({ staff, projects, onClose }) {
       } catch(e) {}
       for (const calId of calIds) {
         const base = calId ? `/me/calendars/${calId}` : "/me";
-        const url = `${base}/calendarView?startDateTime=${periodStart.toISOString()}&endDateTime=${periodEnd.toISOString()}&$top=100&$select=id,subject,start,end,isCancelled,showAs`;
+        const url = `${base}/calendarView?startDateTime=${periodStart.toISOString()}&endDateTime=${periodEnd.toISOString()}&$top=100&$select=id,subject,start,end,isCancelled,showAs,isAllDay`;
         try {
           const resp = await graphFetch("GET", url, undefined, token);
           for (const ev of (resp?.value || [])) {
@@ -20667,8 +20700,50 @@ function TimesheetHelper({ staff, projects, onClose }) {
   function updateExtra(id, field, val) { setExtraRows(prev => prev.map(r => r.id===id ? {...r,[field]:val} : r)); }
   function removeExtra(id) { setExtraRows(prev => prev.filter(r => r.id!==id)); }
 
+  // Copy an Active Work item into the timesheet. WBS items carry their
+  // estimated hours; other types start blank for the user to fill in.
+  function activeRow(item) {
+    return {
+      id: "active-" + item.id,
+      projectId: item.projectId,
+      projectName: item.projectName,
+      projectNumber: item.projectNumber,
+      hours: item.type === "wbs" ? item.wbsHours : "",
+      notes: item.label || "",
+      source: "active",
+    };
+  }
+  function addActiveToTimesheet(item) {
+    const rowId = "active-" + item.id;
+    setRows(prev => prev.some(r => r.id === rowId) ? prev : [...prev, activeRow(item)]);
+  }
+  function addAllWbs() {
+    setRows(prev => {
+      const existing = new Set(prev.map(r => r.id));
+      const toAdd = activeWork
+        .filter(it => it.type === "wbs" && !existing.has("active-" + it.id))
+        .map(activeRow);
+      return [...prev, ...toAdd];
+    });
+  }
+
   const allRows = [...rows, ...extraRows];
   const totalHours = allRows.reduce((a,r) => a + (parseFloat(r.hours)||0), 0);
+
+  function exportExcel() {
+    const headers = ["Project #", "Project Name", "Hours", "Notes / Tasks"];
+    const dataRows = allRows.map(r => [
+      r.projectNumber || "",
+      r.projectName || "",
+      parseFloat(r.hours) || 0,
+      r.notes || "",
+    ]);
+    dataRows.push(["", "Total", Math.round(totalHours * 100) / 100, ""]);
+    const safeName = (staff.name || "Staff").replace(/[^a-z0-9]/gi, "_");
+    const periodTag = year + "-" + String(month + 1).padStart(2, "0") + "_" +
+      (period === "first" ? "1-15" : "16-end");
+    downloadCSV(safeName + "_Timesheet_" + periodTag + ".csv", headers, dataRows);
+  }
 
   const typeColors = {
     wbs: { bg: P.accentDim, text: P.accentLight, label: "WBS" },
@@ -20753,9 +20828,14 @@ function TimesheetHelper({ staff, projects, onClose }) {
             </div>
           ) : (
             <div>
-              <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
-                {activeWork.length} item{activeWork.length !== 1 ? "s" : ""} found across {staffProjects.length} assigned project{staffProjects.length !== 1 ? "s" : ""}.
-                These are reference only — review and transfer hours to the timesheet below.
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: P.textDim }}>
+                  {activeWork.length} item{activeWork.length !== 1 ? "s" : ""} found across {staffProjects.length} assigned project{staffProjects.length !== 1 ? "s" : ""}.
+                  Use <strong>+ Add</strong> to copy an item into the timesheet below.
+                </div>
+                {activeWork.some(it => it.type === "wbs") && (
+                  <Btn small variant="primary" onClick={addAllWbs}>➕ Add all WBS to Timesheet</Btn>
+                )}
               </div>
               <table style={{ width: "100%", marginBottom: 0 }}>
                 <thead>
@@ -20765,6 +20845,7 @@ function TimesheetHelper({ staff, projects, onClose }) {
                     <th>Item</th>
                     <th>Due / Status</th>
                     <th>WBS Hrs</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -20796,6 +20877,17 @@ function TimesheetHelper({ staff, projects, onClose }) {
                         </td>
                         <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.accentLight, textAlign: "center" }}>
                           {item.wbsHours > 0 ? item.wbsHours : "—"}
+                        </td>
+                        <td style={{ textAlign: "center" }}>
+                          {rows.some(r => r.id === "active-" + item.id)
+                            ? <span style={{ fontSize: 10, color: P.green, fontWeight: 600 }}>✓ Added</span>
+                            : <button onClick={() => addActiveToTimesheet(item)}
+                                title="Add to timesheet"
+                                style={{ fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 4,
+                                  background: P.accentDim, color: P.accentLight, border: `1px solid ${P.accent}`,
+                                  cursor: "pointer", whiteSpace: "nowrap" }}>
+                                + Add
+                              </button>}
                         </td>
                       </tr>
                     );
@@ -20892,8 +20984,8 @@ function TimesheetHelper({ staff, projects, onClose }) {
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 12, alignItems: "center" }} className="no-print">
               <Btn small variant="ghost" onClick={addExtraRow}>+ Add Row</Btn>
-              <Btn small variant="primary" onClick={() => window.print()}>🖨 Print / Save as PDF</Btn>
-              <span style={{ fontSize: 11, color: P.textDim }}>Browser Print → Save as PDF</span>
+              <Btn small variant="primary" onClick={exportExcel}>⬇ Export to Excel</Btn>
+              <span style={{ fontSize: 11, color: P.textDim }}>Downloads a .csv that opens in Excel</span>
             </div>
           </div>
         </>
