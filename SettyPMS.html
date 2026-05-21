@@ -20604,14 +20604,21 @@ function TimesheetHelper({ staff, projects, onClose }) {
     const subj = (subject || "").toLowerCase();
     if (!subj) return null;
     const subjTokens = new Set(tsTokenize(subj));
+    // Match against ALL active projects, not just the ones this person is
+    // rostered on — calendar invites routinely cover projects you support
+    // without being a formal team member. Rostered projects get a small
+    // tie-breaker so "your" project wins when two score equally.
+    const staffProjectIds = new Set(staffProjects.map(p => p.id));
     let best = null, bestScore = 0;
-    for (const p of staffProjects) {
+    for (const p of projects) {
+      if (p.archived) continue;
       let score = 0;
       const projNum = String(p.projectNumber || "").toLowerCase().trim();
       if (projNum && subj.includes(projNum)) score += 10;            // project # in subject
       const tokenHits = tsTokenize(p.name || "").filter(t => subjTokens.has(t)).length;
       score += tokenHits * 2;                                        // distinctive name words
       if ([...tsAcronyms(p.name || "")].some(a => subjTokens.has(a))) score += 3; // acronym
+      if (score > 0 && staffProjectIds.has(p.id)) score += 1;        // prefer rostered projects
       if (score > bestScore) { bestScore = score; best = p; }
     }
     return bestScore >= 2 ? best : null;
