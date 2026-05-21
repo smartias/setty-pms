@@ -261,8 +261,8 @@
     <button class="btn btn-ghost" id="backToLandingBtn">← Back</button>
   </div>
   <label>Project</label>
-  <select id="projectPicker"><option value="">— Select a project —</option></select>
-  <div class="meta-line">Pass <code>?project=&lt;id&gt;</code> in the URL from PMS to skip this step.</div>
+  <input id="projectPicker" list="projectOptions" placeholder="Type to search projects…" autocomplete="off">
+  <datalist id="projectOptions"></datalist>
 </div>
 
 <!-- Status bar: shown when working on a report. Lets multiple users see at a
@@ -602,18 +602,20 @@ function hideAllReportViews() {
 
 document.getElementById("newReportBtn").onclick = () => {
   hideAllReportViews();
-  // Show the project picker for new-report mode (populated alphabetically).
+  // Show the searchable project picker for new-report mode (sorted alphabetically).
   const picker = document.getElementById("projectPicker");
-  picker.innerHTML = '<option value="">— Select a project —</option>';
+  const options = document.getElementById("projectOptions");
+  picker.value = "";
+  options.innerHTML = "";
   const sorted = [...pmsProjects].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const labelFor = p => (p.projectNumber ? p.projectNumber + " — " : "") + (p.name || "(unnamed)");
   sorted.forEach(p => {
     const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = (p.projectNumber ? p.projectNumber + " — " : "") + (p.name || "(unnamed)");
-    picker.appendChild(opt);
+    opt.value = labelFor(p);
+    options.appendChild(opt);
   });
-  picker.onchange = () => {
-    const match = pmsProjects.find(p => p.id === picker.value);
+  picker.oninput = () => {
+    const match = sorted.find(p => labelFor(p) === picker.value);
     if (match) selectProject(match);
   };
   document.getElementById("projectPickerCard").style.display = "block";
