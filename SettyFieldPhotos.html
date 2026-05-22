@@ -172,8 +172,55 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 
 /* Progress */
 .upload-progress { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-.progress-bar-wrap { background: var(--border); border-radius: 99px; height: 6px; margin-top: 8px; overflow: hidden; }
-.progress-bar { height: 100%; background: var(--blue); border-radius: 99px; transition: width .3s; }
+/* ─── Film-strip progress bar ───
+   The upload bar is styled as a strip of movie film: a dark body with
+   sprocket holes along the top and bottom edges. The holes scroll ("film
+   advancing") only while an upload is running — startUpload() adds the
+   .running class to #uploadProgress and removes it when the upload ends. */
+.progress-bar-wrap {
+  position: relative;
+  height: 28px;
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: #141419;                 /* film body */
+}
+/* Sprocket-hole rows. The light segments are the holes punched in the film;
+   the gaps between them are film body showing through. */
+.progress-bar-wrap::before,
+.progress-bar-wrap::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  height: 6px;
+  z-index: 2;                          /* keep holes above the colored fill */
+  background-image: repeating-linear-gradient(90deg, #c9ccd6 0 8px, transparent 8px 16px);
+}
+.progress-bar-wrap::before { top: 3px; }
+.progress-bar-wrap::after  { bottom: 3px; }
+/* Holes march sideways only while an upload is actively running. */
+#uploadProgress.running .progress-bar-wrap::before,
+#uploadProgress.running .progress-bar-wrap::after {
+  animation: filmRun .7s linear infinite;
+}
+@keyframes filmRun { to { background-position-x: -16px; } }
+/* Honor the OS "reduce motion" setting — holes stay still; the fill still
+   grows, so progress is never lost, just the decorative scroll is dropped. */
+@media (prefers-reduced-motion: reduce) {
+  #uploadProgress.running .progress-bar-wrap::before,
+  #uploadProgress.running .progress-bar-wrap::after { animation: none; }
+}
+
+/* The colored progress fill sits in the middle band, between the two sprocket
+   rows, so the holes are never covered. JS still drives its width + color. */
+.progress-bar {
+  position: absolute;
+  left: 0; top: 10px; bottom: 10px;
+  height: auto;
+  border-radius: 1px;
+  background: var(--blue);
+  transition: width .3s;
+}
 .progress-label { font-size: 13px; color: var(--dim); margin-top: 6px; }
 
 /* Gallery tab */
@@ -1055,6 +1102,7 @@ async function startUpload() {
 
   const prog = document.getElementById('uploadProgress');
   prog.classList.remove('hidden');
+  prog.classList.add('running');          // start the film-strip scroll
   document.getElementById('uploadBtn').disabled = true;
 
   let done = 0;
@@ -1150,6 +1198,7 @@ async function startUpload() {
     const sessionFolderName = uploadFolder.split('/').pop();
     const spFolderUrl = selectedProject.projectFolderUrl + '/Photos/' + sessionFolderName;
 
+    prog.classList.remove('running');     // upload finished — stop the film
     document.getElementById('progressBar').style.width = '100%';
     document.getElementById('progressBar').style.background = 'var(--green)';
     document.getElementById('progressTitle').innerHTML =
@@ -1186,6 +1235,7 @@ async function startUpload() {
     pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
     renderPreviews();
     toast('Upload failed: ' + e.message, 'error');
+    prog.classList.remove('running');     // upload errored out — stop the film
     prog.classList.add('hidden');
     document.getElementById('progressBar').style.background = 'var(--blue)';
     document.getElementById('uploadBtn').disabled = false;
