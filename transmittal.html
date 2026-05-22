@@ -271,6 +271,52 @@
 
     .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 13px; }
     .folder-url-display { font-size: 11px; color: var(--muted); font-family: monospace; word-break: break-all; margin-bottom: 14px; }
+
+    /* ─── Transmittal-stamp celebration ───
+       A one-shot rubber-stamp slam that plays when a transmittal .docx is
+       generated. Decorative overlay: pointer-events off, self-removing,
+       skipped under prefers-reduced-motion (see playStamp). */
+    #stampOverlay {
+      position: fixed; inset: 0; z-index: 9000; pointer-events: none;
+      display: flex; align-items: center; justify-content: center;
+    }
+    @media print { #stampOverlay { display: none !important; } }
+
+    .tx-stamp {
+      font-family: "Arial Black", "Segoe UI", sans-serif;
+      color: var(--red);
+      border: 5px solid var(--red);
+      border-radius: 10px;
+      padding: 16px 34px 18px;
+      text-align: center;
+      background: rgba(192,0,0,.06);
+      box-shadow: inset 0 0 0 3px rgba(192,0,0,.30);
+      opacity: .9;
+      transform: rotate(-7deg);
+    }
+    /* The stamp is created already carrying tx-slam, so its first painted
+       frame is the 0% keyframe (opacity 0) — no flash of the resting state. */
+    .tx-stamp.tx-slam  { animation: txSlam .26s cubic-bezier(.55,0,.85,.35); }
+    .tx-stamp.tx-shake { animation: txShake .32s ease; }
+    .tx-stamp.tx-out   { animation: txOut .5s ease forwards; }
+    @keyframes txSlam {
+      0%   { opacity: 0;  transform: scale(2.7) rotate(-19deg); }
+      78%  { opacity: 1;  transform: scale(.9)  rotate(-5deg); }
+      100% { opacity: .9; transform: scale(1)   rotate(-7deg); }
+    }
+    @keyframes txShake {
+      0%,100% { transform: scale(1) rotate(-7deg); }
+      30%     { transform: scale(1) rotate(-10deg) translateX(-4px); }
+      65%     { transform: scale(1) rotate(-4deg)  translateX(4px); }
+    }
+    @keyframes txOut { to { opacity: 0; transform: scale(1.18) rotate(-7deg); } }
+
+    .tx-stamp-label { font-size: 44px; font-weight: 900; letter-spacing: 4px; line-height: 1; }
+    .tx-stamp-sub {
+      font-size: 13px; font-weight: 700; letter-spacing: 2px;
+      margin-top: 8px; padding-top: 7px;
+      border-top: 3px double var(--red);
+    }
   </style>
 </head>
 <body>
@@ -1608,6 +1654,7 @@ async function generateDocx() {
 
     // Auto-download
     saveAs(buffer, generatedFileName);
+    playStamp({ number: txNo, date: dateDisplay });   // rubber-stamp celebration
     // Unlock Step 2 actions now that the cover docx exists in memory
     ["saveToSpBtn", "zipBtn", "sendToClientBtn"].forEach(id => {
       const el = document.getElementById(id);
@@ -2119,6 +2166,54 @@ function setStatus(id, type, msg) {
   el.className = "status" + (msg ? " show " + type : "");
   el.textContent = msg;
 }
+
+// ─── TRANSMITTAL-STAMP CELEBRATION ───────────────────────────────────────────
+// Plays a one-shot rubber-stamp slam when a transmittal .docx is generated.
+// Decorative only: the overlay disables pointer-events so it never blocks the
+// UI, and removes itself once the animation finishes.
+//   opts.number — transmittal no. shown on the stamp's sub-line (optional)
+//   opts.date   — formatted date shown on the sub-line (optional)
+function playStamp(opts) {
+  opts = opts || {};
+  // Accessibility: respect the OS "reduce motion" setting — no animation.
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  // Idempotent — clear any previous run still on screen.
+  const stale = document.getElementById("stampOverlay");
+  if (stale) stale.remove();
+
+  // Sub-line under the big word: transmittal number + date, when known.
+  const subParts = [opts.number, opts.date].filter(Boolean);
+
+  const overlay = document.createElement("div");
+  overlay.id = "stampOverlay";
+  const stamp = document.createElement("div");
+  stamp.className = "tx-stamp tx-slam";   // tx-slam from the start = no flash
+  stamp.innerHTML =
+    '<div class="tx-stamp-label">' + STAMP_LABEL + '</div>' +
+    (subParts.length ? '<div class="tx-stamp-sub">' + subParts.join("  ·  ") + '</div>' : '');
+  overlay.appendChild(stamp);
+  document.body.appendChild(overlay);
+
+  // Choreography (ms). A stamp should feel punchy — fast slam, brief hold.
+  const SLAM = 260, SHAKE = 320, HOLD = 850, OUT = 500;
+
+  setTimeout(() => {                      // impact: trade the slam for a wobble
+    stamp.classList.remove("tx-slam");
+    stamp.classList.add("tx-shake");
+  }, SLAM);
+
+  setTimeout(() => {                      // lift the stamp away
+    stamp.classList.remove("tx-shake");
+    stamp.classList.add("tx-out");
+  }, SLAM + SHAKE + HOLD);
+
+  setTimeout(() => overlay.remove(), SLAM + SHAKE + HOLD + OUT);
+}
+
+// The big word on the stamp. AEC transmittals carry real conventions here —
+// "TRANSMITTED" is the neutral, accurate default. See the chat for alternatives.
+const STAMP_LABEL = "TRANSMITTED";
 </script>
 </body>
 </html>
