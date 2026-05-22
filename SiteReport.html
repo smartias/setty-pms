@@ -175,14 +175,16 @@
     #craneOverlay { position: fixed; inset: 0; z-index: 9000; pointer-events: none; overflow: hidden; }
     @media print { #craneOverlay { display: none !important; } }
 
-    /* The whole crane slides in from off-screen-right, then back out. */
+    /* The whole crane slides in from off-screen-left, then back out.
+       Anchored top-LEFT so it clears the browser's download popup, which
+       Chrome renders in the top-right corner. */
     .crane {
-      position: absolute; top: 0; right: 5vw; width: 360px; height: 0;
-      transform: translateX(135%);
+      position: absolute; top: 0; left: 5vw; width: 360px; height: 0;
+      transform: translateX(-135%);
       transition: transform .7s cubic-bezier(.22,.61,.36,1);
     }
     .crane.crane-in  { transform: translateX(0); }
-    .crane.crane-out { transform: translateX(135%); transition: transform .85s cubic-bezier(.55,.06,.68,.19); }
+    .crane.crane-out { transform: translateX(-135%); transition: transform .85s cubic-bezier(.55,.06,.68,.19); }
 
     /* Mast drops from the top edge down to the jib. */
     .crane-mast {
