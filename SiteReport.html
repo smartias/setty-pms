@@ -166,6 +166,69 @@
       .print-cover { display: block; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #1F3864; }
     }
     .print-cover { display: none; }
+
+    /* ─── Crane-lift celebration ───
+       A one-shot tower-crane fly-over that plays when a Word report is
+       generated. The overlay is purely decorative: pointer-events are off so
+       it never blocks the UI, and playCraneLift() removes it when done.
+       Skipped entirely under prefers-reduced-motion (see playCraneLift). */
+    #craneOverlay { position: fixed; inset: 0; z-index: 9000; pointer-events: none; overflow: hidden; }
+    @media print { #craneOverlay { display: none !important; } }
+
+    /* The whole crane slides in from off-screen-right, then back out. */
+    .crane {
+      position: absolute; top: 0; right: 5vw; width: 360px; height: 0;
+      transform: translateX(135%);
+      transition: transform .7s cubic-bezier(.22,.61,.36,1);
+    }
+    .crane.crane-in  { transform: translateX(0); }
+    .crane.crane-out { transform: translateX(135%); transition: transform .85s cubic-bezier(.55,.06,.68,.19); }
+
+    /* Mast drops from the top edge down to the jib. */
+    .crane-mast {
+      position: absolute; top: -10px; right: 26px; width: 16px; height: 58px;
+      background: #1F3864; border: 2px solid #2c4f8f; border-radius: 2px;
+    }
+    /* Jib: the long horizontal arm, drawn with a faint truss pattern. */
+    .crane-jib {
+      position: absolute; top: 40px; right: 10px; width: 340px; height: 16px;
+      background: #1F3864;
+      background-image: repeating-linear-gradient(115deg, transparent 0 13px, #2c4f8f 13px 16px);
+      border: 2px solid #2c4f8f; border-radius: 2px;
+    }
+    /* Operator cab, in Setty red. */
+    .crane-cab {
+      position: absolute; top: 21px; right: 14px; width: 34px; height: 23px;
+      background: #C00000; border: 2px solid #e2453a; border-radius: 3px;
+    }
+    /* Cable hangs from a fixed point on the jib; its height is "paid out"
+       to lower the load. Pivots from the top so it can sway. */
+    .crane-cable {
+      position: absolute; top: 54px; right: 250px; width: 3px; height: 0;
+      background: #cbd5e1; transform-origin: top center;
+      transition: height .95s cubic-bezier(.34,1.18,.64,1);
+    }
+    .crane-cable.crane-lowered  { height: 210px; }
+    .crane-cable.crane-sway     { animation: craneSway 2.4s ease-in-out infinite; }
+    .crane-cable.crane-released { transition: height .5s ease-in, opacity .5s ease-in; height: 248px; opacity: 0; }
+    @keyframes craneSway { 0%,100% { transform: rotate(-2.4deg); } 50% { transform: rotate(2.4deg); } }
+
+    .crane-hook {
+      position: absolute; bottom: -8px; left: -5px; width: 13px; height: 13px;
+      border: 3px solid #C00000; border-top-color: transparent; border-radius: 50%;
+    }
+    /* Whatever dangles from the hook — see buildCranePayload(). */
+    .crane-payload {
+      position: absolute; bottom: -58px; left: 50%;
+      transform: translateX(-50%);
+      filter: drop-shadow(0 6px 10px rgba(0,0,0,.5));
+    }
+    .crane-payload.crane-delivered { animation: cranePop .5s ease; }
+    @keyframes cranePop {
+      0%   { transform: translateX(-50%) scale(1); }
+      40%  { transform: translateX(-50%) scale(1.2); }
+      100% { transform: translateX(-50%) scale(1); }
+    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js"></script>
@@ -1795,6 +1858,7 @@ async function completeAndGenerate() {
     setGlobalStatus("info", "⏳ Generating Word document…");
     ({ blob, filename } = await generateWordDoc(report));
     saveAs(blob, filename);
+    playCraneLift();   // theme-appropriate celebration — the doc is built
   } catch (e) {
     setGlobalStatus("error", "Marked complete + saved, but Word generation failed: " + e.message);
     return;
@@ -2303,6 +2367,180 @@ function setAddStatus(kind, msg) {
   el.className = "status " + (kind || "info");
   el.textContent = msg;
 }
+
+// ─── CRANE-LIFT CELEBRATION ──────────────────────────────────────────────────
+// Plays a one-shot tower-crane fly-over when a Word report is generated.
+// Decorative only: the overlay disables pointer-events so it never blocks the
+// UI, and removes itself once the choreography finishes.
+function playCraneLift() {
+  // Accessibility: respect the OS "reduce motion" setting — no animation.
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  // Idempotent: if a previous run is still on screen, clear it first.
+  const stale = document.getElementById("craneOverlay");
+  if (stale) stale.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "craneOverlay";
+  overlay.innerHTML =
+    '<div class="crane">' +
+      '<div class="crane-mast"></div>' +
+      '<div class="crane-jib"></div>' +
+      '<div class="crane-cab"></div>' +
+      '<div class="crane-cable">' +
+        '<div class="crane-hook"></div>' +
+        '<div class="crane-payload"></div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  const crane   = overlay.querySelector(".crane");
+  const cable   = overlay.querySelector(".crane-cable");
+  const payload = overlay.querySelector(".crane-payload");
+
+  // Hang whatever buildCranePayload() decides on from the hook. Guarded so the
+  // crane still flies (empty-hooked) if the payload isn't implemented yet.
+  const load = buildCranePayload();
+  if (load) payload.appendChild(load);
+
+  // Choreography (ms). Each beat begins after the sum of the beats before it.
+  const ENTER = 700, LOWER = 950, HOLD = 1300, EXIT = 900;
+
+  void crane.offsetWidth;             // flush styles so the first transition runs
+  crane.classList.add("crane-in");    // beat 1: crane swings in from the right
+
+  setTimeout(() => {                  // beat 2: pay out the cable, lower the load
+    cable.classList.add("crane-lowered", "crane-sway");
+  }, ENTER);
+
+  setTimeout(() => {                  // beat 3: the load lands — little pop
+    payload.classList.add("crane-delivered");
+  }, ENTER + LOWER);
+
+  setTimeout(() => {                  // beat 4: release the load, crane retreats
+    cable.classList.remove("crane-sway");
+    cable.classList.add("crane-released");
+    crane.classList.add("crane-out");
+  }, ENTER + LOWER + HOLD);
+
+  setTimeout(() => overlay.remove(), ENTER + LOWER + HOLD + EXIT);
+}
+
+// What dangles from the crane hook. Picks a random entry from CRANE_PAYLOADS
+// each time, so the animation stays fresh report after report. Returns a
+// single DOM element, or null (empty pool) to fly an empty hook.
+function buildCranePayload() {
+  if (!CRANE_PAYLOADS.length) return null;
+  const pick = CRANE_PAYLOADS[Math.floor(Math.random() * CRANE_PAYLOADS.length)];
+  return pick();
+}
+
+// ── Payload builders ── each returns one DOM element sized for the crane
+//    (~44px reads well). Mix and match these in the CRANE_PAYLOADS pool below.
+
+// An emoji at crane scale, with a Setty-red glow so it reads as on-brand
+// rather than a stray emoji. (drop-shadow follows the emoji's alpha shape,
+// unlike box-shadow — so the halo hugs the glyph, not a square.)
+function emojiPayload(emoji) {
+  const el = document.createElement("div");
+  el.textContent = emoji;
+  el.style.cssText = "font-size:40px; line-height:1; text-align:center;" +
+    "filter: drop-shadow(0 0 7px rgba(192,0,0,.85));";
+  return el;
+}
+
+// A drawn traffic cone (no good cone emoji exists).
+function conePayload() {
+  const el = document.createElement("div");
+  el.style.cssText = "width:44px; height:46px; position:relative;";
+  el.innerHTML =
+    '<div style="position:absolute;bottom:0;left:1px;width:42px;height:8px;background:#ff7a1a;border-radius:3px;"></div>' +
+    '<div style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);width:30px;height:38px;' +
+      'background:#ff7a1a;clip-path:polygon(50% 0,100% 100%,0 100%);"></div>' +
+    '<div style="position:absolute;bottom:19px;left:50%;transform:translateX(-50%);width:23px;height:5px;background:#fff;"></div>';
+  return el;
+}
+
+// A rolled-up blueprint tube.
+function blueprintPayload() {
+  const el = document.createElement("div");
+  el.style.cssText = "width:48px; height:18px; border-radius:9px;" +
+    "background:linear-gradient(#3b82f6,#1e63c8); border:2px solid #2c4f8f;";
+  return el;
+}
+
+// The Setty logo on a white card (the PNG is dark-on-transparent).
+function logoPayload() {
+  const card = document.createElement("div");
+  card.style.cssText = "background:#fff; padding:5px 7px; border-radius:3px;";
+  const img = document.createElement("img");
+  img.src = "https://smartias.github.io/setty-pms/setty-logo.png";
+  img.alt = "";
+  img.style.cssText = "display:block; width:58px; height:auto;";
+  img.onerror = () => {  // CDN unreachable — fall back to a wordmark
+    card.textContent = "SETTY";
+    card.style.cssText += "color:#1F3864; font-weight:800; font-size:15px;";
+  };
+  card.appendChild(img);
+  return card;
+}
+
+// THE SURPRISE POOL — buildCranePayload() picks one of these at random for
+// every report. Each entry is a function that returns one DOM element.
+// Duplicate an entry to weight it (the logo appears 3×, blueprint 2×); the
+// one-offs near the end act as rare easter eggs.
+const CRANE_PAYLOADS = [
+  // Core / brand-safe
+  () => logoPayload(),
+  () => logoPayload(),
+  () => logoPayload(),
+  () => blueprintPayload(),
+  () => blueprintPayload(),
+  () => conePayload(),
+  () => emojiPayload("⛑️"),
+  () => emojiPayload("🦺"),
+
+  // Construction chaos
+  () => emojiPayload("☕"),   // survival fluid
+  () => emojiPayload("📋"),   // paperwork mountain
+  () => emojiPayload("📐"),   // dimensions may vary
+  () => emojiPayload("🔧"),   // field fix
+  () => emojiPayload("🪛"),
+  () => emojiPayload("⚡"),
+  () => emojiPayload("🚧"),
+  () => emojiPayload("🧯"),
+  () => emojiPayload("🏗️"),
+  () => emojiPayload("🚜"),
+
+  // MEP / consultant life
+  () => emojiPayload("💡"),
+  () => emojiPayload("🌀"),   // ductwork energy
+  () => emojiPayload("🔥"),   // FP engineer has entered chat
+  () => emojiPayload("💧"),   // plumbing leak somewhere probably
+  () => emojiPayload("🔌"),
+  () => emojiPayload("📡"),
+  () => emojiPayload("🖨️"),   // plotting at 4:59 PM
+
+  // Subtle existential consulting humor
+  () => emojiPayload("⏳"),
+  () => emojiPayload("📞"),   // "quick call"
+  () => emojiPayload("📨"),   // another RFI
+  () => emojiPayload("🔄"),   // latest revision
+  () => emojiPayload("❗"),   // contractor found something
+  () => emojiPayload("🤦"),
+  () => emojiPayload("😵"),
+  () => emojiPayload("🫠"),
+  () => emojiPayload("💸"),   // change order energy
+  () => emojiPayload("📅"),   // impossible schedule
+
+  // Rare easter eggs
+  () => emojiPayload("👽"),
+  () => emojiPayload("🦖"),
+  () => emojiPayload("🍕"),
+  () => emojiPayload("🧃"),
+  () => emojiPayload("🪤"),   // coordination trap
+  () => emojiPayload("🧠"),   // one functioning brain cell
+];
 </script>
 </body>
 </html>
