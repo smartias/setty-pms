@@ -81,14 +81,6 @@
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
 
-// ContractExtractor.html — standalone tool served from this repo via GitHub
-// Pages. Reads contracts issued to Setty and posts override-clause findings
-// (pay-when-paid, no-markup, broad indemnity, etc.) back to this app via
-// postMessage. Used by both ContractView (per-project contracts) and
-// TermContractsView (master agreements).
-const CONTRACT_EXTRACTOR_URL = "https://smartias.github.io/setty-pms/ContractExtractor.html";
-const CONTRACT_EXTRACTOR_ORIGIN = "https://smartias.github.io";
-
 const RS_MEANS_COST_PER_SF = {
   "Office": 285, "Healthcare/Clinic": 420, "Laboratory": 580, "K-12 School": 260,
   "University": 340, "Warehouse/Industrial": 120, "Retail": 175, "Multifamily": 210,
@@ -2545,31 +2537,6 @@ async function getOrCreateTeamsOneNoteNotebook(project) {
   return { id: result.id, webUrl };
 }
 
-// Single shared notebook for Term Contract analyses — they're master agreements
-// that don't belong to any one project, so they get their own notebook at the
-// team level. Cached after first lookup to avoid repeated Graph calls.
-let _termContractsNotebookCache = null;
-async function getOrCreateTermContractsNotebook() {
-  if (_termContractsNotebookCache) return _termContractsNotebookCache;
-  const name = "Setty Term Contracts";
-  const existing = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`);
-  const found = (existing?.value || []).find(n => n.displayName === name);
-  if (found) {
-    _termContractsNotebookCache = {
-      id: found.id,
-      webUrl: found.links?.oneNoteWebUrl?.href || found.links?.oneNoteClientUrl?.href || "",
-    };
-    return _termContractsNotebookCache;
-  }
-  const result = await graphFetch("POST", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, { displayName: name });
-  if (!result?.id) throw new Error("Teams OneNote API did not return a notebook ID for Term Contracts notebook");
-  _termContractsNotebookCache = {
-    id: result.id,
-    webUrl: result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "",
-  };
-  return _termContractsNotebookCache;
-}
-
 // ── PMS Metadata Schema ────────────────────────────────────────────────────────
 // One metadata object, written at save-time to SharePoint, OneNote, and Outlook.
 // This is the connective tissue that makes the corpus searchable across all stores.
@@ -2710,136 +2677,6 @@ function escapeOneNoteText(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-// Builds the rich-HTML body for a Contract Analysis OneNote page from a
-// ContractExtractor payload. Uses Calibri 11pt + navy headings to match
-// the rest of the auto-created pages (Meetings, Site Visits, etc.).
-// Severity-coded callouts make override flags scannable at a glance —
-// these are the highest-value output of the extractor.
-function buildContractAnalysisHtml(extraction, record = null, recordType = null) {
-  const e = (s) => escapeOneNoteText(s);
-  const NAVY = "#1F3864";
-  const flags = extraction.flags || [];
-  const high   = flags.filter(f => f.severity === "high");
-  const medium = flags.filter(f => f.severity === "medium");
-  const info   = flags.filter(f => f.severity === "info");
-  const sevStyle = {
-    high:   { bg: "#FEE2E2", border: "#DC2626", text: "#7F1D1D", icon: "🚨" },
-    medium: { bg: "#FEF3C7", border: "#D97706", text: "#78350F", icon: "⚠" },
-    info:   { bg: "#DBEAFE", border: "#2563EB", text: "#1E3A8A", icon: "ℹ" },
-  };
-  const h2 = `style="color:${NAVY};border-bottom:2px solid ${NAVY};padding-bottom:4px;margin-top:18px;"`;
-  const td = `style="padding:4px 16px 4px 0;vertical-align:top;"`;
-  const fmtMoney = (v) => (v && +v) ? "$" + Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
-
-  let html = `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;max-width:7.5in;">`;
-
-  // PMS Record block — identifies which PMS record this analysis is linked to.
-  // Critical for stand-alone usefulness of the OneNote page (so a reader can
-  // tell which project or term contract this belongs to without opening PMS).
-  if (record && recordType === "project") {
-    const titleLine = `${e(record.name || "Untitled Project")}${record.projectNumber ? ` <span style="color:${NAVY};">(${e(record.projectNumber)})</span>` : ""}`;
-    html += `<div style="background:#F3F4F6;border-left:4px solid ${NAVY};padding:10px 14px;margin-bottom:14px;border-radius:4px;">`;
-    html += `<div style="font-size:13pt;font-weight:700;color:${NAVY};margin-bottom:4px;">📁 ${titleLine}</div>`;
-    html += `<table style="border-collapse:collapse;font-size:10pt;">`;
-    if (record.clientName || record.prime) html += `<tr><td ${td}><strong>Client:</strong></td><td>${e(record.clientName || record.prime)}</td></tr>`;
-    if (record.contractNumber)             html += `<tr><td ${td}><strong>Contract #:</strong></td><td>${e(record.contractNumber)}</td></tr>`;
-    if (record.contractStatus)             html += `<tr><td ${td}><strong>Status:</strong></td><td>${e(record.contractStatus)}</td></tr>`;
-    if (record.feeType)                    html += `<tr><td ${td}><strong>Fee type:</strong></td><td>${e(record.feeType)}</td></tr>`;
-    if (record.contractDate)               html += `<tr><td ${td}><strong>Contract date (PMS):</strong></td><td>${e(record.contractDate)}</td></tr>`;
-    if (record.contractExpirationDate)     html += `<tr><td ${td}><strong>Expiration (PMS):</strong></td><td>${e(record.contractExpirationDate)}</td></tr>`;
-    if (record.contractFolderUrl)          html += `<tr><td ${td}><strong>SharePoint:</strong></td><td><a href="${e(record.contractFolderUrl)}">${e(record.contractFolderUrl)}</a></td></tr>`;
-    html += `</table></div>`;
-  } else if (record && recordType === "termContract") {
-    const titleLine = `${e(record.name || "Untitled Term Contract")}${record.contractNumber ? ` <span style="color:${NAVY};">(${e(record.contractNumber)})</span>` : ""}`;
-    html += `<div style="background:#F3F4F6;border-left:4px solid ${NAVY};padding:10px 14px;margin-bottom:14px;border-radius:4px;">`;
-    html += `<div style="font-size:13pt;font-weight:700;color:${NAVY};margin-bottom:4px;">📋 ${titleLine}</div>`;
-    html += `<table style="border-collapse:collapse;font-size:10pt;">`;
-    if (record.client)         html += `<tr><td ${td}><strong>Client / Agency:</strong></td><td>${e(record.client)}</td></tr>`;
-    if (record.contractStatus) html += `<tr><td ${td}><strong>Status:</strong></td><td>${e(record.contractStatus)}</td></tr>`;
-    if (record.startDate)      html += `<tr><td ${td}><strong>Start date:</strong></td><td>${e(record.startDate)}</td></tr>`;
-    if (record.expirationDate) html += `<tr><td ${td}><strong>Expiration date:</strong></td><td>${e(record.expirationDate)}</td></tr>`;
-    if (record.ceilingValue && +record.ceilingValue) html += `<tr><td ${td}><strong>Ceiling (NTE):</strong></td><td>${e(fmtMoney(record.ceilingValue))}</td></tr>`;
-    if (record.description)    html += `<tr><td ${td}><strong>Description:</strong></td><td>${e(record.description)}</td></tr>`;
-    if (record.folderUrl)      html += `<tr><td ${td}><strong>SharePoint:</strong></td><td><a href="${e(record.folderUrl)}">${e(record.folderUrl)}</a></td></tr>`;
-    if (record.notes)          html += `<tr><td ${td}><strong>PMS notes:</strong></td><td style="white-space:pre-wrap;">${e(record.notes)}</td></tr>`;
-    html += `</table></div>`;
-  }
-
-  // Source PDF metadata
-  html += `<p>`;
-  html += `<strong>Source:</strong> ${e(extraction.fileName || "(unnamed PDF)")}<br/>`;
-  const dt = extraction.isAIA
-    ? `AIA ${extraction.docType}${extraction.docTypeYear ? " (" + extraction.docTypeYear + ")" : ""}`
-    : (extraction.docType || "Unknown");
-  html += `<strong>Document type:</strong> ${e(dt)}<br/>`;
-  if (extraction.contractDate) html += `<strong>Contract date (from PDF):</strong> ${e(extraction.contractDate)}<br/>`;
-  if (extraction.client)       html += `<strong>Client / Prime (from PDF):</strong> ${e(extraction.client)}<br/>`;
-  if (extraction.settyRole)    html += `<strong>Setty role (from PDF):</strong> ${e(extraction.settyRole)}<br/>`;
-  if (extraction.project)      html += `<strong>Project (from PDF):</strong> ${e(extraction.project)}<br/>`;
-  html += `<strong>Extracted:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
-  html += `</p>`;
-
-  // Override flags — the headline output
-  html += `<h2 ${h2}>Override Clauses</h2>`;
-  if (flags.length === 0) {
-    html += `<p style="color:#15803D;"><strong>✓ No client-override clauses detected.</strong> `;
-    html += `Verify manually — absence of detection isn't proof of absence.</p>`;
-  } else {
-    html += `<p>${flags.length} clauses detected`;
-    if (high.length) html += `, <strong style="color:#DC2626;">${high.length} high-severity</strong>`;
-    html += `.</p>`;
-    for (const f of [...high, ...medium, ...info]) {
-      const s = sevStyle[f.severity];
-      html += `<div style="background:${s.bg};border-left:4px solid ${s.border};padding:8px 12px;margin:6px 0;border-radius:4px;">`;
-      html += `<strong style="color:${s.text};">${s.icon} ${e(f.label)}`;
-      if (f.value) html += ` — ${e(f.value)}`;
-      html += `</strong></div>`;
-    }
-  }
-
-  // Payment terms
-  const pt = extraction.payment || {};
-  if (Object.values(pt).some(Boolean)) {
-    html += `<h2 ${h2}>Payment Terms</h2><table style="border-collapse:collapse;">`;
-    if (pt.payWhenPaid)         html += `<tr><td ${td}><strong>Pay-when-paid:</strong></td><td>${e(pt.payWhenPaid)}</td></tr>`;
-    if (pt.invoiceReview)       html += `<tr><td ${td}><strong>Invoice review window:</strong></td><td>${e(pt.invoiceReview)}</td></tr>`;
-    if (pt.interestOnLate)      html += `<tr><td ${td}><strong>Interest on late:</strong></td><td>${e(pt.interestOnLate)}</td></tr>`;
-    if (pt.retainage)           html += `<tr><td ${td}><strong>Retainage:</strong></td><td>${e(pt.retainage)}</td></tr>`;
-    if (pt.conditionsPrecedent) html += `<tr><td ${td}><strong>Conditions precedent:</strong></td><td>${e(pt.conditionsPrecedent)}</td></tr>`;
-    html += `</table>`;
-  }
-
-  // Reimbursable rules
-  const r = extraction.reimbursable || {};
-  if (Object.values(r).some(Boolean)) {
-    html += `<h2 ${h2}>Reimbursable Expense Rules</h2><table style="border-collapse:collapse;">`;
-    if (r.multiplier)       html += `<tr><td ${td}><strong>Multiplier:</strong></td><td>${e(r.multiplier)}</td></tr>`;
-    if (r.markupPolicy)     html += `<tr><td ${td}><strong>Markup policy:</strong></td><td>${e(r.markupPolicy)}</td></tr>`;
-    if (r.markupExclusions) html += `<tr><td ${td}><strong>Excluded from markup:</strong></td><td>${e(r.markupExclusions)}</td></tr>`;
-    html += `</table>`;
-    if (r.rules) {
-      html += `<div style="background:#F9FAFB;border:1px solid #E5E7EB;padding:10px;margin-top:6px;font-size:10pt;white-space:pre-wrap;">${e(r.rules)}</div>`;
-    }
-  }
-
-  // Schedule
-  const sc = extraction.schedule || {};
-  if (Object.values(sc).some(Boolean)) {
-    html += `<h2 ${h2}>Schedule</h2><table style="border-collapse:collapse;">`;
-    if (sc.substantialCompletion) html += `<tr><td ${td}><strong>Substantial Completion:</strong></td><td>${e(sc.substantialCompletion)}</td></tr>`;
-    if (sc.scheduleSource)        html += `<tr><td ${td}><strong>Schedule source:</strong></td><td>${e(sc.scheduleSource)}</td></tr>`;
-    if (sc.terminationNotice)     html += `<tr><td ${td}><strong>Termination notice:</strong></td><td>${e(sc.terminationNotice)}</td></tr>`;
-    html += `</table>`;
-  }
-
-  // Provenance footer
-  html += `<p style="color:#6B7280;font-size:9pt;font-style:italic;margin-top:24px;border-top:1px solid #E5E7EB;padding-top:8px;">`;
-  html += `Generated automatically by ContractExtractor.html (pattern-based extraction, no AI). `;
-  html += `Low-confidence values may have been mis-captured — verify against the source PDF before relying on the data.`;
-  html += `</p></div>`;
-  return html;
 }
 
 // Race-safe section lookup-or-create: catches the 409 conflict that fires when
@@ -8935,221 +8772,11 @@ Setty
 
 // ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
 
-// Shared hook for ContractExtractor.html integration. Used by ContractView
-// (per-project contracts) and TermContractsView (master agreements).
-// Manages the popup window + postMessage handshake. Only one of those views
-// is mounted at a time, so listener collision isn't a concern.
-function useContractExtractor() {
-  const [extraction, setExtraction] = useState(null);
-
-  useEffect(() => {
-    function onMsg(e) {
-      // Whitelist: GH Pages (extractor's hosted origin), same-origin (if both
-      // files served from one location), and "null" for file:// during local dev.
-      if (
-        e.origin !== CONTRACT_EXTRACTOR_ORIGIN &&
-        e.origin !== window.location.origin &&
-        e.origin !== "null"
-      ) return;
-      const d = e.data;
-      if (!d || d.source !== "ContractExtractor" || d.type !== "contractData") return;
-      setExtraction(d.payload);
-    }
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
-  }, []);
-
-  function openExtractor() {
-    const win = window.open(
-      CONTRACT_EXTRACTOR_URL,
-      "ContractExtractor",
-      "width=1500,height=950,menubar=no,toolbar=no,location=no,status=no"
-    );
-    if (!win) {
-      alert("Popup blocked. Allow popups from this site to use the contract extractor.");
-      return;
-    }
-    win.focus();
-  }
-
-  return { extraction, setExtraction, openExtractor };
-}
-
-// Modal shown when ContractExtractor.html posts results back. Generalized
-// over the target date field — ContractView applies to `contractDate`,
-// TermContractsView applies to `startDate`. Parent decides what to do via
-// onApply({ applyDate }).
-function ContractExtractionModal({ extraction, onClose, onApply, currentDateValue, dateFieldLabel = "Contract Date" }) {
-  const flags  = extraction.flags || [];
-  const high   = flags.filter(f => f.severity === "high");
-  const medium = flags.filter(f => f.severity === "medium");
-  const info   = flags.filter(f => f.severity === "info");
-  const [applyDate, setApplyDate] = useState(!!extraction.contractDate && !currentDateValue);
-  const [saving, setSaving] = useState(false);
-
-  async function handleApplyClick() {
-    setSaving(true);
-    try { await onApply({ applyDate }); }
-    catch (e) { alert("Save failed: " + e.message); setSaving(false); }
-    // No `finally` — onApply closes the modal on success (setExtraction(null)),
-    // so we leave `saving` true until unmount. On error we already cleared it.
-  }
-
-  const sev = (s) =>
-    s === "high"   ? { bg: P.redDim,    fg: P.red,         bd: P.red,    icon: "⛔" } :
-    s === "medium" ? { bg: P.yellowDim, fg: P.yellow,      bd: P.yellow, icon: "⚠" } :
-                     { bg: P.accentDim, fg: P.accentLight, bd: P.accent, icon: "ℹ" };
-
-  return (
-    <Modal title="Contract Extraction Results" onClose={onClose} wide>
-      <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 14 }}>
-        📄 <strong style={{ color: P.text }}>{extraction.fileName || "(unnamed PDF)"}</strong>
-        {"  ·  "}
-        {extraction.isAIA
-          ? `AIA ${extraction.docType}${extraction.docTypeYear ? " (" + extraction.docTypeYear + ")" : ""}`
-          : extraction.docType}
-      </div>
-
-      <SectionTitle>
-        Override Clauses ({flags.length} detected{high.length ? `, ${high.length} high-severity` : ""})
-      </SectionTitle>
-      {flags.length === 0 ? (
-        <div style={{ fontSize: 12, color: P.green, padding: "8px 0", marginBottom: 16 }}>
-          ✓ No client-override clauses detected. Verify manually — absence of detection isn't proof of absence.
-        </div>
-      ) : (
-        <div style={{ marginBottom: 16 }}>
-          {[...high, ...medium, ...info].map(f => {
-            const s = sev(f.severity);
-            return (
-              <div key={f.id} style={{ background: s.bg, borderLeft: `4px solid ${s.bd}`, border: `1px solid ${s.bd}`, borderRadius: 6, padding: "8px 12px", marginBottom: 6 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: s.fg }}>
-                  {s.icon} {f.label}{f.value ? ` — ${f.value}` : ""}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <SectionTitle>Auto-Apply to {dateFieldLabel === "Contract Date" ? "Project" : "Term Contract"}</SectionTitle>
-      <div style={{ padding: "10px 12px", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6, marginBottom: 16 }}>
-        {extraction.contractDate ? (
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-            <input type="checkbox" checked={applyDate} onChange={e => setApplyDate(e.target.checked)} />
-            <span>Set <strong>{dateFieldLabel}</strong> to <strong style={{ color: P.accentLight }}>{extraction.contractDate}</strong></span>
-            {currentDateValue && currentDateValue !== extraction.contractDate && (
-              <span style={{ fontSize: 11, color: P.yellow, marginLeft: 6 }}>
-                (currently {currentDateValue} — will be overwritten)
-              </span>
-            )}
-          </label>
-        ) : (
-          <div style={{ fontSize: 12, color: P.textMuted }}>No contract date could be parsed from this PDF.</div>
-        )}
-      </div>
-
-      <SectionTitle>For Reference (manual entry)</SectionTitle>
-      <div style={{ fontSize: 12, color: P.text, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6, padding: 12, marginBottom: 16, lineHeight: 1.7 }}>
-        {extraction.client    && <div><span style={{ color: P.textMuted }}>Client / Prime:</span> {extraction.client}</div>}
-        {extraction.settyRole && <div><span style={{ color: P.textMuted }}>Setty Role:</span> {extraction.settyRole}</div>}
-        {extraction.project   && <div><span style={{ color: P.textMuted }}>Project (from PDF):</span> {extraction.project}</div>}
-        {extraction.payment && Object.values(extraction.payment).some(Boolean) && (
-          <div style={{ marginTop: 8 }}>
-            <strong>Payment Terms</strong>
-            <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
-              {extraction.payment.payWhenPaid         && <li>Pay-when-paid: {extraction.payment.payWhenPaid}</li>}
-              {extraction.payment.invoiceReview       && <li>Invoice review: {extraction.payment.invoiceReview}</li>}
-              {extraction.payment.interestOnLate      && <li>Interest on late: {extraction.payment.interestOnLate}</li>}
-              {extraction.payment.retainage           && <li>Retainage: {extraction.payment.retainage}</li>}
-              {extraction.payment.conditionsPrecedent && <li>Conditions precedent: {extraction.payment.conditionsPrecedent}</li>}
-            </ul>
-          </div>
-        )}
-        {extraction.reimbursable && Object.values(extraction.reimbursable).some(Boolean) && (
-          <div style={{ marginTop: 8 }}>
-            <strong>Reimbursable Rules</strong>
-            <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
-              {extraction.reimbursable.multiplier       && <li>Multiplier: {extraction.reimbursable.multiplier}</li>}
-              {extraction.reimbursable.markupPolicy     && <li>Markup policy: {extraction.reimbursable.markupPolicy}</li>}
-              {extraction.reimbursable.markupExclusions && <li>Excluded from markup: {extraction.reimbursable.markupExclusions}</li>}
-            </ul>
-          </div>
-        )}
-        {extraction.schedule && Object.values(extraction.schedule).some(Boolean) && (
-          <div style={{ marginTop: 8 }}>
-            <strong>Schedule</strong>
-            <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
-              {extraction.schedule.substantialCompletion && <li>Substantial Completion: {extraction.schedule.substantialCompletion}</li>}
-              {extraction.schedule.scheduleSource        && <li>Schedule source: {extraction.schedule.scheduleSource}</li>}
-              {extraction.schedule.terminationNotice     && <li>Termination notice: {extraction.schedule.terminationNotice}</li>}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap" }}>
-        {saving && <span style={{ fontSize: 11, color: P.textMuted, marginRight: 8 }}>Saving to OneNote…</span>}
-        <Btn variant="ghost"   onClick={onClose} disabled={saving}>Cancel</Btn>
-        <Btn variant="success" onClick={handleApplyClick} disabled={saving}>
-          {saving ? "Saving…" : "Apply & save"}
-        </Btn>
-      </div>
-    </Modal>
-  );
-}
-
 function ContractView({ project, onChange, onEagerSave, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts, clients, onUpdateClient }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
-
-  // ContractExtractor integration — see useContractExtractor() above.
-  const { extraction, setExtraction, openExtractor } = useContractExtractor();
-
-  // Async because we attempt a OneNote write (if the project has a notebook).
-  // Persists the full blob regardless so data is durable even if OneNote fails.
-  async function handleApplyExtraction({ applyDate }) {
-    const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
-    if (applyDate && extraction.contractDate) updates.contractDate = extraction.contractDate;
-
-    // Attempt to auto-create a Contract Analysis page in the project's OneNote
-    // notebook. Non-fatal — if no notebook configured or the API fails, the
-    // blob is still saved and the user can re-extract later.
-    const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
-    const useTeamsNB = !!project.teamsOneNoteNotebookId;
-    if (notebookId) {
-      try {
-        const title = `Contract Analysis – ${extraction.fileName || project.name || "Untitled"}`;
-        const html = buildContractAnalysisHtml(extraction, project, "project");
-        const today = new Date().toISOString().slice(0, 10);
-        const meta = buildPmsMetadata(project, PMS_DOC_TYPES.CONTRACT, { date: today, source: "contract-extractor" });
-        const page = useTeamsNB
-          ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, today, meta)
-          : await createOneNotePage(notebookId, "Contract Analysis", title, html, today, meta);
-        if (page?.webUrl) updates.contractAnalysisUrl = page.webUrl;
-      } catch (e) {
-        console.warn("Contract Analysis OneNote page failed:", e);
-        // Surface non-fatally — the blob was still saved.
-        setTimeout(() => alert("Saved extraction, but couldn't write OneNote page: " + e.message), 0);
-      }
-    }
-
-    onChange({ ...project, ...updates });
-    setExtraction(null);
-  }
-
   return (
     <div>
-      <SectionTitle action={
-        <div style={{ display: "flex", gap: 8 }}>
-          {project.contractAnalysisUrl && (
-            <Btn small variant="ghost" onClick={() => window.open(project.contractAnalysisUrl, "_blank")}
-                 title="Open the Contract Analysis page in OneNote">
-              📋 View Analysis
-            </Btn>
-          )}
-          <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
-        </div>
-      }>Contract Details</SectionTitle>
+      <SectionTitle>Contract Details</SectionTitle>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <Field label="Contract Status">
           <select value={project.contractStatus} onChange={e => setField("contractStatus", e.target.value)} style={{ width: "100%" }}>
@@ -10973,15 +10600,6 @@ function TeamWBSView({ projects, onNavigateToProject }) {
           </table>
         </div>
       )}
-      {extraction && (
-        <ContractExtractionModal
-          extraction={extraction}
-          onClose={() => setExtraction(null)}
-          onApply={handleApplyExtraction}
-          currentDateValue={project.contractDate}
-          dateFieldLabel="Contract Date"
-        />
-      )}
     </div>
   );
 }
@@ -11041,54 +10659,6 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
     setForm(f => ({ ...f, [field]: val }));
   }
 
-  // ContractExtractor integration — same hook used by ContractView. Applied
-  // to the term contract currently being edited; extracted contractDate maps
-  // to startDate (the natural analog for term contracts).
-  //
-  // Term contracts share a single team-level "Setty Term Contracts" OneNote
-  // notebook (provisioned lazily by getOrCreateTermContractsNotebook). Each
-  // term contract gets its own page in the "Contracts" section. The page
-  // includes both PMS context (term contract name, client, dates, ceiling,
-  // SharePoint folder) and the extracted override clauses.
-  const { extraction, setExtraction, openExtractor } = useContractExtractor();
-
-  async function handleApplyExtraction({ applyDate }) {
-    const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
-    if (applyDate && extraction.contractDate) updates.startDate = extraction.contractDate;
-
-    try {
-      const { id: notebookId } = await getOrCreateTermContractsNotebook();
-      // Title: term contract name + source filename so repeat extractions
-      // (e.g., contract amendments) don't collide visually in the section list.
-      const title = `${form.name || "Untitled Term Contract"} – ${extraction.fileName || "Contract"}`;
-      // Pass the merged form so the OneNote page reflects the freshly-applied
-      // startDate if the user checked the auto-apply box.
-      const html = buildContractAnalysisHtml(extraction, { ...form, ...updates }, "termContract");
-      const today = new Date().toISOString().slice(0, 10);
-      // buildPmsMetadata expects project-shaped object — map term contract
-      // fields to the closest analogs so the metadata sidecar stays consistent.
-      const meta = buildPmsMetadata(
-        {
-          projectNumber: form.contractNumber || "",
-          name:          form.name || "",
-          prime:         form.client || "",
-          clientName:    form.client || "",
-        },
-        PMS_DOC_TYPES.CONTRACT,
-        { date: today, source: "contract-extractor", termContractId: form.id }
-      );
-      const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, today, meta);
-      if (page?.webUrl) updates.contractAnalysisUrl = page.webUrl;
-    } catch (e) {
-      console.warn("Term Contract Analysis OneNote page failed:", e);
-      setTimeout(() => alert("Saved extraction, but couldn't write OneNote page: " + e.message), 0);
-    }
-
-    // Apply all updates in one form mutation
-    setForm(f => ({ ...f, ...updates }));
-    setExtraction(null);
-  }
-
   // For each term contract, find linked projects
   function linkedProjects(tcId) {
     return projects.filter(p => p.isTaskOrder && p.taskOrderTermContractId === tcId && !p.archived);
@@ -11115,19 +10685,8 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
       {/* New / Edit form */}
       {form && (
         <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 12, padding: 24, marginBottom: 24 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div style={{ fontWeight: 700, fontSize: 15, color: P.accentLight }}>
-              {editingId === "__new__" ? "New Term Contract" : "Edit Term Contract"}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {form.contractAnalysisUrl && (
-                <Btn small variant="ghost" onClick={() => window.open(form.contractAnalysisUrl, "_blank")}
-                     title="Open the Contract Analysis page in the Setty Term Contracts OneNote notebook">
-                  📋 View Analysis
-                </Btn>
-              )}
-              <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
-            </div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 16, color: P.accentLight }}>
+            {editingId === "__new__" ? "New Term Contract" : "Edit Term Contract"}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
             <Field label="Contract Name / Title">
@@ -11295,15 +10854,6 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
           </div>
         );
       })}
-      {extraction && form && (
-        <ContractExtractionModal
-          extraction={extraction}
-          onClose={() => setExtraction(null)}
-          onApply={handleApplyExtraction}
-          currentDateValue={form.startDate}
-          dateFieldLabel="Start Date"
-        />
-      )}
     </div>
   );
 }

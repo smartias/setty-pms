@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v3";
+    window.__appVersion = "2026-05-25-extractor-v5";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -894,8 +894,32 @@
               <h1>Setty Contract Extractor</h1>
               <div className="sub">Surfaces client-imposed override terms · pdf.js · No AI · No data leaves your browser</div>
             </div>
-            <div className={`pms-status ${pmsConnected ? "connected" : "disconnected"}`}>
-              {pmsConnected ? "● Connected to PMS" : "○ Standalone mode"}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div className={`pms-status ${pmsConnected ? "connected" : "disconnected"}`}>
+                {pmsConnected ? "● Connected to PMS" : "○ Standalone mode"}
+              </div>
+              <button
+                onClick={send}
+                disabled={!pmsConnected || !result}
+                title={
+                  !pmsConnected ? "Open this tool from the SettyPMS Contracts tab to enable Apply and Save."
+                  : !result      ? "Drop a contract PDF first."
+                  : "Send the extracted data to PMS — confirm there to apply the date and write to OneNote."
+                }
+                style={{
+                  background: (!pmsConnected || !result) ? "rgba(255,255,255,0.15)" : "#fff",
+                  color:      (!pmsConnected || !result) ? "rgba(255,255,255,0.55)" : "#1F3864",
+                  border: "none",
+                  padding: "8px 18px",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: (!pmsConnected || !result) ? "not-allowed" : "pointer",
+                  boxShadow: (!pmsConnected || !result) ? "none" : "0 2px 8px rgba(0,0,0,0.25)",
+                }}
+              >
+                Apply and Save →
+              </button>
             </div>
           </div>
 
@@ -974,22 +998,9 @@
                   <FieldEditor keyName="scheduleSource" label="Schedule Source" field={result.fields.scheduleSource} onChange={updateField} />
                   <FieldEditor keyName="terminationNotice" label="Termination Notice" field={result.fields.terminationNotice} onChange={updateField} />
 
-                  <div className="actions">
-                    <button className="btn btn-primary" disabled={!pmsConnected} onClick={send}
-                            title="Send the extracted data to PMS where you'll confirm and write to OneNote">
-                      Apply and Save
-                    </button>
-                    <button className="btn btn-secondary" onClick={() => {
-                      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url; a.download = (file?.name || "contract") + ".extracted.json"; a.click();
-                      URL.revokeObjectURL(url);
-                    }} title="Save the raw extraction JSON to disk as a backup">Save JSON</button>
-                  </div>
                   {!pmsConnected && (
-                    <p style={{fontSize: 11, color: "#F87171", marginTop: 8}}>
-                      Open this tool from the SettyPMS Contracts tab to enable "Apply and Save".
+                    <p style={{fontSize: 11, color: "#F87171", marginTop: 16, padding: "8px 12px", background: "#7F1D1D33", borderRadius: 6, border: "1px solid #B91C1C"}}>
+                      ⚠ Open this tool from the SettyPMS Contracts tab to enable <strong>Apply and Save</strong>.
                     </p>
                   )}
                 </>
