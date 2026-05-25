@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v15";
+    window.__appVersion = "2026-05-25-pms-v16";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2764,6 +2764,15 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
   if (extraction.settyRole)      html += `<strong>Setty role:</strong> ${e(extraction.settyRole)}<br/>`;
   if (extraction.project)        html += `<strong>Project (per contract):</strong> ${e(extraction.project)}<br/>`;
   if (extraction.dragSourceUrl)  html += `<strong>PDF source:</strong> <a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a><br/>`;
+  // SharePoint folder URL from the record — the curated contract folder for
+  // the project (contractFolderUrl) or term contract (folderUrl). Different
+  // field name per record type. Re-added after user noted it had gone
+  // missing when the PMS Record block was removed; this is a navigation
+  // aid (link), not a "PMS data field" in the noise-clutter sense.
+  const recordFolderUrl = recordType === "project"
+    ? (record && record.contractFolderUrl)
+    : (record && record.folderUrl);
+  if (recordFolderUrl)          html += `<strong>SharePoint folder:</strong> <a href="${e(recordFolderUrl)}">${e(recordFolderUrl)}</a><br/>`;
   html += `<strong>Extracted on:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
   html += `</p>`;
 
