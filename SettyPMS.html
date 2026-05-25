@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v10";
+    window.__appVersion = "2026-05-25-pms-v12";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2550,19 +2550,26 @@ async function getOrCreateTeamsOneNoteNotebook(project) {
 // team level. Cached after first lookup to avoid repeated Graph calls.
 let _termContractsNotebookCache = null;
 async function getOrCreateTermContractsNotebook() {
-  if (_termContractsNotebookCache) return _termContractsNotebookCache;
+  if (_termContractsNotebookCache) {
+    console.log("[term-contracts-notebook] using cached:", _termContractsNotebookCache);
+    return _termContractsNotebookCache;
+  }
   const name = "Setty Term Contracts";
+  console.log("[term-contracts-notebook] listing existing team notebooks…");
   const existing = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`);
   const found = (existing?.value || []).find(n => n.displayName === name);
   if (found) {
+    console.log("[term-contracts-notebook] found existing:", { id: found.id });
     _termContractsNotebookCache = {
       id: found.id,
       webUrl: found.links?.oneNoteWebUrl?.href || found.links?.oneNoteClientUrl?.href || "",
     };
     return _termContractsNotebookCache;
   }
+  console.log(`[term-contracts-notebook] not found — creating new "${name}" notebook…`);
   const result = await graphFetch("POST", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, { displayName: name });
   if (!result?.id) throw new Error("Teams OneNote API did not return a notebook ID for Term Contracts notebook");
+  console.log("[term-contracts-notebook] created:", { id: result.id });
   _termContractsNotebookCache = {
     id: result.id,
     webUrl: result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "",
@@ -2910,7 +2917,7 @@ function _hashOneNoteReq(url, html) {
 // the same (url, html) pair within ONENOTE_DEDUP_TTL_MS returns the cached
 // page record instead of posting again. Crucial for the retry path where a
 // 502/504 may have masked a successful POST.
-async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 3) {
+async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 5) {
   const key = _hashOneNoteReq(url, pageHtml);
   const cached = _oneNotePageCache.get(key);
   if (cached && (Date.now() - cached.at) < ONENOTE_DEDUP_TTL_MS) {
@@ -2936,13 +2943,23 @@ async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 3) {
     }
 
     const errText = await res.text().catch(() => "");
-    if (res.status === 429 || res.status === 503) {
-      // Honor Retry-After if Graph provides it; otherwise exponential backoff
+    // 409 = OneNote concurrency conflict (code 30103: "too many simultaneous
+    // requests to the same location"). This is a transient error caused by
+    // Graph refusing concurrent writes to the same section — usually resolves
+    // within a couple seconds. Retry with backoff + jitter to spread out
+    // concurrent retries from multiple callers.
+    // 429 = rate limit; 503 = service unavailable; all share the same backoff path.
+    if (res.status === 429 || res.status === 503 || res.status === 409) {
       const retryAfter = parseInt(res.headers.get("Retry-After") || "0", 10);
-      const wait = retryAfter > 0 ? Math.min(15000, retryAfter * 1000) : Math.min(15000, 1000 * Math.pow(2, attempt));
-      console.warn("[OneNote] " + res.status + " — retrying in " + wait + "ms (attempt " + attempt + "/" + maxAttempts + ")");
+      // Jitter (±50%) helps when multiple callers hit 409 simultaneously —
+      // without jitter they'd all retry at the same instant and conflict again.
+      const baseWait = retryAfter > 0 ? retryAfter * 1000 : 1000 * Math.pow(2, attempt);
+      const jitter = baseWait * (0.5 + Math.random());
+      const wait = Math.min(15000, jitter);
+      const reason = res.status === 409 ? "concurrency conflict" : "throttled";
+      console.warn(`[OneNote] HTTP ${res.status} (${reason}) — retrying in ${Math.round(wait)}ms (attempt ${attempt}/${maxAttempts})`);
       await new Promise(r => setTimeout(r, wait));
-      lastErr = new Error("OneNote throttled (HTTP " + res.status + ")");
+      lastErr = new Error(`OneNote ${reason} (HTTP ${res.status})`);
       continue;
     }
     // Non-retryable
@@ -9185,15 +9202,19 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
         // extraction date). Falls back to today if no contract date parsed.
         const pageDate = payload.contractDate || new Date().toISOString().slice(0, 10);
         const meta = buildPmsMetadata(project, PMS_DOC_TYPES.CONTRACT, { date: pageDate, source: "contract-extractor" });
+        console.log("[project-extract] creating OneNote page…", { title, pageDate, useTeamsNB });
         const page = useTeamsNB
           ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta)
           : await createOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta);
+        console.log("[project-extract] page result:", page);
         if (page?.webUrl) { updates.contractAnalysisUrl = page.webUrl; onenoteStatus = "success"; }
         else              { onenoteStatus = "failed:OneNote API returned no page URL"; }
       } catch (e) {
-        console.warn("Contract Analysis OneNote page failed:", e);
+        console.warn("[project-extract] Contract Analysis OneNote page failed:", e);
         onenoteStatus = "failed:" + (e?.message || "unknown error");
       }
+    } else {
+      console.log("[project-extract] no OneNote notebook configured on this project — skipping OneNote write");
     }
 
     onChange({ ...project, ...updates });
@@ -11122,14 +11143,17 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
   }
 
   // ContractExtractor integration — auto-apply on receipt (no modal).
-  // Only acts when the user is editing a term contract (form is open) since
-  // we need a target record. If form is null we still alert so the user
-  // knows the extraction arrived but had nowhere to land.
+  // For EXISTING term contracts we persist the extraction immediately via
+  // onUpdateTermContracts (so the OneNote URL doesn't get lost if the user
+  // closes the form without clicking Save). For NEW term contracts (not
+  // yet in the array), we only update form state — user still needs to
+  // click Save to commit the new term contract record.
   const handleExtractionReceived = React.useCallback(async (payload) => {
     if (!form) {
       alert("Extraction received, but no Term Contract is being edited. Open the Term Contracts view, click + New Term Contract or Edit an existing one, then re-extract.");
       return;
     }
+    console.log("[term-contract-extract] starting for form:", { id: form.id, name: form.name, editingId });
     const updates = { contractExtraction: { ...payload, savedAt: new Date().toISOString() } };
     const appliedLabels = [];
     if (payload.contractDate)       { updates.startDate      = payload.contractDate;       appliedLabels.push(`Start Date → ${payload.contractDate}`); }
@@ -11138,7 +11162,9 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
 
     let onenoteStatus = "skipped";
     try {
-      const { id: notebookId } = await getOrCreateTermContractsNotebook();
+      console.log("[term-contract-extract] resolving notebook…");
+      const { id: notebookId, webUrl: nbWebUrl } = await getOrCreateTermContractsNotebook();
+      console.log("[term-contract-extract] notebook ready:", { notebookId, nbWebUrl });
       const title = `${form.name || "Untitled Term Contract"} – ${payload.fileName || "Contract"}`;
       const html = buildContractAnalysisHtml(payload, { ...form, ...updates }, "termContract");
       // OneNote page date = contract date if known (so the page sorts by
@@ -11149,20 +11175,38 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
         PMS_DOC_TYPES.CONTRACT,
         { date: pageDate, source: "contract-extractor", termContractId: form.id }
       );
+      console.log("[term-contract-extract] creating OneNote page…", { title, pageDate });
       const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, pageDate, meta);
+      console.log("[term-contract-extract] page result:", page);
       if (page?.webUrl) { updates.contractAnalysisUrl = page.webUrl; onenoteStatus = "success"; }
       else              { onenoteStatus = "failed:OneNote API returned no page URL"; }
     } catch (e) {
-      console.warn("Term Contract Analysis OneNote page failed:", e);
+      console.warn("[term-contract-extract] OneNote page failed:", e);
       onenoteStatus = "failed:" + (e?.message || "unknown error");
     }
 
+    // Update form state (for the current edit session UI)
     setForm(f => ({ ...f, ...updates }));
+
+    // ALSO persist immediately to the term contracts array IF this term
+    // contract already exists. This guarantees the contractAnalysisUrl
+    // doesn't get lost if the user closes the form without clicking Save.
+    // For brand-new term contracts (editingId === "__new__"), the record
+    // isn't in the array yet — user still needs to click Save Term Contract.
+    const isExisting = editingId !== "__new__" && form.id;
+    if (isExisting) {
+      console.log("[term-contract-extract] persisting to term contracts array (existing)");
+      onUpdateTermContracts(prev => prev.map(t => t.id === form.id ? { ...t, ...updates } : t));
+    }
 
     setTimeout(() => {
       const lines = [];
       lines.push(`✓ Contract extraction applied to "${form.name || "Term Contract"}".`);
-      lines.push("(Don't forget to click Save Term Contract to persist these changes.)");
+      if (isExisting) {
+        lines.push("Changes have been saved automatically.");
+      } else {
+        lines.push("⚠ This is a NEW Term Contract — click Save Term Contract to persist.");
+      }
       if (appliedLabels.length) {
         lines.push("");
         lines.push("Fields updated:");
@@ -11173,7 +11217,7 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
       else if (onenoteStatus.startsWith("failed:")) lines.push("⚠ OneNote page failed: " + onenoteStatus.slice(7));
       alert(lines.join("\n"));
     }, 0);
-  }, [form]);
+  }, [form, editingId, onUpdateTermContracts]);
 
   const { openExtractor } = useContractExtractor(handleExtractionReceived);
 
