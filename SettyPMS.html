@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v9";
+    window.__appVersion = "2026-05-25-pms-v10";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2832,6 +2832,27 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     if (sc.scheduleSource)        html += `<tr><td ${td}><strong>Schedule source:</strong></td><td>${e(sc.scheduleSource)}</td></tr>`;
     if (sc.terminationNotice)     html += `<tr><td ${td}><strong>Termination notice:</strong></td><td>${e(sc.terminationNotice)}</td></tr>`;
     html += `</table>`;
+  }
+
+  // Source Text — the full containing section text for each flagged clause,
+  // straight from the contract PDF. Lets the reviewer read the override
+  // clause in its full context without opening the source PDF.
+  // Each flag's `fullSection` is captured by the extractor's getContainingSection
+  // helper (text between the previous and next §N.M / ARTICLE N boundary).
+  const flagsWithSections = flags.filter(f => f.fullSection);
+  if (flagsWithSections.length > 0) {
+    html += `<h2 ${h2}>Source Text (Override Clauses in Context)</h2>`;
+    html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:10px;">`;
+    html += `Excerpts pulled directly from the contract PDF — the section containing each detected override clause. `;
+    html += `Use these for review, negotiation responses, or reference when the original PDF isn't handy.</p>`;
+    for (const f of [...high, ...medium, ...info]) {
+      if (!f.fullSection) continue;
+      const s = sevStyle[f.severity];
+      html += `<div style="margin:14px 0;border-left:4px solid ${s.border};padding:0 0 0 14px;">`;
+      html += `<div style="font-weight:700;color:${s.text};font-size:11pt;margin-bottom:6px;">${s.icon} ${e(f.label)}${f.value ? " — " + e(f.value) : ""}</div>`;
+      html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:12px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;">${e(f.fullSection)}</div>`;
+      html += `</div>`;
+    }
   }
 
   // Provenance footer
@@ -9159,11 +9180,14 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
       try {
         const title = `Contract Analysis – ${payload.fileName || project.name || "Untitled"}`;
         const html = buildContractAnalysisHtml(payload, { ...project, ...updates }, "project");
-        const today = new Date().toISOString().slice(0, 10);
-        const meta = buildPmsMetadata(project, PMS_DOC_TYPES.CONTRACT, { date: today, source: "contract-extractor" });
+        // OneNote page date = the contract's own date if known, so the page
+        // sorts chronologically by contract date in the notebook (not by
+        // extraction date). Falls back to today if no contract date parsed.
+        const pageDate = payload.contractDate || new Date().toISOString().slice(0, 10);
+        const meta = buildPmsMetadata(project, PMS_DOC_TYPES.CONTRACT, { date: pageDate, source: "contract-extractor" });
         const page = useTeamsNB
-          ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, today, meta)
-          : await createOneNotePage(notebookId, "Contract Analysis", title, html, today, meta);
+          ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta)
+          : await createOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta);
         if (page?.webUrl) { updates.contractAnalysisUrl = page.webUrl; onenoteStatus = "success"; }
         else              { onenoteStatus = "failed:OneNote API returned no page URL"; }
       } catch (e) {
@@ -11117,13 +11141,15 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
       const { id: notebookId } = await getOrCreateTermContractsNotebook();
       const title = `${form.name || "Untitled Term Contract"} – ${payload.fileName || "Contract"}`;
       const html = buildContractAnalysisHtml(payload, { ...form, ...updates }, "termContract");
-      const today = new Date().toISOString().slice(0, 10);
+      // OneNote page date = contract date if known (so the page sorts by
+      // contract effective date in the Term Contracts notebook).
+      const pageDate = payload.contractDate || new Date().toISOString().slice(0, 10);
       const meta = buildPmsMetadata(
         { projectNumber: form.contractNumber || "", name: form.name || "", prime: form.client || "", clientName: form.client || "" },
         PMS_DOC_TYPES.CONTRACT,
-        { date: today, source: "contract-extractor", termContractId: form.id }
+        { date: pageDate, source: "contract-extractor", termContractId: form.id }
       );
-      const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, today, meta);
+      const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, pageDate, meta);
       if (page?.webUrl) { updates.contractAnalysisUrl = page.webUrl; onenoteStatus = "success"; }
       else              { onenoteStatus = "failed:OneNote API returned no page URL"; }
     } catch (e) {

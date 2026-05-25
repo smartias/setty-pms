@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v7";
+    window.__appVersion = "2026-05-25-extractor-v8";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -423,21 +423,62 @@
       //   { id, label, severity: "high"|"medium"|"info", patterns: [...], captureValue?, explanation: "..." }
     ];
 
+    // Find the containing "section" of a match — the text between the
+    // closest preceding section/article header and the next one. Lets the
+    // OneNote page show the full clause context, not just a 200-char snippet.
+    function getContainingSection(text, matchIndex, matchLength, maxLen = 3000) {
+      // Match common section/article delimiters in AIA and non-AIA contracts:
+      //   §11.6.2, § 4.7, ARTICLE 11, ARTICLE 11 COMPENSATION,
+      //   SECTION 6.7, 4.7.2 (numeric prefix on a new line)
+      const sectionStartRegex = /(?:§\s*\d+\.\d+(?:\.\d+)?|ARTICLE\s+\d+\b|SECTION\s+\d+(?:\.\d+)?\b)/g;
+      const windowStart = Math.max(0, matchIndex - maxLen);
+      const windowEnd   = Math.min(text.length, matchIndex + matchLength + maxLen);
+      const window      = text.slice(windowStart, windowEnd);
+      const matchInWindow = matchIndex - windowStart;
+      let prevBoundary = 0;
+      let nextBoundary = window.length;
+      sectionStartRegex.lastIndex = 0;
+      let m;
+      while ((m = sectionStartRegex.exec(window)) !== null) {
+        if (m.index <= matchInWindow) {
+          prevBoundary = m.index;
+        } else if (m.index > matchInWindow + matchLength) {
+          nextBoundary = m.index;
+          break;
+        }
+      }
+      // If no preceding boundary found at all, fall back to a wider window
+      // around the match (so we don't return zero context).
+      if (prevBoundary === 0 && nextBoundary === window.length && matchInWindow > 600) {
+        prevBoundary = Math.max(0, matchInWindow - 400);
+        nextBoundary = Math.min(window.length, matchInWindow + matchLength + 1000);
+      }
+      let result = window.slice(prevBoundary, nextBoundary).trim();
+      // Normalize internal whitespace runs but preserve paragraph breaks for readability
+      result = result.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
+      if (result.length > maxLen) result = result.slice(0, maxLen) + "…";
+      return result;
+    }
+
     function detectFlags(text) {
       const flags = [];
       for (const def of OVERRIDE_FLAGS) {
         for (const pattern of def.patterns) {
           const m = text.match(pattern);
           if (m) {
-            // Capture surrounding context for evidence
+            // Short evidence snippet — for the in-extractor UI display.
             const start = Math.max(0, m.index - 60);
             const end = Math.min(text.length, m.index + m[0].length + 140);
             const evidence = text.slice(start, end).replace(/\s+/g, " ").trim();
+            // Full containing section — for the OneNote page so reviewers
+            // can read the override clause in its full contract context.
+            const fullSection = getContainingSection(text, m.index, m[0].length);
             flags.push({
               id: def.id,
               label: def.label,
               severity: def.severity,
               evidence: "…" + evidence + "…",
+              fullSection,
               explanation: def.explanation,
               capturedValue: def.captureValue && m[1] ? m[1] : null,
             });
@@ -944,7 +985,7 @@
           docType: result.docType.type,
           docTypeYear: result.docType.year,
           isAIA: result.docType.isAIA,
-          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue })),
+          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue, fullSection: x.fullSection })),
           contractDate: f.contractDate.value,
           contractExpiration: f.contractExpiration.value,
           contractNumber: f.contractNumber.value,
