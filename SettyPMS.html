@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v14";
+    window.__appVersion = "2026-05-25-pms-v15";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2742,59 +2742,29 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
 
   let html = `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;max-width:7.5in;">`;
 
-  // PMS Record block — identifies which PMS record this analysis is linked to.
-  // Critical for stand-alone usefulness of the OneNote page (so a reader can
-  // tell which project or term contract this belongs to without opening PMS).
-  if (record && recordType === "project") {
-    const titleLine = `${e(record.name || "Untitled Project")}${record.projectNumber ? ` <span style="color:${NAVY};">(${e(record.projectNumber)})</span>` : ""}`;
-    html += `<div style="background:#F3F4F6;border-left:4px solid ${NAVY};padding:10px 14px;margin-bottom:14px;border-radius:4px;">`;
-    html += `<div style="font-size:13pt;font-weight:700;color:${NAVY};margin-bottom:4px;">📁 ${titleLine}</div>`;
-    html += `<table style="border-collapse:collapse;font-size:10pt;">`;
-    if (record.clientName || record.prime) html += `<tr><td ${td}><strong>Client:</strong></td><td>${e(record.clientName || record.prime)}</td></tr>`;
-    if (record.contractNumber)             html += `<tr><td ${td}><strong>Contract #:</strong></td><td>${e(record.contractNumber)}</td></tr>`;
-    if (record.contractStatus)             html += `<tr><td ${td}><strong>Status:</strong></td><td>${e(record.contractStatus)}</td></tr>`;
-    if (record.feeType)                    html += `<tr><td ${td}><strong>Fee type:</strong></td><td>${e(record.feeType)}</td></tr>`;
-    if (record.contractDate)               html += `<tr><td ${td}><strong>Contract date (PMS):</strong></td><td>${e(record.contractDate)}</td></tr>`;
-    if (record.contractExpirationDate)     html += `<tr><td ${td}><strong>Expiration (PMS):</strong></td><td>${e(record.contractExpirationDate)}</td></tr>`;
-    if (record.contractFolderUrl)          html += `<tr><td ${td}><strong>SharePoint folder:</strong></td><td><a href="${e(record.contractFolderUrl)}">${e(record.contractFolderUrl)}</a></td></tr>`;
-    // dragSourceUrl is the URL the browser captured when the PDF was
-    // dragged into the extractor — shows the actual provenance of the
-    // file (often distinct from the curated contract folder above).
-    // Only populated for drags from SharePoint web, browser tabs, etc.;
-    // empty for File Explorer drags.
-    if (extraction.dragSourceUrl)          html += `<tr><td ${td}><strong>PDF source:</strong></td><td><a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a></td></tr>`;
-    html += `</table></div>`;
-  } else if (record && recordType === "termContract") {
-    const titleLine = `${e(record.name || "Untitled Term Contract")}${record.contractNumber ? ` <span style="color:${NAVY};">(${e(record.contractNumber)})</span>` : ""}`;
-    html += `<div style="background:#F3F4F6;border-left:4px solid ${NAVY};padding:10px 14px;margin-bottom:14px;border-radius:4px;">`;
-    html += `<div style="font-size:13pt;font-weight:700;color:${NAVY};margin-bottom:4px;">📋 ${titleLine}</div>`;
-    html += `<table style="border-collapse:collapse;font-size:10pt;">`;
-    if (record.client)         html += `<tr><td ${td}><strong>Client / Agency:</strong></td><td>${e(record.client)}</td></tr>`;
-    if (record.contractStatus) html += `<tr><td ${td}><strong>Status:</strong></td><td>${e(record.contractStatus)}</td></tr>`;
-    if (record.startDate)      html += `<tr><td ${td}><strong>Start date:</strong></td><td>${e(record.startDate)}</td></tr>`;
-    if (record.expirationDate) html += `<tr><td ${td}><strong>Expiration date:</strong></td><td>${e(record.expirationDate)}</td></tr>`;
-    if (record.ceilingValue && +record.ceilingValue) html += `<tr><td ${td}><strong>Ceiling (NTE):</strong></td><td>${e(fmtMoney(record.ceilingValue))}</td></tr>`;
-    if (record.description)    html += `<tr><td ${td}><strong>Description:</strong></td><td>${e(record.description)}</td></tr>`;
-    if (record.folderUrl)      html += `<tr><td ${td}><strong>SharePoint folder:</strong></td><td><a href="${e(record.folderUrl)}">${e(record.folderUrl)}</a></td></tr>`;
-    // Same drag-source URL line as for projects — shows actual provenance of
-    // the file separately from the term contract's curated folder.
-    if (extraction.dragSourceUrl) html += `<tr><td ${td}><strong>PDF source:</strong></td><td><a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a></td></tr>`;
-    if (record.notes)          html += `<tr><td ${td}><strong>PMS notes:</strong></td><td style="white-space:pre-wrap;">${e(record.notes)}</td></tr>`;
-    html += `</table></div>`;
-  }
+  // PMS Record block removed per user feedback (Sep 2026): the OneNote page
+  // should contain ONLY data pulled from the contract — no PMS-derived
+  // fields (client name, status, fee type, etc.). The page is linked back
+  // to PMS via project.contractAnalysisHistory[].url; the navigation arrow
+  // works both ways.
 
-  // Source PDF metadata
+  // Source PDF metadata — all fields below are from the contract PDF text
+  // itself (not from the PMS record).
   html += `<p>`;
   html += `<strong>Source:</strong> ${e(extraction.fileName || "(unnamed PDF)")}<br/>`;
   const dt = extraction.isAIA
     ? `AIA ${extraction.docType}${extraction.docTypeYear ? " (" + extraction.docTypeYear + ")" : ""}`
     : (extraction.docType || "Unknown");
   html += `<strong>Document type:</strong> ${e(dt)}<br/>`;
-  if (extraction.contractDate) html += `<strong>Contract date (from PDF):</strong> ${e(extraction.contractDate)}<br/>`;
-  if (extraction.client)       html += `<strong>Client / Prime (from PDF):</strong> ${e(extraction.client)}<br/>`;
-  if (extraction.settyRole)    html += `<strong>Setty role (from PDF):</strong> ${e(extraction.settyRole)}<br/>`;
-  if (extraction.project)      html += `<strong>Project (from PDF):</strong> ${e(extraction.project)}<br/>`;
-  html += `<strong>Extracted:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
+  if (extraction.contractDate)   html += `<strong>Contract date:</strong> ${e(extraction.contractDate)}<br/>`;
+  if (extraction.contractNumber) html += `<strong>Contract #:</strong> ${e(extraction.contractNumber)}<br/>`;
+  if (extraction.primeProjectNumber) html += `<strong>Prime's Project #:</strong> ${e(extraction.primeProjectNumber)}<br/>`;
+  if (extraction.contractExpiration) html += `<strong>Contract expiration:</strong> ${e(extraction.contractExpiration)}<br/>`;
+  if (extraction.client)         html += `<strong>Client / Prime:</strong> ${e(extraction.client)}<br/>`;
+  if (extraction.settyRole)      html += `<strong>Setty role:</strong> ${e(extraction.settyRole)}<br/>`;
+  if (extraction.project)        html += `<strong>Project (per contract):</strong> ${e(extraction.project)}<br/>`;
+  if (extraction.dragSourceUrl)  html += `<strong>PDF source:</strong> <a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a><br/>`;
+  html += `<strong>Extracted on:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
   html += `</p>`;
 
   // Override flags — the headline output
@@ -2815,6 +2785,16 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     }
   }
 
+  // Scope of Work — pulled from ARTICLE 3 / SCOPE OF SERVICES / EXHIBIT A.
+  // Most prominent placement (between flags and payment) per user choice;
+  // it's typically the single most-referenced field after the override flags.
+  if (extraction.scopeOfWork && extraction.scopeOfWork.trim()) {
+    html += `<h2 ${h2}>Scope of Work / Services</h2>`;
+    html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:12px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-bottom:14px;">`;
+    html += `${e(extraction.scopeOfWork)}`;
+    html += `</div>`;
+  }
+
   // Payment terms
   const pt = extraction.payment || {};
   if (Object.values(pt).some(Boolean)) {
@@ -2825,6 +2805,15 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     if (pt.retainage)           html += `<tr><td ${td}><strong>Retainage:</strong></td><td>${e(pt.retainage)}</td></tr>`;
     if (pt.conditionsPrecedent) html += `<tr><td ${td}><strong>Conditions precedent:</strong></td><td>${e(pt.conditionsPrecedent)}</td></tr>`;
     html += `</table>`;
+    // Billing / invoice requirements — separate from the table above because
+    // it's free-text (specific clauses about HOW Setty has to bill) rather
+    // than a single value per field.
+    if (pt.billingRequirements && pt.billingRequirements.trim()) {
+      html += `<div style="margin-top:8px;font-weight:600;color:#374151;">Billing / Invoice Requirements (from contract):</div>`;
+      html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:10px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-top:4px;">`;
+      html += `${e(pt.billingRequirements)}`;
+      html += `</div>`;
+    }
   }
 
   // Reimbursable rules
@@ -9181,6 +9170,83 @@ function ContractExtractionModal({ extraction, onClose, onApply, applyFields = [
   );
 }
 
+// Returns the array of contract analyses for a record (project or term
+// contract). Reads from the new contractAnalysisHistory array if present;
+// otherwise synthesizes a 1-entry history from the legacy single-URL field
+// so older records (extracted before multi-analysis was added) still show
+// up in the dropdown.
+function getAnalysisHistory(record) {
+  if (record?.contractAnalysisHistory && record.contractAnalysisHistory.length) {
+    return record.contractAnalysisHistory;
+  }
+  const legacyUrl = record?.contractAnalysisUrl || record?.contractExtraction?.contractAnalysisUrl || "";
+  if (legacyUrl) {
+    return [{
+      url: legacyUrl,
+      savedAt: record?.contractExtraction?.savedAt || "",
+      fileName: record?.contractExtraction?.fileName || "Contract Analysis",
+      contractDate: record?.contractExtraction?.contractDate || "",
+    }];
+  }
+  return [];
+}
+
+// Dropdown showing all extractions associated with a record. Renders as a
+// single button when there's just one analysis (no dropdown needed), or a
+// "📋 View Analysis (N) ▾" button with an expandable list when there are
+// multiple — common for contracts with amendments where each addendum has
+// its own extraction page.
+function ViewAnalysisDropdown({ history }) {
+  const [open, setOpen] = useState(false);
+  if (!history || !history.length) return null;
+  if (history.length === 1) {
+    return (
+      <Btn small variant="ghost" onClick={() => window.open(history[0].url, "_blank")}
+           title="Open the Contract Analysis page in OneNote">
+        📋 View Analysis
+      </Btn>
+    );
+  }
+  // Newest first — that's the addendum/amendment, usually what the user wants
+  const sorted = [...history].sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
+  return (
+    <div style={{ position: "relative" }}>
+      <Btn small variant="ghost" onClick={() => setOpen(o => !o)}
+           title={`${history.length} analyses linked to this record. Newest at top.`}>
+        📋 View Analysis ({history.length}) {open ? "▴" : "▾"}
+      </Btn>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", right: 0,
+          background: P.card, border: `1px solid ${P.border}`, borderRadius: 6,
+          padding: 4, minWidth: 320, maxWidth: 420, zIndex: 1000,
+          boxShadow: "0 6px 20px rgba(0,0,0,0.4)",
+        }} onMouseLeave={() => setOpen(false)}>
+          {sorted.map((entry, i) => (
+            <div key={i}
+                 onClick={() => { window.open(entry.url, "_blank"); setOpen(false); }}
+                 style={{
+                   padding: "8px 12px", cursor: "pointer", borderRadius: 4,
+                   fontSize: 12, color: P.text,
+                 }}
+                 onMouseOver={e => e.currentTarget.style.background = P.bg}
+                 onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+              <div style={{ fontWeight: 600, color: P.accentLight, marginBottom: 2 }}>
+                {entry.fileName || "Contract Analysis"}
+              </div>
+              <div style={{ fontSize: 10, color: P.textMuted }}>
+                {entry.contractDate ? `Contract: ${entry.contractDate}` : ""}
+                {entry.contractDate && entry.savedAt ? "  ·  " : ""}
+                {entry.savedAt ? `Saved ${entry.savedAt.slice(0, 10)}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ContractView({ project, onChange, onEagerSave, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts, clients, onUpdateClient }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
 
@@ -9217,7 +9283,20 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
           : await createOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta);
         console.log("[project-extract] page result:", page);
         if (page?.webUrl) {
-          updates.contractAnalysisUrl = page.webUrl;
+          updates.contractAnalysisUrl = page.webUrl;  // latest (back-compat)
+          // Append to the analysis history — preserves links to prior
+          // extractions (e.g., original contract + each amendment). Newest
+          // entries are appended; the dropdown sorts newest-first.
+          const existingHistory = getAnalysisHistory(project);
+          updates.contractAnalysisHistory = [
+            ...existingHistory,
+            {
+              url: page.webUrl,
+              savedAt: new Date().toISOString(),
+              fileName: payload.fileName || "Contract.pdf",
+              contractDate: payload.contractDate || "",
+            },
+          ];
           // Also stash inside the contractExtraction blob so the URL is durable
           // even if a parent persistence layer strips unknown top-level fields.
           updates.contractExtraction = { ...updates.contractExtraction, contractAnalysisUrl: page.webUrl, oneNotePageId: page.id };
@@ -9270,17 +9349,14 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
   return (
     <div>
       <SectionTitle action={(() => {
-        // Read the OneNote URL from either the top-level field or the
-        // extraction blob — covers parents that might strip unknown fields.
-        const analysisUrl = project.contractAnalysisUrl || project.contractExtraction?.contractAnalysisUrl || "";
+        // ViewAnalysisDropdown handles the legacy single-URL case (renders a
+        // simple button) AND the multi-analysis case (dropdown listing all
+        // extractions: original + amendments + addenda). getAnalysisHistory
+        // synthesizes a history from the legacy fields when no array exists.
+        const history = getAnalysisHistory(project);
         return (
           <div style={{ display: "flex", gap: 8 }}>
-            {analysisUrl && (
-              <Btn small variant="ghost" onClick={() => window.open(analysisUrl, "_blank")}
-                   title="Open the Contract Analysis page in OneNote">
-                📋 View Analysis
-              </Btn>
-            )}
+            <ViewAnalysisDropdown history={history} />
             <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
           </div>
         );
@@ -11205,7 +11281,19 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
       const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, pageDate, meta);
       console.log("[term-contract-extract] page result:", page);
       if (page?.webUrl) {
-        updates.contractAnalysisUrl = page.webUrl;
+        updates.contractAnalysisUrl = page.webUrl;  // latest (back-compat)
+        // Append to the term contract's analysis history. Each amendment /
+        // re-execution gets its own page, all listed in the dropdown.
+        const existingHistory = getAnalysisHistory(form);
+        updates.contractAnalysisHistory = [
+          ...existingHistory,
+          {
+            url: page.webUrl,
+            savedAt: new Date().toISOString(),
+            fileName: payload.fileName || "Contract.pdf",
+            contractDate: payload.contractDate || "",
+          },
+        ];
         // Dual-store: also inside the contractExtraction blob so the URL
         // survives if a persistence layer strips unknown top-level fields.
         updates.contractExtraction = { ...updates.contractExtraction, contractAnalysisUrl: page.webUrl, oneNotePageId: page.id };
@@ -11288,16 +11376,7 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
               {editingId === "__new__" ? "New Term Contract" : "Edit Term Contract"}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              {(() => {
-                const analysisUrl = form.contractAnalysisUrl || form.contractExtraction?.contractAnalysisUrl || "";
-                if (!analysisUrl) return null;
-                return (
-                  <Btn small variant="ghost" onClick={() => window.open(analysisUrl, "_blank")}
-                       title="Open the Contract Analysis page in the Setty Term Contracts OneNote notebook">
-                    📋 View Analysis
-                  </Btn>
-                );
-              })()}
+              <ViewAnalysisDropdown history={getAnalysisHistory(form)} />
               <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
             </div>
           </div>
