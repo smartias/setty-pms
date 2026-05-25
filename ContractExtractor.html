@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v11";
+    window.__appVersion = "2026-05-25-extractor-v12";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -302,11 +302,23 @@
         label: "Pay-when-paid (overrides Setty's Net 30)",
         severity: "high",
         patterns: [
-          /after\s+the\s+(?:Architect|Consultant|Contractor|Prime|prime\s+consultant)\s+is\s+paid/i,
+          // Classic AIA phrasings
+          /after\s+the\s+(?:Architect|Consultant|Contractor|Prime|prime\s+consultant)\s+(?:is\s+paid|has\s+been\s+paid|has\s+received\s+payment|receives\s+payment)/i,
           /paid\s+by\s+the\s+Owner\s+under\s+the\s+Prime/i,
           /payments?\s+to\s+(?:the\s+)?(?:Consultant|Subconsultant)\s+shall\s+be\s+subject\s+to\s+(?:reduction|withholding)/i,
           /pay[\s\-]when[\s\-]paid/i,
           /in\s+proportion\s+to\s+the\s+amounts\s+received\s+from\s+the\s+Owner/i,
+          // ── New phrasings added after user reported misses ──
+          // "depends ... upon ... receipt of such amounts from the Owner"
+          /(?:depends?|contingent)\s+(?:entirely\s+)?(?:up)?on\s+the\s+(?:Architect|Prime|Consultant|Contractor)\'?s?\s+receipt\s+of\s+(?:such\s+)?(?:amounts|payment|funds)\s+from\s+(?:the\s+)?Owner/i,
+          // "obligation to pay ... shall be reduced proportionately"
+          /obligation\s+to\s+(?:make\s+(?:any\s+)?payments?|pay)[^.]{0,250}?(?:reduced\s+proportionate|proportionate(?:ly)?\s+reduced)/i,
+          // "within a reasonable time after the Architect has received payment"
+          /within\s+(?:a\s+)?reasonable\s+time\s+after[^.]{0,200}?(?:Architect|Consultant|Contractor|Prime)\s+(?:has\s+received|receives|is\s+paid)/i,
+          // "exercise reasonable care in obtaining payment" — telltale of pay-when-paid
+          /exercise\s+(?:reasonable\s+)?(?:care|(?:diligent\s+)?efforts?)\s+(?:in\s+)?(?:obtain(?:ing)?|collect(?:ing)?)\s+(?:prompt\s+)?payment[^.]{0,200}?(?:from\s+(?:the\s+)?Owner|for\s+(?:the\s+)?(?:Sub)?[Cc]onsultant)/i,
+          // "if ... receives partial payment ... reduced proportionately"
+          /(?:partial|pro[\s\-]?rata)\s+payment[^.]{0,200}?(?:reduced\s+proportionate|in\s+proportion)/i,
         ],
         explanation: "Setty's payment is contingent on the prime/architect being paid by the Owner. This overrides Setty's standard Net 30 terms and can significantly delay cashflow.",
       },
@@ -612,6 +624,38 @@
       return null;
     }
 
+    // Strips Setty's appended fee proposal section from the full text so that
+    // pattern matching only sees the CLIENT's contract — not Setty's own
+    // proposal language (which has rates, scope phrases, etc. that look like
+    // contract terms but aren't override clauses imposed by the client).
+    //
+    // ★ USER CONTRIBUTION POINT ★
+    // Add more markers below if Setty's other proposal templates aren't
+    // being detected. The marker matches the START of Setty's section; the
+    // text from that point onward is dropped.
+    function excludeSettyProposal(text) {
+      const markers = [
+        // EXHIBIT B header followed within ~1500 chars by Setty's standard banner
+        /EXHIBIT\s+B[\s\S]{0,1500}?(?:DESIGN\s+ENGINEERING\s+SERVICES|MECHANICAL\s*[\|\s]+ELECTRICAL\s*[\|\s]+PLUMBING)/i,
+        // Setty's standard fee proposal banner ("Mechanical | Electrical | Plumbing | Fire Protection")
+        /Mechanical\s*[\|]\s*Electrical\s*[\|]\s*Plumbing\s*[\|]\s*Fire\s+Protection/i,
+        // "DESIGN ENGINEERING SERVICES" header with To: addressee (Setty proposal cover)
+        /DESIGN\s+ENGINEERING\s+SERVICES\b[\s\S]{0,500}?(?:To\s*:|TO\s*:)/i,
+        // Setty Associates with their service-category banner (Modeling, Commissioning, LEED, etc.)
+        /\bSetty\s+(?:&\s+|and\s+)?Associates\b[\s\S]{0,300}?(?:LEED|Modeling|Commissioning|Master\s+Controls)/i,
+      ];
+      let earliest = text.length;
+      for (const re of markers) {
+        const m = text.match(re);
+        // Guard: require marker to appear past the first ~1000 chars. Setty's
+        // name shows up at the top of every contract as a PARTY (not as the
+        // author of the proposal section) — we don't want to truncate the
+        // entire contract just because Setty is named on the cover page.
+        if (m && m.index > 1000 && m.index < earliest) earliest = m.index;
+      }
+      return earliest < text.length ? text.slice(0, earliest) : text;
+    }
+
     function parseContractDate(text) {
       // AIA word-form: "AGREEMENT made as of the tenth of July in the year Two Thousand Eighteen"
       let m = text.match(/AGREEMENT\s+made\s+as\s+of\s+the\s+([A-Za-z\-]+)\s+of\s+([A-Za-z]+)\s+in\s+the\s+year\s+([A-Za-z\- ]+?)(?:\.|,|BETWEEN|$)/i);
@@ -626,6 +670,22 @@
       if (m) {
         const mo = MONTHS[m[2].toLowerCase()];
         if (mo) return { date: `${m[3]}-${String(mo).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`, source: "subcontract preamble '__ day of __'", confidence: "high" };
+      }
+      // Signature-line MM/DD/YYYY — common on executed contracts. Look for an
+      // explicit "Date:" / "Dated:" / "Effective Date:" label to avoid grabbing
+      // random dates in the body. Pulls the FIRST matching one (typically the
+      // signature on the first signature page = the contract's effective date).
+      m = text.match(/\b(?:Date|Dated|Effective\s+Date|Executed)\s*[:\-]\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/i);
+      if (m) {
+        let y = m[3]; if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
+        return { date: `${y}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`, source: "labeled 'Date: MM/DD/YYYY' on signature line", confidence: "high" };
+      }
+      // Generic MM/DD/YYYY anywhere in first ~6000 chars (cover + signature area).
+      // Lower confidence — could be a random date in the body. Only accepts
+      // years 1990-2099 to avoid false positives on numeric fields.
+      m = text.slice(0, 6000).match(/\b(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(19[9]\d|20\d{2})\b/);
+      if (m) {
+        return { date: `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`, source: "generic MM/DD/YYYY in cover", confidence: "medium" };
       }
       // Last resort: any date near "Effective Date" or "dated"
       m = text.slice(0, 4000).match(/(?:Effective\s+Date|dated)[\s\S]{0,40}?([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
@@ -866,13 +926,88 @@
       return out;
     }
 
+    // -- Scope of Work --
+    // Finds whatever section heading is closest to "scope of work" / "scope of
+    // services" and grabs the body of that section (up to ~2500 chars or the
+    // next §N.M / ARTICLE N boundary, whichever comes first).
+    function extractScopeOfWork(text) {
+      const anchors = [
+        /ARTICLE\s+3\s+(?:SCOPE\s+OF\s+SERVICES|SCOPE\s+OF\s+WORK|CONSULTANT['']?S\s+SERVICES|SERVICES)\b/i,
+        /(?:§|Section)\s*3(?:\.\d+)?\s+(?:SCOPE\s+OF\s+SERVICES|SCOPE\s+OF\s+WORK)/i,
+        /\bSCOPE\s+OF\s+(?:THE\s+)?(?:WORK|SERVICES)\b\s*[:\.\n]/i,
+        /EXHIBIT\s+A\s*[\-—:]?\s*(?:SCOPE|Services|Description\s+of\s+Services)/i,
+        /\bDescription\s+of\s+(?:the\s+)?(?:Services|Work|Scope)\b/i,
+      ];
+      for (const re of anchors) {
+        const m = text.match(re);
+        if (!m) continue;
+        const start = m.index;
+        const window = text.slice(start, Math.min(text.length, start + 5000));
+        // Stop at the next major section heading (but skip the one we just matched)
+        const tail = window.slice(m[0].length);
+        const stopRe = /(?:§\s*\d+\.\d+|ARTICLE\s+\d+\b|SECTION\s+\d+(?:\.\d+)?\b|EXHIBIT\s+[B-Z]\b)/;
+        const stop = tail.search(stopRe);
+        const sliceEnd = stop > 0 ? m[0].length + stop : Math.min(2500, window.length);
+        let section = window.slice(0, sliceEnd).trim();
+        if (section.length > 100) {
+          // Normalize whitespace but preserve paragraph structure
+          section = section.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
+          if (section.length > 2500) section = section.slice(0, 2500) + "…";
+          return makeField(section, "medium", "scope anchor: '" + m[0].slice(0, 60) + "…'");
+        }
+      }
+      return makeField("", "empty", "");
+    }
+
+    // -- Billing / Invoice Requirements --
+    // Captures specific direction on HOW Setty has to bill — payment cycle,
+    // required attachments, invoice format, supporting docs. Distinct from
+    // payment terms (which focuses on overrides like pay-when-paid).
+    function extractBillingRequirements(text) {
+      const hits = [];
+      const seen = new Set();
+      const collect = (snippet) => {
+        const key = snippet.slice(0, 80).toLowerCase();
+        if (!seen.has(key)) { seen.add(key); hits.push(snippet.trim()); }
+      };
+      const anchors = [
+        // Invoice submission cadence
+        /(?:invoices?|billing)\s+shall\s+be\s+submitted[^.]{0,300}\./i,
+        /(?:invoices?|payment\s+applications?)\s+(?:will|shall|must)\s+be\s+(?:submitted|delivered|provided)[^.]{0,300}\./i,
+        // Required content on invoices
+        /(?:invoices?\s+(?:must|shall)\s+(?:include|contain)|required\s+(?:on|with)\s+(?:each\s+)?invoice)[^.]{0,300}\./i,
+        /(?:supporting\s+documentation|backup\s+(?:material|documentation))[^.]{0,200}?(?:invoice|payment|billing)[^.]{0,200}\./i,
+        // Net payment windows
+        /\b(?:Net|net)\s+(?:thirty|forty[\s\-]five|sixty|ninety|\d{2,3})\s+(?:\(\d+\)\s+)?days?\b[^.]{0,200}\./i,
+        // Payment-application phrases (DDC/CARF-style projects often have these)
+        /payment\s+application(?:s)?[^.]{0,400}\./i,
+        // Audit / record-retention tied to billing
+        /(?:retain|maintain|keep)\s+(?:all\s+)?(?:books|records|invoices)[^.]{0,200}?(?:audit|inspection)/i,
+      ];
+      for (const re of anchors) {
+        const m = text.match(re);
+        if (m) collect(m[0]);
+      }
+      if (hits.length === 0) return makeField("", "empty", "");
+      const combined = hits.join("\n\n").slice(0, 2000);
+      return makeField(combined, "medium", "billing/invoice-requirement clauses (" + hits.length + " matched)");
+    }
+
     // ========================================================================
     // Main pipeline
     // ========================================================================
     function extractAll(parsedPdf) {
       const log = [];
-      const text = parsedPdf.fullText;
-      log.push({ type: "info", msg: `PDF parsed: ${parsedPdf.numPages} pages, ${text.length} chars` });
+      const rawText = parsedPdf.fullText;
+      // Strip Setty's appended fee proposal section (Exhibit B etc.) before
+      // pattern matching — those proposals are Setty's own language and don't
+      // represent client-imposed override terms. See excludeSettyProposal above.
+      const text = excludeSettyProposal(rawText);
+      const trimmed = rawText.length - text.length;
+      log.push({ type: "info", msg: `PDF parsed: ${parsedPdf.numPages} pages, ${rawText.length} chars` });
+      if (trimmed > 200) {
+        log.push({ type: "info", msg: `Trimmed ${trimmed} chars from Setty's proposal appendix — scanning client contract only.` });
+      }
 
       // 1. Document type
       const docType = detectDocType(text);
@@ -916,6 +1051,16 @@
       log.push({ type: "tier", msg: "Extracting schedule terms…" });
       const schedule = extractSchedule(text, flags);
 
+      // 7. Scope of Work
+      log.push({ type: "tier", msg: "Extracting scope of work…" });
+      const scopeOfWork = extractScopeOfWork(text);
+      if (scopeOfWork.value) log.push({ type: "hit", msg: `Scope of Work: ${scopeOfWork.value.slice(0,80)}…` });
+
+      // 8. Billing / Invoice requirements
+      log.push({ type: "tier", msg: "Extracting billing / invoice requirements…" });
+      const billingReqs = extractBillingRequirements(text);
+      if (billingReqs.value) log.push({ type: "hit", msg: `Billing requirements (${billingReqs.value.length} chars)` });
+
       return {
         log,
         docType,
@@ -929,12 +1074,15 @@
           client: parties.client,
           settyRole: parties.settyRole,
           project,
+          // scope (NEW)
+          scopeOfWork,
           // payment
           invoiceReview: payment.invoiceReview || makeField("", "empty", ""),
           payWhenPaid: payment.payWhenPaid,
           interestOnLate: payment.interestOnLate,
           retainage: payment.retainage,
           conditionsPrecedent: payment.conditionsPrecedent,
+          billingRequirements: billingReqs,  // NEW
           // reimbursable
           multiplier: reimb.multiplier,
           markupPolicy: reimb.markupPolicy,
@@ -1121,12 +1269,14 @@
           client: f.client.value,
           settyRole: f.settyRole.value,
           project: f.project.value,
+          scopeOfWork: f.scopeOfWork ? f.scopeOfWork.value : "",
           payment: {
             invoiceReview: f.invoiceReview.value,
             payWhenPaid: f.payWhenPaid.value,
             interestOnLate: f.interestOnLate.value,
             retainage: f.retainage.value,
             conditionsPrecedent: f.conditionsPrecedent.value,
+            billingRequirements: f.billingRequirements ? f.billingRequirements.value : "",
           },
           reimbursable: {
             multiplier: f.multiplier.value,
@@ -1289,12 +1439,16 @@
                   <FieldEditor keyName="settyRole" label="Setty Role" field={result.fields.settyRole} onChange={updateField} multiline />
                   <FieldEditor keyName="project" label="Project" field={result.fields.project} onChange={updateField} />
 
+                  <h3>Scope of Work</h3>
+                  <FieldEditor keyName="scopeOfWork" label="Scope of Work / Services" field={result.fields.scopeOfWork} onChange={updateField} multiline />
+
                   <h3>Payment Terms</h3>
                   <FieldEditor keyName="payWhenPaid" label="Pay-When-Paid?" field={result.fields.payWhenPaid} onChange={updateField} />
                   <FieldEditor keyName="invoiceReview" label="Invoice Review Window" field={result.fields.invoiceReview} onChange={updateField} />
                   <FieldEditor keyName="interestOnLate" label="Interest on Late Payment" field={result.fields.interestOnLate} onChange={updateField} />
                   <FieldEditor keyName="retainage" label="Retainage / Withholding" field={result.fields.retainage} onChange={updateField} />
                   <FieldEditor keyName="conditionsPrecedent" label="Conditions Precedent" field={result.fields.conditionsPrecedent} onChange={updateField} />
+                  <FieldEditor keyName="billingRequirements" label="Billing / Invoice Requirements" field={result.fields.billingRequirements} onChange={updateField} multiline />
 
                   <h3>Reimbursable Expense Rules</h3>
                   <FieldEditor keyName="multiplier" label="Client Multiplier" field={result.fields.multiplier} onChange={updateField} />
