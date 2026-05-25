@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<!-- Setty Contract Extractor | Standalone tool that integrates with SettyPMS via postMessage.
+     Purpose: surface CLIENT-IMPOSED override terms in contracts issued to Setty
+     (pay-when-paid, no markup, conditions precedent, etc.) — NOT to re-extract
+     Setty's own fee proposal, which is captured at proposal time. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+  <title>Setty Contract Extractor</title>
+
+  <script>
+    window.__appVersion = "2026-05-25-extractor-v2";
+  </script>
+
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js";
+  </script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #0F172A; color: #E2E8F0;
+      min-height: 100vh;
+    }
+    .header {
+      background: linear-gradient(90deg, #1F3864, #3B82F6);
+      padding: 14px 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+    .header .sub { font-size: 12px; opacity: 0.85; }
+    .pms-status {
+      font-size: 12px; padding: 4px 10px; border-radius: 12px; background: rgba(255,255,255,0.15);
+    }
+    .pms-status.connected { background: #15803D; }
+    .pms-status.disconnected { background: #B91C1C; }
+
+    .layout {
+      display: grid; grid-template-columns: 300px 1fr 400px; gap: 12px;
+      padding: 12px; min-height: calc(100vh - 56px);
+    }
+    .panel {
+      background: #1E293B; border: 1px solid #334155; border-radius: 8px;
+      padding: 14px; overflow-y: auto;
+    }
+    .panel h2 {
+      margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; color: #94A3B8; border-bottom: 1px solid #334155; padding-bottom: 6px;
+    }
+    .panel h3 {
+      margin: 16px 0 8px; font-size: 12px; font-weight: 700; color: #BFDBFE;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+
+    .dropzone {
+      border: 2px dashed #475569; border-radius: 8px; padding: 20px; text-align: center;
+      cursor: pointer; transition: all 0.15s; background: #0F172A;
+    }
+    .dropzone:hover, .dropzone.dragging { border-color: #3B82F6; background: #1E3A8A33; }
+    .dropzone .icon { font-size: 30px; margin-bottom: 6px; }
+    .dropzone p { margin: 4px 0; font-size: 12px; color: #94A3B8; }
+    .dropzone input { display: none; }
+
+    .file-info { margin-top: 12px; font-size: 11px; color: #94A3B8; }
+    .file-info strong { color: #E2E8F0; }
+
+    /* Override flags — the prominent thing the user cares about */
+    .flags-banner {
+      background: #7F1D1D; border-radius: 6px; padding: 12px; margin-bottom: 12px;
+    }
+    .flags-banner.empty { background: #14532D; }
+    .flags-banner.empty .header-line { color: #BBF7D0; }
+    .flags-banner .header-line {
+      font-size: 13px; font-weight: 700; color: #FECACA; margin-bottom: 8px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .flag {
+      background: rgba(0,0,0,0.25); border-radius: 4px; padding: 8px 10px;
+      margin-bottom: 6px; font-size: 12px;
+    }
+    .flag-label { font-weight: 700; color: #FCA5A5; }
+    .flag.medium .flag-label { color: #FCD34D; }
+    .flag.info .flag-label { color: #93C5FD; }
+    .flag-evidence {
+      font-size: 11px; color: #CBD5E1; font-style: italic; margin-top: 4px;
+      font-family: "Consolas", "Courier New", monospace;
+    }
+    .flag-loc { font-size: 10px; color: #94A3B8; }
+
+    .log { font-family: "Consolas", "Courier New", monospace; font-size: 11px; line-height: 1.5; }
+    .log .row { padding: 2px 0; border-bottom: 1px solid #1E293B; }
+    .log .tier { color: #60A5FA; font-weight: 600; }
+    .log .hit { color: #4ADE80; }
+    .log .miss { color: #F87171; }
+    .log .flag { color: #FCD34D; background: transparent; padding: 2px 0; margin: 0; }
+    .log .info { color: #94A3B8; }
+
+    .field {
+      margin-bottom: 10px; padding: 8px 10px; background: #0F172A; border-radius: 6px;
+      border-left: 3px solid #475569;
+    }
+    .field.conf-high { border-left-color: #22C55E; }
+    .field.conf-medium { border-left-color: #EAB308; }
+    .field.conf-low { border-left-color: #EF4444; }
+    .field.conf-empty { border-left-color: #475569; opacity: 0.65; }
+    .field label {
+      display: block; font-size: 11px; font-weight: 600; text-transform: uppercase;
+      color: #94A3B8; margin-bottom: 4px;
+    }
+    .field input, .field textarea {
+      width: 100%; background: #1E293B; color: #E2E8F0; border: 1px solid #334155;
+      border-radius: 4px; padding: 5px 7px; font-size: 12px; font-family: inherit;
+    }
+    .field textarea { resize: vertical; min-height: 40px; }
+    .field .source { font-size: 10px; color: #64748B; margin-top: 3px; font-style: italic; }
+    .field .badge {
+      display: inline-block; font-size: 9px; padding: 2px 6px; border-radius: 8px;
+      margin-left: 6px; font-weight: 700; text-transform: uppercase;
+    }
+    .badge.high { background: #14532D; color: #BBF7D0; }
+    .badge.medium { background: #713F12; color: #FDE68A; }
+    .badge.low { background: #7F1D1D; color: #FECACA; }
+    .badge.empty { background: #334155; color: #94A3B8; }
+
+    .actions { display: flex; gap: 8px; margin-top: 16px; }
+    .btn {
+      flex: 1; padding: 10px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary { background: #3B82F6; color: white; }
+    .btn-primary:hover { background: #2563EB; }
+    .btn-primary:disabled { background: #475569; cursor: not-allowed; }
+    .btn-secondary { background: #334155; color: #E2E8F0; }
+    .btn-secondary:hover { background: #475569; }
+
+    .doc-type {
+      display: inline-block; padding: 4px 10px; border-radius: 12px;
+      background: #1E3A8A; color: #BFDBFE; font-size: 11px; font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .doc-type.non-aia { background: #713F12; color: #FDE68A; }
+    .doc-type.unknown { background: #475569; color: #CBD5E1; }
+
+    .spinner {
+      display: inline-block; width: 12px; height: 12px; border: 2px solid #334155;
+      border-top-color: #3B82F6; border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // ========================================================================
+    // postMessage integration with SettyPMS
+    // ========================================================================
+    const PMS_ORIGINS = [
+      "null",                                  // file:// during local dev
+      "https://smartias.github.io",            // GitHub Pages deploy
+      "https://settyassociates.sharepoint.com", // if PMS is also served via SharePoint
+      window.location.origin,                  // same-origin (both files on same GH Pages)
+    ];
+
+    function sendToPMS(payload) {
+      if (!window.opener) {
+        alert("Open this tool from the SettyPMS Contracts tab to enable 'Send to PMS'.");
+        return false;
+      }
+      for (const origin of PMS_ORIGINS) {
+        try { window.opener.postMessage({ source: "ContractExtractor", type: "contractData", payload }, origin); }
+        catch (_) {}
+      }
+      return true;
+    }
+
+    // ========================================================================
+    // PDF reading (client-side, no upload)
+    // ========================================================================
+    async function readPdf(file) {
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      const pages = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        let text = ""; let lastY = null;
+        for (const item of content.items) {
+          if (lastY !== null && Math.abs(item.transform[5] - lastY) > 2) text += "\n";
+          else if (text && !text.endsWith(" ")) text += " ";
+          text += item.str;
+          lastY = item.transform[5];
+        }
+        pages.push(text);
+      }
+      return { pages, fullText: pages.join("\n\n"), numPages: pdf.numPages };
+    }
+
+    // ========================================================================
+    // OVERRIDE FLAG DETECTION — the heart of this tool
+    // ========================================================================
+    // Each flag definition has:
+    //   - id: stable key
+    //   - label: shown to user
+    //   - severity: "high" (real cashflow/compliance risk) | "medium" | "info"
+    //   - patterns: regex(es) to detect; first match wins
+    //   - explanation: what this means for Setty
+    //
+    // ★ USER CONTRIBUTION POINT ★
+    // When you encounter a contract with an override clause we missed, add it here.
+    // The patterns are intentionally readable — they're meant to be edited by hand.
+    //
+    const OVERRIDE_FLAGS = [
+      {
+        id: "pay-when-paid",
+        label: "Pay-when-paid (overrides Setty's Net 30)",
+        severity: "high",
+        patterns: [
+          /after\s+the\s+(?:Architect|Consultant|Contractor|Prime|prime\s+consultant)\s+is\s+paid/i,
+          /paid\s+by\s+the\s+Owner\s+under\s+the\s+Prime/i,
+          /payments?\s+to\s+(?:the\s+)?(?:Consultant|Subconsultant)\s+shall\s+be\s+subject\s+to\s+(?:reduction|withholding)/i,
+          /pay[\s\-]when[\s\-]paid/i,
+          /in\s+proportion\s+to\s+the\s+amounts\s+received\s+from\s+the\s+Owner/i,
+        ],
+        explanation: "Setty's payment is contingent on the prime/architect being paid by the Owner. This overrides Setty's standard Net 30 terms and can significantly delay cashflow.",
+      },
+      {
+        id: "no-markup",
+        label: "No markup on reimbursables",
+        severity: "high",
+        patterns: [
+          /shall\s+not\s+be\s+entitled\s+to\s+any\s+mark[\s\-]?up/i,
+          /no\s+mark[\s\-]?up\s+(?:shall|will|on)/i,
+          /without\s+(?:any\s+)?mark[\s\-]?up/i,
+        ],
+        explanation: "Setty cannot apply its standard markup to reimbursable items. Check for excluded categories (often travel, printing, filing fees, expediting).",
+      },
+      {
+        id: "no-interest",
+        label: "Interest on late payment waived",
+        severity: "high",
+        patterns: [
+          /no\s+interest\s+shall\s+be\s+(?:paid|payable)/i,
+          /interest\s+shall\s+not\s+(?:be\s+)?(?:paid|payable|accrue)/i,
+          /waives?\s+(?:any\s+)?(?:right\s+to\s+)?interest/i,
+        ],
+        explanation: "Setty's standard 1.5%/month interest on late payment is waived. Combined with pay-when-paid, this is a significant financial concession.",
+      },
+      {
+        id: "conditions-precedent",
+        label: "Conditions precedent to payment",
+        severity: "high",
+        patterns: [
+          /condition[s]?\s+precedent\s+to\s+payment/i,
+          /condition[s]?\s+precedent\s+to\s+such\s+payment/i,
+          /strict\s+condition[s]?\s+precedent/i,
+        ],
+        explanation: "Specific requirements (audit cooperation, staffing approval, prime-agreement compliance) must be satisfied BEFORE payment is owed. Missing any blocks invoicing.",
+      },
+      {
+        id: "multiplier",
+        label: "Client-imposed multiplier on labor",
+        severity: "medium",
+        patterns: [
+          /(?:Subconsultant['’]?s\s+)?[Mm]ultiplier(?:\s+\(as\s+set\s+forth)?[^\n]{0,200}?(\d+\.\d+)/,
+          /multiplier\s+of\s+(\d+\.\d+)/i,
+          /(\d+\.\d+)\s*[Mm]ultiplier/,
+        ],
+        captureValue: true,
+        explanation: "Client specifies a multiplier on direct labor. Compare to Setty's standard multiplier to confirm acceptable margin.",
+      },
+      {
+        id: "audit-rights",
+        label: "Audit / records access required",
+        severity: "medium",
+        patterns: [
+          /Records,?\s+Audits?,?\s+Reports/i,
+          /right\s+to\s+audit/i,
+          /(?:books?\s+and\s+)?records?\s+(?:shall|must)\s+be\s+(?:made\s+)?available\s+for\s+(?:audit|inspection)/i,
+        ],
+        explanation: "Client (or owner) can audit Setty's books/records related to this contract. Ensure billing rates and reimbursable docs are kept defensible.",
+      },
+      {
+        id: "prime-flowdown",
+        label: "Prime Agreement terms flow down",
+        severity: "medium",
+        patterns: [
+          /Prime\s+Master\s+Services\s+Agreement/i,
+          /Prime\s+Agreement[^\n]{0,200}(?:incorporated|applicable|bound|subject)/i,
+          /bound\s+(?:by|to)\s+the\s+same\s+(?:rules|terms|conditions)\s+of\s+the\s+prime/i,
+        ],
+        explanation: "Setty is bound by terms in a Prime Agreement that may not be fully visible in this contract. Request a copy or summary of the Prime to confirm full obligations.",
+      },
+      {
+        id: "approval-required",
+        label: "Prior written approval requirements",
+        severity: "info",
+        patterns: [
+          /prior\s+written\s+(?:approval|consent)/i,
+        ],
+        explanation: "Specific actions (staffing changes, subcontracting, additional services) require prior written approval. May slow execution if PM doesn't track.",
+      },
+      {
+        id: "termination-linked",
+        label: "Termination linked to Prime Agreement",
+        severity: "medium",
+        patterns: [
+          /If\s+the\s+Prime\s+Agreement\s+is\s+terminated[^.]+terminate\s+this\s+Subcontract/i,
+          /termination\s+of\s+the\s+Prime\s+Agreement[^.]+terminate/i,
+        ],
+        explanation: "If the prime's contract with the owner is terminated, Setty's contract terminates too — potentially without notice or wind-down terms.",
+      },
+
+      // ----- Indemnification / Insurance / Risk-allocation flags -----
+      // These detect SCOPE-WIDENING language, not the standard AIA mutual indemnity
+      // (which is narrow and OK for Setty). The discriminator phrases are:
+      //   "to the fullest extent permitted by law" + indemnification language
+      //   "defend, indemnify" (duty to defend = broader than just indemnify)
+      //   Flow-down to multiple parties ("Owner and all other Indemnitees")
+      {
+        id: "broad-indemnity",
+        label: "Broad indemnification (incl. duty to defend)",
+        severity: "high",
+        patterns: [
+          // "Subconsultant/Consultant shall ... defend, indemnify" — unilateral with duty to defend
+          /(?:Sub)?[Cc]onsultant\s+shall[^.]{0,250}?\bdefend\b[,\s]+\s*indemnif/i,
+          // "to the fullest extent permitted by law" near indemnification
+          /to\s+the\s+fullest\s+extent\s+permitted\s+by\s+law[^.]{0,250}?(?:defend|indemnif|hold\s+harmless)/i,
+          // Flow-down: indemnifying "Owner and all other Indemnitees" (named multi-party)
+          /indemnif[^.]{0,300}?(?:Owner\s+and\s+all\s+other\s+Indemnitees|all\s+(?:other\s+)?Indemnitees)/i,
+        ],
+        explanation: "Indemnity is broader than AIA standard — includes duty to defend and/or covers multiple parties (Owner, prime, their agents). Real E&O exposure beyond Setty's negligent acts. Verify with carrier whether scope is insurable; consider negotiating a 'negligence-only' carve-back.",
+      },
+      {
+        id: "e-o-limits",
+        label: "Professional Liability / E&O limit",
+        severity: "medium",
+        patterns: [
+          // AIA-style: "Professional Liability covering ... with policy limits of not less than $X"
+          /Professional\s+Liability[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)\s*(?:per\s+claim|each|in\s+the\s+aggregate)/i,
+          // Generic E&O dollar near "Errors and Omissions"
+          /Errors\s+and\s+Omissions[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)/i,
+        ],
+        captureValue: true,
+        explanation: "Verify Setty's E&O policy meets or exceeds this limit. If higher than Setty's standing limit, you'll need a project-specific endorsement (cost + carrier approval lead time). Flag to insurance broker.",
+      },
+      {
+        id: "cgl-limits",
+        label: "Commercial General Liability limit",
+        severity: "medium",
+        patterns: [
+          /Commercial\s+General\s+Liability[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)\s*(?:for\s+each|per|in\s+the\s+aggregate)/i,
+        ],
+        captureValue: true,
+        explanation: "CGL limit imposed by client. If above Setty's standing limit, typically met by adding excess/umbrella coverage. Verify with broker.",
+      },
+      {
+        id: "owner-direct-rights",
+        label: "Owner direct communication / direction rights",
+        severity: "medium",
+        patterns: [
+          /Owner\s+(?:may|shall\s+have\s+the\s+right|reserves\s+the\s+right)\s+to\s+(?:direct|communicate\s+directly|instruct|coordinate\s+directly)/i,
+          /direct\s+communication\s+(?:with|to|from)\s+(?:the\s+)?Owner/i,
+          /(?:Sub)?[Cc]onsultant\s+shall\s+(?:communicate|report|coordinate)\s+directly\s+(?:to|with)\s+(?:the\s+)?Owner/i,
+          /Owner\s+may\s+bypass/i,
+        ],
+        explanation: "Owner can bypass the prime/architect and direct Setty's work or request communication. Risks: conflicting directions from prime vs owner, scope creep without prime sign-off, billing disputes. Confirm escalation/notification protocol up front.",
+      },
+      {
+        id: "no-damages-for-delay",
+        label: "No damages for delay",
+        severity: "high",
+        patterns: [
+          /no\s+damages?\s+for\s+delay/i,
+          /no[\s\-]damages[\s\-]for[\s\-]delay/i,
+          /not\s+(?:be\s+)?entitled\s+to\s+(?:any\s+)?(?:damages|compensation|claim|recovery)[^.]{0,100}?(?:on\s+account\s+of\s+)?delay/i,
+          /(?:extension\s+of\s+time|time\s+extension)\s+(?:shall\s+be\s+)?(?:the\s+)?(?:sole|exclusive)\s+(?:and\s+exclusive\s+)?remedy/i,
+          /delay[^.]{0,100}?(?:sole|exclusive)\s+remedy[^.]{0,100}?(?:extension\s+of\s+time|time)/i,
+        ],
+        explanation: "If the project is delayed (by owner, prime, or third parties), Setty cannot recover additional compensation — only a time extension. Major exposure on long-delayed projects where Setty staffing costs continue. Push back during negotiation if possible.",
+      },
+      {
+        id: "liquidated-damages",
+        label: "Liquidated damages",
+        severity: "high",
+        patterns: [
+          // With dollar/day amount
+          /liquidated\s+damages[^.]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)\s*(?:per\s+(?:calendar\s+)?day|\/day|each\s+day)/i,
+          /\$\s*([\d,]+(?:\.\d{2})?)\s*per\s+(?:calendar\s+)?day[^.]{0,80}?(?:delay|liquidated\s+damages|substantial\s+completion)/i,
+          // Mention without amount (still important to flag)
+          /\bliquidated\s+damages\b/i,
+        ],
+        captureValue: true,
+        explanation: "Daily penalty for delay in completion. Confirm whether LDs pass through proportionally to subconsultants (typical) or are borne fully by the prime. If they pass through, Setty's portion may be deducted directly from invoices — model worst-case in fee.",
+      },
+
+      // ★ ADD MORE FLAGS HERE as you encounter them. Pattern is:
+      //   { id, label, severity: "high"|"medium"|"info", patterns: [...], captureValue?, explanation: "..." }
+    ];
+
+    function detectFlags(text) {
+      const flags = [];
+      for (const def of OVERRIDE_FLAGS) {
+        for (const pattern of def.patterns) {
+          const m = text.match(pattern);
+          if (m) {
+            // Capture surrounding context for evidence
+            const start = Math.max(0, m.index - 60);
+            const end = Math.min(text.length, m.index + m[0].length + 140);
+            const evidence = text.slice(start, end).replace(/\s+/g, " ").trim();
+            flags.push({
+              id: def.id,
+              label: def.label,
+              severity: def.severity,
+              evidence: "…" + evidence + "…",
+              explanation: def.explanation,
+              capturedValue: def.captureValue && m[1] ? m[1] : null,
+            });
+            break; // first matching pattern wins for this flag
+          }
+        }
+      }
+      return flags;
+    }
+
+    // ========================================================================
+    // STRUCTURED EXTRACTION — payment terms, reimbursable rules, schedule
+    // ========================================================================
+    function makeField(value, confidence, source) {
+      return { value: value || "", confidence: value ? confidence : "empty", source: source || "" };
+    }
+
+    // Find a heading and return the chunk of text following it
+    function sectionAfter(text, headingRegex, maxChars = 2000) {
+      const m = text.match(headingRegex);
+      if (!m) return null;
+      const start = m.index + m[0].length;
+      return text.slice(start, start + maxChars);
+    }
+
+    // -- Document type detection --
+    function detectDocType(text) {
+      const cover = text.slice(0, 3000);
+      const m = cover.match(/Document\s+(A\d{3}|B\d{3}|C\d{3})(?:TM|™)?\s*[–—\-]?\s*(\d{4})?/i);
+      if (m) return { type: m[1].toUpperCase(), year: m[2] || null, isAIA: true };
+      if (/SUBCONTRACT\s+AGREEMENT/i.test(cover)) return { type: "Subcontract Agreement", isAIA: false };
+      if (/Master\s+Services\s+Agreement/i.test(cover)) return { type: "Master Services Agreement", isAIA: false };
+      if (/PROFESSIONAL\s+SERVICES\s+AGREEMENT/i.test(cover)) return { type: "Professional Services Agreement", isAIA: false };
+      return { type: "Unknown contract type", isAIA: false };
+    }
+
+    // -- Date parsing --
+    const ORDINAL_WORDS = {
+      first:1, second:2, third:3, fourth:4, fifth:5, sixth:6, seventh:7, eighth:8, ninth:9,
+      tenth:10, eleventh:11, twelfth:12, thirteenth:13, fourteenth:14, fifteenth:15,
+      sixteenth:16, seventeenth:17, eighteenth:18, nineteenth:19, twentieth:20,
+      "twenty-first":21, "twenty-second":22, "twenty-third":23, "twenty-fourth":24,
+      "twenty-fifth":25, "twenty-sixth":26, "twenty-seventh":27, "twenty-eighth":28,
+      "twenty-ninth":29, thirtieth:30, "thirty-first":31,
+    };
+    const MONTHS = {
+      january:1, february:2, march:3, april:4, may:5, june:6,
+      july:7, august:8, september:9, october:10, november:11, december:12,
+    };
+
+    function wordsToYear(s) {
+      const t = s.toLowerCase().replace(/[,]/g, "").trim();
+      const small = {
+        one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
+        eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17,
+        eighteen:18, nineteen:19, twenty:20, thirty:30, forty:40, fifty:50, sixty:60,
+        seventy:70, eighty:80, ninety:90,
+      };
+      let m = t.match(/two\s+thousand(?:\s+and)?\s+([a-z\- ]+)/);
+      if (m) {
+        const rest = m[1].trim();
+        if (small[rest] !== undefined) return 2000 + small[rest];
+        const parts = rest.split(/[\s-]+/);
+        if (parts.length === 2 && small[parts[0]] && small[parts[1]]) return 2000 + small[parts[0]] + small[parts[1]];
+        if (parts.length === 1 && small[parts[0]]) return 2000 + small[parts[0]];
+      }
+      // Numeric year already in the string?
+      m = t.match(/\b(20\d{2}|19\d{2})\b/);
+      if (m) return parseInt(m[1], 10);
+      return null;
+    }
+
+    function parseContractDate(text) {
+      // AIA word-form: "AGREEMENT made as of the tenth of July in the year Two Thousand Eighteen"
+      let m = text.match(/AGREEMENT\s+made\s+as\s+of\s+the\s+([A-Za-z\-]+)\s+of\s+([A-Za-z]+)\s+in\s+the\s+year\s+([A-Za-z\- ]+?)(?:\.|,|BETWEEN|$)/i);
+      if (m) {
+        const day = ORDINAL_WORDS[m[1].toLowerCase()];
+        const month = MONTHS[m[2].toLowerCase()];
+        const year = wordsToYear(m[3]);
+        if (day && month && year) return { date: `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`, source: "AIA cover 'AGREEMENT made as of'", confidence: "high" };
+      }
+      // Non-AIA: "as of this 11th day of December, 2023"
+      m = text.match(/(?:as\s+of\s+(?:this\s+)?|dated\s+)(\d{1,2})(?:st|nd|rd|th)?\s+day\s+of\s+([A-Za-z]+),?\s+(\d{4})/i);
+      if (m) {
+        const mo = MONTHS[m[2].toLowerCase()];
+        if (mo) return { date: `${m[3]}-${String(mo).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`, source: "subcontract preamble '__ day of __'", confidence: "high" };
+      }
+      // Last resort: any date near "Effective Date" or "dated"
+      m = text.slice(0, 4000).match(/(?:Effective\s+Date|dated)[\s\S]{0,40}?([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
+      if (m) {
+        const mo = MONTHS[m[1].toLowerCase()];
+        if (mo) return { date: `${m[3]}-${String(mo).padStart(2,"0")}-${String(m[2]).padStart(2,"0")}`, source: "generic 'Effective Date' anchor", confidence: "medium" };
+      }
+      return null;
+    }
+
+    // -- Parties --
+    function extractParties(text) {
+      const cover = text.slice(0, 4000);
+      // AIA: "BETWEEN the Consultant's client identified as the Architect: <CLIENT> and the Consultant: <SETTY>"
+      let m = cover.match(/BETWEEN[\s\S]{0,80}?:\s*([\s\S]{20,300}?)\s+and\s+the\s+(?:Consultant|Architect|Contractor)[^:]*:\s*([\s\S]{20,300}?)(?=\s+for\s+the\s+following|\s+the\s+Project|\n\s*for\s|ARTICLE)/i);
+      if (m) return {
+        client: { value: m[1].replace(/\s+/g, " ").trim(), confidence: "high", source: "AIA cover BETWEEN clause" },
+        settyRole: { value: m[2].replace(/\s+/g, " ").trim(), confidence: "high", source: "AIA cover BETWEEN clause" },
+      };
+      // Non-AIA subcontract: "between <PRIME> and <SETTY>"
+      m = cover.match(/between\s+([A-Z][A-Za-z &,\.'\-]+?)\s+\(["“]([^"”]+)["”][\s\S]{0,100}?\)\s+and\s+([A-Z][A-Za-z &,\.'\-]+?)\s+\(/);
+      if (m) return {
+        client: { value: m[1].trim(), confidence: "medium", source: "subcontract preamble 'between ... and'" },
+        settyRole: { value: m[3].trim(), confidence: "medium", source: "subcontract preamble 'between ... and'" },
+      };
+      return {
+        client: makeField("", "empty", ""),
+        settyRole: makeField("", "empty", ""),
+      };
+    }
+
+    // -- Project name --
+    function extractProject(text) {
+      const cover = text.slice(0, 4000);
+      // AIA section "PROJECT: ..." or "for the following PROJECT:"
+      let m = cover.match(/(?:for\s+the\s+following\s+)?PROJECT:\s*([^\n]{5,200})/i);
+      if (m) return makeField(m[1].trim(), "high", "AIA 'PROJECT:' label");
+      // Non-AIA: "for the performance of certain professional services for the [Project Name] (the "Project")"
+      m = cover.match(/professional\s+services\s+for\s+the\s+([A-Z][^.]{5,150}?)\s+\(\s*(?:the\s+)?["“]?Project["”]?/i);
+      if (m) return makeField(m[1].trim(), "medium", "subcontract 'professional services for the' clause");
+      // First-line title: a lot of subcontracts open with "<PROJECT NAME>"
+      const firstLine = (cover.split("\n")[0] || "").trim();
+      if (firstLine.length > 8 && firstLine.length < 150 && /[A-Z]/.test(firstLine)) {
+        return makeField(firstLine, "low", "first line of document");
+      }
+      return makeField("", "empty", "");
+    }
+
+    // -- Payment terms --
+    function extractPaymentTerms(text, flags) {
+      const out = {};
+
+      // Invoice review window — "within ten days" / "within 10 days"
+      const reviewM = text.match(/(?:Architect|Consultant|Owner|Grimshaw|prime)[^\n]{0,80}?within\s+(\w+|\d+)\s+days?[^\n]{0,120}?(?:invoice|billing|payment\s+application)/i)
+                  || text.match(/(?:invoice|billing)[^\n]{0,120}?within\s+(\w+|\d+)\s+days?/i);
+      if (reviewM) {
+        out.invoiceReview = makeField(`Within ${reviewM[1]} days`, "medium", "AIA §11.6 / payment-article review window");
+      }
+
+      // Pay-when-paid? Pull straight from the flags result for consistency
+      const pwp = flags.find(f => f.id === "pay-when-paid");
+      out.payWhenPaid = pwp
+        ? makeField("YES — see override flag", "high", pwp.evidence.slice(0, 120))
+        : makeField("No / not detected", "medium", "no pay-when-paid language found");
+
+      // Interest on late payment
+      const noInt = flags.find(f => f.id === "no-interest");
+      if (noInt) {
+        out.interestOnLate = makeField("WAIVED (no interest payable)", "high", "client waiver clause");
+      } else {
+        // Look for standard rate language
+        const intM = text.match(/(\d+(?:\.\d+)?%)\s*(?:per\s+month|monthly|annually)[^\n]{0,80}?(?:interest|late|past\s+due)/i)
+                  || text.match(/(?:interest|late)[^\n]{0,80}?(\d+(?:\.\d+)?%)\s*(?:per\s+month|monthly|annually)/i);
+        if (intM) out.interestOnLate = makeField(intM[1], "medium", "interest rate near 'late payment'");
+        else out.interestOnLate = makeField("", "empty", "");
+      }
+
+      // Retainage / withholding
+      const retM = text.match(/retainage[^\n]{0,80}?(\d+(?:\.\d+)?\s*%|\$[\d,]+)/i)
+                || text.match(/retain[^\n]{0,80}?(\d+(?:\.\d+)?\s*%)\s+of/i);
+      if (retM) out.retainage = makeField(retM[1].trim(), "medium", "retainage clause");
+      else out.retainage = makeField("", "empty", "");
+
+      // Conditions precedent count — just note presence
+      const cpFlag = flags.find(f => f.id === "conditions-precedent");
+      out.conditionsPrecedent = cpFlag
+        ? makeField("YES — review carefully", "high", "see flagged clause(s)")
+        : makeField("None detected", "low", "no 'condition precedent' language found");
+
+      return out;
+    }
+
+    // -- Reimbursable expense rules --
+    function extractReimbursableRules(text, flags) {
+      const out = {};
+
+      // Multiplier — pull from flag
+      const multFlag = flags.find(f => f.id === "multiplier");
+      if (multFlag && multFlag.capturedValue) {
+        out.multiplier = makeField(multFlag.capturedValue, "high", "client-imposed multiplier");
+      } else {
+        out.multiplier = makeField("", "empty", "");
+      }
+
+      // No-markup status
+      const nmFlag = flags.find(f => f.id === "no-markup");
+      out.markupPolicy = nmFlag
+        ? makeField("NO MARKUP allowed (see flag)", "high", "client prohibition")
+        : makeField("Standard markup likely permitted", "low", "no prohibition found — verify against client's exhibit");
+
+      // Reimbursable section body — look for §11.5/§11.8 (AIA) or "Reimbursable" sections
+      let body = sectionAfter(text, /§\s*11\.[58]\b[^\n]*REIMBURSABLE/i, 1500)
+              || sectionAfter(text, /COMPENSATION\s+FOR\s+REIMBURSABLE\s+EXPENSES/i, 1500)
+              || sectionAfter(text, /Reimbursable\s+(?:Expenses|Services)\b/i, 1500);
+      if (body) {
+        // Trim at next section heading
+        const stop = body.search(/§\s*\d+\.\d+\b|ARTICLE\s+\d+|\n\d+\.\d+\.\d+/);
+        const snippet = (stop > 50 ? body.slice(0, stop) : body.slice(0, 700)).trim();
+        if (/prime\s+agreement|prime\s+master/i.test(snippet)) {
+          out.reimbursableRules = makeField("Refers to Prime Agreement — request Prime for full rules.\n\n" + snippet.slice(0, 400), "medium", "AIA §11.5 / non-AIA reimbursable section, defers to Prime");
+        } else {
+          out.reimbursableRules = makeField(snippet, "medium", "extracted reimbursable-rules block");
+        }
+      } else {
+        out.reimbursableRules = makeField("", "empty", "");
+      }
+
+      // Categories excluded from markup (Grimshaw-style explicit list)
+      const exclM = text.match(/not\s+be\s+entitled\s+to\s+any\s+mark[\s\-]?up\s+with\s+respect\s+to([\s\S]{0,400}?)(?:\.\s*\n|\n\s*[A-Z]|Subconsultant)/i);
+      if (exclM) {
+        out.markupExclusions = makeField(exclM[1].replace(/\s+/g, " ").trim(), "high", "explicit no-markup exclusion list");
+      } else {
+        out.markupExclusions = makeField("", "empty", "");
+      }
+
+      return out;
+    }
+
+    // -- Schedule / duration --
+    function extractSchedule(text, flags) {
+      const out = {};
+
+      // Substantial Completion — appears only in owner/contractor contracts typically
+      let m = text.match(/Substantial\s+Completion[^\n]{0,200}?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|[A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i);
+      if (m) {
+        out.substantialCompletion = makeField(m[1], "high", "explicit Substantial Completion date");
+      } else if (/Substantial\s+Completion/i.test(text)) {
+        out.substantialCompletion = makeField("Mentioned but no explicit date — check schedule exhibit", "low", "term present without date");
+      } else {
+        out.substantialCompletion = makeField("Not applicable (services contract)", "info", "no Substantial Completion language");
+      }
+
+      // Schedule reference — does this contract defer schedule to Prime/Task Order?
+      if (/schedules?\s+(?:and\s+timelines\s+)?set\s+forth\s+in\s+the\s+Prime/i.test(text) ||
+          /Task\s+Order/i.test(text) ||
+          /Prime\s+Agreement/i.test(text) && /schedule/i.test(text)) {
+        out.scheduleSource = makeField("Schedule governed by Prime Agreement / Task Order", "high", "client cross-references Prime");
+      } else {
+        // Look for a standalone duration clause
+        m = text.match(/(?:term|duration|period)\s+of\s+(?:this\s+)?(?:Agreement|Subcontract|contract)[^\n]{0,80}?(\d+\s+(?:months?|years?|days?))/i);
+        if (m) out.scheduleSource = makeField(m[1], "medium", "explicit duration clause");
+        else out.scheduleSource = makeField("", "empty", "");
+      }
+
+      // Termination notice
+      m = text.match(/(?:terminate|termination)[^\n]{0,200}?(?:upon|with|on)\s+(\w+|\d+)\s+days?\s+(?:written\s+)?notice/i);
+      if (m) out.terminationNotice = makeField(`${m[1]} days written notice`, "medium", "termination notice clause");
+      else out.terminationNotice = makeField("", "empty", "");
+
+      return out;
+    }
+
+    // ========================================================================
+    // Main pipeline
+    // ========================================================================
+    function extractAll(parsedPdf) {
+      const log = [];
+      const text = parsedPdf.fullText;
+      log.push({ type: "info", msg: `PDF parsed: ${parsedPdf.numPages} pages, ${text.length} chars` });
+
+      // 1. Document type
+      const docType = detectDocType(text);
+      log.push({ type: "info", msg: `Document type: ${docType.type}${docType.year ? " ("+docType.year+")" : ""}` });
+
+      // 2. OVERRIDE FLAGS — the primary output
+      log.push({ type: "tier", msg: "Scanning for override clauses…" });
+      const flags = detectFlags(text);
+      for (const f of flags) {
+        log.push({ type: "flag", msg: `⚑ ${f.label}` });
+      }
+      if (flags.length === 0) log.push({ type: "info", msg: "No override flags detected — verify manually" });
+
+      // 3. Document metadata
+      log.push({ type: "tier", msg: "Extracting document metadata…" });
+      const dateRes = parseContractDate(text);
+      const contractDate = dateRes
+        ? makeField(dateRes.date, dateRes.confidence, dateRes.source)
+        : makeField("", "empty", "");
+      if (dateRes) log.push({ type: "hit", msg: `Contract date: ${dateRes.date}` });
+      else log.push({ type: "miss", msg: "Contract date not parsed" });
+
+      const parties = extractParties(text);
+      if (parties.client.value) log.push({ type: "hit", msg: `Client: ${parties.client.value.slice(0,60)}…` });
+      const project = extractProject(text);
+      if (project.value) log.push({ type: "hit", msg: `Project: ${project.value.slice(0,60)}` });
+
+      // 4. Payment terms
+      log.push({ type: "tier", msg: "Extracting payment terms…" });
+      const payment = extractPaymentTerms(text, flags);
+
+      // 5. Reimbursable rules
+      log.push({ type: "tier", msg: "Extracting reimbursable expense rules…" });
+      const reimb = extractReimbursableRules(text, flags);
+
+      // 6. Schedule
+      log.push({ type: "tier", msg: "Extracting schedule terms…" });
+      const schedule = extractSchedule(text, flags);
+
+      return {
+        log,
+        docType,
+        flags,
+        fields: {
+          // metadata
+          contractDate,
+          client: parties.client,
+          settyRole: parties.settyRole,
+          project,
+          // payment
+          invoiceReview: payment.invoiceReview || makeField("", "empty", ""),
+          payWhenPaid: payment.payWhenPaid,
+          interestOnLate: payment.interestOnLate,
+          retainage: payment.retainage,
+          conditionsPrecedent: payment.conditionsPrecedent,
+          // reimbursable
+          multiplier: reimb.multiplier,
+          markupPolicy: reimb.markupPolicy,
+          markupExclusions: reimb.markupExclusions,
+          reimbursableRules: reimb.reimbursableRules,
+          // schedule
+          substantialCompletion: schedule.substantialCompletion,
+          scheduleSource: schedule.scheduleSource,
+          terminationNotice: schedule.terminationNotice,
+        },
+      };
+    }
+
+    // ========================================================================
+    // React UI
+    // ========================================================================
+    function FieldEditor({ keyName, label, field, onChange, multiline }) {
+      const Tag = multiline ? "textarea" : "input";
+      return (
+        <div className={`field conf-${field.confidence}`}>
+          <label>
+            {label}
+            <span className={`badge ${field.confidence}`}>{field.confidence}</span>
+          </label>
+          <Tag
+            value={field.value}
+            onChange={(e) => onChange(keyName, { ...field, value: e.target.value })}
+            rows={multiline ? 3 : undefined}
+          />
+          {field.source && <div className="source">via {field.source}</div>}
+        </div>
+      );
+    }
+
+    function FlagsBanner({ flags }) {
+      if (flags.length === 0) {
+        return (
+          <div className="flags-banner empty">
+            <div className="header-line">✓ No client-override clauses detected</div>
+            <div style={{fontSize: 11, color: "#A7F3D0"}}>
+              Verify manually — absence of detection isn't proof of absence.
+            </div>
+          </div>
+        );
+      }
+      const high = flags.filter(f => f.severity === "high");
+      const medium = flags.filter(f => f.severity === "medium");
+      const info = flags.filter(f => f.severity === "info");
+      return (
+        <div className="flags-banner">
+          <div className="header-line">
+            ⚑ {flags.length} override clause{flags.length === 1 ? "" : "s"} detected
+            {high.length > 0 && <span style={{fontSize: 11, fontWeight: 500}}> ({high.length} high-severity)</span>}
+          </div>
+          {[...high, ...medium, ...info].map((f) => (
+            <div className={`flag ${f.severity}`} key={f.id}>
+              <div className="flag-label">{f.label}{f.capturedValue ? ` — ${f.capturedValue}` : ""}</div>
+              <div style={{fontSize: 11, color: "#E2E8F0", marginTop: 4}}>{f.explanation}</div>
+              <div className="flag-evidence">{f.evidence}</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function App() {
+      const [file, setFile] = useState(null);
+      const [parsing, setParsing] = useState(false);
+      const [result, setResult] = useState(null);
+      const [log, setLog] = useState([]);
+      const [pmsConnected, setPmsConnected] = useState(false);
+      const [dragging, setDragging] = useState(false);
+
+      useEffect(() => { setPmsConnected(!!window.opener); }, []);
+
+      const handleFile = useCallback(async (f) => {
+        if (!f || f.type !== "application/pdf") { alert("Please drop a PDF file."); return; }
+        setFile(f); setParsing(true); setResult(null);
+        setLog([{ type: "info", msg: `Reading ${f.name}…` }]);
+        try {
+          const parsed = await readPdf(f);
+          const res = extractAll(parsed);
+          setResult(res);
+          setLog((prev) => [...prev, ...res.log]);
+        } catch (e) {
+          setLog((prev) => [...prev, { type: "miss", msg: `Error: ${e.message}` }]);
+          console.error(e);
+        } finally { setParsing(false); }
+      }, []);
+
+      const onDrop = (e) => {
+        e.preventDefault(); setDragging(false);
+        if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+      };
+
+      const updateField = useCallback((key, newVal) => {
+        setResult((prev) => ({ ...prev, fields: { ...prev.fields, [key]: newVal } }));
+      }, []);
+
+      const send = () => {
+        if (!result) return;
+        const f = result.fields;
+        const payload = {
+          fileName: file?.name,
+          docType: result.docType.type,
+          docTypeYear: result.docType.year,
+          isAIA: result.docType.isAIA,
+          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue })),
+          contractDate: f.contractDate.value,
+          client: f.client.value,
+          settyRole: f.settyRole.value,
+          project: f.project.value,
+          payment: {
+            invoiceReview: f.invoiceReview.value,
+            payWhenPaid: f.payWhenPaid.value,
+            interestOnLate: f.interestOnLate.value,
+            retainage: f.retainage.value,
+            conditionsPrecedent: f.conditionsPrecedent.value,
+          },
+          reimbursable: {
+            multiplier: f.multiplier.value,
+            markupPolicy: f.markupPolicy.value,
+            markupExclusions: f.markupExclusions.value,
+            rules: f.reimbursableRules.value,
+          },
+          schedule: {
+            substantialCompletion: f.substantialCompletion.value,
+            scheduleSource: f.scheduleSource.value,
+            terminationNotice: f.terminationNotice.value,
+          },
+        };
+        if (sendToPMS(payload)) alert("Sent to PMS. You can close this window.");
+      };
+
+      const docTypeLabel = result?.docType
+        ? (result.docType.isAIA ? `AIA ${result.docType.type} ${result.docType.year || ""}` : result.docType.type)
+        : null;
+
+      return (
+        <>
+          <div className="header">
+            <div>
+              <h1>Setty Contract Extractor</h1>
+              <div className="sub">Surfaces client-imposed override terms · pdf.js · No AI · No data leaves your browser</div>
+            </div>
+            <div className={`pms-status ${pmsConnected ? "connected" : "disconnected"}`}>
+              {pmsConnected ? "● Connected to PMS" : "○ Standalone mode"}
+            </div>
+          </div>
+
+          <div className="layout">
+            {/* LEFT — drop zone */}
+            <div className="panel">
+              <h2>1. Contract PDF</h2>
+              <label className={`dropzone ${dragging ? "dragging" : ""}`}
+                     onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                     onDragLeave={() => setDragging(false)}
+                     onDrop={onDrop}>
+                <div className="icon">📄</div>
+                <p><strong>Drop a contract PDF</strong></p>
+                <p>or click to browse</p>
+                <input type="file" accept="application/pdf" onChange={(e) => handleFile(e.target.files[0])} />
+              </label>
+              {file && (
+                <div className="file-info">
+                  <strong>{file.name}</strong><br/>
+                  {(file.size / 1024 / 1024).toFixed(2)} MB
+                  {parsing && <div><span className="spinner"></span>Parsing…</div>}
+                </div>
+              )}
+              <h2 style={{marginTop: 20}}>About</h2>
+              <p style={{fontSize: 11, color: "#94A3B8", lineHeight: 1.5}}>
+                This tool extracts <strong>client-imposed override terms</strong> from contracts issued to Setty —
+                pay-when-paid clauses, no-markup rules, conditions precedent, and similar terms that
+                supersede Setty's standard proposal. It does <em>not</em> re-extract Setty's own fee proposals.
+              </p>
+            </div>
+
+            {/* MIDDLE — flags banner + log */}
+            <div className="panel">
+              <h2>2. Override Clauses & Extraction Log</h2>
+              {result && <FlagsBanner flags={result.flags} />}
+              {docTypeLabel && (
+                <div className={`doc-type ${result.docType.isAIA ? "" : "non-aia"}`}>{docTypeLabel}</div>
+              )}
+              <div className="log">
+                {log.map((row, i) => (
+                  <div className="row" key={i}>
+                    <span className={row.type}>[{row.type}]</span> {row.msg}
+                  </div>
+                ))}
+                {!log.length && <div className="row info">Drop a contract PDF to begin.</div>}
+              </div>
+            </div>
+
+            {/* RIGHT — review + send */}
+            <div className="panel">
+              <h2>3. Review & Send</h2>
+              {!result && <p style={{fontSize: 12, color: "#94A3B8"}}>Extracted fields appear here. Review each one before sending to PMS — low-confidence values are flagged in red, medium in yellow.</p>}
+              {result && (
+                <>
+                  <h3>Document</h3>
+                  <FieldEditor keyName="contractDate" label="Contract Date" field={result.fields.contractDate} onChange={updateField} />
+                  <FieldEditor keyName="client" label="Client / Prime" field={result.fields.client} onChange={updateField} multiline />
+                  <FieldEditor keyName="settyRole" label="Setty Role" field={result.fields.settyRole} onChange={updateField} multiline />
+                  <FieldEditor keyName="project" label="Project" field={result.fields.project} onChange={updateField} />
+
+                  <h3>Payment Terms</h3>
+                  <FieldEditor keyName="payWhenPaid" label="Pay-When-Paid?" field={result.fields.payWhenPaid} onChange={updateField} />
+                  <FieldEditor keyName="invoiceReview" label="Invoice Review Window" field={result.fields.invoiceReview} onChange={updateField} />
+                  <FieldEditor keyName="interestOnLate" label="Interest on Late Payment" field={result.fields.interestOnLate} onChange={updateField} />
+                  <FieldEditor keyName="retainage" label="Retainage / Withholding" field={result.fields.retainage} onChange={updateField} />
+                  <FieldEditor keyName="conditionsPrecedent" label="Conditions Precedent" field={result.fields.conditionsPrecedent} onChange={updateField} />
+
+                  <h3>Reimbursable Expense Rules</h3>
+                  <FieldEditor keyName="multiplier" label="Client Multiplier" field={result.fields.multiplier} onChange={updateField} />
+                  <FieldEditor keyName="markupPolicy" label="Markup Policy" field={result.fields.markupPolicy} onChange={updateField} />
+                  <FieldEditor keyName="markupExclusions" label="Markup Exclusions" field={result.fields.markupExclusions} onChange={updateField} multiline />
+                  <FieldEditor keyName="reimbursableRules" label="Reimbursable Rules (raw)" field={result.fields.reimbursableRules} onChange={updateField} multiline />
+
+                  <h3>Schedule</h3>
+                  <FieldEditor keyName="substantialCompletion" label="Substantial Completion" field={result.fields.substantialCompletion} onChange={updateField} />
+                  <FieldEditor keyName="scheduleSource" label="Schedule Source" field={result.fields.scheduleSource} onChange={updateField} />
+                  <FieldEditor keyName="terminationNotice" label="Termination Notice" field={result.fields.terminationNotice} onChange={updateField} />
+
+                  <div className="actions">
+                    <button className="btn btn-primary" disabled={!pmsConnected} onClick={send}>Send to PMS</button>
+                    <button className="btn btn-secondary" onClick={() => {
+                      const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url; a.download = (file?.name || "contract") + ".extracted.json"; a.click();
+                      URL.revokeObjectURL(url);
+                    }}>Download JSON</button>
+                  </div>
+                  {!pmsConnected && (
+                    <p style={{fontSize: 11, color: "#F87171", marginTop: 8}}>
+                      Open this tool from the SettyPMS Contracts tab to enable "Send to PMS".
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
