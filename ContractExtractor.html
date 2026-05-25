@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v8";
+    window.__appVersion = "2026-05-25-extractor-v9";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1014,10 +1014,16 @@
         };
         if (sendToPMS(payload)) {
           setSendState("sent");
-          // Revert button to idle after 8s so the user can re-send if needed
-          // (e.g. they reviewed the modal in PMS, decided to tweak a field
-          // here, and want to push the update across again).
-          setTimeout(() => setSendState("idle"), 8000);
+          // Auto-close this popup after a short delay so the user doesn't
+          // have to manually close it. 1.5s gives them time to see the
+          // green "✓ Sent" confirmation. If close is blocked by the
+          // browser (rare for popups opened via window.open), revert the
+          // button after 8s so they can re-send or close manually.
+          setTimeout(() => {
+            try { window.close(); } catch (_) { /* may be blocked */ }
+            // If we're still here after 8s total (close was blocked), reset
+            setTimeout(() => setSendState("idle"), 6500);
+          }, 1500);
         }
       };
 
