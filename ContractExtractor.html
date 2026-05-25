@@ -180,7 +180,7 @@
 
     function sendToPMS(payload) {
       if (!window.opener) {
-        alert("Open this tool from the SettyPMS Contracts tab to enable 'Send to PMS'.");
+        alert("Open this tool from the SettyPMS Contracts tab to enable 'Apply and Save'.");
         return false;
       }
       for (const origin of PMS_ORIGINS) {
@@ -880,7 +880,7 @@
             terminationNotice: f.terminationNotice.value,
           },
         };
-        if (sendToPMS(payload)) alert("Sent to PMS. You can close this window.");
+        if (sendToPMS(payload)) alert("Sent to PMS. Confirm in the PMS window to apply the date and write to OneNote — then close this window.");
       };
 
       const docTypeLabel = result?.docType
@@ -947,7 +947,7 @@
             {/* RIGHT — review + send */}
             <div className="panel">
               <h2>3. Review & Send</h2>
-              {!result && <p style={{fontSize: 12, color: "#94A3B8"}}>Extracted fields appear here. Review each one before sending to PMS — low-confidence values are flagged in red, medium in yellow.</p>}
+              {!result && <p style={{fontSize: 12, color: "#94A3B8"}}>Extracted fields appear here. Review each one before applying — low-confidence values are flagged in red, medium in yellow.</p>}
               {result && (
                 <>
                   <h3>Document</h3>
@@ -975,18 +975,21 @@
                   <FieldEditor keyName="terminationNotice" label="Termination Notice" field={result.fields.terminationNotice} onChange={updateField} />
 
                   <div className="actions">
-                    <button className="btn btn-primary" disabled={!pmsConnected} onClick={send}>Send to PMS</button>
+                    <button className="btn btn-primary" disabled={!pmsConnected} onClick={send}
+                            title="Send the extracted data to PMS where you'll confirm and write to OneNote">
+                      Apply and Save
+                    </button>
                     <button className="btn btn-secondary" onClick={() => {
                       const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" });
                       const url = URL.createObjectURL(blob);
                       const a = document.createElement("a");
                       a.href = url; a.download = (file?.name || "contract") + ".extracted.json"; a.click();
                       URL.revokeObjectURL(url);
-                    }}>Download JSON</button>
+                    }} title="Save the raw extraction JSON to disk as a backup">Save JSON</button>
                   </div>
                   {!pmsConnected && (
                     <p style={{fontSize: 11, color: "#F87171", marginTop: 8}}>
-                      Open this tool from the SettyPMS Contracts tab to enable "Send to PMS".
+                      Open this tool from the SettyPMS Contracts tab to enable "Apply and Save".
                     </p>
                   )}
                 </>
