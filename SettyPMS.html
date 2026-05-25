@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v16";
+    window.__appVersion = "2026-05-25-pms-v17";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2924,6 +2924,15 @@ function _hashOneNoteReq(url, html) {
 // the same (url, html) pair within ONENOTE_DEDUP_TTL_MS returns the cached
 // page record instead of posting again. Crucial for the retry path where a
 // 502/504 may have masked a successful POST.
+// In-flight promise map — keyed on URL+HTML hash. Lets concurrent callers
+// share a single POST instead of racing past the cache check and creating
+// duplicate OneNote pages. Critical for the case where two postMessage
+// events arrive at the listener within the same tick (e.g., from a buggy
+// PMS_ORIGINS dedupe at the sender), both call onReceive, both reach
+// postOneNotePageWithRetry — without this map, both miss the result cache
+// (empty until POST returns) and fire parallel POSTs.
+const _oneNoteInFlight = new Map();
+
 async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 5) {
   const key = _hashOneNoteReq(url, pageHtml);
   const cached = _oneNotePageCache.get(key);
@@ -2931,23 +2940,33 @@ async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 5) {
     console.log("[OneNote] idempotency cache hit — skipping duplicate POST");
     return cached.page;
   }
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
-      body: pageHtml,
-    });
-    if (res.ok) {
-      const page = await res.json();
-      _oneNotePageCache.set(key, { page, at: Date.now() });
-      // Best-effort cleanup: prune any entry older than 2× TTL on each insert.
-      if (_oneNotePageCache.size > 200) {
-        const cutoff = Date.now() - 2 * ONENOTE_DEDUP_TTL_MS;
-        for (const [k, v] of _oneNotePageCache) if (v.at < cutoff) _oneNotePageCache.delete(k);
+  // In-flight check: if a POST with this same body is currently running,
+  // await its result instead of starting a parallel one.
+  if (_oneNoteInFlight.has(key)) {
+    console.log("[OneNote] in-flight dedup — awaiting parallel POST in progress");
+    return await _oneNoteInFlight.get(key);
+  }
+  // Wrap the existing retry loop in an async IIFE and stash its promise
+  // in the in-flight map before awaiting. Any caller arriving while this
+  // promise is pending will see it in the map and share the result.
+  const inFlightPromise = (async () => {
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
+        body: pageHtml,
+      });
+      if (res.ok) {
+        const page = await res.json();
+        _oneNotePageCache.set(key, { page, at: Date.now() });
+        // Best-effort cleanup: prune any entry older than 2× TTL on each insert.
+        if (_oneNotePageCache.size > 200) {
+          const cutoff = Date.now() - 2 * ONENOTE_DEDUP_TTL_MS;
+          for (const [k, v] of _oneNotePageCache) if (v.at < cutoff) _oneNotePageCache.delete(k);
+        }
+        return page;
       }
-      return page;
-    }
 
     const errText = await res.text().catch(() => "");
     // 409 = OneNote concurrency conflict (code 30103: "too many simultaneous
@@ -2972,7 +2991,17 @@ async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 5) {
     // Non-retryable
     throw new Error("OneNote page error " + res.status + ": " + errText.slice(0, 300));
   }
-  throw lastErr || new Error("OneNote page creation failed after " + maxAttempts + " attempts");
+    throw lastErr || new Error("OneNote page creation failed after " + maxAttempts + " attempts");
+  })();
+  // Register the promise in the in-flight map so concurrent callers see it
+  // and await the same result instead of starting a parallel POST. Removed
+  // in the finally block whether the call succeeds or throws.
+  _oneNoteInFlight.set(key, inFlightPromise);
+  try {
+    return await inFlightPromise;
+  } finally {
+    _oneNoteInFlight.delete(key);
+  }
 }
 
 async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, eventDate, metadata = null) {

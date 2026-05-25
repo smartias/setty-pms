@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v12";
+    window.__appVersion = "2026-05-25-extractor-v13";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -178,12 +178,18 @@
     // ========================================================================
     // postMessage integration with SettyPMS
     // ========================================================================
-    const PMS_ORIGINS = [
+    // Deduplicated with Set — when the extractor is hosted at github.io,
+    // window.location.origin === "https://smartias.github.io" and the array
+    // would otherwise contain that target twice. The sendToPMS loop posts
+    // once per entry, so duplicates → double-delivery → duplicate OneNote
+    // pages on the PMS side. Set ensures each effective target gets one
+    // postMessage call.
+    const PMS_ORIGINS = [...new Set([
       "null",                                  // file:// during local dev
       "https://smartias.github.io",            // GitHub Pages deploy
       "https://settyassociates.sharepoint.com", // if PMS is also served via SharePoint
-      window.location.origin,                  // same-origin (both files on same GH Pages)
-    ];
+      window.location.origin,                  // same-origin fallback
+    ])];
 
     function sendToPMS(payload) {
       if (!window.opener) {
