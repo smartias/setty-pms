@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v10";
+    window.__appVersion = "2026-05-25-extractor-v11";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1007,6 +1007,12 @@
       const [log, setLog] = useState([]);
       const [pmsConnected, setPmsConnected] = useState(false);
       const [dragging, setDragging] = useState(false);
+      // The SharePoint/web URL the file was dragged from, if the browser
+      // populated it in the DataTransfer (works for drags out of SharePoint
+      // Online, browser tabs, some email clients). Empty for File Explorer
+      // drags. Sent to PMS so the OneNote page can show where the contract
+      // came from in addition to the record's curated folder.
+      const [dragSourceUrl, setDragSourceUrl] = useState("");
       // sendState: "idle" → "sent" (reverts to idle after a few seconds so
       // the user can re-send if they made a typo or want to retry). Gives
       // visible confirmation that the click was registered.
@@ -1051,8 +1057,46 @@
         } finally { setParsing(false); }
       }, []);
 
+      // Pull the source URL out of a DataTransfer if the drag provided one.
+      // Behavior by drag source:
+      //   - SharePoint Online web: usually populates text/html with the file's
+      //     SharePoint URL inside an <a href>. Sometimes text/uri-list too.
+      //   - File Explorer with OneDrive sync: typically only `files`, no URL.
+      //   - Email attachment in Outlook web: may include an attachment URL.
+      //   - Drag from a browser tab/bookmark: text/uri-list with page URL.
+      // Returns "" if no URL was provided.
+      function extractDragSourceUrl(dt) {
+        if (!dt) return "";
+        // RFC 2483: one URI per line, lines starting with # are comments
+        const list = dt.getData("text/uri-list");
+        if (list) {
+          for (const line of list.split(/\r?\n/)) {
+            const t = line.trim();
+            if (t && !t.startsWith("#")) return t;
+          }
+        }
+        // Firefox-specific: "url\ntitle"
+        const moz = dt.getData("text/x-moz-url");
+        if (moz) {
+          const first = moz.split(/\r?\n/)[0].trim();
+          if (first) return first;
+        }
+        // text/html — first <a href="…">
+        const html = dt.getData("text/html");
+        if (html) {
+          const m = html.match(/href\s*=\s*["']([^"']+)["']/i);
+          if (m && /^https?:\/\//i.test(m[1])) return m[1];
+        }
+        // text/plain — sometimes a bare URL
+        const text = dt.getData("text/plain");
+        if (text && /^https?:\/\//.test(text.trim())) return text.trim();
+        return "";
+      }
+
       const onDrop = (e) => {
         e.preventDefault(); setDragging(false);
+        const sourceUrl = extractDragSourceUrl(e.dataTransfer);
+        setDragSourceUrl(sourceUrl);  // remember even before file is parsed
         if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
       };
 
@@ -1065,6 +1109,7 @@
         const f = result.fields;
         const payload = {
           fileName: file?.name,
+          dragSourceUrl,  // empty string if drag didn't carry a URL (e.g., File Explorer)
           docType: result.docType.type,
           docTypeYear: result.docType.year,
           isAIA: result.docType.isAIA,
@@ -1186,6 +1231,16 @@
                 <div className="file-info">
                   <strong>{file.name}</strong><br/>
                   {(file.size / 1024 / 1024).toFixed(2)} MB
+                  {dragSourceUrl && (
+                    <div style={{ marginTop: 6, fontSize: 10, color: "#60A5FA", wordBreak: "break-all" }}
+                         title="Captured from the drag-and-drop source. Will be included in the OneNote analysis page.">
+                      📎 source:<br/>
+                      <a href={dragSourceUrl} target="_blank" rel="noreferrer"
+                         style={{ color: "#60A5FA", textDecoration: "none" }}>
+                        {dragSourceUrl.length > 80 ? dragSourceUrl.slice(0, 77) + "…" : dragSourceUrl}
+                      </a>
+                    </div>
+                  )}
                   {parsing && <div><span className="spinner"></span>Parsing…</div>}
                 </div>
               )}

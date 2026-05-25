@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v13";
+    window.__appVersion = "2026-05-25-pms-v14";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2756,7 +2756,13 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     if (record.feeType)                    html += `<tr><td ${td}><strong>Fee type:</strong></td><td>${e(record.feeType)}</td></tr>`;
     if (record.contractDate)               html += `<tr><td ${td}><strong>Contract date (PMS):</strong></td><td>${e(record.contractDate)}</td></tr>`;
     if (record.contractExpirationDate)     html += `<tr><td ${td}><strong>Expiration (PMS):</strong></td><td>${e(record.contractExpirationDate)}</td></tr>`;
-    if (record.contractFolderUrl)          html += `<tr><td ${td}><strong>SharePoint:</strong></td><td><a href="${e(record.contractFolderUrl)}">${e(record.contractFolderUrl)}</a></td></tr>`;
+    if (record.contractFolderUrl)          html += `<tr><td ${td}><strong>SharePoint folder:</strong></td><td><a href="${e(record.contractFolderUrl)}">${e(record.contractFolderUrl)}</a></td></tr>`;
+    // dragSourceUrl is the URL the browser captured when the PDF was
+    // dragged into the extractor — shows the actual provenance of the
+    // file (often distinct from the curated contract folder above).
+    // Only populated for drags from SharePoint web, browser tabs, etc.;
+    // empty for File Explorer drags.
+    if (extraction.dragSourceUrl)          html += `<tr><td ${td}><strong>PDF source:</strong></td><td><a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a></td></tr>`;
     html += `</table></div>`;
   } else if (record && recordType === "termContract") {
     const titleLine = `${e(record.name || "Untitled Term Contract")}${record.contractNumber ? ` <span style="color:${NAVY};">(${e(record.contractNumber)})</span>` : ""}`;
@@ -2769,7 +2775,10 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     if (record.expirationDate) html += `<tr><td ${td}><strong>Expiration date:</strong></td><td>${e(record.expirationDate)}</td></tr>`;
     if (record.ceilingValue && +record.ceilingValue) html += `<tr><td ${td}><strong>Ceiling (NTE):</strong></td><td>${e(fmtMoney(record.ceilingValue))}</td></tr>`;
     if (record.description)    html += `<tr><td ${td}><strong>Description:</strong></td><td>${e(record.description)}</td></tr>`;
-    if (record.folderUrl)      html += `<tr><td ${td}><strong>SharePoint:</strong></td><td><a href="${e(record.folderUrl)}">${e(record.folderUrl)}</a></td></tr>`;
+    if (record.folderUrl)      html += `<tr><td ${td}><strong>SharePoint folder:</strong></td><td><a href="${e(record.folderUrl)}">${e(record.folderUrl)}</a></td></tr>`;
+    // Same drag-source URL line as for projects — shows actual provenance of
+    // the file separately from the term contract's curated folder.
+    if (extraction.dragSourceUrl) html += `<tr><td ${td}><strong>PDF source:</strong></td><td><a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a></td></tr>`;
     if (record.notes)          html += `<tr><td ${td}><strong>PMS notes:</strong></td><td style="white-space:pre-wrap;">${e(record.notes)}</td></tr>`;
     html += `</table></div>`;
   }
