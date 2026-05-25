@@ -64,6 +64,8 @@
     }
 
     .dropzone {
+      display: block;  /* <label> is inline by default — without this, the dashed
+                           border fragments at each <p> boundary inside. */
       border: 2px dashed #475569; border-radius: 8px; padding: 20px; text-align: center;
       cursor: pointer; transition: all 0.15s; background: #0F172A;
     }
