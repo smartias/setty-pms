@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v9";
+    window.__appVersion = "2026-05-25-extractor-v10";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -26,6 +26,13 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   </script>
+
+  <!-- Tesseract.js for OCR on scanned/image-only PDFs (e.g., contracts that
+       were printed, signed, and re-scanned for storage). pdf.js can only
+       extract embedded text; Tesseract reads pixels. Loaded eagerly so it's
+       ready when needed, but only invoked when a dropped PDF has no
+       extractable text. First OCR run downloads ~10MB English language data. -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -218,7 +225,61 @@
         }
         pages.push(text);
       }
-      return { pages, fullText: pages.join("\n\n"), numPages: pdf.numPages, fileName: file?.name || "" };
+      const fullText = pages.join("\n\n");
+      // Scanned PDFs (image-only, no embedded text layer) come in with
+      // essentially zero extractable text. Threshold of 500 chars covers
+      // edge cases like a stray watermark or page-number while still
+      // catching legitimate scanned contracts.
+      const isScanned = fullText.length < 500 && pdf.numPages > 0;
+      // Return the pdf doc itself so the caller can render pages to canvas
+      // for OCR. pdf.js doc has no `close()` so leaking it is fine.
+      return { pages, fullText, numPages: pdf.numPages, fileName: file?.name || "", isScanned, pdfDoc: pdf };
+    }
+
+    // OCR a pdf.js document by rendering each page to a high-DPI canvas
+    // and feeding it to Tesseract.js. Tesseract's logger is wired to
+    // onProgress so the UI can show "OCR page 3/13" type updates.
+    async function ocrPdfPages(pdfDoc, onProgress) {
+      if (typeof Tesseract === "undefined") {
+        throw new Error("Tesseract.js failed to load (check your network connection).");
+      }
+      if (onProgress) onProgress({ stage: "init", msg: "Initializing OCR engine (first run downloads ~10MB language data)…" });
+      // scale: 2.0 gives ~150 DPI which is the sweet spot for Tesseract
+      // accuracy on contract documents. Higher scales help marginally but
+      // slow OCR significantly and use more memory.
+      const SCALE = 2.0;
+      const worker = await Tesseract.createWorker("eng", 1, {
+        logger: (m) => {
+          // Throttle: only log status changes, not progress percentage spam.
+          if (m.status && m.progress === 0) {
+            if (onProgress) onProgress({ stage: m.status });
+          }
+        },
+      });
+      const pages = [];
+      try {
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+          if (onProgress) onProgress({ stage: "render", page: i, total: pdfDoc.numPages });
+          const page = await pdfDoc.getPage(i);
+          const viewport = page.getViewport({ scale: SCALE });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          if (onProgress) onProgress({ stage: "ocr", page: i, total: pdfDoc.numPages });
+          const { data } = await worker.recognize(canvas);
+          pages.push(data.text || "");
+
+          // Release canvas memory — scanned contracts can have huge pages
+          canvas.width = 0; canvas.height = 0;
+        }
+      } finally {
+        // Always terminate worker, even on error, to free its memory
+        try { await worker.terminate(); } catch (_) {}
+      }
+      return pages;
     }
 
     // ========================================================================
@@ -959,6 +1020,28 @@
         setLog([{ type: "info", msg: `Reading ${f.name}…` }]);
         try {
           const parsed = await readPdf(f);
+
+          // Scanned PDFs (image-only, no embedded text layer) need OCR
+          // before any pattern-based extraction can work. Tesseract.js
+          // runs entirely in the browser — no upload, contract stays local.
+          if (parsed.isScanned) {
+            setLog((prev) => [...prev,
+              { type: "info", msg: `⚠ No embedded text found — ${parsed.numPages}-page scanned PDF.` },
+              { type: "info", msg: `Running OCR (Tesseract.js, in-browser). First page-set may take 30-60s; subsequent pages ~2-5s each.` },
+            ]);
+            const ocrPages = await ocrPdfPages(parsed.pdfDoc, (p) => {
+              let msg;
+              if (p.stage === "render")      msg = `Rendering p${p.page}/${p.total} for OCR…`;
+              else if (p.stage === "ocr")    msg = `OCR p${p.page}/${p.total}…`;
+              else if (p.stage === "init")   msg = p.msg || "Initializing OCR…";
+              else                            msg = `OCR: ${p.stage}`;
+              setLog((prev) => [...prev, { type: "info", msg }]);
+            });
+            parsed.pages = ocrPages;
+            parsed.fullText = ocrPages.join("\n\n");
+            setLog((prev) => [...prev, { type: "hit", msg: `OCR complete: ${parsed.fullText.length} chars extracted from ${parsed.numPages} pages.` }]);
+          }
+
           const res = extractAll(parsed);
           setResult(res);
           setLog((prev) => [...prev, ...res.log]);
@@ -1111,6 +1194,11 @@
                 This tool extracts <strong>client-imposed override terms</strong> from contracts issued to Setty —
                 pay-when-paid clauses, no-markup rules, conditions precedent, and similar terms that
                 supersede Setty's standard proposal. It does <em>not</em> re-extract Setty's own fee proposals.
+              </p>
+              <p style={{fontSize: 11, color: "#94A3B8", lineHeight: 1.5, marginTop: 10}}>
+                Scanned/image-only PDFs are automatically OCR'd in the browser via Tesseract.js —
+                no upload, no server, contract stays on your machine. OCR takes 1–3 seconds per page
+                after the initial language-data download (~10MB, one time).
               </p>
             </div>
 
