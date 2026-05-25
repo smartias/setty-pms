@@ -8979,21 +8979,34 @@ function useContractExtractor() {
 // over the target date field — ContractView applies to `contractDate`,
 // TermContractsView applies to `startDate`. Parent decides what to do via
 // onApply({ applyDate }).
-function ContractExtractionModal({ extraction, onClose, onApply, currentDateValue, dateFieldLabel = "Contract Date" }) {
+// Parent passes `applyFields` describing which extracted fields can map to
+// PMS record fields. Each entry: { extractKey, label, currentValue, extractedValue }
+// Defaults to checked for any field with an extracted value (user can uncheck
+// to skip overwriting). onApply receives a `selections` object keyed by
+// extractKey so the parent can map to the right PMS field.
+function ContractExtractionModal({ extraction, onClose, onApply, applyFields = [], targetLabel = "Project" }) {
   const flags  = extraction.flags || [];
   const high   = flags.filter(f => f.severity === "high");
   const medium = flags.filter(f => f.severity === "medium");
   const info   = flags.filter(f => f.severity === "info");
-  const [applyDate, setApplyDate] = useState(!!extraction.contractDate && !currentDateValue);
+  const [selections, setSelections] = useState(() => {
+    const sels = {};
+    for (const af of applyFields) sels[af.extractKey] = !!af.extractedValue;
+    return sels;
+  });
   const [saving, setSaving] = useState(false);
+
+  function toggleSel(key) { setSelections(s => ({ ...s, [key]: !s[key] })); }
 
   async function handleApplyClick() {
     setSaving(true);
-    try { await onApply({ applyDate }); }
+    try { await onApply(selections); }
     catch (e) { alert("Save failed: " + e.message); setSaving(false); }
     // No `finally` — onApply closes the modal on success (setExtraction(null)),
     // so we leave `saving` true until unmount. On error we already cleared it.
   }
+
+  const applicableFields = applyFields.filter(af => af.extractedValue);
 
   const sev = (s) =>
     s === "high"   ? { bg: P.redDim,    fg: P.red,         bd: P.red,    icon: "⛔" } :
@@ -9032,20 +9045,25 @@ function ContractExtractionModal({ extraction, onClose, onApply, currentDateValu
         </div>
       )}
 
-      <SectionTitle>Auto-Apply to {dateFieldLabel === "Contract Date" ? "Project" : "Term Contract"}</SectionTitle>
+      <SectionTitle>Auto-Apply to {targetLabel}</SectionTitle>
       <div style={{ padding: "10px 12px", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6, marginBottom: 16 }}>
-        {extraction.contractDate ? (
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-            <input type="checkbox" checked={applyDate} onChange={e => setApplyDate(e.target.checked)} />
-            <span>Set <strong>{dateFieldLabel}</strong> to <strong style={{ color: P.accentLight }}>{extraction.contractDate}</strong></span>
-            {currentDateValue && currentDateValue !== extraction.contractDate && (
-              <span style={{ fontSize: 11, color: P.yellow, marginLeft: 6 }}>
-                (currently {currentDateValue} — will be overwritten)
-              </span>
-            )}
-          </label>
+        {applicableFields.length === 0 ? (
+          <div style={{ fontSize: 12, color: P.textMuted }}>No auto-applicable fields were extracted from this PDF.</div>
         ) : (
-          <div style={{ fontSize: 12, color: P.textMuted }}>No contract date could be parsed from this PDF.</div>
+          applicableFields.map(af => {
+            const willOverwrite = af.currentValue && af.currentValue !== af.extractedValue;
+            return (
+              <label key={af.extractKey} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>
+                <input type="checkbox" checked={!!selections[af.extractKey]} onChange={() => toggleSel(af.extractKey)} />
+                <span>Set <strong>{af.label}</strong> to <strong style={{ color: P.accentLight }}>{af.extractedValue}</strong></span>
+                {willOverwrite && (
+                  <span style={{ fontSize: 11, color: P.yellow, marginLeft: 6 }}>
+                    (currently {af.currentValue} — will be overwritten)
+                  </span>
+                )}
+              </label>
+            );
+          })
         )}
       </div>
 
@@ -9109,9 +9127,15 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
   // Persists the full blob regardless so data is durable even if OneNote fails.
   // Surfaces a clear status alert at the end so the user always knows whether
   // the OneNote page was created, skipped, or failed.
-  async function handleApplyExtraction({ applyDate }) {
+  // Receives a `selections` object keyed by extractor field names (contractDate,
+  // contractExpiration, contractNumber, primeProjectNumber) — each true if the
+  // user wants to apply that field to the project record.
+  async function handleApplyExtraction(selections) {
     const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
-    if (applyDate && extraction.contractDate) updates.contractDate = extraction.contractDate;
+    if (selections.contractDate       && extraction.contractDate)       updates.contractDate            = extraction.contractDate;
+    if (selections.contractExpiration && extraction.contractExpiration) updates.contractExpirationDate  = extraction.contractExpiration;
+    if (selections.contractNumber     && extraction.contractNumber)     updates.contractNumber          = extraction.contractNumber;
+    if (selections.primeProjectNumber && extraction.primeProjectNumber) updates.primeProjectNumber      = extraction.primeProjectNumber;
 
     const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
     const useTeamsNB = !!project.teamsOneNoteNotebookId;
@@ -11002,8 +11026,13 @@ function TeamWBSView({ projects, onNavigateToProject }) {
           extraction={extraction}
           onClose={() => setExtraction(null)}
           onApply={handleApplyExtraction}
-          currentDateValue={project.contractDate}
-          dateFieldLabel="Contract Date"
+          targetLabel="Project"
+          applyFields={[
+            { extractKey: "contractDate",       label: "Contract Date",            currentValue: project.contractDate,           extractedValue: extraction.contractDate },
+            { extractKey: "contractExpiration", label: "Contract Expiration Date", currentValue: project.contractExpirationDate, extractedValue: extraction.contractExpiration },
+            { extractKey: "contractNumber",    label: "Contract Number",          currentValue: project.contractNumber,         extractedValue: extraction.contractNumber },
+            { extractKey: "primeProjectNumber", label: "Prime's Project Number",   currentValue: project.primeProjectNumber,     extractedValue: extraction.primeProjectNumber },
+          ]}
         />
       )}
     </div>
@@ -11076,9 +11105,14 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
   // SharePoint folder) and the extracted override clauses.
   const { extraction, setExtraction, openExtractor } = useContractExtractor();
 
-  async function handleApplyExtraction({ applyDate }) {
+  async function handleApplyExtraction(selections) {
     const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
-    if (applyDate && extraction.contractDate) updates.startDate = extraction.contractDate;
+    // Map extractor field names to term-contract form field names. Term
+    // contracts have no analog for the prime's project number (they ARE
+    // master agreements between Setty and the prime).
+    if (selections.contractDate       && extraction.contractDate)       updates.startDate      = extraction.contractDate;
+    if (selections.contractExpiration && extraction.contractExpiration) updates.expirationDate = extraction.contractExpiration;
+    if (selections.contractNumber     && extraction.contractNumber)     updates.contractNumber = extraction.contractNumber;
 
     let onenoteStatus = "skipped"; // "success" | "failed:<msg>"
 
@@ -11342,8 +11376,12 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
           extraction={extraction}
           onClose={() => setExtraction(null)}
           onApply={handleApplyExtraction}
-          currentDateValue={form.startDate}
-          dateFieldLabel="Start Date"
+          targetLabel="Term Contract"
+          applyFields={[
+            { extractKey: "contractDate",       label: "Start Date",       currentValue: form.startDate,      extractedValue: extraction.contractDate },
+            { extractKey: "contractExpiration", label: "Expiration Date",  currentValue: form.expirationDate, extractedValue: extraction.contractExpiration },
+            { extractKey: "contractNumber",    label: "Contract Number",  currentValue: form.contractNumber, extractedValue: extraction.contractNumber },
+          ]}
         />
       )}
     </div>

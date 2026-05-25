@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v5";
+    window.__appVersion = "2026-05-25-extractor-v6";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -209,7 +209,7 @@
         }
         pages.push(text);
       }
-      return { pages, fullText: pages.join("\n\n"), numPages: pdf.numPages };
+      return { pages, fullText: pages.join("\n\n"), numPages: pdf.numPages, fileName: file?.name || "" };
     }
 
     // ========================================================================
@@ -563,6 +563,74 @@
       return makeField("", "empty", "");
     }
 
+    // -- Identifiers (numbers + expiration) --
+    // Pulls things that map 1:1 to PMS fields and should be auto-applied:
+    //   contractNumber, primeProjectNumber, contractExpiration
+    // Patterns deliberately favor cover-page anchors (within first ~4000 chars)
+    // to avoid false positives from body text that happens to contain "Project No."
+    function extractIdentifiers(text, fileName) {
+      const out = {};
+      const cover = text.slice(0, 4000);
+
+      // Contract Number — "Contract No.: XYZ" / "Agreement Number: ABC-123" /
+      // "Contract #: 12345". Allow letters, digits, dashes, dots, slashes; cap
+      // length so we don't grab an entire paragraph.
+      const cn = cover.match(/(?:Contract|Agreement)\s+(?:Number|No\.?|#)\s*[:\-]?\s*([A-Z0-9][A-Z0-9.\-\/_]{2,40})/i);
+      out.contractNumber = cn
+        ? makeField(cn[1].trim(), "high", "cover-page 'Contract No.' anchor")
+        : makeField("", "empty", "");
+
+      // Prime's Project Number — most contracts label this "Project No." or
+      // "Project Number". On a SETTY contract issued BY a prime, this number
+      // is the prime's internal job number, not Setty's. Falls back to a
+      // leading numeric pattern in the filename if no inline label found.
+      let pn = cover.match(/(?:Project|Job)\s+(?:Number|No\.?|#)\s*[:\-]?\s*([A-Z0-9][A-Z0-9.\-\/_]{2,30})/i);
+      if (pn) {
+        out.primeProjectNumber = makeField(pn[1].trim(), "high", "cover-page 'Project No.' anchor");
+      } else if (fileName) {
+        // Filenames like "13660001.00A Setty Agreement..." often start with the
+        // prime's project number. Conservative pattern: digits + optional .NNX suffix.
+        const fnMatch = fileName.match(/^([0-9]{4,}(?:\.[0-9A-Z]{1,4})?)\b/i);
+        if (fnMatch) out.primeProjectNumber = makeField(fnMatch[1], "low", "leading token in filename");
+        else out.primeProjectNumber = makeField("", "empty", "");
+      } else {
+        out.primeProjectNumber = makeField("", "empty", "");
+      }
+
+      // Contract Expiration — common in master service agreements / term contracts;
+      // usually absent in per-project services contracts (B101/C401).
+      // Try several patterns, accept ISO/US/word-month dates.
+      const expRegexes = [
+        /(?:expir(?:es?|ation|ing|y)|terminat(?:es?|ing))\s+(?:on\s+|date\s*[:\-]?\s*)?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|[A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i,
+        /(?:term|agreement|contract)\s+(?:shall\s+)?(?:end(?:s|ing)?|expir(?:es?|ing)|terminat(?:es?|ing))\s+(?:on\s+)?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|[A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i,
+        /(?:through|until|effective\s+(?:through|until))\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|[A-Z][a-z]+\s+\d{1,2},?\s+\d{4})/i,
+      ];
+      let expMatch = null;
+      for (const re of expRegexes) {
+        const m2 = text.match(re);
+        if (m2) { expMatch = m2; break; }
+      }
+      if (expMatch) {
+        // Normalize to YYYY-MM-DD if we can
+        const raw = expMatch[1];
+        let iso = null;
+        const isoTry1 = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+        const isoTry2 = raw.match(/^([A-Z][a-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+        if (isoTry1) {
+          let y = isoTry1[3]; if (y.length === 2) y = (parseInt(y,10) > 50 ? "19" : "20") + y;
+          iso = `${y}-${isoTry1[1].padStart(2,"0")}-${isoTry1[2].padStart(2,"0")}`;
+        } else if (isoTry2) {
+          const mo = MONTHS[isoTry2[1].toLowerCase()];
+          if (mo) iso = `${isoTry2[3]}-${String(mo).padStart(2,"0")}-${isoTry2[2].padStart(2,"0")}`;
+        }
+        out.contractExpiration = makeField(iso || raw, iso ? "medium" : "low", "expiration-pattern match");
+      } else {
+        out.contractExpiration = makeField("", "empty", "");
+      }
+
+      return out;
+    }
+
     // -- Payment terms --
     function extractPaymentTerms(text, flags) {
       const out = {};
@@ -720,6 +788,10 @@
       if (parties.client.value) log.push({ type: "hit", msg: `Client: ${parties.client.value.slice(0,60)}…` });
       const project = extractProject(text);
       if (project.value) log.push({ type: "hit", msg: `Project: ${project.value.slice(0,60)}` });
+      const ids = extractIdentifiers(text, parsedPdf.fileName);
+      if (ids.contractNumber.value)      log.push({ type: "hit", msg: `Contract #: ${ids.contractNumber.value}` });
+      if (ids.primeProjectNumber.value)  log.push({ type: "hit", msg: `Prime's Project #: ${ids.primeProjectNumber.value}` });
+      if (ids.contractExpiration.value)  log.push({ type: "hit", msg: `Contract Expiration: ${ids.contractExpiration.value}` });
 
       // 4. Payment terms
       log.push({ type: "tier", msg: "Extracting payment terms…" });
@@ -740,6 +812,9 @@
         fields: {
           // metadata
           contractDate,
+          contractExpiration: ids.contractExpiration,
+          contractNumber: ids.contractNumber,
+          primeProjectNumber: ids.primeProjectNumber,
           client: parties.client,
           settyRole: parties.settyRole,
           project,
@@ -858,6 +933,9 @@
           isAIA: result.docType.isAIA,
           flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue })),
           contractDate: f.contractDate.value,
+          contractExpiration: f.contractExpiration.value,
+          contractNumber: f.contractNumber.value,
+          primeProjectNumber: f.primeProjectNumber.value,
           client: f.client.value,
           settyRole: f.settyRole.value,
           project: f.project.value,
@@ -880,7 +958,7 @@
             terminationNotice: f.terminationNotice.value,
           },
         };
-        if (sendToPMS(payload)) alert("Sent to PMS. Confirm in the PMS window to apply the date and write to OneNote — then close this window.");
+        if (sendToPMS(payload)) alert("Sent to PMS. Confirm in the PMS window to apply the fields and write to OneNote — then close this window.");
       };
 
       const docTypeLabel = result?.docType
@@ -976,6 +1054,9 @@
                 <>
                   <h3>Document</h3>
                   <FieldEditor keyName="contractDate" label="Contract Date" field={result.fields.contractDate} onChange={updateField} />
+                  <FieldEditor keyName="contractExpiration" label="Contract Expiration" field={result.fields.contractExpiration} onChange={updateField} />
+                  <FieldEditor keyName="contractNumber" label="Contract Number" field={result.fields.contractNumber} onChange={updateField} />
+                  <FieldEditor keyName="primeProjectNumber" label="Prime's Project Number" field={result.fields.primeProjectNumber} onChange={updateField} />
                   <FieldEditor keyName="client" label="Client / Prime" field={result.fields.client} onChange={updateField} multiline />
                   <FieldEditor keyName="settyRole" label="Setty Role" field={result.fields.settyRole} onChange={updateField} multiline />
                   <FieldEditor keyName="project" label="Project" field={result.fields.project} onChange={updateField} />
