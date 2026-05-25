@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v13";
+    window.__appVersion = "2026-05-25-extractor-v14";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -316,7 +316,13 @@
           /in\s+proportion\s+to\s+the\s+amounts\s+received\s+from\s+the\s+Owner/i,
           // ── New phrasings added after user reported misses ──
           // "depends ... upon ... receipt of such amounts from the Owner"
-          /(?:depends?|contingent)\s+(?:entirely\s+)?(?:up)?on\s+the\s+(?:Architect|Prime|Consultant|Contractor)\'?s?\s+receipt\s+of\s+(?:such\s+)?(?:amounts|payment|funds)\s+from\s+(?:the\s+)?Owner/i,
+          // Also matches the "dependent" form and tolerates an interrupting
+          // parenthetical clause like ", as a condition precedent,"
+          /(?:depends?|dependent|contingent)\s*(?:,[^,.]{0,80},)?\s*(?:up)?on\s+(?:the\s+)?(?:Architect|Prime|Consultant|Contractor)\'?s?\s+receipt\s+of\s+(?:such\s+)?(?:amounts|payment|funds)\s+from\s+(?:the\s+)?Owner/i,
+          // "payment to the Consultant is dependent ... upon the Architect's receipt of payment"
+          // (catches the AIA §11.6.3 variant where "dependent" is used and
+          // the parenthetical is "as a condition precedent")
+          /payment\s+to\s+(?:the\s+)?(?:Sub)?[Cc]onsultant\s+is\s+dependent[^.]{0,150}?(?:Architect|Prime)\'?s?\s+receipt/i,
           // "obligation to pay ... shall be reduced proportionately"
           /obligation\s+to\s+(?:make\s+(?:any\s+)?payments?|pay)[^.]{0,250}?(?:reduced\s+proportionate|proportionate(?:ly)?\s+reduced)/i,
           // "within a reasonable time after the Architect has received payment"
@@ -325,6 +331,9 @@
           /exercise\s+(?:reasonable\s+)?(?:care|(?:diligent\s+)?efforts?)\s+(?:in\s+)?(?:obtain(?:ing)?|collect(?:ing)?)\s+(?:prompt\s+)?payment[^.]{0,200}?(?:from\s+(?:the\s+)?Owner|for\s+(?:the\s+)?(?:Sub)?[Cc]onsultant)/i,
           // "if ... receives partial payment ... reduced proportionately"
           /(?:partial|pro[\s\-]?rata)\s+payment[^.]{0,200}?(?:reduced\s+proportionate|in\s+proportion)/i,
+          // "Consultant acknowledges the risk of non-payment" — explicit
+          // acknowledgement that payment depends on prime getting paid
+          /(?:risk\s+of\s+non[\s\-]?payment|non[\s\-]?payment\s+(?:to\s+(?:the\s+)?)?(?:Sub)?[Cc]onsultant\s+by\s+(?:the\s+)?Architect)/i,
         ],
         explanation: "Setty's payment is contingent on the prime/architect being paid by the Owner. This overrides Setty's standard Net 30 terms and can significantly delay cashflow.",
       },
@@ -725,13 +734,40 @@
 
     // -- Project name --
     function extractProject(text) {
-      const cover = text.slice(0, 4000);
-      // AIA section "PROJECT: ..." or "for the following PROJECT:"
-      let m = cover.match(/(?:for\s+the\s+following\s+)?PROJECT:\s*([^\n]{5,200})/i);
-      if (m) return makeField(m[1].trim(), "high", "AIA 'PROJECT:' label");
+      // Larger window — AIA 'for the following Project:' block can run 5-10
+      // lines including name, location, address, and scope summary.
+      const cover = text.slice(0, 6000);
+
+      // AIA block: "for the following Project:" followed by a multi-line
+      // description. Capture from the header to the next major section
+      // boundary (BETWEEN, AGREEMENT, ARTICLE, etc.) or up to ~1500 chars.
+      let m = cover.match(/(?:for\s+the\s+following\s+)?PROJECT\s*[:\.]/i);
+      if (m) {
+        const startIdx = m.index + m[0].length;
+        let body = cover.slice(startIdx);
+        // Strip the italicized hint sometimes embedded by the AIA template:
+        //   "(Include detailed description of Project, location, address and scope.)"
+        body = body.replace(/^\s*\([^)]{10,200}\)\s*/i, "");
+        // Stop at the next major section boundary. AIA cover pages put the
+        // project description before "BETWEEN" (parties) or "AGREEMENT made"
+        // (recital), and well before any ARTICLE / EXHIBIT header.
+        const stopRe = /\n\s*(?:BETWEEN\b|AGREEMENT\s+(?:is\s+)?made|ARTICLE\s+\d|§\s*\d+\.\d+|EXHIBIT\s+[A-Z]|The\s+Architect\s+and\s+Consultant)/i;
+        const stopM = body.match(stopRe);
+        const sliceEnd = stopM ? stopM.index : Math.min(body.length, 1500);
+        let project = body.slice(0, sliceEnd).trim();
+        // Collapse runs of spaces/tabs but preserve paragraph breaks for readability
+        project = project.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
+        // Cap final length so a missed stop boundary doesn't dump 5KB into PMS
+        if (project.length > 1500) project = project.slice(0, 1500) + "…";
+        if (project.length > 5) {
+          return makeField(project, "high", "AIA 'for the following Project:' block (multi-line)");
+        }
+      }
+
       // Non-AIA: "for the performance of certain professional services for the [Project Name] (the "Project")"
       m = cover.match(/professional\s+services\s+for\s+the\s+([A-Z][^.]{5,150}?)\s+\(\s*(?:the\s+)?["“]?Project["”]?/i);
       if (m) return makeField(m[1].trim(), "medium", "subcontract 'professional services for the' clause");
+
       // First-line title: a lot of subcontracts open with "<PROJECT NAME>"
       const firstLine = (cover.split("\n")[0] || "").trim();
       if (firstLine.length > 8 && firstLine.length < 150 && /[A-Z]/.test(firstLine)) {
