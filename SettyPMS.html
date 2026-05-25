@@ -9107,16 +9107,19 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
 
   // Async because we attempt a OneNote write (if the project has a notebook).
   // Persists the full blob regardless so data is durable even if OneNote fails.
+  // Surfaces a clear status alert at the end so the user always knows whether
+  // the OneNote page was created, skipped, or failed.
   async function handleApplyExtraction({ applyDate }) {
     const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
     if (applyDate && extraction.contractDate) updates.contractDate = extraction.contractDate;
 
-    // Attempt to auto-create a Contract Analysis page in the project's OneNote
-    // notebook. Non-fatal — if no notebook configured or the API fails, the
-    // blob is still saved and the user can re-extract later.
     const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
     const useTeamsNB = !!project.teamsOneNoteNotebookId;
-    if (notebookId) {
+    let onenoteStatus = "skipped"; // "success" | "skipped" | "failed:<msg>"
+
+    if (!notebookId) {
+      onenoteStatus = "skipped-no-notebook";
+    } else {
       try {
         const title = `Contract Analysis – ${extraction.fileName || project.name || "Untitled"}`;
         const html = buildContractAnalysisHtml(extraction, project, "project");
@@ -9125,16 +9128,37 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
         const page = useTeamsNB
           ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, today, meta)
           : await createOneNotePage(notebookId, "Contract Analysis", title, html, today, meta);
-        if (page?.webUrl) updates.contractAnalysisUrl = page.webUrl;
+        if (page?.webUrl) {
+          updates.contractAnalysisUrl = page.webUrl;
+          onenoteStatus = "success";
+        } else {
+          onenoteStatus = "failed:OneNote API returned no page URL";
+        }
       } catch (e) {
         console.warn("Contract Analysis OneNote page failed:", e);
-        // Surface non-fatally — the blob was still saved.
-        setTimeout(() => alert("Saved extraction, but couldn't write OneNote page: " + e.message), 0);
+        onenoteStatus = "failed:" + (e?.message || "unknown error");
       }
     }
 
     onChange({ ...project, ...updates });
     setExtraction(null);
+
+    // Surface the outcome — silent success is OK (the View Analysis button
+    // appears), but the user must know why nothing showed up otherwise.
+    setTimeout(() => {
+      if (onenoteStatus === "skipped-no-notebook") {
+        alert(
+          "Extraction data saved to the project.\n\n" +
+          "OneNote page was NOT created — this project doesn't have a OneNote notebook " +
+          "configured yet. To enable: open this project's Overview tab and provision the " +
+          "Teams/OneNote notebook (look for the 'Enable Teams' or 'Create Notebook' action). " +
+          "Then re-extract to create the Contract Analysis page."
+        );
+      } else if (onenoteStatus.startsWith("failed:")) {
+        alert("Extraction saved, but the OneNote page failed: " + onenoteStatus.slice(7));
+      }
+      // success: silent — View Analysis button appears in Contract tab
+    }, 0);
   }
 
   return (
@@ -11056,6 +11080,8 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
     const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
     if (applyDate && extraction.contractDate) updates.startDate = extraction.contractDate;
 
+    let onenoteStatus = "skipped"; // "success" | "failed:<msg>"
+
     try {
       const { id: notebookId } = await getOrCreateTermContractsNotebook();
       // Title: term contract name + source filename so repeat extractions
@@ -11078,15 +11104,31 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
         { date: today, source: "contract-extractor", termContractId: form.id }
       );
       const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, today, meta);
-      if (page?.webUrl) updates.contractAnalysisUrl = page.webUrl;
+      if (page?.webUrl) {
+        updates.contractAnalysisUrl = page.webUrl;
+        onenoteStatus = "success";
+      } else {
+        onenoteStatus = "failed:OneNote API returned no page URL";
+      }
     } catch (e) {
       console.warn("Term Contract Analysis OneNote page failed:", e);
-      setTimeout(() => alert("Saved extraction, but couldn't write OneNote page: " + e.message), 0);
+      onenoteStatus = "failed:" + (e?.message || "unknown error");
     }
 
     // Apply all updates in one form mutation
     setForm(f => ({ ...f, ...updates }));
     setExtraction(null);
+
+    // Surface the outcome — silent success (View Analysis link appears in form),
+    // alert on failure so the user always knows status.
+    setTimeout(() => {
+      if (onenoteStatus.startsWith("failed:")) {
+        alert(
+          "Extraction saved to form (don't forget to click 'Save Term Contract'). " +
+          "However the OneNote page failed: " + onenoteStatus.slice(7)
+        );
+      }
+    }, 0);
   }
 
   // For each term contract, find linked projects
