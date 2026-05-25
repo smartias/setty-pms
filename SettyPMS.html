@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-03-pms-v7";
+    window.__appVersion = "2026-05-25-pms-v8";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -8946,13 +8946,26 @@ function useContractExtractor() {
     function onMsg(e) {
       // Whitelist: GH Pages (extractor's hosted origin), same-origin (if both
       // files served from one location), and "null" for file:// during local dev.
-      if (
-        e.origin !== CONTRACT_EXTRACTOR_ORIGIN &&
-        e.origin !== window.location.origin &&
-        e.origin !== "null"
-      ) return;
+      const originOK = (
+        e.origin === CONTRACT_EXTRACTOR_ORIGIN ||
+        e.origin === window.location.origin ||
+        e.origin === "null"
+      );
+      // Diagnostic logging — open DevTools console to see what arrived. Helps
+      // debug "I clicked Apply and Save but nothing happened" — you can tell
+      // whether the message reached this listener and why it was/wasn't accepted.
       const d = e.data;
+      if (d && d.source === "ContractExtractor") {
+        console.log("[ContractExtractor→PMS]", {
+          origin: e.origin,
+          originAccepted: originOK,
+          type: d.type,
+          payloadKeys: d.payload ? Object.keys(d.payload) : null,
+        });
+      }
+      if (!originOK) return;
       if (!d || d.source !== "ContractExtractor" || d.type !== "contractData") return;
+      console.log("[ContractExtractor→PMS] payload accepted, opening modal");
       setExtraction(d.payload);
     }
     window.addEventListener("message", onMsg);

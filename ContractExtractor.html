@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v6";
+    window.__appVersion = "2026-05-25-extractor-v7";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -183,10 +183,19 @@
         alert("Open this tool from the SettyPMS Contracts tab to enable 'Apply and Save'.");
         return false;
       }
+      // Diagnostic: log so the user can verify in DevTools that send happened
+      // and what payload went across. No contract data is sent over the network —
+      // postMessage stays within the browser.
+      console.log("[ContractExtractor] sending to PMS:", { payload, allowedOrigins: PMS_ORIGINS });
+      let attempts = 0;
       for (const origin of PMS_ORIGINS) {
-        try { window.opener.postMessage({ source: "ContractExtractor", type: "contractData", payload }, origin); }
+        try { window.opener.postMessage({ source: "ContractExtractor", type: "contractData", payload }, origin); attempts++; }
         catch (_) {}
       }
+      console.log(`[ContractExtractor] posted to ${attempts}/${PMS_ORIGINS.length} candidate origins`);
+      // Bring the PMS window forward so the user sees the modal immediately
+      // instead of staring at the extractor window thinking nothing happened.
+      try { window.opener.focus(); } catch (_) { /* cross-origin focus may be blocked */ }
       return true;
     }
 
@@ -896,6 +905,10 @@
       const [log, setLog] = useState([]);
       const [pmsConnected, setPmsConnected] = useState(false);
       const [dragging, setDragging] = useState(false);
+      // sendState: "idle" → "sent" (reverts to idle after a few seconds so
+      // the user can re-send if they made a typo or want to retry). Gives
+      // visible confirmation that the click was registered.
+      const [sendState, setSendState] = useState("idle");
 
       useEffect(() => { setPmsConnected(!!window.opener); }, []);
 
@@ -958,7 +971,13 @@
             terminationNotice: f.terminationNotice.value,
           },
         };
-        if (sendToPMS(payload)) alert("Sent to PMS. Confirm in the PMS window to apply the fields and write to OneNote — then close this window.");
+        if (sendToPMS(payload)) {
+          setSendState("sent");
+          // Revert button to idle after 8s so the user can re-send if needed
+          // (e.g. they reviewed the modal in PMS, decided to tweak a field
+          // here, and want to push the update across again).
+          setTimeout(() => setSendState("idle"), 8000);
+        }
       };
 
       const docTypeLabel = result?.docType
@@ -976,28 +995,47 @@
               <div className={`pms-status ${pmsConnected ? "connected" : "disconnected"}`}>
                 {pmsConnected ? "● Connected to PMS" : "○ Standalone mode"}
               </div>
-              <button
-                onClick={send}
-                disabled={!pmsConnected || !result}
-                title={
-                  !pmsConnected ? "Open this tool from the SettyPMS Contracts tab to enable Apply and Save."
-                  : !result      ? "Drop a contract PDF first."
-                  : "Send the extracted data to PMS — confirm there to apply the date and write to OneNote."
-                }
-                style={{
-                  background: (!pmsConnected || !result) ? "rgba(255,255,255,0.15)" : "#fff",
-                  color:      (!pmsConnected || !result) ? "rgba(255,255,255,0.55)" : "#1F3864",
-                  border: "none",
-                  padding: "8px 18px",
-                  borderRadius: 6,
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: (!pmsConnected || !result) ? "not-allowed" : "pointer",
-                  boxShadow: (!pmsConnected || !result) ? "none" : "0 2px 8px rgba(0,0,0,0.25)",
-                }}
-              >
-                Apply and Save →
-              </button>
+              {(() => {
+                const isDisabled = !pmsConnected || !result;
+                const isSent     = sendState === "sent";
+                // Three visual states:
+                //   disabled  — gray, no shadow, not clickable
+                //   idle      — white background, navy text, primary action
+                //   sent      — green background, white text, ✓ confirm in PMS
+                // The "sent" state reverts to idle after 8s (see setSendState).
+                const bg     = isSent ? "#10B981" : isDisabled ? "rgba(255,255,255,0.15)" : "#fff";
+                const fg     = isSent ? "#fff"    : isDisabled ? "rgba(255,255,255,0.55)" : "#1F3864";
+                const label  = isSent ? "✓ Sent — check PMS tab"
+                              : isDisabled ? "Apply and Save →"
+                              : "Apply and Save →";
+                const titleText =
+                  isSent          ? "Sent to PMS. Switch to the SettyPMS tab — the confirmation modal should be open there. If not, the PMS may have an older cached version (try Ctrl+Shift+R)."
+                  : !pmsConnected ? "Open this tool from the SettyPMS Contracts tab to enable Apply and Save."
+                  : !result       ? "Drop a contract PDF first."
+                  : "Send the extracted data to PMS — confirm there to apply fields and write to OneNote.";
+                return (
+                  <button
+                    onClick={send}
+                    disabled={isDisabled || isSent}
+                    title={titleText}
+                    style={{
+                      background: bg,
+                      color: fg,
+                      border: "none",
+                      padding: "8px 18px",
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: (isDisabled || isSent) ? "default" : "pointer",
+                      boxShadow: isDisabled ? "none" : (isSent ? "0 2px 12px rgba(16,185,129,0.5)" : "0 2px 8px rgba(0,0,0,0.25)"),
+                      transition: "background 0.2s, color 0.2s, box-shadow 0.2s",
+                      minWidth: 200,
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })()}
             </div>
           </div>
 
