@@ -11,17 +11,20 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v2";
+    window.__appVersion = "2026-05-25-extractor-v3";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+  <!-- pdf.js 3.11.174 — last v3 release with reliable UMD `pdfjsLib` global.
+       v4+ switched to ES-modules-first and doesn't expose `pdfjsLib` when
+       loaded via plain <script src>, only via `type="module"` import. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js";
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   </script>
 
   <style>

@@ -81,13 +81,6 @@
 
 // ─── DATA / CONSTANTS ────────────────────────────────────────────────────────
 
-// ContractExtractor.html — standalone tool served from this repo via GitHub
-// Pages. Reads contracts issued to Setty and posts override-clause findings
-// (pay-when-paid, no-markup, broad indemnity, etc.) back to this app via
-// postMessage. Lives alongside SettyPMS.html so same-origin postMessage works.
-const CONTRACT_EXTRACTOR_URL = "https://smartias.github.io/setty-pms/ContractExtractor.html";
-const CONTRACT_EXTRACTOR_ORIGIN = "https://smartias.github.io";
-
 const RS_MEANS_COST_PER_SF = {
   "Office": 285, "Healthcare/Clinic": 420, "Laboratory": 580, "K-12 School": 260,
   "University": 340, "Warehouse/Industrial": 120, "Retail": 175, "Multifamily": 210,
@@ -8779,182 +8772,11 @@ Setty
 
 // ─── CONTRACT TRACKING ────────────────────────────────────────────────────────
 
-// Shown when ContractExtractor.html posts back via postMessage. Lets the user
-// review override flags, auto-apply the one field that maps directly to the
-// project schema (contractDate), and optionally stash the full extraction
-// blob on the project for later reference.
-function ContractExtractionModal({ extraction, onClose, onApply, onSaveBlob, currentContractDate }) {
-  const flags  = extraction.flags || [];
-  const high   = flags.filter(f => f.severity === "high");
-  const medium = flags.filter(f => f.severity === "medium");
-  const info   = flags.filter(f => f.severity === "info");
-  const [applyDate, setApplyDate] = useState(!!extraction.contractDate && !currentContractDate);
-
-  const sev = (s) =>
-    s === "high"   ? { bg: P.redDim,    fg: P.red,         bd: P.red,    icon: "⛔" } :
-    s === "medium" ? { bg: P.yellowDim, fg: P.yellow,      bd: P.yellow, icon: "⚠" } :
-                     { bg: P.accentDim, fg: P.accentLight, bd: P.accent, icon: "ℹ" };
-
-  function handleApply() {
-    const updates = {};
-    if (applyDate && extraction.contractDate) updates.contractDate = extraction.contractDate;
-    onApply(updates);
-  }
-
-  return (
-    <Modal title="Contract Extraction Results" onClose={onClose} wide>
-      <div style={{ fontSize: 12, color: P.textMuted, marginBottom: 14 }}>
-        📄 <strong style={{ color: P.text }}>{extraction.fileName || "(unnamed PDF)"}</strong>
-        {"  ·  "}
-        {extraction.isAIA
-          ? `AIA ${extraction.docType}${extraction.docTypeYear ? " (" + extraction.docTypeYear + ")" : ""}`
-          : extraction.docType}
-      </div>
-
-      <SectionTitle>
-        Override Clauses ({flags.length} detected{high.length ? `, ${high.length} high-severity` : ""})
-      </SectionTitle>
-      {flags.length === 0 ? (
-        <div style={{ fontSize: 12, color: P.green, padding: "8px 0", marginBottom: 16 }}>
-          ✓ No client-override clauses detected. Verify manually — absence of detection isn't proof of absence.
-        </div>
-      ) : (
-        <div style={{ marginBottom: 16 }}>
-          {[...high, ...medium, ...info].map(f => {
-            const s = sev(f.severity);
-            return (
-              <div key={f.id} style={{ background: s.bg, borderLeft: `4px solid ${s.bd}`, border: `1px solid ${s.bd}`, borderRadius: 6, padding: "8px 12px", marginBottom: 6 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: s.fg }}>
-                  {s.icon} {f.label}{f.value ? ` — ${f.value}` : ""}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <SectionTitle>Auto-Apply to Project</SectionTitle>
-      <div style={{ padding: "10px 12px", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6, marginBottom: 16 }}>
-        {extraction.contractDate ? (
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-            <input type="checkbox" checked={applyDate} onChange={e => setApplyDate(e.target.checked)} />
-            <span>Set <strong>Contract Date</strong> to <strong style={{ color: P.accentLight }}>{extraction.contractDate}</strong></span>
-            {currentContractDate && currentContractDate !== extraction.contractDate && (
-              <span style={{ fontSize: 11, color: P.yellow, marginLeft: 6 }}>
-                (currently {currentContractDate} — will be overwritten)
-              </span>
-            )}
-          </label>
-        ) : (
-          <div style={{ fontSize: 12, color: P.textMuted }}>No contract date could be parsed from this PDF.</div>
-        )}
-      </div>
-
-      <SectionTitle>For Reference (manual entry)</SectionTitle>
-      <div style={{ fontSize: 12, color: P.text, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6, padding: 12, marginBottom: 16, lineHeight: 1.7 }}>
-        {extraction.client    && <div><span style={{ color: P.textMuted }}>Client / Prime:</span> {extraction.client}</div>}
-        {extraction.settyRole && <div><span style={{ color: P.textMuted }}>Setty Role:</span> {extraction.settyRole}</div>}
-        {extraction.project   && <div><span style={{ color: P.textMuted }}>Project (from PDF):</span> {extraction.project}</div>}
-        {extraction.payment && Object.values(extraction.payment).some(Boolean) && (
-          <div style={{ marginTop: 8 }}>
-            <strong>Payment Terms</strong>
-            <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
-              {extraction.payment.payWhenPaid         && <li>Pay-when-paid: {extraction.payment.payWhenPaid}</li>}
-              {extraction.payment.invoiceReview       && <li>Invoice review: {extraction.payment.invoiceReview}</li>}
-              {extraction.payment.interestOnLate      && <li>Interest on late: {extraction.payment.interestOnLate}</li>}
-              {extraction.payment.retainage           && <li>Retainage: {extraction.payment.retainage}</li>}
-              {extraction.payment.conditionsPrecedent && <li>Conditions precedent: {extraction.payment.conditionsPrecedent}</li>}
-            </ul>
-          </div>
-        )}
-        {extraction.reimbursable && Object.values(extraction.reimbursable).some(Boolean) && (
-          <div style={{ marginTop: 8 }}>
-            <strong>Reimbursable Rules</strong>
-            <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
-              {extraction.reimbursable.multiplier       && <li>Multiplier: {extraction.reimbursable.multiplier}</li>}
-              {extraction.reimbursable.markupPolicy     && <li>Markup policy: {extraction.reimbursable.markupPolicy}</li>}
-              {extraction.reimbursable.markupExclusions && <li>Excluded from markup: {extraction.reimbursable.markupExclusions}</li>}
-            </ul>
-          </div>
-        )}
-        {extraction.schedule && Object.values(extraction.schedule).some(Boolean) && (
-          <div style={{ marginTop: 8 }}>
-            <strong>Schedule</strong>
-            <ul style={{ margin: "4px 0", paddingLeft: 20 }}>
-              {extraction.schedule.substantialCompletion && <li>Substantial Completion: {extraction.schedule.substantialCompletion}</li>}
-              {extraction.schedule.scheduleSource        && <li>Schedule source: {extraction.schedule.scheduleSource}</li>}
-              {extraction.schedule.terminationNotice     && <li>Termination notice: {extraction.schedule.terminationNotice}</li>}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-        <Btn variant="ghost"   onClick={onClose}>Cancel</Btn>
-        <Btn variant="purple"  onClick={() => onSaveBlob(extraction)}>Save full extraction to project</Btn>
-        <Btn variant="success" onClick={handleApply}>Apply selected &amp; close</Btn>
-      </div>
-    </Modal>
-  );
-}
-
 function ContractView({ project, onChange, onEagerSave, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts, clients, onUpdateClient }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
-
-  // ContractExtractor integration — popup-based postMessage handshake.
-  // Listener is attached on mount and torn down on unmount; if the user
-  // navigates away from the Contract tab while the popup is open, the
-  // extracted data won't land here (acceptable v1 limitation — the popup
-  // also offers a Download JSON fallback).
-  const [extraction, setExtraction] = useState(null);
-
-  useEffect(() => {
-    function onMsg(e) {
-      // Whitelist: GH Pages (the extractor's hosted origin), same-origin
-      // (if both files are served from one location), and "null" for
-      // file:// during local dev.
-      if (
-        e.origin !== CONTRACT_EXTRACTOR_ORIGIN &&
-        e.origin !== window.location.origin &&
-        e.origin !== "null"
-      ) return;
-      const d = e.data;
-      if (!d || d.source !== "ContractExtractor" || d.type !== "contractData") return;
-      setExtraction(d.payload);
-    }
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
-  }, []);
-
-  function openExtractor() {
-    const win = window.open(
-      CONTRACT_EXTRACTOR_URL,
-      "ContractExtractor",
-      "width=1500,height=950,menubar=no,toolbar=no,location=no,status=no"
-    );
-    if (!win) {
-      alert("Popup blocked. Allow popups from this site to use the contract extractor.");
-      return;
-    }
-    win.focus();
-  }
-
-  function handleApply(updates) {
-    if (Object.keys(updates).length > 0) onChange({ ...project, ...updates });
-    setExtraction(null);
-  }
-
-  function handleSaveBlob(blob) {
-    onChange({
-      ...project,
-      contractExtraction: { ...blob, savedAt: new Date().toISOString() },
-    });
-    setExtraction(null);
-  }
-
   return (
     <div>
-      <SectionTitle action={<Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>}>Contract Details</SectionTitle>
+      <SectionTitle>Contract Details</SectionTitle>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <Field label="Contract Status">
           <select value={project.contractStatus} onChange={e => setField("contractStatus", e.target.value)} style={{ width: "100%" }}>
@@ -10777,15 +10599,6 @@ function TeamWBSView({ projects, onNavigateToProject }) {
             </tbody>
           </table>
         </div>
-      )}
-      {extraction && (
-        <ContractExtractionModal
-          extraction={extraction}
-          onClose={() => setExtraction(null)}
-          onApply={handleApply}
-          onSaveBlob={handleSaveBlob}
-          currentContractDate={project.contractDate}
-        />
       )}
     </div>
   );
