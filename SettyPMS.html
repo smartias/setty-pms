@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v12";
+    window.__appVersion = "2026-05-25-pms-v13";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -9207,8 +9207,20 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
           ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta)
           : await createOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta);
         console.log("[project-extract] page result:", page);
-        if (page?.webUrl) { updates.contractAnalysisUrl = page.webUrl; onenoteStatus = "success"; }
-        else              { onenoteStatus = "failed:OneNote API returned no page URL"; }
+        if (page?.webUrl) {
+          updates.contractAnalysisUrl = page.webUrl;
+          // Also stash inside the contractExtraction blob so the URL is durable
+          // even if a parent persistence layer strips unknown top-level fields.
+          updates.contractExtraction = { ...updates.contractExtraction, contractAnalysisUrl: page.webUrl, oneNotePageId: page.id };
+          onenoteStatus = "success";
+        } else if (page?.id) {
+          // Page exists in OneNote but Graph didn't return a webUrl link. Still
+          // store the page id so we can reconstruct/fetch the URL later.
+          updates.contractExtraction = { ...updates.contractExtraction, oneNotePageId: page.id };
+          onenoteStatus = "failed:OneNote returned page id but no webUrl — page exists in OneNote, visit notebook directly";
+        } else {
+          onenoteStatus = "failed:OneNote API returned no page URL";
+        }
       } catch (e) {
         console.warn("[project-extract] Contract Analysis OneNote page failed:", e);
         onenoteStatus = "failed:" + (e?.message || "unknown error");
@@ -9248,17 +9260,22 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
 
   return (
     <div>
-      <SectionTitle action={
-        <div style={{ display: "flex", gap: 8 }}>
-          {project.contractAnalysisUrl && (
-            <Btn small variant="ghost" onClick={() => window.open(project.contractAnalysisUrl, "_blank")}
-                 title="Open the Contract Analysis page in OneNote">
-              📋 View Analysis
-            </Btn>
-          )}
-          <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
-        </div>
-      }>Contract Details</SectionTitle>
+      <SectionTitle action={(() => {
+        // Read the OneNote URL from either the top-level field or the
+        // extraction blob — covers parents that might strip unknown fields.
+        const analysisUrl = project.contractAnalysisUrl || project.contractExtraction?.contractAnalysisUrl || "";
+        return (
+          <div style={{ display: "flex", gap: 8 }}>
+            {analysisUrl && (
+              <Btn small variant="ghost" onClick={() => window.open(analysisUrl, "_blank")}
+                   title="Open the Contract Analysis page in OneNote">
+                📋 View Analysis
+              </Btn>
+            )}
+            <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
+          </div>
+        );
+      })()}>Contract Details</SectionTitle>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <Field label="Contract Status">
           <select value={project.contractStatus} onChange={e => setField("contractStatus", e.target.value)} style={{ width: "100%" }}>
@@ -11178,8 +11195,18 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
       console.log("[term-contract-extract] creating OneNote page…", { title, pageDate });
       const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, pageDate, meta);
       console.log("[term-contract-extract] page result:", page);
-      if (page?.webUrl) { updates.contractAnalysisUrl = page.webUrl; onenoteStatus = "success"; }
-      else              { onenoteStatus = "failed:OneNote API returned no page URL"; }
+      if (page?.webUrl) {
+        updates.contractAnalysisUrl = page.webUrl;
+        // Dual-store: also inside the contractExtraction blob so the URL
+        // survives if a persistence layer strips unknown top-level fields.
+        updates.contractExtraction = { ...updates.contractExtraction, contractAnalysisUrl: page.webUrl, oneNotePageId: page.id };
+        onenoteStatus = "success";
+      } else if (page?.id) {
+        updates.contractExtraction = { ...updates.contractExtraction, oneNotePageId: page.id };
+        onenoteStatus = "failed:OneNote returned page id but no webUrl — page exists in notebook, visit directly";
+      } else {
+        onenoteStatus = "failed:OneNote API returned no page URL";
+      }
     } catch (e) {
       console.warn("[term-contract-extract] OneNote page failed:", e);
       onenoteStatus = "failed:" + (e?.message || "unknown error");
@@ -11252,12 +11279,16 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
               {editingId === "__new__" ? "New Term Contract" : "Edit Term Contract"}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              {form.contractAnalysisUrl && (
-                <Btn small variant="ghost" onClick={() => window.open(form.contractAnalysisUrl, "_blank")}
-                     title="Open the Contract Analysis page in the Setty Term Contracts OneNote notebook">
-                  📋 View Analysis
-                </Btn>
-              )}
+              {(() => {
+                const analysisUrl = form.contractAnalysisUrl || form.contractExtraction?.contractAnalysisUrl || "";
+                if (!analysisUrl) return null;
+                return (
+                  <Btn small variant="ghost" onClick={() => window.open(analysisUrl, "_blank")}
+                       title="Open the Contract Analysis page in the Setty Term Contracts OneNote notebook">
+                    📋 View Analysis
+                  </Btn>
+                );
+              })()}
               <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
             </div>
           </div>
