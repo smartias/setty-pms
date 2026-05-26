@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v15";
+    window.__appVersion = "2026-05-25-extractor-v16";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -189,11 +189,8 @@
     .investigating-text {
       font-size: 14px; font-weight: 600; color: #E0E7FF;
       flex: 1; line-height: 1.4;
+      font-style: italic;
       animation: investigate-fade 0.5s ease-out;
-    }
-    .investigating-text .tag {
-      display: block; font-size: 10px; font-weight: 500; color: #A5B4FC;
-      text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px;
     }
     @keyframes investigate-wiggle {
       0%   { transform: translateX(0)    rotate(0)    scale(1); }
@@ -217,37 +214,97 @@
 
     // ════════════════════════════════════════════════════════════════════
     // Investigative quotes — rotated while a contract is being extracted.
-    // Each entry: { emoji, tag, line }
-    //   emoji: 1-2 emoji shown in the big animated icon spot
-    //   tag:   small uppercase eyebrow label (e.g. "FORENSICS")
-    //   line:  the punchy caption (one short sentence)
+    // Plain strings; the emoji shown alongside rotates independently from
+    // EMOJI_POOL so we don't have to pair every quote to a specific icon.
     //
-    // ★ USER CONTRIBUTION POINT ★
-    // Add your own quotes here — punchier, more Setty-specific phrasings
-    // will land better than generic ones. Domain knowledge wins: what's
-    // funny in a contract review is different from generic dev tooling.
+    // These are intentionally observational/dry rather than action-verb
+    // phrases — the punchline IS the line. Most are MEP/architecture
+    // industry-insider jokes; some are AIA-contract-specific.
     // ════════════════════════════════════════════════════════════════════
     const INVESTIGATIVE_QUOTES = [
-      { emoji: "🔍", tag: "Surveillance",  line: "Sniffing out pay-when-paid clauses…" },
-      { emoji: "🕵️",  tag: "Field work",    line: "Reading between the legal lines…" },
-      { emoji: "🧐", tag: "Cross-exam",    line: "Examining the fine print…" },
-      { emoji: "📜", tag: "Discovery",     line: "Unrolling Article 11 of the agreement…" },
-      { emoji: "🔎", tag: "Stakeout",      line: "Hunting for hidden override traps…" },
-      { emoji: "⚖️",  tag: "Counsel",       line: "Weighing client demands vs. Setty's standards…" },
-      { emoji: "📋", tag: "Evidence",      line: "Cross-referencing with the AIA template…" },
-      { emoji: "🚨", tag: "Risk watch",    line: "Flagging potential E&O exposures…" },
-      { emoji: "🧾", tag: "Audit trail",   line: "Auditing reimbursable expense rules…" },
-      { emoji: "💼", tag: "Case file",     line: "Building the contractual evidence file…" },
-      { emoji: "🎯", tag: "Bullseye",      line: "Zeroing in on conditions precedent…" },
-      { emoji: "🔬", tag: "Forensics",     line: "Markup language under the microscope…" },
-      { emoji: "📐", tag: "Site survey",   line: "Measuring the scope of work…" },
-      { emoji: "🗝️",  tag: "Decoding",      line: "Decoding the consultant's obligations…" },
-      { emoji: "🚩", tag: "Red flags",     line: "Searching for indemnity landmines…" },
-      { emoji: "📡", tag: "Intel",         line: "Triangulating the Prime Agreement…" },
-      { emoji: "🧮", tag: "Calculations",  line: "Tallying the multiplier and markups…" },
-      { emoji: "🪪",  tag: "Identity",      line: "Verifying contracting parties…" },
-      // TODO: drop in your favorites here ↑
+      "‘Per contract’ is doing a lot of heavy lifting here.",
+      "Somewhere an AIA exhibit is quietly contradicting this email.",
+      "CA scope: unlimited in spirit, eight site visits in reality.",
+      "The architect said ‘minor revision.’ The bulletin is 47 pages.",
+      "We regret to inform you the existing conditions were fictional.",
+      "Nothing says optimism like a rooftop fully occupied by future equipment.",
+      "This RFI appears to be seeking emotional support from the engineer.",
+      "‘Design-assist’ is starting to sound a lot like delegated design.",
+      "The BIM model is clash-free if you don’t count the actual building.",
+      "Contractor to verify dimensions. Contractor did not verify dimensions.",
+      "The schedule is aggressive, the fee is lean, and the ceiling space is gone.",
+      "Somebody definitely value-engineered the maintenance clearance.",
+      "Awaiting utility feedback: the unofficial sixth phase of design.",
+      "Every owner wants innovation until the deduct alternate comes back.",
+      "There are now more addenda than bid drawings.",
+      "This meeting could have been one markup cloud.",
+      "Field conditions continue to express themselves creatively.",
+      "‘No major comments’ from DOB is the closest thing to love we get.",
+      "The mechanical room was apparently designed via escape room logic.",
+      "Somewhere in this building is a damper no human can access.",
+      "The coordination meeting has entered its natural predator-prey phase.",
+      "That duct routing is less ‘engineered’ and more ‘manifested.’",
+      "Please see attached: consequences of reducing SD effort.",
+      "The phrase ‘simple replacement’ has never once been accurate.",
+      "ConEd comments received. Project morale reduced accordingly.",
+      "We are now discovering undocumented systems from multiple geological eras.",
+      "Architectural ceiling heights remain spiritually ambitious.",
+      "‘Reuse existing infrastructure’ is always where the horror begins.",
+      "The contractor has interpreted the drawings with confidence.",
+      "This substitution request appears to have been inspired by vibes.",
+      "Nothing unites a project team like discovering an undersized electrical service.",
+      "The commissioning agent has entered the chat.",
+      "Every coordination issue is technically solvable with enough soffits.",
+      "The roof plan currently resembles an HVAC battle royale.",
+      "No one truly owns the shaft until CD.",
+      "Another day, another ‘existing condition not shown on drawings.’",
+      "The client requested LEED Gold with a Bronze budget.",
+      "The phrase ‘basis of design’ is being used very generously.",
+      "Somewhere, Appendix G is ruining an architect’s afternoon.",
+      "This AHU replacement now includes philosophy, archaeology, and grief.",
+      "There is no greater optimism than ‘future tenant by others.’",
+      "The owner requested resiliency, sustainability, and no visible equipment.",
+      "Setty has reviewed the contractor’s interpretation with concern.",
+      "This submittal answers questions no one asked.",
+      "AIA contracts: where every sentence costs money later.",
+      "The one thing moving faster than the schedule is scope creep.",
+      "If the model were accurate, we wouldn’t need site visits.",
+      "The coordination drawings have become aspirational art.",
+      "‘As discussed in meeting’ — the most dangerous phrase in construction.",
+      "The contractor’s means and methods now include hope.",
+      "This detail appears to have survived multiple administrations.",
+      "Nothing says ‘public project’ like five stakeholders and zero ceiling space.",
+      "Somewhere, an engineer is quietly adding an exclusion.",
+      "The permit set and the bid set are now estranged cousins.",
+      "The existing panel schedule appears to have been written during wartime.",
+      "MEP scope now includes diplomacy and forensic investigation.",
+      "The equipment fits perfectly in the rendering.",
+      "This project contains several hidden boss fights.",
+      "A rooftop unit has never once respected an architectural elevation.",
+      "The fee proposal was accepted moments before reality emerged.",
+      "Every all-electric project eventually reaches the ‘where does the power come from’ phase.",
+      "‘Minimal impact to operations’ has entered the risk register.",
+      "The ceiling coordination plan is now a cry for help.",
+      "One more owner-requested change and this becomes a new project.",
+      "Somewhere in New York, a DOB reviewer is sharpening a red pen.",
+      "The contractor found a cheaper option and a more expensive problem.",
+      "This project was coordinated in the ancient tradition of overlaying PDFs.",
+      "We have officially exceeded the structural engineer’s emotional load capacity.",
+      "The phrase ‘like-for-like replacement’ is under active investigation.",
+      "The plumbing riser diagram and reality are no longer on speaking terms.",
+      "A field walk would have prevented this entire email chain.",
+      "The model is LOD 300. The expectations are LOD 900.",
+      "The client requested a world-class facility with existing infrastructure.",
+      "Please hold while the engineers negotiate with physics.",
+      "This project has entered the ‘who approved this’ phase.",
+      "Nothing motivates coordination like a missing shaft opening.",
+      "Setty recommends additional investigation, prayer, and contingency.",
     ];
+
+    // Emoji pool — rotated independently of quotes, keeps the investigative
+    // visual identity (magnifier / detective / scrutiny icons) while quotes
+    // carry the personality.
+    const INVESTIGATIVE_EMOJI = ["🔍","🕵️","🧐","🔎","📋","⚖️","🚩","🧾","💼","🎯","🔬","📐","🗝️","📡","🚨","🪪","📜","🧮"];
 
     // ========================================================================
     // postMessage integration with SettyPMS
@@ -1296,13 +1353,16 @@
         setLog([{ type: "info", msg: `Reading ${f.name}…` }]);
         // Start the investigative animation — rotate through quotes every
         // ~1.7s. Pick a random starting index so consecutive extractions
-        // don't always lead with the same line.
+        // don't always lead with the same line. Emoji rotates independently
+        // from a pool so the visual identity stays "investigative" without
+        // having to hand-pair each quote to a specific icon.
         if (investigationTimerRef.current) clearInterval(investigationTimerRef.current);
         let qIdx = Math.floor(Math.random() * INVESTIGATIVE_QUOTES.length);
-        setInvestigation(INVESTIGATIVE_QUOTES[qIdx]);
+        const pickEmoji = () => INVESTIGATIVE_EMOJI[Math.floor(Math.random() * INVESTIGATIVE_EMOJI.length)];
+        setInvestigation({ emoji: pickEmoji(), line: INVESTIGATIVE_QUOTES[qIdx] });
         investigationTimerRef.current = setInterval(() => {
           qIdx = (qIdx + 1) % INVESTIGATIVE_QUOTES.length;
-          setInvestigation(INVESTIGATIVE_QUOTES[qIdx]);
+          setInvestigation({ emoji: pickEmoji(), line: INVESTIGATIVE_QUOTES[qIdx] });
         }, 1700);
         try {
           const parsed = await readPdf(f);
@@ -1552,9 +1612,8 @@
               <h2>2. Override Clauses & Extraction Log</h2>
               {parsing && investigation && (
                 <div className="investigating">
-                  <span className="investigating-emoji">{investigation.emoji}</span>
+                  <span className="investigating-emoji" key={investigation.emoji}>{investigation.emoji}</span>
                   <span className="investigating-text" key={investigation.line}>
-                    <span className="tag">{investigation.tag}</span>
                     {investigation.line}
                   </span>
                 </div>
