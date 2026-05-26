@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v14";
+    window.__appVersion = "2026-05-25-extractor-v15";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -167,6 +167,46 @@
       vertical-align: middle; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Investigative animation — shown in the middle column while a PDF is
+       being parsed/OCR'd/extracted. Big magnifying glass that wiggles like
+       it's scanning the page, plus rotating witty captions underneath. */
+    .investigating {
+      background: linear-gradient(135deg, #1E293BCC 0%, #4338CACC 60%, #7C3AEDCC 100%);
+      border: 1px solid #6366F1;
+      border-radius: 10px;
+      padding: 18px 18px;
+      margin-bottom: 14px;
+      display: flex; align-items: center; gap: 16px;
+      box-shadow: 0 4px 18px rgba(99, 102, 241, 0.25);
+    }
+    .investigating-emoji {
+      font-size: 36px; line-height: 1;
+      animation: investigate-wiggle 1.7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      display: inline-block; flex-shrink: 0;
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+    }
+    .investigating-text {
+      font-size: 14px; font-weight: 600; color: #E0E7FF;
+      flex: 1; line-height: 1.4;
+      animation: investigate-fade 0.5s ease-out;
+    }
+    .investigating-text .tag {
+      display: block; font-size: 10px; font-weight: 500; color: #A5B4FC;
+      text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px;
+    }
+    @keyframes investigate-wiggle {
+      0%   { transform: translateX(0)    rotate(0)    scale(1); }
+      20%  { transform: translateX(8px)  rotate(-14deg) scale(1.05); }
+      40%  { transform: translateX(0)    rotate(0)    scale(1); }
+      60%  { transform: translateX(-8px) rotate(14deg)  scale(1.05); }
+      80%  { transform: translateX(0)    rotate(0)    scale(1); }
+      100% { transform: translateX(0)    rotate(0)    scale(1); }
+    }
+    @keyframes investigate-fade {
+      from { opacity: 0.3; transform: translateY(3px); }
+      to   { opacity: 1;   transform: translateY(0); }
+    }
   </style>
 </head>
 <body>
@@ -174,6 +214,40 @@
 
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useCallback, useRef } = React;
+
+    // ════════════════════════════════════════════════════════════════════
+    // Investigative quotes — rotated while a contract is being extracted.
+    // Each entry: { emoji, tag, line }
+    //   emoji: 1-2 emoji shown in the big animated icon spot
+    //   tag:   small uppercase eyebrow label (e.g. "FORENSICS")
+    //   line:  the punchy caption (one short sentence)
+    //
+    // ★ USER CONTRIBUTION POINT ★
+    // Add your own quotes here — punchier, more Setty-specific phrasings
+    // will land better than generic ones. Domain knowledge wins: what's
+    // funny in a contract review is different from generic dev tooling.
+    // ════════════════════════════════════════════════════════════════════
+    const INVESTIGATIVE_QUOTES = [
+      { emoji: "🔍", tag: "Surveillance",  line: "Sniffing out pay-when-paid clauses…" },
+      { emoji: "🕵️",  tag: "Field work",    line: "Reading between the legal lines…" },
+      { emoji: "🧐", tag: "Cross-exam",    line: "Examining the fine print…" },
+      { emoji: "📜", tag: "Discovery",     line: "Unrolling Article 11 of the agreement…" },
+      { emoji: "🔎", tag: "Stakeout",      line: "Hunting for hidden override traps…" },
+      { emoji: "⚖️",  tag: "Counsel",       line: "Weighing client demands vs. Setty's standards…" },
+      { emoji: "📋", tag: "Evidence",      line: "Cross-referencing with the AIA template…" },
+      { emoji: "🚨", tag: "Risk watch",    line: "Flagging potential E&O exposures…" },
+      { emoji: "🧾", tag: "Audit trail",   line: "Auditing reimbursable expense rules…" },
+      { emoji: "💼", tag: "Case file",     line: "Building the contractual evidence file…" },
+      { emoji: "🎯", tag: "Bullseye",      line: "Zeroing in on conditions precedent…" },
+      { emoji: "🔬", tag: "Forensics",     line: "Markup language under the microscope…" },
+      { emoji: "📐", tag: "Site survey",   line: "Measuring the scope of work…" },
+      { emoji: "🗝️",  tag: "Decoding",      line: "Decoding the consultant's obligations…" },
+      { emoji: "🚩", tag: "Red flags",     line: "Searching for indemnity landmines…" },
+      { emoji: "📡", tag: "Intel",         line: "Triangulating the Prime Agreement…" },
+      { emoji: "🧮", tag: "Calculations",  line: "Tallying the multiplier and markups…" },
+      { emoji: "🪪",  tag: "Identity",      line: "Verifying contracting parties…" },
+      // TODO: drop in your favorites here ↑
+    ];
 
     // ========================================================================
     // postMessage integration with SettyPMS
@@ -1193,6 +1267,12 @@
     function App() {
       const [file, setFile] = useState(null);
       const [parsing, setParsing] = useState(false);
+      // Investigative caption that rotates through INVESTIGATIVE_QUOTES while
+      // parsing is in progress. Holds an entry from that array, or null when
+      // not parsing. The timer is held in a ref so we can clear it from any
+      // codepath that ends parsing (success, error, or unmount).
+      const [investigation, setInvestigation] = useState(null);
+      const investigationTimerRef = useRef(null);
       const [result, setResult] = useState(null);
       const [log, setLog] = useState([]);
       const [pmsConnected, setPmsConnected] = useState(false);
@@ -1214,6 +1294,16 @@
         if (!f || f.type !== "application/pdf") { alert("Please drop a PDF file."); return; }
         setFile(f); setParsing(true); setResult(null);
         setLog([{ type: "info", msg: `Reading ${f.name}…` }]);
+        // Start the investigative animation — rotate through quotes every
+        // ~1.7s. Pick a random starting index so consecutive extractions
+        // don't always lead with the same line.
+        if (investigationTimerRef.current) clearInterval(investigationTimerRef.current);
+        let qIdx = Math.floor(Math.random() * INVESTIGATIVE_QUOTES.length);
+        setInvestigation(INVESTIGATIVE_QUOTES[qIdx]);
+        investigationTimerRef.current = setInterval(() => {
+          qIdx = (qIdx + 1) % INVESTIGATIVE_QUOTES.length;
+          setInvestigation(INVESTIGATIVE_QUOTES[qIdx]);
+        }, 1700);
         try {
           const parsed = await readPdf(f);
 
@@ -1244,7 +1334,15 @@
         } catch (e) {
           setLog((prev) => [...prev, { type: "miss", msg: `Error: ${e.message}` }]);
           console.error(e);
-        } finally { setParsing(false); }
+        } finally {
+          setParsing(false);
+          // Stop the investigative animation regardless of success/failure.
+          if (investigationTimerRef.current) {
+            clearInterval(investigationTimerRef.current);
+            investigationTimerRef.current = null;
+          }
+          setInvestigation(null);
+        }
       }, []);
 
       // Pull the source URL out of a DataTransfer if the drag provided one.
@@ -1452,6 +1550,15 @@
             {/* MIDDLE — flags banner + log */}
             <div className="panel">
               <h2>2. Override Clauses & Extraction Log</h2>
+              {parsing && investigation && (
+                <div className="investigating">
+                  <span className="investigating-emoji">{investigation.emoji}</span>
+                  <span className="investigating-text" key={investigation.line}>
+                    <span className="tag">{investigation.tag}</span>
+                    {investigation.line}
+                  </span>
+                </div>
+              )}
               {result && <FlagsBanner flags={result.flags} />}
               {docTypeLabel && (
                 <div className={`doc-type ${result.docType.isAIA ? "" : "non-aia"}`}>{docTypeLabel}</div>

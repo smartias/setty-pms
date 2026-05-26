@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v17";
+    window.__appVersion = "2026-05-25-pms-v19";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2724,6 +2724,32 @@ function escapeOneNoteText(s) {
 // the rest of the auto-created pages (Meetings, Site Visits, etc.).
 // Severity-coded callouts make override flags scannable at a glance —
 // these are the highest-value output of the extractor.
+
+// When a PDF is dragged from SharePoint, dragSourceUrl points to the FILE.
+// This helper strips the filename (and any query/hash) to derive the parent
+// FOLDER URL, so the OneNote can show a clickable folder link even if the
+// PMS record's curated folder field hasn't been set yet. Returns "" if the
+// input doesn't look like a SharePoint/OneDrive file URL.
+function deriveSharePointFolderUrl(fileUrl) {
+  if (!fileUrl || typeof fileUrl !== "string") return "";
+  if (!/sharepoint\.com|onedrive\.live|1drv\.ms/i.test(fileUrl)) return "";
+  try {
+    const url = new URL(fileUrl);
+    // If the pathname ends with a recognizable document filename, strip it.
+    // Otherwise treat the URL as already-folder-shaped and return unchanged.
+    if (/\.(pdf|docx?|xlsx?|pptx?|txt|rtf|jpg|jpeg|png)(\?|$)/i.test(url.pathname + url.search)) {
+      const segs = url.pathname.split("/").filter(Boolean);
+      segs.pop();
+      url.pathname = "/" + segs.join("/") + (segs.length ? "/" : "");
+      url.search = "";
+      url.hash = "";
+    }
+    return url.toString();
+  } catch (_) {
+    return "";
+  }
+}
+
 function buildContractAnalysisHtml(extraction, record = null, recordType = null) {
   const e = (s) => escapeOneNoteText(s);
   const NAVY = "#1F3864";
@@ -2741,6 +2767,27 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
   const fmtMoney = (v) => (v && +v) ? "$" + Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
 
   let html = `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;max-width:7.5in;">`;
+
+  // Prominent SharePoint folder callout at the very top — user-requested:
+  // "the onenote should have a clickable link to the sharepoint folder
+  // that the contract was drag and dropped from at the top".
+  // Uses the same two-tier logic as the inline link further down: prefer the
+  // record's curated folder, fall back to derived-from-dragSourceUrl.
+  const topRecordFolder = recordType === "project"
+    ? (record && record.contractFolderUrl)
+    : (record && record.folderUrl);
+  const topDerivedFolder = topRecordFolder ? "" : deriveSharePointFolderUrl(extraction.dragSourceUrl);
+  const topFolderUrl = topRecordFolder || topDerivedFolder || "";
+  if (topFolderUrl) {
+    const isDerived = !topRecordFolder && topDerivedFolder;
+    html += `<div style="background:#E0F2FE;border-left:6px solid #0EA5E9;padding:14px 18px;margin-bottom:18px;border-radius:6px;">`;
+    html += `<div style="font-size:13pt;font-weight:700;color:#075985;margin-bottom:6px;">📁 SharePoint Folder${isDerived ? " (from PDF location)" : ""}</div>`;
+    html += `<a href="${e(topFolderUrl)}" style="color:#0369A1;word-break:break-all;font-size:11pt;font-weight:500;">${e(topFolderUrl)}</a>`;
+    if (isDerived) {
+      html += `<div style="font-size:9pt;color:#0C4A6E;margin-top:6px;font-style:italic;">Parent folder derived from where this PDF was dragged in. Not necessarily the curated contract folder — set one on the record to override.</div>`;
+    }
+    html += `</div>`;
+  }
 
   // PMS Record block removed per user feedback (Sep 2026): the OneNote page
   // should contain ONLY data pulled from the contract — no PMS-derived
@@ -2764,15 +2811,9 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
   if (extraction.settyRole)      html += `<strong>Setty role:</strong> ${e(extraction.settyRole)}<br/>`;
   if (extraction.project)        html += `<strong>Project (per contract):</strong> ${e(extraction.project)}<br/>`;
   if (extraction.dragSourceUrl)  html += `<strong>PDF source:</strong> <a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a><br/>`;
-  // SharePoint folder URL from the record — the curated contract folder for
-  // the project (contractFolderUrl) or term contract (folderUrl). Different
-  // field name per record type. Re-added after user noted it had gone
-  // missing when the PMS Record block was removed; this is a navigation
-  // aid (link), not a "PMS data field" in the noise-clutter sense.
-  const recordFolderUrl = recordType === "project"
-    ? (record && record.contractFolderUrl)
-    : (record && record.folderUrl);
-  if (recordFolderUrl)          html += `<strong>SharePoint folder:</strong> <a href="${e(recordFolderUrl)}">${e(recordFolderUrl)}</a><br/>`;
+  // SharePoint folder link moved to the prominent callout at the top of
+  // the page (see topFolderUrl logic above). Kept inline 'PDF source:' here
+  // because it points to the FILE, not the folder — different intent.
   html += `<strong>Extracted on:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
   html += `</p>`;
 
