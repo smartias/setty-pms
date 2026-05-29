@@ -14069,7 +14069,24 @@ function InvestigationView({ project }) {
       }
 
       const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
-      setResults(parseSearchHits(raw, project));
+      let hits = parseSearchHits(raw, project);
+
+      // Microsoft Graph's /search/query is relevance-ranked — `AND` is a ranking
+      // hint, not a hard filter. So docs that strongly match the project number
+      // can come back even if the keyword barely matched (or didn't). Enforce
+      // keyword presence client-side against title + summary. For multi-word
+      // keywords, require every word to appear separately (not the full phrase)
+      // — Graph tokenizes, and matched terms in the summary may be split across
+      // <mark> tags which would defeat a full-phrase substring check.
+      if (kw) {
+        const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
+        hits = hits.filter(h => {
+          const haystack = ((h.title || "") + " " + (h.summary || "")).toLowerCase();
+          return words.every(w => haystack.includes(w));
+        });
+      }
+
+      setResults(hits);
     } catch (e) { setError("✗ " + e.message); }
     setSearching(false);
   }
