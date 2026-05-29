@@ -16199,6 +16199,11 @@ function EmailsView({ project, onChange }) {
                             ))
                           : <span style={{ fontSize: 11, background: P.yellowDim, color: P.yellow, borderRadius: 4, padding: "1px 7px" }}>📎 Has attachments (names unavailable)</span>
                         }
+                        {!email.spFolderUrl && (
+                          <div style={{ marginTop: 4, fontSize: 10, color: P.red, fontStyle: "italic", lineHeight: 1.45 }}>
+                            ⚠ Attachments are fetched live from Outlook at "Save to SharePoint" time — if the original email is deleted from the mailbox first (or another user clicks Save), the attachments will be silently lost. Save to SharePoint now to preserve them.
+                          </div>
+                        )}
                       </div>
                     )}
                       <span style={{ fontSize: 10, color: P.textDim }}>Saved {email.savedAt ? new Date(email.savedAt).toLocaleDateString() : "Unknown date"} by {email.savedBy || "Unknown user"}</span>
