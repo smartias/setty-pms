@@ -1221,6 +1221,19 @@ async function loadEmailBody(recordId) {
   return rows?.[0]?.body_html_compressed || "";
 }
 
+// All saved msg_ids for a project. Used to dedupe Outlook-search results
+// against the entire saved set (not just the loaded page). One round-trip
+// per project session; result is bounded by saved-email count and is just
+// strings, so cheap even at 10K+ rows.
+async function loadProjectMsgIds(projectId) {
+  if (!projectId) return new Set();
+  const path = "/rest/v1/pms_project_emails" +
+               "?project_id=eq." + encodeURIComponent(projectId) +
+               "&select=msg_id";
+  const rows = await sbFetchV2("GET", path);
+  return new Set((rows || []).map(r => r.msg_id).filter(Boolean));
+}
+
 // Distinct senders for a project — feeds the sender filter dropdown.
 // Cheap: indexed scan, no table scan.
 async function loadProjectSenders(projectId) {
@@ -15311,7 +15324,6 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 // ─── EMAILS VIEW ─────────────────────────────────────────────────────────────
 
 function EmailsView({ project, onChange }) {
-  const saved = (project.emails || []).filter(e => e && typeof e === "object");
   const toText = (value, fallback = "") => {
     if (typeof value === "string") return value;
     if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -15321,21 +15333,124 @@ function EmailsView({ project, onChange }) {
     return fallback;
   };
 
-  // Search state
+  // Outlook-search state (unchanged from before)
   const [query, setQuery] = useState(project.name || project.projectNumber || "");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState(null);
   const [selected, setSelected] = useState({}); // { [msgId]: bool }
 
-  // View state
+  // Email open/expand state (unchanged from before)
   const [expanded, setExpanded] = useState(null); // msgId of open email
   const [fetchingBody, setFetchingBody] = useState(null);
   const [spSaveState, setSpSaveState] = useState({}); // msgId -> {status, msg}
   const [shareState, setShareState] = useState({}); // msgId -> {status, msg}
-  const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string }
-  const [filterSender, setFilterSender] = useState("All");
+  const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string } — Outlook live-fetched
+
+  // ── Phase 6b: server-side reads from pms_project_emails ────────────────────
+  // `emails` is the loaded page (metadata only, no bodies). It replaces what
+  // used to be derived from project.emails[] each render. Mutations still
+  // call onChange to keep project.emails[] in sync (dual-write); the local
+  // state mirror lets the UI re-render immediately without waiting for the
+  // parent prop to update.
+  const [emails, setEmails] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const PAGE_SIZE = 50;
+
+  // Filter UI state.
+  // `logSearch` = current text in the search box (typing)
+  // `searchTerm` = committed value (changes trigger a server refetch)
+  // `filterSender` = selected sender filter (changes trigger a refetch)
   const [logSearch, setLogSearch] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterSender, setFilterSender] = useState("All");
+  const [senderOptions, setSenderOptions] = useState([]); // populated from loadProjectSenders
+
+  // Set of every saved msg_id for THIS project — used to dedupe Outlook-search
+  // results against the entire saved set (not just the loaded page). Loaded
+  // once per project session.
+  const [savedMsgIds, setSavedMsgIds] = useState(new Set());
+
+  // Load the first page + supporting data when project changes or filters change.
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setOffset(0);
+    (async () => {
+      try {
+        const page = await loadProjectEmails(project.id, {
+          limit: PAGE_SIZE,
+          offset: 0,
+          search: searchTerm,
+          sender: filterSender === "All" ? "" : filterSender,
+        });
+        if (cancelled) return;
+        setEmails(page);
+        setHasMore(page.length === PAGE_SIZE);
+      } catch (e) {
+        if (cancelled) return;
+        console.warn("loadProjectEmails failed:", e);
+        setEmails([]);
+        setHasMore(false);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [project.id, searchTerm, filterSender]);
+
+  // Load sender options + saved-msgId set when project changes (independent of filters).
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [senders, msgIds] = await Promise.all([
+          loadProjectSenders(project.id),
+          loadProjectMsgIds(project.id),
+        ]);
+        if (cancelled) return;
+        setSenderOptions(senders);
+        setSavedMsgIds(msgIds);
+      } catch (e) {
+        console.warn("loadProjectSenders/MsgIds failed:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  // Fetch next page and append. Triggered by the "Show more" button.
+  async function loadMore() {
+    if (!hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const nextOffset = offset + PAGE_SIZE;
+      const page = await loadProjectEmails(project.id, {
+        limit: PAGE_SIZE,
+        offset: nextOffset,
+        search: searchTerm,
+        sender: filterSender === "All" ? "" : filterSender,
+      });
+      setEmails(prev => [...prev, ...page]);
+      setOffset(nextOffset);
+      setHasMore(page.length === PAGE_SIZE);
+    } catch (e) {
+      console.warn("loadMore failed:", e);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  // Commit the search box value (called on Enter or Search button).
+  function commitSearch() {
+    setSearchTerm(logSearch.trim());
+  }
+  function clearSearch() {
+    setLogSearch("");
+    setSearchTerm("");
+  }
 
   // Strip HTML to plain text
   function htmlToText(html) {
@@ -15601,9 +15716,9 @@ function EmailsView({ project, onChange }) {
   }
 
   async function saveSelected() {
-    const existingIds = new Set(saved.map(e => e.msgId));
-    const toSave = results.filter(m => selected[m.id] && !existingIds.has(m.id));
-    const dupeCount = results.filter(m => selected[m.id] && existingIds.has(m.id)).length;
+    // Dedup against ALL saved emails (savedMsgIds), not just the loaded page.
+    const toSave = results.filter(m => selected[m.id] && !savedMsgIds.has(m.id));
+    const dupeCount = results.filter(m => selected[m.id] && savedMsgIds.has(m.id)).length;
 
     if (toSave.length === 0 && dupeCount > 0) {
       alert(`${dupeCount} email${dupeCount > 1 ? "s" : ""} already saved.`);
@@ -15648,7 +15763,16 @@ function EmailsView({ project, onChange }) {
       };
     }));
 
-    onChange({ ...project, emails: [...saved, ...toAdd] });
+    // Dual-write: update project.emails[] (parent state) AND the local
+    // `emails` page (so the UI re-renders immediately without waiting for
+    // a refetch). Prepend toAdd to local state since the list is date-desc.
+    onChange({ ...project, emails: [...(project.emails || []), ...toAdd] });
+    setEmails(prev => [...toAdd, ...prev]);
+    setSavedMsgIds(prev => {
+      const next = new Set(prev);
+      toAdd.forEach(e => next.add(e.msgId));
+      return next;
+    });
     setSelected({});
     setResults([]);
 
@@ -15689,15 +15813,21 @@ function EmailsView({ project, onChange }) {
       const { folderName, attachCount, folderWebUrl } = await saveEmailToSharePoint(email, project, bodyHtml, buildPmsMetadata(project, PMS_DOC_TYPES.CORRESPONDENCE));
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
-      // Persist the SP folder URL on the email record so it survives page refresh
-      onChange({ ...project, emails: saved.map(e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e) });
+      // Persist the SP folder URL on the email record so it survives page refresh.
+      // Dual-write: update both project.emails[] (parent state) and the local page.
+      const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
+      onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
+      setEmails(prev => prev.map(patchSpUrl));
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
     }
   }
 
   function deleteEmail(msgId) {
-    onChange({ ...project, emails: saved.filter(e => e.msgId !== msgId) });
+    // Dual-write delete: parent project.emails[], local page, savedMsgIds set.
+    onChange({ ...project, emails: (project.emails || []).filter(e => e.msgId !== msgId) });
+    setEmails(prev => prev.filter(e => e.msgId !== msgId));
+    setSavedMsgIds(prev => { const next = new Set(prev); next.delete(msgId); return next; });
     if (expanded === msgId) setExpanded(null);
   }
 
@@ -15713,16 +15843,16 @@ function EmailsView({ project, onChange }) {
         // Phase 3: persist the compressed body to the project record so we never
         // need to re-fetch it. Future opens go straight to decompress + render.
         // The save uses onChange (debounced auto-save) — no extra round-trip cost.
-        const existing = saved.find(e => e.msgId === msgId);
+        const existing = emails.find(e => e.msgId === msgId);
         if (existing && !existing.bodyHtmlCompressed) {
           const compressed = compressHtml(html);
           if (compressed) {
-            onChange({
-              ...project,
-              emails: saved.map(e => e.msgId === msgId
-                ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
-                : e),
-            });
+            // Dual-write the cached body: parent project.emails[] AND local page.
+            const patchBody = e => e.msgId === msgId
+              ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
+              : e;
+            onChange({ ...project, emails: (project.emails || []).map(patchBody) });
+            setEmails(prev => prev.map(patchBody));
           }
         }
       }
@@ -15747,31 +15877,17 @@ function EmailsView({ project, onChange }) {
     fetchLiveBody(email.msgId);
   }
 
-  // Unique senders for filter
-  const senders = useMemo(() => {
-    const s = new Set(saved.map(e => toText(e.from, "")).filter(Boolean));
-    return ["All", ...Array.from(s).sort()];
-  }, [saved]);
+  // The sender dropdown options. `senderOptions` is populated from the server;
+  // we prepend "All" as a no-filter sentinel.
+  const senders = useMemo(() => ["All", ...senderOptions], [senderOptions]);
 
-  const filtered = saved.filter(e => {
-    const subjectTxt = toText(e.subject, "");
-    const fromTxt = toText(e.from, "");
-    const toTxt = toText(e.to, "");
-    const bodyTxt = toText(e.bodyText, "");
-    if (filterSender !== "All" && fromTxt !== filterSender) return false;
-    if (logSearch.trim()) {
-      const q = logSearch.toLowerCase();
-      return subjectTxt.toLowerCase().includes(q)
-        || fromTxt.toLowerCase().includes(q)
-        || toTxt.toLowerCase().includes(q)
-        || bodyTxt.toLowerCase().includes(q);
-    }
-    return true;
-  });
-  const sortedSaved = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
+  // No client-side filter/sort — server returns sorted, filtered results.
+  // `emails` IS the final list rendered.
 
   const selectedCount = Object.values(selected).filter(Boolean).length;
-  const newCount = results.filter(m => selected[m.id] && !saved.find(e => e.msgId === m.id)).length;
+  // Dedup against the full saved-msg-id set (not just the loaded page), so
+  // results that are saved on page 27 still get the "already saved" marker.
+  const newCount = results.filter(m => selected[m.id] && !savedMsgIds.has(m.id)).length;
 
   // ─── Share an email out via Outlook draft ──────────────────────────────────
   // Uses the same createOutlookDraft pattern as Schedule/Invoice exports — no
@@ -15887,7 +16003,7 @@ function EmailsView({ project, onChange }) {
             </div>
             <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${P.border}`, borderRadius: 6 }}>
               {results.map((m, i) => {
-                const alreadySaved = saved.some(e => e.msgId === m.id);
+                const alreadySaved = savedMsgIds.has(m.id);
                 const isChecked = !!selected[m.id];
                 return (
                   <div key={m.id}
@@ -15935,19 +16051,28 @@ function EmailsView({ project, onChange }) {
         <SectionTitle style={{ margin: 0 }}>
           Saved Emails
           <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: P.textDim }}>
-            ({filtered.length}{filtered.length !== saved.length ? ` of ${saved.length}` : ""})
+            {loading
+              ? "(loading…)"
+              : `(showing ${emails.length}${hasMore ? "+" : ""}${searchTerm || filterSender !== "All" ? " — filtered" : ""})`}
           </span>
         </SectionTitle>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             value={logSearch}
             onChange={e => setLogSearch(e.target.value)}
-            placeholder="Search subject, sender, body…"
-            style={{ fontSize: 12, padding: "3px 8px", width: 220 }}
+            onKeyDown={e => { if (e.key === "Enter") commitSearch(); }}
+            placeholder="Search subject, sender, body — press Enter"
+            style={{ fontSize: 12, padding: "3px 8px", width: 240 }}
           />
-          {logSearch && (
-            <button onClick={() => setLogSearch("")}
+          {(logSearch || searchTerm) && (
+            <button onClick={clearSearch}
               style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13 }}>✕</button>
+          )}
+          {searchTerm && logSearch !== searchTerm && (
+            <button onClick={commitSearch}
+              style={{ background: P.accent, color: "#fff", border: "none", borderRadius: 4, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+              Search
+            </button>
           )}
           {senders.length > 2 && (
             <select value={filterSender} onChange={e => setFilterSender(e.target.value)}
@@ -15958,13 +16083,21 @@ function EmailsView({ project, onChange }) {
         </div>
       </div>
 
-      {sortedSaved.length === 0 ? (
+      {loading && emails.length === 0 && (
         <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
-          No emails saved yet. Use the search above to find and import emails from Outlook.
+          ⏳ Loading emails…
         </div>
-      ) : (
+      )}
+      {!loading && emails.length === 0 && (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
+          {searchTerm || filterSender !== "All"
+            ? "No emails match the current filter. Adjust the search or sender, or clear filters."
+            : "No emails saved yet. Use the search above to find and import emails from Outlook."}
+        </div>
+      )}
+      {emails.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-          {sortedSaved.map((email, idx) => {
+          {emails.map((email, idx) => {
             const emailId = email.msgId || email.id || ("legacy-" + idx);
             const isOpen = expanded === emailId;
             const body = liveBody[emailId] || email.bodyText || "";
@@ -16121,6 +16254,13 @@ function EmailsView({ project, onChange }) {
               </div>
             );
           })}
+        </div>
+      )}
+      {hasMore && emails.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "center", padding: "16px 0 8px" }}>
+          <Btn small variant="ghost" disabled={loadingMore} onClick={loadMore}>
+            {loadingMore ? "⏳ Loading…" : `Show more (${PAGE_SIZE} more)`}
+          </Btn>
         </div>
       )}
     </div>
