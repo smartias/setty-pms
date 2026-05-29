@@ -15323,6 +15323,47 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 
 // ─── EMAILS VIEW ─────────────────────────────────────────────────────────────
 
+// Hoisted out of EmailsView + memoized so the iframe DOM is preserved across
+// parent re-renders. Previously this was declared inline, which meant every
+// EmailsView render created a new component identity → iframe fully remounted →
+// srcDoc reloaded → "scanline" flash as the iframe redrew from a default 300px
+// height back to the measured content height. With memo + stable identity,
+// identical html prop values short-circuit the re-render entirely.
+const EmailIframe = React.memo(function EmailIframe({ html }) {
+  const ref = React.useRef(null);
+  const [height, setHeight] = React.useState(300);
+
+  const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>
+    *{box-sizing:border-box;}
+    body{background:#fff;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+         font-size:13px;line-height:1.6;padding:16px;margin:0;word-break:break-word;}
+    img{max-width:100%;height:auto;}
+    a{color:#1d4ed8;}
+    table{max-width:100%!important;}
+    td,th{word-break:break-word;}
+  </style></head><body>${html}</body></html>`;
+
+  function onLoad() {
+    try {
+      const body = ref.current?.contentDocument?.body;
+      if (body) setHeight(Math.min(body.scrollHeight + 24, 600));
+    } catch(e) { /* cross-origin guard */ }
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 8, overflow: "hidden", border: `1px solid ${P.border}` }}>
+      <iframe
+        ref={ref}
+        srcDoc={doc}
+        sandbox="allow-same-origin"
+        onLoad={onLoad}
+        style={{ width: "100%", height, border: "none", display: "block" }}
+        title="email-body"
+      />
+    </div>
+  );
+});
+
 function EmailsView({ project, onChange }) {
   const toText = (value, fallback = "") => {
     if (typeof value === "string") return value;
@@ -15570,42 +15611,8 @@ function EmailsView({ project, onChange }) {
     return cleanBodyText(text || "");
   }
 
-  // Renders raw HTML email in a sandboxed iframe — preserves all formatting,
-  // isolates email CSS, and handles chains the way the email client intended.
-  function EmailIframe({ html }) {
-    const ref = React.useRef(null);
-    const [height, setHeight] = React.useState(300);
-
-    const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>
-      *{box-sizing:border-box;}
-      body{background:#fff;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-           font-size:13px;line-height:1.6;padding:16px;margin:0;word-break:break-word;}
-      img{max-width:100%;height:auto;}
-      a{color:#1d4ed8;}
-      table{max-width:100%!important;}
-      td,th{word-break:break-word;}
-    </style></head><body>${html}</body></html>`;
-
-    function onLoad() {
-      try {
-        const body = ref.current?.contentDocument?.body;
-        if (body) setHeight(Math.min(body.scrollHeight + 24, 600));
-      } catch(e) { /* cross-origin guard */ }
-    }
-
-    return (
-      <div style={{ background: "#fff", borderRadius: 8, overflow: "hidden", border: `1px solid ${P.border}` }}>
-        <iframe
-          ref={ref}
-          srcDoc={doc}
-          sandbox="allow-same-origin"
-          onLoad={onLoad}
-          style={{ width: "100%", height, border: "none", display: "block" }}
-          title="email-body"
-        />
-      </div>
-    );
-  }
+  // EmailIframe is hoisted to module scope (above EmailsView) and wrapped in
+  // React.memo so the iframe DOM survives parent re-renders.
 
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
