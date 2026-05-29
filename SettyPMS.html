@@ -1138,6 +1138,139 @@ async function saveProjectEmailRowFromPMS(projectId, emailRecord, savedToSharePo
   await sbFetchV2("POST", "/rest/v1/pms_project_emails", row, "return=minimal");
 }
 
+// ── PHASE 6b READERS ────────────────────────────────────────────────────────
+// Server-side paginated reads from pms_project_emails. The list query is
+// deliberately metadata-only (no body_html_compressed) so pages stay <100KB
+// even at 50 rows; bodies are fetched on demand via loadEmailBody().
+//
+// Designed for projects with thousands of emails — no full-table scans, all
+// queries hit the (project_id, email_date DESC) index added in Phase 6a.
+
+// Column subset returned by the list query. Excludes body_html_compressed
+// and body_text — those are lazy-loaded.
+const EMAIL_LIST_COLUMNS =
+  "record_id,msg_id,conversation_id,subject,from_name,from_address," +
+  "to_addresses,cc_addresses,email_date,saved_at,saved_by," +
+  "sp_folder_url,saved_to_sharepoint,preview,has_attachments," +
+  "attachment_names,body_html_size";
+
+// Maps a pms_project_emails row (snake_case DB columns) into the camelCase
+// shape that EmailsView expects (matches project.emails[] entries today).
+// bodyHtmlCompressed defaults to empty — loadEmailBody fills it in on demand.
+function _rowToEmailRecord(r) {
+  return {
+    id: r.record_id,
+    msgId: r.msg_id,
+    conversationId: r.conversation_id,
+    subject: r.subject || "",
+    from: r.from_name || "",
+    fromAddress: r.from_address || "",
+    to: r.to_addresses || "",
+    cc: r.cc_addresses || "",
+    date: r.email_date,
+    savedAt: r.saved_at,
+    savedBy: r.saved_by || "",
+    spFolderUrl: r.sp_folder_url || "",
+    preview: r.preview || "",
+    hasAttachments: !!r.has_attachments,
+    attachmentNames: Array.isArray(r.attachment_names) ? r.attachment_names : [],
+    bodyHtmlSize: r.body_html_size || 0,
+    bodyHtmlCompressed: r.body_html_compressed || "",
+  };
+}
+
+// Load a page of emails for a project. Returns metadata only — no bodies.
+// Caller infers "no more results" by checking returned.length < limit.
+//   opts.limit:   page size (default 50)
+//   opts.offset:  number of rows to skip (default 0)
+//   opts.search:  free-text — server-side ILIKE on subject/from/body_text
+//   opts.sender:  exact-match filter on from_address
+async function loadProjectEmails(projectId, { limit = 50, offset = 0, search = "", sender = "" } = {}) {
+  if (!projectId) return [];
+  const params = new URLSearchParams({
+    "project_id": "eq." + projectId,
+    "select": EMAIL_LIST_COLUMNS,
+    "order": "email_date.desc.nullslast",
+    "limit": String(limit),
+    "offset": String(offset),
+  });
+  if (sender) params.append("from_address", "eq." + sender);
+  if (search && search.trim()) {
+    // Strip characters that have special meaning in PostgREST's or= syntax.
+    // Wrap in % wildcards. ILIKE is case-insensitive.
+    const q = "*" + search.trim().replace(/[*(),]/g, " ") + "*";
+    params.append("or",
+      "(subject.ilike." + q +
+      ",from_name.ilike." + q +
+      ",from_address.ilike." + q +
+      ",body_text.ilike." + q + ")"
+    );
+  }
+  const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?" + params.toString());
+  return (rows || []).map(_rowToEmailRecord);
+}
+
+// Fetch the compressed HTML body for a single email. Caller decompresses
+// with decompressHtml(). Returns "" if the row has no body (legacy gap).
+async function loadEmailBody(recordId) {
+  if (!recordId) return "";
+  const path = "/rest/v1/pms_project_emails?record_id=eq." +
+               encodeURIComponent(recordId) +
+               "&select=body_html_compressed,body_html_size&limit=1";
+  const rows = await sbFetchV2("GET", path);
+  return rows?.[0]?.body_html_compressed || "";
+}
+
+// Distinct senders for a project — feeds the sender filter dropdown.
+// Cheap: indexed scan, no table scan.
+async function loadProjectSenders(projectId) {
+  if (!projectId) return [];
+  const path = "/rest/v1/pms_project_emails" +
+               "?project_id=eq." + encodeURIComponent(projectId) +
+               "&select=from_address" +
+               "&order=from_address.asc";
+  const rows = await sbFetchV2("GET", path);
+  // De-dupe client-side (PostgREST has no DISTINCT). Cheap because the result
+  // is bounded by unique senders, not total emails.
+  const seen = new Set();
+  const out = [];
+  for (const r of rows || []) {
+    const s = r.from_address || "";
+    if (s && !seen.has(s)) { seen.add(s); out.push(s); }
+  }
+  return out;
+}
+
+// ── PHASE 6b MUTATIONS ──────────────────────────────────────────────────────
+// Targeted updates on individual email rows. Use these instead of PATCHing
+// the whole project row for email-only mutations.
+
+async function deleteProjectEmail(recordId) {
+  if (!recordId) return;
+  const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
+  await sbFetchV2("DELETE", path, undefined, "return=minimal");
+}
+
+async function updateProjectEmailSpFolder(recordId, spFolderUrl) {
+  if (!recordId) return;
+  const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
+  await sbFetchV2("PATCH", path, {
+    sp_folder_url: spFolderUrl || "",
+    saved_to_sharepoint: !!spFolderUrl,
+  }, "return=minimal");
+}
+
+// Backfill a body onto a previously-bodyless row (e.g. legacy email re-fetched
+// from Outlook on click). Used by the "live-fetch" path when a row has no body.
+async function updateProjectEmailBody(recordId, bodyHtmlCompressed, bodyHtmlSize) {
+  if (!recordId || !bodyHtmlCompressed) return;
+  const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
+  await sbFetchV2("PATCH", path, {
+    body_html_compressed: bodyHtmlCompressed,
+    body_html_size: bodyHtmlSize || 0,
+  }, "return=minimal");
+}
+
 async function saveClientV2(client, expectedVersion) {
   if (!client?.id) throw new Error("saveClientV2: client.id required");
   const path = "/rest/v1/pms_clients?id=eq." + encodeURIComponent(client.id) +
