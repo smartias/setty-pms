@@ -15818,17 +15818,29 @@ function EmailsView({ project, onChange }) {
       const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
       onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
       setEmails(prev => prev.map(patchSpUrl));
+      // Also patch the new table. Fire-and-forget — local state already updated.
+      if (email.id) {
+        updateProjectEmailSpFolder(email.id, folderWebUrl)
+          .catch(err => console.warn("updateProjectEmailSpFolder failed:", err));
+      }
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
     }
   }
 
   function deleteEmail(msgId) {
+    const target = emails.find(e => e.msgId === msgId);
     // Dual-write delete: parent project.emails[], local page, savedMsgIds set.
     onChange({ ...project, emails: (project.emails || []).filter(e => e.msgId !== msgId) });
     setEmails(prev => prev.filter(e => e.msgId !== msgId));
     setSavedMsgIds(prev => { const next = new Set(prev); next.delete(msgId); return next; });
     if (expanded === msgId) setExpanded(null);
+    // Also delete the row from pms_project_emails. Fire-and-forget: the local
+    // UI is already updated; a failure here leaves an orphan row (visible in
+    // cross-project search until cleanup) but doesn't block the user.
+    if (target?.id) {
+      deleteProjectEmail(target.id).catch(err => console.warn("deleteProjectEmail failed:", err));
+    }
   }
 
   async function fetchLiveBody(msgId) {
@@ -15853,6 +15865,11 @@ function EmailsView({ project, onChange }) {
               : e;
             onChange({ ...project, emails: (project.emails || []).map(patchBody) });
             setEmails(prev => prev.map(patchBody));
+            // Also persist to the new table so future opens skip the live fetch.
+            if (existing.id) {
+              updateProjectEmailBody(existing.id, compressed, html.length)
+                .catch(err => console.warn("updateProjectEmailBody failed:", err));
+            }
           }
         }
       }
