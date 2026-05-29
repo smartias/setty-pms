@@ -15864,16 +15864,35 @@ function EmailsView({ project, onChange }) {
     }
   }
 
-  function toggleExpand(email) {
+  async function toggleExpand(email) {
     if (expanded === email.msgId) { setExpanded(null); return; }
-    // Phase 3: if we have a compressed body stored, render it immediately —
-    // no need to call Graph. Saves a round-trip and works offline / for
-    // emails deleted from Outlook.
+    // 1. Already-loaded compressed body? Render instantly.
     if (email.bodyHtmlCompressed) {
       setExpanded(email.msgId);
       return;
     }
-    // Otherwise fetch live + opportunistically persist the compressed body
+    // 2. The list query excludes body_html_compressed for speed. On expand,
+    //    fetch this row's body from pms_project_emails. Cache it onto the
+    //    email object in local state so re-opening renders instantly.
+    if (email.id) {
+      setFetchingBody(email.msgId);
+      try {
+        const body = await loadEmailBody(email.id);
+        if (body) {
+          setEmails(prev => prev.map(e => e.id === email.id
+            ? { ...e, bodyHtmlCompressed: body }
+            : e));
+          setFetchingBody(null);
+          setExpanded(email.msgId);
+          return;
+        }
+      } catch (e) {
+        console.warn("loadEmailBody failed for", email.id, e);
+      }
+      setFetchingBody(null);
+    }
+    // 3. Row has no stored body (legacy gap) — last resort: live-fetch from
+    //    Outlook + opportunistically persist the compressed body.
     fetchLiveBody(email.msgId);
   }
 
