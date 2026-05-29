@@ -1107,9 +1107,10 @@ async function saveProjectV2(project, expectedVersion) {
   return result[0].version;
 }
 
-// PMS-side write to pms_project_emails search index. Mirrors the add-in's
-// saveProjectEmailRow so PMS-side email captures also appear in cross-project
-// email search. Phase-6-prep: same column subset as the add-in writes today.
+// PMS-side write to pms_project_emails. Dual-write: writes both the slim
+// index fields AND the new body/metadata columns added in Phase 6a, so the
+// new table is a complete copy after every save (in parallel with the
+// existing project.emails[] write).
 async function saveProjectEmailRowFromPMS(projectId, emailRecord, savedToSharePoint) {
   if (!projectId || !emailRecord?.msgId) return;
   const row = {
@@ -1120,10 +1121,19 @@ async function saveProjectEmailRowFromPMS(projectId, emailRecord, savedToSharePo
     subject: emailRecord.subject || "",
     from_name: emailRecord.from || "",
     from_address: emailRecord.fromAddress || "",
+    to_addresses: emailRecord.to || "",
+    cc_addresses: emailRecord.cc || "",
     email_date: emailRecord.date || null,
     saved_at: emailRecord.savedAt || new Date().toISOString(),
+    saved_by: emailRecord.savedBy || null,
     sp_folder_url: emailRecord.spFolderUrl || "",
     saved_to_sharepoint: !!savedToSharePoint,
+    body_html_compressed: emailRecord.bodyHtmlCompressed || null,
+    body_html_size: emailRecord.bodyHtmlSize || 0,
+    body_text: emailRecord.bodyText || "",
+    preview: emailRecord.preview || "",
+    has_attachments: !!emailRecord.hasAttachments,
+    attachment_names: emailRecord.attachmentNames || [],
   };
   await sbFetchV2("POST", "/rest/v1/pms_project_emails", row, "return=minimal");
 }
