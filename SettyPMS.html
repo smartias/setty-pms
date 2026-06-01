@@ -4184,30 +4184,39 @@ async function createSharePointFolder(project) {
 //   3. Create "Setty Deliverables" subfolder (share with client — Can View)
 //   4. Plant .url shortcut files in the main NYCProjects project folder (best-effort)
 //
-// Sharing uses POST /drives/{id}/items/{id}/invite with sendInvitation:false.
-// Why /invite and not /createLink: /createLink with scope:"users" + recipients
-// is officially a /beta-only shape on driveItem, and at v1.0 Graph masks any
-// resolution failure as a generic `sharingFailed` 400. /invite is the v1.0-
-// supported way to grant a specific user permission and it returns a per-
-// recipient permission collection so failures surface with detail.
-async function shareDriveItemWithUser(driveId, itemId, email, role) {
+// Sharing uses POST /drives/{id}/items/{id}/invite. Why /invite over
+// /createLink: /createLink with scope:"users" + recipients is officially a
+// /beta-only shape on driveItem; at v1.0 Graph masks failures as a generic
+// `sharingFailed` 400. /invite is the v1.0-supported way to grant a specific
+// user permission.
+//
+// IMPORTANT: sendInvitation MUST be true for brand-new external recipients.
+// If the email doesn't yet exist as a B2B guest in Entra ID, Graph has to
+// create the guest record as part of the share, and the invitation email is
+// how the guest bootstraps into Entra (they redeem via the link in the email).
+// Suppressing the invitation while requiring sign-in is impossible for new
+// guests — Graph rejects the whole call with `sharingFailed`. Existing
+// guests would work either way, but we have no cheap client-side check, so
+// we always send the invitation.
+async function shareDriveItemWithUser(driveId, itemId, email, role, message) {
   if (!email) throw new Error("shareDriveItemWithUser: email required");
-  // requireSignIn:true keeps the grant tied to the recipient's identity
-  // (no open links). sendInvitation:false skips the SP "send sharing email"
-  // pipeline that was failing for us — the recipient still gets the grant,
-  // they just have to be told the link out-of-band (which we do anyway).
   return await graphFetch("POST",
     "/drives/" + driveId + "/items/" + itemId + "/invite",
     {
       recipients: [{ email }],
       roles: [role === "write" ? "write" : "read"],
       requireSignIn: true,
-      sendInvitation: false,
+      sendInvitation: true,
+      message: (message || "You have been granted access to a SETTY project folder.").slice(0, 2000),
     }
   );
 }
 
-async function createClientPortalFolders(project, clientEmail) {
+// Creates the portal folder structure but does NOT share with anyone.
+// Sharing is opt-in via the Manage Sharing modal so the user controls
+// exactly who gets an invitation email (rather than auto-inviting whichever
+// contact happened to be first in the directory, which is often wrong).
+async function createClientPortalFolders(project) {
   const num  = (project.projectNumber || "").trim();
   const name = (project.name         || "Unnamed Project").trim();
   if (!num && !name) throw new Error("Project must have a number or name before creating portal folders.");
@@ -4251,17 +4260,6 @@ async function createClientPortalFolders(project, clientEmail) {
   const uploads      = await getOrCreate("Client Uploads");
   const deliverables = await getOrCreate("Setty Deliverables");
 
-  // Share folders with client email if available. Failures are non-fatal:
-  // the folders themselves are created; sharing can be retried via the
-  // Manage Sharing modal. We collect failures so the caller can surface them.
-  const shareErrors = [];
-  if (clientEmail) {
-    try { await shareDriveItemWithUser(driveId, uploads.id,      clientEmail, "write"); }
-    catch (e) { shareErrors.push("Client Uploads: " + e.message); }
-    try { await shareDriveItemWithUser(driveId, deliverables.id, clientEmail, "read"); }
-    catch (e) { shareErrors.push("Setty Deliverables: " + e.message); }
-  }
-
   // Plant .url shortcut files in the main NYCProjects project folder
   if (project.projectFolderUrl) {
     try {
@@ -4292,7 +4290,6 @@ async function createClientPortalFolders(project, clientEmail) {
   return {
     clientUploadsUrl:     uploads.webUrl,
     settyDeliverablesUrl: deliverables.webUrl,
-    shareErrors,
   };
 }
 
@@ -21196,24 +21193,6 @@ function TermContractFolderField({ termContract, onUpdate }) {
   );
 }
 
-// Resolves a client email from the project's client name → clients directory.
-// Falls back to project.projectContacts.pm[0].email. Returns null if neither
-// path yields a valid-looking email. Pulled out so create() and the
-// "Set Up Portal Folders" button both use the same lookup.
-function resolveClientEmail(project, clients) {
-  const companyName = (project.clientName || "").trim().toLowerCase();
-  if (companyName && clients && clients.length) {
-    const clientRecord = clients.find(c => (c.name || "").trim().toLowerCase() === companyName);
-    if (clientRecord) {
-      const contact = (clientRecord.contacts || []).find(ct => ct.email && ct.email.includes("@"));
-      if (contact) return contact.email.trim();
-    }
-  }
-  const pmPoc = (project.projectContacts?.pm || [])[0];
-  if (pmPoc && pmPoc.email && pmPoc.email.includes("@")) return pmPoc.email.trim();
-  return null;
-}
-
 function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
@@ -21284,26 +21263,18 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
       // Also create NYSharesite client portal folders. Non-fatal on failure:
       // the main folder is already created and saved, and the user can retry
       // portal creation independently from the "Set Up Portal Folders" button.
+      // Folders are created empty \u2014 use Manage Sharing to invite people.
       setPortalStatus("creating");
-      const portalEmail = resolveClientEmail(project, clients);
-      setPortalMsg("\u23f3 Creating client portal folders in NYSharesite"
-        + (portalEmail ? " and sharing with " + portalEmail : " (no client email found \u2014 folders created but not shared)") + "\u2026");
+      setPortalMsg("\u23f3 Creating client portal folders in NYSharesite\u2026");
       try {
-        const { clientUploadsUrl, settyDeliverablesUrl, shareErrors } =
-          await createClientPortalFolders(updatedProject, portalEmail);
+        const { clientUploadsUrl, settyDeliverablesUrl } =
+          await createClientPortalFolders(updatedProject);
         updatedProject.clientUploadsFolderUrl     = clientUploadsUrl;
         updatedProject.settyDeliverablesFolderUrl = settyDeliverablesUrl;
         onUpdate("clientUploadsFolderUrl",     clientUploadsUrl);
         onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
-        if (shareErrors && shareErrors.length) {
-          setPortalStatus("error");
-          setPortalMsg("\u26a0 Portal folders created but sharing failed: " + shareErrors.join("; ")
-            + " \u2014 use Manage Sharing to retry.");
-        } else {
-          setPortalStatus("done");
-          setPortalMsg("\u2713 Client portal folders ready"
-            + (portalEmail ? " \u2014 shared with " + portalEmail : " (no client email \u2014 share manually)") + ".");
-        }
+        setPortalStatus("done");
+        setPortalMsg("\u2713 Client portal folders ready \u2014 use Manage Sharing to invite the client.");
       } catch (portalErr) {
         setPortalStatus("error");
         setPortalMsg("\u26a0 Portal folders failed: " + portalErr.message);
@@ -21332,14 +21303,12 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
   }
 
   // For existing projects: main folder exists but portal folders not yet created.
+  // Folders are created empty \u2014 use Manage Sharing to invite people.
   async function createPortalFolders() {
     setPortalStatus("creating");
-    const portalEmail = resolveClientEmail(project, clients);
-    setPortalMsg("\u23f3 Creating client portal folders in NYSharesite"
-      + (portalEmail ? " and sharing with " + portalEmail : " (no client email found \u2014 folders created but not shared)") + "\u2026");
+    setPortalMsg("\u23f3 Creating client portal folders in NYSharesite\u2026");
     try {
-      const { clientUploadsUrl, settyDeliverablesUrl, shareErrors } =
-        await createClientPortalFolders(project, portalEmail);
+      const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(project);
       onUpdate("clientUploadsFolderUrl",     clientUploadsUrl);
       onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
       if (onEagerSave) {
@@ -21348,15 +21317,8 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
           settyDeliverablesFolderUrl: settyDeliverablesUrl,
         }).catch(() => {});
       }
-      if (shareErrors && shareErrors.length) {
-        setPortalStatus("error");
-        setPortalMsg("\u26a0 Portal folders created but sharing failed: " + shareErrors.join("; ")
-          + " \u2014 use Manage Sharing to retry.");
-      } else {
-        setPortalStatus("done");
-        setPortalMsg("\u2713 Client portal folders ready"
-          + (portalEmail ? " \u2014 shared with " + portalEmail : " (no client email \u2014 share manually)") + ".");
-      }
+      setPortalStatus("done");
+      setPortalMsg("\u2713 Client portal folders ready \u2014 use Manage Sharing to invite the client.");
     } catch(e) {
       setPortalStatus("error");
       setPortalMsg("\u2717 " + e.message);
@@ -21610,8 +21572,12 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
         // "Both folders" + "Can Edit" → uploads gets write, deliverables stays read.
         // Setty Deliverables is meant to be view-only for clients regardless.
         targets.push({ itemId: perms.deliverablesId, role: addTarget === "both" && addRole === "write" ? "read" : addRole });
+      const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim()].filter(Boolean).join(" - ");
       for (const t of targets) {
-        await shareDriveItemWithUser(driveId, t.itemId, contact.email, t.role);
+        const folderLabel = t.itemId === perms.uploadsId ? "Client Uploads" : "Setty Deliverables";
+        const message = "You have been granted " + (t.role === "write" ? "upload" : "view") +
+          " access to the " + folderLabel + " folder for SETTY project " + projLabel + ".";
+        await shareDriveItemWithUser(driveId, t.itemId, contact.email, t.role, message);
       }
       setActionStatus("done");
       setActionMsg("✓ Added " + contact.email);
@@ -21723,6 +21689,18 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           <div style={{ borderTop: `1px solid ${P.border}`, paddingTop: 12, marginTop: 4 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim,
               letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 8 }}>Add Person</div>
+
+            {/* Heads-up: clicking a contact sends them a SharePoint invitation
+                email immediately. This is required for first-time external
+                recipients (B2B guest creation rides on the invitation), so
+                there's no silent-add option. */}
+            <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10,
+              padding: "6px 10px", background: P.bgCard || P.bgAlt || P.bg,
+              border: `1px solid ${P.border}`, borderRadius: 5, lineHeight: 1.45 }}>
+              ✉️ Clicking a contact will <strong>send them a SharePoint invitation email</strong> from
+              your account. They'll click the link, sign in with their work email, and gain access
+              to the folder.
+            </div>
 
             {/* Folder + role selectors */}
             <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
