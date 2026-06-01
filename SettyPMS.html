@@ -16177,15 +16177,24 @@ function EmailsView({ project, onChange }) {
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{toText(email.subject, "(no subject)")}</div>
                       <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
-                        {new Date(email.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                        {new Date(email.date).toLocaleString("en-US", {
+                          weekday: "short", month: "numeric", day: "numeric", year: "numeric",
+                          hour: "numeric", minute: "2-digit",
+                        }).replace(/,/g, "")}
                       </div>
                     </div>
                     <div style={{ fontSize: 12, color: P.textMuted, marginTop: 2 }}>
                       <span>From: <strong>{toText(email.from, "Unknown")}</strong></span>
-                      {toText(email.to, "") && <span style={{ marginLeft: 10 }}>To: {toText(email.to, "").length > 60 ? toText(email.to, "").slice(0, 60) + "…" : toText(email.to, "")}</span>}
+                      {toText(email.to, "") && (
+                        <span style={{ marginLeft: 10, wordBreak: "break-word" }}>
+                          To: {toText(email.to, "")}
+                        </span>
+                      )}
                     </div>
                     {toText(email.cc, "") && (
-                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>CC: {toText(email.cc, "").length > 80 ? toText(email.cc, "").slice(0, 80) + "…" : toText(email.cc, "")}</div>
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1, wordBreak: "break-word" }}>
+                        CC: {toText(email.cc, "")}
+                      </div>
                     )}
                     <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
                       {email.hasAttachments && (
@@ -16206,7 +16215,6 @@ function EmailsView({ project, onChange }) {
                         )}
                       </div>
                     )}
-                      <span style={{ fontSize: 10, color: P.textDim }}>Saved {email.savedAt ? new Date(email.savedAt).toLocaleDateString() : "Unknown date"} by {email.savedBy || "Unknown user"}</span>
                     </div>
                   </div>
                   <div style={{ flexShrink: 0, fontSize: 16, color: P.textDim, marginTop: 2 }}>{isOpen ? "▲" : "▼"}</div>
