@@ -21606,6 +21606,67 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
     }
   }
 
+  // Email this person a backup copy of the folder link(s). Use case: the
+  // SharePoint invitation email gets lost, filtered to spam, or they need
+  // to re-share the link to a colleague. Creates an Outlook draft pre-filled
+  // with subject, body, and recipient — user reviews + sends from Outlook.
+  //
+  // If the recipient has permissions on BOTH folders, both URLs are included
+  // in one email regardless of which row's button was clicked. Saves the
+  // user from sending two near-identical emails.
+  async function emailLinkToPerson(perm) {
+    setActionStatus("working");
+    setActionMsg("⏳ Creating Outlook draft for " + perm.email + "…");
+    try {
+      const allTheirPerms = [
+        ...(perms?.uploads      || []).map(p => ({ ...p, folder: "Client Uploads",      url: project.clientUploadsFolderUrl     })),
+        ...(perms?.deliverables || []).map(p => ({ ...p, folder: "Setty Deliverables",  url: project.settyDeliverablesFolderUrl })),
+      ].filter(p => p.email === perm.email && p.url);
+
+      const projLabel = [(project.projectNumber||"").trim(), (project.name||"").trim()].filter(Boolean).join(" - ");
+      const subject = "SETTY project folder access — " + projLabel;
+
+      const folderList = allTheirPerms.map(p => {
+        const roleLabel = (p.roles || []).includes("write") ? "edit access" : "view access";
+        return `<li><strong>${p.folder}</strong> (${roleLabel}): <a href="${p.url}">${p.url}</a></li>`;
+      }).join("");
+
+      const firstName = (perm.name || "").split(/\s+/)[0] || "";
+      const bodyHtml =
+        `<p>Hi ${firstName},</p>` +
+        `<p>You have access to the SharePoint folder${allTheirPerms.length > 1 ? "s" : ""} for SETTY project <strong>${projLabel}</strong>:</p>` +
+        `<ul>${folderList}</ul>` +
+        `<p><strong>First-time sign-in:</strong></p>` +
+        `<ul>` +
+          `<li>If you have a Microsoft work account, click the folder link and sign in normally.</li>` +
+          `<li>Otherwise, click "Send code" on the sign-in page — SharePoint will email you a 6-digit verification code to enter.</li>` +
+        `</ul>` +
+        `<p>Once you're in, bookmark the folder URL above — you won't need this email again.</p>` +
+        `<p>Let me know if you have any trouble accessing the folder.</p>`;
+
+      const token = await getToken();
+      const res = await fetch("https://graph.microsoft.com/v1.0/me/messages", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject,
+          body: { contentType: "HTML", content: bodyHtml },
+          toRecipients: [{ emailAddress: { address: perm.email, name: perm.name || "" } }],
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error?.message || "Failed to create draft");
+      }
+
+      setActionStatus("done");
+      setActionMsg("✓ Outlook draft for " + perm.email + " created — open Outlook Drafts to review and send.");
+    } catch(e) {
+      setActionStatus("error");
+      setActionMsg("✗ " + e.message);
+    }
+  }
+
   function PermRow({ perm }) {
     const isEdit    = perm.roles.includes("write");
     const roleLabel = isEdit ? "Can Edit" : "Can View";
@@ -21621,6 +21682,10 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
         <span style={{ fontSize: 10, fontWeight: 700, color: roleColor,
           background: roleColor + "22", borderRadius: 3, padding: "1px 6px",
           whiteSpace: "nowrap" }}>{roleLabel}</span>
+        <button onClick={() => emailLinkToPerson(perm)}
+          style={{ background: "none", border: "none", color: P.textDim,
+            cursor: "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
+          title={"Email folder link(s) to " + perm.email + " (creates an Outlook draft)"}>📧</button>
         <button onClick={() => removePerson(perm)}
           style={{ background: "none", border: "none", color: P.red || "#ef4444",
             cursor: "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
