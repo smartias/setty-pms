@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v19";
+    window.__appVersion = "2026-05-25-pms-v8";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -428,6 +428,8 @@ function newProject(overrides = {}) {
     teamsOneNoteUrl: "",
     teamsChannelFolderUrl: "",
     externalLinks: [],
+    clientUploadsFolderUrl: "",
+    settyDeliverablesFolderUrl: "",
     reimbursableBudget: 0,
     reimbursables: [],
     ...overrides,
@@ -1107,183 +1109,6 @@ async function saveProjectV2(project, expectedVersion) {
   return result[0].version;
 }
 
-// PMS-side write to pms_project_emails. Dual-write: writes both the slim
-// index fields AND the new body/metadata columns added in Phase 6a, so the
-// new table is a complete copy after every save (in parallel with the
-// existing project.emails[] write).
-async function saveProjectEmailRowFromPMS(projectId, emailRecord, savedToSharePoint) {
-  if (!projectId || !emailRecord?.msgId) return;
-  const row = {
-    record_id: emailRecord.id,
-    project_id: projectId,
-    msg_id: emailRecord.msgId,
-    conversation_id: emailRecord.conversationId || null,
-    subject: emailRecord.subject || "",
-    from_name: emailRecord.from || "",
-    from_address: emailRecord.fromAddress || "",
-    to_addresses: emailRecord.to || "",
-    cc_addresses: emailRecord.cc || "",
-    email_date: emailRecord.date || null,
-    saved_at: emailRecord.savedAt || new Date().toISOString(),
-    saved_by: emailRecord.savedBy || null,
-    sp_folder_url: emailRecord.spFolderUrl || "",
-    saved_to_sharepoint: !!savedToSharePoint,
-    body_html_compressed: emailRecord.bodyHtmlCompressed || null,
-    body_html_size: emailRecord.bodyHtmlSize || 0,
-    body_text: emailRecord.bodyText || "",
-    preview: emailRecord.preview || "",
-    has_attachments: !!emailRecord.hasAttachments,
-    attachment_names: emailRecord.attachmentNames || [],
-  };
-  await sbFetchV2("POST", "/rest/v1/pms_project_emails", row, "return=minimal");
-}
-
-// ── PHASE 6b READERS ────────────────────────────────────────────────────────
-// Server-side paginated reads from pms_project_emails. The list query is
-// deliberately metadata-only (no body_html_compressed) so pages stay <100KB
-// even at 50 rows; bodies are fetched on demand via loadEmailBody().
-//
-// Designed for projects with thousands of emails — no full-table scans, all
-// queries hit the (project_id, email_date DESC) index added in Phase 6a.
-
-// Column subset returned by the list query. Excludes body_html_compressed
-// and body_text — those are lazy-loaded.
-const EMAIL_LIST_COLUMNS =
-  "record_id,msg_id,conversation_id,subject,from_name,from_address," +
-  "to_addresses,cc_addresses,email_date,saved_at,saved_by," +
-  "sp_folder_url,saved_to_sharepoint,preview,has_attachments," +
-  "attachment_names,body_html_size";
-
-// Maps a pms_project_emails row (snake_case DB columns) into the camelCase
-// shape that EmailsView expects (matches project.emails[] entries today).
-// bodyHtmlCompressed defaults to empty — loadEmailBody fills it in on demand.
-function _rowToEmailRecord(r) {
-  return {
-    id: r.record_id,
-    msgId: r.msg_id,
-    conversationId: r.conversation_id,
-    subject: r.subject || "",
-    from: r.from_name || "",
-    fromAddress: r.from_address || "",
-    to: r.to_addresses || "",
-    cc: r.cc_addresses || "",
-    date: r.email_date,
-    savedAt: r.saved_at,
-    savedBy: r.saved_by || "",
-    spFolderUrl: r.sp_folder_url || "",
-    preview: r.preview || "",
-    hasAttachments: !!r.has_attachments,
-    attachmentNames: Array.isArray(r.attachment_names) ? r.attachment_names : [],
-    bodyHtmlSize: r.body_html_size || 0,
-    bodyHtmlCompressed: r.body_html_compressed || "",
-  };
-}
-
-// Load a page of emails for a project. Returns metadata only — no bodies.
-// Caller infers "no more results" by checking returned.length < limit.
-//   opts.limit:   page size (default 50)
-//   opts.offset:  number of rows to skip (default 0)
-//   opts.search:  free-text — server-side ILIKE on subject/from/body_text
-//   opts.sender:  exact-match filter on from_address
-async function loadProjectEmails(projectId, { limit = 50, offset = 0, search = "", sender = "" } = {}) {
-  if (!projectId) return [];
-  const params = new URLSearchParams({
-    "project_id": "eq." + projectId,
-    "select": EMAIL_LIST_COLUMNS,
-    "order": "email_date.desc.nullslast",
-    "limit": String(limit),
-    "offset": String(offset),
-  });
-  if (sender) params.append("from_address", "eq." + sender);
-  if (search && search.trim()) {
-    // Strip characters that have special meaning in PostgREST's or= syntax.
-    // Wrap in % wildcards. ILIKE is case-insensitive.
-    const q = "*" + search.trim().replace(/[*(),]/g, " ") + "*";
-    params.append("or",
-      "(subject.ilike." + q +
-      ",from_name.ilike." + q +
-      ",from_address.ilike." + q +
-      ",body_text.ilike." + q + ")"
-    );
-  }
-  const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?" + params.toString());
-  return (rows || []).map(_rowToEmailRecord);
-}
-
-// Fetch the compressed HTML body for a single email. Caller decompresses
-// with decompressHtml(). Returns "" if the row has no body (legacy gap).
-async function loadEmailBody(recordId) {
-  if (!recordId) return "";
-  const path = "/rest/v1/pms_project_emails?record_id=eq." +
-               encodeURIComponent(recordId) +
-               "&select=body_html_compressed,body_html_size&limit=1";
-  const rows = await sbFetchV2("GET", path);
-  return rows?.[0]?.body_html_compressed || "";
-}
-
-// All saved msg_ids for a project. Used to dedupe Outlook-search results
-// against the entire saved set (not just the loaded page). One round-trip
-// per project session; result is bounded by saved-email count and is just
-// strings, so cheap even at 10K+ rows.
-async function loadProjectMsgIds(projectId) {
-  if (!projectId) return new Set();
-  const path = "/rest/v1/pms_project_emails" +
-               "?project_id=eq." + encodeURIComponent(projectId) +
-               "&select=msg_id";
-  const rows = await sbFetchV2("GET", path);
-  return new Set((rows || []).map(r => r.msg_id).filter(Boolean));
-}
-
-// Distinct senders for a project — feeds the sender filter dropdown.
-// Cheap: indexed scan, no table scan.
-async function loadProjectSenders(projectId) {
-  if (!projectId) return [];
-  const path = "/rest/v1/pms_project_emails" +
-               "?project_id=eq." + encodeURIComponent(projectId) +
-               "&select=from_address" +
-               "&order=from_address.asc";
-  const rows = await sbFetchV2("GET", path);
-  // De-dupe client-side (PostgREST has no DISTINCT). Cheap because the result
-  // is bounded by unique senders, not total emails.
-  const seen = new Set();
-  const out = [];
-  for (const r of rows || []) {
-    const s = r.from_address || "";
-    if (s && !seen.has(s)) { seen.add(s); out.push(s); }
-  }
-  return out;
-}
-
-// ── PHASE 6b MUTATIONS ──────────────────────────────────────────────────────
-// Targeted updates on individual email rows. Use these instead of PATCHing
-// the whole project row for email-only mutations.
-
-async function deleteProjectEmail(recordId) {
-  if (!recordId) return;
-  const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
-  await sbFetchV2("DELETE", path, undefined, "return=minimal");
-}
-
-async function updateProjectEmailSpFolder(recordId, spFolderUrl) {
-  if (!recordId) return;
-  const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
-  await sbFetchV2("PATCH", path, {
-    sp_folder_url: spFolderUrl || "",
-    saved_to_sharepoint: !!spFolderUrl,
-  }, "return=minimal");
-}
-
-// Backfill a body onto a previously-bodyless row (e.g. legacy email re-fetched
-// from Outlook on click). Used by the "live-fetch" path when a row has no body.
-async function updateProjectEmailBody(recordId, bodyHtmlCompressed, bodyHtmlSize) {
-  if (!recordId || !bodyHtmlCompressed) return;
-  const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
-  await sbFetchV2("PATCH", path, {
-    body_html_compressed: bodyHtmlCompressed,
-    body_html_size: bodyHtmlSize || 0,
-  }, "return=minimal");
-}
-
 async function saveClientV2(client, expectedVersion) {
   if (!client?.id) throw new Error("saveClientV2: client.id required");
   const path = "/rest/v1/pms_clients?id=eq." + encodeURIComponent(client.id) +
@@ -1515,6 +1340,7 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
     isAllDay: true,
     start: { dateTime: milestone.dueDate + "T00:00:00", timeZone: "Eastern Standard Time" },
     end:   { dateTime: endDate + "T00:00:00",           timeZone: "Eastern Standard Time" },
+    categories: ["PMS Milestone"],
   };
 
 
@@ -1573,6 +1399,112 @@ async function createNoteCalendarEvent(note, project) {
   } catch(e) {
     return { success: false, error: e.message };
   }
+}
+
+// ─── CALENDAR → PMS REVERSE SYNC ─────────────────────────────────────────────
+// When someone drags a milestone event in Outlook, the PMS dueDate goes stale.
+// This scanner reads Graph's delta feed for the NYC Shared Calendar and flags
+// any milestone whose calendar event has moved to a different date. Per policy:
+//   • Surface conflicts (don't auto-apply) — user resolves on the milestone row
+//   • Deleted events: ignore (milestone stays as-is)
+//   • Renamed events: ignore (date-only sync)
+
+const CAL_DELTA_LINK_KEY = "setty_pms_cal_delta_link";
+
+// Policy stub — YOU write this. See note below the scanner.
+function evaluateMilestoneDateConflict(milestone, newDateFromCalendar) {
+  // TODO(sara): return one of
+  //   { status: 'match'   }                                       // dates agree — clear any existing conflict
+  //   { status: 'ignore'  }                                       // differ, but don't bother the user (cancelled? completed?)
+  //   { status: 'conflict', proposedDate: 'YYYY-MM-DD' }          // surface the badge
+  //
+  // Available inputs:
+  //   milestone.dueDate       — current PMS date (YYYY-MM-DD) or "" if unset
+  //   milestone.cancelled     — bool
+  //   milestone.pctComplete   — 0–100
+  //   milestone.dateConflict  — already-flagged conflict if present (idempotency)
+  //   newDateFromCalendar     — YYYY-MM-DD from Outlook
+  return { status: 'ignore' }; // placeholder so the scanner is safe before you fill this in
+}
+
+async function scanCalendarForMilestoneChanges(projects, setProjects) {
+  const calId = await getNYCCalendarId();
+  if (!calId) return { scanned: 0, conflicts: 0, skipped: "no NYC calendar" };
+
+  // Build a quick lookup: calendarEventId → { projectId, milestoneId, milestone }
+  const eventIdToMilestone = new Map();
+  for (const p of projects) {
+    for (const m of (p.milestones || [])) {
+      if (m.calendarEventId) eventIdToMilestone.set(m.calendarEventId, { projectId: p.id, milestoneId: m.id, milestone: m });
+    }
+  }
+  if (!eventIdToMilestone.size) return { scanned: 0, conflicts: 0, skipped: "no linked milestones" };
+
+  // First run seeds a delta link for a ±1y window around today. Subsequent
+  // runs follow the saved deltaLink for incremental changes only.
+  let url = localStorage.getItem(CAL_DELTA_LINK_KEY);
+  if (!url) {
+    const start = new Date(); start.setFullYear(start.getFullYear() - 1);
+    const end   = new Date(); end.setFullYear(end.getFullYear() + 1);
+    url = "https://graph.microsoft.com/v1.0/me/calendars/" + calId
+        + "/calendarView/delta?startDateTime=" + start.toISOString()
+        + "&endDateTime=" + end.toISOString();
+  }
+
+  const changed = []; // [{ entry, newDate }]
+  let pageCount = 0;
+  try {
+    while (url && pageCount < 20) { // hard cap on pages — defensive
+      pageCount++;
+      const isAbsolute = url.startsWith("http");
+      const path = isAbsolute ? url.replace("https://graph.microsoft.com/v1.0", "") : url;
+      const page = await graphFetch("GET", path);
+      const items = page?.value || [];
+      for (const ev of items) {
+        if (ev["@removed"]) continue;                     // policy: ignore deletes
+        const entry = eventIdToMilestone.get(ev.id);
+        if (!entry) continue;                              // not one of ours
+        const newDate = (ev.start?.dateTime || "").slice(0, 10);
+        if (!newDate) continue;
+        changed.push({ entry, newDate });
+      }
+      url = page?.["@odata.nextLink"] || null;
+      if (page?.["@odata.deltaLink"]) {
+        localStorage.setItem(CAL_DELTA_LINK_KEY, page["@odata.deltaLink"]);
+      }
+    }
+  } catch (e) {
+    console.warn("[cal-reverse-sync] delta fetch failed:", e);
+    return { scanned: 0, conflicts: 0, error: e.message };
+  }
+
+  if (!changed.length) return { scanned: eventIdToMilestone.size, conflicts: 0 };
+
+  // Apply policy decisions, then write conflicts via setProjects (autosave picks it up).
+  let conflictCount = 0;
+  const decisions = new Map(); // milestoneId → { status, proposedDate? }
+  for (const { entry, newDate } of changed) {
+    const decision = evaluateMilestoneDateConflict(entry.milestone, newDate);
+    decisions.set(entry.milestoneId, decision);
+    if (decision.status === "conflict") conflictCount++;
+  }
+  if (!decisions.size) return { scanned: eventIdToMilestone.size, conflicts: 0 };
+
+  setProjects(prev => prev.map(p => {
+    if (!(p.milestones || []).some(m => decisions.has(m.id))) return p;
+    return { ...p, milestones: p.milestones.map(m => {
+      const d = decisions.get(m.id);
+      if (!d) return m;
+      if (d.status === "match" && m.dateConflict) {
+        const { dateConflict, ...rest } = m; return rest; // clear stale flag
+      }
+      if (d.status === "conflict") {
+        return { ...m, dateConflict: { proposedDate: d.proposedDate, detectedAt: new Date().toISOString() } };
+      }
+      return m;
+    }) };
+  }));
+  return { scanned: eventIdToMilestone.size, conflicts: conflictCount };
 }
 
 // ─── PALETTE & STYLES ────────────────────────────────────────────────────────
@@ -2183,6 +2115,13 @@ const SP_PROPOSALS_DRIVE_ID      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1B
 // Obtained from: https://setty.sharepoint.com/sites/NYCProjects/_api/v2.0/drives
 const SP_CONTRACTS_DRIVE_ID      = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BDwTLUC_kC6TYDhC8BfQTMb";
 
+// ── NYSharesite (client portal) — Shared Documents library
+// Site:  https://setty.sharepoint.com/sites/NYSharesite
+// Drive: "Documents" library (name shown in SharePoint = "Shared Documents")
+// IDs from: /sites/NYSharesite/_api/v2.0/drives
+const SP_NYSHARE_DRIVE_ID = "b!SaMkH0tf00uoxA0tJ16JZk3twzAjpPVIiKbmf40CKBjNhrOxU3cMTZTIYq6CXDLJ";
+const SP_NYSHARE_SITE_URL = "https://setty.sharepoint.com/sites/NYSharesite";
+
 let _spSiteId  = SP_SITE_ID_HARDCODED;
 let _spDriveId = SP_DRIVE_ID_HARDCODED;
 
@@ -2727,26 +2666,19 @@ async function getOrCreateTeamsOneNoteNotebook(project) {
 // team level. Cached after first lookup to avoid repeated Graph calls.
 let _termContractsNotebookCache = null;
 async function getOrCreateTermContractsNotebook() {
-  if (_termContractsNotebookCache) {
-    console.log("[term-contracts-notebook] using cached:", _termContractsNotebookCache);
-    return _termContractsNotebookCache;
-  }
+  if (_termContractsNotebookCache) return _termContractsNotebookCache;
   const name = "Setty Term Contracts";
-  console.log("[term-contracts-notebook] listing existing team notebooks…");
   const existing = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`);
   const found = (existing?.value || []).find(n => n.displayName === name);
   if (found) {
-    console.log("[term-contracts-notebook] found existing:", { id: found.id });
     _termContractsNotebookCache = {
       id: found.id,
       webUrl: found.links?.oneNoteWebUrl?.href || found.links?.oneNoteClientUrl?.href || "",
     };
     return _termContractsNotebookCache;
   }
-  console.log(`[term-contracts-notebook] not found — creating new "${name}" notebook…`);
   const result = await graphFetch("POST", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks`, { displayName: name });
   if (!result?.id) throw new Error("Teams OneNote API did not return a notebook ID for Term Contracts notebook");
-  console.log("[term-contracts-notebook] created:", { id: result.id });
   _termContractsNotebookCache = {
     id: result.id,
     webUrl: result.links?.oneNoteWebUrl?.href || result.links?.oneNoteClientUrl?.href || "",
@@ -2901,32 +2833,6 @@ function escapeOneNoteText(s) {
 // the rest of the auto-created pages (Meetings, Site Visits, etc.).
 // Severity-coded callouts make override flags scannable at a glance —
 // these are the highest-value output of the extractor.
-
-// When a PDF is dragged from SharePoint, dragSourceUrl points to the FILE.
-// This helper strips the filename (and any query/hash) to derive the parent
-// FOLDER URL, so the OneNote can show a clickable folder link even if the
-// PMS record's curated folder field hasn't been set yet. Returns "" if the
-// input doesn't look like a SharePoint/OneDrive file URL.
-function deriveSharePointFolderUrl(fileUrl) {
-  if (!fileUrl || typeof fileUrl !== "string") return "";
-  if (!/sharepoint\.com|onedrive\.live|1drv\.ms/i.test(fileUrl)) return "";
-  try {
-    const url = new URL(fileUrl);
-    // If the pathname ends with a recognizable document filename, strip it.
-    // Otherwise treat the URL as already-folder-shaped and return unchanged.
-    if (/\.(pdf|docx?|xlsx?|pptx?|txt|rtf|jpg|jpeg|png)(\?|$)/i.test(url.pathname + url.search)) {
-      const segs = url.pathname.split("/").filter(Boolean);
-      segs.pop();
-      url.pathname = "/" + segs.join("/") + (segs.length ? "/" : "");
-      url.search = "";
-      url.hash = "";
-    }
-    return url.toString();
-  } catch (_) {
-    return "";
-  }
-}
-
 function buildContractAnalysisHtml(extraction, record = null, recordType = null) {
   const e = (s) => escapeOneNoteText(s);
   const NAVY = "#1F3864";
@@ -2945,53 +2851,50 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
 
   let html = `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;max-width:7.5in;">`;
 
-  // Prominent SharePoint folder callout at the very top — user-requested:
-  // "the onenote should have a clickable link to the sharepoint folder
-  // that the contract was drag and dropped from at the top".
-  // Uses the same two-tier logic as the inline link further down: prefer the
-  // record's curated folder, fall back to derived-from-dragSourceUrl.
-  const topRecordFolder = recordType === "project"
-    ? (record && record.contractFolderUrl)
-    : (record && record.folderUrl);
-  const topDerivedFolder = topRecordFolder ? "" : deriveSharePointFolderUrl(extraction.dragSourceUrl);
-  const topFolderUrl = topRecordFolder || topDerivedFolder || "";
-  if (topFolderUrl) {
-    const isDerived = !topRecordFolder && topDerivedFolder;
-    html += `<div style="background:#E0F2FE;border-left:6px solid #0EA5E9;padding:14px 18px;margin-bottom:18px;border-radius:6px;">`;
-    html += `<div style="font-size:13pt;font-weight:700;color:#075985;margin-bottom:6px;">📁 SharePoint Folder${isDerived ? " (from PDF location)" : ""}</div>`;
-    html += `<a href="${e(topFolderUrl)}" style="color:#0369A1;word-break:break-all;font-size:11pt;font-weight:500;">${e(topFolderUrl)}</a>`;
-    if (isDerived) {
-      html += `<div style="font-size:9pt;color:#0C4A6E;margin-top:6px;font-style:italic;">Parent folder derived from where this PDF was dragged in. Not necessarily the curated contract folder — set one on the record to override.</div>`;
-    }
-    html += `</div>`;
+  // PMS Record block — identifies which PMS record this analysis is linked to.
+  // Critical for stand-alone usefulness of the OneNote page (so a reader can
+  // tell which project or term contract this belongs to without opening PMS).
+  if (record && recordType === "project") {
+    const titleLine = `${e(record.name || "Untitled Project")}${record.projectNumber ? ` <span style="color:${NAVY};">(${e(record.projectNumber)})</span>` : ""}`;
+    html += `<div style="background:#F3F4F6;border-left:4px solid ${NAVY};padding:10px 14px;margin-bottom:14px;border-radius:4px;">`;
+    html += `<div style="font-size:13pt;font-weight:700;color:${NAVY};margin-bottom:4px;">📁 ${titleLine}</div>`;
+    html += `<table style="border-collapse:collapse;font-size:10pt;">`;
+    if (record.clientName || record.prime) html += `<tr><td ${td}><strong>Client:</strong></td><td>${e(record.clientName || record.prime)}</td></tr>`;
+    if (record.contractNumber)             html += `<tr><td ${td}><strong>Contract #:</strong></td><td>${e(record.contractNumber)}</td></tr>`;
+    if (record.contractStatus)             html += `<tr><td ${td}><strong>Status:</strong></td><td>${e(record.contractStatus)}</td></tr>`;
+    if (record.feeType)                    html += `<tr><td ${td}><strong>Fee type:</strong></td><td>${e(record.feeType)}</td></tr>`;
+    if (record.contractDate)               html += `<tr><td ${td}><strong>Contract date (PMS):</strong></td><td>${e(record.contractDate)}</td></tr>`;
+    if (record.contractExpirationDate)     html += `<tr><td ${td}><strong>Expiration (PMS):</strong></td><td>${e(record.contractExpirationDate)}</td></tr>`;
+    if (record.contractFolderUrl)          html += `<tr><td ${td}><strong>SharePoint:</strong></td><td><a href="${e(record.contractFolderUrl)}">${e(record.contractFolderUrl)}</a></td></tr>`;
+    html += `</table></div>`;
+  } else if (record && recordType === "termContract") {
+    const titleLine = `${e(record.name || "Untitled Term Contract")}${record.contractNumber ? ` <span style="color:${NAVY};">(${e(record.contractNumber)})</span>` : ""}`;
+    html += `<div style="background:#F3F4F6;border-left:4px solid ${NAVY};padding:10px 14px;margin-bottom:14px;border-radius:4px;">`;
+    html += `<div style="font-size:13pt;font-weight:700;color:${NAVY};margin-bottom:4px;">📋 ${titleLine}</div>`;
+    html += `<table style="border-collapse:collapse;font-size:10pt;">`;
+    if (record.client)         html += `<tr><td ${td}><strong>Client / Agency:</strong></td><td>${e(record.client)}</td></tr>`;
+    if (record.contractStatus) html += `<tr><td ${td}><strong>Status:</strong></td><td>${e(record.contractStatus)}</td></tr>`;
+    if (record.startDate)      html += `<tr><td ${td}><strong>Start date:</strong></td><td>${e(record.startDate)}</td></tr>`;
+    if (record.expirationDate) html += `<tr><td ${td}><strong>Expiration date:</strong></td><td>${e(record.expirationDate)}</td></tr>`;
+    if (record.ceilingValue && +record.ceilingValue) html += `<tr><td ${td}><strong>Ceiling (NTE):</strong></td><td>${e(fmtMoney(record.ceilingValue))}</td></tr>`;
+    if (record.description)    html += `<tr><td ${td}><strong>Description:</strong></td><td>${e(record.description)}</td></tr>`;
+    if (record.folderUrl)      html += `<tr><td ${td}><strong>SharePoint:</strong></td><td><a href="${e(record.folderUrl)}">${e(record.folderUrl)}</a></td></tr>`;
+    if (record.notes)          html += `<tr><td ${td}><strong>PMS notes:</strong></td><td style="white-space:pre-wrap;">${e(record.notes)}</td></tr>`;
+    html += `</table></div>`;
   }
 
-  // PMS Record block removed per user feedback (Sep 2026): the OneNote page
-  // should contain ONLY data pulled from the contract — no PMS-derived
-  // fields (client name, status, fee type, etc.). The page is linked back
-  // to PMS via project.contractAnalysisHistory[].url; the navigation arrow
-  // works both ways.
-
-  // Source PDF metadata — all fields below are from the contract PDF text
-  // itself (not from the PMS record).
+  // Source PDF metadata
   html += `<p>`;
   html += `<strong>Source:</strong> ${e(extraction.fileName || "(unnamed PDF)")}<br/>`;
   const dt = extraction.isAIA
     ? `AIA ${extraction.docType}${extraction.docTypeYear ? " (" + extraction.docTypeYear + ")" : ""}`
     : (extraction.docType || "Unknown");
   html += `<strong>Document type:</strong> ${e(dt)}<br/>`;
-  if (extraction.contractDate)   html += `<strong>Contract date:</strong> ${e(extraction.contractDate)}<br/>`;
-  if (extraction.contractNumber) html += `<strong>Contract #:</strong> ${e(extraction.contractNumber)}<br/>`;
-  if (extraction.primeProjectNumber) html += `<strong>Prime's Project #:</strong> ${e(extraction.primeProjectNumber)}<br/>`;
-  if (extraction.contractExpiration) html += `<strong>Contract expiration:</strong> ${e(extraction.contractExpiration)}<br/>`;
-  if (extraction.client)         html += `<strong>Client / Prime:</strong> ${e(extraction.client)}<br/>`;
-  if (extraction.settyRole)      html += `<strong>Setty role:</strong> ${e(extraction.settyRole)}<br/>`;
-  if (extraction.project)        html += `<strong>Project (per contract):</strong> ${e(extraction.project)}<br/>`;
-  if (extraction.dragSourceUrl)  html += `<strong>PDF source:</strong> <a href="${e(extraction.dragSourceUrl)}">${e(extraction.dragSourceUrl)}</a><br/>`;
-  // SharePoint folder link moved to the prominent callout at the top of
-  // the page (see topFolderUrl logic above). Kept inline 'PDF source:' here
-  // because it points to the FILE, not the folder — different intent.
-  html += `<strong>Extracted on:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
+  if (extraction.contractDate) html += `<strong>Contract date (from PDF):</strong> ${e(extraction.contractDate)}<br/>`;
+  if (extraction.client)       html += `<strong>Client / Prime (from PDF):</strong> ${e(extraction.client)}<br/>`;
+  if (extraction.settyRole)    html += `<strong>Setty role (from PDF):</strong> ${e(extraction.settyRole)}<br/>`;
+  if (extraction.project)      html += `<strong>Project (from PDF):</strong> ${e(extraction.project)}<br/>`;
+  html += `<strong>Extracted:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
   html += `</p>`;
 
   // Override flags — the headline output
@@ -3012,16 +2915,6 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     }
   }
 
-  // Scope of Work — pulled from ARTICLE 3 / SCOPE OF SERVICES / EXHIBIT A.
-  // Most prominent placement (between flags and payment) per user choice;
-  // it's typically the single most-referenced field after the override flags.
-  if (extraction.scopeOfWork && extraction.scopeOfWork.trim()) {
-    html += `<h2 ${h2}>Scope of Work / Services</h2>`;
-    html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:12px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-bottom:14px;">`;
-    html += `${e(extraction.scopeOfWork)}`;
-    html += `</div>`;
-  }
-
   // Payment terms
   const pt = extraction.payment || {};
   if (Object.values(pt).some(Boolean)) {
@@ -3032,15 +2925,6 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     if (pt.retainage)           html += `<tr><td ${td}><strong>Retainage:</strong></td><td>${e(pt.retainage)}</td></tr>`;
     if (pt.conditionsPrecedent) html += `<tr><td ${td}><strong>Conditions precedent:</strong></td><td>${e(pt.conditionsPrecedent)}</td></tr>`;
     html += `</table>`;
-    // Billing / invoice requirements — separate from the table above because
-    // it's free-text (specific clauses about HOW Setty has to bill) rather
-    // than a single value per field.
-    if (pt.billingRequirements && pt.billingRequirements.trim()) {
-      html += `<div style="margin-top:8px;font-weight:600;color:#374151;">Billing / Invoice Requirements (from contract):</div>`;
-      html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:10px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-top:4px;">`;
-      html += `${e(pt.billingRequirements)}`;
-      html += `</div>`;
-    }
   }
 
   // Reimbursable rules
@@ -3064,27 +2948,6 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     if (sc.scheduleSource)        html += `<tr><td ${td}><strong>Schedule source:</strong></td><td>${e(sc.scheduleSource)}</td></tr>`;
     if (sc.terminationNotice)     html += `<tr><td ${td}><strong>Termination notice:</strong></td><td>${e(sc.terminationNotice)}</td></tr>`;
     html += `</table>`;
-  }
-
-  // Source Text — the full containing section text for each flagged clause,
-  // straight from the contract PDF. Lets the reviewer read the override
-  // clause in its full context without opening the source PDF.
-  // Each flag's `fullSection` is captured by the extractor's getContainingSection
-  // helper (text between the previous and next §N.M / ARTICLE N boundary).
-  const flagsWithSections = flags.filter(f => f.fullSection);
-  if (flagsWithSections.length > 0) {
-    html += `<h2 ${h2}>Source Text (Override Clauses in Context)</h2>`;
-    html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:10px;">`;
-    html += `Excerpts pulled directly from the contract PDF — the section containing each detected override clause. `;
-    html += `Use these for review, negotiation responses, or reference when the original PDF isn't handy.</p>`;
-    for (const f of [...high, ...medium, ...info]) {
-      if (!f.fullSection) continue;
-      const s = sevStyle[f.severity];
-      html += `<div style="margin:14px 0;border-left:4px solid ${s.border};padding:0 0 0 14px;">`;
-      html += `<div style="font-weight:700;color:${s.text};font-size:11pt;margin-bottom:6px;">${s.icon} ${e(f.label)}${f.value ? " — " + e(f.value) : ""}</div>`;
-      html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:12px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;">${e(f.fullSection)}</div>`;
-      html += `</div>`;
-    }
   }
 
   // Provenance footer
@@ -3142,84 +3005,45 @@ function _hashOneNoteReq(url, html) {
 // the same (url, html) pair within ONENOTE_DEDUP_TTL_MS returns the cached
 // page record instead of posting again. Crucial for the retry path where a
 // 502/504 may have masked a successful POST.
-// In-flight promise map — keyed on URL+HTML hash. Lets concurrent callers
-// share a single POST instead of racing past the cache check and creating
-// duplicate OneNote pages. Critical for the case where two postMessage
-// events arrive at the listener within the same tick (e.g., from a buggy
-// PMS_ORIGINS dedupe at the sender), both call onReceive, both reach
-// postOneNotePageWithRetry — without this map, both miss the result cache
-// (empty until POST returns) and fire parallel POSTs.
-const _oneNoteInFlight = new Map();
-
-async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 5) {
+async function postOneNotePageWithRetry(url, token, pageHtml, maxAttempts = 3) {
   const key = _hashOneNoteReq(url, pageHtml);
   const cached = _oneNotePageCache.get(key);
   if (cached && (Date.now() - cached.at) < ONENOTE_DEDUP_TTL_MS) {
     console.log("[OneNote] idempotency cache hit — skipping duplicate POST");
     return cached.page;
   }
-  // In-flight check: if a POST with this same body is currently running,
-  // await its result instead of starting a parallel one.
-  if (_oneNoteInFlight.has(key)) {
-    console.log("[OneNote] in-flight dedup — awaiting parallel POST in progress");
-    return await _oneNoteInFlight.get(key);
-  }
-  // Wrap the existing retry loop in an async IIFE and stash its promise
-  // in the in-flight map before awaiting. Any caller arriving while this
-  // promise is pending will see it in the map and share the result.
-  const inFlightPromise = (async () => {
-    let lastErr;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
-        body: pageHtml,
-      });
-      if (res.ok) {
-        const page = await res.json();
-        _oneNotePageCache.set(key, { page, at: Date.now() });
-        // Best-effort cleanup: prune any entry older than 2× TTL on each insert.
-        if (_oneNotePageCache.size > 200) {
-          const cutoff = Date.now() - 2 * ONENOTE_DEDUP_TTL_MS;
-          for (const [k, v] of _oneNotePageCache) if (v.at < cutoff) _oneNotePageCache.delete(k);
-        }
-        return page;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token, "Content-Type": "text/html" },
+      body: pageHtml,
+    });
+    if (res.ok) {
+      const page = await res.json();
+      _oneNotePageCache.set(key, { page, at: Date.now() });
+      // Best-effort cleanup: prune any entry older than 2× TTL on each insert.
+      if (_oneNotePageCache.size > 200) {
+        const cutoff = Date.now() - 2 * ONENOTE_DEDUP_TTL_MS;
+        for (const [k, v] of _oneNotePageCache) if (v.at < cutoff) _oneNotePageCache.delete(k);
       }
+      return page;
+    }
 
     const errText = await res.text().catch(() => "");
-    // 409 = OneNote concurrency conflict (code 30103: "too many simultaneous
-    // requests to the same location"). This is a transient error caused by
-    // Graph refusing concurrent writes to the same section — usually resolves
-    // within a couple seconds. Retry with backoff + jitter to spread out
-    // concurrent retries from multiple callers.
-    // 429 = rate limit; 503 = service unavailable; all share the same backoff path.
-    if (res.status === 429 || res.status === 503 || res.status === 409) {
+    if (res.status === 429 || res.status === 503) {
+      // Honor Retry-After if Graph provides it; otherwise exponential backoff
       const retryAfter = parseInt(res.headers.get("Retry-After") || "0", 10);
-      // Jitter (±50%) helps when multiple callers hit 409 simultaneously —
-      // without jitter they'd all retry at the same instant and conflict again.
-      const baseWait = retryAfter > 0 ? retryAfter * 1000 : 1000 * Math.pow(2, attempt);
-      const jitter = baseWait * (0.5 + Math.random());
-      const wait = Math.min(15000, jitter);
-      const reason = res.status === 409 ? "concurrency conflict" : "throttled";
-      console.warn(`[OneNote] HTTP ${res.status} (${reason}) — retrying in ${Math.round(wait)}ms (attempt ${attempt}/${maxAttempts})`);
+      const wait = retryAfter > 0 ? Math.min(15000, retryAfter * 1000) : Math.min(15000, 1000 * Math.pow(2, attempt));
+      console.warn("[OneNote] " + res.status + " — retrying in " + wait + "ms (attempt " + attempt + "/" + maxAttempts + ")");
       await new Promise(r => setTimeout(r, wait));
-      lastErr = new Error(`OneNote ${reason} (HTTP ${res.status})`);
+      lastErr = new Error("OneNote throttled (HTTP " + res.status + ")");
       continue;
     }
     // Non-retryable
     throw new Error("OneNote page error " + res.status + ": " + errText.slice(0, 300));
   }
-    throw lastErr || new Error("OneNote page creation failed after " + maxAttempts + " attempts");
-  })();
-  // Register the promise in the in-flight map so concurrent callers see it
-  // and await the same result instead of starting a parallel POST. Removed
-  // in the finally block whether the call succeeds or throws.
-  _oneNoteInFlight.set(key, inFlightPromise);
-  try {
-    return await inFlightPromise;
-  } finally {
-    _oneNoteInFlight.delete(key);
-  }
+  throw lastErr || new Error("OneNote page creation failed after " + maxAttempts + " attempts");
 }
 
 async function createTeamsOneNotePage(notebookId, sectionName, title, htmlBody, eventDate, metadata = null) {
@@ -4166,6 +3990,104 @@ async function createSharePointFolder(project) {
 
   return folderUrl;
 }
+
+
+// ── NYSharesite Client Portal Folder Creation ───────────────────────────
+// When the project folder is created (Overview tab), this also runs to:
+//   1. Create {ProjectNumber} - {ProjectName} parent folder in NYSharesite Shared Documents
+//   2. Create "Client Uploads" subfolder    (share with client — Can Edit)
+//   3. Create "Setty Deliverables" subfolder (share with client — Can View)
+//   4. Plant .url shortcut files in the main NYCProjects folder (best-effort)
+async function createClientPortalFolders(project) {
+  const num  = (project.projectNumber || "").trim();
+  const name = (project.name         || "Unnamed Project").trim();
+  if (!num && !name) throw new Error("Project must have a number or name before creating portal folders.");
+  const folderName = num ? num + " - " + name : name;
+  const driveId    = SP_NYSHARE_DRIVE_ID;
+
+  // Get or create the parent project folder in NYSharesite
+  let parentId, parentUrl;
+  try {
+    const existing = await graphFetch("GET",
+      "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName)
+    );
+    parentId  = existing.id;
+    parentUrl = existing.webUrl;
+  } catch (e) {
+    const msg = (e.message || "").toLowerCase();
+    if (!msg.includes("404") && !msg.includes("itemnotfound") && !msg.includes("not found")) throw e;
+    const created = await graphFetch("POST",
+      "/drives/" + driveId + "/root/children",
+      { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "rename" }
+    );
+    parentId  = created.id;
+    parentUrl = created.webUrl;
+  }
+
+  // Helper: get-or-create a named subfolder
+  async function getOrCreate(subName) {
+    try {
+      const r = await graphFetch("GET",
+        "/drives/" + driveId + "/items/" + parentId + ":/" + encodeURIComponent(subName)
+      );
+      return r.webUrl;
+    } catch (e) {
+      const r = await graphFetch("POST",
+        "/drives/" + driveId + "/items/" + parentId + "/children",
+        { name: subName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }
+      );
+      return r.webUrl;
+    }
+  }
+
+  const clientUploadsUrl     = await getOrCreate("Client Uploads");
+  const settyDeliverablesUrl = await getOrCreate("Setty Deliverables");
+
+  // Plant .url shortcut files in the NYCProjects main folder (best-effort, non-fatal)
+  if (project.projectFolderUrl) {
+    try {
+      const { driveId: mainDriveId } = await resolveSpIds();
+      const rawPath = decodeURIComponent(project.projectFolderUrl);
+      // Extract path after the library segment (everything after /Shared Documents/ or /Project Document Library/)
+      const pathMatch = rawPath.match(/\/sites\/NYCProjects\/[^/]+\/(.+)$/);
+      const mainFolderPath = pathMatch ? pathMatch[1].replace(/\/$/, "") : null;
+
+      if (mainFolderPath) {
+        function makeShortcut(url) {
+          const txt = "[InternetShortcut]\r\nURL=" + url + "\r\n";
+          // base64 encode
+          const bytes = new TextEncoder().encode(txt);
+          let bin = "";
+          bytes.forEach(b => { bin += String.fromCharCode(b); });
+          return btoa(bin);
+        }
+
+        const shortcuts = [
+          { name: "\ud83d\udce4 Client Uploads (NYSharesite).url",     url: clientUploadsUrl     },
+          { name: "\ud83d\udce5 Setty Deliverables (NYSharesite).url", url: settyDeliverablesUrl },
+        ];
+
+        for (const sc of shortcuts) {
+          const itemPath = "/drives/" + mainDriveId + "/root:/"
+            + encodeURIComponent(mainFolderPath) + "/"
+            + encodeURIComponent(sc.name) + ":/content";
+          // Use raw PUT with text/plain body
+          const token = await getGraphToken();
+          await fetch("https://graph.microsoft.com/v1.0" + itemPath, {
+            method: "PUT",
+            headers: { Authorization: "Bearer " + token, "Content-Type": "text/plain" },
+            body: sc.url.split("").map(c => c).join("").replace(/.*/, "[InternetShortcut]\r\nURL=" + sc.url + "\r\n"),
+          }).catch(err => console.warn("Shortcut skipped:", err.message));
+        }
+      }
+    } catch (e) {
+      console.warn("NYSharesite shortcut planting skipped:", e.message);
+    }
+  }
+
+  return { clientUploadsUrl, settyDeliverablesUrl };
+}
+
 
 
 // ── TEAMS NOTIFICATIONS ───────────────────────────────────────────────────────
@@ -6137,6 +6059,29 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   function CalIcon({ m }) {
     const st = calState[m.id];
     const has = !!calMap[m.id];
+    // Reverse-sync conflict — calendar event was edited in Outlook and now
+    // disagrees with PMS. Click to resolve (accept Outlook's date, or dismiss).
+    if (m.dateConflict?.proposedDate) {
+      const handleResolve = () => {
+        const msg = "Outlook moved this milestone to " + fmtDate(m.dateConflict.proposedDate)
+                  + ".\nPMS currently shows " + (m.dueDate ? fmtDate(m.dueDate) : "(no date)") + "."
+                  + "\n\nOK = accept Outlook's date.\nCancel = keep PMS date and dismiss the warning.";
+        const accept = window.confirm(msg);
+        if (accept) {
+          updateMilestone(m.id, "dueDate", m.dateConflict.proposedDate, false, { notifyTeams: false });
+        }
+        // Either way, clear the conflict flag.
+        const updated = { ...project, milestones: milestones.map(x => {
+          if (x.id !== m.id) return x;
+          const { dateConflict, ...rest } = x;
+          return accept ? { ...rest, dueDate: m.dateConflict.proposedDate } : rest;
+        }) };
+        onChange(updated);
+      };
+      return <span title={"Outlook says " + m.dateConflict.proposedDate + " — click to resolve"}
+        onClick={handleResolve}
+        style={{ color: P.yellow, fontSize: 12, cursor: "pointer", fontWeight: 700 }}>⚠!</span>;
+    }
     if (st === "syncing") return <span style={{ color: P.accentLight, fontSize: 12 }}>⏳</span>;
     if (st === "error") return <span title={calState[`${m.id}_err`] || "Error"} style={{ color: P.red, fontSize: 12, cursor: "help" }}>✗</span>;
     if (st === "stale") return <span title="Date changed — re-sync" style={{ color: P.yellow, fontSize: 12, cursor: "help" }}>⚠</span>;
@@ -9231,20 +9176,21 @@ Setty
 // (per-project contracts) and TermContractsView (master agreements).
 // Manages the popup window + postMessage handshake. Only one of those views
 // is mounted at a time, so listener collision isn't a concern.
-// Now takes an `onReceive(payload)` callback. The listener invokes it
-// directly with the payload — bypasses the previous React-state-based
-// modal flow that was failing to render (state was set but the modal
-// component didn't appear; root cause was unclear but likely related to
-// other React lifecycle issues in this app). Direct callback path avoids
-// any React re-render dependency.
-function useContractExtractor(onReceive) {
+function useContractExtractor() {
+  const [extraction, setExtraction] = useState(null);
+
   useEffect(() => {
     function onMsg(e) {
+      // Whitelist: GH Pages (extractor's hosted origin), same-origin (if both
+      // files served from one location), and "null" for file:// during local dev.
       const originOK = (
         e.origin === CONTRACT_EXTRACTOR_ORIGIN ||
         e.origin === window.location.origin ||
         e.origin === "null"
       );
+      // Diagnostic logging — open DevTools console to see what arrived. Helps
+      // debug "I clicked Apply and Save but nothing happened" — you can tell
+      // whether the message reached this listener and why it was/wasn't accepted.
       const d = e.data;
       if (d && d.source === "ContractExtractor") {
         console.log("[ContractExtractor→PMS]", {
@@ -9256,17 +9202,12 @@ function useContractExtractor(onReceive) {
       }
       if (!originOK) return;
       if (!d || d.source !== "ContractExtractor" || d.type !== "contractData") return;
-      console.log("[ContractExtractor→PMS] payload accepted, auto-applying");
-      try {
-        if (onReceive) onReceive(d.payload);
-      } catch (err) {
-        console.error("[ContractExtractor→PMS] onReceive handler threw:", err);
-        alert("Extraction received but auto-apply failed: " + (err?.message || "unknown error"));
-      }
+      console.log("[ContractExtractor→PMS] payload accepted, opening modal");
+      setExtraction(d.payload);
     }
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
-  }, [onReceive]);
+  }, []);
 
   function openExtractor() {
     const win = window.open(
@@ -9281,7 +9222,7 @@ function useContractExtractor(onReceive) {
     win.focus();
   }
 
-  return { openExtractor };
+  return { extraction, setExtraction, openExtractor };
 }
 
 // Modal shown when ContractExtractor.html posts results back. Generalized
@@ -9426,197 +9367,87 @@ function ContractExtractionModal({ extraction, onClose, onApply, applyFields = [
   );
 }
 
-// Returns the array of contract analyses for a record (project or term
-// contract). Reads from the new contractAnalysisHistory array if present;
-// otherwise synthesizes a 1-entry history from the legacy single-URL field
-// so older records (extracted before multi-analysis was added) still show
-// up in the dropdown.
-function getAnalysisHistory(record) {
-  if (record?.contractAnalysisHistory && record.contractAnalysisHistory.length) {
-    return record.contractAnalysisHistory;
-  }
-  const legacyUrl = record?.contractAnalysisUrl || record?.contractExtraction?.contractAnalysisUrl || "";
-  if (legacyUrl) {
-    return [{
-      url: legacyUrl,
-      savedAt: record?.contractExtraction?.savedAt || "",
-      fileName: record?.contractExtraction?.fileName || "Contract Analysis",
-      contractDate: record?.contractExtraction?.contractDate || "",
-    }];
-  }
-  return [];
-}
-
-// Dropdown showing all extractions associated with a record. Renders as a
-// single button when there's just one analysis (no dropdown needed), or a
-// "📋 View Analysis (N) ▾" button with an expandable list when there are
-// multiple — common for contracts with amendments where each addendum has
-// its own extraction page.
-function ViewAnalysisDropdown({ history }) {
-  const [open, setOpen] = useState(false);
-  if (!history || !history.length) return null;
-  if (history.length === 1) {
-    return (
-      <Btn small variant="ghost" onClick={() => window.open(history[0].url, "_blank")}
-           title="Open the Contract Analysis page in OneNote">
-        📋 View Analysis
-      </Btn>
-    );
-  }
-  // Newest first — that's the addendum/amendment, usually what the user wants
-  const sorted = [...history].sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
-  return (
-    <div style={{ position: "relative" }}>
-      <Btn small variant="ghost" onClick={() => setOpen(o => !o)}
-           title={`${history.length} analyses linked to this record. Newest at top.`}>
-        📋 View Analysis ({history.length}) {open ? "▴" : "▾"}
-      </Btn>
-      {open && (
-        <div style={{
-          position: "absolute", top: "calc(100% + 4px)", right: 0,
-          background: P.card, border: `1px solid ${P.border}`, borderRadius: 6,
-          padding: 4, minWidth: 320, maxWidth: 420, zIndex: 1000,
-          boxShadow: "0 6px 20px rgba(0,0,0,0.4)",
-        }} onMouseLeave={() => setOpen(false)}>
-          {sorted.map((entry, i) => (
-            <div key={i}
-                 onClick={() => { window.open(entry.url, "_blank"); setOpen(false); }}
-                 style={{
-                   padding: "8px 12px", cursor: "pointer", borderRadius: 4,
-                   fontSize: 12, color: P.text,
-                 }}
-                 onMouseOver={e => e.currentTarget.style.background = P.bg}
-                 onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-              <div style={{ fontWeight: 600, color: P.accentLight, marginBottom: 2 }}>
-                {entry.fileName || "Contract Analysis"}
-              </div>
-              <div style={{ fontSize: 10, color: P.textMuted }}>
-                {entry.contractDate ? `Contract: ${entry.contractDate}` : ""}
-                {entry.contractDate && entry.savedAt ? "  ·  " : ""}
-                {entry.savedAt ? `Saved ${entry.savedAt.slice(0, 10)}` : ""}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ContractView({ project, onChange, onEagerSave, contractExpSyncState, contractExpSyncMsg, onSyncContractExp, termContracts, clients, onUpdateClient }) {
   function setField(field, val) { onChange({ ...project, [field]: val }); }
 
-  // ContractExtractor integration — auto-apply on receipt (no modal).
-  // Was previously modal-based but the modal wouldn't render reliably in this
-  // app's React tree. Now applies all extracted PMS-mappable fields directly
-  // and shows a single result alert summarizing what happened.
-  // The `useCallback` keeps the listener registration stable across renders
-  // unless project/onChange changes — preventing repeated attach/detach.
-  const handleExtractionReceived = React.useCallback(async (payload) => {
-    const updates = { contractExtraction: { ...payload, savedAt: new Date().toISOString() } };
-    const appliedLabels = [];
-    if (payload.contractDate)       { updates.contractDate           = payload.contractDate;       appliedLabels.push(`Contract Date → ${payload.contractDate}`); }
-    if (payload.contractExpiration) { updates.contractExpirationDate = payload.contractExpiration; appliedLabels.push(`Contract Expiration → ${payload.contractExpiration}`); }
-    if (payload.contractNumber)     { updates.contractNumber         = payload.contractNumber;     appliedLabels.push(`Contract Number → ${payload.contractNumber}`); }
-    if (payload.primeProjectNumber) { updates.primeProjectNumber     = payload.primeProjectNumber; appliedLabels.push(`Prime's Project Number → ${payload.primeProjectNumber}`); }
+  // ContractExtractor integration — see useContractExtractor() above.
+  const { extraction, setExtraction, openExtractor } = useContractExtractor();
+
+  // Async because we attempt a OneNote write (if the project has a notebook).
+  // Persists the full blob regardless so data is durable even if OneNote fails.
+  // Surfaces a clear status alert at the end so the user always knows whether
+  // the OneNote page was created, skipped, or failed.
+  // Receives a `selections` object keyed by extractor field names (contractDate,
+  // contractExpiration, contractNumber, primeProjectNumber) — each true if the
+  // user wants to apply that field to the project record.
+  async function handleApplyExtraction(selections) {
+    const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
+    if (selections.contractDate       && extraction.contractDate)       updates.contractDate            = extraction.contractDate;
+    if (selections.contractExpiration && extraction.contractExpiration) updates.contractExpirationDate  = extraction.contractExpiration;
+    if (selections.contractNumber     && extraction.contractNumber)     updates.contractNumber          = extraction.contractNumber;
+    if (selections.primeProjectNumber && extraction.primeProjectNumber) updates.primeProjectNumber      = extraction.primeProjectNumber;
 
     const notebookId = project.teamsOneNoteNotebookId || project.oneNoteNotebookId || "";
     const useTeamsNB = !!project.teamsOneNoteNotebookId;
-    let onenoteStatus = "skipped-no-notebook";
+    let onenoteStatus = "skipped"; // "success" | "skipped" | "failed:<msg>"
 
-    if (notebookId) {
+    if (!notebookId) {
+      onenoteStatus = "skipped-no-notebook";
+    } else {
       try {
-        const title = `Contract Analysis – ${payload.fileName || project.name || "Untitled"}`;
-        const html = buildContractAnalysisHtml(payload, { ...project, ...updates }, "project");
-        // OneNote page date = the contract's own date if known, so the page
-        // sorts chronologically by contract date in the notebook (not by
-        // extraction date). Falls back to today if no contract date parsed.
-        const pageDate = payload.contractDate || new Date().toISOString().slice(0, 10);
-        const meta = buildPmsMetadata(project, PMS_DOC_TYPES.CONTRACT, { date: pageDate, source: "contract-extractor" });
-        console.log("[project-extract] creating OneNote page…", { title, pageDate, useTeamsNB });
+        const title = `Contract Analysis – ${extraction.fileName || project.name || "Untitled"}`;
+        const html = buildContractAnalysisHtml(extraction, project, "project");
+        const today = new Date().toISOString().slice(0, 10);
+        const meta = buildPmsMetadata(project, PMS_DOC_TYPES.CONTRACT, { date: today, source: "contract-extractor" });
         const page = useTeamsNB
-          ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta)
-          : await createOneNotePage(notebookId, "Contract Analysis", title, html, pageDate, meta);
-        console.log("[project-extract] page result:", page);
+          ? await createTeamsOneNotePage(notebookId, "Contract Analysis", title, html, today, meta)
+          : await createOneNotePage(notebookId, "Contract Analysis", title, html, today, meta);
         if (page?.webUrl) {
-          updates.contractAnalysisUrl = page.webUrl;  // latest (back-compat)
-          // Append to the analysis history — preserves links to prior
-          // extractions (e.g., original contract + each amendment). Newest
-          // entries are appended; the dropdown sorts newest-first.
-          const existingHistory = getAnalysisHistory(project);
-          updates.contractAnalysisHistory = [
-            ...existingHistory,
-            {
-              url: page.webUrl,
-              savedAt: new Date().toISOString(),
-              fileName: payload.fileName || "Contract.pdf",
-              contractDate: payload.contractDate || "",
-            },
-          ];
-          // Also stash inside the contractExtraction blob so the URL is durable
-          // even if a parent persistence layer strips unknown top-level fields.
-          updates.contractExtraction = { ...updates.contractExtraction, contractAnalysisUrl: page.webUrl, oneNotePageId: page.id };
+          updates.contractAnalysisUrl = page.webUrl;
           onenoteStatus = "success";
-        } else if (page?.id) {
-          // Page exists in OneNote but Graph didn't return a webUrl link. Still
-          // store the page id so we can reconstruct/fetch the URL later.
-          updates.contractExtraction = { ...updates.contractExtraction, oneNotePageId: page.id };
-          onenoteStatus = "failed:OneNote returned page id but no webUrl — page exists in OneNote, visit notebook directly";
         } else {
           onenoteStatus = "failed:OneNote API returned no page URL";
         }
       } catch (e) {
-        console.warn("[project-extract] Contract Analysis OneNote page failed:", e);
+        console.warn("Contract Analysis OneNote page failed:", e);
         onenoteStatus = "failed:" + (e?.message || "unknown error");
       }
-    } else {
-      console.log("[project-extract] no OneNote notebook configured on this project — skipping OneNote write");
     }
 
     onChange({ ...project, ...updates });
+    setExtraction(null);
 
-    // Single summary alert. Uses setTimeout so React commits the onChange
-    // update before the alert blocks the main thread.
+    // Surface the outcome — silent success is OK (the View Analysis button
+    // appears), but the user must know why nothing showed up otherwise.
     setTimeout(() => {
-      const lines = [];
-      lines.push(`✓ Contract extraction applied to ${project.name || "this project"}.`);
-      if (appliedLabels.length) {
-        lines.push("");
-        lines.push("Fields updated:");
-        for (const l of appliedLabels) lines.push("  • " + l);
-      } else {
-        lines.push("(No PMS-mappable fields were extracted.)");
-      }
-      lines.push("");
-      if (onenoteStatus === "success") {
-        lines.push("📋 OneNote 'Contract Analysis' page created.");
-      } else if (onenoteStatus === "skipped-no-notebook") {
-        lines.push("⚠ OneNote page NOT created — this project has no Teams/OneNote notebook configured.");
-        lines.push("Enable Teams/OneNote on the Overview tab, then re-extract.");
+      if (onenoteStatus === "skipped-no-notebook") {
+        alert(
+          "Extraction data saved to the project.\n\n" +
+          "OneNote page was NOT created — this project doesn't have a OneNote notebook " +
+          "configured yet. To enable: open this project's Overview tab and provision the " +
+          "Teams/OneNote notebook (look for the 'Enable Teams' or 'Create Notebook' action). " +
+          "Then re-extract to create the Contract Analysis page."
+        );
       } else if (onenoteStatus.startsWith("failed:")) {
-        lines.push("⚠ OneNote page failed: " + onenoteStatus.slice(7));
+        alert("Extraction saved, but the OneNote page failed: " + onenoteStatus.slice(7));
       }
-      alert(lines.join("\n"));
+      // success: silent — View Analysis button appears in Contract tab
     }, 0);
-  }, [project, onChange]);
-
-  const { openExtractor } = useContractExtractor(handleExtractionReceived);
+  }
 
   return (
     <div>
-      <SectionTitle action={(() => {
-        // ViewAnalysisDropdown handles the legacy single-URL case (renders a
-        // simple button) AND the multi-analysis case (dropdown listing all
-        // extractions: original + amendments + addenda). getAnalysisHistory
-        // synthesizes a history from the legacy fields when no array exists.
-        const history = getAnalysisHistory(project);
-        return (
-          <div style={{ display: "flex", gap: 8 }}>
-            <ViewAnalysisDropdown history={history} />
-            <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
-          </div>
-        );
-      })()}>Contract Details</SectionTitle>
+      <SectionTitle action={
+        <div style={{ display: "flex", gap: 8 }}>
+          {project.contractAnalysisUrl && (
+            <Btn small variant="ghost" onClick={() => window.open(project.contractAnalysisUrl, "_blank")}
+                 title="Open the Contract Analysis page in OneNote">
+              📋 View Analysis
+            </Btn>
+          )}
+          <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
+        </div>
+      }>Contract Details</SectionTitle>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <Field label="Contract Status">
           <select value={project.contractStatus} onChange={e => setField("contractStatus", e.target.value)} style={{ width: "100%" }}>
@@ -11440,7 +11271,20 @@ function TeamWBSView({ projects, onNavigateToProject }) {
           </table>
         </div>
       )}
-      {/* Modal removed — extraction auto-applies via handleExtractionReceived callback above. */}
+      {extraction && (
+        <ContractExtractionModal
+          extraction={extraction}
+          onClose={() => setExtraction(null)}
+          onApply={handleApplyExtraction}
+          targetLabel="Project"
+          applyFields={[
+            { extractKey: "contractDate",       label: "Contract Date",            currentValue: project.contractDate,           extractedValue: extraction.contractDate },
+            { extractKey: "contractExpiration", label: "Contract Expiration Date", currentValue: project.contractExpirationDate, extractedValue: extraction.contractExpiration },
+            { extractKey: "contractNumber",    label: "Contract Number",          currentValue: project.contractNumber,         extractedValue: extraction.contractNumber },
+            { extractKey: "primeProjectNumber", label: "Prime's Project Number",   currentValue: project.primeProjectNumber,     extractedValue: extraction.primeProjectNumber },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -11500,106 +11344,76 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
     setForm(f => ({ ...f, [field]: val }));
   }
 
-  // ContractExtractor integration — auto-apply on receipt (no modal).
-  // For EXISTING term contracts we persist the extraction immediately via
-  // onUpdateTermContracts (so the OneNote URL doesn't get lost if the user
-  // closes the form without clicking Save). For NEW term contracts (not
-  // yet in the array), we only update form state — user still needs to
-  // click Save to commit the new term contract record.
-  const handleExtractionReceived = React.useCallback(async (payload) => {
-    if (!form) {
-      alert("Extraction received, but no Term Contract is being edited. Open the Term Contracts view, click + New Term Contract or Edit an existing one, then re-extract.");
-      return;
-    }
-    console.log("[term-contract-extract] starting for form:", { id: form.id, name: form.name, editingId });
-    const updates = { contractExtraction: { ...payload, savedAt: new Date().toISOString() } };
-    const appliedLabels = [];
-    if (payload.contractDate)       { updates.startDate      = payload.contractDate;       appliedLabels.push(`Start Date → ${payload.contractDate}`); }
-    if (payload.contractExpiration) { updates.expirationDate = payload.contractExpiration; appliedLabels.push(`Expiration Date → ${payload.contractExpiration}`); }
-    if (payload.contractNumber)     { updates.contractNumber = payload.contractNumber;     appliedLabels.push(`Contract Number → ${payload.contractNumber}`); }
+  // ContractExtractor integration — same hook used by ContractView. Applied
+  // to the term contract currently being edited; extracted contractDate maps
+  // to startDate (the natural analog for term contracts).
+  //
+  // Term contracts share a single team-level "Setty Term Contracts" OneNote
+  // notebook (provisioned lazily by getOrCreateTermContractsNotebook). Each
+  // term contract gets its own page in the "Contracts" section. The page
+  // includes both PMS context (term contract name, client, dates, ceiling,
+  // SharePoint folder) and the extracted override clauses.
+  const { extraction, setExtraction, openExtractor } = useContractExtractor();
 
-    let onenoteStatus = "skipped";
+  async function handleApplyExtraction(selections) {
+    const updates = { contractExtraction: { ...extraction, savedAt: new Date().toISOString() } };
+    // Map extractor field names to term-contract form field names. Term
+    // contracts have no analog for the prime's project number (they ARE
+    // master agreements between Setty and the prime).
+    if (selections.contractDate       && extraction.contractDate)       updates.startDate      = extraction.contractDate;
+    if (selections.contractExpiration && extraction.contractExpiration) updates.expirationDate = extraction.contractExpiration;
+    if (selections.contractNumber     && extraction.contractNumber)     updates.contractNumber = extraction.contractNumber;
+
+    let onenoteStatus = "skipped"; // "success" | "failed:<msg>"
+
     try {
-      console.log("[term-contract-extract] resolving notebook…");
-      const { id: notebookId, webUrl: nbWebUrl } = await getOrCreateTermContractsNotebook();
-      console.log("[term-contract-extract] notebook ready:", { notebookId, nbWebUrl });
-      const title = `${form.name || "Untitled Term Contract"} – ${payload.fileName || "Contract"}`;
-      const html = buildContractAnalysisHtml(payload, { ...form, ...updates }, "termContract");
-      // OneNote page date = contract date if known (so the page sorts by
-      // contract effective date in the Term Contracts notebook).
-      const pageDate = payload.contractDate || new Date().toISOString().slice(0, 10);
+      const { id: notebookId } = await getOrCreateTermContractsNotebook();
+      // Title: term contract name + source filename so repeat extractions
+      // (e.g., contract amendments) don't collide visually in the section list.
+      const title = `${form.name || "Untitled Term Contract"} – ${extraction.fileName || "Contract"}`;
+      // Pass the merged form so the OneNote page reflects the freshly-applied
+      // startDate if the user checked the auto-apply box.
+      const html = buildContractAnalysisHtml(extraction, { ...form, ...updates }, "termContract");
+      const today = new Date().toISOString().slice(0, 10);
+      // buildPmsMetadata expects project-shaped object — map term contract
+      // fields to the closest analogs so the metadata sidecar stays consistent.
       const meta = buildPmsMetadata(
-        { projectNumber: form.contractNumber || "", name: form.name || "", prime: form.client || "", clientName: form.client || "" },
+        {
+          projectNumber: form.contractNumber || "",
+          name:          form.name || "",
+          prime:         form.client || "",
+          clientName:    form.client || "",
+        },
         PMS_DOC_TYPES.CONTRACT,
-        { date: pageDate, source: "contract-extractor", termContractId: form.id }
+        { date: today, source: "contract-extractor", termContractId: form.id }
       );
-      console.log("[term-contract-extract] creating OneNote page…", { title, pageDate });
-      const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, pageDate, meta);
-      console.log("[term-contract-extract] page result:", page);
+      const page = await createTeamsOneNotePage(notebookId, "Contracts", title, html, today, meta);
       if (page?.webUrl) {
-        updates.contractAnalysisUrl = page.webUrl;  // latest (back-compat)
-        // Append to the term contract's analysis history. Each amendment /
-        // re-execution gets its own page, all listed in the dropdown.
-        const existingHistory = getAnalysisHistory(form);
-        updates.contractAnalysisHistory = [
-          ...existingHistory,
-          {
-            url: page.webUrl,
-            savedAt: new Date().toISOString(),
-            fileName: payload.fileName || "Contract.pdf",
-            contractDate: payload.contractDate || "",
-          },
-        ];
-        // Dual-store: also inside the contractExtraction blob so the URL
-        // survives if a persistence layer strips unknown top-level fields.
-        updates.contractExtraction = { ...updates.contractExtraction, contractAnalysisUrl: page.webUrl, oneNotePageId: page.id };
+        updates.contractAnalysisUrl = page.webUrl;
         onenoteStatus = "success";
-      } else if (page?.id) {
-        updates.contractExtraction = { ...updates.contractExtraction, oneNotePageId: page.id };
-        onenoteStatus = "failed:OneNote returned page id but no webUrl — page exists in notebook, visit directly";
       } else {
         onenoteStatus = "failed:OneNote API returned no page URL";
       }
     } catch (e) {
-      console.warn("[term-contract-extract] OneNote page failed:", e);
+      console.warn("Term Contract Analysis OneNote page failed:", e);
       onenoteStatus = "failed:" + (e?.message || "unknown error");
     }
 
-    // Update form state (for the current edit session UI)
+    // Apply all updates in one form mutation
     setForm(f => ({ ...f, ...updates }));
+    setExtraction(null);
 
-    // ALSO persist immediately to the term contracts array IF this term
-    // contract already exists. This guarantees the contractAnalysisUrl
-    // doesn't get lost if the user closes the form without clicking Save.
-    // For brand-new term contracts (editingId === "__new__"), the record
-    // isn't in the array yet — user still needs to click Save Term Contract.
-    const isExisting = editingId !== "__new__" && form.id;
-    if (isExisting) {
-      console.log("[term-contract-extract] persisting to term contracts array (existing)");
-      onUpdateTermContracts(prev => prev.map(t => t.id === form.id ? { ...t, ...updates } : t));
-    }
-
+    // Surface the outcome — silent success (View Analysis link appears in form),
+    // alert on failure so the user always knows status.
     setTimeout(() => {
-      const lines = [];
-      lines.push(`✓ Contract extraction applied to "${form.name || "Term Contract"}".`);
-      if (isExisting) {
-        lines.push("Changes have been saved automatically.");
-      } else {
-        lines.push("⚠ This is a NEW Term Contract — click Save Term Contract to persist.");
+      if (onenoteStatus.startsWith("failed:")) {
+        alert(
+          "Extraction saved to form (don't forget to click 'Save Term Contract'). " +
+          "However the OneNote page failed: " + onenoteStatus.slice(7)
+        );
       }
-      if (appliedLabels.length) {
-        lines.push("");
-        lines.push("Fields updated:");
-        for (const l of appliedLabels) lines.push("  • " + l);
-      }
-      lines.push("");
-      if (onenoteStatus === "success")              lines.push("📋 OneNote page created in 'Setty Term Contracts' notebook.");
-      else if (onenoteStatus.startsWith("failed:")) lines.push("⚠ OneNote page failed: " + onenoteStatus.slice(7));
-      alert(lines.join("\n"));
     }, 0);
-  }, [form, editingId, onUpdateTermContracts]);
-
-  const { openExtractor } = useContractExtractor(handleExtractionReceived);
+  }
 
   // For each term contract, find linked projects
   function linkedProjects(tcId) {
@@ -11632,7 +11446,12 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
               {editingId === "__new__" ? "New Term Contract" : "Edit Term Contract"}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <ViewAnalysisDropdown history={getAnalysisHistory(form)} />
+              {form.contractAnalysisUrl && (
+                <Btn small variant="ghost" onClick={() => window.open(form.contractAnalysisUrl, "_blank")}
+                     title="Open the Contract Analysis page in the Setty Term Contracts OneNote notebook">
+                  📋 View Analysis
+                </Btn>
+              )}
               <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
             </div>
           </div>
@@ -11802,7 +11621,19 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
           </div>
         );
       })}
-      {/* Modal removed — extraction auto-applies via handleExtractionReceived callback in TermContractsView. */}
+      {extraction && form && (
+        <ContractExtractionModal
+          extraction={extraction}
+          onClose={() => setExtraction(null)}
+          onApply={handleApplyExtraction}
+          targetLabel="Term Contract"
+          applyFields={[
+            { extractKey: "contractDate",       label: "Start Date",       currentValue: form.startDate,      extractedValue: extraction.contractDate },
+            { extractKey: "contractExpiration", label: "Expiration Date",  currentValue: form.expirationDate, extractedValue: extraction.contractExpiration },
+            { extractKey: "contractNumber",    label: "Contract Number",  currentValue: form.contractNumber, extractedValue: extraction.contractNumber },
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -14069,24 +13900,7 @@ function InvestigationView({ project }) {
       }
 
       const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
-      let hits = parseSearchHits(raw, project);
-
-      // Microsoft Graph's /search/query is relevance-ranked — `AND` is a ranking
-      // hint, not a hard filter. So docs that strongly match the project number
-      // can come back even if the keyword barely matched (or didn't). Enforce
-      // keyword presence client-side against title + summary. For multi-word
-      // keywords, require every word to appear separately (not the full phrase)
-      // — Graph tokenizes, and matched terms in the summary may be split across
-      // <mark> tags which would defeat a full-phrase substring check.
-      if (kw) {
-        const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
-        hits = hits.filter(h => {
-          const haystack = ((h.title || "") + " " + (h.summary || "")).toLowerCase();
-          return words.every(w => haystack.includes(w));
-        });
-      }
-
-      setResults(hits);
+      setResults(parseSearchHits(raw, project));
     } catch (e) { setError("✗ " + e.message); }
     setSearching(false);
   }
@@ -15340,48 +15154,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 
 // ─── EMAILS VIEW ─────────────────────────────────────────────────────────────
 
-// Hoisted out of EmailsView + memoized so the iframe DOM is preserved across
-// parent re-renders. Previously this was declared inline, which meant every
-// EmailsView render created a new component identity → iframe fully remounted →
-// srcDoc reloaded → "scanline" flash as the iframe redrew from a default 300px
-// height back to the measured content height. With memo + stable identity,
-// identical html prop values short-circuit the re-render entirely.
-const EmailIframe = React.memo(function EmailIframe({ html }) {
-  const ref = React.useRef(null);
-  const [height, setHeight] = React.useState(300);
-
-  const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>
-    *{box-sizing:border-box;}
-    body{background:#fff;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-         font-size:13px;line-height:1.6;padding:16px;margin:0;word-break:break-word;}
-    img{max-width:100%;height:auto;}
-    a{color:#1d4ed8;}
-    table{max-width:100%!important;}
-    td,th{word-break:break-word;}
-  </style></head><body>${html}</body></html>`;
-
-  function onLoad() {
-    try {
-      const body = ref.current?.contentDocument?.body;
-      if (body) setHeight(Math.min(body.scrollHeight + 24, 600));
-    } catch(e) { /* cross-origin guard */ }
-  }
-
-  return (
-    <div style={{ background: "#fff", borderRadius: 8, overflow: "hidden", border: `1px solid ${P.border}` }}>
-      <iframe
-        ref={ref}
-        srcDoc={doc}
-        sandbox="allow-same-origin"
-        onLoad={onLoad}
-        style={{ width: "100%", height, border: "none", display: "block" }}
-        title="email-body"
-      />
-    </div>
-  );
-});
-
 function EmailsView({ project, onChange }) {
+  const saved = (project.emails || []).filter(e => e && typeof e === "object");
   const toText = (value, fallback = "") => {
     if (typeof value === "string") return value;
     if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -15391,124 +15165,21 @@ function EmailsView({ project, onChange }) {
     return fallback;
   };
 
-  // Outlook-search state (unchanged from before)
+  // Search state
   const [query, setQuery] = useState(project.name || project.projectNumber || "");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [searchErr, setSearchErr] = useState(null);
   const [selected, setSelected] = useState({}); // { [msgId]: bool }
 
-  // Email open/expand state (unchanged from before)
+  // View state
   const [expanded, setExpanded] = useState(null); // msgId of open email
   const [fetchingBody, setFetchingBody] = useState(null);
   const [spSaveState, setSpSaveState] = useState({}); // msgId -> {status, msg}
   const [shareState, setShareState] = useState({}); // msgId -> {status, msg}
-  const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string } — Outlook live-fetched
-
-  // ── Phase 6b: server-side reads from pms_project_emails ────────────────────
-  // `emails` is the loaded page (metadata only, no bodies). It replaces what
-  // used to be derived from project.emails[] each render. Mutations still
-  // call onChange to keep project.emails[] in sync (dual-write); the local
-  // state mirror lets the UI re-render immediately without waiting for the
-  // parent prop to update.
-  const [emails, setEmails] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(false);
-  const [offset, setOffset] = useState(0);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const PAGE_SIZE = 50;
-
-  // Filter UI state.
-  // `logSearch` = current text in the search box (typing)
-  // `searchTerm` = committed value (changes trigger a server refetch)
-  // `filterSender` = selected sender filter (changes trigger a refetch)
-  const [logSearch, setLogSearch] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
+  const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string }
   const [filterSender, setFilterSender] = useState("All");
-  const [senderOptions, setSenderOptions] = useState([]); // populated from loadProjectSenders
-
-  // Set of every saved msg_id for THIS project — used to dedupe Outlook-search
-  // results against the entire saved set (not just the loaded page). Loaded
-  // once per project session.
-  const [savedMsgIds, setSavedMsgIds] = useState(new Set());
-
-  // Load the first page + supporting data when project changes or filters change.
-  React.useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setOffset(0);
-    (async () => {
-      try {
-        const page = await loadProjectEmails(project.id, {
-          limit: PAGE_SIZE,
-          offset: 0,
-          search: searchTerm,
-          sender: filterSender === "All" ? "" : filterSender,
-        });
-        if (cancelled) return;
-        setEmails(page);
-        setHasMore(page.length === PAGE_SIZE);
-      } catch (e) {
-        if (cancelled) return;
-        console.warn("loadProjectEmails failed:", e);
-        setEmails([]);
-        setHasMore(false);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [project.id, searchTerm, filterSender]);
-
-  // Load sender options + saved-msgId set when project changes (independent of filters).
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [senders, msgIds] = await Promise.all([
-          loadProjectSenders(project.id),
-          loadProjectMsgIds(project.id),
-        ]);
-        if (cancelled) return;
-        setSenderOptions(senders);
-        setSavedMsgIds(msgIds);
-      } catch (e) {
-        console.warn("loadProjectSenders/MsgIds failed:", e);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [project.id]);
-
-  // Fetch next page and append. Triggered by the "Show more" button.
-  async function loadMore() {
-    if (!hasMore || loadingMore) return;
-    setLoadingMore(true);
-    try {
-      const nextOffset = offset + PAGE_SIZE;
-      const page = await loadProjectEmails(project.id, {
-        limit: PAGE_SIZE,
-        offset: nextOffset,
-        search: searchTerm,
-        sender: filterSender === "All" ? "" : filterSender,
-      });
-      setEmails(prev => [...prev, ...page]);
-      setOffset(nextOffset);
-      setHasMore(page.length === PAGE_SIZE);
-    } catch (e) {
-      console.warn("loadMore failed:", e);
-    } finally {
-      setLoadingMore(false);
-    }
-  }
-
-  // Commit the search box value (called on Enter or Search button).
-  function commitSearch() {
-    setSearchTerm(logSearch.trim());
-  }
-  function clearSearch() {
-    setLogSearch("");
-    setSearchTerm("");
-  }
+  const [logSearch, setLogSearch] = useState("");
 
   // Strip HTML to plain text
   function htmlToText(html) {
@@ -15628,8 +15299,42 @@ function EmailsView({ project, onChange }) {
     return cleanBodyText(text || "");
   }
 
-  // EmailIframe is hoisted to module scope (above EmailsView) and wrapped in
-  // React.memo so the iframe DOM survives parent re-renders.
+  // Renders raw HTML email in a sandboxed iframe — preserves all formatting,
+  // isolates email CSS, and handles chains the way the email client intended.
+  function EmailIframe({ html }) {
+    const ref = React.useRef(null);
+    const [height, setHeight] = React.useState(300);
+
+    const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>
+      *{box-sizing:border-box;}
+      body{background:#fff;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+           font-size:13px;line-height:1.6;padding:16px;margin:0;word-break:break-word;}
+      img{max-width:100%;height:auto;}
+      a{color:#1d4ed8;}
+      table{max-width:100%!important;}
+      td,th{word-break:break-word;}
+    </style></head><body>${html}</body></html>`;
+
+    function onLoad() {
+      try {
+        const body = ref.current?.contentDocument?.body;
+        if (body) setHeight(Math.min(body.scrollHeight + 24, 600));
+      } catch(e) { /* cross-origin guard */ }
+    }
+
+    return (
+      <div style={{ background: "#fff", borderRadius: 8, overflow: "hidden", border: `1px solid ${P.border}` }}>
+        <iframe
+          ref={ref}
+          srcDoc={doc}
+          sandbox="allow-same-origin"
+          onLoad={onLoad}
+          style={{ width: "100%", height, border: "none", display: "block" }}
+          title="email-body"
+        />
+      </div>
+    );
+  }
 
   function EmailChain({ body }) {
     const chain = parseEmailChain(body);
@@ -15740,9 +15445,9 @@ function EmailsView({ project, onChange }) {
   }
 
   async function saveSelected() {
-    // Dedup against ALL saved emails (savedMsgIds), not just the loaded page.
-    const toSave = results.filter(m => selected[m.id] && !savedMsgIds.has(m.id));
-    const dupeCount = results.filter(m => selected[m.id] && savedMsgIds.has(m.id)).length;
+    const existingIds = new Set(saved.map(e => e.msgId));
+    const toSave = results.filter(m => selected[m.id] && !existingIds.has(m.id));
+    const dupeCount = results.filter(m => selected[m.id] && existingIds.has(m.id)).length;
 
     if (toSave.length === 0 && dupeCount > 0) {
       alert(`${dupeCount} email${dupeCount > 1 ? "s" : ""} already saved.`);
@@ -15767,7 +15472,6 @@ function EmailsView({ project, onChange }) {
       const rawHtml = m.body?.content || "";
       const compressed = rawHtml ? compressHtml(rawHtml) : "";
       return {
-        id: uid(),
         msgId: m.id,
         conversationId: m.conversationId || null,
         subject: m.subject || "(no subject)",
@@ -15787,38 +15491,10 @@ function EmailsView({ project, onChange }) {
       };
     }));
 
-    // Dual-write: update project.emails[] (parent state) AND the local
-    // `emails` page (so the UI re-renders immediately without waiting for
-    // a refetch). Prepend toAdd to local state since the list is date-desc.
-    onChange({ ...project, emails: [...(project.emails || []), ...toAdd] });
-    setEmails(prev => [...toAdd, ...prev]);
-    setSavedMsgIds(prev => {
-      const next = new Set(prev);
-      toAdd.forEach(e => next.add(e.msgId));
-      return next;
-    });
+    onChange({ ...project, emails: [...saved, ...toAdd] });
     setSelected({});
     setResults([]);
-
-    // Phase-6 prep: also write each new email to pms_project_emails (search index).
-    // Non-blocking — local save already succeeded; index failures only warn.
-    let indexFailures = 0;
-    await Promise.all(toAdd.map(async e => {
-      try {
-        await saveProjectEmailRowFromPMS(project.id, e, false);
-      } catch (err) {
-        console.warn("saveProjectEmailRowFromPMS failed for", e.msgId, err);
-        indexFailures++;
-      }
-    }));
-
-    if (dupeCount > 0 || indexFailures > 0) {
-      const parts = [];
-      if (toAdd.length > 0) parts.push(`${toAdd.length} saved.`);
-      if (dupeCount > 0) parts.push(`${dupeCount} skipped (already on record).`);
-      if (indexFailures > 0) parts.push(`${indexFailures} not indexed for search.`);
-      alert(parts.join(" "));
-    }
+    if (dupeCount > 0) alert(`${toAdd.length} saved. ${dupeCount} skipped (already on record).`);
   }
 
   async function saveToSharePoint(email) {
@@ -15837,34 +15513,16 @@ function EmailsView({ project, onChange }) {
       const { folderName, attachCount, folderWebUrl } = await saveEmailToSharePoint(email, project, bodyHtml, buildPmsMetadata(project, PMS_DOC_TYPES.CORRESPONDENCE));
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
-      // Persist the SP folder URL on the email record so it survives page refresh.
-      // Dual-write: update both project.emails[] (parent state) and the local page.
-      const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
-      onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
-      setEmails(prev => prev.map(patchSpUrl));
-      // Also patch the new table. Fire-and-forget — local state already updated.
-      if (email.id) {
-        updateProjectEmailSpFolder(email.id, folderWebUrl)
-          .catch(err => console.warn("updateProjectEmailSpFolder failed:", err));
-      }
+      // Persist the SP folder URL on the email record so it survives page refresh
+      onChange({ ...project, emails: saved.map(e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e) });
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
     }
   }
 
   function deleteEmail(msgId) {
-    const target = emails.find(e => e.msgId === msgId);
-    // Dual-write delete: parent project.emails[], local page, savedMsgIds set.
-    onChange({ ...project, emails: (project.emails || []).filter(e => e.msgId !== msgId) });
-    setEmails(prev => prev.filter(e => e.msgId !== msgId));
-    setSavedMsgIds(prev => { const next = new Set(prev); next.delete(msgId); return next; });
+    onChange({ ...project, emails: saved.filter(e => e.msgId !== msgId) });
     if (expanded === msgId) setExpanded(null);
-    // Also delete the row from pms_project_emails. Fire-and-forget: the local
-    // UI is already updated; a failure here leaves an orphan row (visible in
-    // cross-project search until cleanup) but doesn't block the user.
-    if (target?.id) {
-      deleteProjectEmail(target.id).catch(err => console.warn("deleteProjectEmail failed:", err));
-    }
   }
 
   async function fetchLiveBody(msgId) {
@@ -15879,21 +15537,16 @@ function EmailsView({ project, onChange }) {
         // Phase 3: persist the compressed body to the project record so we never
         // need to re-fetch it. Future opens go straight to decompress + render.
         // The save uses onChange (debounced auto-save) — no extra round-trip cost.
-        const existing = emails.find(e => e.msgId === msgId);
+        const existing = saved.find(e => e.msgId === msgId);
         if (existing && !existing.bodyHtmlCompressed) {
           const compressed = compressHtml(html);
           if (compressed) {
-            // Dual-write the cached body: parent project.emails[] AND local page.
-            const patchBody = e => e.msgId === msgId
-              ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
-              : e;
-            onChange({ ...project, emails: (project.emails || []).map(patchBody) });
-            setEmails(prev => prev.map(patchBody));
-            // Also persist to the new table so future opens skip the live fetch.
-            if (existing.id) {
-              updateProjectEmailBody(existing.id, compressed, html.length)
-                .catch(err => console.warn("updateProjectEmailBody failed:", err));
-            }
+            onChange({
+              ...project,
+              emails: saved.map(e => e.msgId === msgId
+                ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
+                : e),
+            });
           }
         }
       }
@@ -15905,49 +15558,44 @@ function EmailsView({ project, onChange }) {
     }
   }
 
-  async function toggleExpand(email) {
+  function toggleExpand(email) {
     if (expanded === email.msgId) { setExpanded(null); return; }
-    // 1. Already-loaded compressed body? Render instantly.
+    // Phase 3: if we have a compressed body stored, render it immediately —
+    // no need to call Graph. Saves a round-trip and works offline / for
+    // emails deleted from Outlook.
     if (email.bodyHtmlCompressed) {
       setExpanded(email.msgId);
       return;
     }
-    // 2. The list query excludes body_html_compressed for speed. On expand,
-    //    fetch this row's body from pms_project_emails. Cache it onto the
-    //    email object in local state so re-opening renders instantly.
-    if (email.id) {
-      setFetchingBody(email.msgId);
-      try {
-        const body = await loadEmailBody(email.id);
-        if (body) {
-          setEmails(prev => prev.map(e => e.id === email.id
-            ? { ...e, bodyHtmlCompressed: body }
-            : e));
-          setFetchingBody(null);
-          setExpanded(email.msgId);
-          return;
-        }
-      } catch (e) {
-        console.warn("loadEmailBody failed for", email.id, e);
-      }
-      setFetchingBody(null);
-    }
-    // 3. Row has no stored body (legacy gap) — last resort: live-fetch from
-    //    Outlook + opportunistically persist the compressed body.
+    // Otherwise fetch live + opportunistically persist the compressed body
     fetchLiveBody(email.msgId);
   }
 
-  // The sender dropdown options. `senderOptions` is populated from the server;
-  // we prepend "All" as a no-filter sentinel.
-  const senders = useMemo(() => ["All", ...senderOptions], [senderOptions]);
+  // Unique senders for filter
+  const senders = useMemo(() => {
+    const s = new Set(saved.map(e => toText(e.from, "")).filter(Boolean));
+    return ["All", ...Array.from(s).sort()];
+  }, [saved]);
 
-  // No client-side filter/sort — server returns sorted, filtered results.
-  // `emails` IS the final list rendered.
+  const filtered = saved.filter(e => {
+    const subjectTxt = toText(e.subject, "");
+    const fromTxt = toText(e.from, "");
+    const toTxt = toText(e.to, "");
+    const bodyTxt = toText(e.bodyText, "");
+    if (filterSender !== "All" && fromTxt !== filterSender) return false;
+    if (logSearch.trim()) {
+      const q = logSearch.toLowerCase();
+      return subjectTxt.toLowerCase().includes(q)
+        || fromTxt.toLowerCase().includes(q)
+        || toTxt.toLowerCase().includes(q)
+        || bodyTxt.toLowerCase().includes(q);
+    }
+    return true;
+  });
+  const sortedSaved = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
 
   const selectedCount = Object.values(selected).filter(Boolean).length;
-  // Dedup against the full saved-msg-id set (not just the loaded page), so
-  // results that are saved on page 27 still get the "already saved" marker.
-  const newCount = results.filter(m => selected[m.id] && !savedMsgIds.has(m.id)).length;
+  const newCount = results.filter(m => selected[m.id] && !saved.find(e => e.msgId === m.id)).length;
 
   // ─── Share an email out via Outlook draft ──────────────────────────────────
   // Uses the same createOutlookDraft pattern as Schedule/Invoice exports — no
@@ -16063,7 +15711,7 @@ function EmailsView({ project, onChange }) {
             </div>
             <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${P.border}`, borderRadius: 6 }}>
               {results.map((m, i) => {
-                const alreadySaved = savedMsgIds.has(m.id);
+                const alreadySaved = saved.some(e => e.msgId === m.id);
                 const isChecked = !!selected[m.id];
                 return (
                   <div key={m.id}
@@ -16111,28 +15759,19 @@ function EmailsView({ project, onChange }) {
         <SectionTitle style={{ margin: 0 }}>
           Saved Emails
           <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: P.textDim }}>
-            {loading
-              ? "(loading…)"
-              : `(showing ${emails.length}${hasMore ? "+" : ""}${searchTerm || filterSender !== "All" ? " — filtered" : ""})`}
+            ({filtered.length}{filtered.length !== saved.length ? ` of ${saved.length}` : ""})
           </span>
         </SectionTitle>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
             value={logSearch}
             onChange={e => setLogSearch(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") commitSearch(); }}
-            placeholder="Search subject, sender, body — press Enter"
-            style={{ fontSize: 12, padding: "3px 8px", width: 240 }}
+            placeholder="Search subject, sender, body…"
+            style={{ fontSize: 12, padding: "3px 8px", width: 220 }}
           />
-          {(logSearch || searchTerm) && (
-            <button onClick={clearSearch}
+          {logSearch && (
+            <button onClick={() => setLogSearch("")}
               style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13 }}>✕</button>
-          )}
-          {searchTerm && logSearch !== searchTerm && (
-            <button onClick={commitSearch}
-              style={{ background: P.accent, color: "#fff", border: "none", borderRadius: 4, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
-              Search
-            </button>
           )}
           {senders.length > 2 && (
             <select value={filterSender} onChange={e => setFilterSender(e.target.value)}
@@ -16143,21 +15782,13 @@ function EmailsView({ project, onChange }) {
         </div>
       </div>
 
-      {loading && emails.length === 0 && (
+      {sortedSaved.length === 0 ? (
         <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
-          ⏳ Loading emails…
+          No emails saved yet. Use the search above to find and import emails from Outlook.
         </div>
-      )}
-      {!loading && emails.length === 0 && (
-        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
-          {searchTerm || filterSender !== "All"
-            ? "No emails match the current filter. Adjust the search or sender, or clear filters."
-            : "No emails saved yet. Use the search above to find and import emails from Outlook."}
-        </div>
-      )}
-      {emails.length > 0 && (
+      ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-          {emails.map((email, idx) => {
+          {sortedSaved.map((email, idx) => {
             const emailId = email.msgId || email.id || ("legacy-" + idx);
             const isOpen = expanded === emailId;
             const body = liveBody[emailId] || email.bodyText || "";
@@ -16177,24 +15808,15 @@ function EmailsView({ project, onChange }) {
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{toText(email.subject, "(no subject)")}</div>
                       <div style={{ fontSize: 11, color: P.textDim, flexShrink: 0 }}>
-                        {new Date(email.date).toLocaleString("en-US", {
-                          weekday: "short", month: "numeric", day: "numeric", year: "numeric",
-                          hour: "numeric", minute: "2-digit",
-                        }).replace(/,/g, "")}
+                        {new Date(email.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                       </div>
                     </div>
                     <div style={{ fontSize: 12, color: P.textMuted, marginTop: 2 }}>
                       <span>From: <strong>{toText(email.from, "Unknown")}</strong></span>
-                      {toText(email.to, "") && (
-                        <span style={{ marginLeft: 10, wordBreak: "break-word" }}>
-                          To: {toText(email.to, "")}
-                        </span>
-                      )}
+                      {toText(email.to, "") && <span style={{ marginLeft: 10 }}>To: {toText(email.to, "").length > 60 ? toText(email.to, "").slice(0, 60) + "…" : toText(email.to, "")}</span>}
                     </div>
                     {toText(email.cc, "") && (
-                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1, wordBreak: "break-word" }}>
-                        CC: {toText(email.cc, "")}
-                      </div>
+                      <div style={{ fontSize: 11, color: P.textDim, marginTop: 1 }}>CC: {toText(email.cc, "").length > 80 ? toText(email.cc, "").slice(0, 80) + "…" : toText(email.cc, "")}</div>
                     )}
                     <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
                       {email.hasAttachments && (
@@ -16208,13 +15830,9 @@ function EmailsView({ project, onChange }) {
                             ))
                           : <span style={{ fontSize: 11, background: P.yellowDim, color: P.yellow, borderRadius: 4, padding: "1px 7px" }}>📎 Has attachments (names unavailable)</span>
                         }
-                        {!email.spFolderUrl && (
-                          <div style={{ marginTop: 4, fontSize: 10, color: P.red, fontStyle: "italic", lineHeight: 1.45 }}>
-                            ⚠ Attachments are fetched live from Outlook at "Save to SharePoint" time — if the original email is deleted from the mailbox first (or another user clicks Save), the attachments will be silently lost. Save to SharePoint now to preserve them.
-                          </div>
-                        )}
                       </div>
                     )}
+                      <span style={{ fontSize: 10, color: P.textDim }}>Saved {email.savedAt ? new Date(email.savedAt).toLocaleDateString() : "Unknown date"} by {email.savedBy || "Unknown user"}</span>
                     </div>
                   </div>
                   <div style={{ flexShrink: 0, fontSize: 16, color: P.textDim, marginTop: 2 }}>{isOpen ? "▲" : "▼"}</div>
@@ -16327,13 +15945,6 @@ function EmailsView({ project, onChange }) {
               </div>
             );
           })}
-        </div>
-      )}
-      {hasMore && emails.length > 0 && (
-        <div style={{ display: "flex", justifyContent: "center", padding: "16px 0 8px" }}>
-          <Btn small variant="ghost" disabled={loadingMore} onClick={loadMore}>
-            {loadingMore ? "⏳ Loading…" : `Show more (${PAGE_SIZE} more)`}
-          </Btn>
         </div>
       )}
     </div>
@@ -21072,6 +20683,8 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
   const [msg, setMsg] = React.useState("");
   const [scStatus, setScStatus] = React.useState("idle"); // shortcut install state
   const [scMsg, setScMsg] = React.useState("");
+  const [portalStatus, setPortalStatus] = React.useState("idle"); // idle | creating | done | error
+  const [portalMsg, setPortalMsg] = React.useState("");
 
   const url = project.projectFolderUrl || "";
   const hasFolder = !!url;
@@ -21124,21 +20737,37 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
     }
     setStatus("creating");
     setMsg("");
+    setPortalStatus("idle");
+    setPortalMsg("");
     try {
       const folderUrl = await createSharePointFolder(project);
+      const updatedProject = { ...project, projectFolderUrl: folderUrl };
       onUpdate("projectFolderUrl", folderUrl);
-      // Eager-save: don't wait for the 2-second debounce. If the user closes the
-      // tab or the network blips during that window, the folder exists in
-      // SharePoint but the project record has no link to it (orphaned folder).
-      // Calling onEagerSave forces an immediate flush to Supabase.
+
+      // Also create NYSharesite client portal folders
+      setPortalStatus("creating");
+      setPortalMsg("\u23f3 Creating client portal folders in NYSharesite\u2026");
+      try {
+        const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(updatedProject);
+        updatedProject.clientUploadsFolderUrl     = clientUploadsUrl;
+        updatedProject.settyDeliverablesFolderUrl = settyDeliverablesUrl;
+        onUpdate("clientUploadsFolderUrl",     clientUploadsUrl);
+        onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
+        setPortalStatus("done");
+        setPortalMsg("\u2713 Client portal folders ready in NYSharesite");
+      } catch (portalErr) {
+        // Non-fatal: main folder succeeded, portal folders failed
+        setPortalStatus("error");
+        setPortalMsg("\u26a0 Portal folders failed: " + portalErr.message);
+      }
+
+      // Eager-save: flush all URLs to Supabase immediately
       if (onEagerSave) {
         try {
-          await onEagerSave({ ...project, projectFolderUrl: folderUrl });
+          await onEagerSave(updatedProject);
           setStatus("done");
           setMsg("\u2713 Folder created and linked");
         } catch (saveErr) {
-          // Folder exists in SP but link save failed \u2014 give the user a clear
-          // recovery path. The URL is also in the input field they can copy.
           setStatus("error");
           setMsg("\u26a0 Folder created at " + folderUrl + " but link save failed: " + saveErr.message + ". Copy the URL above; the next auto-save will retry.");
         }
@@ -21149,6 +20778,28 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
     } catch(e) {
       setStatus("error");
       setMsg("\u2717 " + e.message);
+    }
+  }
+
+  // For existing projects: main folder exists but portal folders not yet created
+  async function createPortalFolders() {
+    setPortalStatus("creating");
+    setPortalMsg("\u23f3 Creating client portal folders in NYSharesite\u2026");
+    try {
+      const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(project);
+      onUpdate("clientUploadsFolderUrl",     clientUploadsUrl);
+      onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
+      if (onEagerSave) {
+        await onEagerSave({ ...project,
+          clientUploadsFolderUrl:     clientUploadsUrl,
+          settyDeliverablesFolderUrl: settyDeliverablesUrl,
+        }).catch(() => {});
+      }
+      setPortalStatus("done");
+      setPortalMsg("\u2713 Client portal folders ready in NYSharesite");
+    } catch(e) {
+      setPortalStatus("error");
+      setPortalMsg("\u2717 " + e.message);
     }
   }
 
@@ -21206,6 +20857,52 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
             <span style={{ fontSize: 11, color: scStatus === "done" ? P.green : scStatus === "error" ? P.red : P.textDim }}>
               {scMsg}
             </span>
+          )}
+        </div>
+      )}
+      {/* Set Up Portal Folders button - shown for existing projects with no portal folders yet */}
+      {hasFolder && !project.clientUploadsFolderUrl && !project.settyDeliverablesFolderUrl && portalStatus === "idle" && (
+        <div style={{ marginTop: 8 }}>
+          <button onClick={createPortalFolders}
+            style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.textDim, cursor: "pointer", fontSize: 11, padding: "4px 10px", whiteSpace: "nowrap" }}
+            title="Create Client Uploads and Setty Deliverables folders in NYSharesite">
+            🌐 Set Up Client Portal Folders
+          </button>
+        </div>
+      )}
+      {/* NYSharesite client portal folder links */}
+      {(project.clientUploadsFolderUrl || project.settyDeliverablesFolderUrl || portalStatus !== "idle") && (
+        <div style={{ marginTop: 10, padding: "8px 10px",
+          border: `1px solid ${P.border}`, borderRadius: 6, background: P.bgAlt || P.bgCard || P.bg }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim, marginBottom: 6, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+            Client Portal — NYSharesite
+          </div>
+          {project.clientUploadsFolderUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📤 Client Uploads</span>
+              <a href={project.clientUploadsFolderUrl} target="_blank" rel="noreferrer"
+                style={{ fontSize: 11, background: "#0078d4", color: "#fff", borderRadius: 4,
+                  padding: "2px 10px", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
+                Open
+              </a>
+            </div>
+          )}
+          {project.settyDeliverablesFolderUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 12, color: P.textDim, minWidth: 128, flexShrink: 0 }}>📥 Setty Deliverables</span>
+              <a href={project.settyDeliverablesFolderUrl} target="_blank" rel="noreferrer"
+                style={{ fontSize: 11, background: "#0078d4", color: "#fff", borderRadius: 4,
+                  padding: "2px 10px", textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}>
+                Open
+              </a>
+            </div>
+          )}
+          {portalMsg && (
+            <div style={{ fontSize: 11, marginTop: 4,
+              color: portalStatus === "done" ? P.green : portalStatus === "error" ? P.red : P.textDim }}>
+              {portalMsg}
+            </div>
           )}
         </div>
       )}
@@ -23333,6 +23030,18 @@ function App() {
 
         isLoaded.current = true;
         setAppStatus("idle");
+
+        // Reverse-sync: after data is in, scan the NYC Shared Calendar for any
+        // milestone events whose date has been edited in Outlook. Fire-and-forget;
+        // any conflicts get flagged on the milestone via setProjects (autosave
+        // picks it up). Wrapped in setTimeout so it never blocks first paint.
+        if (source.projects?.length) {
+          setTimeout(() => {
+            scanCalendarForMilestoneChanges(source.projects, setProjects)
+              .then(r => console.log("[cal-reverse-sync]", r))
+              .catch(e => console.warn("[cal-reverse-sync] failed:", e));
+          }, 1500);
+        }
       } catch (e) {
         console.error("V2 load failed:", e);
         // V2 load failed. We mark v2LoadFailedRef so the auto-save effect
