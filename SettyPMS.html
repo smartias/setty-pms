@@ -20988,27 +20988,37 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
   const [actionMsg, setActionMsg]       = React.useState("");
   const [actionStatus, setActionStatus] = React.useState("idle");
 
-  // Flatten all contacts with emails from the clients directory
-  const allContacts = React.useMemo(() => {
-    const out = [];
+  // Flatten all contacts with emails from the clients directory.
+  // Contacts from the project's own client company come first.
+  const { projectContacts, otherContacts } = React.useMemo(() => {
+    const clientName = (project.clientName || "").trim().toLowerCase();
+    const proj = [], other = [];
     (clients || []).forEach(c => {
+      const isProjectClient = clientName && (c.name || "").trim().toLowerCase() === clientName;
       (c.contacts || []).forEach(ct => {
         if (ct.email && ct.email.includes("@")) {
-          out.push({ name: ct.name || ct.email, email: ct.email.trim(),
-            company: c.name || "", title: ct.title || "" });
+          const entry = { name: ct.name || ct.email, email: ct.email.trim(),
+            company: c.name || "", title: ct.title || "" };
+          if (isProjectClient) proj.push(entry);
+          else other.push(entry);
         }
       });
     });
-    return out;
-  }, [clients]);
+    return { projectContacts: proj, otherContacts: other };
+  }, [clients, project.clientName]);
 
+  // When no query: show project contacts first (all of them), then others up to 8 total.
+  // When searching: search across everyone.
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return allContacts.slice(0, 8);
-    return allContacts.filter(c =>
+    if (!q) {
+      const combined = [...projectContacts, ...otherContacts];
+      return combined.slice(0, Math.max(8, projectContacts.length));
+    }
+    return [...projectContacts, ...otherContacts].filter(c =>
       (c.name + " " + c.email + " " + c.company + " " + c.title).toLowerCase().includes(q)
-    ).slice(0, 8);
-  }, [query, allContacts]);
+    ).slice(0, 10);
+  }, [query, projectContacts, otherContacts]);
 
   // Resolve a subfolder item ID from its SharePoint webUrl
   async function resolveItemId(folderUrl) {
@@ -21217,23 +21227,56 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                 boxSizing: "border-box" }} />
 
             <div style={{ border: `1px solid ${P.border}`, borderRadius: 5,
-              maxHeight: 180, overflowY: "auto", background: P.bgAlt || P.bg }}>
+              maxHeight: 200, overflowY: "auto", background: P.bgAlt || P.bg }}>
               {filtered.length === 0
                 ? <div style={{ fontSize: 11, color: P.textDim, padding: "8px 10px", fontStyle: "italic" }}>
                     No contacts found
                   </div>
-                : filtered.map(c => (
-                  <div key={c.email} onClick={() => addPerson(c)}
-                    style={{ padding: "7px 10px", cursor: "pointer",
-                      borderBottom: `1px solid ${P.border}` }}
-                    onMouseEnter={e => e.currentTarget.style.background = P.bgCard || "#1a2535"}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{c.name}</div>
-                    <div style={{ fontSize: 11, color: P.textDim }}>
-                      {c.email}{c.company ? " \u00b7 " + c.company : ""}
-                    </div>
-                  </div>
-                ))
+                : (() => {
+                    const projEmails = new Set(projectContacts.map(c => c.email));
+                    const projFiltered  = filtered.filter(c => projEmails.has(c.email));
+                    const otherFiltered = filtered.filter(c => !projEmails.has(c.email));
+                    function ContactRow({ c }) {
+                      return (
+                        <div key={c.email} onClick={() => addPerson(c)}
+                          style={{ padding: "7px 10px", cursor: "pointer",
+                            borderBottom: `1px solid ${P.border}` }}
+                          onMouseEnter={e => e.currentTarget.style.background = P.bgCard || "#1a2535"}
+                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{c.name}</div>
+                          <div style={{ fontSize: 11, color: P.textDim }}>
+                            {c.email}{c.company ? " \u00b7 " + c.company : ""}
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <>
+                        {projFiltered.length > 0 && (
+                          <>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: P.textDim,
+                              letterSpacing: "0.05em", padding: "5px 10px 3px",
+                              background: P.bgCard || P.bg, textTransform: "uppercase" }}>
+                              {project.clientName || "Project Client"}
+                            </div>
+                            {projFiltered.map(c => <ContactRow key={c.email} c={c} />)}
+                          </>
+                        )}
+                        {otherFiltered.length > 0 && (
+                          <>
+                            {projFiltered.length > 0 && (
+                              <div style={{ fontSize: 10, fontWeight: 700, color: P.textDim,
+                                letterSpacing: "0.05em", padding: "5px 10px 3px",
+                                background: P.bgCard || P.bg, textTransform: "uppercase" }}>
+                                Other Contacts
+                              </div>
+                            )}
+                            {otherFiltered.map(c => <ContactRow key={c.email} c={c} />)}
+                          </>
+                        )}
+                      </>
+                    );
+                  })()
               }
             </div>
           </div>
