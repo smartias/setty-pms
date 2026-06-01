@@ -4058,11 +4058,10 @@ async function createClientPortalFolders(project, clientEmail) {
         // POST /drives/{id}/items/{itemId}/invite
         // sendInvitation: false = silent (no email sent to client)
         await graphFetch("POST",
-          "/drives/" + driveId + "/items/" + item.id + "/invite",
+          "/drives/" + driveId + "/items/" + item.id + "/createLink",
           {
-            requireSignIn: true,
-            sendInvitation: false,
-            roles: [role],
+            type: role === "write" ? "edit" : "view",
+            scope: "users",
             recipients: [{ email: clientEmail }],
           }
         );
@@ -21045,16 +21044,28 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       async function getPerms(itemId) {
         if (!itemId) return [];
         const resp = await graphFetch("GET", "/drives/" + driveId + "/items/" + itemId + "/permissions");
-        return (resp?.value || []).filter(p =>
-          p.grantedToV2?.user?.email &&
-          !p.grantedToV2.user.email.toLowerCase().includes("setty.com")
-        ).map(p => ({
-          id:     p.id,
-          email:  p.grantedToV2.user.email,
-          name:   p.grantedToV2.user.displayName || p.grantedToV2.user.email,
-          roles:  p.roles || [],
-          itemId,
-        }));
+        const out = [];
+        for (const p of (resp?.value || [])) {
+          // Direct grant (grantedToV2.user)
+          if (p.grantedToV2?.user?.email) {
+            const email = p.grantedToV2.user.email;
+            if (!email.toLowerCase().includes("setty.com")) {
+              out.push({ id: p.id, email, name: p.grantedToV2.user.displayName || email,
+                roles: p.roles || [], itemId, linkId: null });
+            }
+          }
+          // Link-based grant (createLink scope:"users") - each recipient in grantedToIdentities
+          else if (p.link && p.grantedToIdentitiesV2?.length) {
+            for (const identity of p.grantedToIdentitiesV2) {
+              const email = identity.user?.email || identity.siteUser?.email;
+              if (email && !email.toLowerCase().includes("setty.com")) {
+                out.push({ id: p.id, email, name: identity.user?.displayName || email,
+                  roles: p.roles || [], itemId, linkId: p.id });
+              }
+            }
+          }
+        }
+        return out;
       }
 
       const [uploads, deliverables] = await Promise.all([
@@ -21079,10 +21090,15 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       if ((addTarget === "deliverables" || addTarget === "both") && perms?.deliverablesId)
         targets.push({ itemId: perms.deliverablesId, role: addTarget === "both" && addRole === "write" ? "read" : addRole });
       for (const t of targets) {
+        // createLink with scope:"users" works on folders with broken inheritance
+        // where /invite returns sharingFailed 400.
         await graphFetch("POST",
-          "/drives/" + driveId + "/items/" + t.itemId + "/invite",
-          { requireSignIn: true, sendInvitation: false, roles: [t.role],
-            recipients: [{ email: contact.email }] }
+          "/drives/" + driveId + "/items/" + t.itemId + "/createLink",
+          {
+            type: t.role === "write" ? "edit" : "view",
+            scope: "users",
+            recipients: [{ email: contact.email }],
+          }
         );
       }
       setActionStatus("done");
