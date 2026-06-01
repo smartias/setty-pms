@@ -3998,7 +3998,7 @@ async function createSharePointFolder(project) {
 //   2. Create "Client Uploads" subfolder    (share with client — Can Edit)
 //   3. Create "Setty Deliverables" subfolder (share with client — Can View)
 //   4. Plant .url shortcut files in the main NYCProjects folder (best-effort)
-async function createClientPortalFolders(project) {
+async function createClientPortalFolders(project, clientEmail) {
   const num  = (project.projectNumber || "").trim();
   const name = (project.name         || "Unnamed Project").trim();
   if (!num && !name) throw new Error("Project must have a number or name before creating portal folders.");
@@ -4041,42 +4041,62 @@ async function createClientPortalFolders(project) {
   const clientUploadsUrl     = await getOrCreate("Client Uploads");
   const settyDeliverablesUrl = await getOrCreate("Setty Deliverables");
 
-  // Plant .url shortcut files in the NYCProjects main folder (best-effort, non-fatal)
+  // Share folders with client email if available
+  if (clientEmail) {
+    // Helper: invite a person to a drive item by item path
+    async function shareFolder(folderUrl, role) {
+      try {
+        // Resolve the item ID from its webUrl by fetching via path
+        const decoded = decodeURIComponent(folderUrl);
+        const nameMatch = decoded.match(/\/([^\/]+)\/?$/);
+        if (!nameMatch) return;
+        const subName = nameMatch[1];
+        const item = await graphFetch("GET",
+          "/drives/" + driveId + "/items/" + parentId + ":/" + encodeURIComponent(subName)
+        );
+        if (!item || !item.id) return;
+        // POST /drives/{id}/items/{itemId}/invite
+        // sendInvitation: false = silent (no email sent to client)
+        await graphFetch("POST",
+          "/drives/" + driveId + "/items/" + item.id + "/invite",
+          {
+            requireSignIn: true,
+            sendInvitation: false,
+            roles: [role],
+            recipients: [{ email: clientEmail }],
+          }
+        );
+      } catch (e) {
+        console.warn("Sharing skipped for " + folderUrl + ":", e.message);
+      }
+    }
+    await shareFolder(clientUploadsUrl,     "write");  // Client Uploads: Can Edit
+    await shareFolder(settyDeliverablesUrl, "read");   // Setty Deliverables: Can View
+  }
+
+  // Plant .url shortcut files in the main NYCProjects project folder
   if (project.projectFolderUrl) {
     try {
       const { driveId: mainDriveId } = await resolveSpIds();
-      const rawPath = decodeURIComponent(project.projectFolderUrl);
-      // Extract path after the library segment (everything after /Shared Documents/ or /Project Document Library/)
-      const pathMatch = rawPath.match(/\/sites\/NYCProjects\/[^/]+\/(.+)$/);
-      const mainFolderPath = pathMatch ? pathMatch[1].replace(/\/$/, "") : null;
+      // Parse the folder name from the end of the webUrl
+      const decoded = decodeURIComponent(project.projectFolderUrl);
+      const folderNameMatch = decoded.match(/\/([^\/]+)\/?$/);
+      if (!folderNameMatch) throw new Error("Could not parse folder name from projectFolderUrl");
+      const mainFolderName = folderNameMatch[1];
 
-      if (mainFolderPath) {
-        function makeShortcut(url) {
-          const txt = "[InternetShortcut]\r\nURL=" + url + "\r\n";
-          // base64 encode
-          const bytes = new TextEncoder().encode(txt);
-          let bin = "";
-          bytes.forEach(b => { bin += String.fromCharCode(b); });
-          return btoa(bin);
-        }
+      const shortcuts = [
+        { name: "Client Uploads (NYSharesite).url",     url: clientUploadsUrl     },
+        { name: "Setty Deliverables (NYSharesite).url", url: settyDeliverablesUrl },
+      ];
 
-        const shortcuts = [
-          { name: "\ud83d\udce4 Client Uploads (NYSharesite).url",     url: clientUploadsUrl     },
-          { name: "\ud83d\udce5 Setty Deliverables (NYSharesite).url", url: settyDeliverablesUrl },
-        ];
-
-        for (const sc of shortcuts) {
-          const itemPath = "/drives/" + mainDriveId + "/root:/"
-            + encodeURIComponent(mainFolderPath) + "/"
-            + encodeURIComponent(sc.name) + ":/content";
-          // Use raw PUT with text/plain body
-          const token = await getGraphToken();
-          await fetch("https://graph.microsoft.com/v1.0" + itemPath, {
-            method: "PUT",
-            headers: { Authorization: "Bearer " + token, "Content-Type": "text/plain" },
-            body: sc.url.split("").map(c => c).join("").replace(/.*/, "[InternetShortcut]\r\nURL=" + sc.url + "\r\n"),
-          }).catch(err => console.warn("Shortcut skipped:", err.message));
-        }
+      for (const sc of shortcuts) {
+        // Graph PUT to /drives/{id}/root:/{folderName}/{fileName}:/content
+        const graphPath = "/drives/" + mainDriveId
+          + "/root:/" + mainFolderName + "/" + sc.name + ":/content";
+        const body = "[InternetShortcut]\r\nURL=" + sc.url + "\r\n";
+        const bytes = new TextEncoder().encode(body);
+        await graphFetch("PUT", graphPath, bytes)
+          .catch(err => console.warn("Shortcut upload skipped (" + sc.name + "):", err.message));
       }
     } catch (e) {
       console.warn("NYSharesite shortcut planting skipped:", e.message);
@@ -15015,7 +15035,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </Field>
             ) : (
               <Field label="Project Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
-                <SharePointFolderField project={project} onUpdate={updateField} onEagerSave={onEagerSave} />
+                <SharePointFolderField project={project} onUpdate={updateField} onEagerSave={onEagerSave} clients={clients} />
               </Field>
             )}
 
@@ -20676,13 +20696,32 @@ function TermContractFolderField({ termContract, onUpdate }) {
   );
 }
 
-function SharePointFolderField({ project, onUpdate, onEagerSave }) {
+// Resolve a client email for portal folder sharing.
+// Looks up the client company by project.clientName, returns the first contact
+// with a valid email. Falls back to project.projectContacts.pm[0].email.
+function resolveClientEmail(project, clients) {
+  const companyName = (project.clientName || "").trim().toLowerCase();
+  if (companyName && clients && clients.length) {
+    const clientRecord = clients.find(c => (c.name || "").trim().toLowerCase() === companyName);
+    if (clientRecord) {
+      const contact = (clientRecord.contacts || []).find(ct => ct.email && ct.email.includes("@"));
+      if (contact) return contact.email.trim();
+    }
+  }
+  // Fallback: PM POC email on the project
+  const pmPoc = (project.projectContacts?.pm || [])[0];
+  if (pmPoc && pmPoc.email && pmPoc.email.includes("@")) return pmPoc.email.trim();
+  return null;
+}
+
+function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
   const [scStatus, setScStatus] = React.useState("idle"); // shortcut install state
   const [scMsg, setScMsg] = React.useState("");
   const [portalStatus, setPortalStatus] = React.useState("idle"); // idle | creating | done | error
   const [portalMsg, setPortalMsg] = React.useState("");
+  const [showSharingModal, setShowSharingModal] = React.useState(false);
 
   const url = project.projectFolderUrl || "";
   const hasFolder = !!url;
@@ -20744,15 +20783,20 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
 
       // Also create NYSharesite client portal folders
       setPortalStatus("creating");
-      setPortalMsg("\u23f3 Creating client portal folders in NYSharesite\u2026");
+      const _emailForMsg = resolveClientEmail(project, clients);
+    setPortalMsg("\u23f3 Creating client portal folders in NYSharesite"
+      + (_emailForMsg ? " and sharing with " + _emailForMsg : " (no client email found \u2014 folders created but not shared)") + "\u2026");
       try {
-        const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(updatedProject);
+        const _portalEmail = resolveClientEmail(project, clients);
+      const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(updatedProject, _portalEmail);
         updatedProject.clientUploadsFolderUrl     = clientUploadsUrl;
         updatedProject.settyDeliverablesFolderUrl = settyDeliverablesUrl;
         onUpdate("clientUploadsFolderUrl",     clientUploadsUrl);
         onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
         setPortalStatus("done");
-        setPortalMsg("\u2713 Client portal folders ready in NYSharesite");
+        const _doneEmail = resolveClientEmail(project, clients);
+      setPortalMsg("\u2713 Client portal folders ready"
+        + (_doneEmail ? " \u2014 shared with " + _doneEmail : " (no client email \u2014 share manually)") + ".");
       } catch (portalErr) {
         // Non-fatal: main folder succeeded, portal folders failed
         setPortalStatus("error");
@@ -20782,9 +20826,12 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
   // For existing projects: main folder exists but portal folders not yet created
   async function createPortalFolders() {
     setPortalStatus("creating");
-    setPortalMsg("\u23f3 Creating client portal folders in NYSharesite\u2026");
+    const _emailForMsg = resolveClientEmail(project, clients);
+    setPortalMsg("\u23f3 Creating client portal folders in NYSharesite"
+      + (_emailForMsg ? " and sharing with " + _emailForMsg : " (no client email found \u2014 folders created but not shared)") + "\u2026");
     try {
-      const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(project);
+      const _portalEmail = resolveClientEmail(project, clients);
+      const { clientUploadsUrl, settyDeliverablesUrl } = await createClientPortalFolders(project, _portalEmail);
       onUpdate("clientUploadsFolderUrl",     clientUploadsUrl);
       onUpdate("settyDeliverablesFolderUrl", settyDeliverablesUrl);
       if (onEagerSave) {
@@ -20794,7 +20841,9 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
         }).catch(() => {});
       }
       setPortalStatus("done");
-      setPortalMsg("\u2713 Client portal folders ready in NYSharesite");
+      const _doneEmail = resolveClientEmail(project, clients);
+      setPortalMsg("\u2713 Client portal folders ready"
+        + (_doneEmail ? " \u2014 shared with " + _doneEmail : " (no client email \u2014 share manually)") + ".");
     } catch(e) {
       setPortalStatus("error");
       setPortalMsg("\u2717 " + e.message);
@@ -20902,12 +20951,315 @@ function SharePointFolderField({ project, onUpdate, onEagerSave }) {
               {portalMsg}
             </div>
           )}
+          {(project.clientUploadsFolderUrl || project.settyDeliverablesFolderUrl) && (
+            <div style={{ marginTop: 6 }}>
+              <button onClick={() => setShowSharingModal(true)}
+                style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 5,
+                  color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
+                👥 Manage Sharing
+              </button>
+            </div>
+          )}
         </div>
+      )}
+      {showSharingModal && (
+        <PortalSharingModal
+          project={project}
+          clients={clients}
+          driveId={SP_NYSHARE_DRIVE_ID}
+          onClose={() => setShowSharingModal(false)}
+        />
       )}
     </div>
   );
 }
 
+
+// Portal Sharing Modal
+// Shows current permissions on Client Uploads + Setty Deliverables,
+// lets user add/remove contacts from the clients directory.
+function PortalSharingModal({ project, clients, driveId, onClose }) {
+  const [perms, setPerms]               = React.useState(null);
+  const [loading, setLoading]           = React.useState(true);
+  const [loadError, setLoadError]       = React.useState("");
+  const [query, setQuery]               = React.useState("");
+  const [addTarget, setAddTarget]       = React.useState("both");
+  const [addRole, setAddRole]           = React.useState("write");
+  const [actionMsg, setActionMsg]       = React.useState("");
+  const [actionStatus, setActionStatus] = React.useState("idle");
+
+  // Flatten all contacts with emails from the clients directory
+  const allContacts = React.useMemo(() => {
+    const out = [];
+    (clients || []).forEach(c => {
+      (c.contacts || []).forEach(ct => {
+        if (ct.email && ct.email.includes("@")) {
+          out.push({ name: ct.name || ct.email, email: ct.email.trim(),
+            company: c.name || "", title: ct.title || "" });
+        }
+      });
+    });
+    return out;
+  }, [clients]);
+
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return allContacts.slice(0, 8);
+    return allContacts.filter(c =>
+      (c.name + " " + c.email + " " + c.company + " " + c.title).toLowerCase().includes(q)
+    ).slice(0, 8);
+  }, [query, allContacts]);
+
+  // Resolve a subfolder item ID from its SharePoint webUrl
+  async function resolveItemId(folderUrl) {
+    const decoded = decodeURIComponent(folderUrl);
+    const parts   = decoded.replace(/\/$/, "").split("/");
+    const subName    = parts[parts.length - 1];
+    const parentName = parts[parts.length - 2];
+    if (!subName || !parentName) throw new Error("Cannot parse folder path from URL");
+    const item = await graphFetch("GET",
+      "/drives/" + driveId + "/root:/" + encodeURIComponent(parentName) + "/" + encodeURIComponent(subName)
+    );
+    if (!item || !item.id) throw new Error("Folder not found: " + subName);
+    return item.id;
+  }
+
+  // Load current external permissions for both folders
+  async function loadPerms() {
+    setLoading(true);
+    setLoadError("");
+    try {
+      const uploadsId      = project.clientUploadsFolderUrl     ? await resolveItemId(project.clientUploadsFolderUrl)     : null;
+      const deliverablesId = project.settyDeliverablesFolderUrl ? await resolveItemId(project.settyDeliverablesFolderUrl) : null;
+
+      async function getPerms(itemId) {
+        if (!itemId) return [];
+        const resp = await graphFetch("GET", "/drives/" + driveId + "/items/" + itemId + "/permissions");
+        return (resp?.value || []).filter(p =>
+          p.grantedToV2?.user?.email &&
+          !p.grantedToV2.user.email.toLowerCase().includes("setty.com")
+        ).map(p => ({
+          id:     p.id,
+          email:  p.grantedToV2.user.email,
+          name:   p.grantedToV2.user.displayName || p.grantedToV2.user.email,
+          roles:  p.roles || [],
+          itemId,
+        }));
+      }
+
+      const [uploads, deliverables] = await Promise.all([
+        getPerms(uploadsId), getPerms(deliverablesId)
+      ]);
+      setPerms({ uploads, deliverables, uploadsId, deliverablesId });
+    } catch(e) {
+      setLoadError("Could not load permissions: " + e.message);
+    }
+    setLoading(false);
+  }
+
+  React.useEffect(() => { loadPerms(); }, []);
+
+  async function addPerson(contact) {
+    setActionStatus("working");
+    setActionMsg("\u23f3 Adding " + contact.email + "\u2026");
+    try {
+      const targets = [];
+      if ((addTarget === "uploads"      || addTarget === "both") && perms?.uploadsId)
+        targets.push({ itemId: perms.uploadsId,      role: addRole });
+      if ((addTarget === "deliverables" || addTarget === "both") && perms?.deliverablesId)
+        targets.push({ itemId: perms.deliverablesId, role: addTarget === "both" && addRole === "write" ? "read" : addRole });
+      for (const t of targets) {
+        await graphFetch("POST",
+          "/drives/" + driveId + "/items/" + t.itemId + "/invite",
+          { requireSignIn: true, sendInvitation: false, roles: [t.role],
+            recipients: [{ email: contact.email }] }
+        );
+      }
+      setActionStatus("done");
+      setActionMsg("\u2713 Added " + contact.email);
+      setQuery("");
+      await loadPerms();
+    } catch(e) {
+      setActionStatus("error");
+      setActionMsg("\u2717 " + e.message);
+    }
+  }
+
+  async function removePerson(perm) {
+    if (!window.confirm("Remove " + perm.email + " from this folder?")) return;
+    setActionStatus("working");
+    setActionMsg("\u23f3 Removing " + perm.email + "\u2026");
+    try {
+      await graphFetch("DELETE",
+        "/drives/" + driveId + "/items/" + perm.itemId + "/permissions/" + perm.id
+      );
+      setActionStatus("done");
+      setActionMsg("\u2713 Removed " + perm.email);
+      await loadPerms();
+    } catch(e) {
+      setActionStatus("error");
+      setActionMsg("\u2717 " + e.message);
+    }
+  }
+
+  function PermRow({ perm }) {
+    const isEdit    = perm.roles.includes("write");
+    const roleLabel = isEdit ? "Can Edit" : "Can View";
+    const roleColor = isEdit ? P.green : (P.blue || "#60a5fa");
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0",
+        borderBottom: `1px solid ${P.border}` }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: P.text,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{perm.name}</div>
+          <div style={{ fontSize: 11, color: P.textDim }}>{perm.email}</div>
+        </div>
+        <span style={{ fontSize: 10, fontWeight: 700, color: roleColor,
+          background: roleColor + "22", borderRadius: 3, padding: "1px 6px",
+          whiteSpace: "nowrap" }}>{roleLabel}</span>
+        <button onClick={() => removePerson(perm)}
+          style={{ background: "none", border: "none", color: P.red || "#ef4444",
+            cursor: "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
+          title={"Remove " + perm.email}>\u2715</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+      zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: P.bg, borderRadius: 10, width: "100%", maxWidth: 520,
+        maxHeight: "85vh", display: "flex", flexDirection: "column",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }}>
+
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 18px", borderBottom: `1px solid ${P.border}` }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: P.text }}>Manage Portal Sharing</div>
+            <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>
+              {(project.projectNumber || project.name || "").trim()} \u2014 NYSharesite
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none",
+            color: P.textDim, cursor: "pointer", fontSize: 18 }}>\u2715</button>
+        </div>
+
+        <div style={{ overflowY: "auto", padding: "14px 18px", flex: 1 }}>
+
+          {/* Current permissions */}
+          {loading && <div style={{ fontSize: 12, color: P.textDim }}>\u23f3 Loading permissions\u2026</div>}
+          {loadError && <div style={{ fontSize: 12, color: P.red }}>{loadError}</div>}
+
+          {perms && !loading && (
+            <>
+              {project.clientUploadsFolderUrl && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim,
+                    letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 6 }}>
+                    Client Uploads
+                  </div>
+                  {perms.uploads.length === 0
+                    ? <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>No external users</div>
+                    : perms.uploads.map(p => <PermRow key={p.id} perm={p} />)
+                  }
+                </div>
+              )}
+              {project.settyDeliverablesFolderUrl && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim,
+                    letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 6 }}>
+                    Setty Deliverables
+                  </div>
+                  {perms.deliverables.length === 0
+                    ? <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>No external users</div>
+                    : perms.deliverables.map(p => <PermRow key={p.id} perm={p} />)
+                  }
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Add person section */}
+          <div style={{ borderTop: `1px solid ${P.border}`, paddingTop: 12, marginTop: 4 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: P.textDim,
+              letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 8 }}>Add Person</div>
+
+            {/* Folder + role selectors */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: P.textDim, marginBottom: 3 }}>FOLDER</div>
+                <select value={addTarget} onChange={e => setAddTarget(e.target.value)}
+                  style={{ width: "100%", fontSize: 12, background: P.bg, color: P.text,
+                    border: `1px solid ${P.border}`, borderRadius: 5, padding: "4px 6px" }}>
+                  <option value="both">Both folders</option>
+                  <option value="uploads">Client Uploads only</option>
+                  <option value="deliverables">Setty Deliverables only</option>
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: P.textDim, marginBottom: 3 }}>ROLE</div>
+                <select value={addRole} onChange={e => setAddRole(e.target.value)}
+                  style={{ width: "100%", fontSize: 12, background: P.bg, color: P.text,
+                    border: `1px solid ${P.border}`, borderRadius: 5, padding: "4px 6px" }}>
+                  <option value="write">Can Edit</option>
+                  <option value="read">Can View</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Contact search */}
+            <input value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Search by name, email, or company\u2026"
+              style={{ width: "100%", fontSize: 12, marginBottom: 6, background: P.bg, color: P.text,
+                border: `1px solid ${P.border}`, borderRadius: 5, padding: "6px 8px",
+                boxSizing: "border-box" }} />
+
+            <div style={{ border: `1px solid ${P.border}`, borderRadius: 5,
+              maxHeight: 180, overflowY: "auto", background: P.bgAlt || P.bg }}>
+              {filtered.length === 0
+                ? <div style={{ fontSize: 11, color: P.textDim, padding: "8px 10px", fontStyle: "italic" }}>
+                    No contacts found
+                  </div>
+                : filtered.map(c => (
+                  <div key={c.email} onClick={() => addPerson(c)}
+                    style={{ padding: "7px 10px", cursor: "pointer",
+                      borderBottom: `1px solid ${P.border}` }}
+                    onMouseEnter={e => e.currentTarget.style.background = P.bgCard || "#1a2535"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{c.name}</div>
+                    <div style={{ fontSize: 11, color: P.textDim }}>
+                      {c.email}{c.company ? " \u00b7 " + c.company : ""}
+                    </div>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+
+          {/* Action status */}
+          {actionMsg && (
+            <div style={{ fontSize: 11, marginTop: 10,
+              color: actionStatus === "done" ? P.green : actionStatus === "error" ? P.red : P.textDim }}>
+              {actionMsg}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "10px 18px", borderTop: `1px solid ${P.border}`,
+          display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={onClose}
+            style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.text, cursor: "pointer", fontSize: 13, padding: "6px 18px", fontWeight: 600 }}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClose }) {
   const [name, setName] = React.useState("");
