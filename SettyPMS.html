@@ -4005,39 +4005,37 @@ async function createClientPortalFolders(project) {
   const folderName = num ? num + " - " + name : name;
   const driveId    = SP_NYSHARE_DRIVE_ID;
 
-  // Get or create the parent project folder in NYSharesite
+  // Get or create the parent project folder in NYSharesite.
+  // NOTE: graphFetch returns null on 404 (does not throw), so we must null-check.
   let parentId, parentUrl;
-  try {
-    const existing = await graphFetch("GET",
-      "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName)
-    );
+  const existing = await graphFetch("GET",
+    "/drives/" + driveId + "/root:/" + encodeURIComponent(folderName)
+  );
+  if (existing && existing.id) {
     parentId  = existing.id;
     parentUrl = existing.webUrl;
-  } catch (e) {
-    const msg = (e.message || "").toLowerCase();
-    if (!msg.includes("404") && !msg.includes("itemnotfound") && !msg.includes("not found")) throw e;
+  } else {
     const created = await graphFetch("POST",
       "/drives/" + driveId + "/root/children",
       { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "rename" }
     );
+    if (!created || !created.id) throw new Error("Failed to create parent folder in NYSharesite - no id returned.");
     parentId  = created.id;
     parentUrl = created.webUrl;
   }
 
-  // Helper: get-or-create a named subfolder
+  // Helper: get-or-create a named subfolder (null-safe)
   async function getOrCreate(subName) {
-    try {
-      const r = await graphFetch("GET",
-        "/drives/" + driveId + "/items/" + parentId + ":/" + encodeURIComponent(subName)
-      );
-      return r.webUrl;
-    } catch (e) {
-      const r = await graphFetch("POST",
-        "/drives/" + driveId + "/items/" + parentId + "/children",
-        { name: subName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }
-      );
-      return r.webUrl;
-    }
+    const r = await graphFetch("GET",
+      "/drives/" + driveId + "/items/" + parentId + ":/" + encodeURIComponent(subName)
+    );
+    if (r && r.id) return r.webUrl;
+    const created = await graphFetch("POST",
+      "/drives/" + driveId + "/items/" + parentId + "/children",
+      { name: subName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }
+    );
+    if (!created || !created.id) throw new Error("Failed to create subfolder: " + subName);
+    return created.webUrl;
   }
 
   const clientUploadsUrl     = await getOrCreate("Client Uploads");
