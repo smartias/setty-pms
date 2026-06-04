@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-04-pms-v26-proposal-prime-toc";
+    window.__appVersion = "2026-06-04-pms-v27-sharepoint-diagnostic";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2972,6 +2972,12 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     if (isDerived) {
       html += `<div style="font-size:9pt;color:#0C4A6E;margin-top:6px;font-style:italic;">Parent folder derived from where this PDF was dragged in. Not necessarily the curated contract folder — set one on the record to override.</div>`;
     }
+    html += `</div>`;
+  } else {
+    // No SharePoint folder link available. Tell the reviewer WHY so they
+    // can fix the source rather than wondering where the link went.
+    html += `<div style="background:#F8FAFC;border:1px dashed #CBD5E1;padding:8px 12px;margin-bottom:14px;border-radius:4px;font-size:10pt;color:#64748B;font-style:italic;">`;
+    html += `No SharePoint folder link captured. To get one here, either drag the contract from the SharePoint Online web view (not File Explorer / OneDrive sync) into the extractor, or set "Contract folder" on this PMS project record.`;
     html += `</div>`;
   }
 
