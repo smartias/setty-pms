@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v20-tier-labels";
+    window.__appVersion = "2026-06-04-extractor-v21-pages-sections-legal";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -863,7 +863,46 @@
       return result;
     }
 
-    function detectFlags(text) {
+    // Build offsets[] where offsets[i] is the start index of page (i+1) inside
+    // fullText (which is pages.join("\n\n")). Used to map a regex match index
+    // back to its source page so OneNote can show "p. 9" next to each flag.
+    function buildPageOffsets(pages) {
+      const offsets = [];
+      let off = 0;
+      for (let i = 0; i < pages.length; i++) {
+        offsets.push(off);
+        off += (pages[i] || "").length + (i < pages.length - 1 ? 2 : 0); // 2 for "\n\n" separator between pages
+      }
+      return offsets;
+    }
+
+    // Map an index in fullText to a 1-indexed page number. Binary search would
+    // be faster but `pages.length` is usually <200, linear is fine.
+    function pageOfIndex(idx, offsets) {
+      if (!offsets || offsets.length === 0) return null;
+      let i = 0;
+      while (i < offsets.length - 1 && offsets[i + 1] <= idx) i++;
+      return i + 1;
+    }
+
+    // Extract the section label from the start of a captured paragraph.
+    // Recognizes "9.", "10.2", "Item 9", "Article 11", "Article 11.6.2",
+    // "§ 4.7" — whatever the contract calls the section. Returns the
+    // canonical label as the contract has it (so the OneNote page mirrors
+    // the contract's own numbering, not ours).
+    function extractSectionLabel(fullSection) {
+      if (!fullSection) return "";
+      const head = fullSection.slice(0, 60);
+      let m;
+      if ((m = head.match(/^\s*(§\s*\d+(?:\.\d+){0,2})/))) return m[1].replace(/\s+/g, " ");
+      if ((m = head.match(/^\s*(ARTICLE\s+\d+(?:\.\d+){0,2})/i))) return m[1].replace(/\s+/g, " ");
+      if ((m = head.match(/^\s*(SECTION\s+\d+(?:\.\d+){0,2})/i))) return m[1].replace(/\s+/g, " ");
+      if ((m = head.match(/^\s*(Item\s+\d+(?:\.\d+){0,2})/i))) return m[1].replace(/\s+/g, " ");
+      if ((m = head.match(/^\s*(\d{1,3}(?:\.\d+){0,2})\.\s/))) return "Item " + m[1];
+      return "";
+    }
+
+    function detectFlags(text, pageOffsets) {
       const flags = [];
       for (const def of OVERRIDE_FLAGS) {
         for (const pattern of def.patterns) {
@@ -883,6 +922,8 @@
               severity: def.severity,
               evidence: "…" + evidence + "…",
               fullSection,
+              sectionLabel: extractSectionLabel(fullSection),
+              pageNumber: pageOfIndex(m.index, pageOffsets),
               explanation: def.explanation,
               capturedValue: def.captureValue && m[1] ? m[1] : null,
             });
@@ -1214,12 +1255,57 @@
       return out;
     }
 
+    // Legal: governing law, venue/jurisdiction, dispute resolution mechanism.
+    // These are the three things you always want to find fast when a dispute
+    // brews, so they get their own block in the Key Numbers callout.
+    function extractLegal(text) {
+      const out = {};
+      // Governing law: "governed by the laws of the State of X" / "governed by
+      // and construed in accordance with the laws of X" / etc.
+      let m = text.match(/govern(?:ed)?\s+(?:by\s+(?:and\s+construed\s+(?:in\s+accordance\s+with\s+)?)?)?the\s+laws\s+of\s+(?:the\s+(?:State|Commonwealth|District)\s+of\s+)?([A-Z][A-Za-z][A-Za-z .]+?)(?:[,.\n]|\s+without|\s+excluding)/);
+      if (m) out.governingLaw = makeField(m[1].trim(), "high", "governing law clause");
+      else out.governingLaw = makeField("", "empty", "");
+
+      // Venue / jurisdiction: "exclusive jurisdiction of the courts of X" /
+      // "venue shall lie in X" / "any action … brought in the [federal/state]
+      // courts located in X".
+      m = text.match(/(?:exclusive\s+)?jurisdiction\s+(?:of\s+(?:the\s+)?courts?\s+(?:of|located\s+in|sitting\s+in)\s+|in\s+the\s+(?:federal\s+|state\s+)?courts?\s+(?:of|located\s+in|sitting\s+in)\s+)([^,.\n]+)/i)
+        || text.match(/venue\s+(?:shall|will|must)\s+(?:lie|be)\s+(?:exclusively\s+)?in\s+([^,.\n]+)/i);
+      if (m) out.venue = makeField(m[1].trim(), "medium", "venue / jurisdiction clause");
+      else out.venue = makeField("", "empty", "");
+
+      // Dispute resolution: mediation vs arbitration vs litigation.
+      const hasMediation   = /\bmediation\b/i.test(text);
+      const hasArbitration = /\barbitration\b/i.test(text);
+      const isBinding      = /\bbinding\s+arbitration\b/i.test(text);
+      if (hasMediation && hasArbitration) {
+        out.disputeResolution = makeField(
+          (isBinding ? "Mediation then binding arbitration" : "Mediation then arbitration"),
+          "medium",
+          "dispute-resolution clause"
+        );
+      } else if (hasMediation) {
+        out.disputeResolution = makeField("Mediation required", "medium", "mediation-only clause");
+      } else if (isBinding) {
+        out.disputeResolution = makeField("Binding arbitration", "medium", "arbitration clause");
+      } else if (hasArbitration) {
+        out.disputeResolution = makeField("Arbitration", "medium", "arbitration clause");
+      } else {
+        out.disputeResolution = makeField("", "empty", "");
+      }
+
+      return out;
+    }
+
     // ========================================================================
     // Main pipeline
     // ========================================================================
     function extractAll(parsedPdf) {
       const log = [];
       const text = parsedPdf.fullText;
+      // Rebuild page offsets from parsedPdf.pages here (not in readPdf) so OCR-
+      // replaced pages still produce correct page-number mapping.
+      const pageOffsets = buildPageOffsets(parsedPdf.pages || []);
       log.push({ type: "info", msg: `PDF parsed: ${parsedPdf.numPages} pages, ${text.length} chars` });
 
       // 1. Document type
@@ -1228,9 +1314,10 @@
 
       // 2. OVERRIDE FLAGS — the primary output
       log.push({ type: "tier", msg: "Override clauses" });
-      const flags = detectFlags(text);
+      const flags = detectFlags(text, pageOffsets);
       for (const f of flags) {
-        log.push({ type: "flag", msg: `⚑ ${f.label}` });
+        const locator = [f.sectionLabel, f.pageNumber ? `p. ${f.pageNumber}` : ""].filter(Boolean).join(" · ");
+        log.push({ type: "flag", msg: `⚑ ${f.label}${locator ? "  (" + locator + ")" : ""}` });
         // Include the full containing section in the log so reviewers see
         // the override clause text inline (and so it flows through to the
         // OneNote page when the log is rendered there). Per user request
@@ -1272,6 +1359,13 @@
       log.push({ type: "tier", msg: "Schedule terms" });
       const schedule = extractSchedule(text, flags);
 
+      // 7. Legal — governing law, venue, dispute resolution
+      log.push({ type: "tier", msg: "Legal" });
+      const legal = extractLegal(text);
+      if (legal.governingLaw.value)      log.push({ type: "hit", msg: `Governing law: ${legal.governingLaw.value}` });
+      if (legal.venue.value)              log.push({ type: "hit", msg: `Venue: ${legal.venue.value}` });
+      if (legal.disputeResolution.value)  log.push({ type: "hit", msg: `Dispute resolution: ${legal.disputeResolution.value}` });
+
       return {
         log,
         docType,
@@ -1299,6 +1393,10 @@
           substantialCompletion: schedule.substantialCompletion,
           scheduleSource: schedule.scheduleSource,
           terminationNotice: schedule.terminationNotice,
+          // legal
+          governingLaw: legal.governingLaw,
+          venue: legal.venue,
+          disputeResolution: legal.disputeResolution,
         },
       };
     }
@@ -1492,6 +1590,39 @@
       "workers-comp-limit":   { key: "workersComp",           label: "Employer's Liability" },
       "cyber-liability-limit":{ key: "cyberLiability",        label: "Cyber Liability" },
     };
+
+    // Build the required-vs-Setty-standing insurance comparison rows for the
+    // OneNote Key Numbers callout. Computed in the extractor (where standards
+    // and INS_FLAG_MAP live) so PMS doesn't need to duplicate them. Returns
+    // an array of { line, requiredText, settyText, status } where status is
+    // "above" | "within" | "unknown".
+    function computeInsuranceComparison(flags, standards) {
+      if (!standards || !standards.insurance) return [];
+      const ins = standards.insurance;
+      const dollars = (v) => "$" + Number(v).toLocaleString();
+      const toNum = (str) => {
+        const n = parseInt(String(str).replace(/[^0-9]/g, ""), 10);
+        return isNaN(n) ? null : n;
+      };
+      const rows = [];
+      for (const [flagId, cfg] of Object.entries(INS_FLAG_MAP)) {
+        const flag = (flags || []).find((f) => f.id === flagId);
+        const o = ins[cfg.key];
+        if (!o) continue;
+        const settyText = dollars(o.perOccurrence) + (o.aggregate ? " / " + dollars(o.aggregate) + " agg" : "");
+        if (!flag || !flag.capturedValue) {
+          // No client-required limit found in the contract for this line.
+          // Still show Setty's standing so the reader knows what we carry.
+          rows.push({ line: cfg.label, requiredText: "—", settyText, status: "unknown" });
+          continue;
+        }
+        const required = toNum(flag.capturedValue);
+        const requiredText = required != null ? dollars(required) : flag.capturedValue;
+        const status = (required != null && required > o.perOccurrence) ? "above" : "within";
+        rows.push({ line: cfg.label, requiredText, settyText, status });
+      }
+      return rows;
+    }
 
     // Attach a `contextNote` to flags using PMS structure + standards. Pure —
     // computed at render time, so it updates whenever context arrives and never
@@ -1804,7 +1935,7 @@
           // clause. SettyPMS.html buildContractAnalysisHtml renders these
           // under "Source Text (Override Clauses in Context)" so reviewers
           // can read the full clause without opening the source PDF.
-          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue, fullSection: x.fullSection })),
+          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue, fullSection: x.fullSection, sectionLabel: x.sectionLabel, pageNumber: x.pageNumber })),
           // Full extraction log — sent so PMS can include it in OneNote
           // (user request 2026-06-04). Each entry is { type, msg } and the
           // "section" type entries carry the full paragraph for each flag.
@@ -1833,6 +1964,16 @@
             scheduleSource: f.scheduleSource.value,
             terminationNotice: f.terminationNotice.value,
           },
+          legal: {
+            governingLaw: f.governingLaw.value,
+            venue: f.venue.value,
+            disputeResolution: f.disputeResolution.value,
+          },
+          // Pre-computed comparison rows for the OneNote Key Numbers block.
+          // Computed here so SettyPMS doesn't need to duplicate Setty's
+          // standing-coverage figures or the flag-id → insurance-line map.
+          insuranceComparison: computeInsuranceComparison(result.flags, SETTY_STANDARDS),
+          settyStandardMultiplier: SETTY_STANDARDS.multiplier,
         };
         if (sendToPMS(payload)) {
           setSendState("sent");
@@ -2106,6 +2247,11 @@
                   <FieldEditor keyName="substantialCompletion" label="Substantial Completion" field={result.fields.substantialCompletion} onChange={updateField} />
                   <FieldEditor keyName="scheduleSource" label="Schedule Source" field={result.fields.scheduleSource} onChange={updateField} />
                   <FieldEditor keyName="terminationNotice" label="Termination Notice" field={result.fields.terminationNotice} onChange={updateField} />
+
+                  <h3>Legal</h3>
+                  <FieldEditor keyName="governingLaw" label="Governing Law" field={result.fields.governingLaw} onChange={updateField} />
+                  <FieldEditor keyName="venue" label="Venue / Jurisdiction" field={result.fields.venue} onChange={updateField} />
+                  <FieldEditor keyName="disputeResolution" label="Dispute Resolution" field={result.fields.disputeResolution} onChange={updateField} />
 
                   {!pmsConnected && (
                     <p style={{fontSize: 11, color: "#F87171", marginTop: 16, padding: "8px 12px", background: "#7F1D1D33", borderRadius: 6, border: "1px solid #B91C1C"}}>
