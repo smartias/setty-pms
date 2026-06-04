@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v18-log-paragraph-search";
+    window.__appVersion = "2026-06-04-extractor-v19-reimb-tightened";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1147,10 +1147,15 @@
       // the flag banner when a client prohibition is detected — that's where
       // markup info actually belongs.
 
-      // Reimbursable section body — look for §11.5/§11.8 (AIA) or "Reimbursable" sections
+      // Reimbursable section body — look for §11.5/§11.8 (AIA) or non-AIA
+      // section headings. The third pattern requires HEADING position (line
+      // start + colon/end-of-line) — without that anchor it false-matches the
+      // word "reimbursable expenses" appearing mid-sentence (e.g. FXC NRTC
+      // paragraph 1: "...terms related to ... reimbursable expenses, mark ups,
+      // ... are excluded" → grabbed 1500 chars of paragraph 1+2 garbage).
       let body = sectionAfter(text, /§\s*11\.[58]\b[^\n]*REIMBURSABLE/i, 1500)
               || sectionAfter(text, /COMPENSATION\s+FOR\s+REIMBURSABLE\s+EXPENSES/i, 1500)
-              || sectionAfter(text, /Reimbursable\s+(?:Expenses|Services)\b/i, 1500);
+              || sectionAfter(text, /(?:^|\n)\s*(?:\d+\.\s*)?Reimbursable\s+(?:Expenses|Services)\b\s*[:.\n]/i, 1500);
       if (body) {
         // Trim at next section heading
         const stop = body.search(/§\s*\d+\.\d+\b|ARTICLE\s+\d+|\n\d+\.\d+\.\d+/);
