@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-05-25-extractor-v16";
+    window.__appVersion = "2026-06-03-extractor-v11";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -26,13 +26,6 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   </script>
-
-  <!-- Tesseract.js for OCR on scanned/image-only PDFs (e.g., contracts that
-       were printed, signed, and re-scanned for storage). pdf.js can only
-       extract embedded text; Tesseract reads pixels. Loaded eagerly so it's
-       ready when needed, but only invoked when a dropped PDF has no
-       extractable text. First OCR run downloads ~10MB English language data. -->
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -167,43 +160,6 @@
       vertical-align: middle; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* Investigative animation — shown in the middle column while a PDF is
-       being parsed/OCR'd/extracted. Big magnifying glass that wiggles like
-       it's scanning the page, plus rotating witty captions underneath. */
-    .investigating {
-      background: linear-gradient(135deg, #1E293BCC 0%, #4338CACC 60%, #7C3AEDCC 100%);
-      border: 1px solid #6366F1;
-      border-radius: 10px;
-      padding: 18px 18px;
-      margin-bottom: 14px;
-      display: flex; align-items: center; gap: 16px;
-      box-shadow: 0 4px 18px rgba(99, 102, 241, 0.25);
-    }
-    .investigating-emoji {
-      font-size: 36px; line-height: 1;
-      animation: investigate-wiggle 1.7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-      display: inline-block; flex-shrink: 0;
-      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
-    }
-    .investigating-text {
-      font-size: 14px; font-weight: 600; color: #E0E7FF;
-      flex: 1; line-height: 1.4;
-      font-style: italic;
-      animation: investigate-fade 0.5s ease-out;
-    }
-    @keyframes investigate-wiggle {
-      0%   { transform: translateX(0)    rotate(0)    scale(1); }
-      20%  { transform: translateX(8px)  rotate(-14deg) scale(1.05); }
-      40%  { transform: translateX(0)    rotate(0)    scale(1); }
-      60%  { transform: translateX(-8px) rotate(14deg)  scale(1.05); }
-      80%  { transform: translateX(0)    rotate(0)    scale(1); }
-      100% { transform: translateX(0)    rotate(0)    scale(1); }
-    }
-    @keyframes investigate-fade {
-      from { opacity: 0.3; transform: translateY(3px); }
-      to   { opacity: 1;   transform: translateY(0); }
-    }
   </style>
 </head>
 <body>
@@ -212,115 +168,15 @@
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useCallback, useRef } = React;
 
-    // ════════════════════════════════════════════════════════════════════
-    // Investigative quotes — rotated while a contract is being extracted.
-    // Plain strings; the emoji shown alongside rotates independently from
-    // EMOJI_POOL so we don't have to pair every quote to a specific icon.
-    //
-    // These are intentionally observational/dry rather than action-verb
-    // phrases — the punchline IS the line. Most are MEP/architecture
-    // industry-insider jokes; some are AIA-contract-specific.
-    // ════════════════════════════════════════════════════════════════════
-    const INVESTIGATIVE_QUOTES = [
-      "‘Per contract’ is doing a lot of heavy lifting here.",
-      "Somewhere an AIA exhibit is quietly contradicting this email.",
-      "CA scope: unlimited in spirit, eight site visits in reality.",
-      "The architect said ‘minor revision.’ The bulletin is 47 pages.",
-      "We regret to inform you the existing conditions were fictional.",
-      "Nothing says optimism like a rooftop fully occupied by future equipment.",
-      "This RFI appears to be seeking emotional support from the engineer.",
-      "‘Design-assist’ is starting to sound a lot like delegated design.",
-      "The BIM model is clash-free if you don’t count the actual building.",
-      "Contractor to verify dimensions. Contractor did not verify dimensions.",
-      "The schedule is aggressive, the fee is lean, and the ceiling space is gone.",
-      "Somebody definitely value-engineered the maintenance clearance.",
-      "Awaiting utility feedback: the unofficial sixth phase of design.",
-      "Every owner wants innovation until the deduct alternate comes back.",
-      "There are now more addenda than bid drawings.",
-      "This meeting could have been one markup cloud.",
-      "Field conditions continue to express themselves creatively.",
-      "‘No major comments’ from DOB is the closest thing to love we get.",
-      "The mechanical room was apparently designed via escape room logic.",
-      "Somewhere in this building is a damper no human can access.",
-      "The coordination meeting has entered its natural predator-prey phase.",
-      "That duct routing is less ‘engineered’ and more ‘manifested.’",
-      "Please see attached: consequences of reducing SD effort.",
-      "The phrase ‘simple replacement’ has never once been accurate.",
-      "ConEd comments received. Project morale reduced accordingly.",
-      "We are now discovering undocumented systems from multiple geological eras.",
-      "Architectural ceiling heights remain spiritually ambitious.",
-      "‘Reuse existing infrastructure’ is always where the horror begins.",
-      "The contractor has interpreted the drawings with confidence.",
-      "This substitution request appears to have been inspired by vibes.",
-      "Nothing unites a project team like discovering an undersized electrical service.",
-      "The commissioning agent has entered the chat.",
-      "Every coordination issue is technically solvable with enough soffits.",
-      "The roof plan currently resembles an HVAC battle royale.",
-      "No one truly owns the shaft until CD.",
-      "Another day, another ‘existing condition not shown on drawings.’",
-      "The client requested LEED Gold with a Bronze budget.",
-      "The phrase ‘basis of design’ is being used very generously.",
-      "Somewhere, Appendix G is ruining an architect’s afternoon.",
-      "This AHU replacement now includes philosophy, archaeology, and grief.",
-      "There is no greater optimism than ‘future tenant by others.’",
-      "The owner requested resiliency, sustainability, and no visible equipment.",
-      "Setty has reviewed the contractor’s interpretation with concern.",
-      "This submittal answers questions no one asked.",
-      "AIA contracts: where every sentence costs money later.",
-      "The one thing moving faster than the schedule is scope creep.",
-      "If the model were accurate, we wouldn’t need site visits.",
-      "The coordination drawings have become aspirational art.",
-      "‘As discussed in meeting’ — the most dangerous phrase in construction.",
-      "The contractor’s means and methods now include hope.",
-      "This detail appears to have survived multiple administrations.",
-      "Nothing says ‘public project’ like five stakeholders and zero ceiling space.",
-      "Somewhere, an engineer is quietly adding an exclusion.",
-      "The permit set and the bid set are now estranged cousins.",
-      "The existing panel schedule appears to have been written during wartime.",
-      "MEP scope now includes diplomacy and forensic investigation.",
-      "The equipment fits perfectly in the rendering.",
-      "This project contains several hidden boss fights.",
-      "A rooftop unit has never once respected an architectural elevation.",
-      "The fee proposal was accepted moments before reality emerged.",
-      "Every all-electric project eventually reaches the ‘where does the power come from’ phase.",
-      "‘Minimal impact to operations’ has entered the risk register.",
-      "The ceiling coordination plan is now a cry for help.",
-      "One more owner-requested change and this becomes a new project.",
-      "Somewhere in New York, a DOB reviewer is sharpening a red pen.",
-      "The contractor found a cheaper option and a more expensive problem.",
-      "This project was coordinated in the ancient tradition of overlaying PDFs.",
-      "We have officially exceeded the structural engineer’s emotional load capacity.",
-      "The phrase ‘like-for-like replacement’ is under active investigation.",
-      "The plumbing riser diagram and reality are no longer on speaking terms.",
-      "A field walk would have prevented this entire email chain.",
-      "The model is LOD 300. The expectations are LOD 900.",
-      "The client requested a world-class facility with existing infrastructure.",
-      "Please hold while the engineers negotiate with physics.",
-      "This project has entered the ‘who approved this’ phase.",
-      "Nothing motivates coordination like a missing shaft opening.",
-      "Setty recommends additional investigation, prayer, and contingency.",
-    ];
-
-    // Emoji pool — rotated independently of quotes, keeps the investigative
-    // visual identity (magnifier / detective / scrutiny icons) while quotes
-    // carry the personality.
-    const INVESTIGATIVE_EMOJI = ["🔍","🕵️","🧐","🔎","📋","⚖️","🚩","🧾","💼","🎯","🔬","📐","🗝️","📡","🚨","🪪","📜","🧮"];
-
     // ========================================================================
     // postMessage integration with SettyPMS
     // ========================================================================
-    // Deduplicated with Set — when the extractor is hosted at github.io,
-    // window.location.origin === "https://smartias.github.io" and the array
-    // would otherwise contain that target twice. The sendToPMS loop posts
-    // once per entry, so duplicates → double-delivery → duplicate OneNote
-    // pages on the PMS side. Set ensures each effective target gets one
-    // postMessage call.
-    const PMS_ORIGINS = [...new Set([
+    const PMS_ORIGINS = [
       "null",                                  // file:// during local dev
       "https://smartias.github.io",            // GitHub Pages deploy
       "https://settyassociates.sharepoint.com", // if PMS is also served via SharePoint
-      window.location.origin,                  // same-origin fallback
-    ])];
+      window.location.origin,                  // same-origin (both files on same GH Pages)
+    ];
 
     function sendToPMS(payload) {
       if (!window.opener) {
@@ -362,61 +218,7 @@
         }
         pages.push(text);
       }
-      const fullText = pages.join("\n\n");
-      // Scanned PDFs (image-only, no embedded text layer) come in with
-      // essentially zero extractable text. Threshold of 500 chars covers
-      // edge cases like a stray watermark or page-number while still
-      // catching legitimate scanned contracts.
-      const isScanned = fullText.length < 500 && pdf.numPages > 0;
-      // Return the pdf doc itself so the caller can render pages to canvas
-      // for OCR. pdf.js doc has no `close()` so leaking it is fine.
-      return { pages, fullText, numPages: pdf.numPages, fileName: file?.name || "", isScanned, pdfDoc: pdf };
-    }
-
-    // OCR a pdf.js document by rendering each page to a high-DPI canvas
-    // and feeding it to Tesseract.js. Tesseract's logger is wired to
-    // onProgress so the UI can show "OCR page 3/13" type updates.
-    async function ocrPdfPages(pdfDoc, onProgress) {
-      if (typeof Tesseract === "undefined") {
-        throw new Error("Tesseract.js failed to load (check your network connection).");
-      }
-      if (onProgress) onProgress({ stage: "init", msg: "Initializing OCR engine (first run downloads ~10MB language data)…" });
-      // scale: 2.0 gives ~150 DPI which is the sweet spot for Tesseract
-      // accuracy on contract documents. Higher scales help marginally but
-      // slow OCR significantly and use more memory.
-      const SCALE = 2.0;
-      const worker = await Tesseract.createWorker("eng", 1, {
-        logger: (m) => {
-          // Throttle: only log status changes, not progress percentage spam.
-          if (m.status && m.progress === 0) {
-            if (onProgress) onProgress({ stage: m.status });
-          }
-        },
-      });
-      const pages = [];
-      try {
-        for (let i = 1; i <= pdfDoc.numPages; i++) {
-          if (onProgress) onProgress({ stage: "render", page: i, total: pdfDoc.numPages });
-          const page = await pdfDoc.getPage(i);
-          const viewport = page.getViewport({ scale: SCALE });
-          const canvas = document.createElement("canvas");
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          const ctx = canvas.getContext("2d");
-          await page.render({ canvasContext: ctx, viewport }).promise;
-
-          if (onProgress) onProgress({ stage: "ocr", page: i, total: pdfDoc.numPages });
-          const { data } = await worker.recognize(canvas);
-          pages.push(data.text || "");
-
-          // Release canvas memory — scanned contracts can have huge pages
-          canvas.width = 0; canvas.height = 0;
-        }
-      } finally {
-        // Always terminate worker, even on error, to free its memory
-        try { await worker.terminate(); } catch (_) {}
-      }
-      return pages;
+      return { pages, fullText: pages.join("\n\n"), numPages: pdf.numPages, fileName: file?.name || "" };
     }
 
     // ========================================================================
@@ -439,32 +241,11 @@
         label: "Pay-when-paid (overrides Setty's Net 30)",
         severity: "high",
         patterns: [
-          // Classic AIA phrasings
-          /after\s+the\s+(?:Architect|Consultant|Contractor|Prime|prime\s+consultant)\s+(?:is\s+paid|has\s+been\s+paid|has\s+received\s+payment|receives\s+payment)/i,
+          /after\s+the\s+(?:Architect|Consultant|Contractor|Prime|prime\s+consultant)\s+is\s+paid/i,
           /paid\s+by\s+the\s+Owner\s+under\s+the\s+Prime/i,
           /payments?\s+to\s+(?:the\s+)?(?:Consultant|Subconsultant)\s+shall\s+be\s+subject\s+to\s+(?:reduction|withholding)/i,
           /pay[\s\-]when[\s\-]paid/i,
           /in\s+proportion\s+to\s+the\s+amounts\s+received\s+from\s+the\s+Owner/i,
-          // ── New phrasings added after user reported misses ──
-          // "depends ... upon ... receipt of such amounts from the Owner"
-          // Also matches the "dependent" form and tolerates an interrupting
-          // parenthetical clause like ", as a condition precedent,"
-          /(?:depends?|dependent|contingent)\s*(?:,[^,.]{0,80},)?\s*(?:up)?on\s+(?:the\s+)?(?:Architect|Prime|Consultant|Contractor)\'?s?\s+receipt\s+of\s+(?:such\s+)?(?:amounts|payment|funds)\s+from\s+(?:the\s+)?Owner/i,
-          // "payment to the Consultant is dependent ... upon the Architect's receipt of payment"
-          // (catches the AIA §11.6.3 variant where "dependent" is used and
-          // the parenthetical is "as a condition precedent")
-          /payment\s+to\s+(?:the\s+)?(?:Sub)?[Cc]onsultant\s+is\s+dependent[^.]{0,150}?(?:Architect|Prime)\'?s?\s+receipt/i,
-          // "obligation to pay ... shall be reduced proportionately"
-          /obligation\s+to\s+(?:make\s+(?:any\s+)?payments?|pay)[^.]{0,250}?(?:reduced\s+proportionate|proportionate(?:ly)?\s+reduced)/i,
-          // "within a reasonable time after the Architect has received payment"
-          /within\s+(?:a\s+)?reasonable\s+time\s+after[^.]{0,200}?(?:Architect|Consultant|Contractor|Prime)\s+(?:has\s+received|receives|is\s+paid)/i,
-          // "exercise reasonable care in obtaining payment" — telltale of pay-when-paid
-          /exercise\s+(?:reasonable\s+)?(?:care|(?:diligent\s+)?efforts?)\s+(?:in\s+)?(?:obtain(?:ing)?|collect(?:ing)?)\s+(?:prompt\s+)?payment[^.]{0,200}?(?:from\s+(?:the\s+)?Owner|for\s+(?:the\s+)?(?:Sub)?[Cc]onsultant)/i,
-          // "if ... receives partial payment ... reduced proportionately"
-          /(?:partial|pro[\s\-]?rata)\s+payment[^.]{0,200}?(?:reduced\s+proportionate|in\s+proportion)/i,
-          // "Consultant acknowledges the risk of non-payment" — explicit
-          // acknowledgement that payment depends on prime getting paid
-          /(?:risk\s+of\s+non[\s\-]?payment|non[\s\-]?payment\s+(?:to\s+(?:the\s+)?)?(?:Sub)?[Cc]onsultant\s+by\s+(?:the\s+)?Architect)/i,
         ],
         explanation: "Setty's payment is contingent on the prime/architect being paid by the Owner. This overrides Setty's standard Net 30 terms and can significantly delay cashflow.",
       },
@@ -599,6 +380,47 @@
         explanation: "CGL limit imposed by client. If above Setty's standing limit, typically met by adding excess/umbrella coverage. Verify with broker.",
       },
       {
+        id: "auto-liability-limit",
+        label: "Automobile Liability limit",
+        severity: "medium",
+        patterns: [
+          /(?:Business\s+)?Auto(?:mobile)?\s+Liability[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)/i,
+        ],
+        captureValue: true,
+        explanation: "Auto Liability limit required by client. Compared to Setty's standing coverage below.",
+      },
+      {
+        id: "umbrella-limit",
+        label: "Umbrella / Excess Liability limit",
+        severity: "medium",
+        patterns: [
+          /(?:Umbrella|Excess)\s+(?:Liability|Coverage|Policy|Insurance)?[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)/i,
+        ],
+        captureValue: true,
+        explanation: "Umbrella/Excess limit required by client. Compared to Setty's standing coverage below.",
+      },
+      {
+        id: "workers-comp-limit",
+        label: "Workers' Compensation / Employer's Liability limit",
+        severity: "medium",
+        patterns: [
+          /Employer['’]?s?\s+Liability[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)/i,
+          /Workers?[’'\s]*\s*Compensation[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)/i,
+        ],
+        captureValue: true,
+        explanation: "Workers' Comp is usually statutory; the dollar figure is the Employer's Liability limit. Compared to Setty's standing coverage below.",
+      },
+      {
+        id: "cyber-liability-limit",
+        label: "Cyber Liability limit",
+        severity: "medium",
+        patterns: [
+          /Cyber\s+(?:Liability|Risk|Security)?[^$]{0,200}?\$\s*([\d,]+(?:\.\d{2})?)/i,
+        ],
+        captureValue: true,
+        explanation: "Cyber Liability limit required by client. Compared to Setty's standing coverage below.",
+      },
+      {
         id: "owner-direct-rights",
         label: "Owner direct communication / direction rights",
         severity: "medium",
@@ -638,46 +460,132 @@
         explanation: "Daily penalty for delay in completion. Confirm whether LDs pass through proportionally to subconsultants (typical) or are borne fully by the prime. If they pass through, Setty's portion may be deducted directly from invoices — model worst-case in fee.",
       },
 
+      // ----- Standard-of-care, performance & risk-allocation flags -----
+      // Ported from the /setty-contract-sentinel review baseline. These detect
+      // RISKY LANGUAGE THAT IS PRESENT. Regex cannot detect the ABSENCE of a
+      // protective clause (e.g. a missing liability cap or missing consequential-
+      // damages waiver) — those remain manual checks, called out in explanations.
+      {
+        id: "elevated-standard-of-care",
+        label: "Elevated standard of care / warranty",
+        severity: "high",
+        patterns: [
+          /\b(?:highest|best|greatest|utmost|first[\s\-]class)\b[^.]{0,60}?(?:standard\s+of\s+care|skill|diligence|degree\s+of\s+care)/i,
+          /standard\s+of\s+care[^.]{0,60}?\b(?:highest|best|greatest|utmost)\b/i,
+          /fit(?:ness)?\s+for\s+(?:a\s+particular\s+)?purpose/i,
+          /(?:warrant|guarantee)s?\b[^.]{0,80}?(?:design|services|work|result|accuracy|completeness)/i,
+        ],
+        explanation: "Contract demands more than the ordinary professional standard of care ('highest', 'best', 'fit for purpose') or asks Setty to warrant/guarantee its design. Warranties and elevated standards are generally UNINSURABLE under E&O. Negotiate back to 'ordinary professional standard of care.'",
+      },
+      {
+        id: "certification-compliance",
+        label: "Certification of code / legal compliance",
+        severity: "high",
+        patterns: [
+          /certif(?:y|ies|ication)[^.]{0,120}?(?:complian|conform)[^.]{0,60}?(?:all\s+)?(?:laws|codes|regulations|contract\s+documents)/i,
+          /(?:Sub)?[Cc]onsultant\s+(?:shall\s+)?certif(?:y|ies)[^.]{0,120}?(?:complete|correct|free\s+(?:of|from)\s+(?:defect|error))/i,
+        ],
+        explanation: "Requires Setty to certify (not merely opine) that work complies with all laws/codes or is free of defects. Certifications of absolute compliance are uninsurable and unattainable. Replace with 'to the best of our professional knowledge and belief.'",
+      },
+      {
+        id: "means-methods-safety",
+        label: "Responsibility for means, methods, or site safety",
+        severity: "high",
+        patterns: [
+          /responsib(?:le|ility)[^.]{0,120}?(?:construction\s+)?means[,\s]+(?:methods|techniques)/i,
+          /responsib(?:le|ility)[^.]{0,120}?(?:job\s*site|site|construction)\s+safety/i,
+          /(?:Sub)?[Cc]onsultant[^.]{0,120}?(?:sequenc(?:e|ing)|procedures)\s+of\s+construction/i,
+        ],
+        explanation: "Shifts construction means, methods, sequencing, or site safety onto Setty — these belong to the contractor, are outside a design professional's control, and fall outside E&O coverage. Site visits should be 'observation,' not control.",
+      },
+      {
+        id: "redesign-no-cost",
+        label: "Redesign at no cost regardless of cause",
+        severity: "high",
+        patterns: [
+          /(?:re[\s\-]?design|correct|revise)[^.]{0,120}?at\s+no\s+(?:additional\s+)?(?:cost|charge|expense)[^.]{0,80}?(?:regardless|whether\s+or\s+not|irrespective)/i,
+          /no\s+(?:additional\s+)?(?:cost|charge|fee)[^.]{0,120}?re[\s\-]?design/i,
+        ],
+        explanation: "Obligates Setty to redesign at no charge even when the cause isn't Setty's negligence (owner scope changes, AHJ changes). Tie any no-cost rework strictly to Setty's own errors/omissions.",
+      },
+      {
+        id: "ownership-instruments",
+        label: "Ownership transfer of instruments of service",
+        severity: "high",
+        patterns: [
+          /(?:ownership|all\s+right[s]?,?\s+title)[^.]{0,140}?(?:instruments\s+of\s+service|drawings|documents|deliverables)[^.]{0,80}?(?:vest|transfer|belong|assigned?|property\s+of)/i,
+          /(?:instruments\s+of\s+service|documents)[^.]{0,120}?(?:shall\s+(?:be(?:come)?|vest))[^.]{0,60}?property\s+of\s+(?:the\s+)?(?:Owner|Client)/i,
+          /work\s+(?:made\s+)?for\s+hire/i,
+        ],
+        explanation: "Transfers ownership of Setty's instruments of service to the client/owner. Setty's posture is to RETAIN ownership and grant a limited license upon full payment. Reuse of documents without Setty equals uncompensated liability.",
+      },
+      {
+        id: "personal-liability",
+        label: "Personal liability of individuals",
+        severity: "high",
+        patterns: [
+          /personal(?:ly)?\s+liab(?:le|ility)/i,
+          /(?:officers|employees|directors|principals|individual\s+engineers)[^.]{0,80}?(?:personally\s+)?liable/i,
+        ],
+        explanation: "Attempts to make Setty's officers, employees, or individual engineers personally liable. Liability should rest with the firm only — strike personal-liability language entirely.",
+      },
+      {
+        id: "consequential-damages",
+        label: "Consequential / indirect damages exposure",
+        severity: "high",
+        patterns: [
+          /liab(?:le|ility)[^.]{0,140}?(?:consequential|indirect|special|incidental|punitive)\s+damages/i,
+          /(?:consequential|indirect)\s+damages[^.]{0,120}?(?:including|such\s+as)[^.]{0,120}?(?:lost\s+profits|loss\s+of\s+use)/i,
+        ],
+        explanation: "Exposes Setty to consequential/indirect damages (lost profits, loss of use). Setty's posture is a MUTUAL waiver of consequential damages. NOTE: a waiver that IS present won't trigger this flag — if no mutual waiver appears anywhere, add one (manual check).",
+      },
+      {
+        id: "no-suspension-right",
+        label: "Right to suspend for nonpayment waived/limited",
+        severity: "high",
+        patterns: [
+          /(?:shall|will|may)\s+not[^.]{0,80}?(?:suspend|stop|cease)[^.]{0,80}?(?:services|work|performance)/i,
+          /waives?[^.]{0,80}?right\s+to\s+(?:suspend|stop\s+work)/i,
+          /continue[^.]{0,80}?(?:services|work)[^.]{0,80}?(?:notwithstanding|despite)[^.]{0,80}?(?:non[\s\-]?payment|dispute)/i,
+        ],
+        explanation: "Bars or limits Setty's right to suspend work when unpaid. Setty should retain the right to suspend after notice for nonpayment and recover demobilization/remobilization costs.",
+      },
+      {
+        id: "retainage-withheld",
+        label: "Retainage on professional services",
+        severity: "high",
+        patterns: [
+          /retain[^.]{0,40}?(\d+(?:\.\d+)?\s*%)[^.]{0,40}?(?:of\s+)?(?:each\s+)?(?:invoice|payment|fee)/i,
+          /retainage/i,
+        ],
+        captureValue: true,
+        explanation: "Retainage withholds a percentage of each payment until project end — a construction concept disfavored on professional-services fees. Negotiate to remove or cap, and confirm release conditions.",
+      },
+      {
+        id: "schedule-guarantee",
+        label: "Schedule guarantee / time-is-of-the-essence",
+        severity: "medium",
+        patterns: [
+          /time\s+is\s+of\s+the\s+essence/i,
+          /(?:guarantee|warrant)[^.]{0,80}?(?:schedule|completion\s+date|milestone)/i,
+        ],
+        explanation: "Makes Setty guarantee schedule/milestones (or 'time is of the essence'). Setty cannot guarantee dates affected by owner, prime, or AHJ delays. Tie schedule obligations to factors within Setty's control and exclude excusable delays.",
+      },
+      {
+        id: "limitation-of-liability-cap",
+        label: "Limitation of liability cap (present)",
+        severity: "info",
+        patterns: [
+          /(?:total\s+)?(?:aggregate\s+)?liability[^.]{0,140}?(?:shall\s+not\s+exceed|limited\s+to|capped\s+at)[^.]{0,80}?(\$\s*[\d,]+(?:\.\d{2})?|(?:the\s+)?(?:total\s+)?fee)/i,
+          /limitation\s+of\s+liability/i,
+        ],
+        captureValue: true,
+        explanation: "A liability cap IS present — generally GOOD for Setty. Confirm it's reasonable (tied to fee or insurance proceeds). NOTE: if NO cap clause appears anywhere, that is itself a RED issue (uncapped exposure) — this tool cannot detect a missing clause, so verify manually.",
+      },
+
       // ★ ADD MORE FLAGS HERE as you encounter them. Pattern is:
       //   { id, label, severity: "high"|"medium"|"info", patterns: [...], captureValue?, explanation: "..." }
     ];
-
-    // Find the containing "section" of a match — the text between the
-    // closest preceding section/article header and the next one. Lets the
-    // OneNote page show the full clause context, not just a 200-char snippet.
-    function getContainingSection(text, matchIndex, matchLength, maxLen = 3000) {
-      // Match common section/article delimiters in AIA and non-AIA contracts:
-      //   §11.6.2, § 4.7, ARTICLE 11, ARTICLE 11 COMPENSATION,
-      //   SECTION 6.7, 4.7.2 (numeric prefix on a new line)
-      const sectionStartRegex = /(?:§\s*\d+\.\d+(?:\.\d+)?|ARTICLE\s+\d+\b|SECTION\s+\d+(?:\.\d+)?\b)/g;
-      const windowStart = Math.max(0, matchIndex - maxLen);
-      const windowEnd   = Math.min(text.length, matchIndex + matchLength + maxLen);
-      const window      = text.slice(windowStart, windowEnd);
-      const matchInWindow = matchIndex - windowStart;
-      let prevBoundary = 0;
-      let nextBoundary = window.length;
-      sectionStartRegex.lastIndex = 0;
-      let m;
-      while ((m = sectionStartRegex.exec(window)) !== null) {
-        if (m.index <= matchInWindow) {
-          prevBoundary = m.index;
-        } else if (m.index > matchInWindow + matchLength) {
-          nextBoundary = m.index;
-          break;
-        }
-      }
-      // If no preceding boundary found at all, fall back to a wider window
-      // around the match (so we don't return zero context).
-      if (prevBoundary === 0 && nextBoundary === window.length && matchInWindow > 600) {
-        prevBoundary = Math.max(0, matchInWindow - 400);
-        nextBoundary = Math.min(window.length, matchInWindow + matchLength + 1000);
-      }
-      let result = window.slice(prevBoundary, nextBoundary).trim();
-      // Normalize internal whitespace runs but preserve paragraph breaks for readability
-      result = result.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
-      if (result.length > maxLen) result = result.slice(0, maxLen) + "…";
-      return result;
-    }
 
     function detectFlags(text) {
       const flags = [];
@@ -685,19 +593,15 @@
         for (const pattern of def.patterns) {
           const m = text.match(pattern);
           if (m) {
-            // Short evidence snippet — for the in-extractor UI display.
+            // Capture surrounding context for evidence
             const start = Math.max(0, m.index - 60);
             const end = Math.min(text.length, m.index + m[0].length + 140);
             const evidence = text.slice(start, end).replace(/\s+/g, " ").trim();
-            // Full containing section — for the OneNote page so reviewers
-            // can read the override clause in its full contract context.
-            const fullSection = getContainingSection(text, m.index, m[0].length);
             flags.push({
               id: def.id,
               label: def.label,
               severity: def.severity,
               evidence: "…" + evidence + "…",
-              fullSection,
               explanation: def.explanation,
               capturedValue: def.captureValue && m[1] ? m[1] : null,
             });
@@ -770,38 +674,6 @@
       return null;
     }
 
-    // Strips Setty's appended fee proposal section from the full text so that
-    // pattern matching only sees the CLIENT's contract — not Setty's own
-    // proposal language (which has rates, scope phrases, etc. that look like
-    // contract terms but aren't override clauses imposed by the client).
-    //
-    // ★ USER CONTRIBUTION POINT ★
-    // Add more markers below if Setty's other proposal templates aren't
-    // being detected. The marker matches the START of Setty's section; the
-    // text from that point onward is dropped.
-    function excludeSettyProposal(text) {
-      const markers = [
-        // EXHIBIT B header followed within ~1500 chars by Setty's standard banner
-        /EXHIBIT\s+B[\s\S]{0,1500}?(?:DESIGN\s+ENGINEERING\s+SERVICES|MECHANICAL\s*[\|\s]+ELECTRICAL\s*[\|\s]+PLUMBING)/i,
-        // Setty's standard fee proposal banner ("Mechanical | Electrical | Plumbing | Fire Protection")
-        /Mechanical\s*[\|]\s*Electrical\s*[\|]\s*Plumbing\s*[\|]\s*Fire\s+Protection/i,
-        // "DESIGN ENGINEERING SERVICES" header with To: addressee (Setty proposal cover)
-        /DESIGN\s+ENGINEERING\s+SERVICES\b[\s\S]{0,500}?(?:To\s*:|TO\s*:)/i,
-        // Setty Associates with their service-category banner (Modeling, Commissioning, LEED, etc.)
-        /\bSetty\s+(?:&\s+|and\s+)?Associates\b[\s\S]{0,300}?(?:LEED|Modeling|Commissioning|Master\s+Controls)/i,
-      ];
-      let earliest = text.length;
-      for (const re of markers) {
-        const m = text.match(re);
-        // Guard: require marker to appear past the first ~1000 chars. Setty's
-        // name shows up at the top of every contract as a PARTY (not as the
-        // author of the proposal section) — we don't want to truncate the
-        // entire contract just because Setty is named on the cover page.
-        if (m && m.index > 1000 && m.index < earliest) earliest = m.index;
-      }
-      return earliest < text.length ? text.slice(0, earliest) : text;
-    }
-
     function parseContractDate(text) {
       // AIA word-form: "AGREEMENT made as of the tenth of July in the year Two Thousand Eighteen"
       let m = text.match(/AGREEMENT\s+made\s+as\s+of\s+the\s+([A-Za-z\-]+)\s+of\s+([A-Za-z]+)\s+in\s+the\s+year\s+([A-Za-z\- ]+?)(?:\.|,|BETWEEN|$)/i);
@@ -816,22 +688,6 @@
       if (m) {
         const mo = MONTHS[m[2].toLowerCase()];
         if (mo) return { date: `${m[3]}-${String(mo).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`, source: "subcontract preamble '__ day of __'", confidence: "high" };
-      }
-      // Signature-line MM/DD/YYYY — common on executed contracts. Look for an
-      // explicit "Date:" / "Dated:" / "Effective Date:" label to avoid grabbing
-      // random dates in the body. Pulls the FIRST matching one (typically the
-      // signature on the first signature page = the contract's effective date).
-      m = text.match(/\b(?:Date|Dated|Effective\s+Date|Executed)\s*[:\-]\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/i);
-      if (m) {
-        let y = m[3]; if (y.length === 2) y = (parseInt(y, 10) > 50 ? "19" : "20") + y;
-        return { date: `${y}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`, source: "labeled 'Date: MM/DD/YYYY' on signature line", confidence: "high" };
-      }
-      // Generic MM/DD/YYYY anywhere in first ~6000 chars (cover + signature area).
-      // Lower confidence — could be a random date in the body. Only accepts
-      // years 1990-2099 to avoid false positives on numeric fields.
-      m = text.slice(0, 6000).match(/\b(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/(19[9]\d|20\d{2})\b/);
-      if (m) {
-        return { date: `${m[3]}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`, source: "generic MM/DD/YYYY in cover", confidence: "medium" };
       }
       // Last resort: any date near "Effective Date" or "dated"
       m = text.slice(0, 4000).match(/(?:Effective\s+Date|dated)[\s\S]{0,40}?([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
@@ -865,40 +721,13 @@
 
     // -- Project name --
     function extractProject(text) {
-      // Larger window — AIA 'for the following Project:' block can run 5-10
-      // lines including name, location, address, and scope summary.
-      const cover = text.slice(0, 6000);
-
-      // AIA block: "for the following Project:" followed by a multi-line
-      // description. Capture from the header to the next major section
-      // boundary (BETWEEN, AGREEMENT, ARTICLE, etc.) or up to ~1500 chars.
-      let m = cover.match(/(?:for\s+the\s+following\s+)?PROJECT\s*[:\.]/i);
-      if (m) {
-        const startIdx = m.index + m[0].length;
-        let body = cover.slice(startIdx);
-        // Strip the italicized hint sometimes embedded by the AIA template:
-        //   "(Include detailed description of Project, location, address and scope.)"
-        body = body.replace(/^\s*\([^)]{10,200}\)\s*/i, "");
-        // Stop at the next major section boundary. AIA cover pages put the
-        // project description before "BETWEEN" (parties) or "AGREEMENT made"
-        // (recital), and well before any ARTICLE / EXHIBIT header.
-        const stopRe = /\n\s*(?:BETWEEN\b|AGREEMENT\s+(?:is\s+)?made|ARTICLE\s+\d|§\s*\d+\.\d+|EXHIBIT\s+[A-Z]|The\s+Architect\s+and\s+Consultant)/i;
-        const stopM = body.match(stopRe);
-        const sliceEnd = stopM ? stopM.index : Math.min(body.length, 1500);
-        let project = body.slice(0, sliceEnd).trim();
-        // Collapse runs of spaces/tabs but preserve paragraph breaks for readability
-        project = project.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
-        // Cap final length so a missed stop boundary doesn't dump 5KB into PMS
-        if (project.length > 1500) project = project.slice(0, 1500) + "…";
-        if (project.length > 5) {
-          return makeField(project, "high", "AIA 'for the following Project:' block (multi-line)");
-        }
-      }
-
+      const cover = text.slice(0, 4000);
+      // AIA section "PROJECT: ..." or "for the following PROJECT:"
+      let m = cover.match(/(?:for\s+the\s+following\s+)?PROJECT:\s*([^\n]{5,200})/i);
+      if (m) return makeField(m[1].trim(), "high", "AIA 'PROJECT:' label");
       // Non-AIA: "for the performance of certain professional services for the [Project Name] (the "Project")"
       m = cover.match(/professional\s+services\s+for\s+the\s+([A-Z][^.]{5,150}?)\s+\(\s*(?:the\s+)?["“]?Project["”]?/i);
       if (m) return makeField(m[1].trim(), "medium", "subcontract 'professional services for the' clause");
-
       // First-line title: a lot of subcontracts open with "<PROJECT NAME>"
       const firstLine = (cover.split("\n")[0] || "").trim();
       if (firstLine.length > 8 && firstLine.length < 150 && /[A-Z]/.test(firstLine)) {
@@ -1099,88 +928,13 @@
       return out;
     }
 
-    // -- Scope of Work --
-    // Finds whatever section heading is closest to "scope of work" / "scope of
-    // services" and grabs the body of that section (up to ~2500 chars or the
-    // next §N.M / ARTICLE N boundary, whichever comes first).
-    function extractScopeOfWork(text) {
-      const anchors = [
-        /ARTICLE\s+3\s+(?:SCOPE\s+OF\s+SERVICES|SCOPE\s+OF\s+WORK|CONSULTANT['']?S\s+SERVICES|SERVICES)\b/i,
-        /(?:§|Section)\s*3(?:\.\d+)?\s+(?:SCOPE\s+OF\s+SERVICES|SCOPE\s+OF\s+WORK)/i,
-        /\bSCOPE\s+OF\s+(?:THE\s+)?(?:WORK|SERVICES)\b\s*[:\.\n]/i,
-        /EXHIBIT\s+A\s*[\-—:]?\s*(?:SCOPE|Services|Description\s+of\s+Services)/i,
-        /\bDescription\s+of\s+(?:the\s+)?(?:Services|Work|Scope)\b/i,
-      ];
-      for (const re of anchors) {
-        const m = text.match(re);
-        if (!m) continue;
-        const start = m.index;
-        const window = text.slice(start, Math.min(text.length, start + 5000));
-        // Stop at the next major section heading (but skip the one we just matched)
-        const tail = window.slice(m[0].length);
-        const stopRe = /(?:§\s*\d+\.\d+|ARTICLE\s+\d+\b|SECTION\s+\d+(?:\.\d+)?\b|EXHIBIT\s+[B-Z]\b)/;
-        const stop = tail.search(stopRe);
-        const sliceEnd = stop > 0 ? m[0].length + stop : Math.min(2500, window.length);
-        let section = window.slice(0, sliceEnd).trim();
-        if (section.length > 100) {
-          // Normalize whitespace but preserve paragraph structure
-          section = section.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
-          if (section.length > 2500) section = section.slice(0, 2500) + "…";
-          return makeField(section, "medium", "scope anchor: '" + m[0].slice(0, 60) + "…'");
-        }
-      }
-      return makeField("", "empty", "");
-    }
-
-    // -- Billing / Invoice Requirements --
-    // Captures specific direction on HOW Setty has to bill — payment cycle,
-    // required attachments, invoice format, supporting docs. Distinct from
-    // payment terms (which focuses on overrides like pay-when-paid).
-    function extractBillingRequirements(text) {
-      const hits = [];
-      const seen = new Set();
-      const collect = (snippet) => {
-        const key = snippet.slice(0, 80).toLowerCase();
-        if (!seen.has(key)) { seen.add(key); hits.push(snippet.trim()); }
-      };
-      const anchors = [
-        // Invoice submission cadence
-        /(?:invoices?|billing)\s+shall\s+be\s+submitted[^.]{0,300}\./i,
-        /(?:invoices?|payment\s+applications?)\s+(?:will|shall|must)\s+be\s+(?:submitted|delivered|provided)[^.]{0,300}\./i,
-        // Required content on invoices
-        /(?:invoices?\s+(?:must|shall)\s+(?:include|contain)|required\s+(?:on|with)\s+(?:each\s+)?invoice)[^.]{0,300}\./i,
-        /(?:supporting\s+documentation|backup\s+(?:material|documentation))[^.]{0,200}?(?:invoice|payment|billing)[^.]{0,200}\./i,
-        // Net payment windows
-        /\b(?:Net|net)\s+(?:thirty|forty[\s\-]five|sixty|ninety|\d{2,3})\s+(?:\(\d+\)\s+)?days?\b[^.]{0,200}\./i,
-        // Payment-application phrases (DDC/CARF-style projects often have these)
-        /payment\s+application(?:s)?[^.]{0,400}\./i,
-        // Audit / record-retention tied to billing
-        /(?:retain|maintain|keep)\s+(?:all\s+)?(?:books|records|invoices)[^.]{0,200}?(?:audit|inspection)/i,
-      ];
-      for (const re of anchors) {
-        const m = text.match(re);
-        if (m) collect(m[0]);
-      }
-      if (hits.length === 0) return makeField("", "empty", "");
-      const combined = hits.join("\n\n").slice(0, 2000);
-      return makeField(combined, "medium", "billing/invoice-requirement clauses (" + hits.length + " matched)");
-    }
-
     // ========================================================================
     // Main pipeline
     // ========================================================================
     function extractAll(parsedPdf) {
       const log = [];
-      const rawText = parsedPdf.fullText;
-      // Strip Setty's appended fee proposal section (Exhibit B etc.) before
-      // pattern matching — those proposals are Setty's own language and don't
-      // represent client-imposed override terms. See excludeSettyProposal above.
-      const text = excludeSettyProposal(rawText);
-      const trimmed = rawText.length - text.length;
-      log.push({ type: "info", msg: `PDF parsed: ${parsedPdf.numPages} pages, ${rawText.length} chars` });
-      if (trimmed > 200) {
-        log.push({ type: "info", msg: `Trimmed ${trimmed} chars from Setty's proposal appendix — scanning client contract only.` });
-      }
+      const text = parsedPdf.fullText;
+      log.push({ type: "info", msg: `PDF parsed: ${parsedPdf.numPages} pages, ${text.length} chars` });
 
       // 1. Document type
       const docType = detectDocType(text);
@@ -1224,16 +978,6 @@
       log.push({ type: "tier", msg: "Extracting schedule terms…" });
       const schedule = extractSchedule(text, flags);
 
-      // 7. Scope of Work
-      log.push({ type: "tier", msg: "Extracting scope of work…" });
-      const scopeOfWork = extractScopeOfWork(text);
-      if (scopeOfWork.value) log.push({ type: "hit", msg: `Scope of Work: ${scopeOfWork.value.slice(0,80)}…` });
-
-      // 8. Billing / Invoice requirements
-      log.push({ type: "tier", msg: "Extracting billing / invoice requirements…" });
-      const billingReqs = extractBillingRequirements(text);
-      if (billingReqs.value) log.push({ type: "hit", msg: `Billing requirements (${billingReqs.value.length} chars)` });
-
       return {
         log,
         docType,
@@ -1247,15 +991,12 @@
           client: parties.client,
           settyRole: parties.settyRole,
           project,
-          // scope (NEW)
-          scopeOfWork,
           // payment
           invoiceReview: payment.invoiceReview || makeField("", "empty", ""),
           payWhenPaid: payment.payWhenPaid,
           interestOnLate: payment.interestOnLate,
           retainage: payment.retainage,
           conditionsPrecedent: payment.conditionsPrecedent,
-          billingRequirements: billingReqs,  // NEW
           // reimbursable
           multiplier: reimb.multiplier,
           markupPolicy: reimb.markupPolicy,
@@ -1314,6 +1055,11 @@
             <div className={`flag ${f.severity}`} key={f.id}>
               <div className="flag-label">{f.label}{f.capturedValue ? ` — ${f.capturedValue}` : ""}</div>
               <div style={{fontSize: 11, color: "#E2E8F0", marginTop: 4}}>{f.explanation}</div>
+              {f.contextNote && (
+                <div style={{fontSize: 11, color: "#BFDBFE", marginTop: 4, padding: "4px 8px", background: "#172554", borderLeft: "3px solid #3B82F6", borderRadius: 3}}>
+                  <strong>◆ PMS context:</strong> {f.contextNote}
+                </div>
+              )}
               <div className="flag-evidence">{f.evidence}</div>
             </div>
           ))}
@@ -1321,130 +1067,308 @@
       );
     }
 
+    // ========================================================================
+    // PMS CONTEXT — disambiguation + comparison baselines
+    // ========================================================================
+    // We derive a context object for the project this contract belongs to. The
+    // contract PDF stays the source of truth for its OWN terms; this context only
+    // supplies what the regex can't infer: who is Setty vs the prime/client, and
+    // the baselines to compare client-imposed terms against. Shape:
+    //   { structure: { settyIsPrime, settyRole, prime, clientName, isTaskOrder,
+    //                   taskOrderNumber, underMaster, subconsultants[], feeType },
+    //     standards:  { paymentTerms, lateInterest, multiplier, insurance:{...} },
+    //     projectName }
+    //
+    // This tool reads the PMS project list DIRECTLY from Supabase (the anon key
+    // below is the same public, client-side key SettyPMS already ships) so NO
+    // edit to SettyPMS is required. The contract is never uploaded — this is a
+    // read only. The user (or an auto-match on contract #) picks which project
+    // the contract belongs to; we then derive structure + standards from it.
+
+    // Setty's standard commercial terms — the baseline used for comparison notes
+    // ("required $10M E&O vs our $5M/occ", etc.). Insurance figures below are
+    // Setty's actual standing coverage (confirmed). paymentTerms/lateInterest/
+    // multiplier are still PLACEHOLDERS — ★ confirm and edit those.
+    const SETTY_STANDARDS = {
+      paymentTerms: "Net 30",     // ★ placeholder — confirm
+      lateInterest: "1.5%/month", // ★ placeholder — confirm
+      multiplier:   2.9,          // ★ placeholder — confirm
+      // Setty's standing insurance schedule (per occurrence / aggregate).
+      insurance: {
+        professionalLiability: { perOccurrence: 5000000,  aggregate: 10000000 },
+        generalLiability:      { perOccurrence: 2000000,  aggregate: 4000000  },
+        automobileLiability:   { perOccurrence: 1000000 },
+        workersComp:           { perOccurrence: 1000000 }, // Employer's Liability
+        umbrella:              { perOccurrence: 10000000 },
+        cyberLiability:        { perOccurrence: 2000000 },
+      },
+    };
+
+    // Same public anon key + URL SettyPMS uses (SettyPMS.html SUPABASE_*).
+    // anon + RLS: this can read the shared pms_data singleton, nothing more.
+    const PMS_SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
+    const PMS_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
+
+    async function loadPmsProjects() {
+      const res = await fetch(
+        PMS_SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=projects",
+        { headers: { apikey: PMS_SUPABASE_ANON_KEY, Authorization: "Bearer " + PMS_SUPABASE_ANON_KEY } }
+      );
+      if (!res.ok) throw new Error("Supabase " + res.status);
+      const rows = await res.json();
+      return (rows && rows[0] && rows[0].projects) || [];
+    }
+
+    // Mirror of SettyPMS buildExtractorContext, but built here from a project row.
+    // `prime` is the top-of-chain firm: empty (or Setty) = Setty is prime; any
+    // other firm = Setty is a sub to it.
+    function buildContextFromProject(project) {
+      if (!project) return null;
+      const prime = (project.prime || "").trim();
+      const settyIsPrime = !prime || /setty/i.test(prime);
+      return {
+        structure: {
+          settyIsPrime,
+          settyRole: settyIsPrime
+            ? "Prime (contracts directly with client)"
+            : "Subconsultant to " + prime,
+          prime,
+          clientName: (project.clientName || "").trim(),
+          isTaskOrder: !!project.isTaskOrder,
+          taskOrderNumber: (project.taskOrderNumber || "").trim(),
+          underMaster: !!project.taskOrderTermContractId,
+          subconsultants: (project.subconsultants || [])
+            .map((s) => (s.firm || s.name || "").trim()).filter(Boolean),
+          feeType: project.feeType || "",
+        },
+        standards: SETTY_STANDARDS,
+        projectName: project.name || "",
+      };
+    }
+
+    // Try to auto-identify which PMS project this contract belongs to, using the
+    // identifiers the regex pulled from the PDF. Tier order reflects live PMS data
+    // (most projects only have name + Setty's projectNumber populated; contract #
+    // and primeProjectNumber are rarely filled):
+    //   1. contractNumber  → p.contractNumber      (rare but unambiguous)
+    //   2. extracted #      → p.primeProjectNumber  (when prime's job # is filled)
+    //   3. extracted #      → p.projectNumber       (HIGH yield — the leading
+    //        filename token / "Project No." on a Setty contract is usually Setty's
+    //        own job number, which maps to PMS projectNumber)
+    //   4. exact project-name match
+    // Returns a project or null (→ user picks from the dropdown).
+    function matchProject(result, projects) {
+      const f = result.fields;
+      const norm = (v) => (v || "").trim().toLowerCase();
+      const cn = norm(f.contractNumber.value);
+      const pn = norm(f.primeProjectNumber.value);
+      const nm = norm(f.project.value);
+      const active = projects.filter((p) => !p.archived);
+      return (
+        (cn && active.find((p) => norm(p.contractNumber) === cn)) ||
+        (pn && active.find((p) => norm(p.primeProjectNumber) === pn)) ||
+        (pn && active.find((p) => norm(p.projectNumber) === pn)) ||
+        (nm && active.find((p) => norm(p.name) === nm)) ||
+        null
+      );
+    }
+
+    // Fill party fields from the PMS's known structure — but ONLY when the regex
+    // came up empty or low-confidence. Never clobber a confident parse or an edit
+    // the user already made (those stay "high" and are skipped here).
+    function fillStructuralFields(result, ctx) {
+      const s = (ctx && ctx.structure) || {};
+      const fields = { ...result.fields };
+      const weak = (c) => c === "empty" || c === "low";
+      if (s.clientName && weak(fields.client.confidence)) {
+        fields.client = { value: s.clientName, confidence: "high", source: "PMS project record (contract structure)" };
+      }
+      if (s.settyRole && weak(fields.settyRole.confidence)) {
+        fields.settyRole = { value: s.settyRole, confidence: "high", source: "PMS project record (contract structure)" };
+      }
+      return { ...result, fields };
+    }
+
+    // Maps each insurance flag to the matching line in SETTY_STANDARDS.insurance.
+    // `umbrellaOK` notes lines whose excess can typically be met by the umbrella.
+    const INS_FLAG_MAP = {
+      "e-o-limits":           { key: "professionalLiability", label: "Professional Liability" },
+      "cgl-limits":           { key: "generalLiability",      label: "General Liability", umbrellaOK: true },
+      "auto-liability-limit": { key: "automobileLiability",   label: "Automobile Liability", umbrellaOK: true },
+      "umbrella-limit":       { key: "umbrella",              label: "Umbrella / Excess" },
+      "workers-comp-limit":   { key: "workersComp",           label: "Employer's Liability" },
+      "cyber-liability-limit":{ key: "cyberLiability",        label: "Cyber Liability" },
+    };
+
+    // Attach a `contextNote` to flags using PMS structure + standards. Pure —
+    // computed at render time, so it updates whenever context arrives and never
+    // touches editable field state. We annotate rather than suppress: a flag the
+    // structure makes unlikely may still be binding boilerplate.
+    function decorateFlags(flags, ctx) {
+      if (!ctx) return flags;
+      const s = ctx.structure || {};
+      const std = ctx.standards || {};
+      const dollars = (v) => "$" + Number(v).toLocaleString();
+      const num = (str) => {
+        const n = parseInt(String(str).replace(/[^0-9]/g, ""), 10);
+        return isNaN(n) ? null : n;
+      };
+      return flags.map((f) => {
+        let note = null;
+        // -- Structure-dependent relevance --
+        if (s.settyIsPrime && (f.id === "pay-when-paid" || f.id === "prime-flowdown" || f.id === "termination-linked")) {
+          note = "PMS shows Setty is PRIME (contracts directly with the client). This clause normally binds a subconsultant — verify it actually applies to Setty here; if not, it may be inherited boilerplate.";
+        }
+        if (f.id === "prime-flowdown" && s.underMaster) {
+          note = "PMS links this project to a master/term agreement" + (s.taskOrderNumber ? " (task order " + s.taskOrderNumber + ")" : "") + " already on file — cross-check the flow-down terms against that master.";
+        }
+        // -- Comparison baselines --
+        if (f.id === "multiplier" && f.capturedValue && std.multiplier) {
+          const v = parseFloat(f.capturedValue);
+          if (!isNaN(v)) note = v > std.multiplier
+            ? "Higher than Setty's standard multiplier (" + std.multiplier + ") — favorable margin, confirm acceptable."
+            : v < std.multiplier
+              ? "BELOW Setty's standard multiplier (" + std.multiplier + ") — margin squeeze, flag for fee review."
+              : "Matches Setty's standard multiplier (" + std.multiplier + ").";
+        }
+        // -- Insurance limits: compare required figure to Setty's standing coverage --
+        const insCfg = INS_FLAG_MAP[f.id];
+        if (insCfg && f.capturedValue && std.insurance && std.insurance[insCfg.key]) {
+          const o = std.insurance[insCfg.key];
+          const v = num(f.capturedValue);
+          if (v !== null) {
+            const aggTxt = o.aggregate ? " / " + dollars(o.aggregate) + " agg" : "";
+            note = v > o.perOccurrence
+              ? "ABOVE Setty's " + insCfg.label + " (" + dollars(o.perOccurrence) + aggTxt + ") — flag to broker; may need a project-specific endorsement" + (insCfg.umbrellaOK ? " or coverage under the $10M umbrella." : ".")
+              : "Within Setty's " + insCfg.label + " (" + dollars(o.perOccurrence) + aggTxt + ").";
+          }
+        }
+        return note ? { ...f, contextNote: note } : f;
+      });
+    }
+
+    function PmsContextCard({ ctx }) {
+      const s = ctx.structure || {};
+      const std = ctx.standards || {};
+      const row = (label, val) => val ? (
+        <div style={{ display: "flex", gap: 6, fontSize: 11, marginTop: 2 }}>
+          <span style={{ color: "#93C5FD", minWidth: 110 }}>{label}</span>
+          <span style={{ color: "#E2E8F0" }}>{val}</span>
+        </div>
+      ) : null;
+      return (
+        <div style={{ background: "#172554", border: "1px solid #1E40AF", borderRadius: 6, padding: "10px 12px", marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#BFDBFE", marginBottom: 6 }}>
+            ◆ PMS context loaded{ctx.projectName ? " — " + ctx.projectName : ""}
+          </div>
+          {row("Setty role", s.settyRole)}
+          {row("Prime", s.prime)}
+          {row("Client", s.clientName)}
+          {row("Task order", s.isTaskOrder ? (s.taskOrderNumber || "Yes") + (s.underMaster ? " (under master on file)" : "") : null)}
+          {row("Subs (by Setty)", (s.subconsultants || []).join(", "))}
+          {row("Std. multiplier", std.multiplier)}
+          {row("Std. payment", std.paymentTerms + (std.lateInterest ? " · " + std.lateInterest + " late" : ""))}
+          {(() => {
+            const ins = std.insurance; if (!ins) return null;
+            const m = (n) => "$" + (n / 1000000) + "M";
+            const line = (o) => o ? m(o.perOccurrence) + (o.aggregate ? " / " + m(o.aggregate) + " agg" : "") : null;
+            return (
+              <>
+                {row("Prof. Liability", line(ins.professionalLiability))}
+                {row("General Liability", line(ins.generalLiability))}
+                {row("Umbrella/Excess", line(ins.umbrella))}
+                {row("Auto Liability", line(ins.automobileLiability))}
+                {row("Workers Comp (EL)", line(ins.workersComp))}
+                {row("Cyber Liability", line(ins.cyberLiability))}
+              </>
+            );
+          })()}
+          <div style={{ fontSize: 10, color: "#64748B", marginTop: 6, fontStyle: "italic" }}>
+            Used to disambiguate parties and compare client terms to Setty's standards. The PDF remains the source of truth for its own terms.
+          </div>
+        </div>
+      );
+    }
+
     function App() {
       const [file, setFile] = useState(null);
       const [parsing, setParsing] = useState(false);
-      // Investigative caption that rotates through INVESTIGATIVE_QUOTES while
-      // parsing is in progress. Holds an entry from that array, or null when
-      // not parsing. The timer is held in a ref so we can clear it from any
-      // codepath that ends parsing (success, error, or unmount).
-      const [investigation, setInvestigation] = useState(null);
-      const investigationTimerRef = useRef(null);
       const [result, setResult] = useState(null);
       const [log, setLog] = useState([]);
       const [pmsConnected, setPmsConnected] = useState(false);
       const [dragging, setDragging] = useState(false);
-      // The SharePoint/web URL the file was dragged from, if the browser
-      // populated it in the DataTransfer (works for drags out of SharePoint
-      // Online, browser tabs, some email clients). Empty for File Explorer
-      // drags. Sent to PMS so the OneNote page can show where the contract
-      // came from in addition to the record's curated folder.
-      const [dragSourceUrl, setDragSourceUrl] = useState("");
       // sendState: "idle" → "sent" (reverts to idle after a few seconds so
       // the user can re-send if they made a typo or want to retry). Gives
       // visible confirmation that the click was registered.
       const [sendState, setSendState] = useState("idle");
+      // PMS project context for the contract being reviewed. We load the PMS
+      // project list straight from Supabase (read-only), then identify which
+      // project this contract belongs to — auto-matched on contract # or chosen
+      // from the dropdown. `pmsContext` (structure + standards) is derived from
+      // that project; the ref lets handleFile read it without a stale closure.
+      const [pmsProjects, setPmsProjects] = useState([]);
+      const [pmsLoadState, setPmsLoadState] = useState("idle"); // idle|loading|loaded|error
+      const [selectedProjectId, setSelectedProjectId] = useState("");
+      const [autoMatched, setAutoMatched] = useState(false);
+      const [pmsContext, setPmsContext] = useState(null);
+      const pmsContextRef = useRef(null);
 
-      useEffect(() => { setPmsConnected(!!window.opener); }, []);
+      useEffect(() => {
+        setPmsConnected(!!window.opener);
+        // Pull the PMS project list directly from Supabase (no SettyPMS edit
+        // needed). Failure is non-fatal — extraction still works without context.
+        (async () => {
+          setPmsLoadState("loading");
+          try {
+            const projects = await loadPmsProjects();
+            setPmsProjects(projects);
+            setPmsLoadState("loaded");
+            console.log(`[ContractExtractor] loaded ${projects.length} PMS projects`);
+          } catch (e) {
+            console.warn("[ContractExtractor] PMS project load failed:", e);
+            setPmsLoadState("error");
+          }
+        })();
+      }, []);
+
+      // Pick a project (auto-match or manual): derive context + backfill fields.
+      const selectProject = useCallback((id, viaAutoMatch = false) => {
+        setSelectedProjectId(id);
+        setAutoMatched(viaAutoMatch);
+        const proj = pmsProjects.find((p) => p.id === id);
+        const ctx = proj ? buildContextFromProject(proj) : null;
+        pmsContextRef.current = ctx;
+        setPmsContext(ctx);
+        if (ctx) setResult((prev) => (prev ? fillStructuralFields(prev, ctx) : prev));
+      }, [pmsProjects]);
+
+      // Once a contract is parsed and projects are loaded, try to auto-identify
+      // the project from the extracted identifiers (skip if already selected).
+      useEffect(() => {
+        if (!result || selectedProjectId || pmsProjects.length === 0) return;
+        const m = matchProject(result, pmsProjects);
+        if (m) selectProject(m.id, true);
+      }, [result, pmsProjects, selectedProjectId, selectProject]);
 
       const handleFile = useCallback(async (f) => {
         if (!f || f.type !== "application/pdf") { alert("Please drop a PDF file."); return; }
+        // New contract → clear any prior project association so auto-match re-runs.
         setFile(f); setParsing(true); setResult(null);
+        setSelectedProjectId(""); setAutoMatched(false); setPmsContext(null); pmsContextRef.current = null;
         setLog([{ type: "info", msg: `Reading ${f.name}…` }]);
-        // Start the investigative animation — rotate through quotes every
-        // ~1.7s. Pick a random starting index so consecutive extractions
-        // don't always lead with the same line. Emoji rotates independently
-        // from a pool so the visual identity stays "investigative" without
-        // having to hand-pair each quote to a specific icon.
-        if (investigationTimerRef.current) clearInterval(investigationTimerRef.current);
-        let qIdx = Math.floor(Math.random() * INVESTIGATIVE_QUOTES.length);
-        const pickEmoji = () => INVESTIGATIVE_EMOJI[Math.floor(Math.random() * INVESTIGATIVE_EMOJI.length)];
-        setInvestigation({ emoji: pickEmoji(), line: INVESTIGATIVE_QUOTES[qIdx] });
-        investigationTimerRef.current = setInterval(() => {
-          qIdx = (qIdx + 1) % INVESTIGATIVE_QUOTES.length;
-          setInvestigation({ emoji: pickEmoji(), line: INVESTIGATIVE_QUOTES[qIdx] });
-        }, 1700);
         try {
           const parsed = await readPdf(f);
-
-          // Scanned PDFs (image-only, no embedded text layer) need OCR
-          // before any pattern-based extraction can work. Tesseract.js
-          // runs entirely in the browser — no upload, contract stays local.
-          if (parsed.isScanned) {
-            setLog((prev) => [...prev,
-              { type: "info", msg: `⚠ No embedded text found — ${parsed.numPages}-page scanned PDF.` },
-              { type: "info", msg: `Running OCR (Tesseract.js, in-browser). First page-set may take 30-60s; subsequent pages ~2-5s each.` },
-            ]);
-            const ocrPages = await ocrPdfPages(parsed.pdfDoc, (p) => {
-              let msg;
-              if (p.stage === "render")      msg = `Rendering p${p.page}/${p.total} for OCR…`;
-              else if (p.stage === "ocr")    msg = `OCR p${p.page}/${p.total}…`;
-              else if (p.stage === "init")   msg = p.msg || "Initializing OCR…";
-              else                            msg = `OCR: ${p.stage}`;
-              setLog((prev) => [...prev, { type: "info", msg }]);
-            });
-            parsed.pages = ocrPages;
-            parsed.fullText = ocrPages.join("\n\n");
-            setLog((prev) => [...prev, { type: "hit", msg: `OCR complete: ${parsed.fullText.length} chars extracted from ${parsed.numPages} pages.` }]);
-          }
-
           const res = extractAll(parsed);
-          setResult(res);
+          setResult(res); // auto-match effect fills structural fields once a project resolves
           setLog((prev) => [...prev, ...res.log]);
         } catch (e) {
           setLog((prev) => [...prev, { type: "miss", msg: `Error: ${e.message}` }]);
           console.error(e);
-        } finally {
-          setParsing(false);
-          // Stop the investigative animation regardless of success/failure.
-          if (investigationTimerRef.current) {
-            clearInterval(investigationTimerRef.current);
-            investigationTimerRef.current = null;
-          }
-          setInvestigation(null);
-        }
+        } finally { setParsing(false); }
       }, []);
-
-      // Pull the source URL out of a DataTransfer if the drag provided one.
-      // Behavior by drag source:
-      //   - SharePoint Online web: usually populates text/html with the file's
-      //     SharePoint URL inside an <a href>. Sometimes text/uri-list too.
-      //   - File Explorer with OneDrive sync: typically only `files`, no URL.
-      //   - Email attachment in Outlook web: may include an attachment URL.
-      //   - Drag from a browser tab/bookmark: text/uri-list with page URL.
-      // Returns "" if no URL was provided.
-      function extractDragSourceUrl(dt) {
-        if (!dt) return "";
-        // RFC 2483: one URI per line, lines starting with # are comments
-        const list = dt.getData("text/uri-list");
-        if (list) {
-          for (const line of list.split(/\r?\n/)) {
-            const t = line.trim();
-            if (t && !t.startsWith("#")) return t;
-          }
-        }
-        // Firefox-specific: "url\ntitle"
-        const moz = dt.getData("text/x-moz-url");
-        if (moz) {
-          const first = moz.split(/\r?\n/)[0].trim();
-          if (first) return first;
-        }
-        // text/html — first <a href="…">
-        const html = dt.getData("text/html");
-        if (html) {
-          const m = html.match(/href\s*=\s*["']([^"']+)["']/i);
-          if (m && /^https?:\/\//i.test(m[1])) return m[1];
-        }
-        // text/plain — sometimes a bare URL
-        const text = dt.getData("text/plain");
-        if (text && /^https?:\/\//.test(text.trim())) return text.trim();
-        return "";
-      }
 
       const onDrop = (e) => {
         e.preventDefault(); setDragging(false);
-        const sourceUrl = extractDragSourceUrl(e.dataTransfer);
-        setDragSourceUrl(sourceUrl);  // remember even before file is parsed
         if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
       };
 
@@ -1457,11 +1381,10 @@
         const f = result.fields;
         const payload = {
           fileName: file?.name,
-          dragSourceUrl,  // empty string if drag didn't carry a URL (e.g., File Explorer)
           docType: result.docType.type,
           docTypeYear: result.docType.year,
           isAIA: result.docType.isAIA,
-          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue, fullSection: x.fullSection })),
+          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue })),
           contractDate: f.contractDate.value,
           contractExpiration: f.contractExpiration.value,
           contractNumber: f.contractNumber.value,
@@ -1469,14 +1392,12 @@
           client: f.client.value,
           settyRole: f.settyRole.value,
           project: f.project.value,
-          scopeOfWork: f.scopeOfWork ? f.scopeOfWork.value : "",
           payment: {
             invoiceReview: f.invoiceReview.value,
             payWhenPaid: f.payWhenPaid.value,
             interestOnLate: f.interestOnLate.value,
             retainage: f.retainage.value,
             conditionsPrecedent: f.conditionsPrecedent.value,
-            billingRequirements: f.billingRequirements ? f.billingRequirements.value : "",
           },
           reimbursable: {
             multiplier: f.multiplier.value,
@@ -1492,16 +1413,10 @@
         };
         if (sendToPMS(payload)) {
           setSendState("sent");
-          // Auto-close this popup after a short delay so the user doesn't
-          // have to manually close it. 1.5s gives them time to see the
-          // green "✓ Sent" confirmation. If close is blocked by the
-          // browser (rare for popups opened via window.open), revert the
-          // button after 8s so they can re-send or close manually.
-          setTimeout(() => {
-            try { window.close(); } catch (_) { /* may be blocked */ }
-            // If we're still here after 8s total (close was blocked), reset
-            setTimeout(() => setSendState("idle"), 6500);
-          }, 1500);
+          // Revert button to idle after 8s so the user can re-send if needed
+          // (e.g. they reviewed the modal in PMS, decided to tweak a field
+          // here, and want to push the update across again).
+          setTimeout(() => setSendState("idle"), 8000);
         }
       };
 
@@ -1581,44 +1496,63 @@
                 <div className="file-info">
                   <strong>{file.name}</strong><br/>
                   {(file.size / 1024 / 1024).toFixed(2)} MB
-                  {dragSourceUrl && (
-                    <div style={{ marginTop: 6, fontSize: 10, color: "#60A5FA", wordBreak: "break-all" }}
-                         title="Captured from the drag-and-drop source. Will be included in the OneNote analysis page.">
-                      📎 source:<br/>
-                      <a href={dragSourceUrl} target="_blank" rel="noreferrer"
-                         style={{ color: "#60A5FA", textDecoration: "none" }}>
-                        {dragSourceUrl.length > 80 ? dragSourceUrl.slice(0, 77) + "…" : dragSourceUrl}
-                      </a>
-                    </div>
-                  )}
                   {parsing && <div><span className="spinner"></span>Parsing…</div>}
                 </div>
               )}
+
+              <h2 style={{marginTop: 20}}>PMS Project <span style={{textTransform:"none",fontWeight:400,color:"#64748B"}}>(for context)</span></h2>
+              {pmsLoadState === "loading" && (
+                <p style={{fontSize: 11, color: "#94A3B8"}}><span className="spinner"></span>Loading PMS projects…</p>
+              )}
+              {pmsLoadState === "error" && (
+                <p style={{fontSize: 11, color: "#FCD34D"}}>
+                  Couldn't reach PMS data — party disambiguation &amp; comparison context unavailable.
+                  Extraction and Apply-and-Save still work normally.
+                </p>
+              )}
+              {pmsLoadState === "loaded" && (
+                <>
+                  <select
+                    value={selectedProjectId}
+                    onChange={(e) => selectProject(e.target.value, false)}
+                    style={{ width: "100%", background: "#1E293B", color: "#E2E8F0", border: "1px solid #334155", borderRadius: 4, padding: "6px 8px", fontSize: 12 }}
+                  >
+                    <option value="">— Select project to load context —</option>
+                    {[...pmsProjects]
+                      .filter((p) => !p.archived)
+                      .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {(p.name || "Untitled")}{p.projectNumber ? ` (${p.projectNumber})` : ""}
+                        </option>
+                      ))}
+                  </select>
+                  {selectedProjectId && autoMatched && (
+                    <div style={{fontSize: 10, color: "#4ADE80", marginTop: 4}}>
+                      ✓ Auto-matched from the contract's identifiers — change above if wrong.
+                    </div>
+                  )}
+                  {!selectedProjectId && result && (
+                    <div style={{fontSize: 10, color: "#94A3B8", marginTop: 4}}>
+                      No automatic match. Pick the project to disambiguate parties and compare terms to Setty's standards.
+                    </div>
+                  )}
+                </>
+              )}
+
               <h2 style={{marginTop: 20}}>About</h2>
               <p style={{fontSize: 11, color: "#94A3B8", lineHeight: 1.5}}>
                 This tool extracts <strong>client-imposed override terms</strong> from contracts issued to Setty —
                 pay-when-paid clauses, no-markup rules, conditions precedent, and similar terms that
                 supersede Setty's standard proposal. It does <em>not</em> re-extract Setty's own fee proposals.
               </p>
-              <p style={{fontSize: 11, color: "#94A3B8", lineHeight: 1.5, marginTop: 10}}>
-                Scanned/image-only PDFs are automatically OCR'd in the browser via Tesseract.js —
-                no upload, no server, contract stays on your machine. OCR takes 1–3 seconds per page
-                after the initial language-data download (~10MB, one time).
-              </p>
             </div>
 
             {/* MIDDLE — flags banner + log */}
             <div className="panel">
               <h2>2. Override Clauses & Extraction Log</h2>
-              {parsing && investigation && (
-                <div className="investigating">
-                  <span className="investigating-emoji" key={investigation.emoji}>{investigation.emoji}</span>
-                  <span className="investigating-text" key={investigation.line}>
-                    {investigation.line}
-                  </span>
-                </div>
-              )}
-              {result && <FlagsBanner flags={result.flags} />}
+              {pmsContext && <PmsContextCard ctx={pmsContext} />}
+              {result && <FlagsBanner flags={decorateFlags(result.flags, pmsContext)} />}
               {docTypeLabel && (
                 <div className={`doc-type ${result.docType.isAIA ? "" : "non-aia"}`}>{docTypeLabel}</div>
               )}
@@ -1647,16 +1581,12 @@
                   <FieldEditor keyName="settyRole" label="Setty Role" field={result.fields.settyRole} onChange={updateField} multiline />
                   <FieldEditor keyName="project" label="Project" field={result.fields.project} onChange={updateField} />
 
-                  <h3>Scope of Work</h3>
-                  <FieldEditor keyName="scopeOfWork" label="Scope of Work / Services" field={result.fields.scopeOfWork} onChange={updateField} multiline />
-
                   <h3>Payment Terms</h3>
                   <FieldEditor keyName="payWhenPaid" label="Pay-When-Paid?" field={result.fields.payWhenPaid} onChange={updateField} />
                   <FieldEditor keyName="invoiceReview" label="Invoice Review Window" field={result.fields.invoiceReview} onChange={updateField} />
                   <FieldEditor keyName="interestOnLate" label="Interest on Late Payment" field={result.fields.interestOnLate} onChange={updateField} />
                   <FieldEditor keyName="retainage" label="Retainage / Withholding" field={result.fields.retainage} onChange={updateField} />
                   <FieldEditor keyName="conditionsPrecedent" label="Conditions Precedent" field={result.fields.conditionsPrecedent} onChange={updateField} />
-                  <FieldEditor keyName="billingRequirements" label="Billing / Invoice Requirements" field={result.fields.billingRequirements} onChange={updateField} multiline />
 
                   <h3>Reimbursable Expense Rules</h3>
                   <FieldEditor keyName="multiplier" label="Client Multiplier" field={result.fields.multiplier} onChange={updateField} />
