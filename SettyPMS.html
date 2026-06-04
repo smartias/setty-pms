@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-04-pms-v25-contents-toc";
+    window.__appVersion = "2026-06-04-pms-v26-proposal-prime-toc";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3016,21 +3016,43 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
       html += `<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:4px;padding:10px 14px;margin-bottom:14px;font-size:10.5pt;line-height:1.6;">`;
       const line = (label, val) => `<div><strong style="color:${NAVY};">${e(label)}:</strong> ${val}</div>`;
       if (ol && ol.numPages)       html += line("Total pages", String(ol.numPages));
-      // Sections — list each exhibit with its page
+      // Sections — list each exhibit / AIA document / named attachment with its page
       if (ol && ol.sections && ol.sections.length > 0) {
         for (const s of ol.sections) {
           const desc = s.description ? ` — ${e(s.description)}` : "";
-          // Highlight known special cases: Proposal attachment, Prime Agreement
+          // Highlight known special cases.
           let extra = "";
           if (ol.proposalAttached && ol.proposalAttached.asExhibit && s.label === ol.proposalAttached.asExhibit) {
             extra = ` <span style="color:#0F766E;font-style:italic;">— Setty's Proposal</span>`;
-          } else if (/prime\s+agreement/i.test(s.description || "")) {
+          } else if (/prime\s+agreement/i.test(s.description || "") || /prime\s+agreement/i.test(s.label || "")) {
             extra = ` <span style="color:#9333EA;font-style:italic;">— Prime Agreement</span>`;
+          } else if (ol.settyProposalPage && s.page === ol.settyProposalPage) {
+            extra = ` <span style="color:#0F766E;font-style:italic;">— Setty's Proposal</span>`;
           }
           html += `<div><strong style="color:${NAVY};">${e(s.label)}</strong>${desc}${extra} <span style="color:#64748B;">(p. ${e(String(s.page || "?"))})</span></div>`;
         }
-      } else if (ol && ol.proposalAttached) {
+      }
+      // Setty's attached proposal — surface even when the contract didn't
+      // formally label it as an Exhibit (numbered .3 sub-item, or just
+      // bundled at the end with a company-header page).
+      if (ol && ol.settyProposalPage) {
+        const alreadyListed = (ol.sections || []).some((s) => s.page === ol.settyProposalPage);
+        if (!alreadyListed) {
+          html += `<div><strong style="color:${NAVY};">Setty's Proposal</strong> <span style="color:#0F766E;font-style:italic;">— attached</span> <span style="color:#64748B;">(p. ${e(String(ol.settyProposalPage))})</span></div>`;
+        }
+      } else if (ol && ol.proposalAttached && ol.proposalAttached.asExhibit) {
+        // Fall back: contract body said proposal is attached as Exhibit X
+        // but we didn't detect a Setty-proposal start page from markers.
         html += `<div><strong style="color:${NAVY};">Setty's Proposal:</strong> attached as ${e(ol.proposalAttached.asExhibit)}</div>`;
+      }
+      // Prime Agreement status — referenced + attached, referenced + NOT
+      // attached (the warning case), or not referenced at all.
+      if (ol && ol.primeAgreementReferenced) {
+        if (ol.primeAgreementAttached) {
+          html += `<div><strong style="color:${NAVY};">Prime Agreement:</strong> <span style="color:#15803D;">attached</span> <span style="color:#64748B;">(p. ${e(String(ol.primeAgreementPage))})</span></div>`;
+        } else {
+          html += `<div><strong style="color:${NAVY};">Prime Agreement:</strong> <span style="color:#DC2626;font-weight:600;">referenced but NOT attached</span> — request from prime before signing</div>`;
+        }
       }
       if (ol && ol.feeLocation) {
         const f = ol.feeLocation;
