@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-04-pms-v24-sigs-reimb-summary";
+    window.__appVersion = "2026-06-04-pms-v25-contents-toc";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3003,6 +3003,66 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
   html += `<strong>Extracted on:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
   html += `</p>`;
 
+  // Contents — a TOC of the source PDF so reviewers can jump back to a
+  // specific page rather than re-reading. Added 2026-06-04 per user request.
+  // Skipped entirely if the extractor didn't send outline/ocrStatus (older
+  // versions, or when there's nothing useful to summarize).
+  {
+    const ol = extraction.outline || null;
+    const os = extraction.ocrStatus || null;
+    const hasContent = !!(ol && (ol.numPages || (ol.sections && ol.sections.length) || ol.signaturePage || ol.feeLocation || ol.proposalAttached)) || (os && os.scannedPageCount > 0);
+    if (hasContent) {
+      html += `<h2 ${h2}>Contents</h2>`;
+      html += `<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:4px;padding:10px 14px;margin-bottom:14px;font-size:10.5pt;line-height:1.6;">`;
+      const line = (label, val) => `<div><strong style="color:${NAVY};">${e(label)}:</strong> ${val}</div>`;
+      if (ol && ol.numPages)       html += line("Total pages", String(ol.numPages));
+      // Sections — list each exhibit with its page
+      if (ol && ol.sections && ol.sections.length > 0) {
+        for (const s of ol.sections) {
+          const desc = s.description ? ` — ${e(s.description)}` : "";
+          // Highlight known special cases: Proposal attachment, Prime Agreement
+          let extra = "";
+          if (ol.proposalAttached && ol.proposalAttached.asExhibit && s.label === ol.proposalAttached.asExhibit) {
+            extra = ` <span style="color:#0F766E;font-style:italic;">— Setty's Proposal</span>`;
+          } else if (/prime\s+agreement/i.test(s.description || "")) {
+            extra = ` <span style="color:#9333EA;font-style:italic;">— Prime Agreement</span>`;
+          }
+          html += `<div><strong style="color:${NAVY};">${e(s.label)}</strong>${desc}${extra} <span style="color:#64748B;">(p. ${e(String(s.page || "?"))})</span></div>`;
+        }
+      } else if (ol && ol.proposalAttached) {
+        html += `<div><strong style="color:${NAVY};">Setty's Proposal:</strong> attached as ${e(ol.proposalAttached.asExhibit)}</div>`;
+      }
+      if (ol && ol.feeLocation) {
+        const f = ol.feeLocation;
+        const val = [f.amount, f.page ? `p. ${f.page}` : null, f.hint].filter(Boolean).join(" · ");
+        html += line("Fee call-out", val || "see Proposal");
+      }
+      if (ol && ol.signaturePage) html += line("Signature page", `p. ${ol.signaturePage}`);
+      // OCR status — what was/wasn't read. The interesting case is "scanned
+      // pages exist and weren't OCR'd" — call that out with what's missing.
+      if (os && os.scannedPageCount > 0) {
+        if (os.ocrAttempted) {
+          html += line("OCR", `All ${os.scannedPageCount} scanned pages were OCR'd and included.`);
+        } else {
+          const label = os.ocrSkipped ? "OCR skipped" : "OCR not run";
+          const rangeText = (os.scannedRanges || []).map((r) => {
+            const rng = r.start === r.end ? `p. ${r.start}` : `pp. ${r.start}–${r.end}`;
+            return r.likelyContent ? `${rng}: likely ${r.likelyContent}` : rng;
+          }).join("; ");
+          let msg = `${os.scannedPageCount} pages had no extractable text and were NOT included in this extraction.`;
+          if (rangeText) msg += ` Specifically: ${rangeText}.`;
+          html += `<div style="margin-top:6px;padding:8px 10px;background:#FEF3C7;border-left:3px solid #D97706;border-radius:3px;color:#78350F;">`;
+          html += `<strong>${e(label)}:</strong> ${e(msg)} `;
+          html += `Re-drop the PDF in the extractor and choose "OCR" to include those pages.`;
+          html += `</div>`;
+        }
+      } else if (os) {
+        html += line("OCR", "All pages had extractable text (no OCR needed).");
+      }
+      html += `</div>`;
+    }
+  }
+
   // Key Numbers callout — added 2026-06-04 to make this OneNote page usable
   // as a long-term reference instead of having to re-read the contract. Pulls
   // together the figures and answers you typically hunt for: fee/multiplier,
@@ -3054,8 +3114,6 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
 
     if (rows.length > 0 || ic.length > 0 || icDeferredTo) {
       html += `<h2 ${h2}>Key Numbers</h2>`;
-      html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:8px;">`;
-      html += `Quick-reference block — the figures and answers most often needed when this contract comes up again. Refer back here instead of re-parsing the PDF.</p>`;
       html += `<div style="background:#F0F9FF;border:1px solid #BAE6FD;border-radius:6px;padding:12px 14px;margin-bottom:14px;">`;
       // Plain key-value lines instead of a 2-column table — OneNote renders
       // tables narrowly and wraps labels/values mid-word ("Contrac/t date").
