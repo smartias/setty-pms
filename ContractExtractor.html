@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v31-toc-fee-year";
+    window.__appVersion = "2026-06-04-extractor-v32-suppress-within-ins";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1697,7 +1697,33 @@
 
       // 2. OVERRIDE FLAGS — the primary output
       log.push({ type: "tier", msg: "Override clauses" });
-      const flags = detectFlags(clientText, pageOffsets);
+      const rawFlags = detectFlags(clientText, pageOffsets);
+      // Drop insurance-limit flags whose required amount is WITHIN Setty's
+      // standing coverage. They aren't override clauses — they're just normal
+      // contract requirements Setty already satisfies. The Key Numbers block
+      // still shows the comparison; we only suppress the noisy "⚠" flag at
+      // the top of the page. Higher-than-standing limits still fire.
+      const insToNum = (s) => {
+        const n = parseFloat(String(s).replace(/[^0-9.]/g, ""));
+        return isNaN(n) ? null : Math.round(n);
+      };
+      const suppressedInsurance = [];
+      const flags = rawFlags.filter((f) => {
+        const cfg = INS_FLAG_MAP[f.id];
+        if (!cfg) return true;                                            // not an insurance flag
+        const o = SETTY_STANDARDS.insurance && SETTY_STANDARDS.insurance[cfg.key];
+        if (!o || !f.capturedValue) return true;                          // can't compare → keep
+        const required = insToNum(f.capturedValue);
+        if (required == null) return true;
+        if (required <= o.perOccurrence) {
+          suppressedInsurance.push({ label: f.label, required, setty: o.perOccurrence });
+          return false;                                                   // within standing → drop
+        }
+        return true;                                                      // above standing → keep
+      });
+      for (const s of suppressedInsurance) {
+        log.push({ type: "info", msg: `Insurance flag suppressed — ${s.label} required $${s.required.toLocaleString()} is within Setty's standing $${s.setty.toLocaleString()}.` });
+      }
       for (const f of flags) {
         const locator = [f.sectionLabel, f.pageNumber ? `p. ${f.pageNumber}` : ""].filter(Boolean).join(" · ");
         log.push({ type: "flag", msg: `⚑ ${f.label}${locator ? "  (" + locator + ")" : ""}` });
