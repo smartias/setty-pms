@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v28-prime-fee-fix";
+    window.__appVersion = "2026-06-04-extractor-v29-prime-strict";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1321,18 +1321,24 @@
     // Consultant"), giving a false "Prime attached on page 1".
     function findPrimeAgreementStart(pages) {
       if (!pages || pages.length === 0) return null;
+      // Strict patterns only — body-text references like "Architect's agreement
+      // with the Owner" or "Owner-Architect" mentioned inside an § 1.3 paragraph
+      // must NOT trigger. The Prime would be a SEPARATE attached document with
+      // its own header. Earlier loose patterns (AGREEMENT...BETWEEN the Owner)
+      // matched references in C-series contract bodies → false "attached".
       const headerPatterns = [
-        // Explicit "PRIME AGREEMENT" header
+        // Explicit "PRIME AGREEMENT" header at line start
         /^\s*PRIME\s+AGREEMENT\b/im,
-        // AIA B-series (Owner-Architect) or A-series (Owner-Contractor)
+        // AIA B-series (Owner-Architect) — B101, B102, B103, B121, etc.
         /\bAIA\s+Document\s+B\d{3}\b/i,
-        /\bAIA\s+Document\s+A\d{3}\b/i,
+        // AIA A1XX-series ONLY (Owner-Contractor agreements: A101, A102, etc.).
+        // A2XX = General Conditions, A3XX = bonds, etc. — NOT prime agreements.
+        // Also exclude A201 explicitly (General Conditions, the most common
+        // false-positive in C-series contracts that reference A201).
+        /\bAIA\s+Document\s+A1\d{2}\b/i,
         // "Standard Form of Agreement Between Owner and Architect/Contractor"
+        // — strongest single-line indicator a Prime Agreement starts here.
         /STANDARD\s+FORM\s+OF\s+(?:[A-Za-z\s]+\s+)?AGREEMENT[^.]{0,200}?BETWEEN\s+(?:THE\s+)?OWNER\s+AND\s+(?:THE\s+)?(?:ARCHITECT|CONTRACTOR|DESIGN[\s\-]?PROFESSIONAL|CONSTRUCTION\s+MANAGER)/i,
-        // "Agreement Between Owner and Architect" without "Standard Form"
-        /\bAGREEMENT\s+BETWEEN\s+(?:THE\s+)?OWNER\s+AND\s+(?:THE\s+)?(?:ARCHITECT|CONTRACTOR|DESIGN[\s\-]?PROFESSIONAL|CONSTRUCTION\s+MANAGER)\b/i,
-        // "AGREEMENT...BETWEEN the Owner ... and the Architect" — body-form
-        /AGREEMENT\b[^.]{0,200}?BETWEEN\s+(?:the\s+)?Owner\b[^.]{0,100}?and\s+(?:the\s+)?(?:Architect|Contractor|Design\s+Professional)/i,
       ];
       for (let i = 0; i < pages.length; i++) {
         const t = pages[i] || "";
