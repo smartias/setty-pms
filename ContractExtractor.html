@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v22-ins-deferral";
+    window.__appVersion = "2026-06-04-extractor-v23-partial-ocr-sigs-reimb";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -378,7 +378,13 @@
     // OCR a pdf.js document by rendering each page to a high-DPI canvas
     // and feeding it to Tesseract.js. Tesseract's logger is wired to
     // onProgress so the UI can show "OCR page 3/13" type updates.
-    async function ocrPdfPages(pdfDoc, onProgress) {
+    //
+    // `pageIndices` (optional): if provided, OCR only those 0-indexed pages.
+    // Returns a Map { pageIndex → ocrText } when filtered, or an array of
+    // strings (one per page in order) when no filter is given. This lets the
+    // mixed-PDF flow OCR just the scanned attachment pages without re-doing
+    // the text-bearing pages we already extracted.
+    async function ocrPdfPages(pdfDoc, onProgress, pageIndices) {
       if (typeof Tesseract === "undefined") {
         throw new Error("Tesseract.js failed to load (check your network connection).");
       }
@@ -395,11 +401,16 @@
           }
         },
       });
-      const pages = [];
+      const filtered = Array.isArray(pageIndices);
+      const targets = filtered ? pageIndices.slice() : Array.from({ length: pdfDoc.numPages }, (_, i) => i);
+      const resultsByIndex = new Map();
+      const orderedResults = [];
       try {
-        for (let i = 1; i <= pdfDoc.numPages; i++) {
-          if (onProgress) onProgress({ stage: "render", page: i, total: pdfDoc.numPages });
-          const page = await pdfDoc.getPage(i);
+        for (let n = 0; n < targets.length; n++) {
+          const idx = targets[n];          // 0-indexed page index
+          const pageNo = idx + 1;          // pdf.js uses 1-indexed
+          if (onProgress) onProgress({ stage: "render", page: n + 1, total: targets.length, sourcePage: pageNo });
+          const page = await pdfDoc.getPage(pageNo);
           const viewport = page.getViewport({ scale: SCALE });
           const canvas = document.createElement("canvas");
           canvas.width = viewport.width;
@@ -407,9 +418,11 @@
           const ctx = canvas.getContext("2d");
           await page.render({ canvasContext: ctx, viewport }).promise;
 
-          if (onProgress) onProgress({ stage: "ocr", page: i, total: pdfDoc.numPages });
+          if (onProgress) onProgress({ stage: "ocr", page: n + 1, total: targets.length, sourcePage: pageNo });
           const { data } = await worker.recognize(canvas);
-          pages.push(data.text || "");
+          const txt = data.text || "";
+          if (filtered) resultsByIndex.set(idx, txt);
+          else orderedResults.push(txt);
 
           // Release canvas memory — scanned contracts can have huge pages
           canvas.width = 0; canvas.height = 0;
@@ -418,7 +431,7 @@
         // Always terminate worker, even on error, to free its memory
         try { await worker.terminate(); } catch (_) {}
       }
-      return pages;
+      return filtered ? resultsByIndex : orderedResults;
     }
 
     // ========================================================================
@@ -1188,15 +1201,24 @@
       // the flag banner when a client prohibition is detected — that's where
       // markup info actually belongs.
 
-      // Reimbursable section body — look for §11.5/§11.8 (AIA) or non-AIA
-      // section headings. The third pattern requires HEADING position (line
-      // start + colon/end-of-line) — without that anchor it false-matches the
-      // word "reimbursable expenses" appearing mid-sentence (e.g. FXC NRTC
-      // paragraph 1: "...terms related to ... reimbursable expenses, mark ups,
-      // ... are excluded" → grabbed 1500 chars of paragraph 1+2 garbage).
+      // Reimbursable section body — try a sequence of heading patterns from
+      // strictest (AIA §11.5/§11.8) to broadest (non-AIA "Direct Expenses",
+      // "Out-of-Pocket Expenses", "Travel & Living"). Each pattern is anchored
+      // to heading position (line start + colon/newline) so we don't match the
+      // phrase appearing mid-sentence in an exclusion list.
       let body = sectionAfter(text, /§\s*11\.[58]\b[^\n]*REIMBURSABLE/i, 1500)
               || sectionAfter(text, /COMPENSATION\s+FOR\s+REIMBURSABLE\s+EXPENSES/i, 1500)
-              || sectionAfter(text, /(?:^|\n)\s*(?:\d+\.\s*)?Reimbursable\s+(?:Expenses|Services)\b\s*[:.\n]/i, 1500);
+              || sectionAfter(text, /(?:^|\n)\s*(?:\d+\.\s*)?Reimbursable\s+(?:Expenses|Services|Costs)\b\s*[:.\n]/i, 1500)
+              || sectionAfter(text, /(?:^|\n)\s*(?:\d+\.\s*)?(?:Direct|Allowable|Approved)\s+(?:Expenses|Costs)\b\s*[:.\n]/i, 1500)
+              || sectionAfter(text, /(?:^|\n)\s*(?:\d+\.\s*)?Out[\s\-]of[\s\-]Pocket\s+(?:Expenses|Costs)\b\s*[:.\n]/i, 1500)
+              || sectionAfter(text, /(?:^|\n)\s*(?:\d+\.\s*)?(?:Travel\s+(?:and|&)\s+Living|Travel\s+Expenses?|T&L)\b\s*[:.\n]/i, 1500)
+              || sectionAfter(text, /(?:^|\n)\s*(?:\d+\.\s*)?Expense\s+Reimbursement\b\s*[:.\n]/i, 1500);
+      // Excluded-by-contract case: parent contract explicitly disclaims the
+      // Proposal's reimbursable terms without specifying replacements (FXC
+      // NRTC item 1: "...terms related to ... reimbursable expenses, mark ups,
+      // ... are excluded"). Worth surfacing as a finding so the reviewer
+      // knows reimbursables ARE NOT addressed rather than just "not found".
+      const exclMatch = !body && text.match(/terms?\s+(?:related\s+to|of|regarding)[^.]{0,200}?reimbursable\s+expenses?[^.]{0,200}?\bare\s+excluded\b/i);
       if (body) {
         // Trim at next section heading
         const stop = body.search(/§\s*\d+\.\d+\b|ARTICLE\s+\d+|\n\d+\.\d+\.\d+/);
@@ -1206,6 +1228,8 @@
         } else {
           out.reimbursableRules = makeField(snippet, "medium", "extracted reimbursable-rules block");
         }
+      } else if (exclMatch) {
+        out.reimbursableRules = makeField("Proposal's reimbursable terms are EXCLUDED by this contract, and no replacement terms are specified. Confirm with PM whether reimbursables are billable at all under this engagement.", "high", "contract excludes Proposal reimbursable terms");
       } else {
         out.reimbursableRules = makeField("", "empty", "");
       }
@@ -1252,6 +1276,38 @@
       if (m) out.terminationNotice = makeField(`${m[1]} days written notice`, "medium", "termination notice clause");
       else out.terminationNotice = makeField("", "empty", "");
 
+      return out;
+    }
+
+    // Extract signature-block parties. Looks in the last 40% of the document
+    // (signatures live at the end) for sequences of "Name: X" followed by
+    // "Title: Y" within ~120 chars. Filters out blank placeholders (rows of
+    // underscores/dashes from unsigned templates). Returns an array of
+    // { name, title } — typically the counterparty signer; sometimes both
+    // sides when both are countersigned.
+    function extractSignatories(text) {
+      if (!text) return [];
+      const tail = text.slice(Math.floor(text.length * 0.6));
+      const out = [];
+      const seen = new Set();
+      // Tolerate the OCR-style spacing artifacts ("N a m e :") and various
+      // forms of underscored blanks.
+      const re = /Name:\s*([^\n]{1,80}?)\s*(?:\n\s*|\s+)Title:\s*([^\n]{1,80}?)(?:\n|$)/gi;
+      let m;
+      while ((m = re.exec(tail)) !== null) {
+        const name  = m[1].replace(/[_]{2,}/g, "").replace(/\s+/g, " ").trim();
+        const title = m[2].replace(/[_]{2,}/g, "").replace(/\s+/g, " ").trim();
+        // Skip placeholders: empty, all-non-letters, or single-letter junk.
+        if (!name || !/[A-Za-z]{2,}/.test(name)) continue;
+        if (!title || !/[A-Za-z]{2,}/.test(title)) continue;
+        // Dedup by lower-cased name+title (the FXC contract has two parallel
+        // signature blocks; only one is populated, but we don't want to double-
+        // count if both ever get filled).
+        const key = (name + "|" + title).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ name, title });
+      }
       return out;
     }
 
@@ -1366,6 +1422,15 @@
       if (legal.venue.value)              log.push({ type: "hit", msg: `Venue: ${legal.venue.value}` });
       if (legal.disputeResolution.value)  log.push({ type: "hit", msg: `Dispute resolution: ${legal.disputeResolution.value}` });
 
+      // 8. Signatories — extract the counterparty's signing name & title from
+      // the signature block. Useful for "who's our point person at the prime"
+      // and for figuring out who actually has authority to sign amendments.
+      log.push({ type: "tier", msg: "Signatories" });
+      const signatories = extractSignatories(text);
+      for (const s of signatories) {
+        log.push({ type: "hit", msg: `Signatory: ${s.name} — ${s.title}` });
+      }
+
       return {
         log,
         docType,
@@ -1374,6 +1439,7 @@
         // deferral detection, future heuristics) can scan it without re-
         // running PDF extraction. Cheap by reference — JS strings are interned.
         sourceText: text,
+        signatories,
         fields: {
           // metadata
           contractDate,
@@ -1754,6 +1820,12 @@
       // ends parsing (success, error, or unmount).
       const [investigation, setInvestigation] = useState(null);
       const investigationTimerRef = useRef(null);
+      // Partial-scan state. When the PDF has SOME pages with text and SOME
+      // pages that are blank (likely scanned attachments — Prime Agreement,
+      // Exhibit B, signed schedules), we extract from the text pages first
+      // and offer to OCR the scanned pages on demand. Shape:
+      //   { parsed, scannedIdxs, textIdxs, ocring }
+      const [partialScan, setPartialScan] = useState(null);
       const [result, setResult] = useState(null);
       const [log, setLog] = useState([]);
       const [pmsConnected, setPmsConnected] = useState(false);
@@ -1849,7 +1921,7 @@
       const handleFile = useCallback(async (f) => {
         if (!f || f.type !== "application/pdf") { alert("Please drop a PDF file."); return; }
         // New contract → clear any prior project association so auto-match re-runs.
-        setFile(f); setParsing(true); setResult(null);
+        setFile(f); setParsing(true); setResult(null); setPartialScan(null);
         setSelectedProjectId(""); setAutoMatched(false); setPmsContext(null); pmsContextRef.current = null;
         setLog([{ type: "info", msg: `Reading ${f.name}…` }]);
         // Start the investigative animation — rotate through quotes every
@@ -1867,6 +1939,27 @@
         }, 1700);
         try {
           const parsed = await readPdf(f);
+
+          // Detect mixed text/scanned PDF. When the parent contract is
+          // text-bearing but attachments (Prime Agreement, Exhibit B) are
+          // scanned, we surface the gap and let the user opt into OCR.
+          // Detection runs before the whole-PDF isScanned branch — if the
+          // PDF is entirely scanned, isScanned takes over and we OCR all.
+          if (!parsed.isScanned) {
+            const TEXT_THRESHOLD = 100;
+            const scannedIdxs = [];
+            const textIdxs = [];
+            (parsed.pages || []).forEach((p, i) => {
+              ((p || "").length < TEXT_THRESHOLD ? scannedIdxs : textIdxs).push(i);
+            });
+            if (scannedIdxs.length > 0 && textIdxs.length > 0) {
+              setPartialScan({ parsed, scannedIdxs, textIdxs, ocring: false });
+              setLog((prev) => [...prev, {
+                type: "miss",
+                msg: `⚠ ${scannedIdxs.length} of ${parsed.numPages} pages have no extractable text — likely scanned attachments. Use the banner above to OCR them.`,
+              }]);
+            }
+          }
 
           // Scanned PDFs (image-only, no embedded text layer) need OCR
           // before any pattern-based extraction can work. Tesseract.js
@@ -1905,6 +1998,54 @@
           setInvestigation(null);
         }
       }, []);
+
+      // OCR just the scanned pages of a mixed PDF, then re-run extractAll
+      // with the merged text. User-triggered from the partial-scan banner.
+      // We don't auto-OCR because a 100+ page Exhibit B can take 15+ minutes
+      // and most contract reviews don't need the attached Prime Agreement
+      // chapter & verse.
+      const runPartialOcr = useCallback(async () => {
+        const ps = partialScan;
+        if (!ps || ps.ocring) return;
+        setPartialScan({ ...ps, ocring: true });
+        setLog((prev) => [...prev, { type: "info", msg: `Starting OCR of ${ps.scannedIdxs.length} scanned pages — this can take a while.` }]);
+        try {
+          const ocrMap = await ocrPdfPages(ps.parsed.pdfDoc, (p) => {
+            let msg;
+            if (p.stage === "render")       msg = `Rendering scanned p${p.sourcePage} for OCR (${p.page}/${p.total})…`;
+            else if (p.stage === "ocr")     msg = `OCR p${p.sourcePage} (${p.page}/${p.total})…`;
+            else if (p.stage === "init")    msg = p.msg || "Initializing OCR…";
+            else                             msg = `OCR: ${p.stage}`;
+            setLog((prev) => [...prev, { type: "info", msg }]);
+          }, ps.scannedIdxs);
+          // Merge OCR results back into the original pages array, replacing
+          // only the previously-blank entries. fullText is rebuilt from the
+          // merged pages so page offsets stay correct.
+          const newPages = [...ps.parsed.pages];
+          for (const [idx, txt] of ocrMap.entries()) newPages[idx] = txt;
+          ps.parsed.pages = newPages;
+          ps.parsed.fullText = newPages.join("\n\n");
+          setLog((prev) => [...prev, { type: "hit", msg: `OCR complete (${ocrMap.size} pages). Re-extracting with full text…` }]);
+          const res = extractAll(ps.parsed);
+          setResult(res);
+          setLog((prev) => [...prev, ...res.log]);
+          setPartialScan(null);
+        } catch (e) {
+          setLog((prev) => [...prev, { type: "miss", msg: `OCR error: ${e.message}` }]);
+          setPartialScan({ ...ps, ocring: false });
+        }
+      }, [partialScan]);
+
+      // Quick time estimate for the OCR banner. Tesseract.js averages ~5-10s
+      // per page on contract scans depending on density. We show a range so
+      // the user knows it's not seconds for a 100-page Exhibit B.
+      const estimateOcrTime = (n) => {
+        const low  = Math.max(1, Math.round(n * 4 / 60));
+        const high = Math.max(1, Math.round(n * 10 / 60));
+        if (n * 10 < 60) return `~${n * 5}s`;
+        if (low === high) return `~${low} min`;
+        return `~${low}–${high} min`;
+      };
 
       // Pull the source URL out of a DataTransfer if the drag provided one.
       // Behavior by drag source:
@@ -2005,6 +2146,10 @@
           // standing-coverage figures or the flag-id → insurance-line map.
           insuranceComparison: computeInsuranceComparison(result.flags, SETTY_STANDARDS, result.sourceText || ""),
           settyStandardMultiplier: SETTY_STANDARDS.multiplier,
+          // Counterparty signers — name + title pulled from signature block.
+          // Often empty for templates sent unsigned; populated for executed
+          // contracts. The "who do I call about an amendment" answer.
+          signatories: result.signatories || [],
         };
         if (sendToPMS(payload)) {
           setSendState("sent");
@@ -2215,6 +2360,45 @@
             {/* MIDDLE — flags banner + log */}
             <div className="panel">
               <h2>2. Override Clauses & Extraction Log</h2>
+              {partialScan && (
+                <div style={{ background: "#78350F", border: "1px solid #F59E0B", borderRadius: 8, padding: "12px 14px", marginBottom: 12, color: "#FEF3C7" }}>
+                  {partialScan.ocring ? (
+                    <>
+                      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                        ⏳ OCR running on {partialScan.scannedIdxs.length} pages…
+                      </div>
+                      <div style={{ fontSize: 11 }}>
+                        See the log below for per-page progress. Don't close this tab.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
+                        ⚠ {partialScan.scannedIdxs.length} of {partialScan.parsed.numPages} pages couldn't be read as text
+                      </div>
+                      <div style={{ fontSize: 11.5, lineHeight: 1.5, marginBottom: 10 }}>
+                        Those pages are likely scanned attachments — Prime Agreement, Exhibit B, signed schedules.
+                        Anything specified there (insurance limits, fee schedules, additional clauses) won't be in this
+                        extraction. OCR those pages to fill them in, or skip if you only need what's in the parent contract.
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <button
+                          onClick={runPartialOcr}
+                          style={{ background: "#D97706", color: "#FFFBEB", border: "none", borderRadius: 4, padding: "6px 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          OCR {partialScan.scannedIdxs.length} pages ({estimateOcrTime(partialScan.scannedIdxs.length)})
+                        </button>
+                        <button
+                          onClick={() => setPartialScan(null)}
+                          style={{ background: "transparent", color: "#FEF3C7", border: "1px solid #B45309", borderRadius: 4, padding: "6px 12px", fontSize: 11.5, cursor: "pointer" }}
+                        >
+                          Skip
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               {parsing && investigation && (
                 <div className="investigating">
                   <span className="investigating-emoji" key={investigation.emoji}>{investigation.emoji}</span>
