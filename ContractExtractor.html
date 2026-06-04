@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v32-suppress-within-ins";
+    window.__appVersion = "2026-06-04-extractor-v33-rawflags-curly-mult";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1456,7 +1456,11 @@
       // consumed the slot and the year never got captured for "C401™ – 2017".
       // "TM" / "SM" handled as a literal too in case the PDF rendered it as
       // ASCII rather than the unicode codepoint.
-      const aiaRe = /AIA\s+Document\s+([A-Z]\s*\d{3,4})\s*(?:[™®]|TM|SM)?\s*(?:[–\-]\s*(\d{4}))?(?:\s*[,;:—\-]\s*([^\n]{1,80}))?/gi;
+      // Description stops at the next comma/semicolon/period as well as newline,
+      // so titles like "AIA G202-2013 — Project Building Information Modeling
+      // Protocol Form" don't slurp the next clause ("...Form, shall be at the
+      // using or re...") into the captured description.
+      const aiaRe = /AIA\s+Document\s+([A-Z]\s*\d{3,4})\s*(?:[™®]|TM|SM)?\s*(?:[–\-]\s*(\d{4}))?(?:\s*[,;:—\-]\s*([^\n,;.]{1,80}))?/gi;
       while ((m = aiaRe.exec(text)) !== null) {
         const code = m[1].replace(/\s+/g, "");
         if (aiaCodeSeen.has(code)) continue;
@@ -1527,7 +1531,7 @@
       // the contract fee.
       const feeSearchText = clientText || text;
       const feeM = feeSearchText.match(/(?:total\s+fee|lump\s+sum(?:\s+fee)?|fixed\s+fee|fee\s+(?:in\s+the\s+amount\s+of|not\s+to\s+exceed|of))[^.\n]{0,150}?(\$[\d,]+(?:\.\d{2})?)/i)
-                || feeSearchText.match(/(?<!Workers['']?\s)(?<!Worker\s)(?:compensation|fee)[^.\n]{0,80}?(\$[\d,]+(?:\.\d{2})?)/i);
+                || feeSearchText.match(/(?<!Workers[‘’‛'`]?\s)(?<!Worker\s)(?:compensation|fee)[^.\n]{0,80}?(\$[\d,]+(?:\.\d{2})?)/i);
       if (feeM) {
         // feeM.index is into feeSearchText. When that's clientText, it's a
         // prefix of fullText so the index also addresses fullText correctly.
@@ -1629,7 +1633,7 @@
       const out = {};
       // Governing law: "governed by the laws of the State of X" / "governed by
       // and construed in accordance with the laws of X" / etc.
-      let m = text.match(/govern(?:ed)?\s+(?:by\s+(?:and\s+construed\s+(?:in\s+accordance\s+with\s+)?)?)?the\s+laws\s+of\s+(?:the\s+(?:State|Commonwealth|District)\s+of\s+)?([A-Z][A-Za-z][A-Za-z .]+?)(?:[,.\n]|\s+without|\s+excluding)/);
+      let m = text.match(/govern(?:ed)?\s+(?:by\s+(?:and\s+construed\s+(?:in\s+accordance\s+with\s+)?)?)?the\s+laws\s+of\s+(?:the\s+(?:State|Commonwealth|District)\s+of\s+)?([A-Z][A-Za-z][A-Za-z .]+?)(?:[,.\n]|\s+without|\s+excluding|\s+except|\s+excepting|\s+other\s+than)/);
       if (m) out.governingLaw = makeField(m[1].trim(), "high", "governing law clause");
       else out.governingLaw = makeField("", "empty", "");
 
@@ -1708,7 +1712,21 @@
         return isNaN(n) ? null : Math.round(n);
       };
       const suppressedInsurance = [];
+      const suppressedOther = [];
       const flags = rawFlags.filter((f) => {
+        // Multiplier flag: contract sets a labor multiplier. Setty's posture is
+        // the higher the better (above standard = more margin). Suppress when
+        // the captured multiplier is at or above Setty's standard. Only flag
+        // when BELOW (margin squeeze).
+        if (f.id === "multiplier") {
+          const required = parseFloat(String(f.capturedValue || "").replace(/[^0-9.]/g, ""));
+          const std = SETTY_STANDARDS.multiplier;
+          if (!isNaN(required) && typeof std === "number" && required >= std) {
+            suppressedOther.push({ label: f.label, msg: `required ${required.toFixed(2)} is at or above Setty's standard ${std}` });
+            return false;
+          }
+          return true;
+        }
         const cfg = INS_FLAG_MAP[f.id];
         if (!cfg) return true;                                            // not an insurance flag
         const o = SETTY_STANDARDS.insurance && SETTY_STANDARDS.insurance[cfg.key];
@@ -1723,6 +1741,9 @@
       });
       for (const s of suppressedInsurance) {
         log.push({ type: "info", msg: `Insurance flag suppressed — ${s.label} required $${s.required.toLocaleString()} is within Setty's standing $${s.setty.toLocaleString()}.` });
+      }
+      for (const s of suppressedOther) {
+        log.push({ type: "info", msg: `Flag suppressed — ${s.label}: ${s.msg}.` });
       }
       for (const f of flags) {
         const locator = [f.sectionLabel, f.pageNumber ? `p. ${f.pageNumber}` : ""].filter(Boolean).join(" · ");
@@ -1860,6 +1881,13 @@
         log,
         docType,
         flags,
+        // rawFlags is the UNFILTERED flag list — used by computeInsurance-
+        // Comparison so the Key Numbers block still shows what the contract
+        // required, even when the insurance flag itself was suppressed (because
+        // the required limit was within Setty's standing coverage). flags is
+        // for display in Override Clauses; rawFlags is for downstream
+        // numerical comparisons that need the captured values.
+        rawFlags,
         // Pass through the CLIENT contract text (not the full text incl. Setty's
         // attached proposal) so downstream consumers like insurance-deferral
         // detection naturally inherit the boundary. Cheap by reference.
@@ -2579,7 +2607,10 @@
           // Pre-computed comparison rows for the OneNote Key Numbers block.
           // Computed here so SettyPMS doesn't need to duplicate Setty's
           // standing-coverage figures or the flag-id → insurance-line map.
-          insuranceComparison: computeInsuranceComparison(result.flags, SETTY_STANDARDS, result.sourceText || ""),
+          // rawFlags (not flags) so the Key Numbers comparison still sees
+          // insurance limits even when their flag was suppressed for being
+          // within Setty's standing coverage.
+          insuranceComparison: computeInsuranceComparison(result.rawFlags || result.flags, SETTY_STANDARDS, result.sourceText || ""),
           settyStandardMultiplier: SETTY_STANDARDS.multiplier,
           // Counterparty signers — name + title pulled from signature block.
           // Often empty for templates sent unsigned; populated for executed
