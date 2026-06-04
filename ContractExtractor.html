@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v19-reimb-tightened";
+    window.__appVersion = "2026-06-04-extractor-v20-tier-labels";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1227,7 +1227,7 @@
       log.push({ type: "info", msg: `Document type: ${docType.type}${docType.year ? " ("+docType.year+")" : ""}` });
 
       // 2. OVERRIDE FLAGS — the primary output
-      log.push({ type: "tier", msg: "Scanning for override clauses…" });
+      log.push({ type: "tier", msg: "Override clauses" });
       const flags = detectFlags(text);
       for (const f of flags) {
         log.push({ type: "flag", msg: `⚑ ${f.label}` });
@@ -1243,7 +1243,7 @@
       if (flags.length === 0) log.push({ type: "info", msg: "No override flags detected — verify manually" });
 
       // 3. Document metadata
-      log.push({ type: "tier", msg: "Extracting document metadata…" });
+      log.push({ type: "tier", msg: "Document metadata" });
       const dateRes = parseContractDate(text);
       const contractDate = dateRes
         ? makeField(dateRes.date, dateRes.confidence, dateRes.source)
@@ -1261,15 +1261,15 @@
       if (ids.contractExpiration.value)  log.push({ type: "hit", msg: `Contract Expiration: ${ids.contractExpiration.value}` });
 
       // 4. Payment terms
-      log.push({ type: "tier", msg: "Extracting payment terms…" });
+      log.push({ type: "tier", msg: "Payment terms" });
       const payment = extractPaymentTerms(text, flags);
 
       // 5. Reimbursable rules
-      log.push({ type: "tier", msg: "Extracting reimbursable expense rules…" });
+      log.push({ type: "tier", msg: "Reimbursable expense rules" });
       const reimb = extractReimbursableRules(text, flags);
 
       // 6. Schedule
-      log.push({ type: "tier", msg: "Extracting schedule terms…" });
+      log.push({ type: "tier", msg: "Schedule terms" });
       const schedule = extractSchedule(text, flags);
 
       return {
