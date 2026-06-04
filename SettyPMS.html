@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-05-25-pms-v19";
+    window.__appVersion = "2026-06-04-pms-v20-extraction-log";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3094,6 +3094,42 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
       html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:12px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;">${e(f.fullSection)}</div>`;
       html += `</div>`;
     }
+  }
+
+  // Extraction log — added 2026-06-04 per user request. Shows the full
+  // run log from the extractor including per-flag full-paragraph captures
+  // (the "section" type entries carry the entire contract paragraph that
+  // each pattern matched against). Skipped if the extractor didn't send a
+  // log (older extractor versions, or empty extraction).
+  const log = Array.isArray(extraction.log) ? extraction.log : [];
+  if (log.length > 0) {
+    html += `<h2 ${h2}>Extraction Log</h2>`;
+    html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:8px;">`;
+    html += `Full trace from the ContractExtractor run, including the contract paragraph captured for each detected override clause.</p>`;
+    html += `<div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:4px;padding:10px 14px;font-size:10pt;line-height:1.5;">`;
+    for (const row of log) {
+      const t = row && row.type;
+      const msg = row && row.msg ? String(row.msg) : "";
+      if (t === "tier") {
+        html += `<div style="font-weight:700;color:${NAVY};margin-top:10px;font-size:10.5pt;">${e(msg)}</div>`;
+      } else if (t === "section") {
+        // Full paragraph capture — the headline output of the log
+        html += `<div style="margin:6px 0 8px 0;border-left:3px solid #FCD34D;background:#FFFBEB;padding:8px 12px;border-radius:3px;">`;
+        html += `<div style="font-size:9.5pt;font-weight:600;color:#78350F;margin-bottom:4px;">⚑ ${e(row.flagLabel || "Flag")} — contract paragraph:</div>`;
+        html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10pt;color:#1F2937;white-space:pre-wrap;">${e(msg)}</div>`;
+        html += `</div>`;
+      } else if (t === "flag") {
+        html += `<div style="color:#92400E;font-weight:600;">${e(msg)}</div>`;
+      } else if (t === "hit") {
+        html += `<div style="color:#166534;">✓ ${e(msg)}</div>`;
+      } else if (t === "miss") {
+        html += `<div style="color:#9CA3AF;font-style:italic;">✗ ${e(msg)}</div>`;
+      } else {
+        // info / unknown
+        html += `<div style="color:#4B5563;">${e(msg)}</div>`;
+      }
+    }
+    html += `</div>`;
   }
 
   // Provenance footer
