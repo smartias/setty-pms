@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-03-extractor-v11";
+    window.__appVersion = "2026-06-04-extractor-v17-pmsctx-merged";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -26,6 +26,13 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   </script>
+
+  <!-- Tesseract.js for OCR on scanned/image-only PDFs (e.g., contracts that
+       were printed, signed, and re-scanned for storage). pdf.js can only
+       extract embedded text; Tesseract reads pixels. Loaded eagerly so it's
+       ready when needed, but only invoked when a dropped PDF has no
+       extractable text. First OCR run downloads ~10MB English language data. -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -160,6 +167,43 @@
       vertical-align: middle; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Investigative animation — shown in the middle column while a PDF is
+       being parsed/OCR'd/extracted. Big magnifying glass that wiggles like
+       it's scanning the page, plus rotating witty captions underneath. */
+    .investigating {
+      background: linear-gradient(135deg, #1E293BCC 0%, #4338CACC 60%, #7C3AEDCC 100%);
+      border: 1px solid #6366F1;
+      border-radius: 10px;
+      padding: 18px 18px;
+      margin-bottom: 14px;
+      display: flex; align-items: center; gap: 16px;
+      box-shadow: 0 4px 18px rgba(99, 102, 241, 0.25);
+    }
+    .investigating-emoji {
+      font-size: 36px; line-height: 1;
+      animation: investigate-wiggle 1.7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      display: inline-block; flex-shrink: 0;
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
+    }
+    .investigating-text {
+      font-size: 14px; font-weight: 600; color: #E0E7FF;
+      flex: 1; line-height: 1.4;
+      font-style: italic;
+      animation: investigate-fade 0.5s ease-out;
+    }
+    @keyframes investigate-wiggle {
+      0%   { transform: translateX(0)    rotate(0)    scale(1); }
+      20%  { transform: translateX(8px)  rotate(-14deg) scale(1.05); }
+      40%  { transform: translateX(0)    rotate(0)    scale(1); }
+      60%  { transform: translateX(-8px) rotate(14deg)  scale(1.05); }
+      80%  { transform: translateX(0)    rotate(0)    scale(1); }
+      100% { transform: translateX(0)    rotate(0)    scale(1); }
+    }
+    @keyframes investigate-fade {
+      from { opacity: 0.3; transform: translateY(3px); }
+      to   { opacity: 1;   transform: translateY(0); }
+    }
   </style>
 </head>
 <body>
@@ -168,15 +212,115 @@
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useCallback, useRef } = React;
 
+    // ════════════════════════════════════════════════════════════════════
+    // Investigative quotes — rotated while a contract is being extracted.
+    // Plain strings; the emoji shown alongside rotates independently from
+    // EMOJI_POOL so we don't have to pair every quote to a specific icon.
+    //
+    // These are intentionally observational/dry rather than action-verb
+    // phrases — the punchline IS the line. Most are MEP/architecture
+    // industry-insider jokes; some are AIA-contract-specific.
+    // ════════════════════════════════════════════════════════════════════
+    const INVESTIGATIVE_QUOTES = [
+      "‘Per contract’ is doing a lot of heavy lifting here.",
+      "Somewhere an AIA exhibit is quietly contradicting this email.",
+      "CA scope: unlimited in spirit, eight site visits in reality.",
+      "The architect said ‘minor revision.’ The bulletin is 47 pages.",
+      "We regret to inform you the existing conditions were fictional.",
+      "Nothing says optimism like a rooftop fully occupied by future equipment.",
+      "This RFI appears to be seeking emotional support from the engineer.",
+      "‘Design-assist’ is starting to sound a lot like delegated design.",
+      "The BIM model is clash-free if you don’t count the actual building.",
+      "Contractor to verify dimensions. Contractor did not verify dimensions.",
+      "The schedule is aggressive, the fee is lean, and the ceiling space is gone.",
+      "Somebody definitely value-engineered the maintenance clearance.",
+      "Awaiting utility feedback: the unofficial sixth phase of design.",
+      "Every owner wants innovation until the deduct alternate comes back.",
+      "There are now more addenda than bid drawings.",
+      "This meeting could have been one markup cloud.",
+      "Field conditions continue to express themselves creatively.",
+      "‘No major comments’ from DOB is the closest thing to love we get.",
+      "The mechanical room was apparently designed via escape room logic.",
+      "Somewhere in this building is a damper no human can access.",
+      "The coordination meeting has entered its natural predator-prey phase.",
+      "That duct routing is less ‘engineered’ and more ‘manifested.’",
+      "Please see attached: consequences of reducing SD effort.",
+      "The phrase ‘simple replacement’ has never once been accurate.",
+      "ConEd comments received. Project morale reduced accordingly.",
+      "We are now discovering undocumented systems from multiple geological eras.",
+      "Architectural ceiling heights remain spiritually ambitious.",
+      "‘Reuse existing infrastructure’ is always where the horror begins.",
+      "The contractor has interpreted the drawings with confidence.",
+      "This substitution request appears to have been inspired by vibes.",
+      "Nothing unites a project team like discovering an undersized electrical service.",
+      "The commissioning agent has entered the chat.",
+      "Every coordination issue is technically solvable with enough soffits.",
+      "The roof plan currently resembles an HVAC battle royale.",
+      "No one truly owns the shaft until CD.",
+      "Another day, another ‘existing condition not shown on drawings.’",
+      "The client requested LEED Gold with a Bronze budget.",
+      "The phrase ‘basis of design’ is being used very generously.",
+      "Somewhere, Appendix G is ruining an architect’s afternoon.",
+      "This AHU replacement now includes philosophy, archaeology, and grief.",
+      "There is no greater optimism than ‘future tenant by others.’",
+      "The owner requested resiliency, sustainability, and no visible equipment.",
+      "Setty has reviewed the contractor’s interpretation with concern.",
+      "This submittal answers questions no one asked.",
+      "AIA contracts: where every sentence costs money later.",
+      "The one thing moving faster than the schedule is scope creep.",
+      "If the model were accurate, we wouldn’t need site visits.",
+      "The coordination drawings have become aspirational art.",
+      "‘As discussed in meeting’ — the most dangerous phrase in construction.",
+      "The contractor’s means and methods now include hope.",
+      "This detail appears to have survived multiple administrations.",
+      "Nothing says ‘public project’ like five stakeholders and zero ceiling space.",
+      "Somewhere, an engineer is quietly adding an exclusion.",
+      "The permit set and the bid set are now estranged cousins.",
+      "The existing panel schedule appears to have been written during wartime.",
+      "MEP scope now includes diplomacy and forensic investigation.",
+      "The equipment fits perfectly in the rendering.",
+      "This project contains several hidden boss fights.",
+      "A rooftop unit has never once respected an architectural elevation.",
+      "The fee proposal was accepted moments before reality emerged.",
+      "Every all-electric project eventually reaches the ‘where does the power come from’ phase.",
+      "‘Minimal impact to operations’ has entered the risk register.",
+      "The ceiling coordination plan is now a cry for help.",
+      "One more owner-requested change and this becomes a new project.",
+      "Somewhere in New York, a DOB reviewer is sharpening a red pen.",
+      "The contractor found a cheaper option and a more expensive problem.",
+      "This project was coordinated in the ancient tradition of overlaying PDFs.",
+      "We have officially exceeded the structural engineer’s emotional load capacity.",
+      "The phrase ‘like-for-like replacement’ is under active investigation.",
+      "The plumbing riser diagram and reality are no longer on speaking terms.",
+      "A field walk would have prevented this entire email chain.",
+      "The model is LOD 300. The expectations are LOD 900.",
+      "The client requested a world-class facility with existing infrastructure.",
+      "Please hold while the engineers negotiate with physics.",
+      "This project has entered the ‘who approved this’ phase.",
+      "Nothing motivates coordination like a missing shaft opening.",
+      "Setty recommends additional investigation, prayer, and contingency.",
+    ];
+
+    // Emoji pool — rotated independently of quotes, keeps the investigative
+    // visual identity (magnifier / detective / scrutiny icons) while quotes
+    // carry the personality.
+    const INVESTIGATIVE_EMOJI = ["🔍","🕵️","🧐","🔎","📋","⚖️","🚩","🧾","💼","🎯","🔬","📐","🗝️","📡","🚨","🪪","📜","🧮"];
+
     // ========================================================================
     // postMessage integration with SettyPMS
     // ========================================================================
-    const PMS_ORIGINS = [
+    // Deduplicated with Set — when the extractor is hosted at github.io,
+    // window.location.origin === "https://smartias.github.io" and the array
+    // would otherwise contain that target twice. The sendToPMS loop posts
+    // once per entry, so duplicates → double-delivery → duplicate OneNote
+    // pages (or MSAL interaction_in_progress when the two concurrent token
+    // calls collide). Set ensures each effective target gets one postMessage.
+    const PMS_ORIGINS = [...new Set([
       "null",                                  // file:// during local dev
       "https://smartias.github.io",            // GitHub Pages deploy
       "https://settyassociates.sharepoint.com", // if PMS is also served via SharePoint
-      window.location.origin,                  // same-origin (both files on same GH Pages)
-    ];
+      window.location.origin,                  // same-origin fallback
+    ])];
 
     function sendToPMS(payload) {
       if (!window.opener) {
@@ -218,7 +362,61 @@
         }
         pages.push(text);
       }
-      return { pages, fullText: pages.join("\n\n"), numPages: pdf.numPages, fileName: file?.name || "" };
+      const fullText = pages.join("\n\n");
+      // Scanned PDFs (image-only, no embedded text layer) come in with
+      // essentially zero extractable text. Threshold of 500 chars covers
+      // edge cases like a stray watermark or page-number while still
+      // catching legitimate scanned contracts.
+      const isScanned = fullText.length < 500 && pdf.numPages > 0;
+      // Return the pdf doc itself so the caller can render pages to canvas
+      // for OCR. pdf.js doc has no `close()` so leaking it is fine.
+      return { pages, fullText, numPages: pdf.numPages, fileName: file?.name || "", isScanned, pdfDoc: pdf };
+    }
+
+    // OCR a pdf.js document by rendering each page to a high-DPI canvas
+    // and feeding it to Tesseract.js. Tesseract's logger is wired to
+    // onProgress so the UI can show "OCR page 3/13" type updates.
+    async function ocrPdfPages(pdfDoc, onProgress) {
+      if (typeof Tesseract === "undefined") {
+        throw new Error("Tesseract.js failed to load (check your network connection).");
+      }
+      if (onProgress) onProgress({ stage: "init", msg: "Initializing OCR engine (first run downloads ~10MB language data)…" });
+      // scale: 2.0 gives ~150 DPI which is the sweet spot for Tesseract
+      // accuracy on contract documents. Higher scales help marginally but
+      // slow OCR significantly and use more memory.
+      const SCALE = 2.0;
+      const worker = await Tesseract.createWorker("eng", 1, {
+        logger: (m) => {
+          // Throttle: only log status changes, not progress percentage spam.
+          if (m.status && m.progress === 0) {
+            if (onProgress) onProgress({ stage: m.status });
+          }
+        },
+      });
+      const pages = [];
+      try {
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+          if (onProgress) onProgress({ stage: "render", page: i, total: pdfDoc.numPages });
+          const page = await pdfDoc.getPage(i);
+          const viewport = page.getViewport({ scale: SCALE });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          if (onProgress) onProgress({ stage: "ocr", page: i, total: pdfDoc.numPages });
+          const { data } = await worker.recognize(canvas);
+          pages.push(data.text || "");
+
+          // Release canvas memory — scanned contracts can have huge pages
+          canvas.width = 0; canvas.height = 0;
+        }
+      } finally {
+        // Always terminate worker, even on error, to free its memory
+        try { await worker.terminate(); } catch (_) {}
+      }
+      return pages;
     }
 
     // ========================================================================
@@ -241,11 +439,32 @@
         label: "Pay-when-paid (overrides Setty's Net 30)",
         severity: "high",
         patterns: [
-          /after\s+the\s+(?:Architect|Consultant|Contractor|Prime|prime\s+consultant)\s+is\s+paid/i,
+          // Classic AIA phrasings
+          /after\s+the\s+(?:Architect|Consultant|Contractor|Prime|prime\s+consultant)\s+(?:is\s+paid|has\s+been\s+paid|has\s+received\s+payment|receives\s+payment)/i,
           /paid\s+by\s+the\s+Owner\s+under\s+the\s+Prime/i,
           /payments?\s+to\s+(?:the\s+)?(?:Consultant|Subconsultant)\s+shall\s+be\s+subject\s+to\s+(?:reduction|withholding)/i,
           /pay[\s\-]when[\s\-]paid/i,
           /in\s+proportion\s+to\s+the\s+amounts\s+received\s+from\s+the\s+Owner/i,
+          // ── New phrasings added after user reported misses ──
+          // "depends ... upon ... receipt of such amounts from the Owner"
+          // Also matches the "dependent" form and tolerates an interrupting
+          // parenthetical clause like ", as a condition precedent,"
+          /(?:depends?|dependent|contingent)\s*(?:,[^,.]{0,80},)?\s*(?:up)?on\s+(?:the\s+)?(?:Architect|Prime|Consultant|Contractor)\'?s?\s+receipt\s+of\s+(?:such\s+)?(?:amounts|payment|funds)\s+from\s+(?:the\s+)?Owner/i,
+          // "payment to the Consultant is dependent ... upon the Architect's receipt of payment"
+          // (catches the AIA §11.6.3 variant where "dependent" is used and
+          // the parenthetical is "as a condition precedent")
+          /payment\s+to\s+(?:the\s+)?(?:Sub)?[Cc]onsultant\s+is\s+dependent[^.]{0,150}?(?:Architect|Prime)\'?s?\s+receipt/i,
+          // "obligation to pay ... shall be reduced proportionately"
+          /obligation\s+to\s+(?:make\s+(?:any\s+)?payments?|pay)[^.]{0,250}?(?:reduced\s+proportionate|proportionate(?:ly)?\s+reduced)/i,
+          // "within a reasonable time after the Architect has received payment"
+          /within\s+(?:a\s+)?reasonable\s+time\s+after[^.]{0,200}?(?:Architect|Consultant|Contractor|Prime)\s+(?:has\s+received|receives|is\s+paid)/i,
+          // "exercise reasonable care in obtaining payment" — telltale of pay-when-paid
+          /exercise\s+(?:reasonable\s+)?(?:care|(?:diligent\s+)?efforts?)\s+(?:in\s+)?(?:obtain(?:ing)?|collect(?:ing)?)\s+(?:prompt\s+)?payment[^.]{0,200}?(?:from\s+(?:the\s+)?Owner|for\s+(?:the\s+)?(?:Sub)?[Cc]onsultant)/i,
+          // "if ... receives partial payment ... reduced proportionately"
+          /(?:partial|pro[\s\-]?rata)\s+payment[^.]{0,200}?(?:reduced\s+proportionate|in\s+proportion)/i,
+          // "Consultant acknowledges the risk of non-payment" — explicit
+          // acknowledgement that payment depends on prime getting paid
+          /(?:risk\s+of\s+non[\s\-]?payment|non[\s\-]?payment\s+(?:to\s+(?:the\s+)?)?(?:Sub)?[Cc]onsultant\s+by\s+(?:the\s+)?Architect)/i,
         ],
         explanation: "Setty's payment is contingent on the prime/architect being paid by the Owner. This overrides Setty's standard Net 30 terms and can significantly delay cashflow.",
       },
@@ -1293,10 +1512,22 @@
     function App() {
       const [file, setFile] = useState(null);
       const [parsing, setParsing] = useState(false);
+      // Investigative caption that rotates through INVESTIGATIVE_QUOTES while
+      // parsing is in progress. Holds { emoji, line } or null when not parsing.
+      // The timer is held in a ref so we can clear it from any codepath that
+      // ends parsing (success, error, or unmount).
+      const [investigation, setInvestigation] = useState(null);
+      const investigationTimerRef = useRef(null);
       const [result, setResult] = useState(null);
       const [log, setLog] = useState([]);
       const [pmsConnected, setPmsConnected] = useState(false);
       const [dragging, setDragging] = useState(false);
+      // The SharePoint/web URL the file was dragged from, if the browser
+      // populated it in the DataTransfer (works for drags out of SharePoint
+      // Online, browser tabs, some email clients). Empty for File Explorer
+      // drags. Sent to PMS so the OneNote page can show where the contract
+      // came from in addition to the record's curated folder.
+      const [dragSourceUrl, setDragSourceUrl] = useState("");
       // sendState: "idle" → "sent" (reverts to idle after a few seconds so
       // the user can re-send if they made a typo or want to retry). Gives
       // visible confirmation that the click was registered.
@@ -1356,19 +1587,100 @@
         setFile(f); setParsing(true); setResult(null);
         setSelectedProjectId(""); setAutoMatched(false); setPmsContext(null); pmsContextRef.current = null;
         setLog([{ type: "info", msg: `Reading ${f.name}…` }]);
+        // Start the investigative animation — rotate through quotes every
+        // ~1.7s. Pick a random starting index so consecutive extractions
+        // don't always lead with the same line. Emoji rotates independently
+        // from a pool so the visual identity stays "investigative" without
+        // having to hand-pair each quote to a specific icon.
+        if (investigationTimerRef.current) clearInterval(investigationTimerRef.current);
+        let qIdx = Math.floor(Math.random() * INVESTIGATIVE_QUOTES.length);
+        const pickEmoji = () => INVESTIGATIVE_EMOJI[Math.floor(Math.random() * INVESTIGATIVE_EMOJI.length)];
+        setInvestigation({ emoji: pickEmoji(), line: INVESTIGATIVE_QUOTES[qIdx] });
+        investigationTimerRef.current = setInterval(() => {
+          qIdx = (qIdx + 1) % INVESTIGATIVE_QUOTES.length;
+          setInvestigation({ emoji: pickEmoji(), line: INVESTIGATIVE_QUOTES[qIdx] });
+        }, 1700);
         try {
           const parsed = await readPdf(f);
+
+          // Scanned PDFs (image-only, no embedded text layer) need OCR
+          // before any pattern-based extraction can work. Tesseract.js
+          // runs entirely in the browser — no upload, contract stays local.
+          if (parsed.isScanned) {
+            setLog((prev) => [...prev,
+              { type: "info", msg: `⚠ No embedded text found — ${parsed.numPages}-page scanned PDF.` },
+              { type: "info", msg: `Running OCR (Tesseract.js, in-browser). First page-set may take 30-60s; subsequent pages ~2-5s each.` },
+            ]);
+            const ocrPages = await ocrPdfPages(parsed.pdfDoc, (p) => {
+              let msg;
+              if (p.stage === "render")      msg = `Rendering p${p.page}/${p.total} for OCR…`;
+              else if (p.stage === "ocr")    msg = `OCR p${p.page}/${p.total}…`;
+              else if (p.stage === "init")   msg = p.msg || "Initializing OCR…";
+              else                            msg = `OCR: ${p.stage}`;
+              setLog((prev) => [...prev, { type: "info", msg }]);
+            });
+            parsed.pages = ocrPages;
+            parsed.fullText = ocrPages.join("\n\n");
+            setLog((prev) => [...prev, { type: "hit", msg: `OCR complete: ${parsed.fullText.length} chars extracted from ${parsed.numPages} pages.` }]);
+          }
+
           const res = extractAll(parsed);
           setResult(res); // auto-match effect fills structural fields once a project resolves
           setLog((prev) => [...prev, ...res.log]);
         } catch (e) {
           setLog((prev) => [...prev, { type: "miss", msg: `Error: ${e.message}` }]);
           console.error(e);
-        } finally { setParsing(false); }
+        } finally {
+          setParsing(false);
+          // Stop the investigative animation regardless of success/failure.
+          if (investigationTimerRef.current) {
+            clearInterval(investigationTimerRef.current);
+            investigationTimerRef.current = null;
+          }
+          setInvestigation(null);
+        }
       }, []);
+
+      // Pull the source URL out of a DataTransfer if the drag provided one.
+      // Behavior by drag source:
+      //   - SharePoint Online web: usually populates text/html with the file's
+      //     SharePoint URL inside an <a href>. Sometimes text/uri-list too.
+      //   - File Explorer with OneDrive sync: typically only `files`, no URL.
+      //   - Email attachment in Outlook web: may include an attachment URL.
+      //   - Drag from a browser tab/bookmark: text/uri-list with page URL.
+      // Returns "" if no URL was provided.
+      function extractDragSourceUrl(dt) {
+        if (!dt) return "";
+        // RFC 2483: one URI per line, lines starting with # are comments
+        const list = dt.getData("text/uri-list");
+        if (list) {
+          for (const line of list.split(/\r?\n/)) {
+            const t = line.trim();
+            if (t && !t.startsWith("#")) return t;
+          }
+        }
+        // Firefox-specific: "url\ntitle"
+        const moz = dt.getData("text/x-moz-url");
+        if (moz) {
+          const first = moz.split(/\r?\n/)[0].trim();
+          if (first) return first;
+        }
+        // text/html — first <a href="…">
+        const html = dt.getData("text/html");
+        if (html) {
+          const m = html.match(/href\s*=\s*["']([^"']+)["']/i);
+          if (m && /^https?:\/\//i.test(m[1])) return m[1];
+        }
+        // text/plain — sometimes a bare URL
+        const text = dt.getData("text/plain");
+        if (text && /^https?:\/\//.test(text.trim())) return text.trim();
+        return "";
+      }
 
       const onDrop = (e) => {
         e.preventDefault(); setDragging(false);
+        const sourceUrl = extractDragSourceUrl(e.dataTransfer);
+        setDragSourceUrl(sourceUrl);  // remember even before file is parsed
         if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
       };
 
@@ -1381,6 +1693,7 @@
         const f = result.fields;
         const payload = {
           fileName: file?.name,
+          dragSourceUrl,  // empty string if drag didn't carry a URL (e.g., File Explorer)
           docType: result.docType.type,
           docTypeYear: result.docType.year,
           isAIA: result.docType.isAIA,
@@ -1413,10 +1726,16 @@
         };
         if (sendToPMS(payload)) {
           setSendState("sent");
-          // Revert button to idle after 8s so the user can re-send if needed
-          // (e.g. they reviewed the modal in PMS, decided to tweak a field
-          // here, and want to push the update across again).
-          setTimeout(() => setSendState("idle"), 8000);
+          // Auto-close this popup after a short delay so the user doesn't
+          // have to manually close it. 1.5s gives them time to see the
+          // green "✓ Sent" confirmation. If close is blocked by the
+          // browser (rare for popups opened via window.open), revert the
+          // button after 8s so they can re-send or close manually.
+          setTimeout(() => {
+            try { window.close(); } catch (_) { /* may be blocked */ }
+            // If we're still here after 8s total (close was blocked), reset
+            setTimeout(() => setSendState("idle"), 6500);
+          }, 1500);
         }
       };
 
@@ -1496,6 +1815,16 @@
                 <div className="file-info">
                   <strong>{file.name}</strong><br/>
                   {(file.size / 1024 / 1024).toFixed(2)} MB
+                  {dragSourceUrl && (
+                    <div style={{ marginTop: 6, fontSize: 10, color: "#60A5FA", wordBreak: "break-all" }}
+                         title="Captured from the drag-and-drop source. Will be included in the OneNote analysis page.">
+                      📎 source:<br/>
+                      <a href={dragSourceUrl} target="_blank" rel="noreferrer"
+                         style={{ color: "#60A5FA", textDecoration: "none" }}>
+                        {dragSourceUrl.length > 80 ? dragSourceUrl.slice(0, 77) + "…" : dragSourceUrl}
+                      </a>
+                    </div>
+                  )}
                   {parsing && <div><span className="spinner"></span>Parsing…</div>}
                 </div>
               )}
@@ -1546,11 +1875,24 @@
                 pay-when-paid clauses, no-markup rules, conditions precedent, and similar terms that
                 supersede Setty's standard proposal. It does <em>not</em> re-extract Setty's own fee proposals.
               </p>
+              <p style={{fontSize: 11, color: "#94A3B8", lineHeight: 1.5, marginTop: 10}}>
+                Scanned/image-only PDFs are automatically OCR'd in the browser via Tesseract.js —
+                no upload, no server, contract stays on your machine. OCR takes 1–3 seconds per page
+                after the initial language-data download (~10MB, one time).
+              </p>
             </div>
 
             {/* MIDDLE — flags banner + log */}
             <div className="panel">
               <h2>2. Override Clauses & Extraction Log</h2>
+              {parsing && investigation && (
+                <div className="investigating">
+                  <span className="investigating-emoji" key={investigation.emoji}>{investigation.emoji}</span>
+                  <span className="investigating-text" key={investigation.line}>
+                    {investigation.line}
+                  </span>
+                </div>
+              )}
               {pmsContext && <PmsContextCard ctx={pmsContext} />}
               {result && <FlagsBanner flags={decorateFlags(result.flags, pmsContext)} />}
               {docTypeLabel && (
