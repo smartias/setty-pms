@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v29-prime-strict";
+    window.__appVersion = "2026-06-04-extractor-v30-skip-aia-hints";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1034,13 +1034,31 @@
     }
 
     // -- Parties --
+    // Strip AIA template-hint lines from a captured party block and collapse
+    // remaining whitespace. The hint "(Name, legal status, address and other
+    // information)" sits directly above the actual party name on AIA cover
+    // pages; without this, the captured client field reads as the hint text
+    // followed by the actual name with addresses jammed together.
+    function cleanPartyBlock(raw) {
+      if (!raw) return "";
+      const lines = raw.split(/\n/).map((l) => l.trim()).filter(Boolean);
+      const kept = [];
+      for (const line of lines) {
+        if (isAiaTemplateHint(line)) continue;
+        kept.push(line);
+      }
+      // Take the first content line — typically the party name. Subsequent
+      // lines are usually address/phone which clutter the field display.
+      return (kept[0] || "").replace(/\s+/g, " ").trim();
+    }
+
     function extractParties(text) {
       const cover = text.slice(0, 4000);
       // AIA: "BETWEEN the Consultant's client identified as the Architect: <CLIENT> and the Consultant: <SETTY>"
       let m = cover.match(/BETWEEN[\s\S]{0,80}?:\s*([\s\S]{20,300}?)\s+and\s+the\s+(?:Consultant|Architect|Contractor)[^:]*:\s*([\s\S]{20,300}?)(?=\s+for\s+the\s+following|\s+the\s+Project|\n\s*for\s|ARTICLE)/i);
       if (m) return {
-        client: { value: m[1].replace(/\s+/g, " ").trim(), confidence: "high", source: "AIA cover BETWEEN clause" },
-        settyRole: { value: m[2].replace(/\s+/g, " ").trim(), confidence: "high", source: "AIA cover BETWEEN clause" },
+        client: { value: cleanPartyBlock(m[1]), confidence: "high", source: "AIA cover BETWEEN clause" },
+        settyRole: { value: cleanPartyBlock(m[2]), confidence: "high", source: "AIA cover BETWEEN clause" },
       };
       // Non-AIA subcontract: "between <PRIME> and <SETTY>"
       m = cover.match(/between\s+([A-Z][A-Za-z &,\.'\-]+?)\s+\(["“]([^"”]+)["”][\s\S]{0,100}?\)\s+and\s+([A-Z][A-Za-z &,\.'\-]+?)\s+\(/);
@@ -1055,11 +1073,40 @@
     }
 
     // -- Project name --
+    // Identify AIA template-hint lines so we don't capture them as content.
+    // AIA forms include parenthetical instructions inline like:
+    //   (Include detailed description of Project, location, address and scope.)
+    //   (Name, legal status, address and other information)
+    //   (Fully describe the Portion of the Project for which the Consultant…)
+    //   (In words, indicate day, month, and year.)
+    // The actual filled-in value is on the line AFTER the hint. Skip hints
+    // (and pure-parenthetical lines generally) when walking captured content.
+    function isAiaTemplateHint(line) {
+      if (!line) return true;
+      const t = line.trim();
+      if (!t) return true;
+      // Pure parenthetical starting with a hint verb / placeholder word.
+      if (/^\(\s*(?:Include|Insert|Indicate|Name|Fully\s+describe|In\s+words|Describe|If\s+applicable|Identify|List|Clearly|Specify|Enter|State)\b/i.test(t)) return true;
+      // Any line that's entirely wrapped in a single parenthetical pair.
+      if (/^\([^)]+\)\s*$/.test(t)) return true;
+      return false;
+    }
+
     function extractProject(text) {
       const cover = text.slice(0, 4000);
-      // AIA section "PROJECT: ..." or "for the following PROJECT:"
-      let m = cover.match(/(?:for\s+the\s+following\s+)?PROJECT:\s*([^\n]{5,200})/i);
-      if (m) return makeField(m[1].trim(), "high", "AIA 'PROJECT:' label");
+      // AIA "for the following Project:" — capture the lines that follow,
+      // skipping AIA template hint parentheticals, and take the first real
+      // content line. Without this, we capture the hint itself
+      // ("(Include detailed description of Project, location, address and
+      // scope.)") which is meaningless.
+      let m = cover.match(/(?:for\s+the\s+following\s+)?PROJECT:\s*([\s\S]{5,800}?)(?:\n\s*\n|The\s+Architect\s+and\s+the\s+Consultant\s+agree|ARTICLE\s+\d|Scope\s+of\s+Work\s+as\s+per)/i);
+      if (m) {
+        const lines = m[1].split(/\n/).map((l) => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          if (isAiaTemplateHint(line)) continue;
+          return makeField(line, "high", "AIA 'PROJECT:' label (first content line after hint)");
+        }
+      }
       // Non-AIA: "for the performance of certain professional services for the [Project Name] (the "Project")"
       m = cover.match(/professional\s+services\s+for\s+the\s+([A-Z][^.]{5,150}?)\s+\(\s*(?:the\s+)?["“]?Project["”]?/i);
       if (m) return makeField(m[1].trim(), "medium", "subcontract 'professional services for the' clause");
