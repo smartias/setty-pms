@@ -21450,6 +21450,33 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
 }
 
 
+// Builds the plain-text message embedded inside the SharePoint sharing
+// invitation email Microsoft sends automatically. Goal: be self-sufficient —
+// a recipient who only sees this email (never the Outlook follow-up) should
+// know exactly what to do, including the OTP code flow for non-Microsoft
+// emails. Plain text only (no HTML), max 2000 chars per Graph spec.
+function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
+  const access = role === "write" ? "edit access" : "view access";
+  const purpose = role === "write"
+    ? "Use this folder to upload documents, drawings, and files you would like to share with the SETTY project team."
+    : "Project deliverables — drawings, reports, calculations — will be posted here as they are issued. You will be able to download files but not modify them.";
+  return (
+    'You have been granted ' + access + ' to the "' + folderLabel + '" folder for SETTY project ' + projLabel + '.\n\n' +
+    purpose + '\n\n' +
+    'HOW TO SIGN IN (first time only)\n\n' +
+    'Click the "Open" link above. Microsoft will ask you to verify your identity. Find your situation below:\n\n' +
+    '1. If your email is Gmail, Yahoo, AOL, or any non-Microsoft address:\n' +
+    '   The sign-in page will show your email, then offer to "Send code" (sometimes labeled "Use a one-time passcode"). Click it. Microsoft will email a 6-digit code to your inbox within ~30 seconds — check spam if you do not see it. Paste the code back into the sign-in page. You are in. No password is needed and no new account is being created — the code only confirms you own the email address.\n\n' +
+    '2. If your email is a Microsoft work account (your company uses Microsoft 365):\n' +
+    '   Sign in with your normal work email and password.\n\n' +
+    '3. If your email is a personal Microsoft account (Outlook.com, Hotmail, Live, MSN):\n' +
+    '   Sign in with your personal Microsoft password.\n\n' +
+    'After your first sign-in, bookmark the folder URL — you will not need this email again.\n\n' +
+    'Please reply to this email or contact the SETTY project team if you have any trouble accessing the folder.'
+  );
+}
+
+
 // Portal Sharing Modal
 // Shows current external (non-@setty.com) permissions on Client Uploads +
 // Setty Deliverables, and lets the user add/remove contacts from the clients
@@ -21575,8 +21602,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim()].filter(Boolean).join(" - ");
       for (const t of targets) {
         const folderLabel = t.itemId === perms.uploadsId ? "Client Uploads" : "Setty Deliverables";
-        const message = "You have been granted " + (t.role === "write" ? "upload" : "view") +
-          " access to the " + folderLabel + " folder for SETTY project " + projLabel + ".";
+        const message = buildSharePointInvitationMessage({ folderLabel, role: t.role, projLabel });
         await shareDriveItemWithUser(driveId, t.itemId, contact.email, t.role, message);
       }
       setActionStatus("done");
@@ -21608,15 +21634,23 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
 
   // Email this person a backup copy of the folder link(s). Use case: the
   // SharePoint invitation email gets lost, filtered to spam, or they need
-  // to re-share the link to a colleague. Creates an Outlook draft pre-filled
-  // with subject, body, and recipient — user reviews + sends from Outlook.
+  // to re-share the link to a colleague. Creates a draft via Graph, then
+  // pops it open in a new Outlook Web window so the user lands directly in
+  // a compose view — no need to navigate to the Drafts folder.
   //
   // If the recipient has permissions on BOTH folders, both URLs are included
   // in one email regardless of which row's button was clicked. Saves the
   // user from sending two near-identical emails.
   async function emailLinkToPerson(perm) {
+    // Open the popup window FIRST, synchronously, while the click's
+    // user-gesture token is still valid. If we opened it after the Graph
+    // call, the browser would block it as a non-user-initiated popup.
+    // We point it at about:blank now and redirect it to the draft's
+    // webLink once we have one.
+    const draftWindow = window.open("about:blank", "_blank");
+
     setActionStatus("working");
-    setActionMsg("⏳ Creating Outlook draft for " + perm.email + "…");
+    setActionMsg("⏳ Opening draft for " + perm.email + "…");
     try {
       const allTheirPerms = [
         ...(perms?.uploads      || []).map(p => ({ ...p, folder: "Client Uploads",      url: project.clientUploadsFolderUrl     })),
@@ -21632,17 +21666,35 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       }).join("");
 
       const firstName = (perm.name || "").split(/\s+/)[0] || "";
+      const folderWord = allTheirPerms.length > 1 ? "folders" : "folder";
       const bodyHtml =
         `<p>Hi ${firstName},</p>` +
-        `<p>You have access to the SharePoint folder${allTheirPerms.length > 1 ? "s" : ""} for SETTY project <strong>${projLabel}</strong>:</p>` +
+        `<p>You have access to the SharePoint ${folderWord} for SETTY project <strong>${projLabel}</strong>:</p>` +
         `<ul>${folderList}</ul>` +
-        `<p><strong>First-time sign-in:</strong></p>` +
-        `<ul>` +
-          `<li>If you have a Microsoft work account, click the folder link and sign in normally.</li>` +
-          `<li>Otherwise, click "Send code" on the sign-in page — SharePoint will email you a 6-digit verification code to enter.</li>` +
+        `<p><strong>How to access the ${folderWord} (first time only):</strong></p>` +
+        `<p>Click a folder link above. Microsoft will then ask you to verify your identity. The steps depend on what kind of email address ${allTheirPerms.length > 1 ? "these folders were shared to" : "this folder was shared to"} — find your situation below:</p>` +
+
+        `<p style="margin-top:14px;"><strong>1. If your email is Gmail, Yahoo, AOL, or any non-Microsoft address</strong></p>` +
+        `<ul style="margin-top:4px;">` +
+          `<li>The sign-in page will show your email address.</li>` +
+          `<li>Look for the option <strong>"Send code"</strong> (sometimes labeled "Use a one-time passcode" or "Sign-in options"). Click it.</li>` +
+          `<li>Microsoft will email a 6-digit code to your inbox within ~30 seconds. Check spam if you don't see it.</li>` +
+          `<li>Paste the code back into the sign-in page. You're in.</li>` +
+          `<li><em>No password is needed and no new account is being created.</em> The code just confirms you own the email address.</li>` +
         `</ul>` +
-        `<p>Once you're in, bookmark the folder URL above — you won't need this email again.</p>` +
-        `<p>Let me know if you have any trouble accessing the folder.</p>`;
+
+        `<p style="margin-top:14px;"><strong>2. If your email is a Microsoft <em>work</em> account</strong> (your company uses Microsoft 365 / Outlook for work)</p>` +
+        `<ul style="margin-top:4px;">` +
+          `<li>Sign in with your normal work email and password.</li>` +
+        `</ul>` +
+
+        `<p style="margin-top:14px;"><strong>3. If your email is a <em>personal</em> Microsoft account</strong> (Outlook.com, Hotmail, Live, MSN)</p>` +
+        `<ul style="margin-top:4px;">` +
+          `<li>Sign in with your personal Microsoft password.</li>` +
+        `</ul>` +
+
+        `<p style="margin-top:14px;"><strong>After you're in:</strong> bookmark the folder URL above. You won't need this email or the original SharePoint invitation again.</p>` +
+        `<p>Let me know if you have any trouble accessing the ${folderWord}.</p>`;
 
       const token = await getToken();
       const res = await fetch("https://graph.microsoft.com/v1.0/me/messages", {
@@ -21658,10 +21710,34 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err?.error?.message || "Failed to create draft");
       }
+      const msg = await res.json();
+      const webLink = msg.webLink;
 
-      setActionStatus("done");
-      setActionMsg("✓ Outlook draft for " + perm.email + " created — open Outlook Drafts to review and send.");
+      if (draftWindow && webLink) {
+        // ispopout=1 forces Outlook Web to render the draft in a standalone
+        // compose popup (rather than the read pane). For drafts this lands
+        // the user directly in editable compose mode — they can tweak and
+        // hit Send without navigating anywhere.
+        draftWindow.location.href = webLink + (webLink.includes("?") ? "&" : "?") + "ispopout=1";
+        setActionStatus("done");
+        setActionMsg("✓ Draft opened in a new window — review and send from there.");
+      } else if (webLink) {
+        // Popup was blocked by the browser. Draft still exists in Drafts;
+        // surface a clickable link so the user can recover without re-doing
+        // the action.
+        setActionStatus("done");
+        setActionMsg("✓ Draft saved to Outlook Drafts (popup blocked). Allow popups for this site and click 📧 again, or open it directly: ");
+        // Note: we can't easily render an <a> inside actionMsg (it's plain
+        // text). Log to console as a fallback for power users.
+        console.log("Draft webLink:", webLink);
+      } else {
+        // No webLink in response — shouldn't happen for v1.0, but guard.
+        if (draftWindow) draftWindow.close();
+        setActionStatus("done");
+        setActionMsg("✓ Draft saved to Outlook Drafts — open Outlook to review and send.");
+      }
     } catch(e) {
+      if (draftWindow) draftWindow.close();
       setActionStatus("error");
       setActionMsg("✗ " + e.message);
     }
