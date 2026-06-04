@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-04-pms-v22-key-numbers";
+    window.__appVersion = "2026-06-04-pms-v23-keynums-flowlines-deferral";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3015,7 +3015,12 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     const r  = extraction.reimbursable || {};
     const sc = extraction.schedule || {};
     const lg = extraction.legal || {};
-    const ic = Array.isArray(extraction.insuranceComparison) ? extraction.insuranceComparison : [];
+    // insuranceComparison is either an array of per-line rows OR an object
+    // { deferredTo: "Prime Agreement" } when the contract farms its insurance
+    // terms out to another agreement instead of specifying limits inline.
+    const icRaw = extraction.insuranceComparison;
+    const ic = Array.isArray(icRaw) ? icRaw : [];
+    const icDeferredTo = (icRaw && !Array.isArray(icRaw)) ? icRaw.deferredTo : null;
     const stdMult = extraction.settyStandardMultiplier;
     const rows = [];
     const push = (label, value) => { if (value && String(value).trim()) rows.push([label, String(value)]); };
@@ -3032,31 +3037,41 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     push("Venue / jurisdiction", lg.venue);
     push("Dispute resolution",   lg.disputeResolution);
 
-    if (rows.length > 0 || ic.length > 0) {
+    if (rows.length > 0 || ic.length > 0 || icDeferredTo) {
       html += `<h2 ${h2}>Key Numbers</h2>`;
       html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:8px;">`;
       html += `Quick-reference block — the figures and answers most often needed when this contract comes up again. Refer back here instead of re-parsing the PDF.</p>`;
       html += `<div style="background:#F0F9FF;border:1px solid #BAE6FD;border-radius:6px;padding:12px 14px;margin-bottom:14px;">`;
+      // Plain key-value lines instead of a 2-column table — OneNote renders
+      // tables narrowly and wraps labels/values mid-word ("Contrac/t date").
+      // One row per line keeps everything full-width and readable.
       if (rows.length > 0) {
-        html += `<table style="border-collapse:collapse;width:100%;">`;
         for (const [k, v] of rows) {
-          html += `<tr><td style="padding:3px 16px 3px 0;vertical-align:top;color:#075985;font-weight:600;width:32%;">${e(k)}</td><td style="padding:3px 0;vertical-align:top;color:#0F172A;">${e(v)}</td></tr>`;
+          html += `<div style="padding:3px 0;color:#0F172A;line-height:1.5;"><strong style="color:#075985;">${e(k)}:</strong> ${e(v)}</div>`;
         }
-        html += `</table>`;
       }
-      if (ic.length > 0) {
-        if (rows.length > 0) html += `<div style="height:8px;"></div>`;
-        html += `<div style="font-weight:700;color:#075985;font-size:10.5pt;margin-bottom:6px;">Insurance — required vs Setty's standing coverage</div>`;
-        html += `<table style="border-collapse:collapse;width:100%;font-size:10pt;">`;
-        html += `<tr style="color:#075985;font-weight:600;border-bottom:1px solid #BAE6FD;"><td style="padding:4px 12px 4px 0;">Line</td><td style="padding:4px 12px 4px 0;">Required by client</td><td style="padding:4px 0;">Setty standing</td></tr>`;
+      if (icDeferredTo) {
+        if (rows.length > 0) html += `<div style="height:10px;"></div>`;
+        html += `<div style="padding:6px 10px;background:#FEF3C7;border-left:3px solid #D97706;border-radius:3px;color:#78350F;line-height:1.5;">`;
+        html += `<strong>Insurance:</strong> deferred to <strong>${e(icDeferredTo)}</strong> — contract does not specify limits inline. `;
+        html += `Open the ${e(icDeferredTo)} (or the attached Exhibit) to confirm Setty's standing coverage is sufficient. `;
+        html += `Setty standing: PL $5M/$10M agg, GL $2M/$4M agg, Auto $1M, Umbrella $10M, WC $1M, Cyber $2M.`;
+        html += `</div>`;
+      } else if (ic.length > 0) {
+        if (rows.length > 0) html += `<div style="height:10px;"></div>`;
+        html += `<div style="font-weight:700;color:#075985;font-size:10.5pt;margin-bottom:4px;">Insurance — required vs Setty's standing coverage</div>`;
+        // Single line per insurance line so OneNote doesn't squish a 3-column
+        // table into illegible narrow cells.
         for (const row of ic) {
           const statusColor = row.status === "above" ? "#DC2626" : row.status === "within" ? "#15803D" : "#6B7280";
-          const statusText  = row.status === "above" ? "ABOVE" : row.status === "within" ? "within" : "—";
-          html += `<tr><td style="padding:4px 12px 4px 0;color:#0F172A;">${e(row.line)}</td>`;
-          html += `<td style="padding:4px 12px 4px 0;color:${statusColor};font-weight:600;">${e(row.requiredText)} <span style="font-weight:400;font-size:9pt;">${statusText !== "—" ? "(" + statusText + ")" : ""}</span></td>`;
-          html += `<td style="padding:4px 0;color:#0F172A;">${e(row.settyText)}</td></tr>`;
+          const statusTag   = row.status === "above" ? " (ABOVE)" : row.status === "within" ? " (within)" : "";
+          const reqDisplay  = row.status === "unknown" ? "not specified" : row.requiredText;
+          html += `<div style="padding:2px 0;color:#0F172A;line-height:1.5;">`;
+          html += `<strong style="color:#075985;">${e(row.line)}:</strong> `;
+          html += `required <span style="color:${statusColor};font-weight:600;">${e(reqDisplay)}${e(statusTag)}</span> `;
+          html += `· Setty standing ${e(row.settyText)}`;
+          html += `</div>`;
         }
-        html += `</table>`;
       }
       html += `</div>`;
     }
