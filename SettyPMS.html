@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-04-pms-v23-keynums-flowlines-deferral";
+    window.__appVersion = "2026-06-04-pms-v24-sigs-reimb-summary";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3032,10 +3032,25 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
       push("Multiplier", r.multiplier + note);
     }
     push("Retainage",            pt.retainage);
+    // Reimbursables: short summary line. Full text still rendered in the
+    // dedicated section below — this is just the headline.
+    if (r.reimbursableRules && r.reimbursableRules.trim()) {
+      const rr = r.reimbursableRules.trim();
+      const short = rr.length > 180 ? rr.slice(0, 180).replace(/\s+\S*$/, "") + "…" : rr;
+      push("Reimbursables", short);
+    } else {
+      push("Reimbursables", "not specified in contract");
+    }
     push("Termination notice",   sc.terminationNotice);
     push("Governing law",        lg.governingLaw);
     push("Venue / jurisdiction", lg.venue);
     push("Dispute resolution",   lg.disputeResolution);
+    // Counterparty signers — "who do I call about an amendment" answer.
+    const sigs = Array.isArray(extraction.signatories) ? extraction.signatories : [];
+    if (sigs.length > 0) {
+      const sigText = sigs.map((s) => `${s.name} (${s.title})`).join("; ");
+      push("Signatories", sigText);
+    }
 
     if (rows.length > 0 || ic.length > 0 || icDeferredTo) {
       html += `<h2 ${h2}>Key Numbers</h2>`;
