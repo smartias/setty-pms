@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v30-skip-aia-hints";
+    window.__appVersion = "2026-06-04-extractor-v31-toc-fee-year";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1415,13 +1415,25 @@
 
       // Sections — EXHIBIT/ATTACHMENT/APPENDIX/SCHEDULE markers.
       // Anchored to line start so we don't pick up the phrase mid-sentence.
-      const sectionRe = /(?:^|\n)\s*(EXHIBIT|ATTACHMENT|APPENDIX|SCHEDULE)\s+([A-Z0-9][A-Z0-9\-]{0,4})\b(?:\s*[—\-:]\s*([^\n]{1,80}))?/g;
+      // The identifier regex skips common connector words (OF, THE, AND, FOR,
+      // TO) so "SCHEDULE OF VALUES" doesn't capture as kind=SCHEDULE / ident=OF.
+      const FILLER_IDENTS = new Set(["OF", "THE", "AND", "FOR", "TO", "BY", "IN", "ON", "AS"]);
+      const sectionRe = /(?:^|\n)\s*(EXHIBIT|ATTACHMENT|APPENDIX|SCHEDULE)\s+([A-Z0-9][A-Z0-9\-]{0,4})\b(?:\s+([A-Z][A-Z0-9 \-]{2,40}))?(?:\s*[—\-:]\s*([^\n]{1,80}))?/g;
       const seen = new Set();
       let m;
       while ((m = sectionRe.exec(text)) !== null) {
         const kind  = m[1].toUpperCase();
-        const ident = m[2];
-        const description = m[3] ? m[3].trim().replace(/[.;,]\s*$/, "") : "";
+        let ident   = m[2];
+        // If the "ident" looks like a filler word, the next token is actually
+        // the section name (e.g., "SCHEDULE OF VALUES" → ident="OF VALUES").
+        if (FILLER_IDENTS.has(ident.toUpperCase()) && m[3]) {
+          ident = (ident + " " + m[3].trim()).replace(/\s+/g, " ");
+        } else if (FILLER_IDENTS.has(ident.toUpperCase())) {
+          // Lone filler word with no following name — skip; this is a noise
+          // match like "SCHEDULE OF" mid-sentence.
+          continue;
+        }
+        const description = m[4] ? m[4].trim().replace(/[.;,]\s*$/, "") : "";
         const key = kind + " " + ident;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1439,7 +1451,12 @@
       // Dedup by CODE (not full label-with-year) so "AIA C421-2018" and a
       // body-text reference to just "AIA C421" don't both show up.
       const aiaCodeSeen = new Set();
-      const aiaRe = /AIA\s+Document\s+([A-Z]\s*\d{3,4})(?:[™®]|\s*[–\-]\s*(\d{4}))?(?:\s*[,;:—\-]\s*([^\n]{1,80}))?/gi;
+      // The trademark mark and the year are INDEPENDENTLY optional. Previous
+      // version had them in an alternation (`[™®] | year`), which meant ™
+      // consumed the slot and the year never got captured for "C401™ – 2017".
+      // "TM" / "SM" handled as a literal too in case the PDF rendered it as
+      // ASCII rather than the unicode codepoint.
+      const aiaRe = /AIA\s+Document\s+([A-Z]\s*\d{3,4})\s*(?:[™®]|TM|SM)?\s*(?:[–\-]\s*(\d{4}))?(?:\s*[,;:—\-]\s*([^\n]{1,80}))?/gi;
       while ((m = aiaRe.exec(text)) !== null) {
         const code = m[1].replace(/\s+/g, "");
         if (aiaCodeSeen.has(code)) continue;
@@ -1502,9 +1519,15 @@
       // against the full PDF picks up Setty's OWN proposed fee from inside
       // our attached proposal (e.g., "$5,000" on p. 18 of the LaBella PDF
       // is from Setty's proposal, not the contract's fee provision).
+      //
+      // The fallback "compensation" pattern uses a negative lookbehind to
+      // exclude "Workers' Compensation" — that's an insurance line, not a
+      // fee. Without this exclusion, the BSA contract's §2.8.4 "Workers'
+      // Compensation at statutory limits or $500,000" gets picked up as
+      // the contract fee.
       const feeSearchText = clientText || text;
       const feeM = feeSearchText.match(/(?:total\s+fee|lump\s+sum(?:\s+fee)?|fixed\s+fee|fee\s+(?:in\s+the\s+amount\s+of|not\s+to\s+exceed|of))[^.\n]{0,150}?(\$[\d,]+(?:\.\d{2})?)/i)
-                || feeSearchText.match(/(?:compensation|fee)[^.\n]{0,80}?(\$[\d,]+(?:\.\d{2})?)/i);
+                || feeSearchText.match(/(?<!Workers['']?\s)(?<!Worker\s)(?:compensation|fee)[^.\n]{0,80}?(\$[\d,]+(?:\.\d{2})?)/i);
       if (feeM) {
         // feeM.index is into feeSearchText. When that's clientText, it's a
         // prefix of fullText so the index also addresses fullText correctly.
