@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v25-sigs-fix";
+    window.__appVersion = "2026-06-04-extractor-v26-dollar-cents-fix";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1835,9 +1835,15 @@
       if (!standards || !standards.insurance) return [];
       const ins = standards.insurance;
       const dollars = (v) => "$" + Number(v).toLocaleString();
+      // Parse a captured dollar amount that may include commas and a `.00`
+      // cents suffix. We strip non-digits-or-decimal, then parseFloat — NOT
+      // a blind `parseInt(replace(/[^0-9]/))` which would treat "2,000,000.00"
+      // as "200000000" (200M) by tacking the cents on as extra zeros. Seen
+      // in the wild on AIA C401-style contracts that write out the long form:
+      //   "Two Million Dollars ($ 2,000,000.00 )"
       const toNum = (str) => {
-        const n = parseInt(String(str).replace(/[^0-9]/g, ""), 10);
-        return isNaN(n) ? null : n;
+        const n = parseFloat(String(str).replace(/[^0-9.]/g, ""));
+        return isNaN(n) ? null : Math.round(n);
       };
       const insuranceFlags = (flags || []).filter((f) => INS_FLAG_MAP[f.id]);
       // No insurance flags fired AND contract defers to another agreement —
@@ -1873,9 +1879,11 @@
       const s = ctx.structure || {};
       const std = ctx.standards || {};
       const dollars = (v) => "$" + Number(v).toLocaleString();
+      // parseFloat after stripping non-digit-non-decimal — avoids the
+      // "$2,000,000.00" → 200000000 trap from the previous parseInt approach.
       const num = (str) => {
-        const n = parseInt(String(str).replace(/[^0-9]/g, ""), 10);
-        return isNaN(n) ? null : n;
+        const n = parseFloat(String(str).replace(/[^0-9.]/g, ""));
+        return isNaN(n) ? null : Math.round(n);
       };
       return flags.map((f) => {
         let note = null;
