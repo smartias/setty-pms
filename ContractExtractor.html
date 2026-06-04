@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v17-pmsctx-merged";
+    window.__appVersion = "2026-06-04-extractor-v18-log-paragraph-search";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -114,6 +114,8 @@
     .log .miss { color: #F87171; }
     .log .flag { color: #FCD34D; background: transparent; padding: 2px 0; margin: 0; }
     .log .info { color: #94A3B8; }
+    .log .section { color: #E5E7EB; font-family: "Calibri", sans-serif; font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+    .log .row.section-row { background: #0F172A; border-left: 3px solid #FCD34D; padding: 6px 10px; margin: 4px 0; border-radius: 3px; }
 
     .field {
       margin-bottom: 10px; padding: 8px 10px; background: #0F172A; border-radius: 6px;
@@ -465,6 +467,21 @@
           // "Consultant acknowledges the risk of non-payment" — explicit
           // acknowledgement that payment depends on prime getting paid
           /(?:risk\s+of\s+non[\s\-]?payment|non[\s\-]?payment\s+(?:to\s+(?:the\s+)?)?(?:Sub)?[Cc]onsultant\s+by\s+(?:the\s+)?Architect)/i,
+          // "the later of ... receipt by [Prime] of payment from the Owner"
+          // FXC/NRTC contract item 9 phrasing — the most common subconsultant
+          // pay-when-paid construction in non-AIA agreements. Doesn't use the
+          // words "depend" or "contingent", just buries it in "due and payable
+          // the later of (i) invoice approval, or (ii) receipt of Owner's
+          // payment". Party name agnostic (FXC, KSA, prime, architect, etc.).
+          /(?:due\s+and\s+payable|payable|made|paid)\s+(?:to\s+\w+\s+)?(?:hereunder\s+)?(?:will|shall)\s+be[^.]{0,120}?the\s+later\s+of[^.]{0,200}?receipt[^.]{0,80}?(?:payment|funds)[^.]{0,80}?(?:from|by)\s+(?:the\s+)?Owner/i,
+          // Same construction without "the later of" framing — just
+          // "payments...will be made/payable upon/after receipt of Owner's payment"
+          /(?:payments?|fees?)\s+(?:to\s+(?:the\s+)?(?:Sub)?[Cc]onsultant\s+)?(?:will|shall)\s+be\s+(?:due\s+(?:and\s+payable\s+)?|made|paid|payable)[^.]{0,120}?(?:upon|after|following)\s+receipt[^.]{0,80}?(?:of\s+(?:such\s+|corresponding\s+)?payment\s+|by\s+\w+\s+of\s+(?:such\s+|corresponding\s+)?payment\s+)from\s+(?:the\s+)?Owner/i,
+          // Catch-all: "receipt by [Prime] of [corresponding/such] payment from
+          // the Owner" — the defining phrase. Broad enough to catch variants we
+          // haven't anticipated, narrow enough that it almost never false-positives
+          // in non-pay-when-paid contexts.
+          /receipt\s+(?:by\s+\w+(?:\s+\w+){0,3}\s+)?of\s+(?:such\s+|corresponding\s+|the\s+)?payment\s+from\s+(?:the\s+)?Owner/i,
         ],
         explanation: "Setty's payment is contingent on the prime/architect being paid by the Owner. This overrides Setty's standard Net 30 terms and can significantly delay cashflow.",
       },
@@ -806,21 +823,66 @@
       //   { id, label, severity: "high"|"medium"|"info", patterns: [...], captureValue?, explanation: "..." }
     ];
 
+    // Find the containing "section" of a match — the text between the
+    // closest preceding section/article header and the next one. Lets the
+    // OneNote page show the full clause context, not just a 200-char snippet.
+    // Non-AIA contracts (like the FXC NRTC subconsultant agreement) often
+    // don't use §/ARTICLE/SECTION headers — they just number top-level
+    // paragraphs "1.", "2.", "3." So we also recognize line-start "N." as
+    // a paragraph boundary, where N is 1-3 digits.
+    function getContainingSection(text, matchIndex, matchLength, maxLen = 3000) {
+      // AIA: §11.6.2, § 4.7, ARTICLE 11, SECTION 6.7, 4.7.2
+      // Non-AIA: line-start numeric "9.", "10." (top-level numbered paragraphs)
+      const sectionStartRegex = /(?:§\s*\d+\.\d+(?:\.\d+)?|ARTICLE\s+\d+\b|SECTION\s+\d+(?:\.\d+)?\b|(?:^|\n)\s*\d{1,3}\.\s)/g;
+      const windowStart = Math.max(0, matchIndex - maxLen);
+      const windowEnd   = Math.min(text.length, matchIndex + matchLength + maxLen);
+      const window      = text.slice(windowStart, windowEnd);
+      const matchInWindow = matchIndex - windowStart;
+      let prevBoundary = 0;
+      let nextBoundary = window.length;
+      sectionStartRegex.lastIndex = 0;
+      let m;
+      while ((m = sectionStartRegex.exec(window)) !== null) {
+        if (m.index <= matchInWindow) {
+          prevBoundary = m.index;
+        } else if (m.index > matchInWindow + matchLength) {
+          nextBoundary = m.index;
+          break;
+        }
+      }
+      // If no preceding boundary found at all, fall back to a wider window
+      // around the match (so we don't return zero context).
+      if (prevBoundary === 0 && nextBoundary === window.length && matchInWindow > 600) {
+        prevBoundary = Math.max(0, matchInWindow - 400);
+        nextBoundary = Math.min(window.length, matchInWindow + matchLength + 1000);
+      }
+      let result = window.slice(prevBoundary, nextBoundary).trim();
+      // Normalize internal whitespace runs but preserve paragraph breaks for readability
+      result = result.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
+      if (result.length > maxLen) result = result.slice(0, maxLen) + "…";
+      return result;
+    }
+
     function detectFlags(text) {
       const flags = [];
       for (const def of OVERRIDE_FLAGS) {
         for (const pattern of def.patterns) {
           const m = text.match(pattern);
           if (m) {
-            // Capture surrounding context for evidence
+            // Short evidence snippet — for the in-extractor UI display.
             const start = Math.max(0, m.index - 60);
             const end = Math.min(text.length, m.index + m[0].length + 140);
             const evidence = text.slice(start, end).replace(/\s+/g, " ").trim();
+            // Full containing section — for the OneNote page and extraction
+            // log so reviewers can read the override clause in its full
+            // contract context without flipping back to the source PDF.
+            const fullSection = getContainingSection(text, m.index, m[0].length);
             flags.push({
               id: def.id,
               label: def.label,
               severity: def.severity,
               evidence: "…" + evidence + "…",
+              fullSection,
               explanation: def.explanation,
               capturedValue: def.captureValue && m[1] ? m[1] : null,
             });
@@ -1079,11 +1141,11 @@
         out.multiplier = makeField("", "empty", "");
       }
 
-      // No-markup status
-      const nmFlag = flags.find(f => f.id === "no-markup");
-      out.markupPolicy = nmFlag
-        ? makeField("NO MARKUP allowed (see flag)", "high", "client prohibition")
-        : makeField("Standard markup likely permitted", "low", "no prohibition found — verify against client's exhibit");
+      // markupPolicy field removed per user feedback 2026-06-04: the "Standard
+      // markup likely permitted" default was misleading (absence of evidence is
+      // not evidence of standard markup). The no-markup FLAG still surfaces in
+      // the flag banner when a client prohibition is detected — that's where
+      // markup info actually belongs.
 
       // Reimbursable section body — look for §11.5/§11.8 (AIA) or "Reimbursable" sections
       let body = sectionAfter(text, /§\s*11\.[58]\b[^\n]*REIMBURSABLE/i, 1500)
@@ -1164,6 +1226,14 @@
       const flags = detectFlags(text);
       for (const f of flags) {
         log.push({ type: "flag", msg: `⚑ ${f.label}` });
+        // Include the full containing section in the log so reviewers see
+        // the override clause text inline (and so it flows through to the
+        // OneNote page when the log is rendered there). Per user request
+        // 2026-06-04: "extract the entire paragraph with the payment
+        // information and put it in the one note/extraction log".
+        if (f.fullSection) {
+          log.push({ type: "section", flagId: f.id, flagLabel: f.label, msg: f.fullSection });
+        }
       }
       if (flags.length === 0) log.push({ type: "info", msg: "No override flags detected — verify manually" });
 
@@ -1218,7 +1288,6 @@
           conditionsPrecedent: payment.conditionsPrecedent,
           // reimbursable
           multiplier: reimb.multiplier,
-          markupPolicy: reimb.markupPolicy,
           markupExclusions: reimb.markupExclusions,
           reimbursableRules: reimb.reimbursableRules,
           // schedule
@@ -1543,6 +1612,11 @@
       const [autoMatched, setAutoMatched] = useState(false);
       const [pmsContext, setPmsContext] = useState(null);
       const pmsContextRef = useRef(null);
+      // Search combobox state — replaced the long <select> pulldown 2026-06-04
+      // because there are hundreds of projects and a scroll-pulldown was unusable.
+      // Token-based substring filter against name/numbers/client. Top 12 shown.
+      const [projectQuery, setProjectQuery] = useState("");
+      const [projectFocused, setProjectFocused] = useState(false);
 
       useEffect(() => {
         setPmsConnected(!!window.opener);
@@ -1566,12 +1640,36 @@
       const selectProject = useCallback((id, viaAutoMatch = false) => {
         setSelectedProjectId(id);
         setAutoMatched(viaAutoMatch);
+        setProjectQuery("");      // collapse the search dropdown
+        setProjectFocused(false);
         const proj = pmsProjects.find((p) => p.id === id);
         const ctx = proj ? buildContextFromProject(proj) : null;
         pmsContextRef.current = ctx;
         setPmsContext(ctx);
         if (ctx) setResult((prev) => (prev ? fillStructuralFields(prev, ctx) : prev));
       }, [pmsProjects]);
+
+      // Filter projects by the search query. Tokens AND-joined: every
+      // whitespace-separated token in the query must appear (case-insensitive)
+      // somewhere in the project's haystack (name + numbers + client). When
+      // the query is empty but the input is focused, show recent/all active.
+      const projectMatches = React.useMemo(() => {
+        const active = pmsProjects.filter((p) => !p.archived);
+        const haystackOf = (p) => [
+          p.name, p.projectNumber, p.contractNumber, p.primeProjectNumber,
+          p.clientName, p.prime
+        ].filter(Boolean).join(" ").toLowerCase();
+        const tokens = projectQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const filtered = tokens.length === 0
+          ? active
+          : active.filter((p) => {
+              const h = haystackOf(p);
+              return tokens.every((t) => h.includes(t));
+            });
+        return filtered
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+          .slice(0, 12);
+      }, [pmsProjects, projectQuery]);
 
       // Once a contract is parsed and projects are loaded, try to auto-identify
       // the project from the extracted identifiers (skip if already selected).
@@ -1697,7 +1795,15 @@
           docType: result.docType.type,
           docTypeYear: result.docType.year,
           isAIA: result.docType.isAIA,
-          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue })),
+          // fullSection: the contract paragraph containing each flagged
+          // clause. SettyPMS.html buildContractAnalysisHtml renders these
+          // under "Source Text (Override Clauses in Context)" so reviewers
+          // can read the full clause without opening the source PDF.
+          flags: result.flags.map(x => ({ id: x.id, label: x.label, severity: x.severity, value: x.capturedValue, fullSection: x.fullSection })),
+          // Full extraction log — sent so PMS can include it in OneNote
+          // (user request 2026-06-04). Each entry is { type, msg } and the
+          // "section" type entries carry the full paragraph for each flag.
+          log: result.log,
           contractDate: f.contractDate.value,
           contractExpiration: f.contractExpiration.value,
           contractNumber: f.contractNumber.value,
@@ -1714,7 +1820,6 @@
           },
           reimbursable: {
             multiplier: f.multiplier.value,
-            markupPolicy: f.markupPolicy.value,
             markupExclusions: f.markupExclusions.value,
             rules: f.reimbursableRules.value,
           },
@@ -1839,35 +1944,83 @@
                   Extraction and Apply-and-Save still work normally.
                 </p>
               )}
-              {pmsLoadState === "loaded" && (
-                <>
-                  <select
-                    value={selectedProjectId}
-                    onChange={(e) => selectProject(e.target.value, false)}
-                    style={{ width: "100%", background: "#1E293B", color: "#E2E8F0", border: "1px solid #334155", borderRadius: 4, padding: "6px 8px", fontSize: 12 }}
-                  >
-                    <option value="">— Select project to load context —</option>
-                    {[...pmsProjects]
-                      .filter((p) => !p.archived)
-                      .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
-                      .map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {(p.name || "Untitled")}{p.projectNumber ? ` (${p.projectNumber})` : ""}
-                        </option>
-                      ))}
-                  </select>
-                  {selectedProjectId && autoMatched && (
-                    <div style={{fontSize: 10, color: "#4ADE80", marginTop: 4}}>
-                      ✓ Auto-matched from the contract's identifiers — change above if wrong.
+              {pmsLoadState === "loaded" && (() => {
+                const selectedProj = pmsProjects.find((p) => p.id === selectedProjectId);
+                // Selected state — show the chosen project as a chip with a
+                // change button. Click "Change" to clear and reopen the search.
+                if (selectedProj) {
+                  return (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#1E293B", border: "1px solid #334155", borderRadius: 4, padding: "6px 8px" }}>
+                      <div style={{ flex: 1, fontSize: 12, color: "#E2E8F0" }}>
+                        <strong>{selectedProj.name || "Untitled"}</strong>
+                        {selectedProj.projectNumber && (
+                          <span style={{ color: "#94A3B8", marginLeft: 6 }}>({selectedProj.projectNumber})</span>
+                        )}
+                        {autoMatched && (
+                          <span style={{ color: "#4ADE80", marginLeft: 8, fontSize: 10 }}>✓ auto-matched</span>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => { setSelectedProjectId(""); setAutoMatched(false); setPmsContext(null); pmsContextRef.current = null; setProjectQuery(""); setProjectFocused(true); }}
+                        style={{ background: "transparent", color: "#60A5FA", border: "1px solid #334155", borderRadius: 3, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}
+                      >Change</button>
                     </div>
-                  )}
-                  {!selectedProjectId && result && (
-                    <div style={{fontSize: 10, color: "#94A3B8", marginTop: 4}}>
-                      No automatic match. Pick the project to disambiguate parties and compare terms to Setty's standards.
-                    </div>
-                  )}
-                </>
-              )}
+                  );
+                }
+                // Search state — text input + filtered dropdown.
+                const showDropdown = projectFocused || projectQuery.length > 0;
+                return (
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type="text"
+                      value={projectQuery}
+                      onChange={(e) => setProjectQuery(e.target.value)}
+                      onFocus={() => setProjectFocused(true)}
+                      onBlur={() => setTimeout(() => setProjectFocused(false), 150)}
+                      placeholder={`Search ${pmsProjects.filter((p) => !p.archived).length} projects by name, number, or client…`}
+                      style={{ width: "100%", background: "#1E293B", color: "#E2E8F0", border: "1px solid #334155", borderRadius: 4, padding: "6px 8px", fontSize: 12 }}
+                    />
+                    {showDropdown && (
+                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#0F172A", border: "1px solid #334155", borderRadius: 4, marginTop: 2, maxHeight: 320, overflowY: "auto", zIndex: 10, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" }}>
+                        {projectMatches.length === 0 && (
+                          <div style={{ padding: "8px 10px", fontSize: 11, color: "#94A3B8", fontStyle: "italic" }}>
+                            No matches. Try a fragment of the project name, project number, or client name.
+                          </div>
+                        )}
+                        {projectMatches.map((p) => (
+                          <div
+                            key={p.id}
+                            // onMouseDown fires before the input's onBlur — this
+                            // is critical, otherwise the blur collapses the
+                            // dropdown before the click registers.
+                            onMouseDown={(e) => { e.preventDefault(); selectProject(p.id, false); }}
+                            style={{ padding: "6px 10px", fontSize: 12, color: "#E2E8F0", cursor: "pointer", borderBottom: "1px solid #1E293B" }}
+                            onMouseEnter={(e) => e.currentTarget.style.background = "#1E293B"}
+                            onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+                          >
+                            <div><strong>{p.name || "Untitled"}</strong></div>
+                            <div style={{ fontSize: 10, color: "#94A3B8" }}>
+                              {p.projectNumber && <span>#{p.projectNumber}</span>}
+                              {p.clientName && <span>{p.projectNumber ? " · " : ""}{p.clientName}</span>}
+                              {p.prime && <span> · prime: {p.prime}</span>}
+                            </div>
+                          </div>
+                        ))}
+                        {projectMatches.length === 12 && (
+                          <div style={{ padding: "6px 10px", fontSize: 10, color: "#64748B", fontStyle: "italic", borderTop: "1px solid #1E293B" }}>
+                            Showing top 12 — refine query for more.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!selectedProjectId && result && (
+                      <div style={{fontSize: 10, color: "#94A3B8", marginTop: 4}}>
+                        No automatic match. Search for the project to disambiguate parties and compare terms to Setty's standards.
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <h2 style={{marginTop: 20}}>About</h2>
               <p style={{fontSize: 11, color: "#94A3B8", lineHeight: 1.5}}>
@@ -1900,9 +2053,18 @@
               )}
               <div className="log">
                 {log.map((row, i) => (
-                  <div className="row" key={i}>
-                    <span className={row.type}>[{row.type}]</span> {row.msg}
-                  </div>
+                  row.type === "section" ? (
+                    <div className="row section-row" key={i}>
+                      <div style={{ fontSize: 10, color: "#FCD34D", fontWeight: 600, marginBottom: 4 }}>
+                        ⚑ {row.flagLabel} — full clause text from contract:
+                      </div>
+                      <span className="section">{row.msg}</span>
+                    </div>
+                  ) : (
+                    <div className="row" key={i}>
+                      <span className={row.type}>[{row.type}]</span> {row.msg}
+                    </div>
+                  )
                 ))}
                 {!log.length && <div className="row info">Drop a contract PDF to begin.</div>}
               </div>
@@ -1932,7 +2094,6 @@
 
                   <h3>Reimbursable Expense Rules</h3>
                   <FieldEditor keyName="multiplier" label="Client Multiplier" field={result.fields.multiplier} onChange={updateField} />
-                  <FieldEditor keyName="markupPolicy" label="Markup Policy" field={result.fields.markupPolicy} onChange={updateField} />
                   <FieldEditor keyName="markupExclusions" label="Markup Exclusions" field={result.fields.markupExclusions} onChange={updateField} multiline />
                   <FieldEditor keyName="reimbursableRules" label="Reimbursable Rules (raw)" field={result.fields.reimbursableRules} onChange={updateField} multiline />
 
