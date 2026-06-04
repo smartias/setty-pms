@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-04-pms-v21-log-dedup";
+    window.__appVersion = "2026-06-04-pms-v22-key-numbers";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3003,6 +3003,65 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
   html += `<strong>Extracted on:</strong> ${e(new Date().toISOString().slice(0, 10))}`;
   html += `</p>`;
 
+  // Key Numbers callout — added 2026-06-04 to make this OneNote page usable
+  // as a long-term reference instead of having to re-read the contract. Pulls
+  // together the figures and answers you typically hunt for: fee/multiplier,
+  // insurance required vs Setty's standing coverage, retainage, termination
+  // notice, dates, governing law / venue / dispute resolution, and a
+  // pay-when-paid yes/no. Renders only the rows that have data so an empty
+  // field doesn't pad the block.
+  {
+    const pt = extraction.payment || {};
+    const r  = extraction.reimbursable || {};
+    const sc = extraction.schedule || {};
+    const lg = extraction.legal || {};
+    const ic = Array.isArray(extraction.insuranceComparison) ? extraction.insuranceComparison : [];
+    const stdMult = extraction.settyStandardMultiplier;
+    const rows = [];
+    const push = (label, value) => { if (value && String(value).trim()) rows.push([label, String(value)]); };
+    push("Contract date", extraction.contractDate);
+    push("Expiration",    extraction.contractExpiration);
+    push("Pay-when-paid", pt.payWhenPaid ? `YES — see flag` : "");
+    if (r.multiplier) {
+      const note = stdMult ? ` (Setty std: ${stdMult})` : "";
+      push("Multiplier", r.multiplier + note);
+    }
+    push("Retainage",            pt.retainage);
+    push("Termination notice",   sc.terminationNotice);
+    push("Governing law",        lg.governingLaw);
+    push("Venue / jurisdiction", lg.venue);
+    push("Dispute resolution",   lg.disputeResolution);
+
+    if (rows.length > 0 || ic.length > 0) {
+      html += `<h2 ${h2}>Key Numbers</h2>`;
+      html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:8px;">`;
+      html += `Quick-reference block — the figures and answers most often needed when this contract comes up again. Refer back here instead of re-parsing the PDF.</p>`;
+      html += `<div style="background:#F0F9FF;border:1px solid #BAE6FD;border-radius:6px;padding:12px 14px;margin-bottom:14px;">`;
+      if (rows.length > 0) {
+        html += `<table style="border-collapse:collapse;width:100%;">`;
+        for (const [k, v] of rows) {
+          html += `<tr><td style="padding:3px 16px 3px 0;vertical-align:top;color:#075985;font-weight:600;width:32%;">${e(k)}</td><td style="padding:3px 0;vertical-align:top;color:#0F172A;">${e(v)}</td></tr>`;
+        }
+        html += `</table>`;
+      }
+      if (ic.length > 0) {
+        if (rows.length > 0) html += `<div style="height:8px;"></div>`;
+        html += `<div style="font-weight:700;color:#075985;font-size:10.5pt;margin-bottom:6px;">Insurance — required vs Setty's standing coverage</div>`;
+        html += `<table style="border-collapse:collapse;width:100%;font-size:10pt;">`;
+        html += `<tr style="color:#075985;font-weight:600;border-bottom:1px solid #BAE6FD;"><td style="padding:4px 12px 4px 0;">Line</td><td style="padding:4px 12px 4px 0;">Required by client</td><td style="padding:4px 0;">Setty standing</td></tr>`;
+        for (const row of ic) {
+          const statusColor = row.status === "above" ? "#DC2626" : row.status === "within" ? "#15803D" : "#6B7280";
+          const statusText  = row.status === "above" ? "ABOVE" : row.status === "within" ? "within" : "—";
+          html += `<tr><td style="padding:4px 12px 4px 0;color:#0F172A;">${e(row.line)}</td>`;
+          html += `<td style="padding:4px 12px 4px 0;color:${statusColor};font-weight:600;">${e(row.requiredText)} <span style="font-weight:400;font-size:9pt;">${statusText !== "—" ? "(" + statusText + ")" : ""}</span></td>`;
+          html += `<td style="padding:4px 0;color:#0F172A;">${e(row.settyText)}</td></tr>`;
+        }
+        html += `</table>`;
+      }
+      html += `</div>`;
+    }
+  }
+
   // Override flags — the headline output
   html += `<h2 ${h2}>Override Clauses</h2>`;
   if (flags.length === 0) {
@@ -3014,10 +3073,16 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     html += `.</p>`;
     for (const f of [...high, ...medium, ...info]) {
       const s = sevStyle[f.severity];
+      // Locator: sectionLabel ("Item 9", "Article 11.6.2") and pageNumber
+      // from the extractor. Both optional — older extractor versions
+      // didn't send these and the OneNote page still works without them.
+      const locator = [f.sectionLabel, f.pageNumber ? `p. ${f.pageNumber}` : ""].filter(Boolean).join(" · ");
       html += `<div style="background:${s.bg};border-left:4px solid ${s.border};padding:8px 12px;margin:6px 0;border-radius:4px;">`;
       html += `<strong style="color:${s.text};">${s.icon} ${e(f.label)}`;
       if (f.value) html += ` — ${e(f.value)}`;
-      html += `</strong></div>`;
+      html += `</strong>`;
+      if (locator) html += `<span style="color:${s.text};opacity:0.7;font-size:9.5pt;margin-left:8px;">${e(locator)}</span>`;
+      html += `</div>`;
     }
   }
 
@@ -3089,8 +3154,11 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     for (const f of [...high, ...medium, ...info]) {
       if (!f.fullSection) continue;
       const s = sevStyle[f.severity];
+      const locator = [f.sectionLabel, f.pageNumber ? `p. ${f.pageNumber}` : ""].filter(Boolean).join(" · ");
       html += `<div style="margin:14px 0;border-left:4px solid ${s.border};padding:0 0 0 14px;">`;
-      html += `<div style="font-weight:700;color:${s.text};font-size:11pt;margin-bottom:6px;">${s.icon} ${e(f.label)}${f.value ? " — " + e(f.value) : ""}</div>`;
+      html += `<div style="font-weight:700;color:${s.text};font-size:11pt;margin-bottom:6px;">${s.icon} ${e(f.label)}${f.value ? " — " + e(f.value) : ""}`;
+      if (locator) html += `<span style="color:${s.text};opacity:0.7;font-weight:500;font-size:10pt;margin-left:8px;">(${e(locator)})</span>`;
+      html += `</div>`;
       html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:12px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;">${e(f.fullSection)}</div>`;
       html += `</div>`;
     }
