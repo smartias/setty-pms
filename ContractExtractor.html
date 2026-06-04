@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v27-proposal-boundary";
+    window.__appVersion = "2026-06-04-extractor-v28-prime-fee-fix";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1310,18 +1310,29 @@
       return null;
     }
 
-    // Detect whether the Prime Agreement is actually attached to the PDF
-    // (vs. just referenced in passing). We look for a page that LOOKS like
-    // a standalone agreement: starts with "AGREEMENT" / "between" / parties,
-    // OR has its own signature block separate from the contract's.
-    // Returns 1-indexed page where Prime Agreement starts, or null.
+    // Detect whether the Prime Agreement is actually attached to the PDF.
+    // The Prime is the agreement ABOVE this one in the chain — typically
+    // Owner-Architect (AIA B-series) or Owner-Contractor (AIA A-series).
+    // The contract WE'RE reviewing is the SUBCONSULTANT level (Architect-
+    // Consultant in C421, or Consultant-Subconsultant), so its own first
+    // page must NOT match these patterns. Earlier version had a loose
+    // "AGREEMENT...Between" pattern that matched the C421's own opening
+    // ("AGREEMENT made as of [date] BETWEEN the Architect and the
+    // Consultant"), giving a false "Prime attached on page 1".
     function findPrimeAgreementStart(pages) {
       if (!pages || pages.length === 0) return null;
       const headerPatterns = [
-        /^\s*(?:OWNER[\s-]ARCHITECT\s+)?AGREEMENT\b[^.]{0,200}?\bBetween\b/im,
+        // Explicit "PRIME AGREEMENT" header
         /^\s*PRIME\s+AGREEMENT\b/im,
-        /^\s*AIA\s+Document\s+B\d{3}/im,    // B-series = owner/architect agreements
-        /STANDARD\s+FORM\s+OF\s+AGREEMENT[^.]{0,200}?BETWEEN\s+OWNER\s+AND\s+ARCHITECT/i,
+        // AIA B-series (Owner-Architect) or A-series (Owner-Contractor)
+        /\bAIA\s+Document\s+B\d{3}\b/i,
+        /\bAIA\s+Document\s+A\d{3}\b/i,
+        // "Standard Form of Agreement Between Owner and Architect/Contractor"
+        /STANDARD\s+FORM\s+OF\s+(?:[A-Za-z\s]+\s+)?AGREEMENT[^.]{0,200}?BETWEEN\s+(?:THE\s+)?OWNER\s+AND\s+(?:THE\s+)?(?:ARCHITECT|CONTRACTOR|DESIGN[\s\-]?PROFESSIONAL|CONSTRUCTION\s+MANAGER)/i,
+        // "Agreement Between Owner and Architect" without "Standard Form"
+        /\bAGREEMENT\s+BETWEEN\s+(?:THE\s+)?OWNER\s+AND\s+(?:THE\s+)?(?:ARCHITECT|CONTRACTOR|DESIGN[\s\-]?PROFESSIONAL|CONSTRUCTION\s+MANAGER)\b/i,
+        // "AGREEMENT...BETWEEN the Owner ... and the Architect" — body-form
+        /AGREEMENT\b[^.]{0,200}?BETWEEN\s+(?:the\s+)?Owner\b[^.]{0,100}?and\s+(?:the\s+)?(?:Architect|Contractor|Design\s+Professional)/i,
       ];
       for (let i = 0; i < pages.length; i++) {
         const t = pages[i] || "";
@@ -1333,9 +1344,14 @@
     // Document outline — table-of-contents for the source PDF. Tells the
     // reviewer where in the contract to look without re-reading: total pages,
     // exhibits and where they start, where the Proposal sits if attached,
-    // where the fee is called out, and where the signature block is. Used by
-    // the OneNote "Contents" block so users can refer back to the PDF.
-    function extractDocumentOutline(text, pages, pageOffsets) {
+    // where the fee is called out, and where the signature block is.
+    //
+    // `text` is the FULL PDF text (used for outline section discovery — we
+    // want to find Setty's proposal as an outline entry).
+    // `clientText` is the contract pages BEFORE Setty's attached proposal
+    // (used for fee detection so we don't return "$5,000 on p. 18" from
+    // Setty's OWN proposed fee inside our attachment).
+    function extractDocumentOutline(text, pages, pageOffsets, clientText) {
       const out = {
         numPages: pages.length,
         sections: [],            // [{ kind, ident, label, page, description }]
@@ -1367,9 +1383,14 @@
       // AIA documents — find each AIA document code (C401, C421, D401, A201,
       // B121, etc.) and record where it appears. The big ones — the master
       // agreement, the service order, certifications, the Prime — surface here.
+      // Dedup by CODE (not full label-with-year) so "AIA C421-2018" and a
+      // body-text reference to just "AIA C421" don't both show up.
+      const aiaCodeSeen = new Set();
       const aiaRe = /AIA\s+Document\s+([A-Z]\s*\d{3,4})(?:[™®]|\s*[–\-]\s*(\d{4}))?(?:\s*[,;:—\-]\s*([^\n]{1,80}))?/gi;
       while ((m = aiaRe.exec(text)) !== null) {
         const code = m[1].replace(/\s+/g, "");
+        if (aiaCodeSeen.has(code)) continue;
+        aiaCodeSeen.add(code);
         const year = m[2] || "";
         const description = m[3] ? m[3].trim().replace(/[.;,]\s*$/, "") : "";
         const label = "AIA " + code + (year ? "-" + year : "");
@@ -1424,11 +1445,16 @@
       const sigM = text.match(/Name:\s*[^\n]{1,80}\s*\n?\s*Title:\s*[^\n]{1,80}/i);
       if (sigM) out.signaturePage = pageOfIndex(sigM.index, pageOffsets);
 
-      // Fee location. First try direct fee-amount patterns; fall back to
-      // "fee is in the Proposal" if we detected a Proposal exhibit.
-      const feeM = text.match(/(?:total\s+fee|lump\s+sum(?:\s+fee)?|fixed\s+fee|fee\s+(?:in\s+the\s+amount\s+of|not\s+to\s+exceed|of))[^.\n]{0,150}?(\$[\d,]+(?:\.\d{2})?)/i)
-                || text.match(/(?:compensation|fee)[^.\n]{0,80}?(\$[\d,]+(?:\.\d{2})?)/i);
+      // Fee location. Run regex against CLIENT contract text only — running
+      // against the full PDF picks up Setty's OWN proposed fee from inside
+      // our attached proposal (e.g., "$5,000" on p. 18 of the LaBella PDF
+      // is from Setty's proposal, not the contract's fee provision).
+      const feeSearchText = clientText || text;
+      const feeM = feeSearchText.match(/(?:total\s+fee|lump\s+sum(?:\s+fee)?|fixed\s+fee|fee\s+(?:in\s+the\s+amount\s+of|not\s+to\s+exceed|of))[^.\n]{0,150}?(\$[\d,]+(?:\.\d{2})?)/i)
+                || feeSearchText.match(/(?:compensation|fee)[^.\n]{0,80}?(\$[\d,]+(?:\.\d{2})?)/i);
       if (feeM) {
+        // feeM.index is into feeSearchText. When that's clientText, it's a
+        // prefix of fullText so the index also addresses fullText correctly.
         out.feeLocation = { page: pageOfIndex(feeM.index, pageOffsets), amount: feeM[1] };
       } else if (out.proposalAttached) {
         // No fee number in the main contract body — typical when the fee is
@@ -1664,7 +1690,7 @@
       // exhibits & where they start, proposal location, fee call-out, sig page.
       // Uses FULL text (not clientText) so it can find the proposal and any
       // attachments that live after the client contract body.
-      const outline = extractDocumentOutline(text, pages, pageOffsets);
+      const outline = extractDocumentOutline(text, pages, pageOffsets, clientText);
       // Augment outline with the boundary detections we did up top.
       outline.settyProposalPage  = settyProposalPage;
       outline.primeAgreementPage = findPrimeAgreementStart(pages);
