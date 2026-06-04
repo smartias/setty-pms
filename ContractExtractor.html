@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v23-partial-ocr-sigs-reimb";
+    window.__appVersion = "2026-06-04-extractor-v25-sigs-fix";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1279,30 +1279,142 @@
       return out;
     }
 
-    // Extract signature-block parties. Looks in the last 40% of the document
-    // (signatures live at the end) for sequences of "Name: X" followed by
-    // "Title: Y" within ~120 chars. Filters out blank placeholders (rows of
-    // underscores/dashes from unsigned templates). Returns an array of
-    // { name, title } — typically the counterparty signer; sometimes both
-    // sides when both are countersigned.
+    // Document outline — table-of-contents for the source PDF. Tells the
+    // reviewer where in the contract to look without re-reading: total pages,
+    // exhibits and where they start, where the Proposal sits if attached,
+    // where the fee is called out, and where the signature block is. Used by
+    // the OneNote "Contents" block so users can refer back to the PDF.
+    function extractDocumentOutline(text, pages, pageOffsets) {
+      const out = {
+        numPages: pages.length,
+        sections: [],            // [{ kind, ident, label, page, description }]
+        proposalAttached: null,  // { asExhibit } or null
+        feeLocation: null,       // { page, amount, hint } or null
+        signaturePage: null,
+      };
+
+      // Sections — EXHIBIT/ATTACHMENT/APPENDIX/SCHEDULE markers.
+      // Anchored to line start so we don't pick up the phrase mid-sentence.
+      const sectionRe = /(?:^|\n)\s*(EXHIBIT|ATTACHMENT|APPENDIX|SCHEDULE)\s+([A-Z0-9][A-Z0-9\-]{0,4})\b(?:\s*[—\-:]\s*([^\n]{1,80}))?/g;
+      const seen = new Set();
+      let m;
+      while ((m = sectionRe.exec(text)) !== null) {
+        const kind  = m[1].toUpperCase();
+        const ident = m[2];
+        const description = m[3] ? m[3].trim().replace(/[.;,]\s*$/, "") : "";
+        const key = kind + " " + ident;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.sections.push({
+          kind, ident,
+          label: key,
+          page: pageOfIndex(m.index, pageOffsets),
+          description,
+        });
+      }
+      // Sort sections by page so the TOC reads in document order
+      out.sections.sort((a, b) => (a.page || 0) - (b.page || 0));
+
+      // Proposal-attached detection. Reads the body for "...proposal...
+      // attached hereto as Exhibit X". Tells us Setty's Proposal lives in
+      // Exhibit X — that's also typically where the fee is.
+      const propM = text.match(/(?:proposal|setty['']?s?\s+proposal)\s*(?:dated[^,\n]{0,40})?[^.]{0,80}?attached\s+(?:hereto\s+)?as\s+(Exhibit\s+[A-Z])/i);
+      if (propM) {
+        out.proposalAttached = { asExhibit: propM[1].replace(/\s+/g, " ") };
+      }
+
+      // Signature block location — first Name/Title pair.
+      const sigM = text.match(/Name:\s*[^\n]{1,80}\s*\n?\s*Title:\s*[^\n]{1,80}/i);
+      if (sigM) out.signaturePage = pageOfIndex(sigM.index, pageOffsets);
+
+      // Fee location. First try direct fee-amount patterns; fall back to
+      // "fee is in the Proposal" if we detected a Proposal exhibit.
+      const feeM = text.match(/(?:total\s+fee|lump\s+sum(?:\s+fee)?|fixed\s+fee|fee\s+(?:in\s+the\s+amount\s+of|not\s+to\s+exceed|of))[^.\n]{0,150}?(\$[\d,]+(?:\.\d{2})?)/i)
+                || text.match(/(?:compensation|fee)[^.\n]{0,80}?(\$[\d,]+(?:\.\d{2})?)/i);
+      if (feeM) {
+        out.feeLocation = { page: pageOfIndex(feeM.index, pageOffsets), amount: feeM[1] };
+      } else if (out.proposalAttached) {
+        // No fee number in the main contract body — typical when the fee is
+        // in the Proposal (Exhibit A) which is often a scanned attachment.
+        // Point the reviewer at the Proposal exhibit's page if we have it.
+        const expA = out.sections.find((s) => s.label === out.proposalAttached.asExhibit);
+        out.feeLocation = {
+          page: expA ? expA.page : null,
+          hint: `see ${out.proposalAttached.asExhibit} (Setty's Proposal)`,
+        };
+      }
+
+      return out;
+    }
+
+    // Group scanned (text-empty) page numbers into contiguous ranges and
+    // label each range with the latest preceding section header. So if pages
+    // 12-166 are scanned and EXHIBIT B starts on page 11, the range gets
+    // labeled "likely EXHIBIT B and following attachments".
+    function groupScannedRanges(scannedPages1Indexed, sections) {
+      if (!scannedPages1Indexed || scannedPages1Indexed.length === 0) return [];
+      const sorted = [...scannedPages1Indexed].sort((a, b) => a - b);
+      const ranges = [];
+      let start = sorted[0];
+      let prev  = start;
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i] === prev + 1) { prev = sorted[i]; continue; }
+        ranges.push({ start, end: prev });
+        start = sorted[i];
+        prev  = start;
+      }
+      ranges.push({ start, end: prev });
+      return ranges.map((r) => {
+        // Find the section header whose page is closest at-or-before r.start
+        let likely = null;
+        for (const s of sections || []) {
+          if (s.page && s.page <= r.start && (!likely || s.page > likely.page)) likely = s;
+        }
+        return {
+          start: r.start,
+          end: r.end,
+          likelyContent: likely
+            ? likely.label + (likely.description ? ` (${likely.description})` : "")
+            : null,
+        };
+      });
+    }
+
+    // Extract signature-block parties. Scans the whole text for "Name: X"
+    // followed by "Title: Y" pairs and keeps the ones that look real.
+    //
+    // Two tricky cases this handles:
+    //   1. Parallel signature blocks where Setty's side is blank and the
+    //      counterparty's is filled in — the PDF flattens them onto one line
+    //      like "Name: ___ Name: Joseph Pikiewicz". We split on the LAST
+    //      occurrence of "Name:" / "Title:" inside the capture so we keep
+    //      only the populated half.
+    //   2. Earlier version only scanned text.slice(text.length * 0.6), which
+    //      misses signatures in the front matter when the rest of the PDF is
+    //      a scanned attachment (most of FXC NRTC is image-only pages 4-166,
+    //      so the sig block at ~46% fell outside the tail window).
     function extractSignatories(text) {
       if (!text) return [];
-      const tail = text.slice(Math.floor(text.length * 0.6));
       const out = [];
       const seen = new Set();
-      // Tolerate the OCR-style spacing artifacts ("N a m e :") and various
-      // forms of underscored blanks.
-      const re = /Name:\s*([^\n]{1,80}?)\s*(?:\n\s*|\s+)Title:\s*([^\n]{1,80}?)(?:\n|$)/gi;
+      const re = /Name:\s*([^\n]{1,120}?)\s*(?:\n\s*|\s+)Title:\s*([^\n]{1,120})/gi;
       let m;
-      while ((m = re.exec(tail)) !== null) {
-        const name  = m[1].replace(/[_]{2,}/g, "").replace(/\s+/g, " ").trim();
-        const title = m[2].replace(/[_]{2,}/g, "").replace(/\s+/g, " ").trim();
-        // Skip placeholders: empty, all-non-letters, or single-letter junk.
-        if (!name || !/[A-Za-z]{2,}/.test(name)) continue;
-        if (!title || !/[A-Za-z]{2,}/.test(title)) continue;
-        // Dedup by lower-cased name+title (the FXC contract has two parallel
-        // signature blocks; only one is populated, but we don't want to double-
-        // count if both ever get filled).
+      while ((m = re.exec(text)) !== null) {
+        // If the capture contains an embedded "Name:" / "Title:" prefix
+        // (parallel signature blocks flattened onto one line), keep only
+        // what's after the LAST such prefix — that's the populated side.
+        let nameRaw  = m[1];
+        let titleRaw = m[2];
+        const lastN = nameRaw.lastIndexOf("Name:");
+        if (lastN >= 0)  nameRaw  = nameRaw.slice(lastN + 5);
+        const lastT = titleRaw.lastIndexOf("Title:");
+        if (lastT >= 0)  titleRaw = titleRaw.slice(lastT + 6);
+        const name  = nameRaw.replace(/_{2,}/g, "").replace(/\s+/g, " ").trim();
+        const title = titleRaw.replace(/_{2,}/g, "").replace(/\s+/g, " ").trim();
+        // Filter placeholders: empty, no letters, single-letter junk, or
+        // implausibly long (>60 chars usually means we caught body text).
+        if (!name  || !/[A-Za-z]{2,}/.test(name)  || name.length  > 60) continue;
+        if (!title || !/[A-Za-z]{2,}/.test(title) || title.length > 60) continue;
         const key = (name + "|" + title).toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
@@ -1431,6 +1543,35 @@
         log.push({ type: "hit", msg: `Signatory: ${s.name} — ${s.title}` });
       }
 
+      // 9. Document outline — pages-of-the-PDF index for the OneNote TOC:
+      // exhibits & where they start, proposal location, fee call-out, sig page.
+      const outline = extractDocumentOutline(text, parsedPdf.pages || [], pageOffsets);
+      if (outline.sections.length > 0) {
+        log.push({ type: "tier", msg: "Document outline" });
+        for (const s of outline.sections) {
+          log.push({ type: "hit", msg: `${s.label}${s.description ? " — " + s.description : ""} (p. ${s.page})` });
+        }
+      }
+
+      // 10. OCR status — which pages have text, which are scanned/blank.
+      // Match scanned ranges back to outline so we can tell the reviewer
+      // WHAT they're missing if they skip OCR.
+      const TEXT_THRESHOLD = 100;
+      const scannedPageNums = [];
+      (parsedPdf.pages || []).forEach((p, i) => {
+        if ((p || "").length < TEXT_THRESHOLD) scannedPageNums.push(i + 1);
+      });
+      const ocrStatus = {
+        totalPages: (parsedPdf.pages || []).length,
+        scannedPageCount: scannedPageNums.length,
+        scannedRanges: groupScannedRanges(scannedPageNums, outline.sections),
+        // Caller (handleFile / runPartialOcr) can override these flags after
+        // an OCR pass or skip. Default state for a fresh extraction is
+        // "scanned pages present, not yet OCR'd".
+        ocrAttempted: false,
+        ocrSkipped:   false,
+      };
+
       return {
         log,
         docType,
@@ -1440,6 +1581,8 @@
         // running PDF extraction. Cheap by reference — JS strings are interned.
         sourceText: text,
         signatories,
+        outline,
+        ocrStatus,
         fields: {
           // metadata
           contractDate,
@@ -2150,6 +2293,11 @@
           // Often empty for templates sent unsigned; populated for executed
           // contracts. The "who do I call about an amendment" answer.
           signatories: result.signatories || [],
+          // Document outline — TOC of the source PDF. Rendered as the
+          // "Contents" block in OneNote so reviewers can refer back to
+          // specific PDF pages instead of re-reading the contract.
+          outline: result.outline || null,
+          ocrStatus: result.ocrStatus || null,
         };
         if (sendToPMS(payload)) {
           setSendState("sent");
@@ -2389,7 +2537,17 @@
                           OCR {partialScan.scannedIdxs.length} pages ({estimateOcrTime(partialScan.scannedIdxs.length)})
                         </button>
                         <button
-                          onClick={() => setPartialScan(null)}
+                          onClick={() => {
+                            setPartialScan(null);
+                            // Mark the current extraction's ocrStatus as
+                            // intentionally-skipped so OneNote can report
+                            // "user chose not to OCR these pages" instead of
+                            // "OCR not attempted".
+                            setResult((prev) => prev ? {
+                              ...prev,
+                              ocrStatus: { ...(prev.ocrStatus || {}), ocrSkipped: true },
+                            } : prev);
+                          }}
                           style={{ background: "transparent", color: "#FEF3C7", border: "1px solid #B45309", borderRadius: 4, padding: "6px 12px", fontSize: 11.5, cursor: "pointer" }}
                         >
                           Skip
