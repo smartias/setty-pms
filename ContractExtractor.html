@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v21-pages-sections-legal";
+    window.__appVersion = "2026-06-04-extractor-v22-ins-deferral";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1370,6 +1370,10 @@
         log,
         docType,
         flags,
+        // Pass through the parsed text so downstream consumers (insurance-
+        // deferral detection, future heuristics) can scan it without re-
+        // running PDF extraction. Cheap by reference — JS strings are interned.
+        sourceText: text,
         fields: {
           // metadata
           contractDate,
@@ -1591,12 +1595,34 @@
       "cyber-liability-limit":{ key: "cyberLiability",        label: "Cyber Liability" },
     };
 
+    // Detect when the contract defers insurance to the Prime Agreement rather
+    // than specifying its own limits. Common in flow-down subcontracts — see
+    // FXC NRTC item 15: "Subconsultant shall ... maintain insurance ... per
+    // the terms of the Prime Agreement." Without this detection the OneNote
+    // Key Numbers block fills with "—" for every line because no $-amounts
+    // appear in the contract text. With it, the block tells you up front
+    // that you need Exhibit B / the Prime Agreement to get actual numbers.
+    function detectInsuranceDeferral(text) {
+      // Phrase must include both "insurance" and a reference to the Prime
+      // (or Owner / Master / referenced agreement) within ~150 chars to
+      // distinguish a true deferral from unrelated insurance mentions.
+      const re = /insurance[^.]{0,150}?(?:per|in\s+accordance\s+with|under|as\s+(?:set\s+forth|required|specified)\s+(?:in|by))\s+(?:the\s+)?(Prime\s+Agreement|Master\s+Agreement|Owner['']s?\s+(?:Agreement|Contract)|attached\s+(?:Exhibit|Schedule)|Exhibit\s+[A-Z])/i;
+      const m = text.match(re);
+      if (m) return m[1];                            // returns "Prime Agreement", "Exhibit B", etc.
+      // Reverse phrasing: "per the Prime Agreement ... insurance"
+      const re2 = /(?:per|in\s+accordance\s+with|under)\s+(?:the\s+)?(Prime\s+Agreement|Master\s+Agreement|Exhibit\s+[A-Z])[^.]{0,150}?insurance/i;
+      const m2 = text.match(re2);
+      if (m2) return m2[1];
+      return null;
+    }
+
     // Build the required-vs-Setty-standing insurance comparison rows for the
     // OneNote Key Numbers callout. Computed in the extractor (where standards
     // and INS_FLAG_MAP live) so PMS doesn't need to duplicate them. Returns
-    // an array of { line, requiredText, settyText, status } where status is
-    // "above" | "within" | "unknown".
-    function computeInsuranceComparison(flags, standards) {
+    // either an array of { line, requiredText, settyText, status } rows or
+    // a deferred result { deferredTo: "Prime Agreement" } if the contract
+    // farms its insurance terms out to another document.
+    function computeInsuranceComparison(flags, standards, text) {
       if (!standards || !standards.insurance) return [];
       const ins = standards.insurance;
       const dollars = (v) => "$" + Number(v).toLocaleString();
@@ -1604,6 +1630,13 @@
         const n = parseInt(String(str).replace(/[^0-9]/g, ""), 10);
         return isNaN(n) ? null : n;
       };
+      const insuranceFlags = (flags || []).filter((f) => INS_FLAG_MAP[f.id]);
+      // No insurance flags fired AND contract defers to another agreement —
+      // surface that instead of a wall of "—" rows.
+      if (insuranceFlags.length === 0 && text) {
+        const deferredTo = detectInsuranceDeferral(text);
+        if (deferredTo) return { deferredTo };
+      }
       const rows = [];
       for (const [flagId, cfg] of Object.entries(INS_FLAG_MAP)) {
         const flag = (flags || []).find((f) => f.id === flagId);
@@ -1611,8 +1644,6 @@
         if (!o) continue;
         const settyText = dollars(o.perOccurrence) + (o.aggregate ? " / " + dollars(o.aggregate) + " agg" : "");
         if (!flag || !flag.capturedValue) {
-          // No client-required limit found in the contract for this line.
-          // Still show Setty's standing so the reader knows what we carry.
           rows.push({ line: cfg.label, requiredText: "—", settyText, status: "unknown" });
           continue;
         }
@@ -1972,7 +2003,7 @@
           // Pre-computed comparison rows for the OneNote Key Numbers block.
           // Computed here so SettyPMS doesn't need to duplicate Setty's
           // standing-coverage figures or the flag-id → insurance-line map.
-          insuranceComparison: computeInsuranceComparison(result.flags, SETTY_STANDARDS),
+          insuranceComparison: computeInsuranceComparison(result.flags, SETTY_STANDARDS, result.sourceText || ""),
           settyStandardMultiplier: SETTY_STANDARDS.multiplier,
         };
         if (sendToPMS(payload)) {
