@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v26-dollar-cents-fix";
+    window.__appVersion = "2026-06-04-extractor-v27-proposal-boundary";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1279,6 +1279,57 @@
       return out;
     }
 
+    // Find the 1-indexed page where Setty's attached proposal starts, or null
+    // if the contract doesn't include one. The proposal is detected by
+    // company markers (URL, name patterns, signature header) that wouldn't
+    // appear in a client's contract body. This lets us scope flag detection
+    // to the CLIENT contract only — without this, our own boilerplate
+    // (liquidated-damages disclaimer, consequential-damages waiver, etc.)
+    // shows up as flags because the regex doesn't care WHO authored the text.
+    function findSettyProposalStart(pages) {
+      if (!pages || pages.length === 0) return null;
+      const markerPatterns = [
+        /\bwww\.SETTY\.com\b/i,
+        /\bSETTY\s*&\s*Associates\b/i,
+        /\bSETTY['']?s\s+(?:Standard|Professional|services)\b/i,
+        /^\s*Professional\s+Services\s+Proposal\s*$/im,
+        /Presented\s+By:\s*[\s\S]{0,80}?Setty/i,
+        /Mechanical\s*\|\s*Electrical\s*\|\s*Plumbing/i,
+        /FPID:\s*ANY\d/i,
+      ];
+      for (let i = 0; i < pages.length; i++) {
+        const t = pages[i] || "";
+        let hits = 0;
+        for (const re of markerPatterns) if (re.test(t)) hits++;
+        // Two markers in one page = high confidence we're in Setty's proposal.
+        // One marker alone could be a coincidence (e.g., the client's contract
+        // mentions Setty's name); require two so we don't accidentally cut off
+        // legitimate client contract pages.
+        if (hits >= 2) return i + 1;
+      }
+      return null;
+    }
+
+    // Detect whether the Prime Agreement is actually attached to the PDF
+    // (vs. just referenced in passing). We look for a page that LOOKS like
+    // a standalone agreement: starts with "AGREEMENT" / "between" / parties,
+    // OR has its own signature block separate from the contract's.
+    // Returns 1-indexed page where Prime Agreement starts, or null.
+    function findPrimeAgreementStart(pages) {
+      if (!pages || pages.length === 0) return null;
+      const headerPatterns = [
+        /^\s*(?:OWNER[\s-]ARCHITECT\s+)?AGREEMENT\b[^.]{0,200}?\bBetween\b/im,
+        /^\s*PRIME\s+AGREEMENT\b/im,
+        /^\s*AIA\s+Document\s+B\d{3}/im,    // B-series = owner/architect agreements
+        /STANDARD\s+FORM\s+OF\s+AGREEMENT[^.]{0,200}?BETWEEN\s+OWNER\s+AND\s+ARCHITECT/i,
+      ];
+      for (let i = 0; i < pages.length; i++) {
+        const t = pages[i] || "";
+        for (const re of headerPatterns) if (re.test(t)) return i + 1;
+      }
+      return null;
+    }
+
     // Document outline — table-of-contents for the source PDF. Tells the
     // reviewer where in the contract to look without re-reading: total pages,
     // exhibits and where they start, where the Proposal sits if attached,
@@ -1312,6 +1363,52 @@
           description,
         });
       }
+
+      // AIA documents — find each AIA document code (C401, C421, D401, A201,
+      // B121, etc.) and record where it appears. The big ones — the master
+      // agreement, the service order, certifications, the Prime — surface here.
+      const aiaRe = /AIA\s+Document\s+([A-Z]\s*\d{3,4})(?:[™®]|\s*[–\-]\s*(\d{4}))?(?:\s*[,;:—\-]\s*([^\n]{1,80}))?/gi;
+      while ((m = aiaRe.exec(text)) !== null) {
+        const code = m[1].replace(/\s+/g, "");
+        const year = m[2] || "";
+        const description = m[3] ? m[3].trim().replace(/[.;,]\s*$/, "") : "";
+        const label = "AIA " + code + (year ? "-" + year : "");
+        if (seen.has(label)) continue;
+        seen.add(label);
+        out.sections.push({
+          kind: "AIA",
+          ident: code,
+          label,
+          page: pageOfIndex(m.index, pageOffsets),
+          description,
+        });
+      }
+
+      // Named attachments — quoted document titles in contract bodies like
+      //   "'Professional Services Proposal' May 6th 2026"
+      //   "'Consultant's Agreement', March 3rd 2026"
+      // Many contracts (esp. AIA C421 §16.2 lists) use quoted titles instead
+      // of EXHIBIT letters. We grab anything ≤80 chars in single quotes that
+      // contains at least one Title-cased word.
+      const quotedRe = /[''""]([A-Z][^''""\n]{4,80})[''""]/g;
+      while ((m = quotedRe.exec(text)) !== null) {
+        const title = m[1].trim();
+        // Filter junk: must contain at least 2 title-cased words OR a known
+        // attachment keyword. Skip if it looks like a quoted phrase from body
+        // text (lowercased after the first word, no capitalization pattern).
+        if (!/(?:Proposal|Agreement|Exhibit|Attachment|Schedule|Document|Order|Notes?|Specifications?|Plans?|Drawings?)/i.test(title)) continue;
+        const label = title;
+        if (seen.has(label)) continue;
+        seen.add(label);
+        out.sections.push({
+          kind: "NAMED",
+          ident: title,
+          label,
+          page: pageOfIndex(m.index, pageOffsets),
+          description: "",
+        });
+      }
+
       // Sort sections by page so the TOC reads in document order
       out.sections.sort((a, b) => (a.page || 0) - (b.page || 0));
 
@@ -1471,18 +1568,34 @@
     function extractAll(parsedPdf) {
       const log = [];
       const text = parsedPdf.fullText;
-      // Rebuild page offsets from parsedPdf.pages here (not in readPdf) so OCR-
-      // replaced pages still produce correct page-number mapping.
-      const pageOffsets = buildPageOffsets(parsedPdf.pages || []);
+      const pages = parsedPdf.pages || [];
+      // Rebuild page offsets from pages here (not in readPdf) so OCR-replaced
+      // pages still produce correct page-number mapping.
+      const pageOffsets = buildPageOffsets(pages);
       log.push({ type: "info", msg: `PDF parsed: ${parsedPdf.numPages} pages, ${text.length} chars` });
 
+      // Detect Setty's attached proposal boundary. The client contract is the
+      // pages BEFORE the proposal; all flag/payment/schedule/legal/signature
+      // detection runs against THAT text only. Without this scoping, our own
+      // protective language (warranty disclaimers, consequential-damages
+      // waivers, liquidated-damages disclaimer) shows up as client overrides.
+      const settyProposalPage = findSettyProposalStart(pages);
+      const clientPages = settyProposalPage ? pages.slice(0, settyProposalPage - 1) : pages;
+      const clientText  = clientPages.join("\n\n");
+      // pageOffsets are computed against the FULL text, which is fine even
+      // when we scan clientText — match indices in clientText also map to
+      // valid offsets in fullText since clientText is a prefix.
+      if (settyProposalPage) {
+        log.push({ type: "info", msg: `Setty's proposal detected starting page ${settyProposalPage} — flag detection scoped to client contract pages 1-${settyProposalPage - 1}.` });
+      }
+
       // 1. Document type
-      const docType = detectDocType(text);
+      const docType = detectDocType(clientText);
       log.push({ type: "info", msg: `Document type: ${docType.type}${docType.year ? " ("+docType.year+")" : ""}` });
 
       // 2. OVERRIDE FLAGS — the primary output
       log.push({ type: "tier", msg: "Override clauses" });
-      const flags = detectFlags(text, pageOffsets);
+      const flags = detectFlags(clientText, pageOffsets);
       for (const f of flags) {
         const locator = [f.sectionLabel, f.pageNumber ? `p. ${f.pageNumber}` : ""].filter(Boolean).join(" · ");
         log.push({ type: "flag", msg: `⚑ ${f.label}${locator ? "  (" + locator + ")" : ""}` });
@@ -1506,30 +1619,34 @@
       if (dateRes) log.push({ type: "hit", msg: `Contract date: ${dateRes.date}` });
       else log.push({ type: "miss", msg: "Contract date not parsed" });
 
-      const parties = extractParties(text);
+      // All of the structured extractors run against clientText, not text.
+      // Setty's attached proposal would otherwise leak its OWN language into
+      // the parsed fields (Setty's payment terms, Setty's insurance, Setty's
+      // governing-law/venue) which would shadow the client's actual terms.
+      const parties = extractParties(clientText);
       if (parties.client.value) log.push({ type: "hit", msg: `Client: ${parties.client.value.slice(0,60)}…` });
-      const project = extractProject(text);
+      const project = extractProject(clientText);
       if (project.value) log.push({ type: "hit", msg: `Project: ${project.value.slice(0,60)}` });
-      const ids = extractIdentifiers(text, parsedPdf.fileName);
+      const ids = extractIdentifiers(clientText, parsedPdf.fileName);
       if (ids.contractNumber.value)      log.push({ type: "hit", msg: `Contract #: ${ids.contractNumber.value}` });
       if (ids.primeProjectNumber.value)  log.push({ type: "hit", msg: `Prime's Project #: ${ids.primeProjectNumber.value}` });
       if (ids.contractExpiration.value)  log.push({ type: "hit", msg: `Contract Expiration: ${ids.contractExpiration.value}` });
 
       // 4. Payment terms
       log.push({ type: "tier", msg: "Payment terms" });
-      const payment = extractPaymentTerms(text, flags);
+      const payment = extractPaymentTerms(clientText, flags);
 
       // 5. Reimbursable rules
       log.push({ type: "tier", msg: "Reimbursable expense rules" });
-      const reimb = extractReimbursableRules(text, flags);
+      const reimb = extractReimbursableRules(clientText, flags);
 
       // 6. Schedule
       log.push({ type: "tier", msg: "Schedule terms" });
-      const schedule = extractSchedule(text, flags);
+      const schedule = extractSchedule(clientText, flags);
 
       // 7. Legal — governing law, venue, dispute resolution
       log.push({ type: "tier", msg: "Legal" });
-      const legal = extractLegal(text);
+      const legal = extractLegal(clientText);
       if (legal.governingLaw.value)      log.push({ type: "hit", msg: `Governing law: ${legal.governingLaw.value}` });
       if (legal.venue.value)              log.push({ type: "hit", msg: `Venue: ${legal.venue.value}` });
       if (legal.disputeResolution.value)  log.push({ type: "hit", msg: `Dispute resolution: ${legal.disputeResolution.value}` });
@@ -1538,14 +1655,53 @@
       // the signature block. Useful for "who's our point person at the prime"
       // and for figuring out who actually has authority to sign amendments.
       log.push({ type: "tier", msg: "Signatories" });
-      const signatories = extractSignatories(text);
+      const signatories = extractSignatories(clientText);
       for (const s of signatories) {
         log.push({ type: "hit", msg: `Signatory: ${s.name} — ${s.title}` });
       }
 
       // 9. Document outline — pages-of-the-PDF index for the OneNote TOC:
       // exhibits & where they start, proposal location, fee call-out, sig page.
-      const outline = extractDocumentOutline(text, parsedPdf.pages || [], pageOffsets);
+      // Uses FULL text (not clientText) so it can find the proposal and any
+      // attachments that live after the client contract body.
+      const outline = extractDocumentOutline(text, pages, pageOffsets);
+      // Augment outline with the boundary detections we did up top.
+      outline.settyProposalPage  = settyProposalPage;
+      outline.primeAgreementPage = findPrimeAgreementStart(pages);
+      // Substantive Prime Agreement references = the contract talks about a
+      // specific Prime Agreement (named, dated, with parties) versus the
+      // template "if applicable" mentions. Count phrases that imply a real one.
+      const primeRefMatches = (text.match(/Prime\s+Agreement/gi) || []).length;
+      const primeNamed = /(?:identify|known\s+as|attached\s+as)\s+(?:the\s+)?Prime\s+Agreement|Prime\s+Agreement\s*[:,]\s*['"][^'"\n]{4,80}['"]|Prime\s+Agreement\s+(?:dated|between)\b/i.test(text);
+      outline.primeAgreementReferenced = primeRefMatches >= 2 || primeNamed;
+      outline.primeAgreementAttached   = !!outline.primeAgreementPage;
+
+      // Synthesize a flag when the contract clearly hangs terms off a Prime
+      // Agreement but that Prime Agreement isn't actually in this PDF. The
+      // reviewer needs to chase it down before signing — Prime terms often
+      // contain the substantive obligations (insurance limits, indemnity
+      // language, dispute resolution venue) that this contract just refers
+      // to by reference.
+      if (outline.primeAgreementReferenced && !outline.primeAgreementAttached) {
+        // Find the most descriptive Prime Agreement mention to put in the
+        // captured paragraph — preferred order: "identified as", "known as",
+        // any sentence containing both "Prime Agreement" and a date.
+        const primeContextM = text.match(/[^.\n]{0,300}?Prime\s+Agreement[^.\n]{0,200}?(?:dated|between|identified|known\s+as)[^.\n]{0,300}/i)
+                           || text.match(/[^.\n]{0,200}?Prime\s+Agreement[^.\n]{0,300}/i);
+        const idx = primeContextM ? text.indexOf(primeContextM[0]) : 0;
+        flags.push({
+          id: "prime-not-attached",
+          label: "Prime Agreement referenced but NOT attached",
+          severity: "high",
+          evidence: primeContextM ? "…" + primeContextM[0].slice(0, 200).replace(/\s+/g, " ").trim() + "…" : "",
+          fullSection: primeContextM ? getContainingSection(text, idx, primeContextM[0].length) : "",
+          sectionLabel: "",
+          pageNumber: pageOfIndex(idx, pageOffsets),
+          explanation: "This contract incorporates terms from the Prime Agreement by reference, but the Prime Agreement itself is not included in this PDF. Request the Prime Agreement from the prime/architect before signing — its terms (insurance, indemnity, dispute resolution, payment timing) flow down to Setty under this contract.",
+          capturedValue: null,
+        });
+        log.push({ type: "flag", msg: `⚑ Prime Agreement referenced but NOT attached  (p. ${pageOfIndex(idx, pageOffsets) || "?"})` });
+      }
       if (outline.sections.length > 0) {
         log.push({ type: "tier", msg: "Document outline" });
         for (const s of outline.sections) {
@@ -1576,10 +1732,10 @@
         log,
         docType,
         flags,
-        // Pass through the parsed text so downstream consumers (insurance-
-        // deferral detection, future heuristics) can scan it without re-
-        // running PDF extraction. Cheap by reference — JS strings are interned.
-        sourceText: text,
+        // Pass through the CLIENT contract text (not the full text incl. Setty's
+        // attached proposal) so downstream consumers like insurance-deferral
+        // detection naturally inherit the boundary. Cheap by reference.
+        sourceText: clientText,
         signatories,
         outline,
         ocrStatus,
