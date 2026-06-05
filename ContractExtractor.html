@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-05-extractor-v35-checklist-v5";
+    window.__appVersion = "2026-06-05-extractor-v36-accounting-flags";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -909,6 +909,52 @@
         ],
         explanation: "Contract restricts Setty's ability to substitute key personnel, or imposes damages for personnel changes. Setty must retain the right to substitute with equally qualified individuals upon reasonable notice — strike damages tied to personnel changes.",
       },
+      // ----- Accounting / billing-administration flags -----
+      // Added 2026-06-05 per accounting team request: hourly billing increases
+      // admin overhead, and contracts that require timesheets / receipts /
+      // supporting docs with each invoice need accounting to set up workflows
+      // in advance. Both flags are accounting-notify items, not pure risks.
+      {
+        id: "hourly-billing",
+        label: "Hourly billing / Time-and-Materials",
+        severity: "info",
+        patterns: [
+          // Explicit hourly rate language
+          /hourly\s+(?:rate|billing|fee|charge|basis)/i,
+          // "$150/hr" / "$150 per hour"
+          /\$[\d,]+(?:\.\d{2})?\s*(?:per|\/)\s*(?:hour|hr)\b/i,
+          // Time and materials / T&M
+          /\bT\s*&\s*M\b/,
+          /time[\s\-]and[\s\-]materials/i,
+          // Billable hours / hourly rate schedule
+          /\bbillable\s+hours?\b/i,
+          /(?:hourly|labor)\s+rate\s+schedule/i,
+        ],
+        explanation: "Contract uses hourly billing or Time-and-Materials. Accounting needs to know in advance — timesheet tracking, monthly hour rollups, and rate-schedule enforcement add admin overhead vs. a lump-sum contract. Confirm the rate schedule is attached and rates match what was proposed. NOTIFY ACCOUNTING.",
+      },
+      {
+        id: "invoice-backup-required",
+        label: "Invoice backup / supporting documentation required",
+        severity: "medium",
+        patterns: [
+          // Timesheets required
+          /(?:timesheet|time\s+sheet|time\s+record|time\s+log)s?\s+(?:shall|must|will|are\s+(?:to\s+be|required\s+to\s+be))\s+(?:submitted|provided|attached|included|maintained)/i,
+          /(?:submit|provide|attach|include)[^.]{0,80}?(?:timesheet|time\s+sheet|time\s+record|time\s+log)s?/i,
+          // Generic supporting / backup documentation requirement
+          /(?:supporting|backup|substantiating)\s+document(?:ation|s)?\s+(?:shall|must|will|is\s+required|are\s+required)/i,
+          // Invoice itself must include / be accompanied by backup
+          /(?:invoice|invoices)\s+(?:shall|must|will)\s+(?:include|be\s+accompanied\s+by|contain)[^.]{0,120}?(?:supporting|backup|receipts?|timesheets?|time\s+records|substantiation)/i,
+          // Itemized invoice / broken-down billing
+          /itemized\s+(?:invoice|billing|breakdown|statement)/i,
+          /invoice[^.]{0,80}?broken\s+down\s+by[^.]{0,80}?(?:personnel|staff|employee|task|phase)/i,
+          // Receipts for expenses
+          /receipts?\s+(?:shall|must|will)\s+be\s+(?:provided|submitted|attached|maintained)/i,
+          // Certified payroll reports
+          /certified\s+payroll\s+report/i,
+        ],
+        explanation: "Contract requires backup documentation (timesheets, receipts, itemized breakdowns, or certified payroll) with each invoice. Accounting needs to set up the workflow before the first invoice cycle. Capture exactly what's required — some clients want signed timesheets per person; others just need a summary by phase. NOTIFY ACCOUNTING.",
+      },
+
       {
         id: "claims-accrual-discovery",
         label: "Claims accrue at 'discovery' (extends limitations period)",
