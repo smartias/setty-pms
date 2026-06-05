@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-05-extractor-v36-accounting-flags";
+    window.__appVersion = "2026-06-05-extractor-v37-writing-state";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -307,6 +307,37 @@
     // visual identity (magnifier / detective / scrutiny icons) while quotes
     // carry the personality.
     const INVESTIGATIVE_EMOJI = ["🔍","🕵️","🧐","🔎","📋","⚖️","🚩","🧾","💼","🎯","🔬","📐","🗝️","📡","🚨","🪪","📜","🧮"];
+
+    // ════════════════════════════════════════════════════════════════════
+    // Writing quotes — rotated while OneNote write is in flight after the
+    // user clicks Apply and Save. Same tone as INVESTIGATIVE_QUOTES (dry,
+    // observational, Setty-flavored) but written for the "we're talking to
+    // Microsoft Graph right now" beat. Typical OneNote write takes 3-15s
+    // depending on token cache and Graph API mood.
+    // ════════════════════════════════════════════════════════════════════
+    const WRITING_QUOTES = [
+      "Convincing Microsoft Graph that this contract exists…",
+      "Filing your override flags under 'consequential'…",
+      "OneNote is thinking about it.",
+      "Reticulating contract splines…",
+      "Negotiating with SharePoint's API rate limits…",
+      "Pushing the boulder of bureaucracy uphill.",
+      "Cross-referencing Article 11 with Microsoft's SLA…",
+      "Encoding your override findings for posterity…",
+      "Persuading the auth token to actually return…",
+      "Setting your contract analysis in OneNote stone.",
+      "Filing this where future you will actually find it…",
+      "Writing to OneNote with all the urgency of a Tuesday.",
+      "Crafting a OneNote page worth bookmarking…",
+      "The Microsoft auth token has feelings about this.",
+      "Conjuring a OneNote page from the ether…",
+      "Translating regex hits into Microsoft Graph requests…",
+      "Asking the cloud nicely to acknowledge your contract.",
+      "Documenting today's pay-when-paid clause for tomorrow's PM.",
+      "Routing through Microsoft's preferred number of redirects…",
+    ];
+
+    const WRITING_EMOJI = ["📝","💾","📤","☁️","📨","🗂️","🪶","📨","📡","✏️","📋","📎"];
 
     // ========================================================================
     // postMessage integration with SettyPMS
@@ -2666,10 +2697,19 @@
       // drags. Sent to PMS so the OneNote page can show where the contract
       // came from in addition to the record's curated folder.
       const [dragSourceUrl, setDragSourceUrl] = useState("");
-      // sendState: "idle" → "sent" (reverts to idle after a few seconds so
-      // the user can re-send if they made a typo or want to retry). Gives
-      // visible confirmation that the click was registered.
+      // sendState state machine:
+      //   idle     — button visible, ready to send
+      //   writing  — postMessage sent; PMS is writing OneNote; show rotating quotes
+      //   done     — PMS confirmed success; brief celebration; auto-close
+      //   failed   — PMS reported an error; show it; auto-close after 5s
+      //   timeout  — no PMS ACK in 60s; manual close button
       const [sendState, setSendState] = useState("idle");
+      // Failure message text (from PMS) — shown in the "failed" state UI.
+      const [sendError, setSendError] = useState("");
+      // Currently-displayed writing quote { emoji, line } during "writing" state.
+      const [writingQuote, setWritingQuote] = useState(null);
+      const writingTimerRef = useRef(null);
+      const ackTimeoutRef = useRef(null);
       // PMS project context for the contract being reviewed. We load the PMS
       // project list straight from Supabase (read-only), then identify which
       // project this contract belongs to — auto-matched on contract # or chosen
@@ -2866,6 +2906,34 @@
         }
       }, [partialScan]);
 
+      // Listen for the "contractDataApplied" ACK from SettyPMS. We hold the
+      // extractor open during the OneNote write (3-15s typical) and close on
+      // confirmation — so the user knows whether their save actually worked
+      // before this window disappears.
+      useEffect(() => {
+        const onPmsAck = (e) => {
+          const d = e && e.data;
+          if (!d || d.source !== "SettyPMS" || d.type !== "contractDataApplied") return;
+          // Stop the rotating-quote timer + safety timeout — we got our ACK.
+          if (writingTimerRef.current) { clearInterval(writingTimerRef.current); writingTimerRef.current = null; }
+          if (ackTimeoutRef.current)   { clearTimeout(ackTimeoutRef.current);   ackTimeoutRef.current = null; }
+          setWritingQuote(null);
+          if (d.success) {
+            setSendState("done");
+            // Short success celebration, then close.
+            setTimeout(() => { try { window.close(); } catch (_) {} }, 1500);
+          } else {
+            setSendError(String(d.error || "Unknown error — check PMS window for details."));
+            setSendState("failed");
+            // Longer wait on failure so the user can read the message before
+            // the popup vanishes. PMS also shows its own error modal.
+            setTimeout(() => { try { window.close(); } catch (_) {} }, 5000);
+          }
+        };
+        window.addEventListener("message", onPmsAck);
+        return () => window.removeEventListener("message", onPmsAck);
+      }, []);
+
       // Quick time estimate for the OCR banner. Tesseract.js averages ~5-10s
       // per page on contract scans depending on density. We show a range so
       // the user knows it's not seconds for a 100-page Exhibit B.
@@ -2997,17 +3065,30 @@
           presenceChecks: result.presenceChecks || null,
         };
         if (sendToPMS(payload)) {
-          setSendState("sent");
-          // Auto-close this popup after a short delay so the user doesn't
-          // have to manually close it. 1.5s gives them time to see the
-          // green "✓ Sent" confirmation. If close is blocked by the
-          // browser (rare for popups opened via window.open), revert the
-          // button after 8s so they can re-send or close manually.
-          setTimeout(() => {
-            try { window.close(); } catch (_) { /* may be blocked */ }
-            // If we're still here after 8s total (close was blocked), reset
-            setTimeout(() => setSendState("idle"), 6500);
-          }, 1500);
+          // Transition to "writing" state — the OneNote write on the PMS side
+          // can take 3-15s (Microsoft Graph latency + token cache state).
+          // We used to close immediately, but the user had no idea whether
+          // anything was happening between the extractor closing and the PMS
+          // confirmation modal appearing. Now we hold the popup open with a
+          // rotating-quote animation, and PMS posts back when it's done.
+          setSendState("writing");
+          setSendError("");
+          // Start rotating writing quotes — same vibe as the investigation
+          // animation during parsing. Random start so consecutive runs vary.
+          if (writingTimerRef.current) clearInterval(writingTimerRef.current);
+          let qIdx = Math.floor(Math.random() * WRITING_QUOTES.length);
+          const pickWritingEmoji = () => WRITING_EMOJI[Math.floor(Math.random() * WRITING_EMOJI.length)];
+          setWritingQuote({ emoji: pickWritingEmoji(), line: WRITING_QUOTES[qIdx] });
+          writingTimerRef.current = setInterval(() => {
+            qIdx = (qIdx + 1) % WRITING_QUOTES.length;
+            setWritingQuote({ emoji: pickWritingEmoji(), line: WRITING_QUOTES[qIdx] });
+          }, 1700);
+          // Safety timeout — if PMS never responds (window closed by user,
+          // Graph token failure mid-write, etc.), don't leave the user
+          // staring at a forever-spinning popup. After 60s, flip to a
+          // "timeout" state with a manual close button.
+          if (ackTimeoutRef.current) clearTimeout(ackTimeoutRef.current);
+          ackTimeoutRef.current = setTimeout(() => setSendState("timeout"), 60000);
         }
       };
 
@@ -3028,26 +3109,47 @@
               </div>
               {(() => {
                 const isDisabled = !pmsConnected || !result;
-                const isSent     = sendState === "sent";
-                // Three visual states:
-                //   disabled  — gray, no shadow, not clickable
-                //   idle      — white background, navy text, primary action
-                //   sent      — green background, white text, ✓ confirm in PMS
-                // The "sent" state reverts to idle after 8s (see setSendState).
-                const bg     = isSent ? "#10B981" : isDisabled ? "rgba(255,255,255,0.15)" : "#fff";
-                const fg     = isSent ? "#fff"    : isDisabled ? "rgba(255,255,255,0.55)" : "#1F3864";
-                const label  = isSent ? "✓ Sent — check PMS tab"
-                              : isDisabled ? "Apply and Save →"
-                              : "Apply and Save →";
+                const isWriting  = sendState === "writing";
+                const isDone     = sendState === "done";
+                const isFailed   = sendState === "failed";
+                const isTimeout  = sendState === "timeout";
+                // Visual states:
+                //   disabled  — gray, not clickable
+                //   idle      — white bg, navy text, primary action
+                //   writing   — amber bg, pulsing, "Writing to OneNote…"
+                //   done      — green bg, "✓ Saved" then auto-close
+                //   failed    — red bg, "⚠ Failed" + brief error in title
+                //   timeout   — orange bg, "Still working? Check PMS"
+                const bg =
+                  isDone    ? "#10B981" :
+                  isWriting ? "#D97706" :
+                  isFailed  ? "#DC2626" :
+                  isTimeout ? "#B45309" :
+                  isDisabled ? "rgba(255,255,255,0.15)" : "#fff";
+                const fg = (isDone || isWriting || isFailed || isTimeout) ? "#fff"
+                         : isDisabled ? "rgba(255,255,255,0.55)" : "#1F3864";
+                const label =
+                  isDone    ? "✓ Saved — closing…" :
+                  isWriting ? "✏️ Writing to OneNote…" :
+                  isFailed  ? "⚠ Failed — check PMS" :
+                  isTimeout ? "⏳ Still working? Check PMS" :
+                  "Apply and Save →";
                 const titleText =
-                  isSent          ? "Sent to PMS. Switch to the SettyPMS tab — the confirmation modal should be open there. If not, the PMS may have an older cached version (try Ctrl+Shift+R)."
+                  isDone     ? "OneNote write completed. Closing this window."
+                  : isWriting ? "Sending data to PMS and writing the OneNote analysis page. Hang tight."
+                  : isFailed  ? ("Write failed: " + (sendError || "see PMS window."))
+                  : isTimeout ? "No response from PMS in 60 seconds. Check the PMS window for status."
                   : !pmsConnected ? "Open this tool from the SettyPMS Contracts tab to enable Apply and Save."
                   : !result       ? "Drop a contract PDF first."
                   : "Send the extracted data to PMS — confirm there to apply fields and write to OneNote.";
+                const buttonDisabled = isDisabled || isWriting || isDone || isFailed;
+                const onClick = isTimeout
+                  ? (() => { try { window.close(); } catch (_) {} })
+                  : send;
                 return (
                   <button
-                    onClick={send}
-                    disabled={isDisabled || isSent}
+                    onClick={onClick}
+                    disabled={buttonDisabled}
                     title={titleText}
                     style={{
                       background: bg,
@@ -3057,10 +3159,15 @@
                       borderRadius: 6,
                       fontSize: 13,
                       fontWeight: 700,
-                      cursor: (isDisabled || isSent) ? "default" : "pointer",
-                      boxShadow: isDisabled ? "none" : (isSent ? "0 2px 12px rgba(16,185,129,0.5)" : "0 2px 8px rgba(0,0,0,0.25)"),
+                      cursor: buttonDisabled ? "default" : "pointer",
+                      boxShadow: isDisabled ? "none"
+                              : isDone     ? "0 2px 12px rgba(16,185,129,0.5)"
+                              : isWriting  ? "0 2px 12px rgba(217,119,6,0.5)"
+                              : isFailed   ? "0 2px 12px rgba(220,38,38,0.5)"
+                              : isTimeout  ? "0 2px 12px rgba(180,83,9,0.5)"
+                              : "0 2px 8px rgba(0,0,0,0.25)",
                       transition: "background 0.2s, color 0.2s, box-shadow 0.2s",
-                      minWidth: 200,
+                      minWidth: 220,
                     }}
                   >
                     {label}
@@ -3259,6 +3366,42 @@
                   <span className="investigating-emoji" key={investigation.emoji}>{investigation.emoji}</span>
                   <span className="investigating-text" key={investigation.line}>
                     {investigation.line}
+                  </span>
+                </div>
+              )}
+              {sendState === "writing" && writingQuote && (
+                <div className="investigating" style={{ background: "linear-gradient(135deg, #78350FCC 0%, #B45309CC 60%, #D97706CC 100%)", borderColor: "#F59E0B" }}>
+                  <span className="investigating-emoji" key={writingQuote.emoji}>{writingQuote.emoji}</span>
+                  <span className="investigating-text" key={writingQuote.line}>
+                    <strong style={{ display: "block", fontSize: 13, fontStyle: "normal", marginBottom: 2 }}>Writing OneNote analysis page…</strong>
+                    {writingQuote.line}
+                  </span>
+                </div>
+              )}
+              {sendState === "done" && (
+                <div className="investigating" style={{ background: "linear-gradient(135deg, #064E3BCC 0%, #047857CC 60%, #10B981CC 100%)", borderColor: "#34D399" }}>
+                  <span className="investigating-emoji">✅</span>
+                  <span className="investigating-text" style={{ fontStyle: "normal" }}>
+                    <strong style={{ display: "block", fontSize: 13, marginBottom: 2 }}>Saved to OneNote.</strong>
+                    Closing in a moment — switch to the PMS tab to see the page.
+                  </span>
+                </div>
+              )}
+              {sendState === "failed" && (
+                <div className="investigating" style={{ background: "linear-gradient(135deg, #7F1D1DCC 0%, #B91C1CCC 60%, #DC2626CC 100%)", borderColor: "#F87171" }}>
+                  <span className="investigating-emoji">⚠</span>
+                  <span className="investigating-text" style={{ fontStyle: "normal" }}>
+                    <strong style={{ display: "block", fontSize: 13, marginBottom: 2 }}>OneNote write failed.</strong>
+                    {sendError || "See the PMS window for the error message."} Closing in 5s.
+                  </span>
+                </div>
+              )}
+              {sendState === "timeout" && (
+                <div className="investigating" style={{ background: "linear-gradient(135deg, #78350FCC 0%, #B45309CC 60%, #F59E0BCC 100%)", borderColor: "#FBBF24" }}>
+                  <span className="investigating-emoji">⏳</span>
+                  <span className="investigating-text" style={{ fontStyle: "normal" }}>
+                    <strong style={{ display: "block", fontSize: 13, marginBottom: 2 }}>No response from PMS yet.</strong>
+                    The OneNote write might still be running — check the PMS window. Click the orange button above to close this window.
                   </span>
                 </div>
               )}
