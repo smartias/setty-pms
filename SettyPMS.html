@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-05-pms-v29-accounting-checklist";
+    window.__appVersion = "2026-06-05-pms-v30-extractor-ack";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -9713,7 +9713,7 @@ Setty
 // any React re-render dependency.
 function useContractExtractor(onReceive) {
   useEffect(() => {
-    function onMsg(e) {
+    async function onMsg(e) {
       const originOK = (
         e.origin === CONTRACT_EXTRACTOR_ORIGIN ||
         e.origin === window.location.origin ||
@@ -9731,11 +9731,37 @@ function useContractExtractor(onReceive) {
       if (!originOK) return;
       if (!d || d.source !== "ContractExtractor" || d.type !== "contractData") return;
       console.log("[ContractExtractor→PMS] payload accepted, auto-applying");
+      // Run the receiver (awaitable — handleExtractionReceived is async and
+      // writes the OneNote page) and then post an ACK back to the extractor
+      // window so it can close. Without this ACK, the extractor used to
+      // close on a 1.5s timer with no idea whether the OneNote write
+      // succeeded — the user was left staring at a vanished popup while
+      // PMS was still talking to Microsoft Graph.
+      let success = false;
+      let errMsg  = "";
       try {
-        if (onReceive) onReceive(d.payload);
+        if (onReceive) await onReceive(d.payload);
+        success = true;
       } catch (err) {
         console.error("[ContractExtractor→PMS] onReceive handler threw:", err);
-        alert("Extraction received but auto-apply failed: " + (err?.message || "unknown error"));
+        errMsg = (err && err.message) || "unknown error";
+        // Keep the in-PMS alert too — it surfaces in this window even if
+        // the extractor popup was closed manually before the ACK arrived.
+        try { alert("Extraction received but auto-apply failed: " + errMsg); } catch (_) {}
+      }
+      // Post back to the extractor window. targetOrigin "*" is safe here —
+      // the ACK contains no sensitive data (just a success bool + error
+      // message), and the extractor source/type filter validates the shape.
+      try {
+        if (e.source && typeof e.source.postMessage === "function") {
+          const target = (e.origin && e.origin !== "null") ? e.origin : "*";
+          e.source.postMessage(
+            { source: "SettyPMS", type: "contractDataApplied", success, error: errMsg },
+            target
+          );
+        }
+      } catch (postErr) {
+        console.warn("[ContractExtractor→PMS] failed to post ACK:", postErr);
       }
     }
     window.addEventListener("message", onMsg);
