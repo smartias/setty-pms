@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-04-pms-v27-sharepoint-diagnostic";
+    window.__appVersion = "2026-06-05-pms-v28-checklist-statutory";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3176,6 +3176,112 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
       }
       html += `</div>`;
     }
+  }
+
+  // Presence checks — Force Majeure / TPB disclaimer / Waiver of Subrogation.
+  // Setty wants the latter two PRESENT; absence is itself worth flagging in
+  // the OneNote so the reviewer doesn't have to remember to look.
+  {
+    const pc = extraction.presenceChecks;
+    if (pc) {
+      const pcLine = (label, present, wantPresent) => {
+        if (present) {
+          return `<div style="padding:2px 0;color:#0F172A;"><strong style="color:#075985;">${e(label)}:</strong> <span style="color:#15803D;">present</span></div>`;
+        }
+        const tone = wantPresent ? "#B91C1C" : "#6B7280";
+        const tag  = wantPresent ? "MISSING — request insertion" : "absent";
+        return `<div style="padding:2px 0;color:#0F172A;"><strong style="color:#075985;">${e(label)}:</strong> <span style="color:${tone};font-weight:600;">${e(tag)}</span></div>`;
+      };
+      html += `<h2 ${h2}>Presence Checks</h2>`;
+      html += `<div style="background:#F0F9FF;border:1px solid #BAE6FD;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:10.5pt;line-height:1.5;">`;
+      html += pcLine("Force Majeure clause",            pc.forceMajeure && pc.forceMajeure.present,         false);
+      html += pcLine("Third-party beneficiary disclaimer", pc.tpbDisclaimer && pc.tpbDisclaimer.present,    true);
+      html += pcLine("Waiver of subrogation",           pc.waiverSubrogation && pc.waiverSubrogation.present, true);
+      html += `</div>`;
+    }
+  }
+
+  // Statutory caveats — Contract Checklist V5 Appendix C lookup against the
+  // governing-law state. Shows the per-state enforceability profile plus any
+  // cross-references where a fired flag intersects a restrictive statute.
+  {
+    const sc = extraction.statutoryCaveats;
+    if (sc && sc.profile) {
+      const friendlyTag = sc.friendly
+        ? `<span style="color:#15803D;font-weight:600;font-size:10pt;">(Setty-friendly jurisdiction)</span>`
+        : `<span style="color:#B45309;font-weight:600;font-size:10pt;">(cross-check risk-transfer clauses below)</span>`;
+      html += `<h2 ${h2}>Statutory Caveats — ${e(sc.stateName)} law ${friendlyTag}</h2>`;
+      html += `<div style="background:#FAF5FF;border:1px solid #C4B5FD;border-radius:6px;padding:12px 14px;margin-bottom:14px;font-size:10pt;line-height:1.5;">`;
+      // Cross-references first (most actionable)
+      if (sc.crossReferences && sc.crossReferences.length > 0) {
+        html += `<div style="font-weight:700;color:#5B21B6;margin-bottom:6px;">Cross-references with detected flags:</div>`;
+        for (const cr of sc.crossReferences) {
+          const tone = cr.status === "void" ? "#B91C1C" : cr.status === "restricted" ? "#B45309" : "#5B21B6";
+          html += `<div style="padding:4px 0 6px 12px;border-left:3px solid ${tone};margin-bottom:4px;background:#FFFFFF;border-radius:3px;padding-left:10px;">`;
+          html += `<strong style="color:${tone};">⚠ ${e(cr.flagId)}</strong> — ${e(cr.note)}`;
+          if (cr.statute) html += ` <em style="color:#6B7280;">(${e(cr.statute)})</em>`;
+          html += `</div>`;
+        }
+        html += `<div style="height:8px;"></div>`;
+      }
+      // Full enforceability profile (so the reviewer has the broader picture)
+      const provLabels = {
+        consequentialDamagesWaiver: "Consequential damages waiver",
+        limitationOfLiability:      "Limitation of liability cap",
+        antiIndemnity:              "Anti-indemnity statute",
+        dutyToDefend:               "Duty to defend",
+        waiverOfSubrogation:        "Waiver of subrogation",
+        statuteOfRepose:            "Statute of repose",
+        payWhenPaid:                "Pay-when-paid / pay-if-paid",
+        noDamagesForDelay:          "No-damages-for-delay",
+      };
+      const statusTone = {
+        enforceable:        "#15803D",
+        enforceable_narrow: "#15803D",
+        restricted:         "#B45309",
+        void:               "#B91C1C",
+        varies:             "#6B7280",
+      };
+      html += `<div style="font-weight:700;color:#5B21B6;margin-bottom:4px;">Enforceability profile (${e(sc.stateName)}):</div>`;
+      for (const [key, label] of Object.entries(provLabels)) {
+        const prov = sc.profile[key];
+        if (!prov) continue;
+        const tone = statusTone[prov.status] || "#6B7280";
+        html += `<div style="padding:2px 0;color:#0F172A;">`;
+        html += `<strong style="color:#5B21B6;">${e(label)}:</strong> `;
+        html += `<span style="color:${tone};font-weight:600;">${e(prov.status.replace(/_/g, " "))}</span> — ${e(prov.note)}`;
+        if (prov.statute) html += ` <em style="color:#6B7280;">(${e(prov.statute)})</em>`;
+        html += `</div>`;
+      }
+      html += `<div style="font-size:9pt;color:#6B7280;font-style:italic;margin-top:8px;">Source: Contract Checklist V5 Appendix C (March 2026). Verify current statutes with Contracts/legal counsel before relying.</div>`;
+      html += `</div>`;
+    }
+  }
+
+  // Manual Verification Checklist — boilerplate items per Contract Checklist
+  // V5 that require human judgment and don't lend themselves to regex. Goes
+  // here as a reminder of what the reviewer still needs to do before signing.
+  {
+    const checklistItems = [
+      "Confirm SETTY proposal scope and disciplines match the contract scope (AV/IT, intercom, security, kitchen, etc.).",
+      "Confirm phase breakdown in contract (SD / DD / CD / CA) matches the proposal — note any partial authorizations.",
+      "Verify correct SETTY legal entity is named (SA vs. SAI vs. SME) — different certifications apply.",
+      "Identify the contracting party's legal entity (check for shell LLCs on developer projects).",
+      "Confirm authorized SETTY signatory (Office Director for sub-agreements, managing partner for JVs).",
+      "Review Construction Administration scope — number of site visits, RFI/submittal caps, meeting cadence, closeout deliverables.",
+      "Confirm exclusions are explicitly listed (testing, energy modeling, rebate forms, change-of-sub in CA, bid/addenda sketches).",
+      "Review NDA / confidentiality obligations — term length, mutual scope, carve-outs for insurer / counsel / licensing board.",
+      "If SETTY is prime: forward the main contract to subs for review before execution (redact SETTY's fee first).",
+      "Collect COIs from all subconsultants before they begin work; confirm 'Setty and Associates' is listed as Additional Insured.",
+    ];
+    html += `<h2 ${h2}>Manual Verification Checklist</h2>`;
+    html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:8px;">`;
+    html += `Items that require human review — the extractor can't reliably automate these. Walk through each before signing.</p>`;
+    html += `<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:12px 16px;margin-bottom:14px;font-size:10.5pt;line-height:1.6;">`;
+    for (const item of checklistItems) {
+      html += `<div style="padding:3px 0;color:#0F172A;">☐ ${e(item)}</div>`;
+    }
+    html += `</div>`;
   }
 
   // Override flags — the headline output
