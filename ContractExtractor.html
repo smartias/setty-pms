@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v33-rawflags-curly-mult";
+    window.__appVersion = "2026-06-04-extractor-v34-prime-caps-only";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -1374,14 +1374,18 @@
       // its own header. Earlier loose patterns (AGREEMENT...BETWEEN the Owner)
       // matched references in C-series contract bodies → false "attached".
       const headerPatterns = [
-        // Explicit "PRIME AGREEMENT" header at line start
-        /^\s*PRIME\s+AGREEMENT\b/im,
+        // "PRIME AGREEMENT" as an ALL-CAPS heading. Case-sensitive (no /i flag)
+        // because pdf.js inserts a `\n` wherever the PDF's visual line wraps —
+        // so the body-text mention "...referred to as the\nPrime Agreement" was
+        // matching the line-start anchor when the regex was case-insensitive.
+        // Real heading text on a Prime Agreement first page is ALL CAPS in
+        // practice (AIA / state-issued / GSA agreements alike); body-text
+        // mid-sentence references use title case.
+        /^\s*PRIME\s+AGREEMENT\b/m,
         // AIA B-series (Owner-Architect) — B101, B102, B103, B121, etc.
         /\bAIA\s+Document\s+B\d{3}\b/i,
         // AIA A1XX-series ONLY (Owner-Contractor agreements: A101, A102, etc.).
         // A2XX = General Conditions, A3XX = bonds, etc. — NOT prime agreements.
-        // Also exclude A201 explicitly (General Conditions, the most common
-        // false-positive in C-series contracts that reference A201).
         /\bAIA\s+Document\s+A1\d{2}\b/i,
         // "Standard Form of Agreement Between Owner and Architect/Contractor"
         // — strongest single-line indicator a Prime Agreement starts here.
