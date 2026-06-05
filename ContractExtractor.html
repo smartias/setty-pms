@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-04-extractor-v34-prime-caps-only";
+    window.__appVersion = "2026-06-05-extractor-v35-checklist-v5";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -830,6 +830,98 @@
         ],
         captureValue: true,
         explanation: "A liability cap IS present — generally GOOD for Setty. Confirm it's reasonable (tied to fee or insurance proceeds). NOTE: if NO cap clause appears anywhere, that is itself a RED issue (uncapped exposure) — this tool cannot detect a missing clause, so verify manually.",
+      },
+
+      // ----- Information-reliance, AI, and modern contract risks -----
+      // Added 2026-06-05 from Contract Review Checklist V5 §7, §13.1, §15.4,
+      // §15.7, §15.9, §15.10, §9. These flag clauses that the contract team
+      // routinely escalates for revision.
+      {
+        id: "reliance-verify-info",
+        label: "Independent verification of others' information required",
+        severity: "high",
+        patterns: [
+          // "verify accuracy of" / "independently verify" / "validate" client info
+          /(?:verify|validate|confirm)\s+(?:the\s+)?accuracy\s+of[^.]{0,120}?(?:information|data|drawings|reports|documents|surveys)/i,
+          /independently\s+(?:verify|check|confirm|validate|investigate)[^.]{0,120}?(?:owner|client|prime|architect|consultant|third[\s\-]party)[\s']/i,
+          // "Consultant shall verify" + something owner-furnished
+          /(?:Sub)?[Cc]onsultant\s+shall\s+(?:verify|validate|investigate|inspect)[^.]{0,150}?(?:existing\s+conditions|owner[\s\-]furnished|client[\s\-]furnished|as[\s\-]built)/i,
+          // Discovery-of-latent-conditions obligation
+          /(?:duty|obligation|responsib(?:le|ility))[^.]{0,80}?(?:discover|uncover|identify)[^.]{0,80}?(?:latent|concealed|hidden|unknown)\s+condition/i,
+        ],
+        explanation: "Contract requires Setty to independently verify owner/client-furnished information or to discover latent/concealed conditions. Setty's posture is to RELY on client-furnished data without verification obligation. Push back: 'Design Professional is entitled to rely on information supplied by the Client and other consultants retained directly by the Client.'",
+      },
+      {
+        id: "ai-provisions",
+        label: "AI use restriction / disclosure requirement",
+        severity: "high",
+        patterns: [
+          // Explicit AI restrictions, disclosure, or termination triggers
+          /(?:artificial\s+intelligence|machine\s+learning|large\s+language\s+model|\bLLM\b|generative\s+AI|neural\s+network)[^.]{0,200}?(?:prohibited|restrict|prior\s+(?:written\s+)?consent|disclose|notif(?:y|ication))/i,
+          // "shall not use AI" / "AI tools" / "automated decision"
+          /(?:shall\s+not\s+use|prohibited\s+from\s+using|may\s+not\s+(?:use|employ))[^.]{0,80}?(?:AI|artificial\s+intelligence|machine\s+learning|automated\s+decision|generative)/i,
+          // AI training data prohibition
+          /(?:project\s+data|confidential\s+information|client\s+data)[^.]{0,80}?(?:training|train\s+(?:an?\s+)?AI|machine\s+learning\s+model|vectoriz|tokeniz)/i,
+          // AI disclosure or transparency obligations
+          /disclose[^.]{0,80}?(?:AI|artificial\s+intelligence|machine\s+learning)[^.]{0,80}?(?:functionality|capabilities|tools|usage)/i,
+        ],
+        explanation: "Contract includes AI-related restrictions, disclosure obligations, or termination triggers. Modern contracts increasingly require prior written consent before any AI tool may be used to perform services. Review whether Setty's existing workflows (energy modeling, load calcs, code review, drafting) trigger the restriction. AI-specific indemnification or termination clauses often create uninsured exposure — escalate to Contracts.",
+      },
+      {
+        id: "prevailing-party-fees",
+        label: "Prevailing-party / one-sided attorney fees",
+        severity: "medium",
+        patterns: [
+          // Generic prevailing-party language
+          /prevailing\s+party[^.]{0,200}?(?:attorney|legal|counsel)['']?s?\s+fees/i,
+          // One-sided: Consultant pays Client's fees
+          /(?:Sub)?[Cc]onsultant\s+shall\s+(?:pay|reimburse|be\s+responsible\s+for)[^.]{0,120}?(?:Client|Owner|Architect)['']?s?\s+(?:attorney|legal|counsel)['']?s?\s+fees/i,
+          // Costs of enforcement
+          /costs?\s+of\s+enforcement[^.]{0,80}?(?:attorney|legal|counsel)/i,
+        ],
+        explanation: "Prevailing-party or one-sided attorney-fee provisions are typically NOT covered by E&O insurance. Push for removal, or make the clause mutual with cost-sharing. RED FLAG: language requiring Setty to pay Client's fees without reciprocal obligation.",
+      },
+      {
+        id: "betterment-liability",
+        label: "Betterment / upgrade liability for design corrections",
+        severity: "medium",
+        patterns: [
+          // Direct betterment language
+          /\bbetterment\b/i,
+          // Liability for upgrades beyond original spec
+          /(?:cost|expense)\s+of\s+(?:correction|remediation|rework)[^.]{0,150}?(?:upgrade|enhancement|improvement|exceed(?:s|ing)\s+the\s+original)/i,
+          // No betterment carve-out / Setty pays full cost
+          /(?:Sub)?[Cc]onsultant[^.]{0,120}?(?:bear|pay|be\s+responsible\s+for)[^.]{0,80}?(?:full|total|entire)\s+cost\s+of\s+(?:correction|remediation|redesign)/i,
+        ],
+        explanation: "Contract makes Setty liable for the full cost of correcting design errors, including any betterment or windfall benefit to the owner. Cost of correction should be limited to restoring the design to its originally intended condition — not improving on it. Negotiate a betterment carve-out.",
+      },
+      {
+        id: "key-personnel-restriction",
+        label: "Key-personnel restriction / substitution damages",
+        severity: "medium",
+        patterns: [
+          // Damages tied to personnel changes
+          /(?:damages|penalties|default)[^.]{0,120}?(?:key\s+personnel|named\s+personnel|designated\s+(?:individual|staff|engineer)|personnel\s+(?:change|substitut|replacement))/i,
+          // Client approval for substitution with no qualification
+          /(?:client|owner|architect)['']?s?\s+(?:prior\s+)?(?:written\s+)?(?:approval|consent)[^.]{0,80}?(?:replace|substitut|change)[^.]{0,80}?(?:key\s+personnel|named|designated)/i,
+          // Dedicated personnel with no substitution
+          /\bdedicated\s+(?:personnel|staff|team)\b[^.]{0,150}?(?:throughout|duration\s+of\s+the\s+project|until\s+completion)/i,
+        ],
+        explanation: "Contract restricts Setty's ability to substitute key personnel, or imposes damages for personnel changes. Setty must retain the right to substitute with equally qualified individuals upon reasonable notice — strike damages tied to personnel changes.",
+      },
+      {
+        id: "claims-accrual-discovery",
+        label: "Claims accrue at 'discovery' (extends limitations period)",
+        severity: "medium",
+        patterns: [
+          // Discovery rule explicitly stated
+          /(?:claims?|causes?\s+of\s+action)[^.]{0,120}?(?:accru|arise)[^.]{0,80}?(?:discovery|when\s+(?:discovered|known)|upon\s+(?:learning|knowledge))/i,
+          // Tolling / extension of limitations
+          /(?:toll(?:ed|ing)?|extend(?:ed|ing)?|suspend(?:ed|ing)?)[^.]{0,120}?(?:statute\s+of\s+limitations?|limitations?\s+period)/i,
+          // Discovery rule applied to design defects
+          /(?:design\s+defect|error|omission)[^.]{0,120}?(?:discovered|known|apparent)[^.]{0,80}?(?:limitations?\s+period|statute\s+of\s+repose)/i,
+        ],
+        explanation: "Claims accruing at 'discovery' rather than at substantial completion / final invoice can extend Setty's exposure well beyond the statute of repose — often creating uninsurable tail liability. Preferred: claims accrue at issuance of final invoice or substantial completion of services.",
       },
 
       // ★ ADD MORE FLAGS HERE as you encounter them. Pattern is:
@@ -1672,6 +1764,202 @@
       return out;
     }
 
+    // Presence checks for clauses where ABSENCE is itself worth noting (force
+    // majeure, third-party-beneficiary disclaimer, waiver of subrogation).
+    // These aren't flags because they're informational — they go in Key Numbers
+    // so the reviewer sees "Force majeure: present" or "TPB disclaimer: MISSING".
+    function extractPresenceChecks(text) {
+      const out = {};
+      // Force Majeure — clause typically titled or starting with "Force Majeure"
+      // OR containing "act of God / war / pandemic / beyond reasonable control"
+      // language. Match either.
+      out.forceMajeure = {
+        present: /\bForce\s+Majeure\b/i.test(text)
+                || /(?:act\s+of\s+God|beyond\s+(?:the\s+)?reasonable\s+control)/i.test(text),
+      };
+      // Third-party beneficiary disclaimer — explicit "no third party benefit"
+      // language. Setty wants this PRESENT.
+      out.tpbDisclaimer = {
+        present: /(?:no(?:t\s+intended\s+to\s+be)?\s+(?:a\s+)?third[\s\-]party\s+beneficiar)/i.test(text)
+                || /(?:nothing\s+(?:in|herein))[^.]{0,80}?(?:create|construed)[^.]{0,120}?(?:right|obligation)[^.]{0,80}?(?:third\s+party|any\s+(?:other\s+)?(?:person|entity))/i.test(text)
+                || /(?:no\s+rights?\s+(?:in|are\s+(?:created|conferred))\s+(?:in\s+)?any\s+third\s+part)/i.test(text),
+      };
+      // Waiver of Subrogation — Setty wants this PRESENT (mutual waiver).
+      out.waiverSubrogation = {
+        present: /\bwaiv(?:er|e)\s+of\s+subrogation\b/i.test(text)
+                || /(?:waiv(?:e|es|ed|ing))[^.]{0,80}?(?:right\s+of\s+)?subrogation/i.test(text),
+      };
+      return out;
+    }
+
+    // ========================================================================
+    // STATUTORY ENFORCEABILITY MATRIX (Contract Checklist V5 Appendix C)
+    // ========================================================================
+    // Per-state enforceability of common risk-transfer clauses. When the
+    // governing-law extractor identifies a state, we surface what's likely
+    // enforceable, restricted, or void under that state's statutes — so a
+    // contract reviewer doesn't have to know NY GOL §5-322.1 cold to know
+    // that a broad-form indemnity is voidable there.
+    //
+    // status values:
+    //   "enforceable"        — generally upheld
+    //   "enforceable_narrow" — upheld with exceptions
+    //   "restricted"         — limited by statute
+    //   "void"               — statute voids the provision
+    //   "varies"             — depends on context (public vs private, etc.)
+    //
+    // Sources: Contract Checklist V5 (March 2026). Current as of that date.
+    // ★ This data should be reviewed periodically with Contracts/legal counsel.
+    const STATUTORY_MATRIX = {
+      VA: { name: "Virginia",   friendly: true,
+        provisions: {
+          consequentialDamagesWaiver: { status: "enforceable",        note: "Enforceable" },
+          limitationOfLiability:      { status: "enforceable_narrow", note: "Enforceable; not for gross negligence" },
+          antiIndemnity:              { status: "void",               note: "§11-4.1 voids sole + partial indemnity (Uniwest); §11-4.4 covers design professionals + public bodies", statute: "Va. Code §11-4.1, §11-4.4" },
+          dutyToDefend:               { status: "varies",             note: "Void for public bodies (§11-4.4); private contracts uncertain" },
+          waiverOfSubrogation:        { status: "enforceable",        note: "Enforceable" },
+          statuteOfRepose:            { status: "enforceable",        note: "5 years",                                      statute: "Va. Code §8.01-250" },
+          payWhenPaid:                { status: "enforceable",        note: "Generally enforceable" },
+          noDamagesForDelay:          { status: "enforceable",        note: "Generally enforceable" },
+        }},
+      DC: { name: "District of Columbia", friendly: true,
+        provisions: {
+          consequentialDamagesWaiver: { status: "enforceable",        note: "Enforceable" },
+          limitationOfLiability:      { status: "enforceable",        note: "Enforceable" },
+          antiIndemnity:              { status: "enforceable",        note: "No anti-indemnity statute; broad-form indemnification enforceable" },
+          dutyToDefend:               { status: "enforceable",        note: "Generally enforceable" },
+          waiverOfSubrogation:        { status: "enforceable",        note: "Enforceable" },
+          statuteOfRepose:            { status: "enforceable",        note: "10 years",                                     statute: "D.C. Code §12-310" },
+          payWhenPaid:                { status: "enforceable",        note: "Generally enforceable" },
+          noDamagesForDelay:          { status: "enforceable",        note: "Generally enforceable" },
+        }},
+      MD: { name: "Maryland",
+        provisions: {
+          consequentialDamagesWaiver: { status: "enforceable",        note: "Enforceable" },
+          limitationOfLiability:      { status: "enforceable",        note: "Enforceable" },
+          antiIndemnity:              { status: "enforceable",        note: "No anti-indemnity statute; broad-form enforceable" },
+          dutyToDefend:               { status: "enforceable",        note: "Generally enforceable" },
+          waiverOfSubrogation:        { status: "enforceable",        note: "Enforceable" },
+          statuteOfRepose:            { status: "enforceable",        note: "20 years",                                     statute: "Md. Code §5-108(b)" },
+          payWhenPaid:                { status: "restricted",         note: "Prompt Payment Act applies; pay-if-paid narrowly construed" },
+          noDamagesForDelay:          { status: "enforceable_narrow", note: "Enforceable; exceptions for bad faith" },
+        }},
+      NY: { name: "New York",
+        provisions: {
+          consequentialDamagesWaiver: { status: "enforceable_narrow", note: "Enforceable but narrowly construed" },
+          limitationOfLiability:      { status: "enforceable_narrow", note: "Enforceable; exception for fraud/gross negligence (Sear-Brown)" },
+          antiIndemnity:              { status: "void",               note: "GOL §5-322.1 voids indemnity for indemnitee's own negligence", statute: "N.Y. GOL §5-322.1" },
+          dutyToDefend:               { status: "restricted",         note: "Limited by GOL §5-322.1" },
+          waiverOfSubrogation:        { status: "enforceable",        note: "Enforceable" },
+          statuteOfRepose:            { status: "restricted",         note: "No statute of repose; CPLR §214-d requires 90-day notice after 10 yrs but no absolute bar", statute: "CPLR §214-d" },
+          payWhenPaid:                { status: "restricted",         note: "Prompt Payment Act restricts pay-if-paid; pay-when-paid disfavored", statute: "N.Y. Prompt Payment Act §§756-757" },
+          noDamagesForDelay:          { status: "varies",             note: "Void in public contracts (Gen. Mun. Law §106-b); private contracts permissible" },
+        }},
+      GA: { name: "Georgia",
+        provisions: {
+          consequentialDamagesWaiver: { status: "enforceable",        note: "Enforceable" },
+          limitationOfLiability:      { status: "enforceable",        note: "Enforceable (RSN Properties, 2009)" },
+          antiIndemnity:              { status: "restricted",         note: "O.C.G.A. §13-8-2(b) voids sole-negligence indemnity only; intermediate form OK", statute: "O.C.G.A. §13-8-2(b)" },
+          dutyToDefend:               { status: "enforceable_narrow", note: "Generally enforceable; subject to sole-negligence limit" },
+          waiverOfSubrogation:        { status: "enforceable",        note: "Enforceable" },
+          statuteOfRepose:            { status: "enforceable",        note: "8 years; express contract excluded (2020 amendment)", statute: "O.C.G.A. §9-3-51" },
+          payWhenPaid:                { status: "enforceable",        note: "Generally enforceable" },
+          noDamagesForDelay:          { status: "enforceable",        note: "Generally enforceable" },
+        }},
+      FL: { name: "Florida",
+        provisions: {
+          consequentialDamagesWaiver: { status: "enforceable_narrow", note: "Enforceable; must be clear and unambiguous" },
+          limitationOfLiability:      { status: "enforceable_narrow", note: "Enforceable for entities; must be clear",   statute: "Fla. Stat. §558.0035" },
+          antiIndemnity:              { status: "restricted",         note: "§725.06 limits indemnification to proportionate fault", statute: "Fla. Stat. §725.06" },
+          dutyToDefend:               { status: "restricted",         note: "Limited to proportionate fault (§725.06)" },
+          waiverOfSubrogation:        { status: "enforceable",        note: "Enforceable" },
+          statuteOfRepose:            { status: "enforceable",        note: "10 years",                                     statute: "Fla. Stat. §95.11(3)(c)" },
+          payWhenPaid:                { status: "restricted",         note: "Restricted by §713.06 prompt payment requirements" },
+          noDamagesForDelay:          { status: "varies",             note: "Void in public construction (§255.078); private contracts permissible" },
+        }},
+      CA: { name: "California",
+        provisions: {
+          consequentialDamagesWaiver: { status: "enforceable_narrow", note: "Enforceable; void if covering fraud/willful injury (§1668)", statute: "Cal. Civ. Code §1668" },
+          limitationOfLiability:      { status: "enforceable_narrow", note: "Enforceable; void for fraud/willful injury (§1668)", statute: "Cal. Civ. Code §1668" },
+          antiIndemnity:              { status: "void",               note: "§2782/§2782.8: indemnity limited to proportionate fault; cannot waive", statute: "Cal. Civ. Code §2782, §2782.8" },
+          dutyToDefend:               { status: "restricted",         note: "Capped at proportionate fault (§2782.8/SB 496); cannot waive" },
+          waiverOfSubrogation:        { status: "enforceable_narrow", note: "Enforceable; subject to §1668" },
+          statuteOfRepose:            { status: "enforceable",        note: "10 years latent / 4 years patent",            statute: "Cal. Civ. Proc. §337.15, §337.1" },
+          payWhenPaid:                { status: "restricted",         note: "Pay-if-paid largely unenforceable",            statute: "Cal. Civ. Code §§8800 et seq." },
+          noDamagesForDelay:          { status: "enforceable_narrow", note: "Enforceable; narrowly construed" },
+        }},
+    };
+
+    // Map various ways a state can appear in extracted text → canonical key.
+    // Handles full names, "State of X", "Commonwealth of X", and US 2-letter
+    // codes appearing in body text. Returns null if no recognized state.
+    function normalizeStateCode(governingLawText) {
+      if (!governingLawText) return null;
+      const t = governingLawText.trim();
+      const nameMap = {
+        "virginia": "VA", "commonwealth of virginia": "VA",
+        "district of columbia": "DC", "washington dc": "DC", "washington d.c.": "DC", "d.c.": "DC",
+        "maryland": "MD",
+        "new york": "NY", "state of new york": "NY",
+        "georgia": "GA",
+        "florida": "FL",
+        "california": "CA",
+      };
+      const norm = t.toLowerCase().replace(/^the\s+/, "").replace(/[.,]+$/, "").trim();
+      if (nameMap[norm]) return nameMap[norm];
+      // 2-letter code at end of capture (e.g., "New York, NY")
+      const codeM = t.match(/\b([A-Z]{2})\b\s*$/);
+      if (codeM && STATUTORY_MATRIX[codeM[1]]) return codeM[1];
+      // Fuzzy: substring match within longer phrases like "the laws of the State of New York"
+      for (const [name, code] of Object.entries(nameMap)) {
+        if (norm.includes(name)) return code;
+      }
+      return null;
+    }
+
+    // For a given state code + fired flags, return cross-reference caveats —
+    // specific notes linking a fired flag to that state's statute. E.g., if
+    // the contract has pay-when-paid AND governing law is NY, surface "NY
+    // Prompt Payment Act restricts pay-if-paid" alongside the flag.
+    //
+    // Returns { state, profile, crossReferences } or null if state unknown.
+    function computeStatutoryCaveats(governingLawText, flags) {
+      const code = normalizeStateCode(governingLawText);
+      if (!code || !STATUTORY_MATRIX[code]) return null;
+      const matrix = STATUTORY_MATRIX[code];
+      // Map each fired flag id → relevant statutory provision
+      const flagToProvision = {
+        "pay-when-paid":              "payWhenPaid",
+        "broad-indemnification":      "antiIndemnity",
+        "consequential-damages":      "consequentialDamagesWaiver",
+        "limitation-of-liability-cap":"limitationOfLiability",
+        "claims-accrual-discovery":   "statuteOfRepose",
+      };
+      const crossReferences = [];
+      const firedIds = new Set((flags || []).map((f) => f.id));
+      for (const [flagId, provKey] of Object.entries(flagToProvision)) {
+        if (!firedIds.has(flagId)) continue;
+        const prov = matrix.provisions[provKey];
+        if (!prov) continue;
+        // Only surface where the state restricts/voids — enforceable is not a caveat
+        if (prov.status === "enforceable") continue;
+        crossReferences.push({
+          flagId,
+          provisionKey: provKey,
+          status: prov.status,
+          note: prov.note,
+          statute: prov.statute || "",
+        });
+      }
+      return {
+        stateCode: code,
+        stateName: matrix.name,
+        friendly: !!matrix.friendly,
+        profile: matrix.provisions,
+        crossReferences,
+      };
+    }
+
     // ========================================================================
     // Main pipeline
     // ========================================================================
@@ -1804,6 +2092,28 @@
       if (legal.venue.value)              log.push({ type: "hit", msg: `Venue: ${legal.venue.value}` });
       if (legal.disputeResolution.value)  log.push({ type: "hit", msg: `Dispute resolution: ${legal.disputeResolution.value}` });
 
+      // Statutory caveats — for the identified governing-law state, look up
+      // enforceability of risk-transfer clauses against the encoded matrix
+      // (Contract Checklist V5 Appendix C). Surfaces caveats specific to
+      // any fired flags (e.g., "you have pay-when-paid AND NY law: NY Prompt
+      // Payment Act restricts pay-if-paid clauses").
+      const statutoryCaveats = computeStatutoryCaveats(legal.governingLaw.value, flags);
+      if (statutoryCaveats) {
+        log.push({ type: "hit", msg: `Statutory matrix loaded for ${statutoryCaveats.stateName}${statutoryCaveats.friendly ? " (Setty-friendly jurisdiction)" : ""}.` });
+        for (const cr of statutoryCaveats.crossReferences) {
+          log.push({ type: "info", msg: `Statutory caveat (${statutoryCaveats.stateCode}): flag "${cr.flagId}" — ${cr.note}${cr.statute ? " (" + cr.statute + ")" : ""}` });
+        }
+      }
+
+      // Presence/absence checks — force majeure, third-party-beneficiary
+      // disclaimer, waiver of subrogation. Each is informational (not a flag);
+      // Setty wants TPB + waiver of subrogation PRESENT, and force majeure
+      // PRESENT for completeness.
+      const presenceChecks = extractPresenceChecks(clientText);
+      log.push({ type: "info", msg: `Force majeure: ${presenceChecks.forceMajeure.present ? "present" : "absent"}` });
+      log.push({ type: "info", msg: `Third-party beneficiary disclaimer: ${presenceChecks.tpbDisclaimer.present ? "present" : "MISSING (request insertion)"}` });
+      log.push({ type: "info", msg: `Waiver of subrogation: ${presenceChecks.waiverSubrogation.present ? "present" : "MISSING (request insertion)"}` });
+
       // 8. Signatories — extract the counterparty's signing name & title from
       // the signature block. Useful for "who's our point person at the prime"
       // and for figuring out who actually has authority to sign amendments.
@@ -1899,6 +2209,13 @@
         signatories,
         outline,
         ocrStatus,
+        // Statutory caveats: { stateCode, stateName, friendly, profile,
+        // crossReferences[] } or null. Computed from governing-law extraction
+        // against Appendix C of Contract Checklist V5.
+        statutoryCaveats,
+        // Presence checks: { forceMajeure, tpbDisclaimer, waiverSubrogation }
+        // each with { present: bool }.
+        presenceChecks,
         fields: {
           // metadata
           contractDate,
@@ -2625,6 +2942,13 @@
           // specific PDF pages instead of re-reading the contract.
           outline: result.outline || null,
           ocrStatus: result.ocrStatus || null,
+          // Statutory caveats from Appendix C matrix lookup against the
+          // extracted governing-law state. Renders as "Statutory caveats"
+          // in Key Numbers.
+          statutoryCaveats: result.statutoryCaveats || null,
+          // Presence/absence info for Force Majeure / TPB disclaimer / Waiver
+          // of Subrogation — renders as part of Key Numbers.
+          presenceChecks: result.presenceChecks || null,
         };
         if (sendToPMS(payload)) {
           setSendState("sent");
