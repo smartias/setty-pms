@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-10-pms-v31-cal-pull-notes";
+    window.__appVersion = "2026-06-10-pms-v32-schedule-polish";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -7047,7 +7047,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       <table>
         <thead>
           <tr>
-            <th>Type</th><th>Name</th><th>Phase</th><th>Due Date</th>
+            <th>Type</th><th>Name</th><th>Due Date</th>
             <th>% Complete</th><th>Status</th><th>Notes</th>
             <th title="Outlook calendar sync">📅</th><th></th>
           </tr>
@@ -7056,7 +7056,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
           {/* Cancelled milestones shown collapsed at bottom */}
           {(milestones.filter(m => m.cancelled)).length > 0 && (
             <tr>
-              <td colSpan={9} style={{ padding: "6px 0 2px", fontSize: 11, color: P.textDim, fontStyle: "italic", borderTop: `1px dashed ${P.border}` }}>
+              <td colSpan={8} style={{ padding: "6px 0 2px", fontSize: 11, color: P.textDim, fontStyle: "italic", borderTop: `1px dashed ${P.border}` }}>
                 Cancelled ({milestones.filter(m => m.cancelled).length})
                 {milestones.filter(m => m.cancelled).map(m => (
                   <span key={m.id} style={{ marginLeft: 10, background: P.redDim, color: P.red, borderRadius: 4, padding: "1px 7px", fontStyle: "normal" }}>
@@ -7098,21 +7098,22 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
               <tr style={highlightStyle || (isComplete ? { background: "rgba(16,185,129,0.05)" } : undefined)}>
                 <td><Badge color={typeColor} text={m.type === "billable" ? "Billable" : "Non-Billable"} /></td>
                 <td>
+                  {/* Completed rows recede (small + grey); active billable names pop (bold + blue) —
+                      the eye lands on the work that still earns fee */}
                   {isComplete
-                    ? <span style={{ fontSize: 13, color: P.text, fontWeight: 500 }}>{m.name}</span>
+                    ? <span style={{ fontSize: 12, color: P.textDim, fontWeight: 400 }}>{m.name}</span>
                     : m.type === "billable" && project.feeScheduleFinalized
-                    ? <span title="Unlock Fee Calculator to rename" style={{ fontSize: 13, color: P.textDim, display: "inline-flex", alignItems: "center", gap: 4 }}>🔒 {m.name}</span>
+                    ? <span title="Unlock Fee Calculator to rename" style={{ fontSize: 13, color: P.accentLight, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>🔒 {m.name}</span>
                     : <input
   value={m.name}
   onChange={e => updateMilestone(m.id, "name", e.target.value, false, { notifyTeams: false })}
   onBlur={e => updateMilestone(m.id, "name", e.target.value, false, { debounceTeams: true, teamsDelay: 2000 })}
-  style={{ width: 190 }}
+  style={{ width: 190, ...(m.type === "billable" ? { color: P.accentLight, fontWeight: 700 } : {}) }}
 />}
                 </td>
-                <td style={{ color: P.textMuted, fontSize: 12 }}>{m.phase === "__CO__" ? "CO" : m.phase}</td>
                 <td>
                   {isComplete ? (
-                    <span style={{ color: P.textMuted, fontSize: 13 }}>{m.dueDate ? fmtDate(m.dueDate) : "—"}</span>
+                    <span style={{ color: P.textDim, fontSize: 12 }}>{m.dueDate ? fmtDate(m.dueDate) : "—"}</span>
                   ) : (
                   <input type="date" value={m.dueDate || ""}
                     onFocus={() => {
@@ -7237,7 +7238,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
               </tr>
               {expandedLinks === m.id && (
                 <tr>
-                  <td colSpan={9} style={{ padding: "0 8px 14px" }}>
+                  <td colSpan={8} style={{ padding: "0 8px 14px" }}>
                     <div style={{ padding: "12px 0 0" }}>
                       <LinkManager
                         links={m.links || []}
