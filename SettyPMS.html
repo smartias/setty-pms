@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-05-pms-v30-extractor-ack";
+    window.__appVersion = "2026-06-10-pms-v31-cal-pull-notes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1551,6 +1551,29 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
   }
 }
 
+// Read back a synced milestone's event from Outlook so the Schedule tab can
+// detect dates that were moved calendar-side (two-way sync, pull direction).
+// Returns:
+//   { found: true, date: "YYYY-MM-DD" } — event exists
+//   { found: false }                    — event was deleted in Outlook
+//   null                                — fetch failed (auth/network); unknown, don't prompt
+async function fetchCalendarEventDate(eventId) {
+  const calId = await getNYCCalendarId();
+  try {
+    let ev = calId ? await graphFetch("GET", "/me/calendars/" + calId + "/events/" + eventId + "?$select=start,isAllDay") : null;
+    // Event may live on the personal calendar — createOrUpdateCalendarEvent
+    // falls back there when the shared calendar isn't visible to the account
+    if (!ev) ev = await graphFetch("GET", "/me/events/" + eventId + "?$select=start,isAllDay");
+    if (!ev) return { found: false };
+    // All-day events carry the calendar date in the dateTime string itself,
+    // so the first 10 chars are the date regardless of timezone representation
+    const date = (ev.start?.dateTime || "").slice(0, 10);
+    return { found: true, date: date || null };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function createNoteCalendarEvent(note, project) {
   const today = new Date().toISOString().slice(0, 10);
   const prefix = project.projectNumber ? "[" + project.projectNumber + "] " : "";
@@ -2939,7 +2962,34 @@ function deriveSharePointFolderUrl(fileUrl) {
 function buildContractAnalysisHtml(extraction, record = null, recordType = null) {
   const e = (s) => escapeOneNoteText(s);
   const NAVY = "#1F3864";
-  const flags = extraction.flags || [];
+  // Accounting-flag classification — flags that pertain to invoicing,
+  // hourly fees, timesheet/backup requirements, reimbursables, retainage,
+  // and related cashflow/audit items. These render ONLY inside the
+  // Accounting section. Excluded from the Override Clauses chip list and
+  // from the Source Text (Override Clauses in Context) section so the
+  // accounting story lives in one place.
+  //
+  // TODO Sara: review and adjust. If you decide a flag is borderline (e.g.
+  // `approval-required` covers prior approval for both reimbursables AND
+  // scope changes), pick the home that matches how YOU brief Accounting.
+  // The id strings come from ContractExtractor.html flag definitions.
+  const ACCOUNTING_FLAG_IDS = new Set([
+    "pay-when-paid",
+    "no-markup",
+    "no-interest",
+    "conditions-precedent",
+    "multiplier",
+    "audit-rights",
+    "retainage-withheld",
+    "hourly-billing",
+    "invoice-backup-required",
+  ]);
+  const allFlags = extraction.flags || [];
+  const acctFlags = allFlags.filter(f => ACCOUNTING_FLAG_IDS.has(f.id));
+  // The rest of the renderer reads `flags` for the Override Clauses chip
+  // list and `flagsWithSections` for the Source Text section — both should
+  // see only the non-accounting subset.
+  const flags = allFlags.filter(f => !ACCOUNTING_FLAG_IDS.has(f.id));
   const high   = flags.filter(f => f.severity === "high");
   const medium = flags.filter(f => f.severity === "medium");
   const info   = flags.filter(f => f.severity === "info");
@@ -3285,15 +3335,24 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     html += `</div>`;
   }
 
-  // Override flags — the headline output
+  // Override flags — the headline output. Accounting flags are filtered out
+  // upstream (see ACCOUNTING_FLAG_IDS) and live in the Accounting section,
+  // so the empty-state and count here only cover the non-accounting subset.
   html += `<h2 ${h2}>Override Clauses</h2>`;
   if (flags.length === 0) {
-    html += `<p style="color:#15803D;"><strong>✓ No client-override clauses detected.</strong> `;
-    html += `Verify manually — absence of detection isn't proof of absence.</p>`;
+    if (acctFlags.length > 0) {
+      html += `<p style="color:#15803D;"><strong>✓ No non-accounting override clauses detected.</strong> `;
+      html += `${acctFlags.length} accounting clause${acctFlags.length === 1 ? "" : "s"} — see the Accounting section below.</p>`;
+    } else {
+      html += `<p style="color:#15803D;"><strong>✓ No client-override clauses detected.</strong> `;
+      html += `Verify manually — absence of detection isn't proof of absence.</p>`;
+    }
   } else {
-    html += `<p>${flags.length} clauses detected`;
+    html += `<p>${flags.length} non-accounting clause${flags.length === 1 ? "" : "s"} detected`;
     if (high.length) html += `, <strong style="color:#DC2626;">${high.length} high-severity</strong>`;
-    html += `.</p>`;
+    html += `.`;
+    if (acctFlags.length > 0) html += ` (Accounting flags shown separately below.)`;
+    html += `</p>`;
     for (const f of [...high, ...medium, ...info]) {
       const s = sevStyle[f.severity];
       // Locator: sectionLabel ("Item 9", "Article 11.6.2") and pageNumber
@@ -3319,37 +3378,94 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     html += `</div>`;
   }
 
-  // Payment terms
+  // ============================================================
+  // Accounting — single consolidated section for invoicing, hourly
+  // fees, timesheet/backup requirements, reimbursables, and retainage.
+  // Replaced separate Payment Terms + Reimbursable Expense Rules
+  // sections (2026-06-05) per user request — "that info should not be
+  // repeated other places". Pulls together:
+  //   - Payment-terms table (pt.*)
+  //   - Reimbursable-rules table (r.*)
+  //   - Billing requirements free-text (pt.billingRequirements)
+  //   - Reimbursable rules free-text (r.rules)
+  //   - Source-text evidence for each accounting flag (acctFlags)
+  // Accounting flags are filtered OUT of Override Clauses + Source
+  // Text upstream (see ACCOUNTING_FLAG_IDS at top of this function),
+  // so this section is the sole home for that material.
+  // ============================================================
   const pt = extraction.payment || {};
-  if (Object.values(pt).some(Boolean)) {
-    html += `<h2 ${h2}>Payment Terms</h2><table style="border-collapse:collapse;">`;
-    if (pt.payWhenPaid)         html += `<tr><td ${td}><strong>Pay-when-paid:</strong></td><td>${e(pt.payWhenPaid)}</td></tr>`;
-    if (pt.invoiceReview)       html += `<tr><td ${td}><strong>Invoice review window:</strong></td><td>${e(pt.invoiceReview)}</td></tr>`;
-    if (pt.interestOnLate)      html += `<tr><td ${td}><strong>Interest on late:</strong></td><td>${e(pt.interestOnLate)}</td></tr>`;
-    if (pt.retainage)           html += `<tr><td ${td}><strong>Retainage:</strong></td><td>${e(pt.retainage)}</td></tr>`;
-    if (pt.conditionsPrecedent) html += `<tr><td ${td}><strong>Conditions precedent:</strong></td><td>${e(pt.conditionsPrecedent)}</td></tr>`;
-    html += `</table>`;
-    // Billing / invoice requirements — separate from the table above because
-    // it's free-text (specific clauses about HOW Setty has to bill) rather
-    // than a single value per field.
+  const r  = extraction.reimbursable || {};
+  const hasAcctData = Object.values(pt).some(Boolean)
+                    || Object.values(r).some(Boolean)
+                    || acctFlags.length > 0;
+  if (hasAcctData) {
+    html += `<h2 ${h2}>Accounting</h2>`;
+    html += `<p style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:10px;">`;
+    html += `Single source of truth for invoicing procedures, hourly fees, timesheet/backup requirements, `;
+    html += `reimbursables, and retainage. Brief Accounting from this section — these items are not repeated `;
+    html += `under Override Clauses or Source Text.</p>`;
+
+    // Quick-reference table — invoice + reimbursable fields side-by-side
+    const acctRows = [];
+    if (pt.payWhenPaid)         acctRows.push(["Pay-when-paid",            pt.payWhenPaid]);
+    if (pt.invoiceReview)       acctRows.push(["Invoice review window",    pt.invoiceReview]);
+    if (pt.conditionsPrecedent) acctRows.push(["Conditions precedent",     pt.conditionsPrecedent]);
+    if (pt.interestOnLate)      acctRows.push(["Interest on late",         pt.interestOnLate]);
+    if (pt.retainage)           acctRows.push(["Retainage",                pt.retainage]);
+    if (r.multiplier)           acctRows.push(["Multiplier on labor",      r.multiplier]);
+    if (r.markupPolicy)         acctRows.push(["Reimbursable markup",      r.markupPolicy]);
+    if (r.markupExclusions)     acctRows.push(["Excluded from markup",     r.markupExclusions]);
+    if (acctRows.length > 0) {
+      html += `<table style="border-collapse:collapse;margin-bottom:12px;">`;
+      for (const [label, val] of acctRows) {
+        html += `<tr><td ${td}><strong>${e(label)}:</strong></td><td>${e(val)}</td></tr>`;
+      }
+      html += `</table>`;
+    }
+
+    // Free-text blocks — billing requirements and reimbursable rules.
+    // Captured as paragraphs by the extractor because they're prose, not
+    // a single value (e.g., "invoices must include certified payroll +
+    // MWBE chart + signed daily inspection reports").
     if (pt.billingRequirements && pt.billingRequirements.trim()) {
-      html += `<div style="margin-top:8px;font-weight:600;color:#374151;">Billing / Invoice Requirements (from contract):</div>`;
-      html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:10px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-top:4px;">`;
+      html += `<div style="margin-top:8px;font-weight:600;color:#374151;">Billing / invoice requirements (from contract):</div>`;
+      html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:10px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-top:4px;margin-bottom:10px;">`;
       html += `${e(pt.billingRequirements)}`;
       html += `</div>`;
     }
-  }
+    if (r.rules && r.rules.trim()) {
+      html += `<div style="margin-top:8px;font-weight:600;color:#374151;">Reimbursable expense rules (from contract):</div>`;
+      html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#F9FAFB;padding:10px 14px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-top:4px;margin-bottom:10px;">`;
+      html += `${e(r.rules)}`;
+      html += `</div>`;
+    }
 
-  // Reimbursable rules
-  const r = extraction.reimbursable || {};
-  if (Object.values(r).some(Boolean)) {
-    html += `<h2 ${h2}>Reimbursable Expense Rules</h2><table style="border-collapse:collapse;">`;
-    if (r.multiplier)       html += `<tr><td ${td}><strong>Multiplier:</strong></td><td>${e(r.multiplier)}</td></tr>`;
-    if (r.markupPolicy)     html += `<tr><td ${td}><strong>Markup policy:</strong></td><td>${e(r.markupPolicy)}</td></tr>`;
-    if (r.markupExclusions) html += `<tr><td ${td}><strong>Excluded from markup:</strong></td><td>${e(r.markupExclusions)}</td></tr>`;
-    html += `</table>`;
-    if (r.rules) {
-      html += `<div style="background:#F9FAFB;border:1px solid #E5E7EB;padding:10px;margin-top:6px;font-size:10pt;white-space:pre-wrap;">${e(r.rules)}</div>`;
+    // Accounting-flag evidence — chip + full contract paragraph for each
+    // accounting override (hourly billing, invoice backup, no markup,
+    // audit rights, etc.). Sorted high → medium → info so the cashflow
+    // landmines surface first.
+    if (acctFlags.length > 0) {
+      const acctHigh   = acctFlags.filter(f => f.severity === "high");
+      const acctMedium = acctFlags.filter(f => f.severity === "medium");
+      const acctInfo   = acctFlags.filter(f => f.severity === "info");
+      html += `<div style="margin-top:14px;font-weight:600;color:#374151;">Accounting overrides flagged in this contract:</div>`;
+      html += `<div style="font-size:10pt;color:#6B7280;font-style:italic;margin-bottom:6px;">`;
+      html += `${acctFlags.length} accounting clause${acctFlags.length === 1 ? "" : "s"} detected`;
+      if (acctHigh.length) html += `, <strong style="color:#DC2626;">${acctHigh.length} high-severity</strong>`;
+      html += `.</div>`;
+      for (const f of [...acctHigh, ...acctMedium, ...acctInfo]) {
+        const s = sevStyle[f.severity];
+        const locator = [f.sectionLabel, f.pageNumber ? `p. ${f.pageNumber}` : ""].filter(Boolean).join(" · ");
+        html += `<div style="margin:10px 0;border-left:4px solid ${s.border};padding:6px 0 6px 12px;background:${s.bg};border-radius:0 4px 4px 0;">`;
+        html += `<div style="font-weight:700;color:${s.text};font-size:11pt;">${s.icon} ${e(f.label)}`;
+        if (f.value) html += ` — ${e(f.value)}`;
+        if (locator) html += `<span style="color:${s.text};opacity:0.7;font-weight:500;font-size:10pt;margin-left:8px;">(${e(locator)})</span>`;
+        html += `</div>`;
+        if (f.fullSection) {
+          html += `<div style="font-family:Calibri,Arial,sans-serif;font-size:10.5pt;color:#1F2937;background:#FFFFFF;padding:10px 12px;border-radius:4px;border:1px solid #E5E7EB;white-space:pre-wrap;line-height:1.5;margin-top:6px;">${e(f.fullSection)}</div>`;
+        }
+        html += `</div>`;
+      }
     }
   }
 
@@ -3397,16 +3513,40 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
   //     next tier or end-of-log) are also skipped — they read as dangling
   //     "Extracting payment terms…" lines with nothing under them.
   const log = Array.isArray(extraction.log) ? extraction.log : [];
-  // Precompute which tier indices have substantive (non-section, non-tier)
-  // content following them. Tiers without content get suppressed below.
+  // Tier groups whose content is already rendered higher on the page. Listing
+  // them in the trace duplicates info the reviewer just read (front-of-page vs
+  // end-of-page repetition reported 2026-06-05 on a CUNY/CUCF contract).
+  // Match is case-insensitive on the tier's leading word.
+  const DUPLICATED_TIERS = /^(override\s+clauses|document\s+outline|document\s+metadata|legal)\b/i;
+  // Precompute which tier indices have substantive (non-section, non-tier,
+  // non-suppressed) content following them. Tiers without content get
+  // suppressed below.
   const tierHasContent = new Set();
+  const suppressedTierIdx = new Set();
   for (let i = 0; i < log.length; i++) {
     if (log[i] && log[i].type === "tier") {
+      if (DUPLICATED_TIERS.test(String(log[i].msg || ""))) {
+        suppressedTierIdx.add(i);
+        continue;
+      }
       for (let j = i + 1; j < log.length; j++) {
         const tj = log[j] && log[j].type;
         if (tj === "tier") break;
         if (tj && tj !== "section") { tierHasContent.add(i); break; }
       }
+    }
+  }
+  // Walk the log and mark which child rows belong to a suppressed tier so
+  // their ⚑ / ✓ / ✗ lines drop out alongside the tier header.
+  const suppressedChildIdx = new Set();
+  let curTier = -1;
+  for (let i = 0; i < log.length; i++) {
+    const row = log[i];
+    if (!row || !row.type) continue;
+    if (row.type === "tier") {
+      curTier = i;
+    } else if (curTier >= 0 && suppressedTierIdx.has(curTier)) {
+      suppressedChildIdx.add(i);
     }
   }
   // Filter log to renderable rows so we don't emit an empty section.
@@ -3415,6 +3555,8 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
     .filter(({ row, i }) => {
       if (!row || !row.type) return false;
       if (row.type === "section") return false;          // shown in Source Text
+      if (suppressedTierIdx.has(i)) return false;        // dup of top-of-page sections
+      if (suppressedChildIdx.has(i)) return false;       // child of a suppressed tier
       if (row.type === "tier" && !tierHasContent.has(i)) return false;
       return true;
     });
@@ -6317,6 +6459,68 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     onChange({ ...project, milestones: newMilestones });
   }
 
+  // ── Two-way sync (pull direction): on tab open, read each synced event back
+  // from Outlook and prompt when the calendar date no longer matches PMS ──
+  const [outlookConflicts, setOutlookConflicts] = useState([]); // [{id, name, pmsDate, outlookDate, deleted}]
+
+  // Which milestones get checked against Outlook. Completed and cancelled
+  // milestones are skipped — their dates are historical record; a calendar
+  // drag shouldn't re-open the question.
+  function shouldCheckOutlookDate(m) {
+    return !m.cancelled && (m.pctComplete || 0) < 100 && !!m.calendarEventId && !!m.dueDate;
+  }
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      const toCheck = (project.milestones || []).filter(shouldCheckOutlookDate);
+      if (!toCheck.length) return;
+      const results = await Promise.all(toCheck.map(async m => {
+        const r = await fetchCalendarEventDate(m.calendarEventId);
+        if (!r) return null; // fetch failed — unknown state, don't prompt
+        if (!r.found) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: null, deleted: true };
+        if (r.date && r.date !== m.dueDate) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
+        return null;
+      }));
+      if (alive) setOutlookConflicts(results.filter(Boolean));
+    })();
+    return () => { alive = false; };
+  }, []); // runs once per Schedule tab open — ScheduleView remounts on tab switch
+
+  function acceptOutlookDate(c) {
+    // updateMilestone cascades the new due date into the phase end date for
+    // billable milestones and fires the (debounced) Teams card, same as a
+    // manual date edit. It also marks the calendar icon stale — override to
+    // synced, since Outlook is where this date came from.
+    updateMilestone(c.id, "dueDate", c.outlookDate, false, { debounceTeams: true, teamsDelay: 1000 });
+    setCalState(s => ({ ...s, [c.id]: "synced" }));
+    setOutlookConflicts(list => list.filter(x => x.id !== c.id));
+    setSyncMsg(`✓ "${c.name}" updated to ${fmtDate(c.outlookDate)} from Outlook`);
+  }
+
+  function keepPmsDate(c) {
+    setOutlookConflicts(list => list.filter(x => x.id !== c.id));
+    const m = milestones.find(x => x.id === c.id);
+    if (!m) return;
+    // TODO(you): You kept the PMS date, so the Outlook event now disagrees
+    // with PMS. Decide the calendar-side follow-up. Two reasonable choices:
+    //   A) Auto-push:  syncOne(m)
+    //      Immediately rewrites the Outlook event back to the PMS date.
+    //      Decisive — calendars never stay wrong — but it silently undoes
+    //      the calendar edit a colleague just made, with no trace for them.
+    //   B) Mark stale: setCalState(s => ({ ...s, [m.id]: "stale" }))
+    //      Shows the ⚠ icon on the row so a human pushes ↑ when ready; the
+    //      two systems knowingly disagree until then.
+    // B is in place as the starter. Replace with A (or your own hybrid) if
+    // you'd rather PMS always win immediately.
+    setCalState(s => ({ ...s, [m.id]: "stale" }));
+  }
+
+  function unlinkCalendarEvent(id) {
+    onChange({ ...project, milestones: (project.milestones || []).map(m => m.id === id ? { ...m, calendarEventId: null } : m) }, { notifyTeams: false });
+    setOutlookConflicts(list => list.filter(x => x.id !== id));
+  }
+
   async function syncOne(m) {
     if (!m.dueDate) { setSyncMsg("⚠ No due date set on this milestone"); return; }
     setCalState(s => ({ ...s, [m.id]: "syncing" }));
@@ -6803,6 +7007,43 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
         </div>
       )}
 
+      {/* Outlook → PMS conflict prompts (two-way sync, pull direction) */}
+      {outlookConflicts.length > 0 && (
+        <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: P.yellow, marginBottom: 4 }}>
+            📅 Outlook calendar changes detected
+          </div>
+          <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
+            These synced milestones were moved or removed in Outlook. Choose which date wins.
+          </div>
+          {outlookConflicts.map(c => (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "7px 0", borderTop: `1px solid ${P.border}` }}>
+              <span style={{ fontWeight: 600, fontSize: 13, minWidth: 160 }}>{c.name}</span>
+              {c.deleted ? (
+                <>
+                  <span style={{ fontSize: 12, color: P.red }}>Event was deleted in Outlook</span>
+                  <Btn small variant="primary" onClick={() => { const m = milestones.find(x => x.id === c.id); setOutlookConflicts(l => l.filter(x => x.id !== c.id)); if (m) syncOne(m); }}>
+                    ↑ Re-create Event
+                  </Btn>
+                  <Btn small variant="ghost" onClick={() => unlinkCalendarEvent(c.id)} title="Forget the deleted event — milestone stays, calendar link is removed">
+                    Unlink
+                  </Btn>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontSize: 12 }}>
+                    Outlook: <strong style={{ color: P.accentLight }}>{fmtDate(c.outlookDate)}</strong>
+                    <span style={{ color: P.textDim }}> · PMS: {fmtDate(c.pmsDate)}</span>
+                  </span>
+                  <Btn small variant="primary" onClick={() => acceptOutlookDate(c)}>✓ Use Outlook Date</Btn>
+                  <Btn small variant="ghost" onClick={() => keepPmsDate(c)}>Keep PMS Date</Btn>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       <table>
         <thead>
           <tr>
@@ -6928,15 +7169,18 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                     text={(m.pctComplete || 0) >= 100 ? "✓ Completed" : autoStatus}
                   />
                 </td>
-                <td>
+                <td style={{ verticalAlign: "top" }}>
                   {isComplete
-                    ? <span style={{ color: P.textMuted, fontSize: 12 }}>{m.notes || "—"}</span>
-                    : <input
+                    ? <span style={{ color: P.textMuted, fontSize: 12, display: "inline-block", maxWidth: 240, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.notes || "—"}</span>
+                    : <textarea
   value={m.notes || ""}
   onChange={e => updateMilestone(m.id, "notes", e.target.value, false, { notifyTeams: false })}
   onBlur={e => updateMilestone(m.id, "notes", e.target.value, false, { debounceTeams: true, teamsDelay: 2000 })}
+  onInput={e => { e.target.style.height = "auto"; e.target.style.height = e.target.scrollHeight + "px"; }}
+  ref={el => { if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; } }}
   placeholder="Notes…"
-  style={{ width: 140 }}
+  rows={1}
+  style={{ width: 220, minHeight: 26, resize: "vertical", overflow: "hidden", fontFamily: "inherit", fontSize: 13, padding: "4px 6px", lineHeight: 1.4, boxSizing: "border-box" }}
 />}
                 </td>
                 <td>
