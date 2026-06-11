@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-10-pms-v32-schedule-polish";
+    window.__appVersion = "2026-06-10-pms-v33-duplicate-guard";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2036,7 +2036,59 @@ function Modal({ title, onClose, children, wide }) {
 // The form intentionally collects only the fields that are awkward to discover
 // inside the detail page tabs. Everything else (PM, fee, address, etc.) is
 // filled in on the detail page where the right context is visible.
-function NewProjectModal({ onClose, onCreate, clients = [] }) {
+// ─── DUPLICATE PROJECT DETECTION ──────────────────────────────────────────────
+// Root-cause fix for the PS 361 Flood Elimination triplicate (June 2026): the
+// same job was entered three times ("PS 361" / "NPS 361" / "PS361") and the
+// copies drifted — invoices maintained on one row, emails filed to another.
+// This guard runs live in the New Project modal so dupes are caught at entry.
+//
+// Same tokenize/stopword shape as the Outlook add-in's suggestProjects() and
+// the calendar's matchEventToProject(), so all three tools agree on what
+// "looks like the same project".
+const DUP_MATCH_STOPWORDS = new Set([
+  "the","and","of","for","at","to","a","an","or","by","on","in","with",
+  "re","fwd","fw","project","renovation","reno","new","update","updated",
+  "phase","building","bldg","floor","fl","st","ave","road","rd",
+]);
+function dupTokenize(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .split(/\s+/)
+    .filter(t => t && t.length >= 2 && !DUP_MATCH_STOPWORDS.has(t));
+}
+// Squash to bare alphanumerics so spacing/punctuation variants collide:
+// "PS361 Flood Elimination" === "PS 361 Flood Elimination " === "ps-361 flood elim…"
+// Token matching alone can never connect "PS361" to "PS 361" — this can.
+function dupSquash(s) { return (s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+
+// Returns [{ project, reason, hard }], hard-blocks first.
+//   hard=true  → same project number on an ACTIVE project: never allow.
+//   hard=false → looks like the same job (or number matches an archived
+//                project): allow only via an explicit "Create anyway".
+function findDuplicateProjects({ name, projectNumber }, existing) {
+  const num = (projectNumber || "").trim().toLowerCase();
+  const squashedName = dupSquash(name);
+  const tokens = new Set(dupTokenize(name));
+  const out = [];
+  for (const p of (existing || [])) {
+    const pNum = String(p.projectNumber || "").trim().toLowerCase();
+    if (num && pNum && pNum === num) {
+      out.push({ project: p, reason: "same project number", hard: !p.archived });
+      continue;
+    }
+    if (squashedName && dupSquash(p.name) === squashedName) {
+      out.push({ project: p, reason: "same name", hard: false });
+      continue;
+    }
+    const hits = dupTokenize(p.name || "").filter(t => tokens.has(t)).length;
+    if (hits >= 2) out.push({ project: p, reason: hits + " name words match", hard: false });
+  }
+  out.sort((a, b) => (b.hard ? 1 : 0) - (a.hard ? 1 : 0));
+  return out;
+}
+
+function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [] }) {
   const [name,          setName]          = React.useState("");
   const [status,        setStatus]        = React.useState("Proposal Due");
   const [projectNumber, setProjectNumber] = React.useState("");
@@ -2044,13 +2096,30 @@ function NewProjectModal({ onClose, onCreate, clients = [] }) {
   const [clientName,    setClientName]    = React.useState("");
   const [proposalDueDate, setProposalDueDate] = React.useState("");
   const [error,         setError]         = React.useState("");
+  const [confirmedDup,  setConfirmedDup]  = React.useState(false);
 
   const allStatuses = [...PIPELINE_STATUSES, ...PROJECT_STATUSES];
   const isProposal  = PIPELINE_STATUSES.includes(status);
 
+  const dupMatches = React.useMemo(
+    () => (name.trim().length >= 3 || projectNumber.trim())
+      ? findDuplicateProjects({ name, projectNumber }, existingProjects)
+      : [],
+    [name, projectNumber, existingProjects]
+  );
+  const hardDup = dupMatches.find(d => d.hard);
+
+  // Editing the name or number invalidates a prior "Create anyway" confirmation
+  React.useEffect(() => { setConfirmedDup(false); }, [name, projectNumber]);
+
   function handleCreate() {
     const result = validateNewProject({ name, status, projectNumber, prime, clientName, proposalDueDate });
     if (result.error) { setError(result.error); return; }
+    if (hardDup) {
+      setError(`Project number ${projectNumber.trim()} already belongs to "${(hardDup.project.name || "").trim()}". Open that project instead of creating a copy.`);
+      return;
+    }
+    if (dupMatches.length && !confirmedDup) { setConfirmedDup(true); setError(""); return; }
     onCreate({
       name: name.trim(),
       status,
@@ -2139,6 +2208,28 @@ function NewProjectModal({ onClose, onCreate, clients = [] }) {
         </div>
       )}
 
+      {dupMatches.length > 0 && (
+        <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 6, padding: "10px 12px", marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: P.yellow, marginBottom: 6 }}>
+            ⚠ {hardDup ? "This project already exists" : `Possible duplicate${dupMatches.length > 1 ? "s" : ""}`}
+          </div>
+          {dupMatches.slice(0, 4).map(d => (
+            <div key={d.project.id} style={{ fontSize: 12, color: P.text, padding: "3px 0", display: "flex", gap: 8, alignItems: "baseline" }}>
+              <span style={{ fontFamily: "monospace", color: P.textMuted }}>{d.project.projectNumber || "—"}</span>
+              <span>{(d.project.name || "").trim()}</span>
+              <span style={{ color: P.textDim, fontSize: 11 }}>{d.reason}{d.project.archived ? " · archived" : ""}</span>
+            </div>
+          ))}
+          {!hardDup && (
+            <div style={{ fontSize: 11, color: P.textMuted, marginTop: 6 }}>
+              {confirmedDup
+                ? "Click “Create anyway” only if this is genuinely a different job."
+                : "If one of these is your project, close this dialog and use it instead of creating a copy."}
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div style={{ background: P.redDim, color: P.red, border: `1px solid ${P.red}`, padding: "8px 12px", borderRadius: 6, fontSize: 13, marginBottom: 14 }}>
           {error}
@@ -2147,7 +2238,7 @@ function NewProjectModal({ onClose, onCreate, clients = [] }) {
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
         <Btn small variant="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn small onClick={handleCreate}>Create Project</Btn>
+        <Btn small onClick={handleCreate}>{confirmedDup && dupMatches.length > 0 ? "Create anyway" : "Create Project"}</Btn>
       </div>
     </Modal>
   );
@@ -2164,9 +2255,10 @@ function NewProjectModal({ onClose, onCreate, clients = [] }) {
 //   1. Project number format — do Setty numbers always look like "25-042"
 //      (YY-NNN)? If so, enforce /^\d{2}-\d{3}$/ when status is not pipeline.
 //      Catches typos like "25_042" or "25042" before they hit the corpus.
-//   2. Duplicate project numbers — should two awarded projects with number
-//      "25-042" be allowed? You'd need to pass `existingProjects` in to check.
-//      (Tell me and I'll wire it through.)
+//   2. ✔ Duplicate project numbers/names — now handled live in the modal via
+//      findDuplicateProjects(): exact number on an active project hard-blocks;
+//      same/similar names (incl. archived matches) need an explicit
+//      "Create anyway" click.
 //   3. Proposal due date sanity — should it reject dates in the past?
 //      Probably yes for new entries, but you may sometimes back-date a
 //      proposal you forgot to log. Soft warning vs hard block is a judgment
@@ -25584,7 +25676,7 @@ async function updateProjectAndFlush(updated) {
       )}
 
       {showNewProjectModal && (
-        <NewProjectModal onClose={() => setShowNewProjectModal(false)} onCreate={createProjectFromForm} clients={clients} />
+        <NewProjectModal onClose={() => setShowNewProjectModal(false)} onCreate={createProjectFromForm} clients={clients} existingProjects={projects} />
       )}
 
       {(view === "list" || view === "archive") && (
