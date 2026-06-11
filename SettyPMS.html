@@ -20887,6 +20887,80 @@ function getCompanyTypes(c) {
   return [];
 }
 
+// ─── DUPLICATE COMPANY DETECTION ──────────────────────────────────────────────
+// Same entry-time guard idea as findDuplicateProjects(), tuned for firms.
+// Companies have no project number, so the signals are:
+//   1. name equality after squashing punctuation AND legal suffixes (LLP/PC/…)
+//   2. name prefix containment — catches "OGS" vs "OGS - New York State"
+//   3. contact email domain — both real-world dupes (June 2026) were
+//      auto-created by the Outlook add-in, and in both cases the new
+//      contact's domain already existed on a directory company.
+const COMPANY_LEGAL_SUFFIXES = /\b(llp|llc|inc|pc|pllc|dpc|corp|co|ltd|pa)\b\.?/g;
+const FREEMAIL_DOMAINS = new Set(["gmail.com","yahoo.com","outlook.com","hotmail.com","aol.com","icloud.com","msn.com"]);
+function companySquash(name) {
+  return (name || "").toLowerCase().replace(COMPANY_LEGAL_SUFFIXES, "").replace(/[^a-z0-9]/g, "");
+}
+function companyDomain(email) {
+  const d = ((email || "").toLowerCase().split("@")[1] || "").trim();
+  return FREEMAIL_DOMAINS.has(d) ? "" : d;
+}
+// Returns [{ company, reason, hard }], hard matches first.
+//   hard=true  → same name (normalized): edit the existing company instead.
+//   hard=false → overlapping name or shared contact domain: confirm to create.
+// excludeId lets the edit form skip the company being edited.
+function findDuplicateCompanies({ name, contacts }, existing, excludeId) {
+  const squashed = companySquash(name);
+  const domains = new Set((contacts || []).map(ct => companyDomain(ct.email)).filter(Boolean));
+  const out = [];
+  for (const c of (existing || [])) {
+    if (!c || c.id === excludeId) continue;
+    const cs = companySquash(c.name);
+    if (squashed && cs && cs === squashed) {
+      out.push({ company: c, reason: "same name", hard: true });
+      continue;
+    }
+    if (squashed.length >= 3 && cs.length >= 3 && (cs.startsWith(squashed) || squashed.startsWith(cs))) {
+      out.push({ company: c, reason: "name overlap", hard: false });
+      continue;
+    }
+    if (domains.size) {
+      const hit = (c.contacts || []).map(ct => companyDomain(ct.email)).find(d => d && domains.has(d));
+      if (hit) out.push({ company: c, reason: "contacts share @" + hit, hard: false });
+    }
+  }
+  out.sort((a, b) => (b.hard ? 1 : 0) - (a.hard ? 1 : 0));
+  return out;
+}
+
+// Shared yellow warning panel for both company-entry surfaces. Rows are
+// clickable — the right move on a dupe is almost always "go to the existing
+// company", so we make that the easiest action.
+function CompanyDupWarning({ matches, hard, confirmed, onPick }) {
+  if (!matches.length) return null;
+  return (
+    <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 6, padding: "10px 12px", marginBottom: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: P.yellow, marginBottom: 6 }}>
+        ⚠ {hard ? "This company is already in the directory" : `Possible duplicate${matches.length > 1 ? "s" : ""}`}
+      </div>
+      {matches.slice(0, 4).map(d => (
+        <div key={d.company.id} onClick={() => onPick && onPick(d.company)}
+          style={{ fontSize: 12, color: P.text, padding: "3px 0", display: "flex", gap: 8, alignItems: "baseline", cursor: onPick ? "pointer" : "default" }}
+          title={onPick ? "Use this existing company instead" : undefined}>
+          <span style={{ textDecoration: onPick ? "underline" : "none" }}>{d.company.name}</span>
+          <span style={{ color: P.textDim, fontSize: 11 }}>{d.reason} · {(d.company.contacts || []).length} contact{(d.company.contacts || []).length !== 1 ? "s" : ""}</span>
+        </div>
+      ))}
+      <div style={{ fontSize: 11, color: P.textMuted, marginTop: 6 }}>
+        {hard
+          ? "Click it above to open the existing record instead."
+          : confirmed
+            ? "Click again only if this is genuinely a different firm."
+            : "Click a match above to use it instead of creating a copy."}
+      </div>
+    </div>
+  );
+}
+
 function newClient(overrides) {
   return {
     id: uid(),
@@ -20901,13 +20975,29 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
   const [editingId, setEditingId] = React.useState(null);
   const [form, setForm] = React.useState(null);
   const [search, setSearch] = React.useState("");
+  const [dupConfirmed, setDupConfirmed] = React.useState(false);
 
-  function startNew() { setForm(newClient()); setEditingId("__new__"); }
-  function startEdit(c) { setForm({ ...c }); setEditingId(c.id); }
-  function cancelEdit() { setEditingId(null); setForm(null); }
+  function startNew() { setForm(newClient()); setEditingId("__new__"); setDupConfirmed(false); }
+  function startEdit(c) { setForm({ ...c }); setEditingId(c.id); setDupConfirmed(false); }
+  function cancelEdit() { setEditingId(null); setForm(null); setDupConfirmed(false); }
+
+  // Renaming an existing company into a collision is just as much a dupe
+  // path as creating one, so the check runs for edits too (excluding self).
+  const dupCompanies = React.useMemo(
+    () => (form && (form.name || "").trim().length >= 3)
+      ? findDuplicateCompanies(form, clients, editingId === "__new__" ? null : editingId)
+      : [],
+    [form, clients, editingId]
+  );
+  const hardDupCompany = dupCompanies.find(d => d.hard);
+
+  // Editing the name invalidates a prior "create anyway" confirmation
+  React.useEffect(() => { setDupConfirmed(false); }, [form && form.name]);
 
   function saveForm() {
     if (!form.name.trim()) return;
+    if (hardDupCompany) return; // panel explains; click-through opens the existing record
+    if (dupCompanies.length && !dupConfirmed) { setDupConfirmed(true); return; }
     if (editingId === "__new__") {
       onUpdateClients([...clients, form]);
     } else {
@@ -20981,8 +21071,14 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
               </div>
               <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>Pick all that apply — a firm can be both, e.g. MEPFP Engineer + Specialty Consultant.</div>
             </Field>
+            <CompanyDupWarning matches={dupCompanies} hard={!!hardDupCompany} confirmed={dupConfirmed}
+              onPick={c => startEdit(c)} />
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-              <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add Company" : "Save Changes"}</Btn>
+              <Btn onClick={saveForm} disabled={!form.name.trim() || !!hardDupCompany}>
+                {dupConfirmed && dupCompanies.length > 0
+                  ? (editingId === "__new__" ? "Add Anyway" : "Save Anyway")
+                  : (editingId === "__new__" ? "Add Company" : "Save Changes")}
+              </Btn>
               <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
             </div>
           </div>
@@ -21139,16 +21235,29 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
 }
 
 // ─── COMPANY TYPEAHEAD ─────────────────────────────────────────────────────────
-function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
+function QuickAddCompanyModal({ filter, prefill, onSave, onClose, existingClients = [], onSelectExisting }) {
   const typeLabel = filter === "client" ? "Client" : "Prime/GC";
   const [form, setForm] = React.useState({ name: prefill || "", type: filter === "client" ? "Client" : "Prime/GC", contacts: [] });
   const [contactName, setContactName] = React.useState("");
   const [contactEmail, setContactEmail] = React.useState("");
   // Repurposed: was per-contact "role" picker; now a free-text Title input.
   const [contactRole, setContactRole] = React.useState("");
+  const [dupConfirmed, setDupConfirmed] = React.useState(false);
+
+  const dupCompanies = React.useMemo(
+    () => (form.name || "").trim().length >= 3 || companyDomain(contactEmail)
+      ? findDuplicateCompanies({ name: form.name, contacts: [{ email: contactEmail }] }, existingClients)
+      : [],
+    [form.name, contactEmail, existingClients]
+  );
+  const hardDupCompany = dupCompanies.find(d => d.hard);
+
+  React.useEffect(() => { setDupConfirmed(false); }, [form.name, contactEmail]);
 
   function save() {
     if (!form.name.trim()) return;
+    if (hardDupCompany) return; // panel explains; clicking the match selects it
+    if (dupCompanies.length && !dupConfirmed) { setDupConfirmed(true); return; }
     const company = newClient({
       ...form,
       contacts: contactName.trim() ? [newContact({ name: contactName.trim(), email: contactEmail.trim(), title: contactRole.trim() })] : [],
@@ -21206,9 +21315,14 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose }) {
           </div>
         </div>
 
+        <CompanyDupWarning matches={dupCompanies} hard={!!hardDupCompany} confirmed={dupConfirmed}
+          onPick={onSelectExisting} />
+
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
           <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn onClick={save} disabled={!form.name.trim()}>Add to Directory & Select</Btn>
+          <Btn onClick={save} disabled={!form.name.trim() || !!hardDupCompany}>
+            {dupConfirmed && dupCompanies.length > 0 ? "Add Anyway" : "Add to Directory & Select"}
+          </Btn>
         </div>
       </div>
     </div>
@@ -22962,6 +23076,8 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAdd
           prefill={value}
           onSave={handleAddSave}
           onClose={() => setShowModal(false)}
+          existingClients={clients}
+          onSelectExisting={c => { onChange(c.name); setShowModal(false); setOpen(false); }}
         />
       )}
     </div>
