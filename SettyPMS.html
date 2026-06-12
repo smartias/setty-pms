@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v34-dash-cal-pull";
+    window.__appVersion = "2026-06-12-pms-v35-link-browse-badge";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1961,7 +1961,7 @@ function Badge({ color, text }) {
   );
 }
 
-function Btn({ onClick, children, variant = "primary", small, disabled, style: s = {} }) {
+function Btn({ onClick, children, variant = "primary", small, disabled, title, style: s = {} }) {
   const styles = {
     primary: { background: P.accent, color: "#fff" },
     ghost: { background: "transparent", color: P.textMuted, border: `1px solid ${P.border}` },
@@ -1971,7 +1971,7 @@ function Btn({ onClick, children, variant = "primary", small, disabled, style: s
     purple: { background: P.purpleDim, color: P.purple },
   };
   return (
-    <button onClick={onClick} disabled={disabled}
+    <button onClick={onClick} disabled={disabled} title={title}
       style={{ ...styles[variant], padding: small ? "4px 10px" : "7px 16px", borderRadius: 6, fontSize: small ? 11 : 13, fontWeight: 500, opacity: disabled ? 0.4 : 1, ...s }}>
       {children}
     </button>
@@ -7326,12 +7326,28 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                     {m.type === "billable" && !project.feeScheduleFinalized && (
                       <Btn small variant="danger" onClick={() => { if (window.confirm("Delete milestone \"" + m.name + "\"?\n\nThis permanently removes it from the project. This cannot be undone.")) onChange({ ...project, milestones: milestones.filter(x => x.id !== m.id) }); }}>✕</Btn>
                     )}
-                    <Btn small variant="ghost"
-                      onClick={() => setExpandedLinks(expandedLinks === m.id ? null : m.id)}
-                      title="Linked items"
-                      style={{ color: expandedLinks === m.id ? P.accentLight : P.textDim }}>
-                      ⛓
-                    </Btn>
+                    {(() => {
+                      // Badge counts both outbound links and back-links so the
+                      // row shows "something is connected" without opening the panel.
+                      const linkCount = (m.links || []).length + findBackLinks(project, "milestone", m.id).length;
+                      return (
+                        <Btn small variant="ghost"
+                          onClick={() => setExpandedLinks(expandedLinks === m.id ? null : m.id)}
+                          title={linkCount > 0 ? linkCount + " linked item" + (linkCount === 1 ? "" : "s") : "Linked items"}
+                          style={{
+                            color: (expandedLinks === m.id || linkCount > 0) ? P.accentLight : P.textDim,
+                            display: "inline-flex", alignItems: "center", gap: 4,
+                          }}>
+                          ⛓{linkCount > 0 ? (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, minWidth: 14, height: 14, lineHeight: "14px",
+                              textAlign: "center", borderRadius: 7, padding: "0 3px",
+                              background: P.accentLight + "26", color: P.accentLight,
+                            }}>{linkCount}</span>
+                          ) : null}
+                        </Btn>
+                      );
+                    })()}
                   </div>
                 </td>
               </tr>
@@ -8837,6 +8853,174 @@ function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId })
   );
 }
 
+// Inline SharePoint browser for AddLinkModal — pick a file/folder from the
+// project folder instead of pasting a URL. Reuses the same Graph plumbing as
+// the Photos gallery (resolveSpIds + /drives/{id}/.../children).
+function SpBrowsePicker({ project, onPick }) {
+  const [stack, setStack] = React.useState(null); // null = collapsed; [] = project root; [{id,name},…] = nested
+  const [items, setItems] = React.useState(null);
+  const [busy,  setBusy]  = React.useState(false);
+  const [err,   setErr]   = React.useState("");
+
+  const rootName = project.projectFolderUrl
+    ? decodeURIComponent(project.projectFolderUrl).replace(/\/+$/, "").split("/").pop()
+    : null;
+
+  async function load(newStack) {
+    setBusy(true); setErr(""); setStack(newStack);
+    try {
+      const { driveId } = await resolveSpIds();
+      const top  = newStack[newStack.length - 1];
+      const path = top
+        ? `/drives/${driveId}/items/${top.id}/children?$top=200`
+        : `/drives/${driveId}/root:/${encodeURIComponent(rootName)}:/children?$top=200`;
+      const res = await graphFetch("GET", path);
+      const all = (res?.value || []).sort((a, b) =>
+        ((b.folder ? 1 : 0) - (a.folder ? 1 : 0)) || a.name.localeCompare(b.name));
+      setItems(all);
+    } catch (e) { setErr(e.message || "Could not load folder."); setItems([]); }
+    setBusy(false);
+  }
+
+  if (!rootName) return (
+    <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginTop: 6 }}>
+      No SharePoint project folder set up yet — paste a URL below instead.
+    </div>
+  );
+
+  if (stack === null) return (
+    <button onClick={() => load([])} style={{
+      marginTop: 6, fontSize: 11, padding: "3px 10px", borderRadius: 4,
+      border: "1px solid " + P.border, background: "transparent",
+      color: P.accentLight, cursor: "pointer", fontWeight: 600,
+    }}>📂 Browse project folder…</button>
+  );
+
+  const rowStyle = { display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderRadius: 4, fontSize: 12 };
+  return (
+    <div style={{ border: "1px solid " + P.border, borderRadius: 6, padding: 8, marginTop: 6, background: P.bg }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: P.textDim, marginBottom: 6, flexWrap: "wrap" }}>
+        <span onClick={() => load([])} style={{ cursor: "pointer", color: stack.length ? P.accentLight : P.textDim, fontWeight: 600 }}>{rootName}</span>
+        {stack.map((f, i) => (
+          <React.Fragment key={f.id}>
+            <span>/</span>
+            <span onClick={() => load(stack.slice(0, i + 1))}
+              style={{ cursor: "pointer", color: i < stack.length - 1 ? P.accentLight : P.textDim }}>{f.name}</span>
+          </React.Fragment>
+        ))}
+        <span style={{ flex: 1 }} />
+        <span onClick={() => { setStack(null); setItems(null); }} title="Close browser" style={{ cursor: "pointer" }}>✕</span>
+      </div>
+      {busy && <div style={{ fontSize: 11, color: P.textDim }}>Loading…</div>}
+      {err && <div style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
+      {!busy && !err && items && items.length === 0 && (
+        <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Empty folder.</div>
+      )}
+      {!busy && (items || []).length > 0 && (
+        <div style={{ maxHeight: 180, overflowY: "auto" }}>
+          {items.map(it => it.folder ? (
+            <div key={it.id} style={rowStyle}>
+              <span onClick={() => load([...stack, { id: it.id, name: it.name }])}
+                title="Open folder"
+                style={{ flex: 1, cursor: "pointer", color: P.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                📁 {it.name} <span style={{ color: P.textDim, fontSize: 10 }}>({it.folder.childCount ?? 0})</span>
+              </span>
+              <button onClick={() => onPick(it.webUrl, it.name)} title="Link to this folder" style={{
+                fontSize: 10, padding: "1px 6px", borderRadius: 3, border: "1px solid " + P.border,
+                background: "transparent", color: P.accentLight, cursor: "pointer", whiteSpace: "nowrap",
+              }}>link folder</button>
+            </div>
+          ) : (
+            <div key={it.id} onClick={() => onPick(it.webUrl, it.name)} title="Link to this file"
+              style={{ ...rowStyle, cursor: "pointer" }}>
+              <span style={{ flex: 1, color: P.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📄 {it.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Inline OneNote page browser for AddLinkModal — lists the project's Teams
+// notebook sections and lets the user pick a page by title.
+function OneNotePagePicker({ project, onPick }) {
+  const nbId = project.teamsOneNoteNotebookId;
+  const [open,     setOpen]     = React.useState(false);
+  const [sections, setSections] = React.useState(null);
+  const [pages,    setPages]    = React.useState({}); // sectionId -> "loading" | array
+  const [err,      setErr]      = React.useState("");
+
+  if (!nbId) return (
+    <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginTop: 6 }}>
+      No project notebook linked yet — paste a page URL below instead.
+    </div>
+  );
+
+  async function loadSections() {
+    setOpen(true); setErr("");
+    try {
+      const res = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/notebooks/${nbId}/sections?$top=50`);
+      setSections(res?.value || []);
+    } catch (e) { setErr(e.message || "Could not load notebook."); setSections([]); }
+  }
+
+  async function loadPages(sid) {
+    setPages(p => ({ ...p, [sid]: "loading" }));
+    try {
+      const res = await graphFetch("GET", `/groups/${TEAMS_TEAM_ID}/onenote/sections/${sid}/pages?$select=id,title,links&$top=100`);
+      setPages(p => ({ ...p, [sid]: res?.value || [] }));
+    } catch (e) { setPages(p => ({ ...p, [sid]: [] })); }
+  }
+
+  if (!open) return (
+    <button onClick={loadSections} style={{
+      marginTop: 6, fontSize: 11, padding: "3px 10px", borderRadius: 4,
+      border: "1px solid " + P.border, background: "transparent",
+      color: P.accentLight, cursor: "pointer", fontWeight: 600,
+    }}>📓 Browse notebook pages…</button>
+  );
+
+  return (
+    <div style={{ border: "1px solid " + P.border, borderRadius: 6, padding: 8, marginTop: 6, background: P.bg }}>
+      <div style={{ display: "flex", alignItems: "center", fontSize: 11, color: P.textDim, marginBottom: 6 }}>
+        <span style={{ fontWeight: 600 }}>Project notebook</span>
+        <span style={{ flex: 1 }} />
+        <span onClick={() => setOpen(false)} title="Close browser" style={{ cursor: "pointer" }}>✕</span>
+      </div>
+      {err && <div style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
+      {!sections && !err && <div style={{ fontSize: 11, color: P.textDim }}>Loading…</div>}
+      {sections && sections.length === 0 && !err && (
+        <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Notebook has no sections yet.</div>
+      )}
+      {(sections || []).length > 0 && (
+        <div style={{ maxHeight: 200, overflowY: "auto" }}>
+          {sections.map(s => (
+            <div key={s.id} style={{ marginBottom: 4 }}>
+              <div onClick={() => pages[s.id] ? setPages(p => { const n = { ...p }; delete n[s.id]; return n; }) : loadPages(s.id)}
+                style={{ fontSize: 12, fontWeight: 600, color: P.text, cursor: "pointer", padding: "2px 4px" }}>
+                {pages[s.id] ? "▾" : "▸"} {s.displayName}
+              </div>
+              {pages[s.id] === "loading" && <div style={{ fontSize: 11, color: P.textDim, paddingLeft: 18 }}>Loading…</div>}
+              {Array.isArray(pages[s.id]) && pages[s.id].length === 0 && (
+                <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", paddingLeft: 18 }}>No pages.</div>
+              )}
+              {Array.isArray(pages[s.id]) && pages[s.id].map(pg => (
+                <div key={pg.id}
+                  onClick={() => onPick(pg.links?.oneNoteWebUrl?.href || pg.links?.oneNoteClientUrl?.href || "", (pg.title || "(untitled page)") + " · " + s.displayName)}
+                  title="Link to this page"
+                  style={{ fontSize: 12, color: P.text, cursor: "pointer", padding: "2px 4px 2px 18px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  📄 {pg.title || "(untitled page)"}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AddLinkModal({ project, onAdd, onClose }) {
   const [linkType,     setLinkType]     = React.useState("references");
   const [targetSystem, setTargetSystem] = React.useState("pms");
@@ -8917,6 +9101,21 @@ function AddLinkModal({ project, onAdd, onClose }) {
             {pmsEntities.map(e => <option key={e[idKey]} value={e[idKey]}>{pmsTypeDef.labelFn(e)}</option>)}
           </select>
         </>)}
+
+        {targetSystem === "sharepoint" && (
+          <SpBrowsePicker project={project}
+            onPick={(url, label) => { setTargetUrl(url); setTargetLabel(label); }} />
+        )}
+        {targetSystem === "onenote" && (
+          <OneNotePagePicker project={project}
+            onPick={(url, label) => { setTargetUrl(url); setTargetLabel(label); }} />
+        )}
+        {targetSystem === "outlook" && (
+          <div style={{ fontSize: 11, color: P.textDim, marginTop: 6, lineHeight: 1.5 }}>
+            Tip: emails filed to this project via the Outlook add-in can be picked from a list — choose
+            “PMS Entity” above, then Entity Type → Email.
+          </div>
+        )}
 
         {targetSystem !== "pms" && (<>
           <label style={lbl}>URL</label>
