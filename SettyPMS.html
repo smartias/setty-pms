@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v50-portal-folder-names";
+    window.__appVersion = "2026-06-12-pms-v51-portal-reset-links";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22891,7 +22891,8 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
                     "This does NOT delete any folders or files — it only clears the links " +
                     "so 'Set Up Client Portal Folders' can run fresh."
                   )) return;
-                  onChange({ ...project, clientUploadsFolderUrl: "", settyDeliverablesFolderUrl: "" });
+                  onUpdate("clientUploadsFolderUrl", "");
+                  onUpdate("settyDeliverablesFolderUrl", "");
                   setPortalStatus("idle");
                   setPortalMsg("");
                 }}
