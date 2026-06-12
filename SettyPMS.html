@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v51-portal-reset-links";
+    window.__appVersion = "2026-06-12-pms-v52-reset-links-atomic";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22884,15 +22884,25 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
                   or renamed in SharePoint, so Set Up can run fresh. */}
               <button
                 title="Clear the saved portal links so Set Up Client Portal Folders can run again. Does not delete anything in SharePoint."
-                onClick={() => {
+                onClick={async () => {
                   if (!window.confirm(
                     "Reset the saved portal links for this project?\n\n" +
                     "Use this after deleting or renaming the portal folders in SharePoint. " +
                     "This does NOT delete any folders or files — it only clears the links " +
                     "so 'Set Up Client Portal Folders' can run fresh."
                   )) return;
-                  onUpdate("clientUploadsFolderUrl", "");
-                  onUpdate("settyDeliverablesFolderUrl", "");
+                  // Both fields must clear in ONE update. onUpdate(field, val)
+                  // spreads the same stale `project` closure per call, so two
+                  // sequential calls clobber each other — the first field's
+                  // clear gets resurrected by the second call's spread.
+                  const patched = { ...project, clientUploadsFolderUrl: "", settyDeliverablesFolderUrl: "" };
+                  if (onEagerSave) {
+                    await onEagerSave(patched);
+                  } else {
+                    // Legacy fallback (call site always passes onEagerSave).
+                    onUpdate("clientUploadsFolderUrl", "");
+                    onUpdate("settyDeliverablesFolderUrl", "");
+                  }
                   setPortalStatus("idle");
                   setPortalMsg("");
                 }}
