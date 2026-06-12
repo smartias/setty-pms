@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v44-fixed-portal-roles";
+    window.__appVersion = "2026-06-12-pms-v45-shorter-invite";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -4797,9 +4797,10 @@ async function shareDriveItemWithUser(driveId, itemId, email, role, message) {
       requireSignIn: true,
       sendInvitation: true,
       // SharePoint enforces a 500-char limit on the invite message (despite
-      // Graph docs saying 2000). Going over yields a 400 "text too long"
-      // error. 490 leaves a small buffer for any tenant-side prefix.
-      message: (message || "You have been granted access to a SETTY project folder.").slice(0, 490),
+      // Graph docs saying 2000) and appears to measure AFTER HTML-encoding
+      // (quotes become &quot;, etc.). Cap at 400 to leave headroom for that
+      // inflation — going over yields a 400 "text too long" error.
+      message: (message || "You have been granted access to a SETTY project folder.").slice(0, 400),
     }
   );
 }
@@ -22789,16 +22790,19 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
 // stay comfortably under that cap — the long per-scenario sign-in guide that
 // used to live here got the whole call rejected. Keep only the essentials;
 // the one-time-passcode hint matters most (it unblocks non-Microsoft users).
+// Keep this WELL under 500 chars even with long project names — SharePoint
+// appears to validate length after HTML-encoding, so avoid quote characters
+// entirely (each " becomes &quot; = 6 chars). Worst case here is ~330 chars.
 function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
   const access = role === "write" ? "edit access" : "view access";
   const purpose = role === "write"
-    ? "Use this folder to upload files you want to share with the SETTY project team."
-    : "Project deliverables will be posted here as issued. You can download files but not modify them.";
+    ? "Use it to upload files for the SETTY team."
+    : "Deliverables are posted here for download.";
   return (
-    'You have been granted ' + access + ' to the "' + folderLabel + '" folder for SETTY project ' + projLabel + '.\n\n' +
-    purpose + '\n\n' +
-    'First sign-in: if your email is not a Microsoft account, choose "Send code" on the sign-in page and enter the one-time passcode Microsoft emails you (check spam). No password or new account is needed.\n\n' +
-    'Questions? Reply to this email to reach the SETTY project team.'
+    'You have been granted ' + access + ' to the ' + folderLabel +
+    ' folder for SETTY project ' + projLabel + '. ' + purpose + '\n\n' +
+    'No Microsoft account? On the sign-in page choose Send code and enter the passcode Microsoft emails you - no password or new account needed.\n\n' +
+    'Questions? Just reply to this email.'
   );
 }
 
