@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v36-email-schedule-open";
+    window.__appVersion = "2026-06-12-pms-v37-current-milestone-email";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -6787,56 +6787,56 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
 
     const pmsProjectUrl = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
 
-    const msRows = sorted.map(m => {
-      // Status is derived from pctComplete exactly like the on-screen table —
-      // the stored m.status field goes stale and was reporting "Not Started" at 100%.
-      const status = milestoneStatus(m.pctComplete);
-      const statusColor = status === "In Progress" ? "#2563eb" : "#6b7280";
-      const linkBits = (m.links || []).map(lk => {
-        const url = lk.targetUrl || (lk.targetSystem === "pms"
-          ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId) : "");
-        const label = String((lk.targetSystem === "pms"
-          ? resolvePmsLabel(project, lk.targetType, lk.targetId)
-          : (lk.targetLabel || lk.targetUrl)) || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-        return url
-          ? `<a href="${url}" style="color:#2F5496;">${label}</a>`
-          : `<span style="color:#44546A;">${label}</span>`;
-      }).join(" &nbsp;·&nbsp; ");
+    const renderLinks = m => (m.links || []).map(lk => {
+      const url = lk.targetUrl || (lk.targetSystem === "pms"
+        ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId) : "");
+      const label = String((lk.targetSystem === "pms"
+        ? resolvePmsLabel(project, lk.targetType, lk.targetId)
+        : (lk.targetLabel || lk.targetUrl)) || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      return url
+        ? `<a href="${url}" style="color:#2F5496;">${label}</a>`
+        : `<span style="color:#44546A;">${label}</span>`;
+    }).join(" &nbsp;·&nbsp; ");
+
+    // The earliest-due open milestone is "current" — it gets a featured callout;
+    // everything after it is FYI context.
+    const current   = sorted[0];
+    const rest      = sorted.slice(1);
+    const curLinks  = current ? renderLinks(current) : "";
+
+    const currentBlock = current ? `
+  <div style="border:1px solid #2F5496;border-left:4px solid #2F5496;background:#EFF6FF;border-radius:6px;padding:14px 16px;margin-bottom:22px;">
+    <div style="font-size:10px;font-weight:700;color:#2F5496;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Current Milestone</div>
+    <div style="font-size:17px;font-weight:700;color:#1a1a1a;">${current.name}</div>
+    <div style="font-size:12px;color:#44546A;margin-top:2px;">Due ${current.dueDate ? fmtDate(current.dueDate) : "TBD"}</div>
+    ${current.notes ? `<div style="font-size:12px;color:#374151;margin-top:8px;">${current.notes}</div>` : ""}
+    ${curLinks ? `<div style="font-size:12px;margin-top:8px;">🔗 ${curLinks}</div>` : ""}
+  </div>` : "";
+
+    const msRows = rest.map(m => {
+      const linkBits = renderLinks(m);
       return `<tr>
         <td style="padding:8px 12px;">${m.name}${linkBits ? `<div style="font-size:11px;margin-top:3px;">🔗 ${linkBits}</div>` : ""}</td>
         <td style="padding:8px 12px;">${m.dueDate ? fmtDate(m.dueDate) : "—"}</td>
-        <td style="padding:8px 12px;"><span style="color:${statusColor};font-weight:600;">${status}</span></td>
-        <td style="padding:8px 12px;">${m.pctComplete || 0}%</td>
         <td style="padding:8px 12px;color:#6b7280;font-size:12px;">${m.notes || ""}</td>
       </tr>`;
     }).join("");
 
     const bodyHtml = `
 <div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:800px;">
-  <div style="border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;">
-    <div>
-      <div style="font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1;">SETTY</div>
-      <div style="font-size:8px;color:#44546A;letter-spacing:1px;">&amp; ASSOCIATES, LTD, PC</div>
-    </div>
-    <div style="text-align:right;">
-      <div style="font-size:16px;font-weight:700;color:#2F5496;">PROJECT SCHEDULE</div>
-      <div style="font-size:11px;color:#44546A;">${project.name || ""}${project.projectNumber ? " · " + project.projectNumber : ""}</div>
-      <div style="font-size:11px;color:#44546A;">${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div>
-    </div>
-  </div>
-
-  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Milestones &amp; Deliverables</div>
   ${sorted.length === 0 ? '<p style="color:#6b7280;">No open milestones — everything is complete.</p>' : `
+  ${currentBlock}
+
+  ${rest.length > 0 ? `
+  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Open Milestone Schedule <span style="font-weight:400;color:#94A3B8;text-transform:none;letter-spacing:0;">— FYI</span></div>
   <table style="border-collapse:collapse;width:100%;font-size:13px;">
     <thead><tr style="background:#F1F5F9;">
       <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Milestone</th>
       <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Due Date</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Status</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">% Complete</th>
       <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Notes</th>
     </tr></thead>
     <tbody>${msRows}</tbody>
-  </table>`}
+  </table>` : ""}`}
 
   <div style="margin-top:16px;font-size:12px;">
     <a href="${pmsProjectUrl}" style="color:#2F5496;font-weight:600;">📁 View this project in Setty PMS →</a>
