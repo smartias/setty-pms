@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v39-link-kind-labels";
+    window.__appVersion = "2026-06-12-pms-v40-email-docset-folder";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -6803,17 +6803,27 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
 
     const pmsProjectUrl = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
 
-    const renderLinks = m => (m.links || []).map(lk => {
-      const url = lk.targetUrl || (lk.targetSystem === "pms"
-        ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId) : "");
-      const label = String((lk.targetSystem === "pms"
-        ? resolvePmsLabel(project, lk.targetType, lk.targetId)
-        : (lk.targetLabel || lk.targetUrl)) || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-      const kind = `<span style="color:#94A3B8;">${linkTargetKindLabel(lk)}:</span> `;
-      return kind + (url
-        ? `<a href="${url}" style="color:#2F5496;">${label}</a>`
-        : `<span style="color:#44546A;">${label}</span>`);
-    }).join(" &nbsp;·&nbsp; ");
+    const renderLinks = m => {
+      const bits = [];
+      // The milestone's Document Set folder leads the list when one exists —
+      // it's where the deliverables actually live.
+      if (m.outgoingFolderUrl) {
+        const folderName = decodeURIComponent((m.outgoingFolderUrl.split("/").pop() || "")).replace(/&/g, "&amp;").replace(/</g, "&lt;") || "Open folder";
+        bits.push(`<span style="color:#94A3B8;">Document Set Folder:</span> <a href="${m.outgoingFolderUrl}" style="color:#2F5496;">${folderName}</a>`);
+      }
+      (m.links || []).forEach(lk => {
+        const url = lk.targetUrl || (lk.targetSystem === "pms"
+          ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId) : "");
+        const label = String((lk.targetSystem === "pms"
+          ? resolvePmsLabel(project, lk.targetType, lk.targetId)
+          : (lk.targetLabel || lk.targetUrl)) || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        const kind = `<span style="color:#94A3B8;">${linkTargetKindLabel(lk)}:</span> `;
+        bits.push(kind + (url
+          ? `<a href="${url}" style="color:#2F5496;">${label}</a>`
+          : `<span style="color:#44546A;">${label}</span>`));
+      });
+      return bits.join(" &nbsp;·&nbsp; ");
+    };
 
     // The earliest-due open milestone is "current" — it gets a featured callout;
     // everything after it is FYI context.
