@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v35-link-browse-badge";
+    window.__appVersion = "2026-06-12-pms-v36-email-schedule-open";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -6775,29 +6775,37 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   async function emailSchedule() {
     setEmailStatus("sending");
     setEmailMsg("");
-    const sorted = [...milestones].sort((a, b) => {
-      if (!a.dueDate && !b.dueDate) return 0;
-      if (!a.dueDate) return 1;
-      if (!b.dueDate) return -1;
-      return a.dueDate > b.dueDate ? 1 : -1;
-    });
+    // Completed and cancelled milestones drop out — recipients only need what's ahead.
+    const sorted = milestones
+      .filter(m => (m.pctComplete || 0) < 100 && !m.cancelled)
+      .sort((a, b) => {
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate > b.dueDate ? 1 : -1;
+      });
 
-    const phaseRows = billablePhases.map(ph => {
-      const pct = getPhasePctFromMilestones(ph, milestones);
-      return `<tr>
-        <td style="padding:8px 12px;font-weight:500;">${ph.name}</td>
-        <td style="padding:8px 12px;">${ph.startDate ? fmtDate(ph.startDate) : "—"}</td>
-        <td style="padding:8px 12px;">${ph.endDate ? fmtDate(ph.endDate) : "—"}</td>
-        <td style="padding:8px 12px;">${pct}%</td>
-      </tr>`;
-    }).join("");
+    const pmsProjectUrl = "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id;
 
     const msRows = sorted.map(m => {
-      const statusColor = m.status === "Completed" ? "#16a34a" : m.status === "In Progress" ? "#2563eb" : "#6b7280";
+      // Status is derived from pctComplete exactly like the on-screen table —
+      // the stored m.status field goes stale and was reporting "Not Started" at 100%.
+      const status = milestoneStatus(m.pctComplete);
+      const statusColor = status === "In Progress" ? "#2563eb" : "#6b7280";
+      const linkBits = (m.links || []).map(lk => {
+        const url = lk.targetUrl || (lk.targetSystem === "pms"
+          ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId) : "");
+        const label = String((lk.targetSystem === "pms"
+          ? resolvePmsLabel(project, lk.targetType, lk.targetId)
+          : (lk.targetLabel || lk.targetUrl)) || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        return url
+          ? `<a href="${url}" style="color:#2F5496;">${label}</a>`
+          : `<span style="color:#44546A;">${label}</span>`;
+      }).join(" &nbsp;·&nbsp; ");
       return `<tr>
-        <td style="padding:8px 12px;">${m.name}</td>
+        <td style="padding:8px 12px;">${m.name}${linkBits ? `<div style="font-size:11px;margin-top:3px;">🔗 ${linkBits}</div>` : ""}</td>
         <td style="padding:8px 12px;">${m.dueDate ? fmtDate(m.dueDate) : "—"}</td>
-        <td style="padding:8px 12px;"><span style="color:${statusColor};font-weight:600;">${m.status || "Not Started"}</span></td>
+        <td style="padding:8px 12px;"><span style="color:${statusColor};font-weight:600;">${status}</span></td>
         <td style="padding:8px 12px;">${m.pctComplete || 0}%</td>
         <td style="padding:8px 12px;color:#6b7280;font-size:12px;">${m.notes || ""}</td>
       </tr>`;
@@ -6817,20 +6825,8 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     </div>
   </div>
 
-  ${billablePhases.length > 0 ? `
-  <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Phase Summary</div>
-  <table style="border-collapse:collapse;width:100%;margin-bottom:24px;font-size:13px;">
-    <thead><tr style="background:#F1F5F9;">
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Phase</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Start</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">End</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">% Complete</th>
-    </tr></thead>
-    <tbody>${phaseRows}</tbody>
-  </table>` : ""}
-
   <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Milestones &amp; Deliverables</div>
-  ${sorted.length === 0 ? '<p style="color:#6b7280;">No milestones scheduled.</p>' : `
+  ${sorted.length === 0 ? '<p style="color:#6b7280;">No open milestones — everything is complete.</p>' : `
   <table style="border-collapse:collapse;width:100%;font-size:13px;">
     <thead><tr style="background:#F1F5F9;">
       <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Milestone</th>
@@ -6842,19 +6838,28 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     <tbody>${msRows}</tbody>
   </table>`}
 
+  <div style="margin-top:16px;font-size:12px;">
+    <a href="${pmsProjectUrl}" style="color:#2F5496;font-weight:600;">📁 View this project in Setty PMS →</a>
+  </div>
+
   <div style="margin-top:28px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A;">
     SETTY &amp; Associates, Ltd, PC &nbsp;·&nbsp; ${project.name || ""} &nbsp;·&nbsp; Schedule as of ${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}
   </div>
 </div>`;
 
     try {
-      await createOutlookDraft({
+      const msg = await createOutlookDraft({
         subject: `Project Schedule — ${project.name || "Project"}${project.projectNumber ? " (" + project.projectNumber + ")" : ""}`,
         bodyHtml,
       });
+      // Pop the draft open in Outlook on the web so it can be addressed and
+      // sent immediately instead of sitting buried in the Drafts folder.
+      const opened = msg?.webLink ? window.open(msg.webLink, "_blank") : null;
       setEmailStatus("done");
-      setEmailMsg("✓ Draft created in your Outlook Drafts folder");
-      setTimeout(() => { setEmailStatus("idle"); setEmailMsg(""); }, 5000);
+      setEmailMsg(opened
+        ? "✓ Draft opened in a new tab — add recipients and send"
+        : "✓ Draft created — your browser blocked the pop-up, so find it in your Outlook Drafts folder");
+      setTimeout(() => { setEmailStatus("idle"); setEmailMsg(""); }, 8000);
     } catch(e) {
       setEmailStatus("error");
       setEmailMsg("✗ " + e.message);
