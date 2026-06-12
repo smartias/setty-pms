@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-10-pms-v33-duplicate-guard";
+    window.__appVersion = "2026-06-12-pms-v34-dash-cal-pull";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1573,6 +1573,13 @@ async function fetchCalendarEventDate(eventId) {
     return null;
   }
 }
+
+// Dashboard-wide pull-check cache — survives navigation between dashboard and
+// projects so re-opening the dashboard doesn't re-sweep Graph every time.
+// Resolved conflicts are pruned from the cache in place; the TTL keeps a
+// long-lived tab honest about changes made calendar-side during the session.
+let _dashCalPullCache = { at: 0, conflicts: [] };
+const DASH_CAL_PULL_TTL_MS = 10 * 60 * 1000;
 
 async function createNoteCalendarEvent(note, project) {
   const today = new Date().toISOString().slice(0, 10);
@@ -18354,6 +18361,80 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
       setDashSyncMsg("✗ \"" + m.name + "\" — " + result.error);
     }
   }
+
+  // ── Two-way calendar sync (pull) — dashboard-wide sweep ──
+  // Same check as the project Schedule tab, but across every active project:
+  // read each synced milestone's event back from Outlook and prompt when the
+  // calendar no longer agrees with PMS. Results are cached module-wide for
+  // 10 minutes so dashboard↔project navigation doesn't redo the Graph calls.
+  const [dashOutlookConflicts, setDashOutlookConflicts] = useState(() =>
+    Date.now() - _dashCalPullCache.at < DASH_CAL_PULL_TTL_MS ? _dashCalPullCache.conflicts : []);
+  const [dashOutlookChecking, setDashOutlookChecking] = useState(false);
+
+  async function sweepOutlookDates(force = false) {
+    if (!force && Date.now() - _dashCalPullCache.at < DASH_CAL_PULL_TTL_MS) return;
+    // Sweep ALL active projects, not the PM-filtered list — a conflict matters
+    // no matter whose dashboard filter is selected. Completed and cancelled
+    // milestones are skipped; their dates are historical record.
+    const targets = [];
+    for (const p of allActive) {
+      for (const m of (p.milestones || [])) {
+        if (!m.cancelled && (m.pctComplete || 0) < 100 && m.calendarEventId && m.dueDate) {
+          targets.push({ p, m });
+        }
+      }
+    }
+    setDashOutlookChecking(true);
+    const found = [];
+    const CHUNK = 6; // polite to Graph throttling — a firm-wide sweep can be dozens of events
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      const part = await Promise.all(targets.slice(i, i + CHUNK).map(async ({ p, m }) => {
+        const r = await fetchCalendarEventDate(m.calendarEventId);
+        if (!r) return null; // fetch failed — unknown state, don't prompt
+        if (!r.found) return { projectId: p.id, projectName: p.name, projectNumber: p.projectNumber, milestoneId: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: null, deleted: true };
+        if (r.date && r.date !== m.dueDate) return { projectId: p.id, projectName: p.name, projectNumber: p.projectNumber, milestoneId: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
+        return null;
+      }));
+      found.push(...part.filter(Boolean));
+    }
+    _dashCalPullCache = { at: Date.now(), conflicts: found };
+    setDashOutlookConflicts(found);
+    setDashOutlookChecking(false);
+  }
+
+  React.useEffect(() => { sweepOutlookDates(); }, []);
+
+  function removeDashConflict(c) {
+    _dashCalPullCache.conflicts = _dashCalPullCache.conflicts.filter(x => x.milestoneId !== c.milestoneId);
+    setDashOutlookConflicts(list => list.filter(x => x.milestoneId !== c.milestoneId));
+  }
+
+  function acceptDashOutlookDate(c) {
+    const proj = projects.find(p => p.id === c.projectId);
+    if (!proj) return;
+    const m = (proj.milestones || []).find(x => x.id === c.milestoneId);
+    if (!m) return;
+    // Same cascade as the Schedule tab: a billable milestone's due date IS its
+    // phase's end date, so the phase moves with it.
+    const phases = m.type === "billable"
+      ? (proj.phases || []).map(ph => ph.code === m.phase ? { ...ph, endDate: c.outlookDate } : ph)
+      : proj.phases;
+    onUpdateProject({
+      ...proj,
+      phases,
+      milestones: (proj.milestones || []).map(x => x.id === c.milestoneId ? { ...x, dueDate: c.outlookDate } : x),
+    });
+    removeDashConflict(c);
+    setDashSyncMsg(`✓ "${c.name}" updated to ${fmtDate(c.outlookDate)} from Outlook`);
+  }
+
+  function unlinkDashCalendarEvent(c) {
+    const proj = projects.find(p => p.id === c.projectId);
+    if (!proj) return;
+    onUpdateProject({ ...proj, milestones: (proj.milestones || []).map(x => x.id === c.milestoneId ? { ...x, calendarEventId: null } : x) });
+    removeDashConflict(c);
+  }
+
   // Build a quick lookup: projectId → project
   const projectMap = Object.fromEntries(active.map(p => [p.id, p]));
   const allMilestones = [
@@ -18448,6 +18529,60 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0, opacity: 0.7 }}>
             ×
           </button>
+        </div>
+      )}
+
+      {/* Outlook → PMS conflict prompts — dashboard-wide (two-way calendar sync).
+          Same panel as the project Schedule tab, but sweeps every active project. */}
+      {dashOutlookConflicts.length > 0 && (
+        <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: 14, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: P.yellow }}>
+              📅 Outlook calendar changes detected ({dashOutlookConflicts.length})
+            </div>
+            <button onClick={() => sweepOutlookDates(true)} disabled={dashOutlookChecking}
+              title="Re-check all synced milestones against Outlook"
+              style={{ background: "none", border: "none", color: P.yellow, cursor: "pointer", fontSize: 13 }}>
+              {dashOutlookChecking ? "⏳" : "↻"}
+            </button>
+          </div>
+          <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
+            These synced milestones were moved or removed in Outlook. Choose which date wins.
+          </div>
+          {dashOutlookConflicts.map(c => (
+            <div key={c.milestoneId} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "7px 0", borderTop: `1px solid ${P.border}` }}>
+              <button onClick={() => onNavigateToProject(c.projectId)} title="Open project"
+                style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, fontWeight: 600, padding: 0, textDecoration: "underline", whiteSpace: "nowrap" }}>
+                {c.projectNumber ? "[" + c.projectNumber + "] " : ""}{c.projectName}
+              </button>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</span>
+              {c.deleted ? (
+                <>
+                  <span style={{ fontSize: 12, color: P.red }}>Event was deleted in Outlook</span>
+                  <Btn small variant="primary" onClick={() => {
+                    const proj = projects.find(p => p.id === c.projectId);
+                    const m = (proj?.milestones || []).find(x => x.id === c.milestoneId);
+                    removeDashConflict(c);
+                    if (m) syncMilestoneFromDash({ ...m, projectId: c.projectId });
+                  }}>
+                    ↑ Re-create Event
+                  </Btn>
+                  <Btn small variant="ghost" onClick={() => unlinkDashCalendarEvent(c)} title="Forget the deleted event — milestone stays, calendar link is removed">
+                    Unlink
+                  </Btn>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontSize: 12 }}>
+                    Outlook: <strong style={{ color: P.accentLight }}>{fmtDate(c.outlookDate)}</strong>
+                    <span style={{ color: P.textDim }}> · PMS: {fmtDate(c.pmsDate)}</span>
+                  </span>
+                  <Btn small variant="primary" onClick={() => acceptDashOutlookDate(c)}>✓ Use Outlook Date</Btn>
+                  <Btn small variant="ghost" onClick={() => removeDashConflict(c)} title="Keep the PMS date — dismisses this prompt; use the row's ↑ sync to push PMS back to Outlook">Keep PMS Date</Btn>
+                </>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
