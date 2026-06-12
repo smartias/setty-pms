@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v37-current-milestone-email";
+    window.__appVersion = "2026-06-12-pms-v39-link-kind-labels";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -6775,6 +6775,22 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   async function emailSchedule() {
     setEmailStatus("sending");
     setEmailMsg("");
+    // Open the tab NOW, synchronously inside the click gesture — popup blockers
+    // always allow it, and the user gets instant feedback while the token
+    // acquisition + Graph round-trip happen. The tab redirects to the draft
+    // as soon as it exists. (OWA's own load time after that is out of our hands.)
+    const draftWin = window.open("", "_blank");
+    if (draftWin) {
+      try {
+        draftWin.document.write(
+          '<title>Creating draft…</title>' +
+          '<body style="font-family:Segoe UI,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:90vh;color:#44546A;">' +
+          '<div style="text-align:center;"><div style="font-size:30px;">✉</div>' +
+          '<div style="font-size:15px;margin-top:6px;">Creating your schedule draft…</div>' +
+          '<div style="font-size:12px;color:#94A3B8;margin-top:6px;">This tab will switch to Outlook automatically.</div></div></body>'
+        );
+      } catch(e) { /* cosmetic only */ }
+    }
     // Completed and cancelled milestones drop out — recipients only need what's ahead.
     const sorted = milestones
       .filter(m => (m.pctComplete || 0) < 100 && !m.cancelled)
@@ -6793,9 +6809,10 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       const label = String((lk.targetSystem === "pms"
         ? resolvePmsLabel(project, lk.targetType, lk.targetId)
         : (lk.targetLabel || lk.targetUrl)) || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
-      return url
+      const kind = `<span style="color:#94A3B8;">${linkTargetKindLabel(lk)}:</span> `;
+      return kind + (url
         ? `<a href="${url}" style="color:#2F5496;">${label}</a>`
-        : `<span style="color:#44546A;">${label}</span>`;
+        : `<span style="color:#44546A;">${label}</span>`);
     }).join(" &nbsp;·&nbsp; ");
 
     // The earliest-due open milestone is "current" — it gets a featured callout;
@@ -6852,15 +6869,22 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
         subject: `Project Schedule — ${project.name || "Project"}${project.projectNumber ? " (" + project.projectNumber + ")" : ""}`,
         bodyHtml,
       });
-      // Pop the draft open in Outlook on the web so it can be addressed and
-      // sent immediately instead of sitting buried in the Drafts folder.
-      const opened = msg?.webLink ? window.open(msg.webLink, "_blank") : null;
+      // Send the already-open tab to the draft in Outlook on the web so it can
+      // be addressed and sent immediately instead of sitting buried in Drafts.
+      let opened = false;
+      if (msg?.webLink) {
+        if (draftWin && !draftWin.closed) { draftWin.location = msg.webLink; opened = true; }
+        else { opened = !!window.open(msg.webLink, "_blank"); }
+      } else if (draftWin && !draftWin.closed) {
+        draftWin.close();
+      }
       setEmailStatus("done");
       setEmailMsg(opened
         ? "✓ Draft opened in a new tab — add recipients and send"
-        : "✓ Draft created — your browser blocked the pop-up, so find it in your Outlook Drafts folder");
+        : "✓ Draft created — find it in your Outlook Drafts folder");
       setTimeout(() => { setEmailStatus("idle"); setEmailMsg(""); }, 8000);
     } catch(e) {
+      if (draftWin && !draftWin.closed) draftWin.close();
       setEmailStatus("error");
       setEmailMsg("✗ " + e.message);
     }
@@ -8754,6 +8778,21 @@ const PMS_TARGET_TYPES = [
   { value: "email",     label: "Email",          listKey: "emails",       labelFn: e => e.subject || "(no subject)", idKey: "msgId" },
 ];
 
+// Human label for WHAT KIND of thing a link points at — shown ahead of the
+// link text so readers know if they're about to open a file, an email, etc.
+function linkTargetKindLabel(lk) {
+  if (lk.targetSystem === "pms") {
+    const def = PMS_TARGET_TYPES.find(t => t.value === lk.targetType);
+    return def ? def.label : "PMS Item";
+  }
+  return {
+    sharepoint: "SharePoint File/Folder",
+    onenote:    "OneNote Page",
+    outlook:    "Email",
+    external:   "External Link",
+  }[lk.targetSystem] || "Link";
+}
+
 function resolvePmsLabel(project, targetType, targetId) {
   const def = PMS_TARGET_TYPES.find(t => t.value === targetType);
   if (!def) return targetId;
@@ -8825,6 +8864,9 @@ function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId })
             <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: typeDef.color + "22", color: typeDef.color, whiteSpace: "nowrap" }}>
               {typeDef.label}
             </span>
+            <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 3, background: P.border, color: P.textMuted, whiteSpace: "nowrap" }}>
+              {linkTargetKindLabel(lk)}
+            </span>
             {resolvedUrl
               ? <a href={resolvedUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: P.accentLight, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</a>
               : <span style={{ fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: P.text }}>{label}</span>
@@ -8843,6 +8885,9 @@ function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId })
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, padding: "4px 8px", borderRadius: 5, background: P.card, opacity: 0.75 }}>
                 <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: typeDef.color + "22", color: typeDef.color, whiteSpace: "nowrap" }}>
                   ← {typeDef.label}
+                </span>
+                <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 3, background: P.border, color: P.textMuted, whiteSpace: "nowrap" }}>
+                  {PMS_TARGET_TYPES.find(t => t.value === lk._backFrom)?.label || "PMS Item"}
                 </span>
                 <span style={{ fontSize: 12, flex: 1, color: P.textMuted }}>{lk._backLabel}</span>
               </div>
