@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v45-shorter-invite";
+    window.__appVersion = "2026-06-12-pms-v47-shortcut-icons";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -763,6 +763,10 @@ async function saveState(state) {
 
 const LOCAL_SNAPSHOT_KEY = "setty_pms_local_snapshot_v1";
 
+// Snapshot is stored pako-compressed (same library as email bodies — JSON
+// deflates ~8-12x) because the raw JSON outgrew the ~5MB localStorage quota.
+// "PZ1|" prefixes the compressed format; loadLocalSnapshot still reads old
+// plain-JSON snapshots for backward compatibility.
 function saveLocalSnapshot(state) {
   try {
     const payload = {
@@ -772,7 +776,36 @@ function saveLocalSnapshot(state) {
       clients: state.clients || [],
       _savedAt: new Date().toISOString(),
     };
-    localStorage.setItem(LOCAL_SNAPSHOT_KEY, JSON.stringify(payload));
+    const json = JSON.stringify(payload);
+    const compressed = compressHtml(json); // generic string deflate, despite the name
+    if (compressed) {
+      try {
+        localStorage.setItem(LOCAL_SNAPSHOT_KEY, "PZ1|" + compressed);
+        return;
+      } catch (quotaErr) {
+        // Still over quota — retry without filed-email bodies, the heaviest
+        // field. Cloud data in Supabase keeps the full copies; the local
+        // snapshot is only a fallback.
+        const slim = {
+          ...payload,
+          projects: payload.projects.map(p =>
+            (p && p.emails && p.emails.length)
+              ? { ...p, emails: p.emails.map(em => ({ ...em, bodyHtmlCompressed: undefined, bodyText: undefined })) }
+              : p
+          ),
+          _slim: true,
+        };
+        const slimCompressed = compressHtml(JSON.stringify(slim));
+        if (slimCompressed) {
+          localStorage.setItem(LOCAL_SNAPSHOT_KEY, "PZ1|" + slimCompressed);
+          console.warn("Local snapshot saved without email bodies (quota) — full data remains in Supabase.");
+          return;
+        }
+        throw quotaErr;
+      }
+    }
+    // pako unavailable — fall back to plain JSON (original behavior).
+    localStorage.setItem(LOCAL_SNAPSHOT_KEY, json);
   } catch (e) {
     console.warn("Local snapshot save failed:", e.message);
   }
@@ -782,7 +815,9 @@ function loadLocalSnapshot() {
   try {
     const raw = localStorage.getItem(LOCAL_SNAPSHOT_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
+    const json = raw.startsWith("PZ1|") ? decompressHtml(raw.slice(4)) : raw;
+    if (!json) return null;
+    const parsed = JSON.parse(json);
     if (!parsed || !Array.isArray(parsed.projects)) return null;
     return parsed;
   } catch (e) {
@@ -4485,10 +4520,16 @@ async function bulkReconcileNotebooks(projects, onProgress) {
 // SharePoint web UI, OneDrive sync, Windows Explorer, and Finder — clicking
 // it opens the target URL in the user's default browser. Idempotent: PUT
 // with the same name overwrites, so re-installing refreshes stale URLs.
-async function writeProjectShortcut(driveId, folderName, shortcutFileName, targetUrl) {
+async function writeProjectShortcut(driveId, folderName, shortcutFileName, targetUrl, iconIndex) {
   // CRLF line endings — old Windows shortcut format. LF-only also works on
   // modern systems but the spec-canonical form is CRLF.
-  const content = "[InternetShortcut]\r\nURL=" + targetUrl + "\r\n";
+  // iconIndex (optional) points into imageres.dll so each shortcut type gets
+  // a distinct Explorer icon instead of the generic .url globe. imageres.dll
+  // ships with every Windows 10/11 install; macOS Finder ignores the lines.
+  let content = "[InternetShortcut]\r\nURL=" + targetUrl + "\r\n";
+  if (iconIndex != null) {
+    content += "IconFile=C:\\Windows\\System32\\imageres.dll\r\nIconIndex=" + iconIndex + "\r\n";
+  }
   const path = encodeURIComponent(folderName) + "/" + encodeURIComponent(shortcutFileName);
   const token = await getToken();
   const url = "https://graph.microsoft.com/v1.0/drives/" + driveId + "/root:/" + path + ":/content";
@@ -4606,29 +4647,36 @@ async function installProjectShortcuts(project) {
   const { driveId } = await resolveSpIds();
 
   // ── Step 1: build the shortcut list once. Each entry: {name, url, label} ──
+  // Per-shortcut `icon` = index into C:\Windows\System32\imageres.dll, so
+  // each launchpad entry gets a distinct Explorer icon (camera, clipboard,
+  // OneNote logo, …) instead of the generic .url globe. Indices verified
+  // against Win10/11 imageres.dll.
   const shortcuts = [];
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
-  if (noteUrl) shortcuts.push({ name: "📓 OneNote Notebook.url", url: noteUrl, label: "OneNote Notebook" });
+  if (noteUrl) shortcuts.push({ name: "📓 OneNote Notebook.url", url: noteUrl, label: "OneNote Notebook", icon: 345 });
 
   shortcuts.push({
     name: "🔗 PMS Project.url",
     url: "https://smartias.github.io/setty-pms/SettyPMS.html#project:" + project.id,
     label: "PMS Project",
+    icon: 187,
   });
   shortcuts.push({
     name: "📋 Site Report Generator.url",
     url: "https://smartias.github.io/setty-pms/SiteReport.html?project=" + encodeURIComponent(project.id),
     label: "Site Report Generator",
+    icon: 242,
   });
   shortcuts.push({
     name: "📸 Field Photos.url",
     url: "https://smartias.github.io/setty-pms/SettyFieldPhotos.html",
     label: "Field Photos",
+    icon: 52,
   });
 
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
   if (teamsFolderUrl) {
-    shortcuts.push({ name: "💬 Teams Chat - Working Files.url", url: teamsFolderUrl, label: "Teams Chat / Working Files" });
+    shortcuts.push({ name: "💬 Teams Chat - Working Files.url", url: teamsFolderUrl, label: "Teams Chat / Working Files", icon: 320 });
   }
 
   // Proposal folder (typically used during the pipeline / marketing stage,
@@ -4636,13 +4684,13 @@ async function installProjectShortcuts(project) {
   // *to* it inside the main project folder so users coming from the awarded
   // side have one click back to the proposal materials.
   if (project.proposalFolderUrl && project.proposalFolderUrl !== project.projectFolderUrl) {
-    shortcuts.push({ name: "📂 Proposal Folder.url", url: project.proposalFolderUrl, label: "Proposal Folder" });
+    shortcuts.push({ name: "📂 Proposal Folder.url", url: project.proposalFolderUrl, label: "Proposal Folder", icon: 227 });
   }
   // Contracts folder — lives separately for projects whose signed contracts
   // are managed in a different SharePoint location. Same "bridge from main
   // folder" model as the proposal shortcut.
   if (project.contractFolderUrl && project.contractFolderUrl !== project.projectFolderUrl) {
-    shortcuts.push({ name: "📜 Contracts Folder.url", url: project.contractFolderUrl, label: "Contracts Folder" });
+    shortcuts.push({ name: "📜 Contracts Folder.url", url: project.contractFolderUrl, label: "Contracts Folder", icon: 364 });
   }
 
   // Channel email: read-only resolution (no provisionEmail — avoids consent).
@@ -4652,7 +4700,17 @@ async function installProjectShortcuts(project) {
     catch (e) { console.warn("[shortcuts] channel email lookup failed:", e.message); }
   }
   if (resolvedChannelEmail) {
-    shortcuts.push({ name: "💌 Email Project Channel.url", url: "mailto:" + resolvedChannelEmail, label: "Email Project Channel" });
+    shortcuts.push({ name: "💌 Email Project Channel.url", url: "mailto:" + resolvedChannelEmail, label: "Email Project Channel", icon: 16 });
+  }
+
+  // Client portal pair — normally planted by createClientPortalFolders, but
+  // including them here means re-running Install Shortcuts also refreshes
+  // them (e.g. to pick up the new distinct icons on older projects).
+  if (project.clientUploadsFolderUrl) {
+    shortcuts.push({ name: "Client Uploads (NYSharesite).url", url: project.clientUploadsFolderUrl, label: "Client Uploads", icon: 169 });
+  }
+  if (project.settyDeliverablesFolderUrl) {
+    shortcuts.push({ name: "Setty Deliverables (NYSharesite).url", url: project.settyDeliverablesFolderUrl, label: "Setty Deliverables", icon: 175 });
   }
 
   // External project links (BIM 360, Procore, Matterport, Network Folder…).
@@ -4662,7 +4720,8 @@ async function installProjectShortcuts(project) {
     if (!link || !link.url) continue;
     const icon = LINK_TYPE_ICONS[link.type] || LINK_TYPE_ICONS["Other"];
     const baseName = sanitizeShortcutName(link.label || link.type || "Link");
-    shortcuts.push({ name: `${icon} ${baseName}.url`, url: link.url, label: baseName });
+    // 170 = globe: all external systems read as "leaves our environment".
+    shortcuts.push({ name: `${icon} ${baseName}.url`, url: link.url, label: baseName, icon: 170 });
   }
 
   // ── Step 2: write all shortcuts into the main project folder root ──
@@ -4670,7 +4729,7 @@ async function installProjectShortcuts(project) {
   const installed = [];
   for (const sc of shortcuts) {
     try {
-      await writeProjectShortcut(driveId, folderName, sc.name, sc.url);
+      await writeProjectShortcut(driveId, folderName, sc.name, sc.url, sc.icon);
       installed.push(sc.label);
     } catch (e) {
       // One bad shortcut shouldn't tank the rest — log and continue.
@@ -4932,15 +4991,18 @@ async function createClientPortalFolders(project) {
       if (!folderNameMatch) throw new Error("Could not parse folder name from projectFolderUrl");
       const mainFolderName = folderNameMatch[1];
 
+      // icon = imageres.dll index: 169 folder-with-person (client uploads),
+      // 175 download arrow (deliverables clients pull from).
       const shortcuts = [
-        { name: "Client Uploads (NYSharesite).url",     url: uploads.webUrl      },
-        { name: "Setty Deliverables (NYSharesite).url", url: deliverables.webUrl },
+        { name: "Client Uploads (NYSharesite).url",     url: uploads.webUrl,      icon: 169 },
+        { name: "Setty Deliverables (NYSharesite).url", url: deliverables.webUrl, icon: 175 },
       ];
 
       for (const sc of shortcuts) {
         const graphPath = "/drives/" + mainDriveId
           + "/root:/" + mainFolderName + "/" + sc.name + ":/content";
-        const body = "[InternetShortcut]\r\nURL=" + sc.url + "\r\n";
+        const body = "[InternetShortcut]\r\nURL=" + sc.url + "\r\n" +
+          "IconFile=C:\\Windows\\System32\\imageres.dll\r\nIconIndex=" + sc.icon + "\r\n";
         const bytes = new TextEncoder().encode(body);
         await graphFetch("PUT", graphPath, bytes)
           .catch(err => console.warn("Shortcut upload skipped (" + sc.name + "):", err.message));
