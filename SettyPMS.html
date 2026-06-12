@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v47-shortcut-icons";
+    window.__appVersion = "2026-06-12-pms-v48-issued-badge";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2679,12 +2679,26 @@ async function fetchTransmittalStatusMap(daysBack = 365) {
       const kind = r.files?.distributionKind || "generated";
       const recordKey = key || folderKey;
       if (!recordKey) continue;
+      // "send-email" is the only kind that means the client actually received
+      // it — track it separately so chips can show "Issued <date>" rather than
+      // just "something happened". deliveryMode ("portal" | "zip") rides on
+      // newer send-email rows.
+      const isEmail = kind === "send-email";
+      const mode = r.files?.deliveryMode || null;
       const existing = map.get(recordKey);
       if (!existing) {
-        map.set(recordKey, { lastAt: ts, kinds: new Set([kind]) });
+        map.set(recordKey, {
+          lastAt: ts, kinds: new Set([kind]),
+          lastEmailAt: isEmail ? ts : null,
+          lastEmailMode: isEmail ? mode : null,
+        });
       } else {
         existing.lastAt = Math.max(existing.lastAt, ts);
         existing.kinds.add(kind);
+        if (isEmail && (!existing.lastEmailAt || ts > existing.lastEmailAt)) {
+          existing.lastEmailAt = ts;
+          existing.lastEmailMode = mode;
+        }
       }
     }
     return map;
@@ -18569,6 +18583,9 @@ function TransmittalChip({ project, milestone }) {
   if (!url) return null;
   const status = transmittalMap?.get(milestone.id) || transmittalMap?.get(url) || null;
   const generated = !!status;
+  // "Issued" = a send-email actually happened (client received it). Stronger
+  // claim than generated, which also covers ZIP downloads / saves to SP.
+  const issuedAt = status?.lastEmailAt || null;
   // Build a tooltip that explains the state. Includes relative time + distribution
   // kinds so the user can tell at a glance whether it was emailed vs just zipped.
   function relTime(ms) {
@@ -18578,10 +18595,18 @@ function TransmittalChip({ project, milestone }) {
     if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + "h ago";
     return Math.floor(diff / 86_400_000) + "d ago";
   }
+  // Compact date for the chip itself: "6/12" this year, "6/12/25" otherwise.
+  function fmtShort(ms) {
+    const d = new Date(ms);
+    const yy = d.getFullYear() !== new Date().getFullYear() ? "/" + String(d.getFullYear()).slice(-2) : "";
+    return (d.getMonth() + 1) + "/" + d.getDate() + yy;
+  }
   const kindLabel = (k) => k === "save-sp" ? "saved to SP" : k === "zip" ? "ZIP downloaded" : k === "send-email" ? "emailed" : k;
   const kindsList = status ? Array.from(status.kinds).map(kindLabel).join(", ") : "";
-  const tooltip = generated
-    ? `Last generated ${relTime(status.lastAt)} (${kindsList}) — click to regenerate`
+  const tooltip = issuedAt
+    ? `Issued ${relTime(issuedAt)}${status.lastEmailMode === "portal" ? " via Client Portal" : ""} (${kindsList}) — click to reopen`
+    : generated
+    ? `Last generated ${relTime(status.lastAt)} (${kindsList}) — not yet emailed to client — click to regenerate`
     : "Open transmittal: generate sheet list, package files, and draft client email";
   const href = `https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}&projectId=${encodeURIComponent(project.id||"")}&milestoneId=${encodeURIComponent(milestone.id||"")}`;
   // Muted style on generated, vivid style on not-yet. Both clickable.
@@ -18590,7 +18615,7 @@ function TransmittalChip({ project, milestone }) {
     : { display: "inline-flex", alignItems: "center", gap: 3, background: "#14532d", color: "#4ade80", borderRadius: 5, fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap", border: "1px solid #166534" };
   return (
     <a href={href} target="_blank" rel="noreferrer" title={tooltip} style={style}>
-      {generated ? "✓ TX" : "📄 TX"}
+      {issuedAt ? "✓ Issued " + fmtShort(issuedAt) : generated ? "✓ TX" : "📄 TX"}
     </a>
   );
 }
