@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v41-share-message-cap";
+    window.__appVersion = "2026-06-12-pms-v42-short-invite-message";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22714,24 +22714,21 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
 // a recipient who only sees this email (never the Outlook follow-up) should
 // know exactly what to do, including the OTP code flow for non-Microsoft
 // emails. Plain text only (no HTML), max 2000 chars per Graph spec.
+// SharePoint's /invite endpoint rejects messages over 500 characters with a
+// 400 "text too long" (despite Graph docs claiming 2000). This message must
+// stay comfortably under that cap — the long per-scenario sign-in guide that
+// used to live here got the whole call rejected. Keep only the essentials;
+// the one-time-passcode hint matters most (it unblocks non-Microsoft users).
 function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
   const access = role === "write" ? "edit access" : "view access";
   const purpose = role === "write"
-    ? "Use this folder to upload documents, drawings, and files you would like to share with the SETTY project team."
-    : "Project deliverables — drawings, reports, calculations — will be posted here as they are issued. You will be able to download files but not modify them.";
+    ? "Use this folder to upload files you want to share with the SETTY project team."
+    : "Project deliverables will be posted here as issued. You can download files but not modify them.";
   return (
     'You have been granted ' + access + ' to the "' + folderLabel + '" folder for SETTY project ' + projLabel + '.\n\n' +
     purpose + '\n\n' +
-    'HOW TO SIGN IN (first time only)\n\n' +
-    'Click the "Open" link above. Microsoft will ask you to verify your identity. Find your situation below:\n\n' +
-    '1. If your email is Gmail, Yahoo, AOL, or any non-Microsoft address:\n' +
-    '   The sign-in page will show your email, then offer to "Send code" (sometimes labeled "Use a one-time passcode"). Click it. Microsoft will email a 6-digit code to your inbox within ~30 seconds — check spam if you do not see it. Paste the code back into the sign-in page. You are in. No password is needed and no new account is being created — the code only confirms you own the email address.\n\n' +
-    '2. If your email is a Microsoft work account (your company uses Microsoft 365):\n' +
-    '   Sign in with your normal work email and password.\n\n' +
-    '3. If your email is a personal Microsoft account (Outlook.com, Hotmail, Live, MSN):\n' +
-    '   Sign in with your personal Microsoft password.\n\n' +
-    'After your first sign-in, bookmark the folder URL — you will not need this email again.\n\n' +
-    'Please reply to this email or contact the SETTY project team if you have any trouble accessing the folder.'
+    'First sign-in: if your email is not a Microsoft account, choose "Send code" on the sign-in page and enter the one-time passcode Microsoft emails you (check spam). No password or new account is needed.\n\n' +
+    'Questions? Reply to this email to reach the SETTY project team.'
   );
 }
 
