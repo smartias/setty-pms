@@ -20994,6 +20994,26 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
   // Editing the name invalidates a prior "create anyway" confirmation
   React.useEffect(() => { setDupConfirmed(false); }, [form && form.name]);
 
+  // Email → projects index: which non-archived projects each person appears
+  // on, via the project's merged directory (POCs, subs, manual + add-in
+  // entries). Email is the join key — the same convention buildMergedDirectory
+  // uses to dedupe people. Contacts without an email simply don't link;
+  // matching by name would cross-link different people who share a name.
+  const contactProjectIndex = React.useMemo(() => {
+    const idx = new Map();
+    (projects || []).forEach(p => {
+      if (p.archived) return;
+      buildMergedDirectory(p).forEach(entry => {
+        const k = (entry.email || "").trim().toLowerCase();
+        if (!k) return;
+        const list = idx.get(k) || [];
+        if (!list.some(x => x.id === p.id)) list.push(p);
+        idx.set(k, list);
+      });
+    });
+    return idx;
+  }, [projects]);
+
   function saveForm() {
     if (!form.name.trim()) return;
     if (hardDupCompany) return; // panel explains; click-through opens the existing record
@@ -21138,6 +21158,23 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                     <input value={ct.notes||""} onChange={e => updateContact(ct.id, { notes: e.target.value })} placeholder="Any notes…" style={{ width: "100%" }} />
                   </Field>
                 </div>
+                {(() => {
+                  const linked = contactProjectIndex.get((ct.email || "").trim().toLowerCase()) || [];
+                  if (linked.length === 0) return null;
+                  return (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+                      <span style={{ fontSize: 11, color: P.textDim, fontWeight: 600 }}>On projects:</span>
+                      {linked.map(p => (
+                        <button key={p.id} onClick={() => onNavigateToProject(p.id)}
+                          style={{ background: P.accentDim, border: "1px solid " + P.accent, borderRadius: 4,
+                            color: P.accentLight, cursor: "pointer", fontSize: 11, padding: "2px 7px", fontWeight: 600 }}
+                          title={p.name + (p.projectNumber ? " [" + p.projectNumber + "]" : "")}>
+                          {p.projectNumber || p.name.slice(0, 12)}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
                   <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>
                     {ct.lastContacted ? "Last contacted: " + ct.lastContacted + " (auto-updated when captured via Outlook add-in)" : "Last contacted: — (auto-fills when this contact is captured via the Outlook add-in)"}
