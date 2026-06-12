@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v48-issued-badge";
+    window.__appVersion = "2026-06-12-pms-v50-portal-folder-names";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -4882,24 +4882,33 @@ async function shareDriveItemWithUser(driveId, itemId, email, role, message) {
 // email caps at 500 chars (SharePoint /invite limit), so the detailed
 // three-scenario sign-in walkthrough lives here instead — where clients land
 // after their first sign-in, and where they can point colleagues later.
-function buildPortalAccessGuide(folderName) {
+function buildPortalAccessGuide(names) {
   return (
-'SETTY CLIENT PORTAL — ' + folderName + '\r\n' +
+'SETTY CLIENT PORTAL — ' + names.label + '\r\n' +
 '=====================================================\r\n' +
 '\r\n' +
 'WHAT THESE FOLDERS ARE\r\n' +
 '\r\n' +
-'Client Uploads — use this folder to upload documents, drawings, and\r\n' +
-'files you would like to share with the SETTY project team.\r\n' +
+names.uploads + ' — use this folder to send us documents, drawings,\r\n' +
+'and files. Anything you place here is immediately visible to the\r\n' +
+'whole SETTY project team (not just one inbox), there are no\r\n' +
+'attachment size limits, and every version is kept. Prefer it over\r\n' +
+'email for project files.\r\n' +
 '\r\n' +
-'Setty Deliverables — project deliverables (drawings, reports,\r\n' +
-'calculations) are posted here as they are issued. Files are\r\n' +
-'view/download only.\r\n' +
+names.deliverables + ' — project deliverables (drawings, reports,\r\n' +
+'calculations) are posted here as they are issued, in dated folders.\r\n' +
+'Files are view/download only and remain available for the life of\r\n' +
+'the project.\r\n' +
 '\r\n' +
-'BOOKMARK THIS FOLDER\r\n' +
+'MAKE IT CONVENIENT\r\n' +
 '\r\n' +
-'After your first sign-in, bookmark this folder in your browser — you\r\n' +
+'Bookmark this folder in your browser after your first sign-in — you\r\n' +
 'will not need the invitation email again.\r\n' +
+'\r\n' +
+'If you sign in with a work Microsoft 365 account, you can also click\r\n' +
+'Sync in the folder toolbar to have these folders appear directly in\r\n' +
+'your File Explorer via OneDrive. (Some organizations restrict this —\r\n' +
+'if the files do not appear, use the browser bookmark instead.)\r\n' +
 '\r\n' +
 'SIGNING IN (for you, or colleagues joining later)\r\n' +
 '\r\n' +
@@ -4935,11 +4944,31 @@ function buildPortalAccessGuide(folderName) {
 // Sharing is opt-in via the Manage Sharing modal so the user controls
 // exactly who gets an invitation email (rather than auto-inviting whichever
 // contact happened to be first in the directory, which is often wrong).
+// Portal folder naming. Parent = project number only — OneDrive-synced
+// client paths run into Windows' 260-char MAX_PATH, so every character in
+// the root matters. Subfolders carry the project NAME so a client who syncs
+// folders from several Setty projects can tell them apart in File Explorer
+// ("BPL New Lots Deliverables", not a third "Setty Deliverables (2)").
+// Name portion capped at 40 chars as a further path-length guard.
+function portalFolderNames(project) {
+  const num  = (project.projectNumber || "").trim();
+  const name = (project.name || "").trim();
+  const safe = s => s.replace(/[\\/:*?"<>|#%]/g, "-").trim();
+  const shortName = safe(name).slice(0, 40).trim() || "Project";
+  return {
+    parent: safe(num) || shortName,
+    uploads: shortName + " Uploads",
+    deliverables: shortName + " Deliverables",
+    label: [num, name].filter(Boolean).join(" - "), // human-readable header for the guide
+  };
+}
+
 async function createClientPortalFolders(project) {
   const num  = (project.projectNumber || "").trim();
   const name = (project.name         || "Unnamed Project").trim();
   if (!num && !name) throw new Error("Project must have a number or name before creating portal folders.");
-  const folderName = num ? num + " - " + name : name;
+  const names = portalFolderNames(project);
+  const folderName = names.parent;
   const driveId    = SP_NYSHARE_DRIVE_ID;
 
   // Get or create the parent project folder in NYSharesite.
@@ -4976,15 +5005,15 @@ async function createClientPortalFolders(project) {
     return { id: created.id, webUrl: created.webUrl };
   }
 
-  const uploads      = await getOrCreate("Client Uploads");
-  const deliverables = await getOrCreate("Setty Deliverables");
+  const uploads      = await getOrCreate(names.uploads);
+  const deliverables = await getOrCreate(names.deliverables);
 
   // Plant the access guide in both portal folders. Leading underscore sorts
   // it to the top of the file list. PUT to :/content replaces on re-run, so
   // re-creating folders refreshes the guide rather than duplicating it.
   // Non-fatal — the folders are usable without it.
   try {
-    const guideBytes = new TextEncoder().encode(buildPortalAccessGuide(folderName));
+    const guideBytes = new TextEncoder().encode(buildPortalAccessGuide(names));
     for (const target of [uploads, deliverables]) {
       await graphFetch("PUT",
         "/drives/" + driveId + "/items/" + target.id
@@ -22844,11 +22873,31 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
             </div>
           )}
           {(project.clientUploadsFolderUrl || project.settyDeliverablesFolderUrl) && (
-            <div style={{ marginTop: 6 }}>
+            <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center" }}>
               <button onClick={() => setShowSharingModal(true)}
                 style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 5,
                   color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
                 👥 Manage Sharing
+              </button>
+              {/* Unlink: clears the stored URLs only — does NOT delete the
+                  SharePoint folders. Needed when portal folders are deleted
+                  or renamed in SharePoint, so Set Up can run fresh. */}
+              <button
+                title="Clear the saved portal links so Set Up Client Portal Folders can run again. Does not delete anything in SharePoint."
+                onClick={() => {
+                  if (!window.confirm(
+                    "Reset the saved portal links for this project?\n\n" +
+                    "Use this after deleting or renaming the portal folders in SharePoint. " +
+                    "This does NOT delete any folders or files — it only clears the links " +
+                    "so 'Set Up Client Portal Folders' can run fresh."
+                  )) return;
+                  onChange({ ...project, clientUploadsFolderUrl: "", settyDeliverablesFolderUrl: "" });
+                  setPortalStatus("idle");
+                  setPortalMsg("");
+                }}
+                style={{ background: "none", border: "none", color: P.textDim,
+                  cursor: "pointer", fontSize: 11, textDecoration: "underline" }}>
+                Reset links
               </button>
             </div>
           )}
@@ -23016,7 +23065,10 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       if (perms?.deliverablesId) targets.push({ itemId: perms.deliverablesId, role: "read"  });
       const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim()].filter(Boolean).join(" - ");
       for (const t of targets) {
-        const folderLabel = t.itemId === perms.uploadsId ? "Client Uploads" : "Setty Deliverables";
+        // Use the actual folder names so the invitation email matches what
+        // the client sees after signing in.
+        const names = portalFolderNames(project);
+        const folderLabel = t.itemId === perms.uploadsId ? names.uploads : names.deliverables;
         const message = buildSharePointInvitationMessage({ folderLabel, role: t.role, projLabel });
         await shareDriveItemWithUser(driveId, t.itemId, contact.email, t.role, message);
       }
@@ -23265,8 +23317,8 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
             <div style={{ fontSize: 11, color: P.textDim, marginBottom: 8,
               padding: "6px 10px", background: P.bgCard || P.bgAlt || P.bg,
               border: `1px solid ${P.border}`, borderRadius: 5, lineHeight: 1.45 }}>
-              Everyone added gets: <strong>Client Uploads</strong> — can upload files ·{" "}
-              <strong>Setty Deliverables</strong> — view &amp; download only
+              Everyone added gets: <strong>{portalFolderNames(project).uploads}</strong> — can upload files ·{" "}
+              <strong>{portalFolderNames(project).deliverables}</strong> — view &amp; download only
             </div>
 
             {/* Contact search */}
