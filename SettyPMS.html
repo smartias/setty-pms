@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v43-portal-access-guide";
+    window.__appVersion = "2026-06-12-pms-v44-fixed-portal-roles";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22813,8 +22813,6 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
   const [loading, setLoading]           = React.useState(true);
   const [loadError, setLoadError]       = React.useState("");
   const [query, setQuery]               = React.useState("");
-  const [addTarget, setAddTarget]       = React.useState("both");
-  const [addRole, setAddRole]           = React.useState("write");
   const [actionMsg, setActionMsg]       = React.useState("");
   const [actionStatus, setActionStatus] = React.useState("idle");
 
@@ -22918,13 +22916,13 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
     setActionStatus("working");
     setActionMsg("⏳ Adding " + contact.email + "…");
     try {
+      // Fixed access model — no per-invite folder/role choices. Everyone gets
+      // both folders: Client Uploads with write (clients upload there) and
+      // Setty Deliverables with read (view + download only; "read" includes
+      // downloading).
       const targets = [];
-      if ((addTarget === "uploads"      || addTarget === "both") && perms?.uploadsId)
-        targets.push({ itemId: perms.uploadsId,      role: addRole });
-      if ((addTarget === "deliverables" || addTarget === "both") && perms?.deliverablesId)
-        // "Both folders" + "Can Edit" → uploads gets write, deliverables stays read.
-        // Setty Deliverables is meant to be view-only for clients regardless.
-        targets.push({ itemId: perms.deliverablesId, role: addTarget === "both" && addRole === "write" ? "read" : addRole });
+      if (perms?.uploadsId)      targets.push({ itemId: perms.uploadsId,      role: "write" });
+      if (perms?.deliverablesId) targets.push({ itemId: perms.deliverablesId, role: "read"  });
       const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim()].filter(Boolean).join(" - ");
       for (const t of targets) {
         const folderLabel = t.itemId === perms.uploadsId ? "Client Uploads" : "Setty Deliverables";
@@ -23169,27 +23167,15 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
               to the folder.
             </div>
 
-            {/* Folder + role selectors */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 10, color: P.textDim, marginBottom: 3 }}>FOLDER</div>
-                <select value={addTarget} onChange={e => setAddTarget(e.target.value)}
-                  style={{ width: "100%", fontSize: 12, background: P.bg, color: P.text,
-                    border: `1px solid ${P.border}`, borderRadius: 5, padding: "4px 6px" }}>
-                  <option value="both">Both folders</option>
-                  <option value="uploads">Client Uploads only</option>
-                  <option value="deliverables">Setty Deliverables only</option>
-                </select>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 10, color: P.textDim, marginBottom: 3 }}>ROLE</div>
-                <select value={addRole} onChange={e => setAddRole(e.target.value)}
-                  style={{ width: "100%", fontSize: 12, background: P.bg, color: P.text,
-                    border: `1px solid ${P.border}`, borderRadius: 5, padding: "4px 6px" }}>
-                  <option value="write">Can Edit</option>
-                  <option value="read">Can View</option>
-                </select>
-              </div>
+            {/* Fixed access model — one click, both folders, standard roles.
+                Per-invite folder/role pickers were removed: every invitee gets
+                upload rights on Client Uploads and view/download on Setty
+                Deliverables. */}
+            <div style={{ fontSize: 11, color: P.textDim, marginBottom: 8,
+              padding: "6px 10px", background: P.bgCard || P.bgAlt || P.bg,
+              border: `1px solid ${P.border}`, borderRadius: 5, lineHeight: 1.45 }}>
+              Everyone added gets: <strong>Client Uploads</strong> — can upload files ·{" "}
+              <strong>Setty Deliverables</strong> — view &amp; download only
             </div>
 
             {/* Contact search */}
