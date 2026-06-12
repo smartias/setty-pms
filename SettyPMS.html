@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v40-email-docset-folder";
+    window.__appVersion = "2026-06-12-pms-v41-share-message-cap";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -4796,7 +4796,10 @@ async function shareDriveItemWithUser(driveId, itemId, email, role, message) {
       roles: [role === "write" ? "write" : "read"],
       requireSignIn: true,
       sendInvitation: true,
-      message: (message || "You have been granted access to a SETTY project folder.").slice(0, 2000),
+      // SharePoint enforces a 500-char limit on the invite message (despite
+      // Graph docs saying 2000). Going over yields a 400 "text too long"
+      // error. 490 leaves a small buffer for any tenant-side prefix.
+      message: (message || "You have been granted access to a SETTY project folder.").slice(0, 490),
     }
   );
 }
