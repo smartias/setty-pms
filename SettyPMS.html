@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v42-short-invite-message";
+    window.__appVersion = "2026-06-12-pms-v43-portal-access-guide";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -4804,6 +4804,59 @@ async function shareDriveItemWithUser(driveId, itemId, email, role, message) {
   );
 }
 
+// Full access guide planted as a text file in each portal folder. The invite
+// email caps at 500 chars (SharePoint /invite limit), so the detailed
+// three-scenario sign-in walkthrough lives here instead — where clients land
+// after their first sign-in, and where they can point colleagues later.
+function buildPortalAccessGuide(folderName) {
+  return (
+'SETTY CLIENT PORTAL — ' + folderName + '\r\n' +
+'=====================================================\r\n' +
+'\r\n' +
+'WHAT THESE FOLDERS ARE\r\n' +
+'\r\n' +
+'Client Uploads — use this folder to upload documents, drawings, and\r\n' +
+'files you would like to share with the SETTY project team.\r\n' +
+'\r\n' +
+'Setty Deliverables — project deliverables (drawings, reports,\r\n' +
+'calculations) are posted here as they are issued. Files are\r\n' +
+'view/download only.\r\n' +
+'\r\n' +
+'BOOKMARK THIS FOLDER\r\n' +
+'\r\n' +
+'After your first sign-in, bookmark this folder in your browser — you\r\n' +
+'will not need the invitation email again.\r\n' +
+'\r\n' +
+'SIGNING IN (for you, or colleagues joining later)\r\n' +
+'\r\n' +
+'Access is granted per email address by the SETTY team. When you open\r\n' +
+'the folder link, Microsoft will ask you to verify your identity:\r\n' +
+'\r\n' +
+'1. Gmail, Yahoo, AOL, or any non-Microsoft email:\r\n' +
+'   The sign-in page will show your email, then offer "Send code"\r\n' +
+'   (sometimes labeled "Use a one-time passcode"). Click it. Microsoft\r\n' +
+'   will email a 6-digit code to your inbox within ~30 seconds — check\r\n' +
+'   spam if you do not see it. Enter the code on the sign-in page.\r\n' +
+'   No password is needed and no new account is created — the code\r\n' +
+'   only confirms you own the email address.\r\n' +
+'\r\n' +
+'2. Microsoft work account (your company uses Microsoft 365):\r\n' +
+'   Sign in with your normal work email and password.\r\n' +
+'\r\n' +
+'3. Personal Microsoft account (Outlook.com, Hotmail, Live, MSN):\r\n' +
+'   Sign in with your personal Microsoft password.\r\n' +
+'\r\n' +
+'NEED A COLLEAGUE ADDED?\r\n' +
+'\r\n' +
+'Access is per-person. Reply to your invitation email or contact the\r\n' +
+'SETTY project team and we will send them their own invitation.\r\n' +
+'\r\n' +
+'QUESTIONS OR TROUBLE ACCESSING\r\n' +
+'\r\n' +
+'Contact your SETTY project manager or reply to the invitation email.\r\n'
+  );
+}
+
 // Creates the portal folder structure but does NOT share with anyone.
 // Sharing is opt-in via the Manage Sharing modal so the user controls
 // exactly who gets an invitation email (rather than auto-inviting whichever
@@ -4851,6 +4904,23 @@ async function createClientPortalFolders(project) {
 
   const uploads      = await getOrCreate("Client Uploads");
   const deliverables = await getOrCreate("Setty Deliverables");
+
+  // Plant the access guide in both portal folders. Leading underscore sorts
+  // it to the top of the file list. PUT to :/content replaces on re-run, so
+  // re-creating folders refreshes the guide rather than duplicating it.
+  // Non-fatal — the folders are usable without it.
+  try {
+    const guideBytes = new TextEncoder().encode(buildPortalAccessGuide(folderName));
+    for (const target of [uploads, deliverables]) {
+      await graphFetch("PUT",
+        "/drives/" + driveId + "/items/" + target.id
+          + ":/" + encodeURIComponent("_START HERE - Folder Access Guide.txt") + ":/content",
+        guideBytes
+      ).catch(err => console.warn("Access guide upload skipped:", err.message));
+    }
+  } catch (e) {
+    console.warn("Portal access guide planting skipped:", e.message);
+  }
 
   // Plant .url shortcut files in the main NYCProjects project folder
   if (project.projectFolderUrl) {
