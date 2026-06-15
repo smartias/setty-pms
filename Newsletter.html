@@ -232,8 +232,13 @@ const MSAL_REDIRECT_URI = "https://smartias.github.io/setty-pms/SettyPMS.html";
 // the marketing senders "Full Access" + "Send As", then paste its address here.
 const SEND_MAILBOX = ""; // e.g. "newsletter@setty.com"
 
-// A shared mailbox needs the ".Shared" delegated scope (usually user-consentable).
-const GRAPH_SCOPES = ["User.Read", SEND_MAILBOX ? "Mail.ReadWrite.Shared" : "Mail.ReadWrite"];
+// Incremental consent: sign-in asks for identity only. The mailbox scopes are
+// requested lazily — when you first create a draft, or first check for bounces —
+// so nobody is prompted for mail access until a feature actually needs it.
+// (".Shared" variants kick in automatically when a shared mailbox is configured.)
+const SIGNIN_SCOPES = ["User.Read"];
+const MAIL_SCOPES   = ["User.Read", SEND_MAILBOX ? "Mail.ReadWrite.Shared" : "Mail.ReadWrite"]; // create drafts
+const BOUNCE_SCOPES = ["User.Read", SEND_MAILBOX ? "Mail.Read.Shared"      : "Mail.Read"];      // read NDRs
 
 const UNSUB_URL = SUPABASE_URL + "/functions/v1/unsubscribe";
 const FROM_NAME = "Setty & Associates";
@@ -313,17 +318,19 @@ async function getMsalApp(){
   if (!_msal.getActiveAccount() && accts.length) _msal.setActiveAccount(accts[0]);
   return _msal;
 }
-async function getToken(){
+async function getToken(scopes){
+  scopes = scopes || SIGNIN_SCOPES;
   const app = await getMsalApp();
   let account = app.getActiveAccount() || app.getAllAccounts()[0];
   if (!account){
-    const r = await app.loginPopup({ scopes: GRAPH_SCOPES });
+    const r = await app.loginPopup({ scopes });
     app.setActiveAccount(r.account);
     if (r.accessToken) return r.accessToken;
     account = r.account;
   }
-  try { return (await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account })).accessToken; }
-  catch { return (await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account })).accessToken; }
+  // Silent first; falls back to a popup, which is also how NEW scopes get consented.
+  try { return (await app.acquireTokenSilent({ scopes, account })).accessToken; }
+  catch { return (await app.acquireTokenPopup({ scopes, account })).accessToken; }
 }
 function currentUser(){
   try { const a = _msal && (_msal.getActiveAccount() || _msal.getAllAccounts()[0]); return a ? (a.username || a.name) : null; }
@@ -344,7 +351,7 @@ function paintUser(){
    ═══════════════════════════════════════════════════════════════════════════ */
 async function loadDirectory(){
   // External contacts live nested inside pms_clients.client.contacts[]
-  const clients = await sbAll("/rest/v1/pms_clients?select=client&order=id");
+  const clients = await sbAll("/rest/v1/pms_clients?select=id,client&order=id"); // id = pms_clients row id
   // Internal staff live in the pms_data singleton
   const data = await sb("GET", "/rest/v1/pms_data?id=eq.singleton&select=staff");
   const staff = (data && data[0] && data[0].staff) || [];
@@ -359,7 +366,9 @@ async function loadDirectory(){
   for (const row of clients){
     const c = row.client || {};
     for (const ct of (c.contacts || [])){
-      push({ email: ct.email, name: ct.name || "", company: c.name || "", companyTypes: c.types || [], source: "client_contact" });
+      // carry the row id + contact id so a bounce can be removed from the exact PMS record
+      push({ email: ct.email, name: ct.name || "", company: c.name || "", companyTypes: c.types || [],
+             source: "client_contact", clientRowId: row.id, contactId: ct.id });
     }
   }
   for (const s of staff){
@@ -428,14 +437,16 @@ function selectRecipients(person, sub){
 /* ═══════════════════════════════════════════════════════════════════════════
    GROUPED PICKER  —  Type ▸ Firm ▸ Contact, with select/deselect at every level
    ═══════════════════════════════════════════════════════════════════════════ */
-function isUnsubscribed(email){ const s = SUBS[email]; return s && s.status === "unsubscribed"; }
+// A person is "blocked" (excluded from sends) if they opted out OR hard-bounced.
+function blockedStatus(email){ const s = SUBS[email]; return (s && (s.status === "unsubscribed" || s.status === "bounced")) ? s.status : null; }
+function isBlocked(email){ return !!blockedStatus(email); }
 function typeKey(p){ return p.source === "staff" ? "Staff" : ((p.companyTypes && p.companyTypes[0]) || "Uncategorized"); }
 function firmKey(p){ return p.company || "(no firm)"; }
 
 // Seed the checkboxes from the default policy (skips unsubscribed).
 function seedDefaults(announce){
   SELECTED = new Set();
-  DIRECTORY.forEach(p => { if (!isUnsubscribed(p.email) && selectRecipients(p, SUBS[p.email])) SELECTED.add(p.email); });
+  DIRECTORY.forEach(p => { if (!isBlocked(p.email) && selectRecipients(p, SUBS[p.email])) SELECTED.add(p.email); });
   renderGroups();
   if (announce) log("Reset to default — " + SELECTED.size + " selected.", "ok");
 }
@@ -460,7 +471,7 @@ function expandAllFirms(on){
 }
 function selectAllVisible(on){
   computeVisible();
-  VISIBLE.filter(p => !isUnsubscribed(p.email)).forEach(p => { on ? SELECTED.add(p.email) : SELECTED.delete(p.email); });
+  VISIBLE.filter(p => !isBlocked(p.email)).forEach(p => { on ? SELECTED.add(p.email) : SELECTED.delete(p.email); });
   renderGroups();
 }
 
@@ -482,7 +493,7 @@ function renderGroups(){
   for (const t of Object.keys(tree).sort((a,b)=>a.localeCompare(b))){
     const firms = tree[t];
     const ppl = Object.values(firms).flat();
-    const eligT = ppl.filter(p => !isUnsubscribed(p.email));
+    const eligT = ppl.filter(p => !isBlocked(p.email));
     const selT = eligT.filter(p => SELECTED.has(p.email)).length;
     const unsubT = ppl.length - eligT.length;
     const tCollapsed = COLLAPSED_TYPES.has(t);
@@ -494,7 +505,7 @@ function renderGroups(){
     if (!tCollapsed){
       for (const f of Object.keys(firms).sort((a,b)=>a.localeCompare(b))){
         const members = firms[f].sort((a,b)=>(a.name||a.email).localeCompare(b.name||b.email));
-        const eligF = members.filter(m => !isUnsubscribed(m.email));
+        const eligF = members.filter(m => !isBlocked(m.email));
         const selF = eligF.filter(m => SELECTED.has(m.email)).length;
         const unsubF = members.length - eligF.length;
         const fkey = t + "|" + f;
@@ -506,7 +517,7 @@ function renderGroups(){
         </div>`;
         if (fExpanded){
           for (const m of members){
-            const u = isUnsubscribed(m.email);
+            const u = isBlocked(m.email);
             html += `<label class="person ${u?'dis':''}">
               <input type="checkbox" data-email="${esc(m.email)}" ${SELECTED.has(m.email)?'checked':''} ${u?'disabled':''}>
               <span>${esc(m.name) || '<span class="muted">—</span>'}</span>
@@ -524,13 +535,13 @@ function renderGroups(){
 
   // Partial (indeterminate) states must be set in JS, not markup
   list.querySelectorAll("input[data-type]").forEach(cb => {
-    const m = Object.values(tree[cb.dataset.type]||{}).flat().filter(p => !isUnsubscribed(p.email));
+    const m = Object.values(tree[cb.dataset.type]||{}).flat().filter(p => !isBlocked(p.email));
     const s = m.filter(p => SELECTED.has(p.email)).length;
     cb.indeterminate = s > 0 && s < m.length;
   });
   list.querySelectorAll("input[data-firm]").forEach(cb => {
     const i = cb.dataset.firm.indexOf("|"); const t = cb.dataset.firm.slice(0,i), f = cb.dataset.firm.slice(i+1);
-    const m = ((tree[t]||{})[f]||[]).filter(p => !isUnsubscribed(p.email));
+    const m = ((tree[t]||{})[f]||[]).filter(p => !isBlocked(p.email));
     const s = m.filter(p => SELECTED.has(p.email)).length;
     cb.indeterminate = s > 0 && s < m.length;
   });
@@ -544,11 +555,11 @@ function onGroupChange(e){
   if (cb.dataset.email){
     cb.checked ? SELECTED.add(cb.dataset.email) : SELECTED.delete(cb.dataset.email);
   } else if (cb.dataset.type){
-    VISIBLE.filter(p => typeKey(p)===cb.dataset.type && !isUnsubscribed(p.email))
+    VISIBLE.filter(p => typeKey(p)===cb.dataset.type && !isBlocked(p.email))
            .forEach(p => cb.checked ? SELECTED.add(p.email) : SELECTED.delete(p.email));
   } else if (cb.dataset.firm){
     const i = cb.dataset.firm.indexOf("|"); const t = cb.dataset.firm.slice(0,i), f = cb.dataset.firm.slice(i+1);
-    VISIBLE.filter(p => typeKey(p)===t && firmKey(p)===f && !isUnsubscribed(p.email))
+    VISIBLE.filter(p => typeKey(p)===t && firmKey(p)===f && !isBlocked(p.email))
            .forEach(p => cb.checked ? SELECTED.add(p.email) : SELECTED.delete(p.email));
   } else return;
   renderGroups();
@@ -563,8 +574,8 @@ function onGroupClick(e){
 }
 
 function updateCounts(){
-  const subbed = DIRECTORY.filter(p => !isUnsubscribed(p.email)).length;
-  const unsub = DIRECTORY.filter(p => isUnsubscribed(p.email)).length;
+  const subbed = DIRECTORY.filter(p => !isBlocked(p.email)).length;
+  const unsub = DIRECTORY.filter(p => isBlocked(p.email)).length;
   const sel = [...SELECTED].filter(e => !(SUBS[e] && SUBS[e].status === "unsubscribed")).length;
   document.getElementById("stPeople").textContent = DIRECTORY.length;
   document.getElementById("stSubbed").textContent = subbed;
@@ -604,7 +615,7 @@ async function createDraft(){
   const type = document.getElementById("campType").value;
   if (!subject){ log("Add a subject first.", "err"); return; }
   if (!innerHtml){ log("Add some body content first.", "err"); return; }
-  const recips = DIRECTORY.filter(p => SELECTED.has(p.email) && !isUnsubscribed(p.email));
+  const recips = DIRECTORY.filter(p => SELECTED.has(p.email) && !isBlocked(p.email));
   if (!recips.length){ log("No recipients selected.", "err"); return; }
 
   const btn = document.getElementById("draftBtn"); btn.disabled = true;
