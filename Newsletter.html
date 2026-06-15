@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setty Newsletter &amp; Invites</title>
+<!-- MSAL — same library + app registration the PMS uses, so sign-in/consent is shared -->
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<style>
+  :root{
+    --bg:#0F172A; --panel:#1E293B; --panel2:#172033; --line:#334155;
+    --ink:#E2E8F0; --muted:#94A3B8; --faint:#64748B;
+    --accent:#2563EB; --accent2:#1D4ED8; --good:#16A34A; --bad:#DC2626; --warn:#D97706;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  a{color:#93C5FD}
+  header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel2);position:sticky;top:0;z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:700}
+  header .sub{font-size:12px;color:var(--muted)}
+  .spacer{flex:1}
+  .who{font-size:12px;color:var(--muted);margin-right:6px}
+  button{font:inherit;font-weight:600;cursor:pointer;border:0;border-radius:8px;padding:9px 16px;background:var(--accent);color:#fff}
+  button:hover{background:var(--accent2)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
+  button.ghost:hover{background:var(--panel)}
+  button.danger{background:var(--bad)}
+  button.sm{padding:5px 10px;font-size:12px}
+  .tabs{display:flex;gap:6px;padding:12px 20px 0}
+  .tab{padding:8px 14px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted);border:1px solid transparent;border-bottom:0;font-weight:600;cursor:pointer}
+  .tab.active{background:var(--panel);color:var(--ink);border-color:var(--line)}
+  main{padding:20px;max-width:1100px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
+  .card h2{font-size:14px;margin:0 0 12px;font-weight:700}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .col{flex:1;min-width:240px}
+  label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px}
+  input[type=text],input[type=email],select,textarea{
+    width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--ink);font:inherit}
+  textarea{min-height:200px;font-family:"Consolas","Courier New",monospace;font-size:12px;line-height:1.5;resize:vertical}
+  .stats{display:flex;gap:18px;flex-wrap:wrap}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 16px;min-width:110px}
+  .stat .n{font-size:22px;font-weight:700}
+  .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .stat.sel .n{color:#60A5FA}
+  .stat.unsub .n{color:#F87171}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:var(--panel)}
+  .scroll{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600}
+  .pill.sub{background:rgba(22,163,74,.18);color:#4ADE80}
+  .pill.unsub{background:rgba(220,38,38,.18);color:#F87171}
+  .pill.staff{background:rgba(37,99,235,.18);color:#93C5FD}
+  .pill.client{background:rgba(217,119,6,.18);color:#FBBF24}
+  .preview-frame{width:100%;height:360px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  .muted{color:var(--muted)}
+  .hint{font-size:12px;color:var(--faint);margin-top:6px}
+  #log{position:fixed;bottom:0;left:0;right:0;max-height:140px;overflow:auto;background:#0B1220;border-top:1px solid var(--line);
+       font-family:"Consolas",monospace;font-size:11px;padding:8px 16px;color:#9CA3AF;display:none}
+  #log.show{display:block}
+  .logline.err{color:#F87171}
+  .logline.ok{color:#4ADE80}
+  .banner{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:14px}
+  .banner.warn{background:rgba(217,119,6,.15);border:1px solid rgba(217,119,6,.4);color:#FBBF24}
+  .type-grp{border-bottom:1px solid var(--line)}
+  .type-head{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--panel2);position:sticky;top:0;z-index:2}
+  .firm-head{display:flex;align-items:center;gap:10px;padding:6px 12px 6px 30px;background:var(--panel);border-top:1px solid rgba(51,65,85,.5)}
+  .cnt{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
+  .grp-name{font-weight:600;cursor:pointer;user-select:none}
+  .firm-name{cursor:pointer;user-select:none}
+  .person{display:flex;align-items:center;gap:10px;padding:5px 12px 5px 52px;border-top:1px solid rgba(51,65,85,.4);cursor:pointer;margin:0}
+  .person:hover{background:var(--panel2)}
+  .person.dis{opacity:.5;cursor:default}
+  .person .em{color:var(--muted);font-size:12px}
+  .person .co-spacer{flex:1}
+  input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:none}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>📰 Setty Newsletter &amp; Invites</h1>
+    <div class="sub">Sends to the live PMS directory · honors unsubscribes</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="who" id="whoami"></span>
+  <button id="signInBtn" class="ghost" onclick="signIn()">Sign in with Microsoft</button>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="send" onclick="showTab('send')">Compose &amp; Send</div>
+  <div class="tab" data-tab="subs" onclick="showTab('subs')">Subscribers</div>
+  <div class="tab" data-tab="hist" onclick="showTab('hist')">History</div>
+</div>
+
+<main>
+  <!-- ════════════════ COMPOSE & SEND ════════════════ -->
+  <section id="tab-send">
+    <div class="card">
+      <h2>1 · Audience <span class="muted" style="font-weight:400">— everyone's selected by default; uncheck by type, firm, or person</span></h2>
+      <div class="row" style="align-items:center;margin-bottom:14px">
+        <button onclick="refreshAll()">↻ Load / refresh directory</button>
+        <span class="hint" id="loadedAt"></span>
+      </div>
+      <div class="stats" id="stats">
+        <div class="stat"><div class="n" id="stPeople">—</div><div class="l">People in directory</div></div>
+        <div class="stat"><div class="n" id="stSubbed">—</div><div class="l">Subscribed</div></div>
+        <div class="stat unsub"><div class="n" id="stUnsub">—</div><div class="l">Unsubscribed</div></div>
+        <div class="stat sel"><div class="n" id="stSelected">—</div><div class="l">Will receive this</div></div>
+      </div>
+
+      <div class="row" style="margin-top:14px;align-items:flex-end">
+        <div>
+          <label>Company type</label>
+          <select id="fltType" onchange="renderGroups()" style="max-width:220px">
+            <option value="all">All company types</option>
+          </select>
+        </div>
+        <div>
+          <label>Search</label>
+          <input type="text" id="fltSearch" placeholder="name / email / firm…" oninput="renderGroups()" style="max-width:240px">
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;color:var(--ink);margin:0 0 9px">
+          <input type="checkbox" id="fltStaff" checked onchange="renderGroups()"> include staff
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px;gap:8px;align-items:center">
+        <button class="ghost sm" onclick="selectAllVisible(true)">Select all shown</button>
+        <button class="ghost sm" onclick="selectAllVisible(false)">Deselect all shown</button>
+        <button class="ghost sm" onclick="expandAllFirms(true)">Expand firms</button>
+        <button class="ghost sm" onclick="expandAllFirms(false)">Collapse firms</button>
+        <button class="ghost sm" onclick="seedDefaults(true)">Reset to default</button>
+        <span class="hint" id="recipNote" style="margin-left:auto"></span>
+      </div>
+      <div class="scroll" style="margin-top:12px" id="groupList">
+        <div class="muted" style="padding:18px">Sign in and load the directory to begin.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Compose</h2>
+      <div class="row">
+        <div style="max-width:220px">
+          <label>Campaign type</label>
+          <select id="campType">
+            <option value="newsletter">Newsletter</option>
+            <option value="event">Event invite</option>
+          </select>
+        </div>
+        <div class="col">
+          <label>Subject</label>
+          <input type="text" id="subject" placeholder="Q3 Setty Newsletter">
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <label>Body (HTML) — paste an exported Publisher design here, or write/paste HTML</label>
+        <textarea id="bodyHtml" oninput="renderPreview()" placeholder="<h1>Hello from Setty</h1><p>…</p>"></textarea>
+        <div class="hint">In Publisher: <em>File → Save As → Web Page (.htm)</em>, open the .htm in a text editor, and paste the markup here. An unsubscribe footer is added automatically.</div>
+      </div>
+      <div style="margin-top:14px">
+        <label>Live preview (with auto-added footer)</label>
+        <iframe id="preview" class="preview-frame"></iframe>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3 · Create the draft</h2>
+      <div class="banner warn">
+        This creates a <strong>draft in your Outlook</strong> with everyone on <strong>BCC</strong> (recipients can't see each other).
+        Nothing sends automatically — you open the draft, review it, and click Send.
+      </div>
+      <button id="draftBtn" onclick="createDraft()" disabled>✉️ Create Outlook draft for <span id="draftCount">0</span> recipients</button>
+      <span class="hint" id="draftStatus"></span>
+    </div>
+  </section>
+
+  <!-- ════════════════ SUBSCRIBERS ════════════════ -->
+  <section id="tab-subs" class="hidden">
+    <div class="card">
+      <h2>Subscription overlay</h2>
+      <p class="muted">People stay in the PMS directory regardless; this only controls who receives mailings. Unsubscribes here (and from the email link) are permanent until you re-subscribe.</p>
+      <div class="row" style="margin-bottom:12px">
+        <input type="text" id="subSearch" placeholder="search…" oninput="renderSubs()" style="max-width:260px">
+        <button class="ghost sm" onclick="renderSubs('unsubscribed')">Show unsubscribed only</button>
+        <button class="ghost sm" onclick="renderSubs()">Show all</button>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Last sent</th><th></th></tr></thead>
+          <tbody id="subsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════ HISTORY ════════════════ -->
+  <section id="tab-hist" class="hidden">
+    <div class="card">
+      <h2>Send history</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Sent</th><th>Type</th><th>Subject</th><th>Recipients</th><th>By</th></tr></thead>
+          <tbody id="histBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="log"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   CONFIG — shared with the PMS so this tool reads the same directory & login
+   ═══════════════════════════════════════════════════════════════════════════ */
+const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
+
+const MSAL_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301"; // same Azure app as SettyPMS
+const TENANT_ID      = "f374c024-71c2-48b6-8420-076fff97327c"; // Setty & Associates tenant
+// Must be a redirect URI registered on the app above. We reuse the PMS's already-
+// registered URL so NO Azure change is needed — as long as this file is served from
+// the SAME origin (https://smartias.github.io/...). If you host elsewhere, register
+// that URL in Entra ▸ App registrations ▸ Authentication and point this at it.
+const MSAL_REDIRECT_URI = "https://smartias.github.io/setty-pms/SettyPMS.html";
+// Optional shared mailbox to send FROM (e.g. "newsletter@setty.com"). Blank = send
+// from whoever is signed in. To use one: have IT create the shared mailbox and grant
+// the marketing senders "Full Access" + "Send As", then paste its address here.
+const SEND_MAILBOX = ""; // e.g. "newsletter@setty.com"
+
+// A shared mailbox needs the ".Shared" delegated scope (usually user-consentable).
+const GRAPH_SCOPES = ["User.Read", SEND_MAILBOX ? "Mail.ReadWrite.Shared" : "Mail.ReadWrite"];
+
+const UNSUB_URL = SUPABASE_URL + "/functions/v1/unsubscribe";
+const FROM_NAME = "Setty & Associates";
+// Physical address shown in the footer (good practice / CAN-SPAM). Edit to taste.
+const FOOTER_ADDRESS = "Setty &amp; Associates, P.C.";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════════════════════════ */
+let DIRECTORY = [];          // [{email,name,company,source,companyTypes}]
+let SUBS = {};               // email -> subscriber row
+let CAMPAIGNS = [];          // history rows
+let SELECTED = new Set();    // checked emails — the source of truth for who gets the send
+let COLLAPSED_TYPES = new Set(); // type groups: expanded by default
+let EXPANDED_FIRMS = new Set();  // firm groups: collapsed by default
+let VISIBLE = [];            // people passing the current view filters (search/type/staff)
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOGGING
+   ═══════════════════════════════════════════════════════════════════════════ */
+function log(msg, cls=""){
+  const el = document.getElementById("log");
+  el.classList.add("show");
+  const line = document.createElement("div");
+  line.className = "logline " + cls;
+  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  el.appendChild(line); el.scrollTop = el.scrollHeight;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SUPABASE
+   ═══════════════════════════════════════════════════════════════════════════ */
+async function sb(method, path, body, prefer){
+  const headers = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: "Bearer " + SUPABASE_ANON_KEY,
+    "Content-Type": "application/json",
+  };
+  if (prefer) headers["Prefer"] = prefer;
+  const res = await fetch(SUPABASE_URL + path, {
+    method, headers, body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error("Supabase " + res.status + ": " + (await res.text()));
+  if (res.status === 204) return null;
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MICROSOFT AUTH (mirrors SettyPMS token flow, trimmed to what we need)
+   ═══════════════════════════════════════════════════════════════════════════ */
+let _msal = null;
+async function getMsalApp(){
+  if (_msal) return _msal;
+  _msal = new msal.PublicClientApplication({
+    auth: { clientId: MSAL_CLIENT_ID, authority: "https://login.microsoftonline.com/" + TENANT_ID, redirectUri: MSAL_REDIRECT_URI },
+    cache: { cacheLocation: "localStorage" },
+  });
+  await _msal.initialize();
+  const accts = _msal.getAllAccounts();
+  if (!_msal.getActiveAccount() && accts.length) _msal.setActiveAccount(accts[0]);
+  return _msal;
+}
+async function getToken(){
+  const app = await getMsalApp();
+  let account = app.getActiveAccount() || app.getAllAccounts()[0];
+  if (!account){
+    const r = await app.loginPopup({ scopes: GRAPH_SCOPES });
+    app.setActiveAccount(r.account);
+    if (r.accessToken) return r.accessToken;
+    account = r.account;
+  }
+  try { return (await app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account })).accessToken; }
+  catch { return (await app.acquireTokenPopup({ scopes: GRAPH_SCOPES, account })).accessToken; }
+}
+function currentUser(){
+  try { const a = _msal && (_msal.getActiveAccount() || _msal.getAllAccounts()[0]); return a ? (a.username || a.name) : null; }
+  catch { return null; }
+}
+async function signIn(){
+  try { await getToken(); paintUser(); log("Signed in as " + currentUser(), "ok"); }
+  catch(e){ log("Sign-in failed: " + e.message, "err"); }
+}
+function paintUser(){
+  const u = currentUser();
+  document.getElementById("whoami").textContent = u ? ("Signed in: " + u) : "";
+  document.getElementById("signInBtn").classList.toggle("hidden", !!u);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOAD DIRECTORY + SUBSCRIBERS  (the "live pull" — runs every refresh)
+   ═══════════════════════════════════════════════════════════════════════════ */
+async function loadDirectory(){
+  // External contacts live nested inside pms_clients.client.contacts[]
+  const clients = await sb("GET", "/rest/v1/pms_clients?select=client");
+  // Internal staff live in the pms_data singleton
+  const data = await sb("GET", "/rest/v1/pms_data?id=eq.singleton&select=staff");
+  const staff = (data && data[0] && data[0].staff) || [];
+
+  const people = [];
+  const seen = new Set();
+  const push = (p) => {
+    const email = (p.email || "").trim().toLowerCase();
+    if (!email || !email.includes("@") || seen.has(email)) return;
+    seen.add(email); people.push({ ...p, email });
+  };
+  for (const row of clients){
+    const c = row.client || {};
+    for (const ct of (c.contacts || [])){
+      push({ email: ct.email, name: ct.name || "", company: c.name || "", companyTypes: c.types || [], source: "client_contact" });
+    }
+  }
+  for (const s of staff){
+    push({ email: s.email, name: s.name || "", company: FROM_NAME, companyTypes: [], source: "staff" });
+  }
+  DIRECTORY = people;
+}
+
+async function loadSubscribers(){
+  const rows = await sb("GET", "/rest/v1/newsletter_subscribers?select=*");
+  SUBS = {};
+  for (const r of (rows || [])) SUBS[r.email] = r;
+}
+
+// Insert a subscriber row (default = subscribed) for any directory person who
+// doesn't have one yet. Existing rows are LEFT ALONE — unsubscribes never get
+// clobbered by a directory refresh. (resolution=ignore-duplicates)
+async function syncOverlay(){
+  const missing = DIRECTORY.filter(p => !SUBS[p.email]).map(p => ({
+    email: p.email, name: p.name, company: p.company, source: p.source,
+  }));
+  if (!missing.length) return 0;
+  await sb("POST", "/rest/v1/newsletter_subscribers", missing, "resolution=ignore-duplicates,return=minimal");
+  await loadSubscribers(); // pull back the new rows (with their tokens/status)
+  return missing.length;
+}
+
+async function loadCampaigns(){
+  CAMPAIGNS = (await sb("GET", "/rest/v1/newsletter_campaigns?select=*&order=sent_at.desc&limit=100")) || [];
+}
+
+async function refreshAll(){
+  try {
+    log("Loading directory…");
+    await Promise.all([loadDirectory(), loadSubscribers()]);
+    const added = await syncOverlay();
+    await loadCampaigns();
+    document.getElementById("loadedAt").textContent =
+      "Loaded " + DIRECTORY.length + " people at " + new Date().toLocaleTimeString() +
+      (added ? (" · " + added + " new added to overlay") : "");
+    buildTypeFilter();
+    seedDefaults(false);
+    renderSubs(); renderHistory();
+    log("Directory ready: " + DIRECTORY.length + " people, " + Object.keys(SUBS).length + " overlay rows.", "ok");
+  } catch(e){ log("Load failed: " + e.message, "err"); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DEFAULT SELECTION POLICY
+   ─────────────────────────────────────────────────────────────────────────
+   selectRecipients() decides who is PRE-CHECKED when the directory loads.
+   Default = everyone. Whoever is sending then unchecks anyone they want in the
+   grouped picker (by type, by firm, or by person) before drafting.
+
+   If you ever want a different starting point (e.g. never pre-check one-off
+   permit consultants), encode it here and it becomes the new default.
+     input  person = { email, name, company, source ('client_contact'|'staff'),
+                       companyTypes:[…] }     // companyTypes from GLOBAL_COMPANY_TYPES
+     return true  -> pre-checked      false -> starts unchecked
+   (Unsubscribed people are never pre-checked regardless — handled below.)
+   ═══════════════════════════════════════════════════════════════════════════ */
+function selectRecipients(person, sub){
+  return true; // default: everyone selected
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GROUPED PICKER  —  Type ▸ Firm ▸ Contact, with select/deselect at every level
+   ═══════════════════════════════════════════════════════════════════════════ */
+function isUnsubscribed(email){ const s = SUBS[email]; return s && s.status === "unsubscribed"; }
+function typeKey(p){ return p.source === "staff" ? "Staff" : ((p.companyTypes && p.companyTypes[0]) || "Uncategorized"); }
+function firmKey(p){ return p.company || "(no firm)"; }
+
+// Seed the checkboxes from the default policy (skips unsubscribed).
+function seedDefaults(announce){
+  SELECTED = new Set();
+  DIRECTORY.forEach(p => { if (!isUnsubscribed(p.email) && selectRecipients(p, SUBS[p.email])) SELECTED.add(p.email); });
+  renderGroups();
+  if (announce) log("Reset to default — " + SELECTED.size + " selected.", "ok");
+}
+
+// View filter (search / type / staff) — changes what's SHOWN, not what's selected.
+function computeVisible(){
+  const type = document.getElementById("fltType").value;
+  const q = document.getElementById("fltSearch").value.trim().toLowerCase();
+  const inclStaff = document.getElementById("fltStaff").checked;
+  VISIBLE = DIRECTORY.filter(p => {
+    if (!inclStaff && p.source === "staff") return false;
+    if (type !== "all" && !(p.companyTypes || []).includes(type)) return false;
+    if (q && !((p.name+" "+p.email+" "+p.company).toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function expandAllFirms(on){
+  EXPANDED_FIRMS = new Set();
+  if (on){ computeVisible(); VISIBLE.forEach(p => EXPANDED_FIRMS.add(typeKey(p) + "|" + firmKey(p))); }
+  renderGroups();
+}
+function selectAllVisible(on){
+  computeVisible();
+  VISIBLE.filter(p => !isUnsubscribed(p.email)).forEach(p => { on ? SELECTED.add(p.email) : SELECTED.delete(p.email); });
+  renderGroups();
+}
+
+function renderGroups(){
+  const list = document.getElementById("groupList");
+  if (!DIRECTORY.length){ list.innerHTML = '<div class="muted" style="padding:18px">Load the directory to begin.</div>'; updateCounts(); return; }
+  computeVisible();
+
+  // Build Type ▸ Firm ▸ [people] tree from the visible set
+  const tree = {};
+  VISIBLE.forEach(p => {
+    const t = typeKey(p), f = firmKey(p);
+    (tree[t] = tree[t] || {});
+    (tree[t][f] = tree[t][f] || []).push(p);
+  });
+
+  const prev = list.scrollTop;
+  let html = "";
+  for (const t of Object.keys(tree).sort((a,b)=>a.localeCompare(b))){
+    const firms = tree[t];
+    const ppl = Object.values(firms).flat();
+    const eligT = ppl.filter(p => !isUnsubscribed(p.email));
+    const selT = eligT.filter(p => SELECTED.has(p.email)).length;
+    const unsubT = ppl.length - eligT.length;
+    const tCollapsed = COLLAPSED_TYPES.has(t);
+    html += `<div class="type-grp"><div class="type-head">
+      <input type="checkbox" class="cb" data-type="${esc(t)}" ${eligT.length && selT===eligT.length ? 'checked':''}>
+      <span class="grp-name" data-tg="type|${esc(t)}">${tCollapsed?'▸':'▾'} ${esc(t)}</span>
+      <span class="cnt">${selT}/${eligT.length}${unsubT?(' · '+unsubT+' unsub'):''}</span>
+    </div>`;
+    if (!tCollapsed){
+      for (const f of Object.keys(firms).sort((a,b)=>a.localeCompare(b))){
+        const members = firms[f].sort((a,b)=>(a.name||a.email).localeCompare(b.name||b.email));
+        const eligF = members.filter(m => !isUnsubscribed(m.email));
+        const selF = eligF.filter(m => SELECTED.has(m.email)).length;
+        const unsubF = members.length - eligF.length;
+        const fkey = t + "|" + f;
+        const fExpanded = EXPANDED_FIRMS.has(fkey);
+        html += `<div class="firm-head">
+          <input type="checkbox" class="cb" data-firm="${esc(fkey)}" ${eligF.length && selF===eligF.length ? 'checked':''}>
+          <span class="firm-name" data-tg="firm|${esc(fkey)}">${fExpanded?'▾':'▸'} ${esc(f)}</span>
+          <span class="cnt">${selF}/${eligF.length}${unsubF?(' · '+unsubF+' unsub'):''}</span>
+        </div>`;
+        if (fExpanded){
+          for (const m of members){
+            const u = isUnsubscribed(m.email);
+            html += `<label class="person ${u?'dis':''}">
+              <input type="checkbox" data-email="${esc(m.email)}" ${SELECTED.has(m.email)?'checked':''} ${u?'disabled':''}>
+              <span>${esc(m.name) || '<span class="muted">—</span>'}</span>
+              <span class="co-spacer"></span>
+              <span class="em">${esc(m.email)}</span>
+              ${u ? '<span class="pill unsub">unsub</span>' : ''}
+            </label>`;
+          }
+        }
+      }
+    }
+    html += `</div>`;
+  }
+  list.innerHTML = html || '<div class="muted" style="padding:18px">No one matches the filter.</div>';
+
+  // Partial (indeterminate) states must be set in JS, not markup
+  list.querySelectorAll("input[data-type]").forEach(cb => {
+    const m = Object.values(tree[cb.dataset.type]||{}).flat().filter(p => !isUnsubscribed(p.email));
+    const s = m.filter(p => SELECTED.has(p.email)).length;
+    cb.indeterminate = s > 0 && s < m.length;
+  });
+  list.querySelectorAll("input[data-firm]").forEach(cb => {
+    const i = cb.dataset.firm.indexOf("|"); const t = cb.dataset.firm.slice(0,i), f = cb.dataset.firm.slice(i+1);
+    const m = ((tree[t]||{})[f]||[]).filter(p => !isUnsubscribed(p.email));
+    const s = m.filter(p => SELECTED.has(p.email)).length;
+    cb.indeterminate = s > 0 && s < m.length;
+  });
+  list.scrollTop = prev;
+  updateCounts();
+}
+
+// Checkbox changes (person / firm / type) — bubble to the container
+function onGroupChange(e){
+  const cb = e.target;
+  if (cb.dataset.email){
+    cb.checked ? SELECTED.add(cb.dataset.email) : SELECTED.delete(cb.dataset.email);
+  } else if (cb.dataset.type){
+    VISIBLE.filter(p => typeKey(p)===cb.dataset.type && !isUnsubscribed(p.email))
+           .forEach(p => cb.checked ? SELECTED.add(p.email) : SELECTED.delete(p.email));
+  } else if (cb.dataset.firm){
+    const i = cb.dataset.firm.indexOf("|"); const t = cb.dataset.firm.slice(0,i), f = cb.dataset.firm.slice(i+1);
+    VISIBLE.filter(p => typeKey(p)===t && firmKey(p)===f && !isUnsubscribed(p.email))
+           .forEach(p => cb.checked ? SELECTED.add(p.email) : SELECTED.delete(p.email));
+  } else return;
+  renderGroups();
+}
+// Caret/name clicks collapse or expand a group
+function onGroupClick(e){
+  const el = e.target.closest("[data-tg]"); if (!el) return;
+  const v = el.dataset.tg; const i = v.indexOf("|"); const kind = v.slice(0,i), key = v.slice(i+1);
+  if (kind === "type") COLLAPSED_TYPES.has(key) ? COLLAPSED_TYPES.delete(key) : COLLAPSED_TYPES.add(key);
+  else EXPANDED_FIRMS.has(key) ? EXPANDED_FIRMS.delete(key) : EXPANDED_FIRMS.add(key);
+  renderGroups();
+}
+
+function updateCounts(){
+  const subbed = DIRECTORY.filter(p => !isUnsubscribed(p.email)).length;
+  const unsub = DIRECTORY.filter(p => isUnsubscribed(p.email)).length;
+  const sel = [...SELECTED].filter(e => !(SUBS[e] && SUBS[e].status === "unsubscribed")).length;
+  document.getElementById("stPeople").textContent = DIRECTORY.length;
+  document.getElementById("stSubbed").textContent = subbed;
+  document.getElementById("stUnsub").textContent = unsub;
+  document.getElementById("stSelected").textContent = sel;
+  document.getElementById("draftCount").textContent = sel;
+  document.getElementById("draftBtn").disabled = !(currentUser() && sel);
+  document.getElementById("recipNote").textContent = sel + " selected";
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   COMPOSE / PREVIEW
+   ═══════════════════════════════════════════════════════════════════════════ */
+function buildEmailHtml(innerHtml){
+  const footer = `
+    <div style="margin-top:32px;padding-top:16px;border-top:1px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">
+      You're receiving this because you're a contact of ${FROM_NAME}.<br>
+      ${FOOTER_ADDRESS}<br>
+      <a href="${UNSUB_URL}" style="color:#888">Unsubscribe from these mailings</a>
+    </div>`;
+  return `<!doctype html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;padding:0;background:#f4f4f4">
+      <div style="max-width:640px;margin:0 auto;padding:24px;background:#fff">${innerHtml || ""}${footer}</div>
+    </body></html>`;
+}
+function renderPreview(){
+  const html = buildEmailHtml(document.getElementById("bodyHtml").value);
+  document.getElementById("preview").srcdoc = html;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CREATE OUTLOOK DRAFT (BCC) — mirrors SettyPMS createOutlookDraft()
+   ═══════════════════════════════════════════════════════════════════════════ */
+async function createDraft(){
+  const subject = document.getElementById("subject").value.trim();
+  const innerHtml = document.getElementById("bodyHtml").value.trim();
+  const type = document.getElementById("campType").value;
+  if (!subject){ log("Add a subject first.", "err"); return; }
+  if (!innerHtml){ log("Add some body content first.", "err"); return; }
+  const recips = DIRECTORY.filter(p => SELECTED.has(p.email) && !isUnsubscribed(p.email));
+  if (!recips.length){ log("No recipients selected.", "err"); return; }
+
+  const btn = document.getElementById("draftBtn"); btn.disabled = true;
+  const status = document.getElementById("draftStatus");
+  try {
+    status.textContent = "Authenticating…";
+    const token = await getToken(); paintUser();
+
+    status.textContent = "Creating draft for " + recips.length + " recipients…";
+    const me = currentUser();
+    const toAddr = SEND_MAILBOX || me; // To: the shared mailbox (or yourself); list goes on BCC
+    const draft = {
+      subject,
+      body: { contentType: "HTML", content: buildEmailHtml(innerHtml) },
+      toRecipients: toAddr ? [{ emailAddress: { address: toAddr } }] : [],
+      bccRecipients: recips.map(p => ({ emailAddress: { address: p.email } })),
+    };
+    if (SEND_MAILBOX) draft.from = { emailAddress: { address: SEND_MAILBOX } };
+    // Draft lands in the shared mailbox if configured, else the signed-in user's drafts.
+    const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
+    const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || ("Graph " + res.status)); }
+    const msg = await res.json();
+
+    // Record the campaign + stamp last_sent on every recipient (one request each).
+    const emails = recips.map(p => p.email);
+    await sb("POST", "/rest/v1/newsletter_campaigns", {
+      type, subject, body_html: buildEmailHtml(innerHtml),
+      recipients: emails, recipient_count: emails.length, sent_by: me,
+    }, "return=minimal");
+    await stampLastSent(emails, type);
+    await Promise.all([loadCampaigns(), loadSubscribers()]).then(()=>{ renderHistory(); renderSubs(); });
+
+    status.innerHTML = '✅ Draft created. <a href="' + (msg.webLink || "#") + '" target="_blank">Open it in Outlook</a> to review &amp; send.';
+    if (msg.webLink) window.open(msg.webLink, "_blank");
+    log("Draft created for " + emails.length + " recipients.", "ok");
+  } catch(e){
+    status.textContent = "";
+    log("Draft failed: " + e.message, "err");
+  } finally { btn.disabled = false; }
+}
+
+// PATCH all recipients in one call using a PostgREST IN filter.
+async function stampLastSent(emails, type){
+  if (!emails.length) return;
+  const list = emails.map(e => '"' + e.replace(/"/g,'') + '"').join(",");
+  await sb("PATCH",
+    "/rest/v1/newsletter_subscribers?email=in.(" + encodeURIComponent(list) + ")",
+    { last_sent_at: new Date().toISOString(), last_sent_type: type },
+    "return=minimal");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SUBSCRIBERS TAB
+   ═══════════════════════════════════════════════════════════════════════════ */
+function renderSubs(forceFilter){
+  const q = document.getElementById("subSearch").value.trim().toLowerCase();
+  let rows = Object.values(SUBS);
+  if (forceFilter === "unsubscribed") rows = rows.filter(r => r.status === "unsubscribed");
+  if (q) rows = rows.filter(r => ((r.name||"")+" "+(r.email||"")).toLowerCase().includes(q));
+  rows.sort((a,b)=> (a.email||"").localeCompare(b.email||""));
+  document.getElementById("subsBody").innerHTML = rows.slice(0,800).map(r => {
+    const unsub = r.status === "unsubscribed";
+    return `<tr>
+      <td>${esc(r.name)||'<span class="muted">—</span>'}</td>
+      <td>${esc(r.email)}</td>
+      <td><span class="pill ${unsub?'unsub':'sub'}">${r.status}</span></td>
+      <td class="muted">${r.last_sent_at ? new Date(r.last_sent_at).toLocaleDateString() : "—"}</td>
+      <td>${unsub
+        ? `<button class="ghost sm" onclick="setStatus('${esc(r.email)}','subscribed')">Re-subscribe</button>`
+        : `<button class="danger sm" onclick="setStatus('${esc(r.email)}','unsubscribed')">Unsubscribe</button>`}</td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="5" class="muted" style="padding:18px">No subscribers yet — load the directory on the first tab.</td></tr>';
+}
+async function setStatus(email, status){
+  try {
+    await sb("PATCH", "/rest/v1/newsletter_subscribers?email=eq." + encodeURIComponent(email),
+      { status, unsubscribed_at: status==="unsubscribed" ? new Date().toISOString() : null, updated_at: new Date().toISOString() },
+      "return=minimal");
+    await loadSubscribers(); renderSubs(); renderGroups();
+    log(email + " → " + status, "ok");
+  } catch(e){ log("Update failed: " + e.message, "err"); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HISTORY TAB
+   ═══════════════════════════════════════════════════════════════════════════ */
+function renderHistory(){
+  document.getElementById("histBody").innerHTML = CAMPAIGNS.map(c => `
+    <tr>
+      <td class="muted">${new Date(c.sent_at).toLocaleString()}</td>
+      <td><span class="pill ${c.type==='event'?'client':'staff'}">${c.type}</span></td>
+      <td>${esc(c.subject)}</td>
+      <td>${c.recipient_count}</td>
+      <td class="muted">${esc(c.sent_by)||"—"}</td>
+    </tr>`).join("") || '<tr><td colspan="5" class="muted" style="padding:18px">No campaigns sent yet.</td></tr>';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI PLUMBING
+   ═══════════════════════════════════════════════════════════════════════════ */
+function buildTypeFilter(){
+  const types = new Set();
+  DIRECTORY.forEach(p => (p.companyTypes||[]).forEach(t => types.add(t)));
+  const sel = document.getElementById("fltType");
+  sel.innerHTML = '<option value="all">All company types</option>' +
+    [...types].sort().map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+}
+function showTab(name){
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab===name));
+  document.getElementById("tab-send").classList.toggle("hidden", name!=="send");
+  document.getElementById("tab-subs").classList.toggle("hidden", name!=="subs");
+  document.getElementById("tab-hist").classList.toggle("hidden", name!=="hist");
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+/* boot */
+(async function(){
+  const list = document.getElementById("groupList");
+  list.addEventListener("change", onGroupChange); // person/firm/type checkbox toggles
+  list.addEventListener("click", onGroupClick);   // caret/name collapse-expand
+  try { await getMsalApp(); paintUser(); } catch(e){ /* not signed in yet */ }
+  renderPreview();
+})();
+</script>
+</body>
+</html>
