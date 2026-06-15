@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v52-reset-links-atomic";
+    window.__appVersion = "2026-06-12-pms-v54-last-filed-email";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1245,6 +1245,30 @@ async function loadProjectEmails(projectId, { limit = 50, offset = 0, search = "
   }
   const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?" + params.toString());
   return (rows || []).map(_rowToEmailRecord);
+}
+
+// Newest filed email (any project) with this address in from/to/cc — powers
+// the "Last filed email" line on Global Directory contact cards. Metadata
+// only (email_date + address columns), so the payload is tiny. ILIKE narrows
+// candidates server-side; the exact token check below rejects substring
+// collisions (jim@acme.com vs jjim@acme.com) since to/cc are comma-separated
+// address strings. Returns the email_date string or null if none verify.
+async function fetchLastFiledEmailDate(address) {
+  const a = (address || "").trim().toLowerCase();
+  if (!a) return null;
+  const likeSafe = a.replace(/\\/g, "\\\\").replace(/[%_*]/g, m => "\\" + m);
+  const q = "*" + likeSafe + "*";
+  const params = new URLSearchParams({
+    "select": "email_date,from_address,to_addresses,cc_addresses",
+    "order": "email_date.desc.nullslast",
+    "limit": "5",
+  });
+  params.append("or", "(from_address.ilike." + q + ",to_addresses.ilike." + q + ",cc_addresses.ilike." + q + ")");
+  const rows = await sbFetchV2("GET", "/rest/v1/pms_project_emails?" + params.toString());
+  const hasAddr = s => (s || "").toLowerCase().split(/[,;]/).map(x => x.trim()).includes(a);
+  const hit = (rows || []).find(r =>
+    (r.from_address || "").trim().toLowerCase() === a || hasAddr(r.to_addresses) || hasAddr(r.cc_addresses));
+  return hit ? hit.email_date : null;
 }
 
 // Fetch the compressed HTML body for a single email. Caller decompresses
@@ -21555,7 +21579,7 @@ function newClient(overrides) {
   };
 }
 
-function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToProject }) {
+function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToProject, onRenameCompany }) {
   const [editingId, setEditingId] = React.useState(null);
   const [form, setForm] = React.useState(null);
   const [search, setSearch] = React.useState("");
@@ -21598,6 +21622,26 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     return idx;
   }, [projects]);
 
+  // "Last filed email" per contact address — queried from pms_project_emails
+  // when a company card opens (emails are paged lazily per project, so there
+  // is no client-side corpus to scan). undefined = still checking (render
+  // falls back to the capture date), null = checked and no filed email found.
+  // Keyed on editingId so adding/editing contacts in the form doesn't refetch.
+  const [lastEmailByAddr, setLastEmailByAddr] = React.useState({});
+  React.useEffect(() => {
+    setLastEmailByAddr({});
+    if (editingId === null || !form) return;
+    const addrs = [...new Set((form.contacts || []).map(c => (c.email || "").trim().toLowerCase()).filter(Boolean))];
+    if (!addrs.length) return;
+    let alive = true;
+    (async () => {
+      const entries = await Promise.all(addrs.map(async a =>
+        [a, await fetchLastFiledEmailDate(a).catch(e => { console.warn("[lastEmail]", a, e.message); return null; })]));
+      if (alive) setLastEmailByAddr(Object.fromEntries(entries));
+    })();
+    return () => { alive = false; };
+  }, [editingId]);
+
   function saveForm() {
     if (!form.name.trim()) return;
     if (hardDupCompany) return; // panel explains; click-through opens the existing record
@@ -21605,6 +21649,13 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     if (editingId === "__new__") {
       onUpdateClients([...clients, form]);
     } else {
+      // Renamed? Carry every project reference (client/prime, sub firms,
+      // directory entries) along — without this, projects keep the old name
+      // string and the company's Linked Projects table silently empties.
+      const prevRec = clients.find(c => c.id === editingId);
+      if (prevRec && onRenameCompany && (prevRec.name || "").trim() && prevRec.name !== form.name) {
+        onRenameCompany(prevRec.name, form.name);
+      }
       onUpdateClients(clients.map(c => c.id === editingId ? form : c));
     }
     cancelEdit();
@@ -21688,7 +21739,11 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
           </div>
           {/* Linked Projects */}
           {(() => {
-            const linked = (projects||[]).filter(p => !p.archived && (p.client === form.name || p.prime === form.name));
+            // Trim/case-insensitive: renames propagate to projects (see
+            // renameCompanyAcrossProjects), but stray whitespace or casing
+            // drift in older records shouldn't hide a linked project.
+            const sameCo = (a, b) => (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
+            const linked = (projects||[]).filter(p => !p.archived && (sameCo(p.client, form.name) || sameCo(p.prime, form.name)));
             if (linked.length === 0) return null;
             return (
               <div style={{ gridColumn: "1/-1", background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 24 }}>
@@ -21697,7 +21752,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                   <thead><tr><th>#</th><th>Project</th><th>Role</th><th>PM</th><th>Status</th></tr></thead>
                   <tbody>
                     {linked.map(p => {
-                      const role = p.client === form.name && p.prime === form.name ? "Client + Prime" : p.client === form.name ? "Client" : "Prime/GC";
+                      const role = sameCo(p.client, form.name) && sameCo(p.prime, form.name) ? "Client + Prime" : sameCo(p.client, form.name) ? "Client" : "Prime/GC";
                       const sc = STATUS_COLORS[p.status] || STATUS_COLORS["Not Started"];
                       return (
                         <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => onNavigateToProject(p.id)}>
@@ -21761,7 +21816,17 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                 })()}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
                   <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>
-                    {ct.lastContacted ? "Last contacted: " + ct.lastContacted + " (auto-updated when captured via Outlook add-in)" : "Last contacted: — (auto-fills when this contact is captured via the Outlook add-in)"}
+                    {(() => {
+                      // Filed-email recency beats capture date: lastContacted
+                      // only moves when a human re-captures the contact, but
+                      // the filed correspondence keeps flowing regardless.
+                      const k = (ct.email || "").trim().toLowerCase();
+                      const last = k ? lastEmailByAddr[k] : undefined;
+                      if (last) return "Last filed email: " + String(last).slice(0, 10);
+                      if (last === null && ct.lastContacted) return "Last captured: " + ct.lastContacted + " (no filed email has this address yet)";
+                      if (ct.lastContacted) return "Last contacted: " + ct.lastContacted + " (checking filed emails…)";
+                      return "Last contact: — (fills from filed project emails or add-in capture)";
+                    })()}
                   </div>
                   <Btn small variant="danger" onClick={() => removeContact(ct.id)}>Remove</Btn>
                 </div>
@@ -26256,6 +26321,45 @@ async function updateProjectAndFlush(updated) {
   await eagerSaveProjectV2(updated, versionsRef.current, lastSavedRef);
 }
 
+// Projects reference companies by NAME string (p.client / p.prime, sub firm
+// names, directory entries, the directoryCompanyTypes map) — there is no
+// company-ID foreign key. So when a company is renamed in the Client
+// Directory, every project reference must be carried along or the rename
+// silently orphans its Linked Projects table and role chips. Matching is
+// trim/case-insensitive to absorb whitespace drift; only projects that
+// actually reference the old name are touched, so the debounced auto-save's
+// dirty-diff writes only those rows. Teams notify is deliberately skipped —
+// this is a metadata sweep, not a project change worth a card.
+function renameCompanyAcrossProjects(oldName, newName) {
+  const oldKey = (oldName || "").trim().toLowerCase();
+  const newTrim = (newName || "").trim();
+  if (!oldKey || !newTrim || oldName === newName) return;
+  const matches = v => (v || "").trim().toLowerCase() === oldKey;
+  setProjects(prev => prev.map(p => {
+    let touched = false;
+    const next = { ...p };
+    if (matches(p.client)) { next.client = newTrim; touched = true; }
+    if (matches(p.prime))  { next.prime  = newTrim; touched = true; }
+    if ((p.subconsultants || []).some(s => matches(s.firm))) {
+      next.subconsultants = p.subconsultants.map(s => matches(s.firm) ? { ...s, firm: newTrim } : s);
+      touched = true;
+    }
+    if ((p.directory || []).some(d => matches(d.company))) {
+      next.directory = p.directory.map(d => matches(d.company) ? { ...d, company: newTrim } : d);
+      touched = true;
+    }
+    // directoryCompanyTypes is keyed by lowercased company name — move the
+    // role override to the new key so a manually-set role survives the rename.
+    const types = p.directoryCompanyTypes || {};
+    if (Object.prototype.hasOwnProperty.call(types, oldKey)) {
+      const { [oldKey]: movedRole, ...rest } = types;
+      next.directoryCompanyTypes = { ...rest, [newTrim.toLowerCase()]: movedRole };
+      touched = true;
+    }
+    return touched ? next : p;
+  }));
+}
+
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
 
   function addProject() { setShowNewProjectModal(true); }
@@ -26422,7 +26526,7 @@ async function updateProjectAndFlush(updated) {
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} staff={staff} />}
       {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
-      {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
+      {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onRenameCompany={renameCompanyAcrossProjects} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "termcontracts" && <TermContractsView termContracts={termContracts} projects={projects} onUpdateTermContracts={setTermContracts} onNavigateToProject={id => setView(`project:${id}`)} clients={clients} onAddClient={c => setClients(prev => [...prev, c])} />}
