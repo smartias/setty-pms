@@ -1560,7 +1560,7 @@ async function getNYCCalendarId() {
   }
 }
 
-async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId) {
+async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId, pmName) {
   if (!milestone.dueDate) return { success: false, error: "No due date" };
 
   // Compute end date (next day — Outlook all-day events use exclusive end)
@@ -1570,12 +1570,16 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
 
   const prefix = projectNumber ? "[" + projectNumber + "] " : "";
   const subject = prefix + projectName + " - " + milestone.name;
+  const pm = (pmName || "").trim();
 
   const eventBody = {
     subject: subject,
     isAllDay: true,
     start: { dateTime: milestone.dueDate + "T00:00:00", timeZone: "Eastern Standard Time" },
     end:   { dateTime: endDate + "T00:00:00",           timeZone: "Eastern Standard Time" },
+    // Surface the PM on the calendar's Location line so the day view shows who
+    // owns the milestone. Graph's `location` is an object, not a bare string.
+    ...(pm ? { location: { displayName: "PM: " + pm } } : {}),
   };
 
 
@@ -6826,7 +6830,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
   async function syncOne(m) {
     if (!m.dueDate) { setSyncMsg("⚠ No due date set on this milestone"); return; }
     setCalState(s => ({ ...s, [m.id]: "syncing" }));
-    const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, calMap[m.id]);
+    const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, calMap[m.id], project.projectManager);
     const newMap = { ...calMap };
     if (result.success) {
       newMap[m.id] = result.eventId;
@@ -6850,7 +6854,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
       const m = syncable[i];
       setSyncMsg(`Syncing ${i+1}/${syncable.length}…`);
       setCalState(s => ({ ...s, [m.id]: "syncing" }));
-      const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, newMap[m.id]);
+      const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, newMap[m.id], project.projectManager);
       if (result.success) {
         newMap[m.id] = result.eventId;
         setCalState(s => ({ ...s, [m.id]: "synced" }));
@@ -14359,7 +14363,7 @@ function TeamCalendar({ projects, onNavigateToProject }) {
       const existingEventId = m.calendarEventId || null;
       setSyncLog([...log, { name: `${m.projectName} — ${m.name}`, status: "pending" }]);
 
-      const result = await createOrUpdateCalendarEvent(m, m.projectName, m.projectNumber, existingEventId);
+      const result = await createOrUpdateCalendarEvent(m, m.projectName, m.projectNumber, existingEventId, m.pm);
 
       if (result.success) {
         if (!projectMilestoneUpdates[m.projectId]) projectMilestoneUpdates[m.projectId] = {};
@@ -16194,7 +16198,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
       pctComplete: 0,
     };
     const existingEventId = project.proposalCalendarEventId || null;
-    const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId);
+    const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId, project.projectManager);
     if (result.success) {
       if (result.eventId) onUpdate({ ...project, proposalCalendarEventId: result.eventId });
       setProposalSyncState("synced");
@@ -16218,7 +16222,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
       pctComplete: 0,
     };
     const existingEventId = project.contractExpCalendarEventId || null;
-    const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId);
+    const result = await createOrUpdateCalendarEvent(fakeMilestone, project.name || "Project", project.projectNumber, existingEventId, project.projectManager);
     if (result.success) {
       if (result.eventId) onUpdate({ ...project, contractExpCalendarEventId: result.eventId });
       setContractExpSyncState("synced");
@@ -17979,7 +17983,7 @@ function NotesView({ project, onChange }) {
       name: "Site Visit" + (note.body ? " — " + note.body.slice(0, 60) + (note.body.length > 60 ? "…" : "") : ""),
       calendarEventId: note.calendarEventId || null,
     };
-    const result = await createOrUpdateCalendarEvent(milestoneProxy, project.name || "Project", project.projectNumber, note.calendarEventId || null);
+    const result = await createOrUpdateCalendarEvent(milestoneProxy, project.name || "Project", project.projectNumber, note.calendarEventId || null, project.projectManager);
     if (result.success) {
       if (result.eventId) {
         onChange({ ...project, notes: (project.notes || []).map(n => n.id === note.id ? { ...n, calendarEventId: result.eventId } : n) });
@@ -18819,7 +18823,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     setDashCalState(s => ({ ...s, [m.id]: "syncing" }));
     const proj = projects.find(p => p.id === m.projectId);
     const existingEventId = m.calendarEventId || null;
-    const result = await createOrUpdateCalendarEvent(m, proj?.name || "Project", proj?.projectNumber, existingEventId);
+    const result = await createOrUpdateCalendarEvent(m, proj?.name || "Project", proj?.projectNumber, existingEventId, proj?.projectManager);
     if (result.success) {
       if (result.eventId && proj) {
         const newMilestones = (proj.milestones || []).map(ms =>
