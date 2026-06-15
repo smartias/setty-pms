@@ -282,6 +282,22 @@ async function sb(method, path, body, prefer){
   return txt ? JSON.parse(txt) : null;
 }
 
+// PostgREST caps a single GET at 1000 rows. Page through with limit/offset so we
+// never silently miss subscribers (an unsubscribe past row 1000 must still count).
+async function sbAll(pathWithSelect){
+  const PAGE = 1000;
+  let out = [], offset = 0;
+  for (;;){
+    const sep = pathWithSelect.includes("?") ? "&" : "?";
+    const rows = await sb("GET", pathWithSelect + sep + "limit=" + PAGE + "&offset=" + offset);
+    if (!rows || !rows.length) break;
+    out = out.concat(rows);
+    if (rows.length < PAGE) break;
+    offset += PAGE;
+  }
+  return out;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    MICROSOFT AUTH (mirrors SettyPMS token flow, trimmed to what we need)
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -328,7 +344,7 @@ function paintUser(){
    ═══════════════════════════════════════════════════════════════════════════ */
 async function loadDirectory(){
   // External contacts live nested inside pms_clients.client.contacts[]
-  const clients = await sb("GET", "/rest/v1/pms_clients?select=client");
+  const clients = await sbAll("/rest/v1/pms_clients?select=client&order=id");
   // Internal staff live in the pms_data singleton
   const data = await sb("GET", "/rest/v1/pms_data?id=eq.singleton&select=staff");
   const staff = (data && data[0] && data[0].staff) || [];
@@ -353,7 +369,7 @@ async function loadDirectory(){
 }
 
 async function loadSubscribers(){
-  const rows = await sb("GET", "/rest/v1/newsletter_subscribers?select=*");
+  const rows = await sbAll("/rest/v1/newsletter_subscribers?select=*&order=email");
   SUBS = {};
   for (const r of (rows || [])) SUBS[r.email] = r;
 }
