@@ -53,6 +53,7 @@
   .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600}
   .pill.sub{background:rgba(22,163,74,.18);color:#4ADE80}
   .pill.unsub{background:rgba(220,38,38,.18);color:#F87171}
+  .pill.bounced{background:rgba(217,119,6,.18);color:#FBBF24}
   .pill.staff{background:rgba(37,99,235,.18);color:#93C5FD}
   .pill.client{background:rgba(217,119,6,.18);color:#FBBF24}
   .preview-frame{width:100%;height:360px;border:1px solid var(--line);border-radius:10px;background:#fff}
@@ -94,6 +95,7 @@
 <div class="tabs">
   <div class="tab active" data-tab="send" onclick="showTab('send')">Compose &amp; Send</div>
   <div class="tab" data-tab="subs" onclick="showTab('subs')">Subscribers</div>
+  <div class="tab" data-tab="bounce" onclick="showTab('bounce')">Bounced</div>
   <div class="tab" data-tab="hist" onclick="showTab('hist')">History</div>
 </div>
 
@@ -108,8 +110,8 @@
       </div>
       <div class="stats" id="stats">
         <div class="stat"><div class="n" id="stPeople">—</div><div class="l">People in directory</div></div>
-        <div class="stat"><div class="n" id="stSubbed">—</div><div class="l">Subscribed</div></div>
-        <div class="stat unsub"><div class="n" id="stUnsub">—</div><div class="l">Unsubscribed</div></div>
+        <div class="stat"><div class="n" id="stSubbed">—</div><div class="l">Mailable</div></div>
+        <div class="stat unsub"><div class="n" id="stUnsub">—</div><div class="l">Excluded (opt-out / bounce)</div></div>
         <div class="stat sel"><div class="n" id="stSelected">—</div><div class="l">Will receive this</div></div>
       </div>
 
@@ -192,6 +194,24 @@
         <table>
           <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Last sent</th><th></th></tr></thead>
           <tbody id="subsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════ BOUNCED ════════════════ -->
+  <section id="tab-bounce" class="hidden">
+    <div class="card">
+      <h2>Bounced addresses — review</h2>
+      <p class="muted">After a send, undeliverable notices land in the sending mailbox. "Check for bounces" scans for them and flags bad addresses so they're skipped on future sends — <strong>nothing is removed from the PMS directory automatically.</strong> You decide that here, per person.</p>
+      <div class="row" style="margin-bottom:12px;align-items:center">
+        <button onclick="checkBounces()">⤓ Check for bounces</button>
+        <span class="hint" id="bounceStatus"></span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Reason</th><th>Flagged</th><th>Actions</th></tr></thead>
+          <tbody id="bounceBody"></tbody>
         </table>
       </div>
     </div>
@@ -411,7 +431,7 @@ async function refreshAll(){
       (added ? (" · " + added + " new added to overlay") : "");
     buildTypeFilter();
     seedDefaults(false);
-    renderSubs(); renderHistory();
+    renderSubs(); renderBounces(); renderHistory();
     log("Directory ready: " + DIRECTORY.length + " people, " + Object.keys(SUBS).length + " overlay rows.", "ok");
   } catch(e){ log("Load failed: " + e.message, "err"); }
 }
@@ -517,13 +537,15 @@ function renderGroups(){
         </div>`;
         if (fExpanded){
           for (const m of members){
-            const u = isBlocked(m.email);
-            html += `<label class="person ${u?'dis':''}">
-              <input type="checkbox" data-email="${esc(m.email)}" ${SELECTED.has(m.email)?'checked':''} ${u?'disabled':''}>
+            const blk = blockedStatus(m.email); // 'unsubscribed' | 'bounced' | null
+            const pill = blk === 'bounced' ? '<span class="pill bounced">bounced</span>'
+                       : blk === 'unsubscribed' ? '<span class="pill unsub">unsub</span>' : '';
+            html += `<label class="person ${blk?'dis':''}">
+              <input type="checkbox" data-email="${esc(m.email)}" ${SELECTED.has(m.email)?'checked':''} ${blk?'disabled':''}>
               <span>${esc(m.name) || '<span class="muted">—</span>'}</span>
               <span class="co-spacer"></span>
               <span class="em">${esc(m.email)}</span>
-              ${u ? '<span class="pill unsub">unsub</span>' : ''}
+              ${pill}
             </label>`;
           }
         }
@@ -622,7 +644,7 @@ async function createDraft(){
   const status = document.getElementById("draftStatus");
   try {
     status.textContent = "Authenticating…";
-    const token = await getToken(); paintUser();
+    const token = await getToken(MAIL_SCOPES); paintUser();
 
     status.textContent = "Creating draft for " + recips.length + " recipients…";
     const me = currentUser();
@@ -675,6 +697,7 @@ async function stampLastSent(emails, type){
 /* ═══════════════════════════════════════════════════════════════════════════
    SUBSCRIBERS TAB
    ═══════════════════════════════════════════════════════════════════════════ */
+const PILL_CLASS = { subscribed: "sub", unsubscribed: "unsub", bounced: "bounced" };
 function renderSubs(forceFilter){
   const q = document.getElementById("subSearch").value.trim().toLowerCase();
   let rows = Object.values(SUBS);
@@ -682,26 +705,142 @@ function renderSubs(forceFilter){
   if (q) rows = rows.filter(r => ((r.name||"")+" "+(r.email||"")).toLowerCase().includes(q));
   rows.sort((a,b)=> (a.email||"").localeCompare(b.email||""));
   document.getElementById("subsBody").innerHTML = rows.slice(0,800).map(r => {
-    const unsub = r.status === "unsubscribed";
+    const subscribed = r.status === "subscribed";
     return `<tr>
       <td>${esc(r.name)||'<span class="muted">—</span>'}</td>
       <td>${esc(r.email)}</td>
-      <td><span class="pill ${unsub?'unsub':'sub'}">${r.status}</span></td>
+      <td><span class="pill ${PILL_CLASS[r.status]||'sub'}">${r.status}</span></td>
       <td class="muted">${r.last_sent_at ? new Date(r.last_sent_at).toLocaleDateString() : "—"}</td>
-      <td>${unsub
-        ? `<button class="ghost sm" onclick="setStatus('${esc(r.email)}','subscribed')">Re-subscribe</button>`
-        : `<button class="danger sm" onclick="setStatus('${esc(r.email)}','unsubscribed')">Unsubscribe</button>`}</td>
+      <td>${subscribed
+        ? `<button class="danger sm" onclick="setStatus('${esc(r.email)}','unsubscribed')">Unsubscribe</button>`
+        : `<button class="ghost sm" onclick="setStatus('${esc(r.email)}','subscribed')">Re-subscribe</button>`}</td>
     </tr>`;
   }).join("") || '<tr><td colspan="5" class="muted" style="padding:18px">No subscribers yet — load the directory on the first tab.</td></tr>';
 }
 async function setStatus(email, status){
   try {
-    await sb("PATCH", "/rest/v1/newsletter_subscribers?email=eq." + encodeURIComponent(email),
-      { status, unsubscribed_at: status==="unsubscribed" ? new Date().toISOString() : null, updated_at: new Date().toISOString() },
-      "return=minimal");
-    await loadSubscribers(); renderSubs(); renderGroups();
+    const patch = { status, updated_at: new Date().toISOString() };
+    if (status === "unsubscribed") patch.unsubscribed_at = new Date().toISOString();
+    if (status === "subscribed"){ patch.unsubscribed_at = null; patch.bounced_at = null; patch.bounce_reason = null; }
+    await sb("PATCH", "/rest/v1/newsletter_subscribers?email=eq." + encodeURIComponent(email), patch, "return=minimal");
+    await loadSubscribers(); renderSubs(); renderBounces(); renderGroups();
     log(email + " → " + status, "ok");
   } catch(e){ log("Update failed: " + e.message, "err"); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BOUNCED TAB — detect undeliverable notices, flag (don't delete), review
+   ═══════════════════════════════════════════════════════════════════════════ */
+function renderBounces(){
+  const rows = Object.values(SUBS).filter(r => r.status === "bounced")
+    .sort((a,b)=> (b.bounced_at||"").localeCompare(a.bounced_at||""));
+  document.getElementById("bounceBody").innerHTML = rows.map(r => {
+    const inDir = DIRECTORY.find(p => p.email === r.email && p.source === "client_contact" && p.clientRowId);
+    return `<tr>
+      <td>${esc(r.name)||'<span class="muted">—</span>'}</td>
+      <td>${esc(r.email)}</td>
+      <td class="muted">${esc(r.bounce_reason)||"—"}</td>
+      <td class="muted">${r.bounced_at ? new Date(r.bounced_at).toLocaleDateString() : "—"}</td>
+      <td>
+        <button class="ghost sm" onclick="setStatus('${esc(r.email)}','subscribed')">Re-subscribe</button>
+        ${inDir ? `<button class="danger sm" onclick="removeFromPms('${esc(r.email)}')">Remove from PMS</button>` : ""}
+      </td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="5" class="muted" style="padding:18px">No bounced addresses. Run "Check for bounces" a day or two after a send.</td></tr>';
+}
+
+async function checkBounces(){
+  const status = document.getElementById("bounceStatus");
+  try {
+    // Only reconcile against addresses we've actually sent to.
+    const sent = new Set();
+    CAMPAIGNS.forEach(c => (c.recipients||[]).forEach(e => sent.add(String(e).toLowerCase())));
+    if (!sent.size){ status.textContent = "No campaigns sent yet — nothing to check bounces against."; return; }
+
+    status.textContent = "Authenticating…";
+    const token = await getToken(BOUNCE_SCOPES); paintUser(); // lazily requests Mail.Read(.Shared)
+
+    status.textContent = "Scanning mailbox for undeliverable notices…";
+    const mailbox = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
+    const since = new Date(Date.now() - 30*24*60*60*1000).toISOString(); // last 30 days
+    const url = "https://graph.microsoft.com/v1.0" + mailbox + "/messages" +
+      "?$top=150&$select=subject,from,bodyPreview,body,receivedDateTime" +
+      "&$filter=" + encodeURIComponent("receivedDateTime ge " + since) +
+      "&$orderby=" + encodeURIComponent("receivedDateTime desc");
+    const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+    if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || ("Graph " + res.status)); }
+    const msgs = (await res.json()).value || [];
+
+    // Identify NDRs, then pull the failed address(es) — but only count ones WE sent to,
+    // and only HARD (permanent) failures. Soft/temporary bounces are ignored.
+    const reEmail = /[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/gi;
+    const hardRe  = /5\.[0-7]\.[0-9]|\b550\b|\b551\b|\b553\b|recipientnotfound|wasn'?t found|does(n'?t| not) exist|no such (user|mailbox|recipient)|unknown recipient|address (couldn'?t|could not) be found|mailbox unavailable/i;
+    const found = {};
+    let ndrCount = 0;
+    for (const m of msgs){
+      const fromAddr = (m.from && m.from.emailAddress && m.from.emailAddress.address || "").toLowerCase();
+      const subj = m.subject || "";
+      const isNdr = fromAddr.includes("postmaster") || fromAddr.includes("mailer-daemon") ||
+                    /undeliverable|delivery (has )?failed|delivery status notification|returned mail|mail delivery/i.test(subj);
+      if (!isNdr) continue;
+      ndrCount++;
+      const text = (m.body && m.body.content) || m.bodyPreview || "";
+      if (!hardRe.test(text)) continue;                 // permanent failures only
+      for (const raw of (text.match(reEmail) || [])){
+        const e = raw.toLowerCase();
+        if (sent.has(e) && !found[e]) found[e] = "Permanent — address not found";
+      }
+    }
+
+    const emails = Object.keys(found);
+    if (!emails.length){ status.textContent = "Scanned " + ndrCount + " notice(s) — no new hard bounces found."; renderBounces(); return; }
+
+    let marked = 0;
+    for (const e of emails){
+      const cur = SUBS[e];
+      if (cur && cur.status === "unsubscribed") continue; // never override an opt-out
+      if (cur && cur.status === "bounced") continue;      // already flagged
+      await sb("PATCH", "/rest/v1/newsletter_subscribers?email=eq." + encodeURIComponent(e),
+        { status: "bounced", bounced_at: new Date().toISOString(), bounce_reason: found[e], updated_at: new Date().toISOString() },
+        "return=minimal");
+      marked++;
+    }
+    await loadSubscribers();
+    renderBounces(); renderSubs(); renderGroups();
+    status.textContent = "Flagged " + marked + " bounced address(es) — now excluded from sends.";
+    log("Bounce check: " + marked + " flagged from " + ndrCount + " notices.", "ok");
+  } catch(e){ status.textContent = ""; log("Bounce check failed: " + e.message, "err"); }
+}
+
+// Remove a bounced contact from the PMS directory — mirrors SettyPMS saveClientV2:
+// version-guarded PATCH on pms_clients so we never clobber a concurrent edit.
+async function removeFromPms(email){
+  const person = DIRECTORY.find(p => p.email === email && p.source === "client_contact" && p.clientRowId);
+  if (!person){ log("Can't locate this contact in the PMS directory.", "err"); return; }
+  if (!confirm("Remove " + email + " from the PMS directory?\n\nThis deletes the contact from the firm's client record — which is used across the PMS, not just newsletters. This can't be undone from here.")) return;
+  try {
+    const rows = await sb("GET", "/rest/v1/pms_clients?id=eq." + encodeURIComponent(person.clientRowId) + "&select=id,client,version");
+    const row = rows && rows[0];
+    if (!row){ log("Client record not found in PMS.", "err"); return; }
+    const client = row.client || {};
+    const before = (client.contacts || []).length;
+    client.contacts = (client.contacts || []).filter(ct =>
+      person.contactId ? ct.id !== person.contactId : (ct.email||"").toLowerCase() !== email);
+    if (client.contacts.length === before){ log("Contact already gone from PMS.", "ok"); await loadDirectory(); renderBounces(); return; }
+
+    // Optimistic-concurrency PATCH: only succeeds if version still matches.
+    const result = await sb("PATCH",
+      "/rest/v1/pms_clients?id=eq." + encodeURIComponent(person.clientRowId) + "&version=eq." + (row.version ?? 1),
+      { client, version: (row.version ?? 1) + 1, updated_at: new Date().toISOString() },
+      "return=representation");
+    if (!result || !result.length){
+      log("That client record was just changed elsewhere — reload the directory and try again.", "err");
+      return;
+    }
+    await loadDirectory();
+    renderBounces(); renderGroups();
+    log("Removed " + email + " from PMS directory (" + (client.name || person.clientRowId) + ").", "ok");
+  } catch(e){ log("Remove from PMS failed: " + e.message, "err"); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -732,6 +871,7 @@ function showTab(name){
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab===name));
   document.getElementById("tab-send").classList.toggle("hidden", name!=="send");
   document.getElementById("tab-subs").classList.toggle("hidden", name!=="subs");
+  document.getElementById("tab-bounce").classList.toggle("hidden", name!=="bounce");
   document.getElementById("tab-hist").classList.toggle("hidden", name!=="hist");
 }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
