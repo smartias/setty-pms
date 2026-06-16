@@ -159,9 +159,36 @@
         </div>
       </div>
       <div style="margin-top:12px">
-        <label>Body (HTML) — paste an exported Publisher design here, or write/paste HTML</label>
-        <textarea id="bodyHtml" oninput="renderPreview()" placeholder="<h1>Hello from Setty</h1><p>…</p>"></textarea>
-        <div class="hint">In Publisher: <em>File → Save As → Web Page (.htm)</em>, open the .htm in a text editor, and paste the markup here. An unsubscribe footer is added automatically.</div>
+        <div class="row" style="justify-content:space-between;align-items:flex-end">
+          <label style="margin:0">Body</label>
+          <div class="tabs" style="padding:0;gap:4px">
+            <button type="button" class="tab active" id="tabVisual" onclick="setEditorMode('visual')">✏️ Visual</button>
+            <button type="button" class="tab" id="tabSource" onclick="setEditorMode('source')">&lt;/&gt; HTML source</button>
+          </div>
+        </div>
+
+        <!-- Visual editor: type, or just paste a designed email -->
+        <div id="visualWrap" style="margin-top:6px">
+          <div class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:6px">
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('formatBlock','<h1>')" title="Heading">H1</button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('formatBlock','<h2>')" title="Subheading">H2</button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('formatBlock','<p>')" title="Normal text">¶</button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('bold')" title="Bold"><b>B</b></button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('italic')" title="Italic"><i>I</i></button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('insertUnorderedList')" title="Bulleted list">• List</button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="makeLink()" title="Insert link">🔗 Link</button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('removeFormat')" title="Clear formatting">✕ Clear</button>
+          </div>
+          <div id="bodyVisual" contenteditable="true" oninput="syncFromVisual()"
+               style="min-height:220px;border:1px solid var(--line);border-radius:8px;padding:14px;background:#fff;overflow:auto;line-height:1.5"></div>
+          <div class="hint">Type here, or simply <strong>paste</strong> (Ctrl+V) a designed email straight from Publisher, Word, Outlook, or a web page — the formatting comes with it. An unsubscribe footer is added automatically.</div>
+        </div>
+
+        <!-- HTML source: canonical store; advanced/optional -->
+        <div id="sourceWrap" style="display:none;margin-top:6px">
+          <textarea id="bodyHtml" oninput="renderPreview()" placeholder="<h1>Hello from Setty</h1><p>…</p>"></textarea>
+          <div class="hint">Raw HTML for fine-tuning. Switching back to <em>Visual</em> reflects these edits.</div>
+        </div>
       </div>
       <div style="margin-top:14px">
         <label>Live preview (with auto-added footer)</label>
@@ -633,6 +660,38 @@ function buildEmailHtml(innerHtml){
 function renderPreview(){
   const html = buildEmailHtml(document.getElementById("bodyHtml").value);
   document.getElementById("preview").srcdoc = html;
+}
+
+/* ── Body editor: Visual (paste-friendly) ⇄ HTML source ──────────────────────
+   #bodyHtml (textarea) stays the single source of truth — read by renderPreview
+   and createDraft. The visual editor just writes its innerHTML into it.        */
+function setEditorMode(mode){
+  const visual = mode !== "source";
+  document.getElementById("visualWrap").style.display = visual ? "" : "none";
+  document.getElementById("sourceWrap").style.display = visual ? "none" : "";
+  document.getElementById("tabVisual").classList.toggle("active", visual);
+  document.getElementById("tabSource").classList.toggle("active", !visual);
+  if (visual){
+    // Load whatever the canonical HTML currently is into the editable area.
+    document.getElementById("bodyVisual").innerHTML = document.getElementById("bodyHtml").value;
+  } else {
+    // Make sure the textarea reflects the latest visual edits before showing it.
+    syncFromVisual();
+  }
+}
+function syncFromVisual(){
+  document.getElementById("bodyHtml").value = document.getElementById("bodyVisual").innerHTML;
+  renderPreview();
+}
+function fmt(cmd, val){
+  document.getElementById("bodyVisual").focus();
+  document.execCommand(cmd, false, val || null);
+  syncFromVisual();
+}
+function makeLink(){
+  const url = prompt("Link URL (https://…)");
+  if (!url) return;
+  fmt("createLink", url);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
