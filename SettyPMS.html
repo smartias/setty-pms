@@ -20354,7 +20354,11 @@ function sanitizePastedHtml(html) {
     }
     Array.from(node.childNodes).forEach(walk);
   }
-  walk(tmp);
+  // Walk the CHILDREN of tmp, not tmp itself: tmp is a detached <div> (a
+  // disallowed tag with no parent), so walking it directly would throw on the
+  // unwrap step and abort the entire paste. That bug is why pasting rich text
+  // silently failed and only worked after round-tripping through Notepad.
+  Array.from(tmp.childNodes).forEach(walk);
   return tmp.innerHTML;
 }
 
@@ -20975,10 +20979,13 @@ function ScopeView({ project, onChange }) {
     e.preventDefault();
     const html = e.clipboardData?.getData("text/html") || "";
     const text = e.clipboardData?.getData("text/plain") || "";
+    let cleaned = "";
     if (html) {
-      const cleaned = sanitizePastedHtml(html);
+      try { cleaned = sanitizePastedHtml(html); } catch (_) { cleaned = ""; }
+    }
+    if (cleaned.trim()) {
       document.execCommand("insertHTML", false, cleaned);
-    } else {
+    } else if (text) {
       document.execCommand("insertText", false, text);
     }
     saveContent();
@@ -21008,9 +21015,13 @@ function ScopeView({ project, onChange }) {
     e.preventDefault();
     const html = e.clipboardData?.getData("text/html") || "";
     const text = e.clipboardData?.getData("text/plain") || "";
+    let cleaned = "";
     if (html) {
-      document.execCommand("insertHTML", false, sanitizePastedHtml(html));
-    } else {
+      try { cleaned = sanitizePastedHtml(html); } catch (_) { cleaned = ""; }
+    }
+    if (cleaned.trim()) {
+      document.execCommand("insertHTML", false, cleaned);
+    } else if (text) {
       document.execCommand("insertText", false, text);
     }
     saveTerms();
@@ -21079,6 +21090,72 @@ function ScopeView({ project, onChange }) {
     span.appendChild(fragment);
     range.insertNode(span);
     // Restore selection over the new span
+    const newRange = document.createRange();
+    newRange.selectNodeContents(span);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+    editor.focus();
+    saveContent();
+  }
+
+  // Returns the top-level block elements (direct children of the editor) that
+  // the current selection touches. The spacing controls use this so a change
+  // hits every paragraph in a multi-line selection, not just the anchor block.
+  function selectedBlocks() {
+    const editor = editorRef.current;
+    if (!editor) return [];
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return [];
+    if (sel.isCollapsed) {
+      let node = sel.anchorNode;
+      while (node && node.parentNode !== editor) node = node.parentNode;
+      return node && node !== editor ? [node] : [];
+    }
+    const range = sel.getRangeAt(0);
+    return Array.from(editor.children).filter(b => range.intersectsNode(b));
+  }
+
+  // Line spacing — sets line-height on each selected block (Word-style).
+  function applyLineSpacing(lh) {
+    if (scopeLocked) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const blocks = selectedBlocks();
+    if (!blocks.length) { editor.focus(); return; }
+    blocks.forEach(b => { b.style.lineHeight = lh; });
+    editor.focus();
+    saveContent();
+  }
+
+  // Paragraph spacing — sets space AFTER each selected block, in points.
+  function applyParaSpacing(pt) {
+    if (scopeLocked) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const blocks = selectedBlocks();
+    if (!blocks.length) { editor.focus(); return; }
+    blocks.forEach(b => { b.style.marginBottom = pt + "pt"; });
+    editor.focus();
+    saveContent();
+  }
+
+  // Snaps the selected text back to the firm standard: strips inline font
+  // styling and re-wraps it in an explicit Calibri 10pt span. Useful after a
+  // paste or a font-size bump drifts a passage off-standard.
+  function resetToCalibri10() {
+    if (scopeLocked) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) { editor.focus(); return; }
+    document.execCommand("removeFormat", false, null);
+    const range = sel.getRangeAt(0);
+    const fragment = range.extractContents();
+    const span = document.createElement("span");
+    span.style.fontFamily = "Calibri, 'Trebuchet MS', sans-serif";
+    span.style.fontSize = "10pt";
+    span.appendChild(fragment);
+    range.insertNode(span);
     const newRange = document.createRange();
     newRange.selectNodeContents(span);
     sel.removeAllRanges();
@@ -21257,6 +21334,31 @@ function ScopeView({ project, onChange }) {
           <TB label="⇤" cmd="outdent" title="Decrease indent" />
           <TB label="⇥" cmd="indent" title="Increase indent" />
           {divider}
+          <select
+            onChange={e => { if (e.target.value) { applyLineSpacing(e.target.value); } e.target.value = ""; }}
+            defaultValue=""
+            disabled={scopeLocked}
+            title="Line spacing (select paragraph(s) first)"
+            style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: scopeLocked ? "not-allowed" : "pointer" }}>
+            <option value="" disabled>↕ Line</option>
+            <option value="1">Single</option>
+            <option value="1.15">1.15</option>
+            <option value="1.5">1.5</option>
+            <option value="2">Double</option>
+          </select>
+          <select
+            onChange={e => { if (e.target.value !== "") { applyParaSpacing(e.target.value); } e.target.value = ""; }}
+            defaultValue=""
+            disabled={scopeLocked}
+            title="Space after paragraph (select paragraph(s) first)"
+            style={{ fontSize: 12, padding: "3px 6px", borderRadius: 4, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: scopeLocked ? "not-allowed" : "pointer" }}>
+            <option value="" disabled>¶ Space</option>
+            {[0,3,6,9,12,18].map(s => <option key={s} value={s}>{s} pt after</option>)}
+          </select>
+          {divider}
+          <button onMouseDown={e => { e.preventDefault(); resetToCalibri10(); }} title="Reset selected text to Calibri 10pt (the firm standard)" style={tbStyle} disabled={scopeLocked}>
+            Aa 10pt
+          </button>
           <TB label="✕ Clear" cmd="removeFormat" title="Clear formatting" />
         </div>
 
@@ -21282,7 +21384,7 @@ function ScopeView({ project, onChange }) {
       </div>
 
       <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
-        💡 Use <strong style={{ color: P.text }}>Heading 1</strong> for discipline sections, <strong style={{ color: P.text }}>Heading 2</strong> for subsections, bullet lists for deliverables and exclusions.
+        💡 Paste directly from Word, Outlook, or email — formatting is cleaned to Calibri 10pt automatically. Select paragraph(s) first to change <strong style={{ color: P.text }}>↕ Line</strong> or <strong style={{ color: P.text }}>¶ Space</strong>; use <strong style={{ color: P.text }}>Aa 10pt</strong> to snap text back to the firm standard. Heading 1 = discipline sections, Heading 2 = subsections, bullet lists for deliverables and exclusions.
       </div>
 
       {/* Audit log */}
