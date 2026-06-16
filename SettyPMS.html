@@ -2807,7 +2807,15 @@ async function createProposalFolder(project) {
     folder: {},
     "@microsoft.graph.conflictBehavior": "rename",
   });
-  if (!result?.webUrl) throw new Error("Folder created but no URL returned.");
+  // graphFetch swallows 404 and returns null, so a null result means the create
+  // never landed \u2014 the folder was NOT created. This is usually a transient
+  // Graph/SharePoint 404 that clears on retry; only a persistent failure points
+  // at a stale SP_PROPOSALS_DRIVE_ID. Either way, don't claim success.
+  if (!result) {
+    throw new Error("Couldn't reach the Proposals drive \u2014 folder not created. Try again; if it keeps failing the drive ID may need refreshing.");
+  }
+  // Genuinely rare: create succeeded but Graph withheld the URL.
+  if (!result.webUrl) throw new Error("Folder created but no URL returned.");
   return result.webUrl;
 }
 
