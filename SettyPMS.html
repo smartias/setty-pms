@@ -20336,23 +20336,34 @@ function sanitizePastedHtml(html) {
   const tmp = document.createElement("div");
   tmp.innerHTML = html;
   const allowed = new Set(["p", "br", "ul", "ol", "li", "h1", "h2", "h3", "strong", "em", "b", "i", "u", "a"]);
+  // Tags deleted with ALL their content. Their text content is markup, not
+  // prose — Word/Outlook pastes a huge <style> block of mso- rules, and merely
+  // unwrapping it dumps that CSS into the editor as literal text. Drop whole.
+  const dropEntirely = new Set(["style", "script", "head", "meta", "title", "link", "xml", "o:p"]);
   function walk(node) {
-    if (node.nodeType === 1) {
-      const tag = node.tagName.toLowerCase();
-      if (!allowed.has(tag)) {
-        // Replace with children — keeps content, drops the disallowed tag
-        const parent = node.parentNode;
-        while (node.firstChild) parent.insertBefore(node.firstChild, node);
-        parent.removeChild(node);
-        return;
-      }
-      // Strip all attributes except href on links
-      Array.from(node.attributes).forEach(a => {
-        if (tag === "a" && a.name === "href") return;
-        node.removeAttribute(a.name);
-      });
-    }
+    // Clean children first (bottom-up) so unwrapped wrappers keep already-clean
+    // contents and dropped subtrees are gone before we reconsider parents.
     Array.from(node.childNodes).forEach(walk);
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName.toLowerCase();
+    if (dropEntirely.has(tag)) {
+      if (node.parentNode) node.parentNode.removeChild(node);
+      return;
+    }
+    if (!allowed.has(tag)) {
+      // Unknown but harmless wrapper (div, span, font) — unwrap, keep children.
+      const parent = node.parentNode;
+      if (!parent) return;
+      while (node.firstChild) parent.insertBefore(node.firstChild, node);
+      parent.removeChild(node);
+      return;
+    }
+    // Allowed tag — strip every attribute except href on links (kills mso-
+    // styles, classes, and inline fonts that drag in foreign styling).
+    Array.from(node.attributes).forEach(a => {
+      if (tag === "a" && a.name === "href") return;
+      node.removeAttribute(a.name);
+    });
   }
   // Walk the CHILDREN of tmp, not tmp itself: tmp is a detached <div> (a
   // disallowed tag with no parent), so walking it directly would throw on the
@@ -21164,6 +21175,100 @@ function ScopeView({ project, onChange }) {
     saveContent();
   }
 
+  // ── List handling ─────────────────────────────────────────────────────
+  // Replaces execCommand's list toggles, which nest a fresh set of markers
+  // when you switch type instead of converting in place (the "double bullets"
+  // bug). These operate on the selected top-level blocks: paragraphs become
+  // list items, an existing list is rebuilt as the requested type, and
+  // re-applying the current type clears it back to paragraphs.
+  function makeList(kind) {
+    if (kind === "bullet") return document.createElement("ul");
+    const ol = document.createElement("ol");
+    const map = { decimal: "decimal", "lower-alpha": "lower-alpha", "upper-alpha": "upper-alpha" };
+    ol.style.listStyleType = map[kind] || "decimal";
+    return ol;
+  }
+  // Identifies what list kind a top-level block represents, or null if it's
+  // not a list. Used to decide whether a click should toggle off.
+  function listKind(block) {
+    if (!block || block.nodeType !== 1) return null;
+    const tag = block.tagName.toLowerCase();
+    if (tag === "ul") return "bullet";
+    if (tag === "ol") {
+      const st = (block.style.listStyleType || "decimal").toLowerCase();
+      if (st === "lower-alpha") return "lower-alpha";
+      if (st === "upper-alpha") return "upper-alpha";
+      return "decimal";
+    }
+    return null;
+  }
+
+  function applyList(kind) {
+    if (scopeLocked) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const blocks = selectedBlocks();
+    if (!blocks.length) { editor.focus(); return; }
+    // Re-applying the current type toggles it off.
+    if (blocks.every(b => listKind(b) === kind)) { clearList(); return; }
+
+    // Collect item HTML across the selection, in document order. Existing list
+    // items keep their inner HTML (so nested sub-lists survive); paragraphs and
+    // headings each become a single item.
+    const items = [];
+    blocks.forEach(b => {
+      const tag = b.tagName.toLowerCase();
+      if (tag === "ul" || tag === "ol") {
+        Array.from(b.children).forEach(li => items.push(li.innerHTML));
+      } else {
+        items.push(b.innerHTML && b.innerHTML.trim() ? b.innerHTML : "<br>");
+      }
+    });
+
+    const list = makeList(kind);
+    items.forEach(html => {
+      const li = document.createElement("li");
+      li.innerHTML = html;
+      list.appendChild(li);
+    });
+
+    // Drop the selected blocks, insert the single new list in their place.
+    const first = blocks[0];
+    first.parentNode.insertBefore(list, first);
+    blocks.forEach(b => { if (b.parentNode) b.parentNode.removeChild(b); });
+
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(list);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    editor.focus();
+    saveContent();
+  }
+
+  // Converts any selected list(s) back to plain paragraphs.
+  function clearList() {
+    if (scopeLocked) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const blocks = selectedBlocks();
+    if (!blocks.length) { editor.focus(); return; }
+    blocks.forEach(b => {
+      const tag = b.tagName.toLowerCase();
+      if (tag !== "ul" && tag !== "ol") return;
+      const frag = document.createDocumentFragment();
+      Array.from(b.children).forEach(li => {
+        const p = document.createElement("p");
+        p.innerHTML = li.innerHTML && li.innerHTML.trim() ? li.innerHTML : "<br>";
+        frag.appendChild(p);
+      });
+      b.parentNode.insertBefore(frag, b);
+      b.parentNode.removeChild(b);
+    });
+    editor.focus();
+    saveContent();
+  }
+
   function saveContent() {
     if (scopeLocked) return;
     const html = editorRef.current ? editorRef.current.innerHTML : "";
@@ -21328,8 +21433,11 @@ function ScopeView({ project, onChange }) {
           <TB label="I" cmd="italic" title="Italic" />
           <TB label="U" cmd="underline" title="Underline" />
           {divider}
-          <TB label="• List" cmd="insertUnorderedList" title="Bullet list" />
-          <TB label="1. List" cmd="insertOrderedList" title="Numbered list" />
+          <button onMouseDown={e => { e.preventDefault(); applyList("bullet"); }} title="Bullet list (• ) — click again to remove" style={tbStyle} disabled={scopeLocked}>•</button>
+          <button onMouseDown={e => { e.preventDefault(); applyList("decimal"); }} title="Numbered list (1. 2. 3.) — click again to remove" style={tbStyle} disabled={scopeLocked}>1.</button>
+          <button onMouseDown={e => { e.preventDefault(); applyList("lower-alpha"); }} title="Lettered list (a. b. c.) — click again to remove" style={tbStyle} disabled={scopeLocked}>a.</button>
+          <button onMouseDown={e => { e.preventDefault(); applyList("upper-alpha"); }} title="Lettered list (A. B. C.) — click again to remove" style={tbStyle} disabled={scopeLocked}>A.</button>
+          <button onMouseDown={e => { e.preventDefault(); clearList(); }} title="Remove list formatting (back to paragraphs)" style={tbStyle} disabled={scopeLocked}>✕ List</button>
           {divider}
           <TB label="⇤" cmd="outdent" title="Decrease indent" />
           <TB label="⇥" cmd="indent" title="Increase indent" />
@@ -21384,7 +21492,7 @@ function ScopeView({ project, onChange }) {
       </div>
 
       <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
-        💡 Paste directly from Word, Outlook, or email — formatting is cleaned to Calibri 10pt automatically. Select paragraph(s) first to change <strong style={{ color: P.text }}>↕ Line</strong> or <strong style={{ color: P.text }}>¶ Space</strong>; use <strong style={{ color: P.text }}>Aa 10pt</strong> to snap text back to the firm standard. Heading 1 = discipline sections, Heading 2 = subsections, bullet lists for deliverables and exclusions.
+        💡 Paste directly from Word, Outlook, or email — formatting is cleaned to Calibri 10pt automatically. Select paragraph(s) first to change <strong style={{ color: P.text }}>↕ Line</strong> or <strong style={{ color: P.text }}>¶ Space</strong>; use <strong style={{ color: P.text }}>Aa 10pt</strong> to snap text back to the firm standard. Lists: <strong style={{ color: P.text }}>•</strong> bullet, <strong style={{ color: P.text }}>1.</strong> numbered, <strong style={{ color: P.text }}>a.</strong> / <strong style={{ color: P.text }}>A.</strong> lettered — click the same one again (or <strong style={{ color: P.text }}>✕ List</strong>) to remove. Heading 1 = discipline sections, Heading 2 = subsections.
       </div>
 
       {/* Audit log */}
