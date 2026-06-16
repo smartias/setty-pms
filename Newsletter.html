@@ -279,7 +279,13 @@ const MSAL_REDIRECT_URI = "https://smartias.github.io/setty-pms/SettyPMS.html";
 // Optional shared mailbox to send FROM (e.g. "newsletter@setty.com"). Blank = send
 // from whoever is signed in. To use one: have IT create the shared mailbox and grant
 // the marketing senders "Full Access" + "Send As", then paste its address here.
-const SEND_MAILBOX = "newsletter@setty.com"; // shared mailbox; Full Access + Send As granted to NYmarketing@setty.com
+const SEND_MAILBOX = ""; // e.g. "newsletter@setty.com" — see note below before enabling.
+// ⚠️ This tool signs in as the SAME Azure app as SettyPMS (MSAL_CLIENT_ID above).
+// Setting a shared mailbox switches the requested scope to Mail.*.Shared, which the
+// tenant has NOT consented to — so Microsoft throws an ADMIN-APPROVAL screen for the
+// whole PMS app (the long calendars/files/OneNote/groups list is the PMS app's existing
+// permissions being re-presented, not new powers). Do NOT re-enable until IT has granted
+// one-time admin consent for Mail.ReadWrite.Shared + Mail.Read.Shared on this app.
 
 // Incremental consent: sign-in asks for identity only. The mailbox scopes are
 // requested lazily — when you first create a draft, or first check for bounces —
