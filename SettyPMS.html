@@ -5393,6 +5393,10 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
         "/me/messages/" + encodeURIComponent(email.msgId) + "/attachments", undefined, token);
       for (const att of (attData?.value || [])) {
         if (!att.contentBytes) continue;
+        // Skip small inline images (signature logos, social icons, banners).
+        // Inline + image + under ~40KB ≈ signature decoration; larger inline
+        // images (pasted screenshots/photos) and all non-inline files are kept.
+        if (att.isInline && att.contentType && att.contentType.startsWith("image/") && att.size < 40000) continue;
         const binary = atob(att.contentBytes);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
