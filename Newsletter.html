@@ -172,11 +172,12 @@
     <div class="card">
       <h2>3 · Create the draft</h2>
       <div class="banner warn">
-        This creates a <strong>draft in your Outlook</strong> with everyone on <strong>BCC</strong> (recipients can't see each other).
-        Nothing sends automatically — you open the draft, review it, and click Send.
+        This creates <strong>draft(s) in Outlook</strong> with everyone on <strong>BCC</strong> (recipients can't see each other).
+        Large lists are split into multiple drafts. Nothing sends automatically — you open each draft, review it, and click Send.
       </div>
-      <button id="draftBtn" onclick="createDraft()" disabled>✉️ Create Outlook draft for <span id="draftCount">0</span> recipients</button>
-      <span class="hint" id="draftStatus"></span>
+      <button id="draftBtn" onclick="createDraft()" disabled>✉️ Create Outlook draft(s) for <span id="draftCount">0</span> recipients</button>
+      <div class="hint" id="batchHint" style="margin-top:8px"></div>
+      <div class="hint" id="draftStatus" style="margin-top:8px"></div>
     </div>
   </section>
 
@@ -250,7 +251,7 @@ const MSAL_REDIRECT_URI = "https://smartias.github.io/setty-pms/SettyPMS.html";
 // Optional shared mailbox to send FROM (e.g. "newsletter@setty.com"). Blank = send
 // from whoever is signed in. To use one: have IT create the shared mailbox and grant
 // the marketing senders "Full Access" + "Send As", then paste its address here.
-const SEND_MAILBOX = ""; // e.g. "newsletter@setty.com"
+const SEND_MAILBOX = "newsletter@setty.com"; // shared mailbox; Full Access + Send As granted to NYmarketing@setty.com
 
 // Incremental consent: sign-in asks for identity only. The mailbox scopes are
 // requested lazily — when you first create a draft, or first check for bounces —
@@ -264,6 +265,9 @@ const UNSUB_URL = SUPABASE_URL + "/functions/v1/unsubscribe";
 const FROM_NAME = "Setty & Associates";
 // Physical address shown in the footer (good practice / CAN-SPAM). Edit to taste.
 const FOOTER_ADDRESS = "Setty &amp; Associates, P.C.";
+// Outlook/Exchange caps recipients per message (~500 by default). Sends larger than
+// this are auto-split into multiple BCC drafts, each one you review and send.
+const BATCH_SIZE = 400;
 
 /* ═══════════════════════════════════════════════════════════════════════════
    STATE
@@ -598,7 +602,7 @@ function onGroupClick(e){
 function updateCounts(){
   const subbed = DIRECTORY.filter(p => !isBlocked(p.email)).length;
   const unsub = DIRECTORY.filter(p => isBlocked(p.email)).length;
-  const sel = [...SELECTED].filter(e => !(SUBS[e] && SUBS[e].status === "unsubscribed")).length;
+  const sel = [...SELECTED].filter(e => !isBlocked(e)).length; // matches who actually gets mailed
   document.getElementById("stPeople").textContent = DIRECTORY.length;
   document.getElementById("stSubbed").textContent = subbed;
   document.getElementById("stUnsub").textContent = unsub;
@@ -606,6 +610,9 @@ function updateCounts(){
   document.getElementById("draftCount").textContent = sel;
   document.getElementById("draftBtn").disabled = !(currentUser() && sel);
   document.getElementById("recipNote").textContent = sel + " selected";
+  const batches = Math.ceil(sel / BATCH_SIZE);
+  document.getElementById("batchHint").textContent =
+    batches > 1 ? ("Will be split into " + batches + " drafts of up to " + BATCH_SIZE + " (Outlook caps recipients per message).") : "";
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -640,58 +647,73 @@ async function createDraft(){
   const recips = DIRECTORY.filter(p => SELECTED.has(p.email) && !isBlocked(p.email));
   if (!recips.length){ log("No recipients selected.", "err"); return; }
 
+  // Split into batches that stay under the per-message recipient cap.
+  const batches = [];
+  for (let i = 0; i < recips.length; i += BATCH_SIZE) batches.push(recips.slice(i, i + BATCH_SIZE));
+
   const btn = document.getElementById("draftBtn"); btn.disabled = true;
   const status = document.getElementById("draftStatus");
   try {
     status.textContent = "Authenticating…";
     const token = await getToken(MAIL_SCOPES); paintUser();
 
-    status.textContent = "Creating draft for " + recips.length + " recipients…";
     const me = currentUser();
-    const toAddr = SEND_MAILBOX || me; // To: the shared mailbox (or yourself); list goes on BCC
-    const draft = {
-      subject,
-      body: { contentType: "HTML", content: buildEmailHtml(innerHtml) },
-      toRecipients: toAddr ? [{ emailAddress: { address: toAddr } }] : [],
-      bccRecipients: recips.map(p => ({ emailAddress: { address: p.email } })),
-    };
-    if (SEND_MAILBOX) draft.from = { emailAddress: { address: SEND_MAILBOX } };
-    // Draft lands in the shared mailbox if configured, else the signed-in user's drafts.
+    const toAddr = SEND_MAILBOX || me;                 // To: shared mailbox (or yourself); list on BCC
     const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
-    const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-      body: JSON.stringify(draft),
-    });
-    if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || ("Graph " + res.status)); }
-    const msg = await res.json();
+    const bodyHtml = buildEmailHtml(innerHtml);
+    const links = [];
 
-    // Record the campaign + stamp last_sent on every recipient (one request each).
+    // Each batch is its own BCC draft. Recipients are disjoint, so no one is double-mailed.
+    for (let b = 0; b < batches.length; b++){
+      status.textContent = "Creating draft " + (b+1) + " of " + batches.length + " (" + batches[b].length + " recipients)…";
+      const draft = {
+        subject,
+        body: { contentType: "HTML", content: bodyHtml },
+        toRecipients: toAddr ? [{ emailAddress: { address: toAddr } }] : [],
+        bccRecipients: batches[b].map(p => ({ emailAddress: { address: p.email } })),
+      };
+      if (SEND_MAILBOX) draft.from = { emailAddress: { address: SEND_MAILBOX } };
+      const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+      if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error("Draft " + (b+1) + ": " + (e?.error?.message || ("Graph " + res.status))); }
+      const msg = await res.json();
+      if (msg.webLink) links.push(msg.webLink);
+    }
+
+    // One campaign record for the whole send; stamp every recipient.
     const emails = recips.map(p => p.email);
     await sb("POST", "/rest/v1/newsletter_campaigns", {
-      type, subject, body_html: buildEmailHtml(innerHtml),
+      type, subject, body_html: bodyHtml,
       recipients: emails, recipient_count: emails.length, sent_by: me,
     }, "return=minimal");
     await stampLastSent(emails, type);
     await Promise.all([loadCampaigns(), loadSubscribers()]).then(()=>{ renderHistory(); renderSubs(); });
 
-    status.innerHTML = '✅ Draft created. <a href="' + (msg.webLink || "#") + '" target="_blank">Open it in Outlook</a> to review &amp; send.';
-    if (msg.webLink) window.open(msg.webLink, "_blank");
-    log("Draft created for " + emails.length + " recipients.", "ok");
+    const linkHtml = links.map((u,i) => '<a href="'+u+'" target="_blank">Draft '+(i+1)+'</a>').join(" · ");
+    status.innerHTML = "✅ Created " + batches.length + " draft" + (batches.length>1?"s":"") +
+      " for " + emails.length + " recipients — open and send each: " + linkHtml;
+    links.slice(0, 6).forEach(u => window.open(u, "_blank")); // auto-open up to 6 to avoid tab spam
+    log("Created " + batches.length + " draft(s) for " + emails.length + " recipients.", "ok");
   } catch(e){
     status.textContent = "";
     log("Draft failed: " + e.message, "err");
   } finally { btn.disabled = false; }
 }
 
-// PATCH all recipients in one call using a PostgREST IN filter.
+// Stamp last_sent on recipients. Chunked so the PostgREST in.() filter never
+// produces an over-long URL (a full 1000+ address list would exceed URL limits).
 async function stampLastSent(emails, type){
-  if (!emails.length) return;
-  const list = emails.map(e => '"' + e.replace(/"/g,'') + '"').join(",");
-  await sb("PATCH",
-    "/rest/v1/newsletter_subscribers?email=in.(" + encodeURIComponent(list) + ")",
-    { last_sent_at: new Date().toISOString(), last_sent_type: type },
-    "return=minimal");
+  const CHUNK = 200;
+  for (let i = 0; i < emails.length; i += CHUNK){
+    const list = emails.slice(i, i + CHUNK).map(e => '"' + e.replace(/"/g,"") + '"').join(",");
+    await sb("PATCH",
+      "/rest/v1/newsletter_subscribers?email=in.(" + encodeURIComponent(list) + ")",
+      { last_sent_at: new Date().toISOString(), last_sent_type: type },
+      "return=minimal");
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
