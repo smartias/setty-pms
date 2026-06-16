@@ -177,6 +177,7 @@
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('italic')" title="Italic"><i>I</i></button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('insertUnorderedList')" title="Bulleted list">• List</button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="makeLink()" title="Insert link">🔗 Link</button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="insertImage()" title="Insert an image file">📷 Image</button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('removeFormat')" title="Clear formatting">✕ Clear</button>
           </div>
           <div id="bodyVisual" contenteditable="true" oninput="syncFromVisual()"
@@ -693,6 +694,47 @@ function makeLink(){
   if (!url) return;
   fmt("createLink", url);
 }
+// Pick an image file and drop it into the body. It's embedded as a data: URI so it
+// previews instantly; at draft time createDraft() converts it to an inline Outlook
+// attachment (cid:) so it actually renders in recipients' inboxes — no hosting needed.
+function insertImage(){
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = () => {
+    const file = inp.files && inp.files[0];
+    if (!file) return;
+    const mb = file.size / 1048576;
+    if (mb > 2 && !confirm("That image is " + (Math.round(mb*10)/10) + " MB. Large images can make the email slow or get blocked — under ~1 MB is best. Insert anyway?")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      document.getElementById("bodyVisual").focus();
+      document.execCommand("insertHTML", false,
+        '<img src="' + reader.result + '" alt="" style="max-width:100%;height:auto">');
+      syncFromVisual();
+    };
+    reader.readAsDataURL(file);
+  };
+  inp.click();
+}
+// Turn every embedded data: image in the HTML into an inline Outlook attachment.
+// Email clients strip data: <img>s, so this is what makes images (inserted OR pasted)
+// show up for recipients. Returns the rewritten HTML plus the Graph attachment list.
+function extractInlineImages(html){
+  const attachments = [];
+  let n = 0;
+  const out = html.replace(/<img\b[^>]*?\bsrc=["']data:([^;"']+);base64,([^"']+)["'][^>]*>/gi,
+    (tag, contentType, b64) => {
+      const cid = "img" + (++n);
+      attachments.push({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        name: cid + "." + ((contentType.split("/")[1] || "png").replace(/[^a-z0-9]/gi,"")),
+        contentType, contentBytes: b64,
+        isInline: true, contentId: cid,
+      });
+      return tag.replace(/\bsrc=["']data:[^"']+["']/i, 'src="cid:' + cid + '"');
+    });
+  return { html: out, attachments };
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    CREATE OUTLOOK DRAFT (BCC) — mirrors SettyPMS createOutlookDraft()
@@ -720,6 +762,10 @@ async function createDraft(){
     const toAddr = SEND_MAILBOX || me;                 // To: shared mailbox (or yourself); list on BCC
     const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
     const bodyHtml = buildEmailHtml(innerHtml);
+    // Convert embedded images (inserted or pasted) into inline attachments so they
+    // render in recipients' inboxes. sendHtml references them as cid:; bodyHtml keeps
+    // the self-contained data: version for the saved campaign history.
+    const { html: sendHtml, attachments } = extractInlineImages(bodyHtml);
     const links = [];
 
     // Each batch is its own BCC draft. Recipients are disjoint, so no one is double-mailed.
@@ -727,10 +773,11 @@ async function createDraft(){
       status.textContent = "Creating draft " + (b+1) + " of " + batches.length + " (" + batches[b].length + " recipients)…";
       const draft = {
         subject,
-        body: { contentType: "HTML", content: bodyHtml },
+        body: { contentType: "HTML", content: sendHtml },
         toRecipients: toAddr ? [{ emailAddress: { address: toAddr } }] : [],
         bccRecipients: batches[b].map(p => ({ emailAddress: { address: p.email } })),
       };
+      if (attachments.length) draft.attachments = attachments;
       if (SEND_MAILBOX) draft.from = { emailAddress: { address: SEND_MAILBOX } };
       const res = await fetch("https://graph.microsoft.com/v1.0" + mailboxPath + "/messages", {
         method: "POST",
