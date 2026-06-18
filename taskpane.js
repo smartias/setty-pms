@@ -4073,15 +4073,36 @@ async function resolveSpIds() {
 const _emailBodyCache = new Map();
 function clearEmailBodyCache() { _emailBodyCache.clear(); }
 async function getEmailBodyHtml(token) {
+  const item = Office.context.mailbox.item;
+  const msgId = item?.itemId;
+  if (msgId && _emailBodyCache.has(msgId)) return _emailBodyCache.get(msgId);
+
+  let body = "";
+  // 1) Graph — full-fidelity HTML body.
   try {
-    const msgId = Office.context.mailbox.item.itemId;
-    if (_emailBodyCache.has(msgId)) return _emailBodyCache.get(msgId);
     const restId = Office.context.mailbox.convertToRestId(msgId, Office.MailboxEnums.RestVersion.v2_0);
     const data = await graphFetch("GET", "/me/messages/" + restId + "?$select=body", null, token);
-    const body = data?.body?.content || "";
-    if (body) _emailBodyCache.set(msgId, body);
-    return body;
-  } catch { return ""; }
+    body = data?.body?.content || "";
+  } catch { /* fall through to the Office.js route */ }
+
+  // 2) Office.js fallback — reads the OPEN item's HTML directly, no network, so it
+  //    works when the Graph /me/messages fetch fails (the cause of "Email body
+  //    could not be retrieved" → empty records). getAsync can fail transiently
+  //    right after an item opens, so retry with short backoff.
+  if (!body && item?.body?.getAsync) {
+    for (let i = 0; i < 3 && !body; i++) {
+      body = await new Promise(resolve => {
+        try {
+          item.body.getAsync(Office.CoercionType.Html, r =>
+            resolve(r.status === Office.AsyncResultStatus.Succeeded ? (r.value || "") : ""));
+        } catch { resolve(""); }
+      });
+      if (!body && i < 2) await new Promise(res => setTimeout(res, 300 * (i + 1)));
+    }
+  }
+
+  if (body && msgId) _emailBodyCache.set(msgId, body);
+  return body;
 }
 
 // ── RELIABLE PLAIN-TEXT BODY ─────────────────────────────────────────────────
