@@ -64,6 +64,7 @@ const EMAIL_PROJECT_MAP_STORAGE_KEY = "settyPms:emailProjectMap";
 const EMAIL_CONVO_PROJECT_MAP_STORAGE_KEY = "settyPms:conversationProjectMap";
 const TEAMS_SENT_MAP_STORAGE_KEY = "settyPms:teamsChannelSentMap";
 const EMAIL_THREAD_TAGS_TABLE = "pms_email_thread_tags";
+const EMAIL_WATCHLIST_TABLE = "pms_email_watchlist";
 const PROJECT_EMAILS_TABLE = "pms_project_emails";
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 Office.onReady(async (info) => {
@@ -80,6 +81,10 @@ Office.onReady(async (info) => {
       msalAccount = accounts.find(a => a.homeAccountId === lastAccountId) || accounts[0];
       msalApp.setActiveAccount(msalAccount);
       await onSignedIn();
+      // Surface the response watchlist once projects are loaded.
+      void renderResponseWatchlist();
+      const sweepBlock = document.getElementById("sweepBlock");
+      if (sweepBlock) sweepBlock.style.display = "block";
     } else {
       showView("signInView");
     }
@@ -91,7 +96,9 @@ Office.onReady(async (info) => {
     // from a Read-mode message to an Edit-mode draft.
     Office.context.mailbox.addHandlerAsync(
       Office.EventType.ItemChanged,
-      () => { showView("mainView"); applyComposeModeUiGuard(); loadItemContext(); }
+      // ItemChanged only ever fires while the pane is pinned, so the first one
+      // we receive doubles as proof the user found the pin — hide the hint.
+      () => { markPanePinned(); showView("mainView"); applyComposeModeUiGuard(); loadItemContext(); }
     );
     loadItemContext();
   } catch (e) {
@@ -143,6 +150,10 @@ function applyComposeModeUiGuard() {
     "logNoteBtn", "sendToTeamsBtn", "newActionItemBtn",
     "moreActions", "oneNoteLinkBanner",
     "dateSuggestionBlock",
+    // Top-level now (no longer inside moreActions) — keep the old compose-
+    // hidden behavior. NOTE: in read mode this guard resets display to "";
+    // updatePeopleButtonBadge runs after and applies the real visibility.
+    "addParticipantBtn",
   ];
   // Hide in Read: templates only make sense while composing a reply.
   const hiddenInRead = ["quickTemplatesSection"];
@@ -160,21 +171,56 @@ function applyComposeModeUiGuard() {
   if (saveRow)        saveRow.style.display        = compose ? "none" : "";
   if (saveRowCaption) saveRowCaption.style.display = compose ? "none" : "";
 }
+// ── Pin hint banner ──────────────────────────────────────────────────────────
+// The pane is far more useful pinned (it follows the user from email to email),
+// but the pin icon Outlook renders in the pane chrome is tiny and most users
+// never notice it. The banner stays up until either (a) the user dismisses it,
+// or (b) an ItemChanged event proves they pinned — whichever comes first.
+function markPanePinned() {
+  try { localStorage.setItem("setty_addin_pin_seen", "1"); } catch (e) {}
+  const b = document.getElementById("pinHintBanner");
+  if (b) b.style.display = "none";
+}
+function initPinHintBanner() {
+  const b = document.getElementById("pinHintBanner");
+  if (!b) return;
+  let hidden = false;
+  try {
+    hidden = !!(localStorage.getItem("setty_addin_pin_seen") || localStorage.getItem("setty_addin_pin_dismissed"));
+  } catch (e) {}
+  if (hidden) return;
+  b.style.display = "flex";
+  const x = document.getElementById("pinHintDismiss");
+  if (x) x.onclick = () => {
+    try { localStorage.setItem("setty_addin_pin_dismissed", "1"); } catch (e) {}
+    b.style.display = "none";
+  };
+}
 function setupEventListeners() {
   document.getElementById("signInBtn").onclick     = doSignIn;
   document.getElementById("signOutBtn").onclick    = doSignOut;
+  const wlRefresh = document.getElementById("responseWatchlistRefresh");
+  if (wlRefresh) wlRefresh.onclick = () => { void renderResponseWatchlist(); };
+  const sweepBtn = document.getElementById("sweepRunBtn");
+  if (sweepBtn) sweepBtn.onclick = () => { void sweepRecentMail(); };
+  const sweepFileBtn = document.getElementById("sweepFileBtn");
+  if (sweepFileBtn) sweepFileBtn.onclick = () => { void sweepRunAndFile(); };
   document.getElementById("saveSpBtn").onclick     = doSaveToSharePoint;
   document.getElementById("saveRecordBtn").onclick = doSaveToProjectRecordOnly;
-  // 5-click easter egg on the SETTY PMS logo — reveals the cornerstone card.
-  // Counter resets after 3 seconds idle so a curious user has time to discover
-  // the pattern but doesn't accidentally trigger it across casual clicks.
-  // NOTE: there are TWO `.header-logo` elements (one in signInView, one in
-  // mainView), so bind to both via querySelectorAll. Counter is shared across
-  // the two so a user who clicks 3x while signed-out and 2x after signing in
-  // still gets the reveal.
+  // Pin hint banner — show unless previously dismissed or pinning was detected.
+  initPinHintBanner();
+  // Version footer — took over the old main-view logo's jobs (hover tooltip +
+  // easter egg) when the red header was removed to save vertical space.
+  const versionFooter = document.getElementById("versionFooter");
+  if (versionFooter) versionFooter.textContent = "v" + (window.__appVersion || "");
+  // 5-click easter egg — reveals the cornerstone card. Counter resets after
+  // 3 seconds idle so a curious user has time to discover the pattern but
+  // doesn't accidentally trigger it across casual clicks.
+  // Bound to the signInView logo AND the mainView version footer (the
+  // mainView header-logo no longer exists). Counter is shared across both.
   let _logoClickCount = 0;
   let _logoClickTimer = null;
-  document.querySelectorAll(".header-logo").forEach(logoEl => {
+  document.querySelectorAll(".header-logo, #versionFooter").forEach(logoEl => {
     logoEl.title = "v" + (window.__appVersion || "");
     logoEl.onclick = () => {
       _logoClickCount++;
@@ -217,8 +263,9 @@ function setupEventListeners() {
   const submitSubRev = document.getElementById("submitSubReviewBtn");
   if (submitSubRev) submitSubRev.onclick = submitSubReview;
   document.getElementById("peopleBack").onclick  = () => showView("mainView");
-  // Contact form back returns to peopleView (the only entry point); peopleBack handles return-to-main
-  document.getElementById("contactBack").onclick = () => showView("peopleView");
+  // Contact form back returns wherever it was opened from — the participant list
+  // normally, or the main screen when reached via the enrich-from-signature shortcut.
+  document.getElementById("contactBack").onclick = () => showView(_contactReturnView || "peopleView");
   document.getElementById("datesBack").onclick   = () => showView("mainView");
   // "More" expander — persist open/closed state across emails so power users
   // who expand it once don't have to keep doing so.
@@ -230,7 +277,7 @@ function setupEventListeners() {
     });
   }
   document.getElementById("manualMilestoneBtn").onclick = showManualMilestoneForm;
-  document.getElementById("addParticipantBtn").onclick = showPeopleView;
+  document.getElementById("addParticipantBtn").onclick = onAddParticipantClick;
   document.getElementById("saveMilestoneBtn").onclick = doSaveMilestone;
   document.getElementById("saveNoteBtn").onclick    = doSaveNote;
   document.getElementById("saveActionItemBtn").onclick = doSaveActionItem;
@@ -254,35 +301,55 @@ function setupEventListeners() {
   document.getElementById("subModeNew").onclick      = () => setSubMode("new");
   document.getElementById("subModeExisting").onclick = () => setSubMode("existing");
   document.getElementById("fileSubBtn").onclick      = doFileToExistingSub;
-  // Project search
+  // Project search — debounced so fast typing doesn't rebuild the dropdown
+  // DOM on every keystroke; one delegated click handler instead of re-binding
+  // per option on each render.
   const searchInput = document.getElementById("projectSearch");
   const dropdown    = document.getElementById("projectDropdown");
+  dropdown.addEventListener("click", (ev) => {
+    const opt = ev.target.closest(".proj-option");
+    if (!opt) return;
+    setSelectedProject(getProjectById(opt.dataset.id), true);
+    searchInput.value = "";
+    dropdown.style.display = "none";
+  });
+  let searchDebounce = null;
   searchInput.addEventListener("input", () => {
-    const q = searchInput.value.trim().toLowerCase();
-    if (!q) { dropdown.style.display = "none"; return; }
-    const matches = allProjects.filter(p =>
-      (p.name || "").toLowerCase().includes(q) ||
-      (p.projectNumber || "").toLowerCase().includes(q)
-    ).slice(0, 10);
-    if (!matches.length) { dropdown.style.display = "none"; return; }
-    dropdown.innerHTML = matches.map(p => `
-      <div class="proj-option" data-id="${p.id}">
-        <div class="proj-num">${p.projectNumber || ""}</div>
-        <div class="proj-name">${p.name || ""}</div>
-      </div>
-    `).join("");
-    dropdown.style.display = "block";
-    dropdown.querySelectorAll(".proj-option").forEach(el => {
-      el.onclick = () => {
-        setSelectedProject(allProjects.find(p => p.id === el.dataset.id), true);
-        searchInput.value = "";
-        dropdown.style.display = "none";
-      };
-    });
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      const q = searchInput.value.trim().toLowerCase();
+      if (!q) { dropdown.style.display = "none"; return; }
+      const matches = allProjects.filter(p =>
+        (p.name || "").toLowerCase().includes(q) ||
+        (p.projectNumber || "").toLowerCase().includes(q)
+      ).slice(0, 10);
+      if (!matches.length) { dropdown.style.display = "none"; return; }
+      dropdown.innerHTML = matches.map(p => `
+        <div class="proj-option" data-id="${p.id}">
+          <div class="proj-num">${p.projectNumber || ""}</div>
+          <div class="proj-name">${p.name || ""}</div>
+        </div>
+      `).join("");
+      dropdown.style.display = "block";
+    }, 150);
   });
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".project-search-wrapper")) dropdown.style.display = "none";
   });
+}
+
+// O(1) project lookup. The Map is rebuilt lazily whenever the allProjects
+// ARRAY REFERENCE changes (cache hydration and fresh loads always assign a
+// new array, they never mutate in place — so reference identity is a valid
+// staleness check). Replaces linear .find() scans in render loops.
+let _projectMapSource = null;
+let _projectMap = null;
+function getProjectById(id) {
+  if (_projectMapSource !== allProjects) {
+    _projectMap = new Map((allProjects || []).map(p => [p.id, p]));
+    _projectMapSource = allProjects;
+  }
+  return _projectMap.get(id);
 }
 // ─── OUTLOOK ITEM CONTEXT (MAIL + CALENDAR) ─────────────────────────────────
 function dedupeParticipants(participants) {
@@ -356,6 +423,8 @@ function loadItemContext() {
   emailParticipants = [];
   // Per-item ✓ "added this session" marks reset when item changes
   _sessionSavedContactEmails.clear();
+  // Stale people-picker status from the previous email shouldn't carry over.
+  try { setStatus("peopleStatus", "", ""); } catch {}
   // Drop the per-item Graph caches (email body, etc.) so a different item
   // can't accidentally serve cached body HTML from the previous one. Cheap.
   if (typeof clearEmailBodyCache === "function") clearEmailBodyCache();
@@ -454,6 +523,7 @@ function loadItemContext() {
             ...emailParticipants,
             ...(r.value || []).map(a => ({ label, displayName: a.displayName || "", emailAddress: a.emailAddress || "" })),
           ]);
+          try { updatePeopleButtonBadge(); } catch {}
         }
       });
       if (emailItem.requiredAttendees?.getAsync) loadAtts(emailItem.requiredAttendees, "Required");
@@ -466,6 +536,7 @@ function loadItemContext() {
         ...(emailItem.optionalAttendees || []).map(r => ({ label: "Optional", displayName: r.displayName || "", emailAddress: r.emailAddress || "" })),
       ]);
     }
+    try { updatePeopleButtonBadge(); } catch {}
 
     document.getElementById("noteCategory").value = "Client Meeting";
     document.getElementById("noteBody").value = buildMeetingNoteBody(emailItem);
@@ -505,6 +576,7 @@ function loadItemContext() {
       ...toList.map(r => ({ label: "To", displayName: r.displayName || "", emailAddress: r.emailAddress || "" })),
       ...ccList.map(r => ({ label: "CC", displayName: r.displayName || "", emailAddress: r.emailAddress || "" })),
     ]);
+    try { updatePeopleButtonBadge(); } catch {}
     // Pre-fill note body
     document.getElementById("noteBody").value = emailItem.subject || "";
     // Pre-fill RFI from
@@ -515,28 +587,82 @@ function loadItemContext() {
     setSelectedProject(null, false);
     void restoreProjectSelectionForCurrentEmail();
     refreshEmailSavedIndicator();
+    // Kick off async Message-ID header fetch — it'll re-trigger chip detection
+    // once it lands, so RFIs whose sourceMessageId was captured (or whose
+    // source/linked email records have that ID stored) become matchable.
+    try { fetchInternetMessageIdFromHeaders(); } catch {}
+    try { refreshLinkToTargetDropdown(); } catch {}
     try { refreshLoggedArtifactChips(); } catch {}
     maybeShowAecQuip();
+    // Score this client email; if it looks like it needs a reply, add it to
+    // the shared watchlist. Async + silent — never blocks item loading.
+    void maybeAddToWatchlist(myGen);
   }
 }
 function getCurrentMessageRestId() {
   if (!emailItem?.itemId) return "";
   return Office.context.mailbox.convertToRestId(emailItem.itemId, Office.MailboxEnums.RestVersion.v2_0);
 }
+// Graph webLink for the current message — a URL that opens the exact email in
+// Outlook on the web. Stored on a watchlist row so the panel can link back to
+// the original. Returns "" if it can't be resolved (link is best-effort).
+async function getCurrentMessageWebLink() {
+  try {
+    const restId = getCurrentMessageRestId();
+    if (!restId) return "";
+    const data = await graphFetch("GET", "/me/messages/" + restId + "?$select=webLink", null);
+    return data?.webLink || "";
+  } catch { return ""; }
+}
+// Fetched-from-headers Message-ID, keyed by itemContextGeneration so it
+// invalidates when the user opens a different item. Set asynchronously by
+// fetchInternetMessageIdFromHeaders() — `emailItem.internetMessageId` is
+// unreliable across Outlook clients (returns "" in new Outlook for Windows),
+// so we read the raw RFC-822 Message-ID header as a fallback.
+let cachedInternetMessageId = "";
+let cachedInternetMessageIdGen = -1;
+function fetchInternetMessageIdFromHeaders() {
+  const myGen = itemContextGeneration;
+  if (!emailItem?.itemId) return;
+  // Already have a synchronous value? No need to fetch.
+  if (emailItem?.internetMessageId) {
+    cachedInternetMessageId = emailItem.internetMessageId;
+    cachedInternetMessageIdGen = myGen;
+    return;
+  }
+  if (!emailItem.getAllInternetHeadersAsync) return; // requires Mailbox 1.8+
+  emailItem.getAllInternetHeadersAsync(result => {
+    if (myGen !== itemContextGeneration) return; // user moved on
+    if (result.status !== Office.AsyncResultStatus.Succeeded) return;
+    const m = String(result.value || "").match(/^Message-ID:\s*(.+)$/im);
+    const id = m ? m[1].trim() : "";
+    if (!id) return;
+    cachedInternetMessageId = id;
+    cachedInternetMessageIdGen = myGen;
+    // Now that we have the stable ID, re-run chip detection — earlier calls
+    // may have returned nothing because matching depended on this value.
+    try { refreshLoggedArtifactChips(); } catch {}
+  });
+}
+function getEffectiveInternetMessageId() {
+  if (emailItem?.internetMessageId) return emailItem.internetMessageId;
+  if (cachedInternetMessageIdGen === itemContextGeneration) return cachedInternetMessageId;
+  return "";
+}
 function getCurrentMessageRecordId() {
   // Prefer internetMessageId (shared across recipients) for cross-mailbox matching.
   // Keep REST/item IDs as fallbacks so existing records created before this change still resolve.
-  return emailItem?.internetMessageId || getCurrentMessageRestId() || emailItem?.itemId || "";
+  return getEffectiveInternetMessageId() || getCurrentMessageRestId() || emailItem?.itemId || "";
 }
 function getCurrentMessageIdCandidates() {
   return [...new Set([
-    emailItem?.internetMessageId || "",
+    getEffectiveInternetMessageId(),
     getCurrentMessageRestId(),
     emailItem?.itemId || "",
   ].filter(Boolean))];
 }
 function getCurrentSharedMessageId() {
-  return emailItem?.internetMessageId || "";
+  return getEffectiveInternetMessageId();
 }
 async function getCurrentConversationId() {
   if (currentConversationId) return currentConversationId;
@@ -622,19 +748,77 @@ function getLoggedEmailArtifactLabels(project) {
   return labels;
 }
 
-// Returns RFI/Submittal records whose sourceItemId or sourceMessageId matches
-// the currently-open mailbox item. Used by refreshLoggedArtifactChips to
-// surface "Logged as RFI-XXX on Date" chips on the main view.
+// Returns RFI/Submittal records related to the currently-open mailbox item.
+// Two kinds of relationship are detected:
+//   1. SOURCE — the artifact was originally logged FROM this email
+//      (matches via sourceItemId / sourceMessageId)
+//   2. LINKED — the user later linked this email to the artifact via the
+//      "Link to RFI/Sub" dropdown (matches via artifact.links[].targetId
+//      pointing at an email record whose msgId matches this item)
 //
-// `status` is included so the chip renderer can decide whether to show a
-// "Log Response" / "Log Review" call-to-action (visible only while open).
+// Used by refreshLoggedArtifactChips to surface chips on the main view.
+// `status` drives whether the action button (Log Response / Log Review)
+// shows below the chip.
 function getLoggedRfiSubArtifacts(project) {
   if (!project || !emailItem?.itemId) return [];
   const sourceItemId = emailItem.itemId;
   const sourceMessageIds = getCurrentMessageIdCandidates();
+  // Build set of email-record IDs for emails on this project that match
+  // the currently-open item. Used to detect "linked" relationships below.
+  const matchingEmailRecordIds = new Set();
+  for (const e of (project.emails || [])) {
+    if (!e?.msgId) continue;
+    if (e.msgId === sourceItemId || sourceMessageIds.includes(e.msgId)) {
+      if (e.id) matchingEmailRecordIds.add(e.id);
+    }
+  }
+  // Supplemental fuzzy match: same email may have multiple records with
+  // different EWS IDs (e.g. email moved between folders). Links and source
+  // references may point at an older record whose msgId no longer matches
+  // the current EWS ID. Match by subject + sender + date (day) instead.
+  {
+    const curSubject = typeof emailItem.subject === "string" ? emailItem.subject.trim() : "";
+    const curFrom = (emailFromAddress || "").toLowerCase().trim();
+    const curDateRaw = emailItem.dateTimeCreated;
+    const curDate = curDateRaw instanceof Date
+      ? curDateRaw.toISOString().slice(0, 10)
+      : typeof curDateRaw === "string" ? curDateRaw.slice(0, 10) : "";
+    if (curSubject && curFrom) {
+      for (const e of (project.emails || [])) {
+        if (matchingEmailRecordIds.has(e.id)) continue;
+        if ((e.subject || "").trim() !== curSubject) continue;
+        if ((e.fromAddress || "").toLowerCase().trim() !== curFrom) continue;
+        if (curDate && e.date && String(e.date).slice(0, 10) !== curDate) continue;
+        if (e.id) matchingEmailRecordIds.add(e.id);
+      }
+    }
+  }
+  // Helper: does this artifact's links[] reference any matching email record?
+  const hasLinkToCurrentEmail = (links) =>
+    (links || []).some(lk =>
+      lk?.targetSystem === "pms" &&
+      lk?.targetType === "email" &&
+      lk?.targetId &&
+      matchingEmailRecordIds.has(lk.targetId)
+    );
+
+  // Helper: does the artifact's sourceItemId belong to an email record that
+  // the fuzzy matcher recognized as the current email? Handles the case where
+  // the email was moved (EWS ID changed) and sourceMessageId was never stored.
+  const isSourceViaFuzzy = (srcItemId) => {
+    if (!srcItemId) return false;
+    return (project.emails || []).some(
+      e => e.msgId === srcItemId && matchingEmailRecordIds.has(e.id)
+    );
+  };
+
   const matches = [];
   for (const r of (project.rfis || [])) {
-    if (r?.sourceItemId === sourceItemId || (r?.sourceMessageId && sourceMessageIds.includes(r.sourceMessageId))) {
+    const isSource = r?.sourceItemId === sourceItemId ||
+                     (r?.sourceMessageId && sourceMessageIds.includes(r.sourceMessageId)) ||
+                     isSourceViaFuzzy(r?.sourceItemId);
+    const isLinked = hasLinkToCurrentEmail(r?.links);
+    if (isSource || isLinked) {
       matches.push({
         kind: "rfi",
         id: r.id,
@@ -643,11 +827,16 @@ function getLoggedRfiSubArtifacts(project) {
         date: r.createdAt || r.dateReceived || null,
         spFolderUrl: r.spFolderUrl || "",
         status: r.status || "Open",
+        relationship: isSource ? "source" : "linked",
       });
     }
   }
   for (const s of (project.submittals || [])) {
-    if (s?.sourceItemId === sourceItemId || (s?.sourceMessageId && sourceMessageIds.includes(s.sourceMessageId))) {
+    const isSource = s?.sourceItemId === sourceItemId ||
+                     (s?.sourceMessageId && sourceMessageIds.includes(s.sourceMessageId)) ||
+                     isSourceViaFuzzy(s?.sourceItemId);
+    const isLinked = hasLinkToCurrentEmail(s?.links);
+    if (isSource || isLinked) {
       matches.push({
         kind: "sub",
         id: s.id,
@@ -656,6 +845,7 @@ function getLoggedRfiSubArtifacts(project) {
         date: s.createdAt || s.dateReceived || null,
         spFolderUrl: s.spFolderUrl || "",
         status: s.status || "Received",
+        relationship: isSource ? "source" : "linked",
       });
     }
   }
@@ -668,24 +858,182 @@ const RFI_OPEN_STATUSES = new Set(["Open", "Pending Sub Response"]);
 // Same notion for submittals: while still under review (not yet returned).
 const SUB_OPEN_STATUSES = new Set(["Received", "In Review", "Pending Sub Response"]);
 
+// Populate the "Link to RFI/Submittal" dropdown on the main view. Lists only
+// OPEN artifacts (the user can't link to a closed RFI in a meaningful way).
+// Hides the row entirely when there are no open RFIs/Subs on the selected
+// project. Option value encodes the kind: "rfi:<id>" or "sub:<id>".
+// Secondary copy: after the primary Save SP completes, optionally copy the
+// email + attachments into a linked RFI or Submittal's /IN folder, and update
+// the artifact's links[] array to reference the email record.
+//
+// linkValue is the encoded dropdown value: "rfi:<id>" or "sub:<id>" or "".
+// emailRecord is the email object that was just persisted to project.emails
+// (we need its id for the bidirectional cross-link).
+// snapItem is the captured Office mailbox item (required by the attachment
+// upload path to avoid item-switch races).
+//
+// Returns { ok: bool, label: string } so the caller can append to the status
+// message. Failure is non-fatal — the primary save already succeeded; the
+// secondary link is a bonus we attempt best-effort.
+async function linkEmailToArtifact({ linkValue, emailRecord, snapItem }) {
+  if (!linkValue) return { ok: false, label: "" };
+  if (!selectedProject?.projectFolderUrl) return { ok: false, label: "" };
+  const kind = linkValue.startsWith("rfi:") ? "rfi" :
+               linkValue.startsWith("sub:") ? "sub" : null;
+  if (!kind) return { ok: false, label: "" };
+  const targetId = linkValue.slice(kind === "rfi" ? "rfi:".length : "sub:".length);
+  const arr = kind === "rfi" ? (selectedProject.rfis || []) : (selectedProject.submittals || []);
+  const target = arr.find(x => x.id === targetId);
+  if (!target) return { ok: false, label: "" };
+
+  try {
+    const token = await getToken();
+    const { driveId } = await resolveSpIds();
+    // Resolve the artifact's root path (new structure or legacy flat layout).
+    // Mirrors the resolution logic in doFileToExistingRfi / doFileToExistingSub
+    // so the link lands in the right place regardless of when the artifact
+    // was originally logged.
+    let rootPath = spDrivePath(target.spFolderUrl);
+    if (!rootPath) {
+      const projFolderName = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+      const discCode = getDisciplineCode(target.discipline);
+      const safeNumber = (target.number || (kind === "rfi" ? "RFI-???" : "SUB-???"))
+        .replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+      const topPath = await ensureSpFolder(driveId, token, projFolderName, kind === "rfi" ? "RFIs" : "Submittals");
+      const discPath = await ensureSpFolder(driveId, token, topPath, discCode);
+      rootPath = await ensureSpFolder(driveId, token, discPath, safeNumber);
+    }
+    // Per-email subfolder under /IN, so multiple emails linked to the same
+    // RFI/Sub coexist without colliding on "email.html". Same pattern as the
+    // project's main Emails folder.
+    const uploadResult = await uploadEmailToArtifactInFolder({
+      driveId, token, artifactRootPath: rootPath, snapItem,
+    });
+
+    // Update the artifact's links[] array to point at the email record.
+    // Schema matches the PMS link format (targetSystem/targetType/targetId).
+    const linkEntry = {
+      id: uid(),
+      targetSystem: "pms",
+      targetType:   "email",
+      targetId:     emailRecord.id,
+      label:        "Related correspondence",
+      createdAt:    new Date().toISOString(),
+    };
+    await applyLocalChangeAndSave(selectedProject.id, fresh => {
+      const list = kind === "rfi" ? "rfis" : "submittals";
+      return {
+        ...fresh,
+        [list]: (fresh[list] || []).map(x => x.id === targetId ? {
+          ...x,
+          links: [...((x.links) || []), linkEntry],
+        } : x),
+      };
+    });
+
+    // Audit log: a separate row for the link operation so the reconcile sweep
+    // sees the secondary upload as its own filing event. Points at the
+    // specific per-email subfolder where the files actually landed.
+    void logFilingOp({
+      project_id:    selectedProject.id,
+      msg_id:        emailRecord.msgId || null,
+      operation:     "email-linked-" + kind,
+      sp_folder_url: uploadResult.emailFolderUrl,
+      files:         (lastAttachmentUploadStats?.uploadedFiles || []),
+      email_subject: emailRecord.subject || "",
+      status:        "success",
+    });
+
+    return { ok: true, label: ` · 📎 linked to ${target.number || (kind === "rfi" ? "RFI" : "Submittal")}` };
+  } catch (e) {
+    console.warn("[link-to] secondary copy failed:", e.message);
+    return { ok: false, label: ` · ⚠ link to RFI/Sub failed: ${e.message.slice(0, 100)}` };
+  }
+}
+
+function refreshLinkToTargetDropdown() {
+  const row = document.getElementById("linkToRow");
+  const sel = document.getElementById("linkToTarget");
+  if (!row || !sel) return;
+  // Remember the user's previous selection so a UI refresh doesn't blow it
+  // away. We restore it at the end if the option still exists.
+  const prevValue = sel.value;
+  if (!selectedProject) {
+    row.style.display = "none";
+    sel.innerHTML = '<option value="">— Standalone (no linking) —</option>';
+    return;
+  }
+  const openRfis = (selectedProject.rfis || []).filter(r => RFI_OPEN_STATUSES.has(r?.status || "Open"));
+  const openSubs = (selectedProject.submittals || []).filter(s => SUB_OPEN_STATUSES.has(s?.status || "Received"));
+  if (openRfis.length === 0 && openSubs.length === 0) {
+    row.style.display = "none";
+    sel.innerHTML = '<option value="">— Standalone (no linking) —</option>';
+    return;
+  }
+  const opts = ['<option value="">— Standalone (no linking) —</option>'];
+  if (openRfis.length) {
+    opts.push('<optgroup label="Open RFIs">');
+    for (const r of openRfis) {
+      const label = `${r.number}${r.title ? " — " + r.title.slice(0, 50) : ""}`;
+      opts.push(`<option value="rfi:${r.id}">🔵 ${escHtml(label)}</option>`);
+    }
+    opts.push('</optgroup>');
+  }
+  if (openSubs.length) {
+    opts.push('<optgroup label="Open Submittals">');
+    for (const s of openSubs) {
+      const label = `${s.number}${s.description ? " — " + s.description.slice(0, 50) : ""}`;
+      opts.push(`<option value="sub:${s.id}">📋 ${escHtml(label)}</option>`);
+    }
+    opts.push('</optgroup>');
+  }
+  sel.innerHTML = opts.join("");
+  // Restore previous selection if still valid
+  if (prevValue && sel.querySelector(`option[value="${prevValue}"]`)) {
+    sel.value = prevValue;
+  }
+  row.style.display = "block";
+}
+
 // Render the "Logged as RFI-XXX / SUB-XXX" chips on the main view. Chips link
 // to the SharePoint folder when one is stored. Open RFIs/Submittals also get
 // a "Log Response" / "Log Review" button rendered below the chip so the user
 // can finish the workflow in one click. Hidden when nothing applies.
+// When an RFI/Submittal chip is showing for the current email, the link-to
+// dropdown, save buttons, and Log as RFI/Sub buttons become redundant — the
+// email is already filed and linked. Hide them. Restoration is automatic:
+// the underlying managers (refreshEmailSavedIndicator, refreshLinkToTargetDropdown)
+// always run before this on the next item change, setting their own visibility
+// before this function gets a chance to override.
+function _applyChipPresenceUiToggles(hasChips) {
+  if (!hasChips) return; // no-op — let the upstream managers own the visible state
+  const ids = ["linkToRow", "logRfiBtn", "logSubBtn"];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = "none";
+  }
+  for (const sel of [".save-row", ".save-row-caption"]) {
+    const el = document.querySelector(sel);
+    if (el) el.style.display = "none";
+  }
+}
 function refreshLoggedArtifactChips() {
   const container = document.getElementById("loggedAsArtifactChips");
   if (!container) return;
   if (!selectedProject || !emailItem?.itemId) {
     container.innerHTML = "";
     container.style.display = "none";
+    _applyChipPresenceUiToggles(false);
     return;
   }
   const artifacts = getLoggedRfiSubArtifacts(selectedProject);
   if (artifacts.length === 0) {
     container.innerHTML = "";
     container.style.display = "none";
+    _applyChipPresenceUiToggles(false);
     return;
   }
+  _applyChipPresenceUiToggles(true);
   // Switch container to a column layout so each artifact's chip + (optional)
   // action button stack vertically.
   container.style.display = "flex";
@@ -705,7 +1053,10 @@ function refreshLoggedArtifactChips() {
     const statusLabel = a.status && a.status !== "Open" && a.status !== "Received"
       ? ` · ${a.status}`
       : "";
-    const label = `${icon} Logged as ${a.number}${a.title ? " — " + a.title.slice(0, 40) : ""} on ${dateStr}${statusLabel}`;
+    // "Logged as" for the email the RFI/Sub was originally created from;
+    // "Linked to" for emails added via the Link to dropdown after the fact.
+    const verb = a.relationship === "linked" ? "Linked to" : "Logged as";
+    const label = `${icon} ${verb} ${a.number}${a.title ? " — " + a.title.slice(0, 40) : ""} on ${dateStr}${statusLabel}`;
     const safeLabel = label.replace(/</g, "&lt;").replace(/>/g, "&gt;");
     let chipHtml;
     if (a.spFolderUrl) {
@@ -761,15 +1112,27 @@ function refreshEmailSavedIndicator(animate = false) {
 
   if (!selectedProject || !emailItem?.itemId) {
     applyEmailFlowEmphasis();
+    try { refreshLoggedArtifactChips(); } catch {}
     return;
   }
   const existing = findSavedEmailRecord(selectedProject, getCurrentMessageRecordId());
   if (!existing) {
     applyEmailFlowEmphasis();
+    try { refreshLoggedArtifactChips(); } catch {}
     return;
   }
 
-  // Saved → collapse the save row into a single big-check confirmation card.
+  // Record is saved. Only collapse to the "done" card once it's filed to
+  // SharePoint; while it's record-only (e.g. auto-saved on tag), KEEP the Save to
+  // SharePoint button available so attachments can still be filed.
+  const wasFiledToSharePoint = !!existing.spFolderUrl;
+  if (!wasFiledToSharePoint) {
+    applyEmailFlowEmphasis();
+    if (confirmation) confirmation.style.display = "none";
+    try { refreshLoggedArtifactChips(); } catch {}
+    return;
+  }
+  // Filed to SharePoint → collapse the save row into a single big-check card.
   if (saveRow) saveRow.style.display = "none";
   if (saveCapRow) saveCapRow.style.display = "none";
 
@@ -777,7 +1140,6 @@ function refreshEmailSavedIndicator(animate = false) {
     ? new Date(existing.savedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
     : "earlier";
   const loggedLabels = getLoggedEmailArtifactLabels(selectedProject);
-  const wasFiledToSharePoint = !!existing.spFolderUrl;
 
   const primary = wasFiledToSharePoint
     ? "Saved to SharePoint + project record"
@@ -835,6 +1197,9 @@ function refreshEmailSavedIndicator(animate = false) {
   // saved-state message, so showing both would be redundant.
   setStatus("actionStatus", "", "");
   applyPipelineUiRules();
+  // Re-apply chip-aware hides last — if an RFI/Sub chip is showing for this
+  // email, the save row stays hidden regardless of save state.
+  try { refreshLoggedArtifactChips(); } catch {}
 }
 
 // Single source of truth for "does this email have file attachments?".
@@ -937,42 +1302,44 @@ function applyEmailFlowEmphasis() {
     capSp.textContent = ""; // reset
 
     if (_renamingSpFolder) {
-      // Inline editor: input + Save/Cancel. Date prefix is appended automatically
-      // at save-time, so we only ask for the trailing portion.
-      const label = document.createElement("span");
-      label.textContent = "YYYY_MM_DD ";
-      label.style.cssText = "color:var(--muted);font-size:11px;";
-      capSp.appendChild(label);
-
+      // Inline editor: full-width input stacked over Save/Cancel — comfortable
+      // to read and tap, instead of a cramped one-line strip. The YYYY_MM_DD
+      // prefix is appended automatically at save-time and everyone knows the
+      // convention, so it's not repeated in the UI (tooltip mentions it).
       const input = document.createElement("input");
       input.type = "text";
       input.id = "saveSpRenameInput";
       input.value = _customSpFolderName || _getDefaultSpFolderSubject();
       input.maxLength = 70;
-      input.style.cssText = "width:55%;font-size:11px;padding:2px 4px;border:1px solid var(--primary);border-radius:3px;";
+      input.title = "Folder name (the date prefix is added automatically)";
+      input.style.cssText = "display:block;width:100%;box-sizing:border-box;font-size:12px;padding:5px 8px;margin:2px 0 6px;border:1px solid var(--primary);border-radius:4px;";
       capSp.appendChild(input);
+
+      const btnRow = document.createElement("div");
+      btnRow.style.cssText = "display:flex;gap:6px;align-items:center;";
+      capSp.appendChild(btnRow);
 
       const saveBtn = document.createElement("button");
       saveBtn.type = "button";
       saveBtn.textContent = "Save";
-      saveBtn.style.cssText = "margin-left:6px;font-size:11px;padding:2px 6px;border:none;background:var(--primary);color:#fff;border-radius:3px;cursor:pointer;";
+      saveBtn.style.cssText = "font-size:11px;padding:4px 14px;border:none;background:var(--primary);color:#fff;border-radius:4px;cursor:pointer;";
       saveBtn.addEventListener("click", e => {
         e.preventDefault();
         e.stopPropagation();
         commitSpFolderRename(input.value);
       });
-      capSp.appendChild(saveBtn);
+      btnRow.appendChild(saveBtn);
 
       const cancelBtn = document.createElement("button");
       cancelBtn.type = "button";
       cancelBtn.textContent = "Cancel";
-      cancelBtn.style.cssText = "margin-left:4px;font-size:11px;padding:2px 6px;border:1px solid #ccc;background:#fff;color:#555;border-radius:3px;cursor:pointer;";
+      cancelBtn.style.cssText = "font-size:11px;padding:4px 12px;border:1px solid #ccc;background:#fff;color:#555;border-radius:4px;cursor:pointer;";
       cancelBtn.addEventListener("click", e => {
         e.preventDefault();
         e.stopPropagation();
         cancelSpFolderRename();
       });
-      capSp.appendChild(cancelBtn);
+      btnRow.appendChild(cancelBtn);
 
       input.addEventListener("keydown", e => {
         if (e.key === "Enter") {
@@ -989,31 +1356,33 @@ function applyEmailFlowEmphasis() {
         clearBtn.type = "button";
         clearBtn.textContent = "Clear";
         clearBtn.title = "Revert to email subject as the folder name";
-        clearBtn.style.cssText = "margin-left:4px;font-size:11px;padding:2px 6px;border:1px solid #ccc;background:#fff;color:#a00;border-radius:3px;cursor:pointer;";
+        clearBtn.style.cssText = "font-size:11px;padding:4px 12px;border:1px solid #ccc;background:#fff;color:#a00;border-radius:4px;cursor:pointer;margin-left:auto;";
         clearBtn.addEventListener("click", e => {
           e.preventDefault();
           e.stopPropagation();
           commitSpFolderRename("");
         });
-        capSp.appendChild(clearBtn);
+        btnRow.appendChild(clearBtn);
       }
     } else {
       if (_customSpFolderName) {
         const prefix = document.createTextNode("Folder: ");
         const strong = document.createElement("strong");
         strong.style.color = "var(--text)";
-        strong.textContent = "YYYY_MM_DD " + _customSpFolderName;
+        strong.textContent = _customSpFolderName;
         capSp.appendChild(prefix);
         capSp.appendChild(strong);
       } else {
         capSp.appendChild(document.createTextNode("Email + attachments → SharePoint + record"));
       }
+      // Quiet text link — discoverable next to the caption but not competing
+      // with the save buttons for attention.
       const renameBtn = document.createElement("button");
       renameBtn.type = "button";
       renameBtn.id = "saveSpRenameLink";
-      renameBtn.textContent = _customSpFolderName ? "✏ change" : "✏ rename";
+      renameBtn.textContent = _customSpFolderName ? "change" : "rename folder";
       renameBtn.title = "Set a custom folder name (the date prefix is added automatically)";
-      renameBtn.style.cssText = "margin-left:8px;color:var(--primary);background:transparent;border:none;padding:0;font:inherit;font-size:11px;font-weight:600;cursor:pointer;text-decoration:underline;";
+      renameBtn.style.cssText = "margin-left:8px;color:var(--muted);background:transparent;border:none;padding:2px 0;font:inherit;font-size:11px;cursor:pointer;text-decoration:underline;text-underline-offset:2px;";
       renameBtn.addEventListener("click", e => {
         e.preventDefault();
         e.stopPropagation();
@@ -1022,26 +1391,11 @@ function applyEmailFlowEmphasis() {
       capSp.appendChild(renameBtn);
     }
   }
-  if (capRecord) capRecord.textContent = "Email body → project record only";
-  if (row) row.style.gridTemplateColumns = "1fr 1fr";
-  if (capRow) capRow.style.gridTemplateColumns = "1fr 1fr";
-
-  // No project picked yet — keep both visible/neutral; we don't know what's relevant.
-  if (!selectedProject) return;
-
-  const hasAtt = emailLikelyHasAttachments();
-  if (hasAtt === false) {
-    // No attachments → SharePoint isn't a meaningful path. Remove it entirely
-    // so there's no wrong button to click. Project Record takes full width.
-    btnSp.style.display = "none";
-    if (capSp) capSp.style.display = "none";
-    if (row) row.style.gridTemplateColumns = "1fr";
-    if (capRow) capRow.style.gridTemplateColumns = "1fr";
-  } else if (hasAtt === true) {
-    // Attachments exist → SharePoint is the recommended path (also writes to record).
-    btnRecord.classList.add("btn-deemph");
-  }
-  // hasAtt === null → keep both buttons visible and neutral; we don't know enough to bias.
+  if (row) row.style.gridTemplateColumns = "1fr";
+  if (capRow) capRow.style.gridTemplateColumns = "1fr";
+  // "Save to Project" retired (auto-file on tag covers the record). The SharePoint
+  // button stays full-width and always available — it files email + attachments
+  // into the project folder.
 }
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 async function doSignIn() {
@@ -1053,7 +1407,7 @@ async function doSignIn() {
     localStorage.setItem(LAST_ACCOUNT_STORAGE_KEY, msalAccount?.homeAccountId || "");
     await onSignedIn();
   } catch (e) {
-    setStatus("signInStatus", "error", "✗ Sign-in failed: " + e.message);
+    setStatus("signInStatus", "error", "✗ Sign-in failed: " + humanizeError(e));
   }
 }
 async function doSignOut() {
@@ -1069,9 +1423,45 @@ async function doSignOut() {
 }
 async function onSignedIn() {
   showView("mainView");
-  await loadProjects();
-  await restoreProjectSelectionForCurrentEmail();
-  updateProjectQuickLinks();
+  // loadProjects() hydrates allProjects from the localStorage cache
+  // synchronously (before its first await), so when the cache has data the
+  // project selection can be restored immediately — the fresh Supabase fetch
+  // keeps running in the background instead of gating the pane for the whole
+  // network round trip.
+  const freshLoad = loadProjects();
+  if (allProjects.length) {
+    await restoreProjectSelectionForCurrentEmail();
+    updateProjectQuickLinks();
+    freshLoad.then(async () => {
+      // Re-restore only if nothing got selected from cache — never stomp a
+      // selection the user made while the fetch was in flight.
+      if (!selectedProject) {
+        await restoreProjectSelectionForCurrentEmail();
+        updateProjectQuickLinks();
+      } else {
+        // The selection restored from the cached snapshot — re-point it at
+        // the fresh object, otherwise directory/RFI/status checks keep
+        // reading pre-fetch data for the rest of the session (e.g. contacts
+        // added last session showing as "not on project").
+        const freshProj = getProjectById(selectedProject.id);
+        if (freshProj && freshProj !== selectedProject) {
+          setSelectedProject(freshProj, false);
+          // If the participants list is on screen, re-render it with the
+          // fresh directory.
+          if (document.getElementById("peopleView")?.classList.contains("active")) {
+            try { showPeopleView(); } catch {}
+          }
+        }
+      }
+      // Fresh allClients may change who counts as "new".
+      try { updatePeopleButtonBadge(); } catch {}
+    }).catch(() => {});
+  } else {
+    // Cold start (no cache yet) — nothing to restore from, wait for the fetch.
+    await freshLoad;
+    await restoreProjectSelectionForCurrentEmail();
+    updateProjectQuickLinks();
+  }
   // Surface any saves that didn't complete on a previous session.
   try { showPendingFilingBanner(); } catch (e) { console.warn("[filing-queue] banner render failed:", e.message); }
 }
@@ -1126,56 +1516,128 @@ const SB_HEADERS = {
 //      drops it to ~15 KB and pushes the quota ceiling out of reach.
 // Cache key bumped to v3 so any stale uncompressed v2 entries are ignored
 // (and overwritten on first save).
-const PROJECTS_CACHE_KEY = "settyPms:addinProjectsCacheV3";
+const PROJECTS_CACHE_KEY = "settyPms:addinProjectsCacheV5"; // V5: adds slim directory/POC emails for people-picker badges
 const PROJECTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h hard limit; revalidate every open
 
-// Cache-strip strategy: keep all top-level fields (the pane reads project.emails,
-// .notes, .milestones, .rfis, .submittals for picker, banner, duplicate-check),
-// but drop the LARGE content fields within each nested record. The biggest
-// offenders are email bodies (bodyHtmlCompressed: ~5-30 KB per email) — those
-// alone account for most localStorage growth. Note bodies, RFI/submittal long
-// text, and link arrays are also stripped. None of these are needed by anything
-// the add-in reads from cache: bodies are re-fetched from Supabase on display.
+// Cache-strip strategy v2 (aggressive): keep ONLY the fields the add-in reads
+// at pane-open time. Everything else is re-fetched from Supabase via the V2
+// fresh fetch (already happens in parallel with cache hydration, ~300-800ms).
 //
-// Result: a project with 20 saved emails goes from ~250 KB → ~5 KB in cache,
-// before compression. After pako, typically <1 KB per project.
+// Previous "soft strip" (remove just bodyHtmlCompressed) was still hitting
+// localStorage quota for users with hundreds of emails — the metadata fields
+// alone (msgId, subject, savedAt, etc.) add up at scale. Hard whitelist solves
+// this permanently: the cache becomes O(KB) regardless of email volume.
+//
+// Anything the cache DOESN'T have is fine — the freshly-loaded `allProjects`
+// from Supabase overwrites the cached version within 1s of pane open. The
+// cache exists only so the project picker renders instantly. Save flows
+// re-fetch the FULL project from Supabase via fetchFreshProjectV2 before
+// mutating, so they never depend on cache completeness.
 function _stripProjectForCache(p) {
   if (!p) return p;
-  const out = { ...p };
-  if (Array.isArray(p.emails)) {
-    out.emails = p.emails.map(e => {
-      const { bodyHtmlCompressed, bodyHtml, bodyText, bodyHtmlSize, links, ...rest } = e || {};
-      return rest;
-    });
-  }
-  if (Array.isArray(p.notes)) {
-    out.notes = p.notes.map(n => {
-      const { body, bodyHtml, links, ...rest } = n || {};
-      return rest;
-    });
-  }
-  if (Array.isArray(p.rfis)) {
-    out.rfis = p.rfis.map(r => {
-      const { notes, links, ...rest } = r || {};
-      return rest;
-    });
-  }
-  if (Array.isArray(p.submittals)) {
-    out.submittals = p.submittals.map(s => {
-      const { notes, links, ...rest } = s || {};
-      return rest;
-    });
-  }
-  if (Array.isArray(p.changeOrders)) {
-    out.changeOrders = p.changeOrders.map(co => {
-      const { notes, links, ...rest } = co || {};
-      return rest;
-    });
-  }
-  return out;
+  return {
+    // Top-level scalars needed everywhere
+    id: p.id,
+    projectNumber: p.projectNumber,
+    name: p.name,
+    client: p.client,
+    clientName: p.clientName,
+    prime: p.prime,
+    settyPm: p.settyPm,
+    status: p.status,
+    archived: p.archived,
+    projectFolderUrl: p.projectFolderUrl,
+    teamsChannelId: p.teamsChannelId,
+    teamsNotificationsEnabled: p.teamsNotificationsEnabled,
+    teamsOneNoteUrl: p.teamsOneNoteUrl,
+    teamsOneNoteNotebookId: p.teamsOneNoteNotebookId,
+    oneNoteNotebookId: p.oneNoteNotebookId,
+    // Small directory arrays — needed for assignee dropdowns
+    teamMembers: p.teamMembers || [],
+    subconsultants: p.subconsultants || [],
+    // Slim people lists — only the emails, used by the people picker's
+    // "already on this project?" badge during the cache window before the
+    // fresh fetch lands. Save flows always re-fetch the full project.
+    directory: (p.directory || []).map(d => ({ email: d.email || "" })),
+    projectContacts: { pm: ((p.projectContacts?.pm) || []).map(c => ({ email: c.email || "" })) },
+    // Nested record arrays — slim each record to ONLY the fields the add-in
+    // reads from the cached project. findSavedEmailRecord needs msgId.
+    // refreshOneNoteLinkBanner needs note.{sourceItemId, sourceMessageId,
+    // oneNoteUrl}. getLoggedEmailArtifactLabels needs note + milestone +
+    // rfi + sub source-id matchers. Pickers need id/number/title/status/etc.
+    emails: (p.emails || []).map(e => ({
+      id: e.id,
+      msgId: e.msgId,
+      subject: e.subject,
+      from: e.from,
+      fromAddress: e.fromAddress,
+      date: e.date,
+      spFolderUrl: e.spFolderUrl,
+      savedAt: e.savedAt,
+    })),
+    notes: (p.notes || []).map(n => ({
+      id: n.id,
+      sourceItemId: n.sourceItemId,
+      sourceMessageId: n.sourceMessageId,
+      sourceCalendarUId: n.sourceCalendarUId,
+      oneNoteUrl: n.oneNoteUrl,
+      actionItem: n.actionItem,
+      category: n.category,
+    })),
+    milestones: (p.milestones || []).map(m => ({
+      id: m.id,
+      sourceItemId: m.sourceItemId,
+      sourceMessageId: m.sourceMessageId,
+      dueDate: m.dueDate,
+      name: m.name,
+    })),
+    rfis: (p.rfis || []).map(r => ({
+      id: r.id,
+      number: r.number,
+      title: r.title,
+      status: r.status,
+      discipline: r.discipline,
+      spFolderUrl: r.spFolderUrl,
+      sourceItemId: r.sourceItemId,
+      sourceMessageId: r.sourceMessageId,
+      // Keep links so the artifact-chip detector can spot emails linked to
+      // this RFI after the fact (not just the original source email).
+      // Links are small (just metadata) so this doesn't bloat the cache.
+      links: r.links || [],
+    })),
+    submittals: (p.submittals || []).map(s => ({
+      id: s.id,
+      number: s.number,
+      description: s.description,
+      status: s.status,
+      discipline: s.discipline,
+      spFolderUrl: s.spFolderUrl,
+      sourceItemId: s.sourceItemId,
+      sourceMessageId: s.sourceMessageId,
+      links: s.links || [],
+    })),
+    // Other arrays (changeOrders, attachments, contracts, etc.) — not used at
+    // pane-open time, drop entirely. Save flows re-fetch the full project
+    // before mutating, so freshness is guaranteed for writes.
+  };
+}
+
+// Evict prior versions of the projects cache. They occupy localStorage quota
+// that may prevent the new (smaller) cache from being writable. Runs on every
+// pane open; cheap.
+function _pruneStaleProjectsCaches() {
+  try {
+    const stale = ["settyPms:addinProjectsCache", "settyPms:addinProjectsCacheV2", "settyPms:addinProjectsCacheV3", "settyPms:addinProjectsCacheV4"];
+    for (const k of stale) {
+      if (k !== PROJECTS_CACHE_KEY && localStorage.getItem(k) != null) {
+        try { localStorage.removeItem(k); } catch {}
+      }
+    }
+  } catch {}
 }
 
 function loadProjectsCache() {
+  _pruneStaleProjectsCaches();
   try {
     const raw = localStorage.getItem(PROJECTS_CACHE_KEY);
     if (!raw) return null;
@@ -1449,6 +1911,15 @@ async function applyLocalChangeAndSave(projectId, mutateProject) {
     }
     allProjects = allProjects.map(p => p.id === projectId ? mutated : p);
     if (selectedProject && selectedProject.id === projectId) selectedProject = mutated;
+    // Keep the localStorage snapshot in step with this save — otherwise the
+    // next pane open hydrates pre-save data and shows it until the fresh
+    // fetch lands (and, before the re-point fix in onSignedIn, for the whole
+    // session). Best-effort: cache failure never fails the save.
+    try {
+      const versionMap = {};
+      for (const [id, ver] of _projectVersionCache.entries()) versionMap[id] = ver;
+      saveProjectsCache(allProjects, allClients, versionMap);
+    } catch {}
     return mutated;
   }
 
@@ -1488,20 +1959,36 @@ async function applyLocalChangeAndSave(projectId, mutateProject) {
   // Pre-migration: legacy path is still authoritative
   return legacyApplyLocalChangeAndSave(projectId, mutateProject);
 }
-async function saveProjectEmailRow(projectId, emailRecord, savedToSharePoint) {
+async function saveProjectEmailRow(projectId, emailRecord, savedToSharePoint, conversationId) {
   if (!projectId || !emailRecord?.msgId) return;
+  // Phase 6 dual-write: write both slim index fields AND new body/metadata
+  // columns. Some fields (to/cc/preview/hasAttachments/attachmentNames/savedBy)
+  // are not yet captured upstream in the add-in's emailRecord — they default
+  // to empty/false. A future patch can enrich emailRecord at construction time
+  // to fill these from the Outlook item; until then add-in saves will have
+  // these fields blank in pms_project_emails. PMS-side saves already populate
+  // all of them.
   const row = {
     record_id: emailRecord.id,
     project_id: projectId,
     msg_id: emailRecord.msgId,
-    conversation_id: currentConversationId || null,
+    conversation_id: conversationId ?? (currentConversationId || null),
     subject: emailRecord.subject || "",
     from_name: emailRecord.from || "",
     from_address: emailRecord.fromAddress || "",
+    to_addresses: emailRecord.to || "",
+    cc_addresses: emailRecord.cc || "",
     email_date: emailRecord.date || null,
     saved_at: emailRecord.savedAt || new Date().toISOString(),
+    saved_by: emailRecord.savedBy || null,
     sp_folder_url: emailRecord.spFolderUrl || "",
     saved_to_sharepoint: !!savedToSharePoint,
+    body_html_compressed: emailRecord.bodyHtmlCompressed || null,
+    body_html_size: emailRecord.bodyHtmlSize || 0,
+    body_text: emailRecord.bodyText || "",
+    preview: emailRecord.preview || "",
+    has_attachments: !!emailRecord.hasAttachments,
+    attachment_names: emailRecord.attachmentNames || [],
   };
   // Throws on failure (caller catches and surfaces a warning). Previously this
   // silently console.warn'd and returned, so users had no idea their email
@@ -1733,6 +2220,31 @@ function _relativeTime(iso) {
   if (ms < 24 * 60 * 60 * 1000) return Math.floor(ms / 3600000) + "h ago";
   return Math.floor(ms / 86400000) + "d ago";
 }
+
+// Active (Mon–Fri) milliseconds between two instants. All of Saturday and
+// Sunday (local time) are skipped, so a Friday-evening client email doesn't
+// trip the response clock until the equivalent point on Monday. Walks the span
+// one local day at a time, counting only weekday segments — handles partial
+// first/last days correctly.
+function businessMsBetween(from, to) {
+  const end = new Date(to).getTime();
+  let cursor = new Date(from).getTime();
+  if (!(end > cursor)) return 0;
+  let total = 0;
+  while (cursor < end) {
+    const d = new Date(cursor);
+    const nextMidnight = new Date(d);
+    nextMidnight.setHours(24, 0, 0, 0);
+    const segEnd = Math.min(nextMidnight.getTime(), end);
+    const day = d.getDay();                 // 0 Sun … 6 Sat
+    if (day !== 0 && day !== 6) total += segEnd - cursor;
+    cursor = segEnd;
+  }
+  return total;
+}
+// A flagged email stays hidden until this much business time has elapsed since
+// the latest unanswered client message — "24 hours, minus the weekend".
+const RESPONSE_GRACE_MS = 24 * 60 * 60 * 1000;
 
 function getEmailProjectMap() {
   try {
@@ -1979,6 +2491,10 @@ function setSelectedProject(project, persistForEmail = false) {
   // Re-render the "Logged as RFI/Sub" chip row — different project may have
   // different artifacts sourced from the same email.
   try { refreshLoggedArtifactChips(); } catch (e) { console.warn("[chips] refresh failed:", e.message); }
+  // Re-populate the "Link to" dropdown — open RFIs/Subs differ per project.
+  try { refreshLinkToTargetDropdown(); } catch (e) { console.warn("[link-to] refresh failed:", e.message); }
+  // "N new" count depends on the selected project's directory.
+  try { updatePeopleButtonBadge(); } catch {}
   const badge = document.getElementById("selectedProjectBadge");
   const badgeText = document.getElementById("selectedProjectBadgeText");
   const clearBtn = document.getElementById("clearProjectTagBtn");
@@ -1999,6 +2515,10 @@ function setSelectedProject(project, persistForEmail = false) {
       if (!badgeText) badge.textContent = "";
     }
   }
+  // Once a project is tagged, hide the search box (the badge shows the project +
+  // a × to clear). Show it again when there's no selection.
+  const searchWrap = document.getElementById("projectSearchWrapper");
+  if (searchWrap) searchWrap.style.display = selectedProject ? "none" : "";
   if (persistForEmail && selectedProject) {
     const msgId = getCurrentMessageRestId();
     if (msgId) {
@@ -2027,6 +2547,30 @@ function setSelectedProject(project, persistForEmail = false) {
   applyPipelineUiRules();
   renderProjectSuggestions();
   void renderDateSuggestions();
+  // Auto-capture the email to the project log whenever it resolves to a project —
+  // explicit tag OR inherited from the conversation tag (restored on open) — so the
+  // whole tagged chain gets logged as you read it. Quiet + deduped inside.
+  void autoSaveEmailToRecord();
+}
+
+// Auto-save the open email to the project log the moment a project is tagged —
+// no "save to record" click needed (capture everything; the SharePoint button is
+// still used to file attachments down). Read-mode + dedup guarded.
+let _autoSavingMsgId = null; // in-flight guard so rapid restores don't double-save
+async function autoSaveEmailToRecord() {
+  try {
+    if (!selectedProject) return;
+    if (typeof emailItem?.subject !== "string") return; // compose / appointment — skip
+    const msgId = getCurrentMessageRecordId();
+    if (!msgId) return;
+    if (_autoSavingMsgId === msgId) return;                    // a save for this email is already running
+    if (findSavedEmailRecord(selectedProject, msgId)) return;  // already filed
+    _autoSavingMsgId = msgId;
+    try { await _doSaveToProjectRecordOnly(true); }            // quiet — no celebrate/status
+    finally { _autoSavingMsgId = null; }
+  } catch (e) {
+    console.warn("auto-save failed:", e);
+  }
 }
 // Refreshes the "Calendar event detected" / "Already logged" status message.
 // Must be called AFTER selectedProject and currentItemICalUId are both resolved.
@@ -2046,7 +2590,7 @@ function refreshCalendarStatus() {
     if (logNoteBtn) logNoteBtn.disabled = true;
   } else {
     setStatus("actionStatus", "info",
-      "Calendar event detected: use 'Log as Note' for meetings/site visits and 'Add Participant to Contacts' for attendees.");
+      "Calendar event detected: use 'Log as Note' (under More actions) for meetings/site visits and 'Add Participant to Contacts' for attendees.");
     if (logNoteBtn) logNoteBtn.disabled = false;
   }
 }
@@ -2134,7 +2678,7 @@ async function restoreProjectSelectionForCurrentEmail() {
     renderProjectSuggestions();
     return;
   }
-  const project = allProjects.find(p => p.id === projectId);
+  const project = getProjectById(projectId);
   if (project) {
     console.info("[restore] Restored project via", restoredVia, ":", project.projectNumber || project.name);
     setSelectedProject(project, false);
@@ -2147,7 +2691,10 @@ async function restoreProjectSelectionForCurrentEmail() {
 
 // ─── PROJECT SUGGESTION ──────────────────────────────────────────────────────
 // Ranks projects by likelihood of being "the project this email is about" using
-// signals from subject, sender domain, and project number. We *suggest* (never
+// signals from the subject, the sender, the project number, and — now that each
+// job carries its own directory — how many of that job's contacts are on the
+// To/CC line and whether the email came from the job's designated PM contact.
+// We *suggest* (never
 // auto-apply) — accuracy matters more than saved clicks given multiple active
 // projects per client. Tier-1 (existing thread tag) is handled separately by
 // restoreProjectSelectionForCurrentEmail.
@@ -2161,6 +2708,15 @@ const SUGGESTION_WEIGHTS = {
   perNameTokenInSubject:   2,
   acronymInSubject:        3,
   senderDomainMatchClient: 4,
+  // Directory signals — the project directory lists who's on each job, so the
+  // people on an email can point straight at a project. Scored in
+  // directorySignalScore(). TUNE these against real mail; see the SCORING
+  // POLICY note there for the "how many is 'lots'?" decision.
+  // Set to 1 (not higher) because Setty's contacts often sit on several active
+  // jobs at once — so one shared name on CC stays below SUGGESTION_MIN_SCORE
+  // and can't surface a job alone; it takes 2+ contacts lining up.
+  perDirectoryContactOnThread: 1, // each project contact found on the To/CC line
+  senderIsDesignatedPm:        6, // FROM the job's designated PM (moderate: one PM often runs several jobs)
 };
 const SUGGESTION_MIN_SCORE = 2;
 const SUGGESTION_MAX_RESULTS = 3;
@@ -2194,7 +2750,71 @@ function suggestionAcronyms(name) {
   }
   return out;
 }
-function suggestProjects(subject, senderEmail) {
+// Directory-based signal for one project. Two facts about an email point hard
+// at a job: how many of the job's OWN contacts are on the To/CC line, and
+// whether the email is FROM the job's designated PM contact. Both are computed
+// from data already in the cached project (directory[].email + the PM contact).
+//
+// We deliberately ignore our own firm's addresses — a Setty teammate is on
+// every internal thread, so their presence tells us nothing about WHICH job.
+//
+// KNOWN LIMITATION: a contact who sits on many active jobs (e.g. a county
+// facilities director) is less discriminating than one unique to a single job.
+// A later refinement could down-weight a contact by how many projects they
+// appear on (an inverse-frequency weight); for now every project contact on
+// the thread counts equally. Returns the { points, reasons } shape the caller
+// already accumulates.
+const FIRM_EMAIL_DOMAIN = "@setty.com";
+function directorySignalScore(project, participants, senderEmail) {
+  const norm = e => (e || "").trim().toLowerCase();
+  const isExternal = e => e && !e.endsWith(FIRM_EMAIL_DOMAIN);
+
+  // This job's discriminating contacts: external directory people + the
+  // designated PM, with our own firm's addresses filtered out.
+  const contactEmails = new Set(
+    [
+      ...((project.directory || []).map(d => norm(d.email))),
+      ...((project.projectContacts?.pm || []).map(c => norm(c.email))),
+    ].filter(isExternal)
+  );
+  if (!contactEmails.size) return { points: 0, reasons: [] };
+
+  // How many of them are on the To/CC line? (The sender is scored separately.)
+  const onThread = new Set(
+    (participants || [])
+      .filter(p => p.label === "To" || p.label === "CC")
+      .map(p => norm(p.emailAddress))
+      .filter(Boolean)
+  );
+  let overlap = 0;
+  for (const e of contactEmails) if (onThread.has(e)) overlap++;
+
+  // Is the email FROM this job's designated PM contact?
+  const pmEmails = new Set((project.projectContacts?.pm || []).map(c => norm(c.email)).filter(Boolean));
+  const fromPm = pmEmails.has(norm(senderEmail));
+
+  // ── SCORING POLICY ─────────────────────────────────────────────────────────
+  // LINEAR: every project contact on the thread is worth
+  // perDirectoryContactOnThread, so "lots of them" stack up. Tuned to Setty's
+  // reality (contacts often span several active jobs): one lone contact scores
+  // 1 — below SUGGESTION_MIN_SCORE, so it can't surface a job alone — while 2+
+  // lining up clears the bar. "From the designated PM" is a moderate nudge (6)
+  // that surfaces all of that PM's jobs for you to pick from, since one PM
+  // often runs several. Re-tune the weights above if real mail says otherwise.
+  let points = 0;
+  const reasons = [];
+  if (overlap > 0) {
+    points += overlap * SUGGESTION_WEIGHTS.perDirectoryContactOnThread;
+    reasons.push(overlap === 1 ? "1 project contact on thread"
+                               : overlap + " project contacts on thread");
+  }
+  if (fromPm) {
+    points += SUGGESTION_WEIGHTS.senderIsDesignatedPm;
+    reasons.push("from project's PM contact");
+  }
+  return { points, reasons };
+}
+function suggestProjects(subject, senderEmail, participants = emailParticipants) {
   const subj = (subject || "").toLowerCase();
   if (!subj && !senderEmail) return [];
   const subjTokens = new Set(suggestionTokenize(subj));
@@ -2238,6 +2858,13 @@ function suggestProjects(subject, senderEmail) {
       }
     }
 
+    // Directory signals: project contacts on the To/CC line + sender = PM contact.
+    const dirSignal = directorySignalScore(p, participants, senderEmail);
+    if (dirSignal.points) {
+      score += dirSignal.points;
+      reasons.push(...dirSignal.reasons);
+    }
+
     if (score >= SUGGESTION_MIN_SCORE) {
       scored.push({ project: p, score, reasons });
     }
@@ -2246,6 +2873,433 @@ function suggestProjects(subject, senderEmail) {
   scored.sort((a, b) => b.score - a.score || (a.project.name || "").localeCompare(b.project.name || ""));
   return scored.slice(0, SUGGESTION_MAX_RESULTS);
 }
+
+// ─── EMAIL SWEEP (dry-run preview) ────────────────────────────────────────────
+// Scans the user's recent mail and classifies each message with suggestProjects:
+//   file   → confident single match (project # in subject, OR top score
+//            >= SWEEP_AUTOFILE_MIN and beats the runner-up by SWEEP_AUTOFILE_MARGIN)
+//   review → plausible but ambiguous (>= SUGGESTION_MIN_SCORE) → human queue
+//   skip   → nothing matched
+// PREVIEW WRITES NOTHING. It exists to calibrate the thresholds against real mail
+// before auto-filing is enabled. Filing + the review queue come next once the
+// numbers look right.
+const SWEEP_FETCH_COUNT = 150; // recent messages to scan (some filtered to Focused)
+const SWEEP_REVIEW_MIN  = 4;   // min name/acronym score to ENTER review (≥2 distinctive signals)
+
+// Common AEC / institutional words that appear across many project names — too
+// generic to identify a project alone (data-driven from the filed-email subjects).
+const SWEEP_EXTRA_STOPWORDS = new Set([
+  "nyc", "ny", "new", "york", "city", "state", "county", "public", "authority", "dormitory",
+  "suny", "sucf", "ogs", "dasny", "sca", "cuny", "dcas", "ddc", "dsny", "nycha", "mta",
+  "university", "college", "school", "schools", "campus", "hall", "building", "bldg", "center", "centre",
+  "design", "services", "service", "engineering", "consulting", "construction", "architectural",
+  "replacement", "replace", "upgrade", "upgrades", "improvements", "improvement",
+  "rehabilitation", "rehab", "roof", "hvac", "mep", "electrical", "mechanical", "plumbing", "fire", "alarm",
+  "study", "feasibility", "assessment", "survey", "report", "garage", "facility", "facilities",
+  "department", "dept", "office", "task", "order",
+]);
+function sweepTokenize(s) {
+  // Drop generic words AND short bare numbers ("23", "06") that coincidentally
+  // match dates/counts; keep 3+ digit identifiers (280, 292, 578) and alphanumerics (9r).
+  return suggestionTokenize(s)
+    .filter((t) => !SWEEP_EXTRA_STOPWORDS.has(t))
+    .filter((t) => !(/^\d+$/.test(t) && t.length < 3));
+}
+
+// Bulk/marketing/automated sender check — no-reply, alerts, ESP & bid/event domains.
+function looksPromotional(addr) {
+  const a = (addr || "").toLowerCase();
+  const local = a.split("@")[0] || "";
+  const domain = a.split("@")[1] || "";
+  if (/(^|[._-])(no-?reply|do-?not-?reply|donotreply|noreply|newsletter|marketing|mailer|notifications?|alerts?|bounce|invitations?|projecttracker|tracker)([._-]|$)/.test(local)) return true;
+  if (/(mailchimp|constantcontact|sendgrid|eventbrite|substack|hubspot|marketo|pardot|sparkpostmail|rsgsv|mcsv|cmail\d|bidnet|nyscr|proest|crewnetwork)/.test(domain)) return true;
+  return false;
+}
+
+// Is a project ID present in the subject? The SAPX number (full or sans .00
+// suffix) OR the client's prime number — both appear in ~7-9% of filed subjects
+// and are the strongest possible signal. Guards against junk/short prime values.
+function subjectHasProjectId(subjLower, p) {
+  // Normalize separators so "2022.37-01" (prime) matches "2022.37.01" in a subject.
+  const norm = (s) => s.replace(/[_\-\s]+/g, ".");
+  const subjN = norm(subjLower);
+  const ids = [];
+  const sapx = String(p.projectNumber || "").trim().toLowerCase();
+  if (sapx.length >= 5) { ids.push(sapx); ids.push(sapx.split(".")[0]); }
+  const prime = String(p.primeProjectNumber || "").trim().toLowerCase();
+  if (prime.length >= 5 && /\d/.test(prime)) ids.push(prime);
+  return ids.some((id) => id && (subjLower.includes(id) || subjN.includes(norm(id))));
+}
+
+// Subject-only project matcher for the sweep. Ignores sender-domain / shared-
+// contact signals (noise in a batch). Signals (data-driven from filed emails):
+// project ID in subject (strong), DISTINCTIVE name words, acronym.
+function sweepSuggest(subject) {
+  const subj = (subject || "").toLowerCase();
+  if (!subj) return [];
+  const subjTokens = new Set(sweepTokenize(subj));
+  const scored = [];
+  for (const p of (allProjects || [])) {
+    if (!p || p.archived || (!p.name && !p.projectNumber)) continue;
+    let score = 0;
+    const reasons = [];
+    if (subjectHasProjectId(subj, p)) {
+      score += SUGGESTION_WEIGHTS.projectNumberInSubject; // 10 — near-certain
+      reasons.push("project # in subject");
+    }
+    const hits = sweepTokenize(p.name || "").filter((t) => subjTokens.has(t));
+    if (hits.length) {
+      score += hits.length * SUGGESTION_WEIGHTS.perNameTokenInSubject;
+      reasons.push(hits.length + " name word" + (hits.length > 1 ? "s" : "") + " match");
+    }
+    if ([...suggestionAcronyms(p.name || "")].some((a) => subjTokens.has(a))) {
+      score += SUGGESTION_WEIGHTS.acronymInSubject;
+      reasons.push("acronym match");
+    }
+    if (score >= SUGGESTION_WEIGHTS.perNameTokenInSubject) scored.push({ project: p, score, reasons });
+  }
+  scored.sort((a, b) => b.score - a.score || (a.project.name || "").localeCompare(b.project.name || ""));
+  return scored.slice(0, 3);
+}
+
+// To/CC list in the shape suggestProjects expects, from a Graph message.
+function sweepParticipants(msg) {
+  const out = [];
+  for (const r of (msg.toRecipients || [])) {
+    const a = r.emailAddress?.address; if (a) out.push({ label: "To", emailAddress: a });
+  }
+  for (const r of (msg.ccRecipients || [])) {
+    const a = r.emailAddress?.address; if (a) out.push({ label: "CC", emailAddress: a });
+  }
+  return out;
+}
+
+// Confidence policy (tightened after live testing — auto-file must be near-certain):
+//   auto-file ONLY when a project ID (SAPX or client prime #) is in the subject;
+//   review only when the name/acronym score clears SWEEP_REVIEW_MIN (≥2 distinctive
+//   signals); otherwise skip. A single coincidental word no longer files anything.
+function classifySweep(candidates) {
+  if (!candidates.length) return { action: "skip" };
+  const top = candidates[0];
+  const hasId = (top.reasons || []).some((r) => r.includes("project #"));
+  if (hasId) return { action: "file", project: top.project, score: top.score, reasons: top.reasons };
+  if (top.score >= SWEEP_REVIEW_MIN) return { action: "review", candidates: candidates.slice(0, 3) };
+  return { action: "skip" };
+}
+
+// msg_ids already in the email log, so the preview ignores already-filed mail.
+async function sweepLoadFiledIds() {
+  try {
+    const res = await fetchWithRetry(
+      SUPABASE_URL + "/rest/v1/" + PROJECT_EMAILS_TABLE + "?select=msg_id",
+      { headers: SB_HEADERS }, { label: "sb sweep filed ids" });
+    if (!res.ok) return new Set();
+    const rows = await res.json();
+    return new Set((rows || []).map(r => r.msg_id).filter(Boolean));
+  } catch { return new Set(); }
+}
+
+// Learned sender→project signal from the filed log (RPC sender_project_signals).
+// Self-improving: as more emails get filed, more senders become project-specific.
+// Fetched once per sweep. Returns Map(lower-address -> [{projectId, n, projects}]).
+async function sweepLoadSenderMap() {
+  try {
+    const res = await fetchWithRetry(
+      SUPABASE_URL + "/rest/v1/rpc/sender_project_signals",
+      { method: "POST", headers: { ...SB_HEADERS, "Content-Type": "application/json" }, body: "{}" },
+      { label: "sb sender signals" });
+    if (!res.ok) return new Map();
+    const rows = await res.json();
+    const map = new Map();
+    for (const r of (rows || [])) {
+      const addr = (r.from_address || "").toLowerCase();
+      if (!addr) continue;
+      if (!map.has(addr)) map.set(addr, []);
+      map.get(addr).push({ projectId: r.project_id, n: r.n, projects: r.projects });
+    }
+    return map;
+  } catch { return new Map(); }
+}
+
+// Merge the learned sender signal into a message's subject candidates. A sender
+// who historically files to ONE project is strong evidence (even with no subject
+// match); two projects is moderate. This is what lets sender-only emails (no
+// project name in the subject) still surface for review.
+function mergeSenderSignal(candidates, senderProjects) {
+  if (!senderProjects || !senderProjects.length) return candidates;
+  const byId = new Map(candidates.map((c) => [c.project.id, c]));
+  for (const sp of senderProjects) {
+    const proj = (allProjects || []).find((p) => p && p.id === sp.projectId);
+    if (!proj) continue;
+    const boost = sp.projects === 1 ? 8 : 4;
+    if (byId.has(sp.projectId)) {
+      const c = byId.get(sp.projectId);
+      c.score += boost;
+      if (!c.reasons.includes("known sender")) c.reasons.push("known sender");
+    } else {
+      const c = { project: proj, score: boost, reasons: ["known sender"] };
+      byId.set(sp.projectId, c);
+      candidates.push(c);
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates;
+}
+
+async function sweepRecentMail() {
+  const btn = document.getElementById("sweepRunBtn");
+  const statusEl = document.getElementById("sweepStatus");
+  const resultsEl = document.getElementById("sweepResults");
+  if (!allProjects || !allProjects.length) {
+    if (statusEl) statusEl.textContent = "Projects still loading — try again in a moment.";
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = "⏳ Scanning your Focused inbox…";
+  if (resultsEl) resultsEl.innerHTML = "";
+  try {
+    const r = await sweepScan(); // shared scanner: newest-first, Focused-only, subject-matched
+    if (statusEl) {
+      statusEl.textContent =
+        "Scanned " + r.scanned + " focused · would auto-file " + r.file.length +
+        " · review " + r.review.length + " · skip " + r.skip +
+        " · already filed " + r.alreadyFiled + "  — preview only, nothing saved.";
+    }
+    const grp = (t) => '<div style="font-weight:600;margin:8px 0 4px;">' + t + "</div>";
+    const meta = (t) => '<span style="color:#888;">' + t + "</span>";
+    const rowCss = 'style="padding:4px 0;border-top:1px solid #eee;font-size:12px;"';
+    const lines = [];
+    if (r.file.length) {
+      lines.push(grp("✅ Would auto-file (" + r.file.length + ")"));
+      for (const e of r.file) {
+        lines.push("<div " + rowCss + "><b>" + sweepEsc(e.project.projectNumber || e.project.name) +
+          "</b> — " + sweepEsc(e.subject) + "<br>" +
+          meta(sweepEsc(e.from) + " · " + sweepEsc((e.date || "").slice(0, 10)) + " · score " + e.score) + "</div>");
+      }
+    }
+    if (r.review.length) {
+      lines.push(grp("🟡 Needs review (" + r.review.length + ")"));
+      for (const e of r.review) {
+        const opts = (e.candidates || [])
+          .map((c) => sweepEsc(c.project.projectNumber || c.project.name) + " (" + c.score + ")").join(" · ");
+        lines.push("<div " + rowCss + ">" + sweepEsc(e.subject) + "<br>" +
+          meta(sweepEsc(e.from) + " · " + sweepEsc((e.date || "").slice(0, 10)) + " → " + opts) + "</div>");
+      }
+    }
+    if (resultsEl) resultsEl.innerHTML = lines.join("") || meta("No new emails matched a project.");
+  } catch (e) {
+    if (statusEl) statusEl.textContent = "✗ " + humanizeError(e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderSweepResults(scanned, b) {
+  const statusEl = document.getElementById("sweepStatus");
+  const resultsEl = document.getElementById("sweepResults");
+  if (statusEl) {
+    statusEl.textContent =
+      "Scanned " + scanned + " · would auto-file " + b.file.length +
+      " · review " + b.review.length + " · skip " + b.skip +
+      " · already filed " + b.alreadyFiled + "  — preview only, nothing saved.";
+  }
+  if (!resultsEl) return;
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const grp = (t) => '<div style="font-weight:600;margin:8px 0 4px;">' + t + "</div>";
+  const meta = (t) => '<span style="color:#888;">' + t + "</span>";
+  const rowCss = 'style="padding:4px 0;border-top:1px solid #eee;font-size:12px;"';
+  const out = [];
+  if (b.file.length) {
+    out.push(grp("✅ Would auto-file (" + b.file.length + ")"));
+    for (const e of b.file) {
+      out.push("<div " + rowCss + "><b>" + esc(e.project.projectNumber || e.project.name) + "</b> — " +
+        esc(e.subject) + "<br>" + meta(esc(e.from) + " · " + esc(e.date) + " · score " + e.score +
+        " (" + esc((e.reasons || []).join(", ")) + ")") + "</div>");
+    }
+  }
+  if (b.review.length) {
+    out.push(grp("🟡 Needs review (" + b.review.length + ")"));
+    for (const e of b.review) {
+      const opts = (e.candidates || [])
+        .map((c) => esc(c.project.projectNumber || c.project.name) + " (" + c.score + ")").join(" · ");
+      out.push("<div " + rowCss + ">" + esc(e.subject) + "<br>" +
+        meta(esc(e.from) + " · " + esc(e.date) + " → " + opts) + "</div>");
+    }
+  }
+  resultsEl.innerHTML = out.join("") || meta("No new emails matched a project.");
+}
+
+// ─── EMAIL SWEEP v2: actual filing + review queue ─────────────────────────────
+// "Run & file" auto-files the confident bucket and queues ambiguous ones for a
+// one-click human confirm. Filing reuses the per-email recipe from
+// _doSaveToProjectRecordOnly (getToken → fetch body → compressHtmlAddin) and ALSO
+// stores stripped body_text so swept mail is full-text searchable immediately
+// (the manual flow leaves body_text empty — that was the backfill root cause).
+let _sweepReview = []; // ambiguous items awaiting confirm after a Run & file
+const sweepEsc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// Fetch + classify recent mail into rich items carrying the Graph id +
+// conversationId needed to file later. Writes nothing.
+async function sweepScan() {
+  const token = await getToken();
+  // Newest first, then keep only Focused (Graph can't combine $filter + $orderby).
+  const path = "/me/messages?$top=" + SWEEP_FETCH_COUNT +
+    "&$select=id,internetMessageId,inferenceClassification,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,hasAttachments" +
+    "&$orderby=receivedDateTime%20desc";
+  const data = await graphFetch("GET", path, null, token);
+  const messages = data?.value || [];
+  const filed = await sweepLoadFiledIds();
+  const senderMap = await sweepLoadSenderMap();
+  const out = { scanned: 0, file: [], review: [], skip: 0, alreadyFiled: 0 };
+  for (const m of messages) {
+    if (m.inferenceClassification && m.inferenceClassification !== "focused") continue; // Focused only
+    out.scanned++;
+    const sender = m.from?.emailAddress?.address || "";
+    if (looksPromotional(sender)) { out.skip++; continue; } // newsletters / marketing
+    const mid = m.internetMessageId || "";
+    if (mid && filed.has(mid)) { out.alreadyFiled++; continue; }
+    const verdict = classifySweep(mergeSenderSignal(sweepSuggest(m.subject || ""), senderMap.get(sender.toLowerCase())));
+    if (verdict.action === "skip") { out.skip++; continue; }
+    const item = {
+      gid: m.id, convId: m.conversationId || "", msgId: mid,
+      subject: m.subject || "(no subject)",
+      from: m.from?.emailAddress?.name || sender, fromAddress: sender,
+      to: (m.toRecipients || []).map((r) => r.emailAddress?.address).filter(Boolean).join(", "),
+      cc: (m.ccRecipients || []).map((r) => r.emailAddress?.address).filter(Boolean).join(", "),
+      date: m.receivedDateTime || "", hasAttachments: !!m.hasAttachments,
+    };
+    if (verdict.action === "file") out.file.push({ ...item, project: verdict.project, score: verdict.score, reasons: verdict.reasons });
+    else out.review.push({ ...item, candidates: verdict.candidates });
+  }
+  return out;
+}
+
+// Strip HTML to plain text for searchable body_text (mirrors the server side).
+function stripHtmlToText(html) {
+  return (html || "")
+    .replace(new RegExp("<script[^>]*>[^]*?</script>", "gi"), " ")
+    .replace(new RegExp("<style[^>]*>[^]*?</style>", "gi"), " ")
+    .replace(new RegExp("<br[^>]*>", "gi"), "\n")
+    .replace(new RegExp("</(p|div|tr|li|h[1-6])>", "gi"), "\n")
+    .replace(new RegExp("<[^>]+>", "g"), " ")
+    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/&#39;/gi, "'").replace(/&apos;/gi, "'").replace(/&quot;/gi, '"')
+    .replace(/ +/g, " ").replace(/\n +/g, "\n").trim();
+}
+
+// File sweep items to item.projectId: writes the search-index row (with stripped
+// body_text) and dual-writes project.emails[] grouped per project. {filed, failed}.
+async function sweepFileItems(items) {
+  if (!items.length) return { filed: 0, failed: 0 };
+  const token = await getToken();
+  const byProject = new Map();
+  let filed = 0, failed = 0;
+  for (const it of items) {
+    try {
+      let bodyHtml = "";
+      try {
+        const d = await graphFetch("GET", "/me/messages/" + it.gid + "?$select=body", null, token);
+        bodyHtml = d?.body?.content || "";
+      } catch (_) { /* body fetch is best-effort */ }
+      const rec = {
+        id: uid(), msgId: it.msgId,
+        subject: it.subject, from: it.from, fromAddress: it.fromAddress,
+        to: it.to, cc: it.cc, date: it.date,
+        bodyText: bodyHtml ? stripHtmlToText(bodyHtml) : "",
+        bodyHtmlCompressed: bodyHtml ? compressHtmlAddin(bodyHtml) : "",
+        bodyHtmlSize: bodyHtml.length,
+        hasAttachments: it.hasAttachments, attachmentNames: [],
+        spFolderUrl: "", links: [],
+        savedAt: new Date().toISOString(), savedBy: _getCurrentUserEmail() || "",
+        savedToSharePoint: false,
+      };
+      await saveProjectEmailRow(it.projectId, rec, false, it.convId || null);
+      if (!byProject.has(it.projectId)) byProject.set(it.projectId, []);
+      byProject.get(it.projectId).push(rec);
+      filed++;
+    } catch (e) {
+      console.warn("sweep file failed:", e);
+      failed++;
+    }
+  }
+  // Keep project.emails[] in sync — one save per project (avoids version churn).
+  for (const [pid, recs] of byProject) {
+    try {
+      await applyLocalChangeAndSave(pid, (fresh) => ({ ...fresh, emails: [...(fresh.emails || []), ...recs] }));
+    } catch (e) {
+      console.warn("sweep dual-write to project.emails failed for", pid, e);
+    }
+  }
+  return { filed, failed };
+}
+
+// RUN & FILE — auto-file the confident bucket, queue the ambiguous ones.
+async function sweepRunAndFile() {
+  const btn = document.getElementById("sweepFileBtn");
+  const statusEl = document.getElementById("sweepStatus");
+  if (!allProjects || !allProjects.length) { if (statusEl) statusEl.textContent = "Projects still loading…"; return; }
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = "⏳ Scanning and filing confident matches…";
+  try {
+    const r = await sweepScan();
+    for (const it of r.file) it.projectId = it.project.id;
+    const { filed, failed } = await sweepFileItems(r.file);
+    _sweepReview = r.review;
+    if (statusEl) statusEl.textContent =
+      "✓ Filed " + filed + (failed ? (" · " + failed + " failed") : "") +
+      " · " + _sweepReview.length + " to review · skipped " + r.skip + " · already filed " + r.alreadyFiled;
+    renderSweepReviewQueue();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = "✗ " + humanizeError(e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Review queue — each ambiguous email gets a button per candidate project + Skip.
+function renderSweepReviewQueue() {
+  const resultsEl = document.getElementById("sweepResults");
+  if (!resultsEl) return;
+  const pending = _sweepReview.filter((e) => !e._done);
+  if (!pending.length) { resultsEl.innerHTML = '<span style="color:#888;">Review queue clear.</span>'; return; }
+  const bcss = 'style="margin:2px 4px 2px 0;padding:2px 8px;font-size:12px;cursor:pointer;"';
+  const rows = ['<div style="font-weight:600;margin:8px 0 4px;">🟡 Review (' + pending.length + ' left)</div>'];
+  _sweepReview.forEach((e, i) => {
+    if (e._done) return;
+    const cands = (e.candidates || []).map((c, ci) =>
+      '<button type="button" data-sw="file" data-i="' + i + '" data-ci="' + ci + '" ' + bcss + ">" +
+      sweepEsc(c.project.projectNumber || c.project.name) + "</button>").join("");
+    rows.push('<div style="padding:6px 0;border-top:1px solid #eee;font-size:12px;">' +
+      sweepEsc(e.subject) + '<br><span style="color:#888;">' + sweepEsc(e.from) + " · " +
+      sweepEsc((e.date || "").slice(0, 10)) + "</span><br>File to: " + cands +
+      '<button type="button" data-sw="skip" data-i="' + i + '" ' + bcss + ">Skip</button></div>");
+  });
+  resultsEl.innerHTML = rows.join("");
+  resultsEl.querySelectorAll("button[data-sw]").forEach((b) => {
+    b.onclick = () => {
+      const i = +b.dataset.i;
+      if (b.dataset.sw === "skip") { if (_sweepReview[i]) _sweepReview[i]._done = "skip"; renderSweepReviewQueue(); return; }
+      void sweepConfirmReview(i, +b.dataset.ci);
+    };
+  });
+}
+
+async function sweepConfirmReview(i, ci) {
+  const e = _sweepReview[i];
+  if (!e || e._done) return;
+  const proj = e.candidates?.[ci]?.project;
+  if (!proj) return;
+  e._done = "filing";
+  renderSweepReviewQueue();
+  const { filed } = await sweepFileItems([{ ...e, projectId: proj.id }]);
+  e._done = filed ? "filed" : null;
+  if (!filed) { const s = document.getElementById("sweepStatus"); if (s) s.textContent = "✗ Filing failed — try again."; }
+  renderSweepReviewQueue();
+}
+
 function renderProjectSuggestions() {
   const block = document.getElementById("suggestionBlock");
   const chips = document.getElementById("suggestionChips");
@@ -2267,11 +3321,442 @@ function renderProjectSuggestions() {
   `).join("");
   chips.querySelectorAll(".suggestion-chip").forEach(el => {
     el.onclick = () => {
-      const proj = allProjects.find(p => p.id === el.dataset.id);
+      const proj = getProjectById(el.dataset.id);
       if (proj) setSelectedProject(proj, true);
     };
   });
   block.style.display = "block";
+}
+
+// ─── RESPONSE-NEEDED CLASSIFIER ──────────────────────────────────────────────
+// Scores a CLIENT email by how likely it is to need a reply from us. Same
+// weighted-signal shape as suggestProjects(): accumulate points, collect the
+// reasons that fired, flag when the total clears RESPONSE_MIN_SCORE. We never
+// auto-act — this only decides "is this worth putting on the watchlist".
+//
+// TUNE: the phrase lists below are the part to adjust after real-world use.
+// Setty clients use a mix of blunt and polite phrasing, so MIN_SCORE is low
+// (3) — a single softer signal can still flag. Raise it if the panel gets
+// noisy; expand RESPONSE_POLITE_PHRASES if soft asks slip through.
+const RESPONSE_WEIGHTS = {
+  questionMarkInSubject:  4,
+  questionMarkInBody:     2,
+  interrogativeOpener:    3,
+  politeRequest:          2,
+  hasDueDate:             3,
+  urgencyWord:            2,
+  addressedToMe:          2,   // signed-in user is in the To field, not just CC
+  namedInSalutation:      3,   // the greeting names the signed-in user
+  exclusionPhrase:       -5,   // explicit opt-out beats inferred signals
+};
+const RESPONSE_MIN_SCORE = 3;
+
+// Sentence-opening interrogatives — matched only at the start of a sentence so
+// a mid-sentence "how" ("…explained how we did it") doesn't count.
+const RESPONSE_INTERROGATIVES = [
+  "can you", "could you", "would you", "will you", "do you", "are you",
+  "is it", "have you", "when ", "what ", "where ", "how ", "why ",
+  "which ", "who ",
+];
+const RESPONSE_POLITE_PHRASES = [
+  "please confirm", "please advise", "please let me know", "please send",
+  "please provide", "let me know", "let us know", "get back to me",
+  "your thoughts", "any update", "awaiting your", "looking forward to your",
+  "circle back", "need your",
+];
+const RESPONSE_URGENCY_WORDS = [
+  "asap", "urgent", "time-sensitive", "time sensitive", "by eod",
+  "end of day", "no later than", "right away", "first thing",
+];
+const RESPONSE_EXCLUSIONS = [
+  "no response needed", "no reply needed", "no action required",
+  "no action needed", "for your records", "just an fyi", "no need to reply",
+];
+
+// Strip URLs so a "?utm=…" query string doesn't read as a question.
+function stripUrlsForScan(s) {
+  return (s || "").replace(/https?:\/\/\S+/gi, " ");
+}
+
+// subject, bodyText: raw strings from the email. emailReceivedDate: Date|string
+// used by extractDueDates to resolve year-less dates. Returns the same
+// { score, reasons } shape as suggestProjects(), plus a needsReply boolean and
+// any ISO dates found (so the watchlist row can store a due date).
+function needsResponse(subject, bodyText, emailReceivedDate, opts = {}) {
+  const subj = (subject || "").toLowerCase();
+  const body = stripUrlsForScan(trimToCurrentMessage(bodyText || "")).toLowerCase();
+  let score = 0;
+  const reasons = [];
+  // A "content signal" is real evidence of an ASK — a question, a request, a
+  // deadline. The recipient signals (addressed to you / named in greeting) are
+  // NOT content: a thank-you note is still addressed to you. needsReply
+  // requires at least one content signal, so recipient signals can only
+  // amplify a genuine ask — never originate a flag on their own.
+  let contentSignal = false;
+
+  if (subj.includes("?")) {
+    score += RESPONSE_WEIGHTS.questionMarkInSubject;
+    reasons.push("question in subject");
+    contentSignal = true;
+  }
+  if (body.includes("?")) {
+    score += RESPONSE_WEIGHTS.questionMarkInBody;
+    reasons.push("question in body");
+    contentSignal = true;
+  }
+  // Interrogative openers — split into sentences, check start-of-sentence only.
+  const sentences = body.split(/[.!?\n]+/).map(s => s.trim()).filter(Boolean);
+  if (sentences.some(s => RESPONSE_INTERROGATIVES.some(q => s.startsWith(q)))) {
+    score += RESPONSE_WEIGHTS.interrogativeOpener;
+    reasons.push("direct question");
+    contentSignal = true;
+  }
+  if (RESPONSE_POLITE_PHRASES.some(p => body.includes(p) || subj.includes(p))) {
+    score += RESPONSE_WEIGHTS.politeRequest;
+    reasons.push("request phrase");
+    contentSignal = true;
+  }
+  // Reuse the existing date detector — any due date is a deadline signal.
+  const dueDates = extractDueDates(bodyText || "", emailReceivedDate);
+  if (dueDates.length) {
+    score += RESPONSE_WEIGHTS.hasDueDate;
+    reasons.push("mentions a date");
+    contentSignal = true;
+  }
+  if (RESPONSE_URGENCY_WORDS.some(w => body.includes(w) || subj.includes(w))) {
+    score += RESPONSE_WEIGHTS.urgencyWord;
+    reasons.push("urgency");
+    contentSignal = true;
+  }
+  // Recipient signals — computed by the caller (needs the recipient list and
+  // the signed-in user's name, which a pure subject+body function can't see).
+  // These are boosters only: they add weight but never set contentSignal.
+  if (opts.addressedToMe) {
+    score += RESPONSE_WEIGHTS.addressedToMe;
+    reasons.push("addressed to you");
+  }
+  if (opts.namedInSalutation) {
+    score += RESPONSE_WEIGHTS.namedInSalutation;
+    reasons.push("greets you by name");
+  }
+  if (RESPONSE_EXCLUSIONS.some(x => body.includes(x) || subj.includes(x))) {
+    score += RESPONSE_WEIGHTS.exclusionPhrase;
+    reasons.push("explicit no-reply");
+  }
+
+  return {
+    score,
+    reasons,
+    // Both gates: a genuine ask must be present AND the weighted score must
+    // clear the bar. A thank-you note addressed to you fails the first gate.
+    needsReply: contentSignal && score >= RESPONSE_MIN_SCORE,
+    dueDates: dueDates.map(d => d.iso),
+  };
+}
+
+// ─── RESPONSE WATCHLIST — DATA LAYER ─────────────────────────────────────────
+// A client email that needsResponse() flags gets one row in the shared
+// pms_email_watchlist table, keyed on conversationId. Whether the row is still
+// "open" is NOT trusted from this table — it's re-verified against Graph at
+// render time (isThreadAwaitingReply). The table is just the watchlist.
+
+// Identifies the current user for watchlist ownership. Used for BOTH the
+// added_by written on insert and the filter on read, so they always agree —
+// the panel only shows emails this user flagged.
+function watchlistUserKey() {
+  return msalAccount?.username || msalAccount?.name || "unknown";
+}
+
+// Looks up THIS user's row for a thread. Rows are keyed (conversation_id,
+// added_by), so a colleague's row for the same thread is invisible here — that
+// is what lets two people track the same thread independently.
+async function getMyWatchlistRow(conversationId) {
+  if (!conversationId) return null;
+  const url = SUPABASE_URL + "/rest/v1/" + EMAIL_WATCHLIST_TABLE +
+    "?conversation_id=eq." + encodeURIComponent(conversationId) +
+    "&added_by=eq." + encodeURIComponent(watchlistUserKey()) +
+    "&select=conversation_id,status&limit=1";
+  try {
+    const res = await fetch(url, { headers: SB_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows?.[0] || null;
+  } catch { return null; }
+}
+
+// True if ANY Setty user's row for this thread is 'dismissed'. Used to honor a
+// shared dismiss: once someone clears a thread, it stays cleared for everyone —
+// including a colleague who only opens the email afterward.
+async function isConversationDismissed(conversationId) {
+  if (!conversationId) return false;
+  const url = SUPABASE_URL + "/rest/v1/" + EMAIL_WATCHLIST_TABLE +
+    "?conversation_id=eq." + encodeURIComponent(conversationId) +
+    "&status=eq.dismissed&select=conversation_id&limit=1";
+  try {
+    const res = await fetch(url, { headers: SB_HEADERS });
+    if (!res.ok) return false;
+    return ((await res.json())?.length || 0) > 0;
+  } catch { return false; }
+}
+
+// Inserts a watchlist row only if THIS user isn't already tracking the thread.
+// This is what makes the classify-on-open hook safe to fire on every email
+// view: re-opening a thread you already dismissed (or that's been answered)
+// must NOT resurrect your row, and a thread any colleague has dismissed stays
+// dismissed for everyone. Returns true only when a new row was created.
+async function addWatchlistEntryIfNew(entry) {
+  if (!entry?.conversation_id) return false;
+  if (await getMyWatchlistRow(entry.conversation_id)) return false;
+  if (await isConversationDismissed(entry.conversation_id)) return false;
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/" + EMAIL_WATCHLIST_TABLE, {
+      method: "POST",
+      headers: { ...SB_HEADERS, "Prefer": "return=minimal" },
+      body: JSON.stringify(entry),
+    });
+    if (!res.ok) {
+      console.warn("Watchlist insert failed:", res.status, await res.text());
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("Watchlist insert failed:", e);
+    return false;
+  }
+}
+
+async function getWatchlistOpenItems() {
+  const url = SUPABASE_URL + "/rest/v1/" + EMAIL_WATCHLIST_TABLE +
+    "?status=eq.watching&added_by=eq." + encodeURIComponent(watchlistUserKey()) +
+    "&select=*&order=added_at.asc";
+  try {
+    const res = await fetch(url, { headers: SB_HEADERS });
+    if (!res.ok) return [];
+    return (await res.json()) || [];
+  } catch { return []; }
+}
+
+// Updates watchlist rows for a thread. By default only THIS user's row (the
+// 'answered' flip is per-row — but behaves as shared because every participant's
+// row independently flips on their next Graph check). Pass { allUsers: true } to
+// update EVERY Setty row for the thread at once — that's how a dismiss clears the
+// flag for every colleague who had the same email flagged, not just the clicker.
+async function setWatchlistStatus(conversationId, status, opts = {}) {
+  if (!conversationId) return;
+  let url = SUPABASE_URL + "/rest/v1/" + EMAIL_WATCHLIST_TABLE +
+    "?conversation_id=eq." + encodeURIComponent(conversationId);
+  if (!opts.allUsers) {
+    url += "&added_by=eq." + encodeURIComponent(watchlistUserKey());
+  }
+  try {
+    await fetch(url, {
+      method: "PATCH",
+      headers: { ...SB_HEADERS, "Prefer": "return=minimal" },
+      body: JSON.stringify({ status, last_checked_at: new Date().toISOString() }),
+    });
+  } catch (e) { console.warn("Watchlist status update failed:", e); }
+}
+
+// The "answered?" check. Asks Graph for the single most recent message in the
+// thread: if its sender is outside Setty, we still owe a reply. A reply from
+// ANY @setty.com address — including a colleague's — counts as answered, so a
+// teammate handling it clears the item for everyone. Returns { awaiting, since }
+// where `since` is the latest message's timestamp (ms) — when awaiting, that's
+// the unanswered client message, i.e. when our response clock starts. Falls back
+// to { awaiting: true, since: null } when Graph can't tell, so a flagged email
+// is never silently lost.
+async function isThreadAwaitingReply(conversationId) {
+  if (!conversationId) return { awaiting: true, since: null, webLink: null };
+  // Fetch the conversation's messages and pick the newest CLIENT-SIDE. We must
+  // NOT add $orderby here: Graph rejects $filter + $orderby on /me/messages when
+  // they reference different properties (conversationId vs receivedDateTime),
+  // returning a 400 — which would land in the catch below and make every thread
+  // look permanently unanswered. Sorting in JS sidesteps the limitation.
+  const filter = "conversationId eq '" + conversationId.replace(/'/g, "''") + "'";
+  const path = "/me/messages?$filter=" + encodeURIComponent(filter) +
+    "&$top=50&$select=from,receivedDateTime,sentDateTime,webLink";
+  try {
+    const data = await graphFetch("GET", path);
+    const msgs = data?.value || [];
+    if (!msgs.length) return { awaiting: true, since: null, webLink: null };
+    const when = m => new Date(m.receivedDateTime || m.sentDateTime || 0).getTime();
+    msgs.sort((a, b) => when(b) - when(a));
+    const latestSender = (msgs[0].from?.emailAddress?.address || "").toLowerCase();
+    return {
+      awaiting: !latestSender.endsWith("@setty.com"),   // latest from Setty = answered
+      since: when(msgs[0]) || null,
+      // The latest message's link + id — used as fallback "open original"
+      // targets for rows flagged before web_link/item_id were stored. restId is
+      // the Graph id (always returned); the render converts it to an EWS id.
+      webLink: msgs[0].webLink || null,
+      restId: msgs[0].id || null,
+    };
+  } catch (e) {
+    console.warn("[watchlist] thread check failed:", e?.message || e);
+    return { awaiting: true, since: null, webLink: null };   // couldn't tell — keep watching
+  }
+}
+
+// Classify-on-open hook. Runs when a client email is viewed: scores it, and if
+// it looks like it needs a reply, adds it to the watchlist. Best-effort and
+// silent — any failure here must never block the rest of the taskpane.
+async function maybeAddToWatchlist(myGen) {
+  try {
+    if (currentItemKind !== "message" || !emailItem) return;
+    const from = (emailFromAddress || "").toLowerCase();
+    if (!from) return;
+    // Hard gate: never watch internal mail. A reply we owe is ALWAYS to an
+    // outside party, so anything from a @setty.com address is out — including a
+    // colleague's message inside a thread. This guard comes first because the
+    // getClientByEmail domain fallback below could otherwise match a @setty.com
+    // sender if a colleague was ever saved under a client's contact record.
+    if (isSettyInternalEmail(from)) return;
+    // Gate: the sender must be a company on the global client list. This is
+    // what keeps automated mail (Microsoft 365 notifications, newsletters,
+    // vendors) off the watchlist — getClientByEmail matches a known client by
+    // contact address or shared email domain.
+    const client = getClientByEmail(emailFromAddress);
+    if (!client) return;
+
+    const token = await getToken();
+    const html  = await getEmailBodyHtml(token);
+    if (myGen !== itemContextGeneration) return;          // user moved on
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html || "";
+    const text = (tmp.innerText || tmp.textContent || "").replace(/\s+/g, " ");
+
+    // Recipient signals — an email sent directly TO you, or one whose greeting
+    // names you, is far more likely to need your reply than a mass CC. Computed
+    // here because needsResponse() can't see the recipient list or your name.
+    const myAddr = (msalAccount?.username || "").toLowerCase();
+    const addressedToMe = !!myAddr &&
+      (emailItem.to || []).some(r => (r.emailAddress || "").toLowerCase() === myAddr);
+    const myFirstName = (msalAccount?.name || "").trim().split(/\s+/)[0].replace(/[^\w]/g, "");
+    const namedInSalutation = myFirstName.length >= 2 &&
+      new RegExp("\\b" + myFirstName + "\\b", "i").test(text.slice(0, 60));
+
+    const subject = (typeof emailItem.subject === "string") ? emailItem.subject : "";
+    const verdict = needsResponse(subject, text, emailItem.dateTimeCreated,
+      { addressedToMe, namedInSalutation });
+    if (!verdict.needsReply) return;
+
+    const conversationId = await getCurrentConversationId();
+    if (!conversationId || myGen !== itemContextGeneration) return;
+
+    // Don't flag a thread Setty has already handled: if the most recent message
+    // in the conversation is from a @setty.com address, someone has replied and
+    // we owe nothing — so it never goes on the watchlist in the first place. The
+    // render-time check still enforces the 24-business-hour grace before a
+    // genuinely unanswered thread actually surfaces in the panel.
+    const threadState = await isThreadAwaitingReply(conversationId);
+    if (myGen !== itemContextGeneration) return;
+    if (!threadState.awaiting) return;
+
+    // Best-effort deep link back to this email — lets the panel row reopen the
+    // original. Captured here (not at render) because it needs the live item.
+    const webLink = await getCurrentMessageWebLink();
+    if (myGen !== itemContextGeneration) return;
+
+    const added = await addWatchlistEntryIfNew({
+      conversation_id: conversationId,
+      subject: subject || "(No subject)",
+      client_email: emailFromAddress,
+      client_name: client.name || emailFrom || "",
+      project_id: selectedProject?.id || null,
+      due_date: verdict.dueDates[0] || null,
+      score: verdict.score,
+      reasons: verdict.reasons,
+      web_link: webLink || null,
+      item_id: emailItem?.itemId || null,   // EWS id → native open in desktop Outlook
+      added_by: watchlistUserKey(),
+    });
+    if (added) void renderResponseWatchlist();
+  } catch (e) {
+    console.warn("[watchlist] add check failed:", e?.message || e);
+  }
+}
+
+// Renders the "needs a reply" panel: fetches open rows, verifies each thread
+// against Graph (flipping answered ones to 'answered'), shows the rest oldest
+// first. Called on add-in load and from the panel's ↻ button — deliberately
+// NOT on every email open, since each render costs one Graph call per item.
+let _watchlistRendering = false;
+async function renderResponseWatchlist() {
+  const block = document.getElementById("responseWatchlistBlock");
+  const list  = document.getElementById("responseWatchlistList");
+  const count = document.getElementById("responseWatchlistCount");
+  if (!block || !list || _watchlistRendering) return;
+  _watchlistRendering = true;
+  try {
+    const open = await getWatchlistOpenItems();
+    // Verify each thread in parallel — the open list is small in practice.
+    // TODO if it grows past ~15 items: switch to a single Graph $batch request.
+    const states = await Promise.all(open.map(r => isThreadAwaitingReply(r.conversation_id)));
+    const now = Date.now();
+    const stillOpen = [];
+    open.forEach((row, i) => {
+      const { awaiting, since, webLink, restId } = states[i];
+      if (!awaiting) { void setWatchlistStatus(row.conversation_id, "answered"); return; }
+      // Awaiting a reply — but hold it back until a full business day (24h minus
+      // weekends) has passed without a response. Measure from the latest client
+      // message; fall back to when we first flagged it if Graph couldn't date
+      // the thread. Below the threshold, the row stays 'watching' — just hidden.
+      const startedAt = since ?? new Date(row.added_at).getTime();
+      if (businessMsBetween(startedAt, now) < RESPONSE_GRACE_MS) return;
+      // Backfill "open original" targets for rows flagged before web_link/item_id
+      // were stored, using the latest message from the thread check above. The
+      // EWS id (for native desktop open) is converted from the Graph id.
+      if (!row.web_link && webLink) row.web_link = webLink;
+      if (!row.item_id && restId) {
+        try { row.item_id = Office.context.mailbox.convertToEwsId(restId, Office.MailboxEnums.RestVersion.v2_0); } catch { /* keep web_link fallback */ }
+      }
+      stillOpen.push(row);
+    });
+    if (!stillOpen.length) { block.style.display = "none"; list.innerHTML = ""; return; }
+    if (count) count.textContent = String(stillOpen.length);
+    list.innerHTML = stillOpen.map(r => {
+      const proj    = getProjectById(r.project_id);
+      const reasons = Array.isArray(r.reasons) ? r.reasons.join(" · ") : "";
+      const due     = r.due_date
+        ? `<span class="wl-due">due ${escHtml(new Date(r.due_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</span>`
+        : "";
+      const subjHtml = (r.web_link || r.item_id)
+        ? `<button type="button" class="wl-subject wl-open" data-itemid="${escHtml(r.item_id || "")}" data-url="${escHtml(r.web_link || "")}" title="Open the original email">${escHtml(r.subject || "(No subject)")}</button>`
+        : `<div class="wl-subject">${escHtml(r.subject || "(No subject)")}</div>`;
+      return `
+        <div class="wl-item">
+          <div class="wl-main">
+            ${subjHtml}
+            <div class="wl-meta">${escHtml(r.client_name || r.client_email || "")}${proj ? " · " + escHtml(proj.name) : ""} · flagged ${escHtml(_relativeTime(r.added_at))}</div>
+            <div class="wl-reasons">${escHtml(reasons)} ${due}</div>
+          </div>
+          <button type="button" class="wl-dismiss" data-cid="${escHtml(r.conversation_id)}" title="Not awaiting a reply — dismiss">×</button>
+        </div>`;
+    }).join("");
+    list.querySelectorAll(".wl-open").forEach(el => {
+      el.onclick = () => openWatchlistEmail(el.dataset.itemid, el.dataset.url);
+    });
+    list.querySelectorAll(".wl-dismiss").forEach(el => {
+      el.onclick = () => {
+        // Optimistic UI: drop the chip immediately so the click feels instant.
+        // The Supabase write runs in the background — a dismiss is low-stakes,
+        // so we don't block on it or roll back on failure (a failed write just
+        // means the chip reappears on the next reload, and the user re-clicks).
+        const cid  = el.dataset.cid;
+        const item = el.closest(".wl-item");
+        if (item) item.remove();
+        const remaining = list.querySelectorAll(".wl-item").length;
+        if (count) count.textContent = String(remaining);
+        if (!remaining) block.style.display = "none";
+        // Shared dismiss: clear this thread for every Setty colleague who flagged
+        // it, not just me — keeps the panel quiet across the team.
+        void setWatchlistStatus(cid, "dismissed", { allUsers: true });
+      };
+    });
+    block.style.display = "block";
+  } finally {
+    _watchlistRendering = false;
+  }
 }
 
 // Cached per-item body fetch — avoids re-hitting Graph each time
@@ -2407,6 +3892,115 @@ function getClientByEmail(email) {
     return !!domain && contacts.some(ct => (ct.email || "").toLowerCase().endsWith("@" + domain));
   }) || null;
 }
+
+// ── DIRECTORY-STATUS LOOKUPS (people picker) ─────────────────────────────────
+// Exact email matches only — getClientByEmail's domain fallback above is for
+// guessing the company on the contact form, not for claiming a person is
+// already saved. All checks run against in-memory data (allClients +
+// selectedProject), so they cost nothing per render.
+function findGlobalContact(email) {
+  const emailLc = (email || "").trim().toLowerCase();
+  if (!emailLc) return null;
+  for (const c of (allClients || [])) {
+    const hit = (c.contacts || []).find(ct => (ct.email || "").trim().toLowerCase() === emailLc);
+    if (hit) return { client: c, contact: hit };
+  }
+  return null;
+}
+// "Already on this job" = in project.directory (contact-save path) OR in the
+// project POC list (save-to-project path) — the two places the add-in writes.
+function isInProjectDirectory(email) {
+  const emailLc = (email || "").trim().toLowerCase();
+  if (!emailLc || !selectedProject) return false;
+  if ((selectedProject.directory || []).some(d => (d.email || "").trim().toLowerCase() === emailLc)) return true;
+  return ((selectedProject.projectContacts?.pm) || []).some(c => (c.email || "").trim().toLowerCase() === emailLc);
+}
+// Setty staff are managed via the project's Teams tab in PMS, not the
+// contact directories — so they're excluded from the "new" nudge entirely.
+function isSettyInternalEmail(email) {
+  return (email || "").trim().toLowerCase().endsWith("@setty.com");
+}
+// Enrichment opportunity: the SENDER is already filed (global directory or this
+// project's directory) but their saved record has NEITHER a title NOR a phone —
+// both of which this email's signature can fill in one tap. We require both to
+// be blank on purpose: titles scrape unreliably (the parser often grabs the firm
+// name), so a title-only gap isn't worth nagging about. Returns the saved record
+// when it's enrichable, otherwise null.
+function senderNeedsEnrichment() {
+  const addr = (emailFromAddress || "").trim().toLowerCase();
+  if (!addr) return null;
+  // Saved/enriched this session — stop nudging immediately, even before the
+  // in-memory directory cache reflects the backfilled title/phone.
+  if (_sessionSavedContactEmails.has(addr)) return null;
+  const rec = findGlobalContact(addr)?.contact
+    || (selectedProject?.directory || []).find(d => (d.email || "").trim().toLowerCase() === addr)
+    || null;
+  if (!rec) return null;
+  const noTitle = !(rec.title || "").trim();
+  const noPhone = !(rec.phone || "").trim();
+  return (noTitle && noPhone) ? rec : null;
+}
+function getParticipantDirectoryStatus(p) {
+  const emailLc = (p?.emailAddress || "").trim().toLowerCase();
+  const internal = isSettyInternalEmail(emailLc);
+  const sessionSaved = !!emailLc && _sessionSavedContactEmails.has(emailLc);
+  const globalHit = internal ? null : findGlobalContact(emailLc);
+  const inProject = internal ? false : isInProjectDirectory(emailLc);
+  // "New" = external, nowhere in the firm's directories, and not just saved
+  // this session.
+  return { internal, globalHit, inProject, sessionSaved, isNew: !internal && !globalHit && !inProject && !sessionSaved };
+}
+// Nudge on the main-view button: surface how many of this email's
+// participants aren't in any directory yet, BEFORE the user opens the list.
+// When there's nothing actionable at all — every participant is Setty staff
+// or already filed everywhere relevant — the button disappears entirely.
+// "Actionable" includes the global-but-not-on-this-project case, since the
+// people view is where the one-click "+ project" add lives.
+// Single source of truth for why the main-view button is showing, shared by the
+// badge renderer and the click handler so they never disagree about whether
+// this is an "enrich the sender from signature" click vs. the participant list.
+function peopleButtonMode() {
+  const statuses = (emailParticipants || []).map(getParticipantDirectoryStatus);
+  const newCount = statuses.filter(s => s.isNew).length;
+  // "+ project" only makes sense once the email is tagged to a project — without
+  // one there's nowhere to add them, so a global-directory hit alone must NOT
+  // keep the button on screen. (Previously this counted regardless of project,
+  // which is why the button always showed on untagged emails.)
+  const addableToProject = selectedProject
+    ? statuses.filter(s => s.globalHit && !s.inProject && !s.sessionSaved).length
+    : 0;
+  // Even when everyone's already filed, surface the button if the sender's
+  // record can be enriched from this email's signature.
+  const enrichRec = senderNeedsEnrichment();
+  // "Enrich-only" = the signature opportunity is the SOLE reason to show — no new
+  // contacts to capture, nothing to add to a project. That's when the button
+  // jumps straight to the form and relabels itself.
+  const enrichOnly = newCount === 0 && addableToProject === 0 && !!enrichRec;
+  return { newCount, addableToProject, enrichRec, enrichOnly };
+}
+function updatePeopleButtonBadge() {
+  const btn = document.getElementById("addParticipantBtn");
+  if (!btn) return;
+  const { newCount, addableToProject, enrichRec, enrichOnly } = peopleButtonMode();
+  // Hidden in compose (nothing filed yet — mirrors applyComposeModeUiGuard)
+  // and whenever there's no one actionable.
+  const compose = (typeof isComposeMode === "function") && isComposeMode();
+  btn.style.display = (!compose && (newCount > 0 || addableToProject > 0 || !!enrichRec)) ? "" : "none";
+  // Label: new contacts take priority. When the ONLY reason to show is the
+  // signature-enrichment opportunity, say so on the button itself.
+  if (newCount > 0) {
+    btn.textContent = "👥 Add Participant to Contacts (" + newCount + " new)";
+  } else if (enrichOnly) {
+    const who = (enrichRec.name || "").trim().split(/\s+/)[0];
+    btn.textContent = who
+      ? "✍️ Complete " + who + "'s contact from signature"
+      : "✍️ Complete a contact from its signature";
+  } else {
+    btn.textContent = "👥 Add Participant to Contacts";
+  }
+  // Visually promote the button when there's actually someone to capture or enrich.
+  btn.classList.toggle("btn-has-new", newCount > 0 || enrichOnly);
+}
 // ─── TRANSIENT-FAILURE RETRY HELPER ──────────────────────────────────────────
 // Single shared exponential-backoff wrapper. Retries network failures, 429,
 // 503, 504. Honors Retry-After if Graph or Supabase provides it. Capped at
@@ -2488,6 +4082,50 @@ async function getEmailBodyHtml(token) {
     if (body) _emailBodyCache.set(msgId, body);
     return body;
   } catch { return ""; }
+}
+
+// ── RELIABLE PLAIN-TEXT BODY ─────────────────────────────────────────────────
+// Office's item.body.getAsync fails transiently right after an item opens
+// (status Failed, especially in new Outlook / OWA) — the cause of "signature
+// extraction only works the second or third time I open the email". Retry
+// with short backoff, then fall back to the Graph body (already cached per
+// item for the filing flow) stripped to plain text. Returns null when every
+// route failed; "" is a genuinely empty body.
+async function getBodyTextReliable(item, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    const text = await new Promise(resolve => {
+      try {
+        if (!item?.body?.getAsync) return resolve(null);
+        item.body.getAsync(Office.CoercionType.Text, r =>
+          resolve(r.status === Office.AsyncResultStatus.Succeeded ? (r.value || "") : null));
+      } catch { resolve(null); }
+    });
+    if (text !== null) return text;
+    if (i < attempts - 1) await new Promise(res => setTimeout(res, 300 * (i + 1)));
+  }
+  // Graph fallback — getEmailBodyHtml reads the CURRENT mailbox item, so only
+  // use it if the pane hasn't switched to a different email meanwhile.
+  try {
+    if (Office.context.mailbox.item?.itemId !== item?.itemId) return null;
+    const token = await getToken();
+    const html = await getEmailBodyHtml(token);
+    if (html) return htmlToPlainText(html);
+  } catch (e) {
+    console.info("[body] Graph fallback failed:", e.message);
+  }
+  return null;
+}
+
+function htmlToPlainText(html) {
+  const t = String(html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6]|table)>/gi, "\n")
+    .replace(/<[^>]+>/g, "");
+  const decoder = document.createElement("textarea");
+  decoder.innerHTML = t; // entity decode — tags already stripped above
+  return decoder.value.replace(/ /g, " ");
 }
 
 // In-memory idempotency cache for OneNote page creation (5-minute TTL).
@@ -3015,7 +4653,7 @@ async function uploadEmailAndAttachments(driveId, token, targetPath, itemSnapsho
   // uploadedFiles[]: per-file metadata for the audit log. Each successful upload
   // appends { name, size, sha256, contentType, verified }. Phase 2 will populate
   // sha256 + verified once read-back lands.
-  lastAttachmentUploadStats = { attempted: 0, uploaded: 0, failed: [], uploadedFiles: [] };
+  lastAttachmentUploadStats = { attempted: 0, uploaded: 0, failed: [], uploadedFiles: [], attemptedNames: [] };
   const bodyHtml = await getEmailBodyHtml(token);
   // Kick off the email.html upload in parallel with the attachment loop —
   // they don't depend on each other, so why serialize them.
@@ -3035,6 +4673,12 @@ async function uploadEmailAndAttachments(driveId, token, targetPath, itemSnapsho
     let succeeded = 0;
     for (let i = 0; i < items.length; i += ATTACHMENT_CONCURRENCY) {
       const batch = items.slice(i, i + ATTACHMENT_CONCURRENCY);
+      // Multi-attachment saves can run 30s+ on big files; surface progress in
+      // whatever busy-status slot the calling flow already opened so users can
+      // tell "working" from "stuck" (and don't re-click Save).
+      if (items.length > 1 && _busyStatusElId) {
+        setStatus(_busyStatusElId, "info", "⏳ Uploading attachments… " + Math.min(i + batch.length, items.length) + "/" + items.length);
+      }
       const results = await Promise.allSettled(batch.map(doUpload));
       results.forEach((r, idx) => {
         const it = batch[idx];
@@ -3074,6 +4718,7 @@ async function uploadEmailAndAttachments(driveId, token, targetPath, itemSnapsho
     if (officeAtts.length) {
       lastAttachmentUploadStats.attempted = officeAtts.length;
       const uniqueNames = uniquifyNames(officeAtts.map(a => a.name));
+      lastAttachmentUploadStats.attemptedNames = uniqueNames;
       const { succeeded, failures } = await uploadInBatches(
         officeAtts,
         async (att) => {
@@ -3094,9 +4739,15 @@ async function uploadEmailAndAttachments(driveId, token, targetPath, itemSnapsho
     // Fallback to Graph attachment APIs when Office APIs are unavailable.
     const restId = Office.context.mailbox.convertToRestId(item.itemId, Office.MailboxEnums.RestVersion.v2_0);
     const attData = await graphFetch("GET", "/me/messages/" + restId + "/attachments", null, token);
-    const fileAtts = (attData?.value || []).filter(att => att["@odata.type"] === "#microsoft.graph.fileAttachment");
+    const fileAtts = (attData?.value || []).filter(att =>
+      att["@odata.type"] === "#microsoft.graph.fileAttachment" &&
+      // Skip small inline images (signature logos, social icons, banners).
+      // att.size here is MIME-encoded (~+33%), so 40KB encoded ≈ 30KB raw —
+      // comfortably above logo size, below real pasted screenshots/photos.
+      !(att.isInline && att.contentType && att.contentType.startsWith("image/") && att.size < 40000));
     lastAttachmentUploadStats.attempted = fileAtts.length;
     const uniqueGraphNames = uniquifyNames(fileAtts.map(a => a.name));
+    lastAttachmentUploadStats.attemptedNames = uniqueGraphNames;
 
     const { succeeded, failures } = await uploadInBatches(fileAtts, async (att) => {
       let bytes = null;
@@ -3153,6 +4804,54 @@ function toBytesFromBase64(base64) {
 // user clicks a different email, and a getAttachmentContentAsync call
 // against the new item with an attachment ID from the old item produces
 // either an error or — worse — bytes that *look* valid but are wrong.
+// Returns only the names of file-type attachments — no byte fetch. Cheap.
+// Used by "save to project record only" path where we don't upload anything
+// but still want PMS to display the attachment list.
+//
+// TWO PATHS, in order:
+//   1. Office.js getAttachmentsAsync — local, no network. Works most of the time.
+//   2. Graph /me/messages/{id}/attachments — fallback when Office.js silently
+//      returns 0 attachments despite the email actually having some. This
+//      happens in some account configurations and Office versions; mirrors
+//      the same fallback uploadEmailAndAttachments uses.
+//
+// Silent on failure (returns []) since names are metadata, not data.
+async function getAttachmentNamesOnly(item, token) {
+  item = item || emailItem;
+  // Try Office.js first
+  if (item?.getAttachmentsAsync) {
+    const officeNames = await new Promise((resolve) => {
+      item.getAttachmentsAsync((res) => {
+        if (res.status === Office.AsyncResultStatus.Succeeded) {
+          const names = (res.value || [])
+            .filter(a => a.attachmentType === Office.MailboxEnums.AttachmentType.File)
+            .map(a => a.name)
+            .filter(Boolean);
+          resolve(names);
+        } else {
+          resolve([]);
+        }
+      });
+    });
+    if (officeNames.length > 0) return officeNames;
+  }
+  // Graph fallback — only if Office.js gave us nothing AND caller provided a token
+  if (token && item?.itemId) {
+    try {
+      const restId = Office.context.mailbox.convertToRestId(item.itemId, Office.MailboxEnums.RestVersion.v2_0);
+      const data = await graphFetch("GET", "/me/messages/" + restId + "/attachments?$select=name,contentType,size", null, token);
+      return (data?.value || [])
+        .filter(a => a["@odata.type"] === "#microsoft.graph.fileAttachment")
+        .map(a => a.name)
+        .filter(Boolean);
+    } catch (e) {
+      console.warn("Graph attachment list failed:", e.message);
+      return [];
+    }
+  }
+  return [];
+}
+
 async function getOfficeFileAttachments(item) {
   item = item || emailItem;
   if (!item?.getAttachmentsAsync || !item?.getAttachmentContentAsync) return [];
@@ -3177,6 +4876,11 @@ async function getOfficeFileAttachments(item) {
     });
     if (!content || content.format !== Office.MailboxEnums.AttachmentContentFormat.Base64) continue;
     const bytes = toBytesFromBase64(content.content);
+    // Skip small inline images (signature logos, social icons, banners) — same
+    // rule as the Graph fallback path. bytes.length is the true raw size here,
+    // so the 40KB cutoff is a hair stricter than the Graph path's encoded size,
+    // but both reliably catch logos and keep real pasted screenshots/photos.
+    if (att.isInline && (att.contentType || "").startsWith("image/") && bytes.length < 40000) continue;
     // NOTE: Office.js's att.size is NOT the raw byte count — it's the
     // MIME-encoded size including base64 transport overhead (~+33%) and headers.
     // So we can't validate decoded bytes against att.size here. The Graph
@@ -3663,7 +5367,7 @@ async function withFilingScaffold(opts, runUpload) {
     dequeueFilingIntent(queueId);
     return result;
   } catch (e) {
-    setStatus(statusElement, "error", "✗ " + e.message);
+    setStatus(statusElement, "error", "✗ " + humanizeError(e));
     void logFilingOp({
       project_id:    selectedProject.id,
       msg_id:        snapItem?.itemId || null,
@@ -3688,7 +5392,40 @@ async function _doSaveToSharePoint() {
   if (!selectedProject.projectFolderUrl) { setStatus("actionStatus", "error", "No SharePoint folder on this project. Create one in the PMS first."); return; }
 const currentMsgId = getCurrentMessageRecordId();
 const existingRecord = findSavedEmailRecord(selectedProject, currentMsgId);
+// Read the Link To target up front so we can branch on it BEFORE the
+// already-saved short-circuit below. Without this, the link operation
+// is silently skipped when the user is adding a link to an email that
+// was previously saved standalone.
+const earlyLinkValue = (document.getElementById("linkToTarget")?.value || "");
 if (existingRecord) {
+  // If a Link To target is picked, run JUST the link operation against the
+  // existing email record. This is the "I forgot to link the first time"
+  // recovery path — the most common reason a user re-clicks Save SP on an
+  // already-filed email is to add a link they couldn't pick before.
+  if (earlyLinkValue) {
+    setStatus("actionStatus", "info", "📎 Linking to RFI/Submittal…");
+    const linkSnapItem = emailItem;
+    try {
+      const linkResult = await linkEmailToArtifact({
+        linkValue: earlyLinkValue,
+        emailRecord: existingRecord,
+        snapItem: linkSnapItem,
+      });
+      if (linkResult.ok) {
+        setStatus("actionStatus", "success", "✓ Linked existing email" + linkResult.label);
+      } else {
+        setStatus("actionStatus", "error", "✗ Link failed" + (linkResult.label || ""));
+      }
+    } catch (e) {
+      setStatus("actionStatus", "error", "✗ Link failed: " + humanizeError(e));
+    }
+    // Reset link dropdown so subsequent saves don't re-link
+    const linkToEl = document.getElementById("linkToTarget");
+    if (linkToEl) linkToEl.value = "";
+    try { refreshLoggedArtifactChips(); } catch {}
+    try { refreshLinkToTargetDropdown(); } catch {}
+    return;
+  }
   refreshEmailSavedIndicator();
   return;
 }
@@ -3702,8 +5439,16 @@ if (existingRecord) {
   const snapDate = snapItem?.dateTimeCreated;
   const snapFromName = snapItem?.from?.displayName || "";
   const snapFromAddr = snapItem?.from?.emailAddress || "";
+  // Capture recipients in the same snapshot so an item-switch mid-save can't
+  // record one email's TO list under a different email's record. Format
+  // matches PMS-side: comma-separated email addresses.
+  const snapTo = (snapItem?.to || []).map(r => r.emailAddress).filter(Boolean).join(", ");
+  const snapCc = (snapItem?.cc || []).map(r => r.emailAddress).filter(Boolean).join(", ");
   const snapItemId = snapItem?.itemId || "";
   const saveGen = itemContextGeneration; // capture for stale-write detection
+  // Read the "Link to RFI/Sub" dropdown synchronously so it can't drift if
+  // the user switches projects mid-save.
+  const linkToValue = (document.getElementById("linkToTarget")?.value || "");
   // Crash-recovery queue: record the intent BEFORE any awaits. If the browser
   // crashes during upload, the entry remains and is surfaced as a pending save
   // on next taskpane open. Dequeued at the end of a clean save.
@@ -3714,7 +5459,7 @@ if (existingRecord) {
     operation:     "email-sp",
     email_subject: snapSubject,
   });
-  setStatus("actionStatus", "info", pickSavingMessage());
+  setStatus("actionStatus", "info", "⏳ " + pickSavingMessage());
   try {
     const token = await getToken();
     const { driveId } = await resolveSpIds();
@@ -3751,17 +5496,26 @@ if (existingRecord) {
     const attCount    = await uploadEmailAndAttachments(driveId, token, targetPath, snapItem);
     const spFolderUrl = SP_BASE_URL + "/" + encodeURIComponent(projFolderName) + "/Emails/" + encodeURIComponent(emailFolderName);
     const msgId = currentMsgId;
+    // Capture attachment names from the upload stats so PMS displays them on
+    // the saved email card. Names are populated by uploadEmailAndAttachments
+    // even if some uploads later failed — the email still HAS the attachments.
+    const attachmentNames = (lastAttachmentUploadStats?.attemptedNames || []).slice();
     const emailRecord = {
       id: uid(), msgId,
       subject: snapSubject,
       from: snapFromName,
       fromAddress: snapFromAddr,
+      to: snapTo,
+      cc: snapCc,
       date: snapDate,
       bodyText: "",
       bodyHtmlCompressed: compressedBody,
       bodyHtmlSize: bodyHtml.length,
+      hasAttachments: attachmentNames.length > 0,
+      attachmentNames,
       spFolderUrl, links: [],
       savedAt: new Date().toISOString(),
+      savedBy: _getCurrentUserEmail() || "",
     };
     // Re-fetch latest projects, then append email to the FRESH copy of this project.
     // Prevents the add-in from overwriting concurrent PMS edits made during this session.
@@ -3776,6 +5530,10 @@ if (existingRecord) {
       console.warn("saveProjectEmailRow failed:", idxErr);
       indexSaveFailed = true;
     }
+    // Optional: if the user picked a "Link to RFI/Sub" target, copy the email
+    // into that artifact's /IN folder and add a links[] entry. Best-effort —
+    // primary save already succeeded so we never throw out of this branch.
+    const linkResult = await linkEmailToArtifact({ linkValue: linkToValue, emailRecord, snapItem });
     const attMsg = attCount ? " + " + attCount + " attachment" + (attCount > 1 ? "s" : "") : "";
     const attempted = lastAttachmentUploadStats?.attempted || 0;
 
@@ -3792,15 +5550,16 @@ if (existingRecord) {
     }
     if (indexSaveFailed) warnings.push("⚠ Email saved to project, but search-index write failed — it may not appear in PMS email searches until you resave or PMS is reloaded.");
 
+    const linkSuffix = linkResult.label || "";
     if (attempted > 0 && attCount === 0) {
       const sample = (lastAttachmentUploadStats?.failed || []).slice(0, 2).join("; ");
-      setStatus("actionStatus", "error", "Email saved, but 0/" + attempted + " attachments uploaded. " + (sample || "Open browser console for details.") + (warnings.length ? " " + warnings.join(" ") : ""));
+      setStatus("actionStatus", "error", "Email saved, but 0/" + attempted + " attachments uploaded. " + (sample ? "Failed: " + sample + ". " : "") + "Try saving again — if it keeps failing, check your connection (VPN?)." + (warnings.length ? " " + warnings.join(" ") : "") + linkSuffix);
     } else if (warnings.length > 0) {
-      setStatus("actionStatus", "info", "✓ Saved to SharePoint" + attMsg + " and project record. " + warnings.join(" "));
+      setStatus("actionStatus", "info", "✓ Saved to SharePoint" + attMsg + " and project record. " + warnings.join(" ") + linkSuffix);
     } else if (attempted === 0) {
-      setStatus("actionStatus", "info", "Email saved to SharePoint, but no attachments were detected by Outlook/Graph for this message.");
+      setStatus("actionStatus", "info", "Email saved to SharePoint, but no attachments were detected by Outlook/Graph for this message." + linkSuffix);
     } else {
-      setStatus("actionStatus", "success", "✓ Saved to SharePoint" + attMsg + " and project record.");
+      setStatus("actionStatus", "success", "✓ Saved to SharePoint" + attMsg + " and project record." + linkSuffix);
     }
     // Append to the filing-integrity audit log so PMS can reconcile this save.
     // Status reflects whether the upload was clean or partial — verified flag
@@ -3822,6 +5581,13 @@ if (existingRecord) {
     // One-shot custom name consumed — clear so the next email's save uses
     // subject-default unless explicitly renamed again.
     _customSpFolderName = "";
+    // Same one-shot semantics for the Link To target: don't carry over from
+    // one save to the next. Refresh chips so the new artifact-source-id
+    // chip + the just-linked RFI both show up.
+    const linkToEl = document.getElementById("linkToTarget");
+    if (linkToEl) linkToEl.value = "";
+    try { refreshLoggedArtifactChips(); } catch {}
+    try { refreshLinkToTargetDropdown(); } catch {}
     recordSaveAndCelebrate();
     refreshEmailSavedIndicator(true);
     // Save completed without throwing — clear crash-recovery queue entry.
@@ -3829,7 +5595,7 @@ if (existingRecord) {
     // a "partial" audit log row; the queue is only for crash recovery.)
     dequeueFilingIntent(queueId);
   } catch (e) {
-    setStatus("actionStatus", "error", "✗ " + e.message);
+    setStatus("actionStatus", "error", "✗ " + humanizeError(e));
     void logFilingOp({
       project_id:    selectedProject.id,
       msg_id:        currentMsgId,
@@ -3844,8 +5610,8 @@ if (existingRecord) {
 async function doSaveToProjectRecordOnly() {
   return withSaveGuard("save-record", _doSaveToProjectRecordOnly, ["saveSpBtn", "saveRecordBtn"]);
 }
-async function _doSaveToProjectRecordOnly() {
-  if (!selectedProject) { setStatus("actionStatus", "error", "Select a project first."); return; }
+async function _doSaveToProjectRecordOnly(quiet = false) {
+  if (!selectedProject) { if (!quiet) setStatus("actionStatus", "error", "Select a project first."); return; }
   // Body-only save works regardless of attachments — the visual emphasis (de-emph
   // + caption) is the soft nudge toward SharePoint when attachments exist.
   // No confirm dialog: trust the user's intent, surface the consequence in the
@@ -3855,7 +5621,7 @@ async function _doSaveToProjectRecordOnly() {
     refreshEmailSavedIndicator();
     return;
   }
-  setStatus("actionStatus", "info", pickSavingMessage());
+  if (!quiet) setStatus("actionStatus", "info", "⏳ " + pickSavingMessage());
   try {
     // Phase 3: capture and compress body so PMS can render it without a Graph round-trip.
     const token = await getToken();
@@ -3863,17 +5629,28 @@ async function _doSaveToProjectRecordOnly() {
     const bodyFetchFailed = !bodyHtml || bodyHtml.length === 0;
     const compressedBody = bodyHtml ? compressHtmlAddin(bodyHtml) : "";
     const from = emailItem.from;
+    const to = (emailItem.to || []).map(r => r.emailAddress).filter(Boolean).join(", ");
+    const cc = (emailItem.cc || []).map(r => r.emailAddress).filter(Boolean).join(", ");
+    // Lightweight metadata fetch — names only, no byte download. Tries
+    // Office.js first, falls back to Graph if Office.js reports 0 attachments
+    // (which it sometimes silently does even when attachments exist).
+    const attachmentNames = await getAttachmentNamesOnly(emailItem, token);
     const emailRecord = {
       id: uid(), msgId,
       subject: emailItem.subject || "",
       from: from?.displayName || "",
       fromAddress: from?.emailAddress || "",
+      to,
+      cc,
       date: emailItem.dateTimeCreated,
-      bodyText: "",
+      bodyText: bodyHtml ? stripHtmlToText(bodyHtml) : "",
       bodyHtmlCompressed: compressedBody,
       bodyHtmlSize: bodyHtml.length,
+      hasAttachments: attachmentNames.length > 0,
+      attachmentNames,
       spFolderUrl: "", links: [],
       savedAt: new Date().toISOString(),
+      savedBy: _getCurrentUserEmail() || "",
       savedToSharePoint: false,
     };
     await applyLocalChangeAndSave(selectedProject.id, fresh => ({
@@ -3892,13 +5669,14 @@ async function _doSaveToProjectRecordOnly() {
     if (indexSaveFailed) warnings.push("⚠ Search-index write failed — may not appear in PMS email searches until next resave.");
     if (warnings.length > 0) {
       setStatus("actionStatus", "info", "✓ Saved to project record. " + warnings.join(" "));
-    } else {
+    } else if (!quiet) {
       setStatus("actionStatus", "success", "✓ Saved to project record (no SharePoint upload).");
     }
-    recordSaveAndCelebrate();
-    refreshEmailSavedIndicator(true);
+    if (!quiet) recordSaveAndCelebrate();
+    refreshEmailSavedIndicator(!quiet);
   } catch (e) {
-    setStatus("actionStatus", "error", "✗ " + e.message);
+    if (!quiet) setStatus("actionStatus", "error", "✗ " + humanizeError(e));
+    else console.warn("auto-save record failed:", e);
   }
 }
 // ─── LOG NOTE ─────────────────────────────────────────────────────────────────
@@ -4130,7 +5908,7 @@ async function sendToTeamsChannel() {
     setStatus("actionStatus", "success",
       "✓ Posted to Teams channel" + (attCount > 0 ? ` (${attCount} attachment${attCount === 1 ? "" : "s"} not transferred)` : ""));
   } catch (e) {
-    setStatus("actionStatus", "error", "Send-to-Teams failed: " + e.message);
+    setStatus("actionStatus", "error", "Send-to-Teams failed: " + humanizeError(e));
   }
 }
 
@@ -4394,7 +6172,7 @@ async function doSaveNote() {
       setTimeout(() => showView("mainView"), 700);
     }
   } catch (e) {
-    setStatus("noteStatus", "error", "✗ " + e.message);
+    setStatus("noteStatus", "error", "✗ " + humanizeError(e));
     // Re-enable the button so the user can retry after fixing the error.
     if (saveNoteBtn) saveNoteBtn.disabled = false;
   } finally {
@@ -4470,7 +6248,7 @@ async function doSaveActionItem() {
     document.getElementById("actionItemOwner").value = "";
     document.getElementById("actionItemDueDate").value = "";
   } catch (e) {
-    setStatus("actionItemStatus", "error", "✗ " + e.message);
+    setStatus("actionItemStatus", "error", "✗ " + humanizeError(e));
     if (saveBtn) saveBtn.disabled = false;
   } finally {
     saveInFlight = false;
@@ -4607,118 +6385,412 @@ function buildSubAssignmentEmailHtml({ sub, project, assignee, inFolderUrl }) {
 }
 
 // ─── DOCX GENERATORS (RFI Response / Submittal Review cover sheets) ─────────
-// Both use the same docx library transmittal.html loads. Style mirrors the
-// transmittal cover sheet so the documents look like a coherent family.
+// Layout mirrors the Newforma RFI Transmittal format (two-page structured doc:
+// metadata grid + boxed answer with boilerplate notations on page 1, FROM/TO/
+// contents tables on page 2). This is a deliberate format choice — the legal
+// "General Notations" boilerplate is risk management language that's standard
+// in the AEC industry, and the structured TO/FROM blocks make the email an
+// auditable artifact.
 
-const DOCX_COLORS = { NAVY: "1e3a8a", RED: "b91c1c", BLUE: "1e40af", GRAY: "475569", LIGHT: "cbd5e1" };
+const DOCX_COLORS = { NAVY: "1e3a8a", RED: "b91c1c", BLUE: "1e40af", GRAY: "475569", LIGHT: "cbd5e1", BOX_BORDER: "94a3b8" };
 
-// Returns a Blob of a DOCX cover sheet for an RFI response. Fields used:
-// rfi.number, .title, .description, .from, .discipline, .dateReceived, .dueDate.
-// project.projectNumber, .name, .prime, .clientName.
-async function buildRfiResponseDocx({ rfi, project, response, dateResponded, status }) {
+// Standard "General Notations" boilerplate for RFI responses. Tells the
+// contractor that the RFI response is not authorization to incur additional
+// cost — they must issue a PCO (Proposed Change Order) for that. This text
+// is unchanged across all Setty RFI responses; if it ever needs to evolve,
+// only this constant needs updating.
+const RFI_GENERAL_NOTATIONS = [
+  "This RFI, RFI response, and related correspondence, written, verbal, or other; is not an authorization to proceed with work which requires additional costs. If any RFI reply requires a change to the contract documents, the contractor shall issue for review, a Proposed Change Order (PCO). Additional costs are authorized only after a PCO has been reviewed, and formally issued as an Accepted Change Order (ACO).",
+  "If the contractor believes an RFI response has materially changed the contract documents, or would subsequently create conflicts in work, or conflicts in coordination with their own or an associated trade; the contractor must state such concerns formally and promptly, prior to acting upon the RFI response.",
+];
+
+// Submittal review boilerplate. Standard "review for general conformance"
+// language — Setty's review doesn't relieve the contractor of responsibility
+// for accuracy of fabrication, coordination with the work, etc.
+const SUB_GENERAL_NOTATIONS = [
+  "This review is for general conformance with the design intent of the contract documents only. Markings and comments do not relieve the contractor of responsibility for accuracy of fabrication, dimensions, quantities, coordination with other trades, performance of any equipment, or means and methods of construction.",
+  "The contractor is responsible for confirming all dimensions, field conditions, and coordination requirements prior to fabrication or installation. Any deviations from the contract documents must be brought to the Architect/Engineer's attention in writing prior to proceeding.",
+];
+
+// Format helper used by both DOCX generators for the metadata grid rows.
+// Returns a TableRow with a label cell (gray background, bold blue text)
+// and a value cell.
+function _docxInfoRow(docxLib, label, value, opts = {}) {
+  const { Paragraph, TextRun, TableRow, TableCell, WidthType, ShadingType } = docxLib;
+  const labelW = opts.labelW || 1600;
+  const valueW = opts.valueW || 3080;
+  return new TableRow({
+    children: [
+      new TableCell({
+        width: { size: labelW, type: WidthType.DXA },
+        shading: { type: ShadingType.SOLID, color: "f8fafc", fill: "f8fafc" },
+        children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: label, font: "Calibri", size: 16, bold: true, color: DOCX_COLORS.GRAY })] })],
+      }),
+      new TableCell({
+        width: { size: valueW, type: WidthType.DXA },
+        children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: String(value || ""), font: "Calibri", size: 20 })] })],
+      }),
+    ],
+  });
+}
+
+// Build the recipients list for the response. Defaults: original RFI sender
+// (from rfi.from + email lookup) + any assigned subconsultant POC + the
+// responder themselves on the COPIES line. Optional override via opts.
+function _resolveRfiResponseRecipients(rfi, project) {
+  const recipients = [];
+  // Original sender: look up in project.emails by sourceItemId/sourceMessageId
+  if (rfi.sourceItemId || rfi.sourceMessageId) {
+    const emailRec = (project.emails || []).find(e =>
+      (rfi.sourceItemId && e.msgId === rfi.sourceItemId) ||
+      (rfi.sourceMessageId && e.msgId === rfi.sourceMessageId)
+    );
+    if (emailRec?.fromAddress) {
+      recipients.push({ name: emailRec.from || "", company: "", email: emailRec.fromAddress, phone: "" });
+    }
+  }
+  // If no email lookup, fall back to rfi.from as a name-only entry
+  if (recipients.length === 0 && rfi.from) {
+    recipients.push({ name: rfi.from, company: "", email: "", phone: "" });
+  }
+  // Assigned subconsultant POC
+  if (rfi.subAssigned) {
+    const sub = (project.subconsultants || []).find(s => s.id === rfi.subAssigned);
+    if (sub) {
+      recipients.push({
+        name: sub.contact || sub.firm || "",
+        company: sub.firm || "",
+        email: sub.email || "",
+        phone: sub.phone || "",
+      });
+    }
+  }
+  return recipients;
+}
+
+// Returns a Blob of a DOCX cover sheet for an RFI response. Two-page layout
+// matching the Newforma RFI Transmittal format:
+//   Page 1: SETTY header, metadata grid (PROJECT / DATE SENT / SUBJECT / RFI ID /
+//     TYPE / TRANSMITTAL ID / PURPOSE / VIA), QUESTION section, ANSWER section
+//     in a bordered box with "Response (Answered) from", "General Notations"
+//     boilerplate, and the response body.
+//   Page 2: FROM table (name, company, email, phone), TO table, DESCRIPTION OF
+//     CONTENTS table, COPIES section.
+async function buildRfiResponseDocx({ rfi, project, response, dateResponded, status, recipients }) {
   if (typeof docx === "undefined" || !docx.Packer) {
     throw new Error("DOCX library not loaded — refresh the taskpane and try again.");
   }
+  const lib = docx;
   const {
     Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-    Header, BorderStyle, WidthType, ShadingType, VerticalAlign,
-  } = docx;
-  const projLabel = [project.projectNumber, project.name].filter(Boolean).join(" — ");
-  const responder = msalAccount?.name || msalAccount?.username || "";
+    Header, BorderStyle, WidthType, ShadingType, AlignmentType, PageBreak,
+  } = lib;
 
-  function infoRow(label, value) {
-    return new TableRow({
-      children: [
-        new TableCell({
-          width: { size: 2160, type: WidthType.DXA },
-          shading: { type: ShadingType.SOLID, color: "f1f5f9", fill: "f1f5f9" },
-          children: [new Paragraph({ children: [new TextRun({ text: label, font: "Calibri", size: 20, bold: true, color: DOCX_COLORS.NAVY })] })],
-        }),
-        new TableCell({
-          width: { size: 7200, type: WidthType.DXA },
-          children: [new Paragraph({ children: [new TextRun({ text: String(value || ""), font: "Calibri", size: 20 })] })],
-        }),
+  const projLabel = project.name || "";
+  const projNumber = project.projectNumber || "";
+  const responder = msalAccount?.name || msalAccount?.username || "";
+  const responderEmail = msalAccount?.username || "";
+  const dateSent = dateResponded || new Date().toISOString().slice(0, 10);
+  const subject = rfi.title || "";
+  const rfiId = rfi.number || "";
+  const purpose = status === "Responded" ? "Answered" : (status || "Answered");
+  // Transmittal ID: a per-project counter would require schema work. For now,
+  // use the RFI number + date — auditable enough.
+  const transmittalId = `${rfiId}-${dateSent.replace(/-/g, "")}`;
+  const via = rfi.receivedVia || "Email";
+  const toList = recipients && recipients.length ? recipients : _resolveRfiResponseRecipients(rfi, project);
+
+  // Bullet-point detection: if the response uses "- " or "• " prefixes, treat
+  // each line as a bullet so the DOCX renders them as a list. Otherwise plain
+  // paragraphs.
+  function responseBodyParagraphs() {
+    const raw = String(response || "(no response text)").trim();
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    const hasBullets = lines.some(l => /^[-•*]\s+/.test(l.trim()));
+    if (!hasBullets) {
+      return lines.map(line =>
+        new Paragraph({
+          spacing: { after: 120 },
+          children: [new TextRun({ text: line, font: "Calibri", size: 22 })],
+        })
+      );
+    }
+    return lines.map(line => {
+      const stripped = line.trim().replace(/^[-•*]\s+/, "");
+      return new Paragraph({
+        spacing: { after: 100 },
+        bullet: { level: 0 },
+        children: [new TextRun({ text: stripped, font: "Calibri", size: 22 })],
+      });
+    });
+  }
+
+  function sectionLabel(text) {
+    return new Paragraph({
+      spacing: { before: 200, after: 80 },
+      children: [new TextRun({ text, font: "Calibri", size: 18, bold: true, color: DOCX_COLORS.GRAY })],
+    });
+  }
+
+  // The "ANSWER" boxed section. The Newforma version puts a bordered box
+  // around everything from "Response (Answered) from" through the response
+  // body. We approximate with a single-cell table that has visible borders.
+  function buildAnswerBox() {
+    const innerChildren = [
+      // "Response (Answered) from: <name>" with bottom border like the PDF
+      new Paragraph({
+        spacing: { before: 100, after: 100 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.GRAY, space: 1 } },
+        children: [new TextRun({ text: `Response (${purpose}) from: ${responder}`, font: "Calibri", size: 22, bold: true })],
+      }),
+      new Paragraph({
+        spacing: { after: 60 },
+        children: [new TextRun({ text: "Remarks:", font: "Calibri", size: 18, italics: true, color: DOCX_COLORS.GRAY })],
+      }),
+      new Paragraph({
+        spacing: { before: 100, after: 80 },
+        children: [new TextRun({ text: "General Notations:", font: "Calibri", size: 22, bold: true })],
+      }),
+      ...RFI_GENERAL_NOTATIONS.map(p =>
+        new Paragraph({
+          spacing: { after: 140 },
+          children: [new TextRun({ text: p, font: "Calibri", size: 20 })],
+        })
+      ),
+      new Paragraph({
+        spacing: { before: 200, after: 80 },
+        children: [new TextRun({ text: "Response:", font: "Calibri", size: 22, bold: true })],
+      }),
+      ...responseBodyParagraphs(),
+      // Signature block — name / company / date
+      new Paragraph({
+        spacing: { before: 280, after: 0 },
+        children: [new TextRun({ text: responder, font: "Calibri", size: 20 })],
+      }),
+      new Paragraph({
+        spacing: { after: 0 },
+        children: [new TextRun({ text: "Setty & Associates", font: "Calibri", size: 20 })],
+      }),
+      new Paragraph({
+        spacing: { after: 100 },
+        children: [new TextRun({ text: dateSent, font: "Calibri", size: 20 })],
+      }),
+    ];
+    return new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: [9360],
+      rows: [new TableRow({
+        children: [new TableCell({
+          width: { size: 9360, type: WidthType.DXA },
+          // Visible box border on all sides
+          borders: {
+            top:    { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+            bottom: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+            left:   { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+            right:  { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+          },
+          children: innerChildren,
+        })],
+      })],
+    });
+  }
+
+  // FROM table (Setty responder) — page 2
+  function buildFromTable() {
+    const colHeader = (label, w) => new TableCell({
+      width: { size: w, type: WidthType.DXA },
+      shading: { type: ShadingType.SOLID, color: "f1f5f9", fill: "f1f5f9" },
+      children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: label, font: "Calibri", size: 16, bold: true, color: DOCX_COLORS.GRAY })] })],
+    });
+    const colData = (text, w) => new TableCell({
+      width: { size: w, type: WidthType.DXA },
+      children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: String(text || ""), font: "Calibri", size: 20 })] })],
+    });
+    return new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: [2200, 2200, 3300, 1660],
+      rows: [
+        new TableRow({ tableHeader: true, children: [
+          colHeader("NAME", 2200), colHeader("COMPANY", 2200), colHeader("EMAIL", 3300), colHeader("PHONE", 1660),
+        ]}),
+        new TableRow({ children: [
+          colData(responder, 2200), colData("Setty & Associates", 2200), colData(responderEmail, 3300), colData("", 1660),
+        ]}),
       ],
     });
   }
 
-  // Paragraph factory for long-form text blocks that need to wrap.
-  function block(text, opts = {}) {
-    const lines = String(text || "").split(/\r?\n/);
-    return lines.map(line =>
-      new Paragraph({
-        spacing: { after: opts.dense ? 60 : 100 },
-        children: [new TextRun({ text: line, font: "Calibri", size: opts.size || 22 })],
-      })
-    );
+  function buildToTable() {
+    const colHeader = (label, w) => new TableCell({
+      width: { size: w, type: WidthType.DXA },
+      shading: { type: ShadingType.SOLID, color: "f1f5f9", fill: "f1f5f9" },
+      children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: label, font: "Calibri", size: 16, bold: true, color: DOCX_COLORS.GRAY })] })],
+    });
+    const colData = (text, w) => new TableCell({
+      width: { size: w, type: WidthType.DXA },
+      children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: String(text || ""), font: "Calibri", size: 20 })] })],
+    });
+    const rows = [
+      new TableRow({ tableHeader: true, children: [
+        colHeader("NAME", 2200), colHeader("COMPANY", 2200), colHeader("EMAIL", 3300), colHeader("PHONE", 1660),
+      ]}),
+    ];
+    if (toList.length === 0) {
+      rows.push(new TableRow({ children: [
+        colData("(no recipients on record)", 2200), colData("", 2200), colData("", 3300), colData("", 1660),
+      ]}));
+    } else {
+      for (const r of toList) {
+        rows.push(new TableRow({ children: [
+          colData(r.name, 2200), colData(r.company, 2200), colData(r.email, 3300), colData(r.phone, 1660),
+        ]}));
+      }
+    }
+    return new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: [2200, 2200, 3300, 1660],
+      rows,
+    });
   }
+
+  function buildContentsTable() {
+    const colHeader = (label, w) => new TableCell({
+      width: { size: w, type: WidthType.DXA },
+      shading: { type: ShadingType.SOLID, color: "f1f5f9", fill: "f1f5f9" },
+      children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: label, font: "Calibri", size: 16, bold: true, color: DOCX_COLORS.GRAY })] })],
+    });
+    const colData = (text, w) => new TableCell({
+      width: { size: w, type: WidthType.DXA },
+      children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: String(text || ""), font: "Calibri", size: 20 })] })],
+    });
+    const docxFileName = `${rfiId} Response ${dateSent.replace(/-/g, "")}.pdf`;
+    return new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: [800, 1400, 3760, 1100, 1100, 1200],
+      rows: [
+        new TableRow({ tableHeader: true, children: [
+          colHeader("QTY", 800), colHeader("DATED", 1400), colHeader("TITLE", 3760), colHeader("NUMBER", 1100), colHeader("SCALE", 1100), colHeader("SIZE", 1200),
+        ]}),
+        new TableRow({ children: [
+          colData("1", 800), colData(dateSent, 1400), colData(docxFileName, 3760), colData("", 1100), colData("", 1100), colData("", 1200),
+        ]}),
+      ],
+    });
+  }
+
+  const headerBlock = new Header({
+    children: [new Paragraph({
+      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: DOCX_COLORS.RED, space: 1 } },
+      spacing: { after: 120 },
+      children: [
+        new TextRun({ text: "SETTY", font: "Calibri", size: 36, bold: true, color: DOCX_COLORS.RED }),
+        new TextRun({ text: "                                                                ", font: "Calibri", size: 16 }),
+        new TextRun({ text: "RFI Transmittal", font: "Calibri", size: 24, bold: true, color: DOCX_COLORS.NAVY }),
+      ],
+    })],
+  });
 
   const doc = new Document({
     styles: { default: { document: { run: { font: "Calibri", size: 22 } } } },
     sections: [{
-      properties: {
-        page: { size: { width: 12240, height: 15840 }, margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 } },
-      },
-      headers: {
-        default: new Header({
-          children: [new Paragraph({
-            border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: DOCX_COLORS.RED, space: 1 } },
-            spacing: { after: 120 },
-            children: [
-              new TextRun({ text: "SETTY", font: "Calibri", size: 28, bold: true, color: DOCX_COLORS.RED }),
-              new TextRun({ text: "  & Associates    ", font: "Calibri", size: 18, color: DOCX_COLORS.GRAY }),
-              new TextRun({ text: "RFI Response", font: "Calibri", size: 18, color: DOCX_COLORS.GRAY }),
-            ],
-          })],
-        }),
-      },
+      properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1080, right: 1080, bottom: 1080, left: 1080 } } },
+      headers: { default: headerBlock },
       children: [
+        // Discipline label (matches the "SME" label at the top of Newforma's page 1)
         new Paragraph({
-          spacing: { before: 0, after: 160 },
-          children: [new TextRun({ text: "RFI RESPONSE", font: "Calibri", size: 40, bold: true, color: DOCX_COLORS.NAVY })],
+          spacing: { before: 0, after: 200 },
+          children: [new TextRun({ text: (rfi.discipline || "").toUpperCase(), font: "Calibri", size: 18, color: DOCX_COLORS.GRAY })],
         }),
-        new Paragraph({
-          border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.NAVY, space: 1 } },
-          spacing: { after: 200 },
-          children: [new TextRun({ text: (rfi.number || "RFI").toUpperCase(), font: "Calibri", size: 22, bold: true, color: DOCX_COLORS.BLUE })],
-        }),
+        // Metadata grid — 4 columns: LABEL | VALUE | LABEL | VALUE.
+        // We build cells directly here rather than via the _docxInfoRow helper
+        // because that helper returns a 2-cell row; the grid needs 4 cells per row.
+        (function() {
+          const labelCell = (text, w) => new TableCell({
+            width: { size: w, type: WidthType.DXA },
+            shading: { type: ShadingType.SOLID, color: "f8fafc", fill: "f8fafc" },
+            children: [new Paragraph({ spacing: { before: 40, after: 40 }, children: [new TextRun({ text, font: "Calibri", size: 16, bold: true, color: DOCX_COLORS.GRAY })] })],
+          });
+          const valueCell = (text, w) => new TableCell({
+            width: { size: w, type: WidthType.DXA },
+            children: [new Paragraph({ spacing: { before: 40, after: 40 }, children: [new TextRun({ text: String(text || ""), font: "Calibri", size: 20 })] })],
+          });
+          const W = [1600, 3080, 1600, 3080];
+          return new Table({
+            width: { size: 9360, type: WidthType.DXA },
+            columnWidths: W,
+            rows: [
+              new TableRow({ children: [
+                labelCell("PROJECT:", W[0]),
+                valueCell(`${projLabel}${projNumber ? "\n" + projNumber : ""}`, W[1]),
+                labelCell("DATE SENT:", W[2]),
+                valueCell(dateSent, W[3]),
+              ]}),
+              new TableRow({ children: [
+                labelCell("SUBJECT:", W[0]),
+                valueCell(subject, W[1]),
+                labelCell("RFI ID:", W[2]),
+                valueCell(rfiId, W[3]),
+              ]}),
+              new TableRow({ children: [
+                labelCell("TYPE:", W[0]),
+                valueCell("RFI", W[1]),
+                labelCell("TRANSMITTAL ID:", W[2]),
+                valueCell(transmittalId, W[3]),
+              ]}),
+              new TableRow({ children: [
+                labelCell("PURPOSE:", W[0]),
+                valueCell(purpose, W[1]),
+                labelCell("VIA:", W[2]),
+                valueCell(via, W[3]),
+              ]}),
+            ],
+          });
+        })(),
 
-        new Table({
-          width: { size: 9360, type: WidthType.DXA },
-          columnWidths: [2160, 7200],
-          rows: [
-            infoRow("Project:",       projLabel),
-            infoRow("RFI No.:",       rfi.number || ""),
-            infoRow("Title:",         rfi.title || ""),
-            infoRow("Discipline:",    rfi.discipline || ""),
-            infoRow("From:",          rfi.from || ""),
-            infoRow("Date Received:", rfi.dateReceived || ""),
-            infoRow("Due Date:",      rfi.dueDate || ""),
-            infoRow("Responded:",     dateResponded || ""),
-            infoRow("Status:",        status || "Responded"),
-            infoRow("Responder:",     responder),
-          ],
+        sectionLabel("QUESTION:"),
+        ...(String(rfi.description || rfi.title || "").trim() ? [
+          new Paragraph({
+            spacing: { after: 200 },
+            indent: { left: 1600 },
+            children: [new TextRun({ text: rfi.description || rfi.title || "", font: "Calibri", size: 22 })],
+          })
+        ] : [
+          new Paragraph({ spacing: { after: 200 }, children: [new TextRun({ text: " ", font: "Calibri", size: 22 })] }),
+        ]),
+
+        sectionLabel("SUGGESTION:"),
+        new Paragraph({ spacing: { after: 200 }, children: [new TextRun({ text: " ", font: "Calibri", size: 22 })] }),
+
+        sectionLabel("ANSWER:"),
+        buildAnswerBox(),
+
+        // Page break before the FROM/TO/CONTENTS tables (page 2)
+        new Paragraph({
+          children: [new TextRun({ text: "FROM", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })],
+          spacing: { before: 240, after: 60 },
+          pageBreakBefore: true,
         }),
+        buildFromTable(),
 
         new Paragraph({
-          spacing: { before: 280, after: 100 },
-          children: [new TextRun({ text: "ORIGINAL QUESTION", font: "Calibri", size: 22, bold: true, color: DOCX_COLORS.NAVY })],
+          children: [new TextRun({ text: "TO", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })],
+          spacing: { before: 240, after: 60 },
         }),
-        ...(block(rfi.description || rfi.title || "(no question text on record)", { size: 22 })),
+        buildToTable(),
 
         new Paragraph({
-          spacing: { before: 280, after: 100 },
-          children: [new TextRun({ text: "RESPONSE", font: "Calibri", size: 22, bold: true, color: DOCX_COLORS.NAVY })],
+          children: [new TextRun({ text: "DESCRIPTION OF CONTENTS", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })],
+          spacing: { before: 240, after: 60 },
         }),
-        ...(block(response || "(no response text)", { size: 22 })),
+        buildContentsTable(),
 
         new Paragraph({
-          spacing: { before: 400 },
-          border: { top: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.LIGHT, space: 1 } },
-          children: [
-            new TextRun({ text: `Generated: ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}     `, font: "Calibri", size: 18, color: DOCX_COLORS.GRAY }),
-            new TextRun({ text: "Setty & Associates", font: "Calibri", size: 18, bold: true, color: DOCX_COLORS.NAVY }),
-          ],
+          children: [new TextRun({ text: "COPIES:", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })],
+          spacing: { before: 240, after: 60 },
+        }),
+        new Paragraph({
+          spacing: { after: 0 },
+          children: [new TextRun({ text: responder, font: "Calibri", size: 20 })],
         }),
       ],
     }],
@@ -4727,46 +6799,185 @@ async function buildRfiResponseDocx({ rfi, project, response, dateResponded, sta
   return await Packer.toBlob(doc);
 }
 
-// Same shape for Submittal review. Uses stamp + comments instead of free response.
-async function buildSubReviewDocx({ sub, project, comments, stamp, dateReturned, status }) {
+function _resolveSubReviewRecipients(sub, project) {
+  const recipients = [];
+  if (sub.sourceItemId || sub.sourceMessageId) {
+    const emailRec = (project.emails || []).find(e =>
+      (sub.sourceItemId && e.msgId === sub.sourceItemId) ||
+      (sub.sourceMessageId && e.msgId === sub.sourceMessageId)
+    );
+    if (emailRec?.fromAddress) {
+      recipients.push({ name: emailRec.from || "", company: "", email: emailRec.fromAddress, phone: "" });
+    }
+  }
+  if (recipients.length === 0 && sub.from) {
+    recipients.push({ name: sub.from, company: "", email: "", phone: "" });
+  }
+  if (sub.subAssigned) {
+    const s = (project.subconsultants || []).find(x => x.id === sub.subAssigned);
+    if (s) {
+      recipients.push({
+        name: s.contact || s.firm || "",
+        company: s.firm || "",
+        email: s.email || "",
+        phone: s.phone || "",
+      });
+    }
+  }
+  return recipients;
+}
+
+// Submittal Review DOCX — same two-page Newforma-style layout as the RFI
+// version, with stamp + comments substituted for the answer/response, and
+// submittal-appropriate boilerplate.
+async function buildSubReviewDocx({ sub, project, comments, stamp, dateReturned, status, recipients }) {
   if (typeof docx === "undefined" || !docx.Packer) {
     throw new Error("DOCX library not loaded — refresh the taskpane and try again.");
   }
+  const lib = docx;
   const {
     Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
     Header, BorderStyle, WidthType, ShadingType,
-  } = docx;
-  const projLabel = [project.projectNumber, project.name].filter(Boolean).join(" — ");
+  } = lib;
+  const projLabel = project.name || "";
+  const projNumber = project.projectNumber || "";
   const reviewer = msalAccount?.name || msalAccount?.username || "";
+  const reviewerEmail = msalAccount?.username || "";
+  const dateSent = dateReturned || new Date().toISOString().slice(0, 10);
+  const subject = sub.description || "";
+  const subId = sub.number || "";
+  const purpose = stamp || "Reviewed";
+  const transmittalId = `${subId}-${dateSent.replace(/-/g, "")}`;
+  const via = sub.receivedVia || "Email";
+  const toList = recipients && recipients.length ? recipients : _resolveSubReviewRecipients(sub, project);
 
-  function infoRow(label, value) {
-    return new TableRow({
-      children: [
-        new TableCell({
-          width: { size: 2160, type: WidthType.DXA },
-          shading: { type: ShadingType.SOLID, color: "f1f5f9", fill: "f1f5f9" },
-          children: [new Paragraph({ children: [new TextRun({ text: label, font: "Calibri", size: 20, bold: true, color: DOCX_COLORS.NAVY })] })],
-        }),
-        new TableCell({
-          width: { size: 7200, type: WidthType.DXA },
-          children: [new Paragraph({ children: [new TextRun({ text: String(value || ""), font: "Calibri", size: 20 })] })],
-        }),
-      ],
-    });
-  }
-  function block(text, opts = {}) {
-    const lines = String(text || "").split(/\r?\n/);
-    return lines.map(line =>
-      new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: line, font: "Calibri", size: opts.size || 22 })] })
-    );
-  }
-
-  // Stamp gets visual emphasis — it's the headline finding of the review.
   const stampColor =
     stamp === "Approved"            ? "059669" :
     stamp === "Approved as Noted"   ? "0891b2" :
     stamp === "Revise and Resubmit" ? "ea580c" :
     stamp === "Rejected"            ? "b91c1c" : DOCX_COLORS.NAVY;
+
+  function commentsBodyParagraphs() {
+    const raw = String(comments || "(no comments)").trim();
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    const hasBullets = lines.some(l => /^[-•*]\s+/.test(l.trim()));
+    if (!hasBullets) {
+      return lines.map(line =>
+        new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: line, font: "Calibri", size: 22 })] })
+      );
+    }
+    return lines.map(line => {
+      const stripped = line.trim().replace(/^[-•*]\s+/, "");
+      return new Paragraph({
+        spacing: { after: 100 }, bullet: { level: 0 },
+        children: [new TextRun({ text: stripped, font: "Calibri", size: 22 })],
+      });
+    });
+  }
+
+  function sectionLabel(text) {
+    return new Paragraph({
+      spacing: { before: 200, after: 80 },
+      children: [new TextRun({ text, font: "Calibri", size: 18, bold: true, color: DOCX_COLORS.GRAY })],
+    });
+  }
+
+  function buildReviewBox() {
+    const innerChildren = [
+      new Paragraph({
+        spacing: { before: 100, after: 100 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.GRAY, space: 1 } },
+        children: [new TextRun({ text: `Review (${purpose}) by: ${reviewer}`, font: "Calibri", size: 22, bold: true })],
+      }),
+      new Paragraph({
+        spacing: { after: 100 },
+        children: [
+          new TextRun({ text: "Stamp: ", font: "Calibri", size: 22, bold: true }),
+          new TextRun({ text: (stamp || "—").toUpperCase(), font: "Calibri", size: 22, bold: true, color: stampColor }),
+        ],
+      }),
+      new Paragraph({
+        spacing: { after: 60 },
+        children: [new TextRun({ text: "Remarks:", font: "Calibri", size: 18, italics: true, color: DOCX_COLORS.GRAY })],
+      }),
+      new Paragraph({
+        spacing: { before: 100, after: 80 },
+        children: [new TextRun({ text: "General Notations:", font: "Calibri", size: 22, bold: true })],
+      }),
+      ...SUB_GENERAL_NOTATIONS.map(p =>
+        new Paragraph({ spacing: { after: 140 }, children: [new TextRun({ text: p, font: "Calibri", size: 20 })] })
+      ),
+      new Paragraph({
+        spacing: { before: 200, after: 80 },
+        children: [new TextRun({ text: "Comments:", font: "Calibri", size: 22, bold: true })],
+      }),
+      ...commentsBodyParagraphs(),
+      new Paragraph({
+        spacing: { before: 280, after: 0 },
+        children: [new TextRun({ text: reviewer, font: "Calibri", size: 20 })],
+      }),
+      new Paragraph({ spacing: { after: 0 }, children: [new TextRun({ text: "Setty & Associates", font: "Calibri", size: 20 })] }),
+      new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: dateSent, font: "Calibri", size: 20 })] }),
+    ];
+    return new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: [9360],
+      rows: [new TableRow({
+        children: [new TableCell({
+          width: { size: 9360, type: WidthType.DXA },
+          borders: {
+            top:    { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+            bottom: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+            left:   { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+            right:  { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.BOX_BORDER },
+          },
+          children: innerChildren,
+        })],
+      })],
+    });
+  }
+
+  // FROM/TO/CONTENTS table builders — same shape as RFI version
+  const colHeader = (label, w) => new TableCell({
+    width: { size: w, type: WidthType.DXA },
+    shading: { type: ShadingType.SOLID, color: "f1f5f9", fill: "f1f5f9" },
+    children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: label, font: "Calibri", size: 16, bold: true, color: DOCX_COLORS.GRAY })] })],
+  });
+  const colData = (text, w) => new TableCell({
+    width: { size: w, type: WidthType.DXA },
+    children: [new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: String(text || ""), font: "Calibri", size: 20 })] })],
+  });
+
+  const fromTable = new Table({
+    width: { size: 9360, type: WidthType.DXA },
+    columnWidths: [2200, 2200, 3300, 1660],
+    rows: [
+      new TableRow({ tableHeader: true, children: [colHeader("NAME", 2200), colHeader("COMPANY", 2200), colHeader("EMAIL", 3300), colHeader("PHONE", 1660)] }),
+      new TableRow({ children: [colData(reviewer, 2200), colData("Setty & Associates", 2200), colData(reviewerEmail, 3300), colData("", 1660)] }),
+    ],
+  });
+
+  const toRows = [
+    new TableRow({ tableHeader: true, children: [colHeader("NAME", 2200), colHeader("COMPANY", 2200), colHeader("EMAIL", 3300), colHeader("PHONE", 1660)] }),
+  ];
+  if (toList.length === 0) {
+    toRows.push(new TableRow({ children: [colData("(no recipients on record)", 2200), colData("", 2200), colData("", 3300), colData("", 1660)] }));
+  } else {
+    for (const r of toList) {
+      toRows.push(new TableRow({ children: [colData(r.name, 2200), colData(r.company, 2200), colData(r.email, 3300), colData(r.phone, 1660)] }));
+    }
+  }
+  const toTable = new Table({ width: { size: 9360, type: WidthType.DXA }, columnWidths: [2200, 2200, 3300, 1660], rows: toRows });
+
+  const docxFileName = `${subId} Review ${dateSent.replace(/-/g, "")}.pdf`;
+  const contentsTable = new Table({
+    width: { size: 9360, type: WidthType.DXA },
+    columnWidths: [800, 1400, 3760, 1100, 1100, 1200],
+    rows: [
+      new TableRow({ tableHeader: true, children: [colHeader("QTY", 800), colHeader("DATED", 1400), colHeader("TITLE", 3760), colHeader("NUMBER", 1100), colHeader("SCALE", 1100), colHeader("SIZE", 1200)] }),
+      new TableRow({ children: [colData("1", 800), colData(dateSent, 1400), colData(docxFileName, 3760), colData("", 1100), colData("", 1100), colData("", 1200)] }),
+    ],
+  });
 
   const doc = new Document({
     styles: { default: { document: { run: { font: "Calibri", size: 22 } } } },
@@ -4778,63 +6989,83 @@ async function buildSubReviewDocx({ sub, project, comments, stamp, dateReturned,
             border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: DOCX_COLORS.RED, space: 1 } },
             spacing: { after: 120 },
             children: [
-              new TextRun({ text: "SETTY", font: "Calibri", size: 28, bold: true, color: DOCX_COLORS.RED }),
-              new TextRun({ text: "  & Associates    ", font: "Calibri", size: 18, color: DOCX_COLORS.GRAY }),
-              new TextRun({ text: "Submittal Review", font: "Calibri", size: 18, color: DOCX_COLORS.GRAY }),
+              new TextRun({ text: "SETTY", font: "Calibri", size: 36, bold: true, color: DOCX_COLORS.RED }),
+              new TextRun({ text: "                                                                ", font: "Calibri", size: 16 }),
+              new TextRun({ text: "Submittal Transmittal", font: "Calibri", size: 24, bold: true, color: DOCX_COLORS.NAVY }),
             ],
           })],
         }),
       },
       children: [
         new Paragraph({
-          spacing: { before: 0, after: 160 },
-          children: [new TextRun({ text: "SUBMITTAL REVIEW", font: "Calibri", size: 40, bold: true, color: DOCX_COLORS.NAVY })],
+          spacing: { before: 0, after: 200 },
+          children: [new TextRun({ text: (sub.discipline || "").toUpperCase(), font: "Calibri", size: 18, color: DOCX_COLORS.GRAY })],
         }),
+        // Metadata grid
+        (function() {
+          const labelCell = (text, w) => new TableCell({
+            width: { size: w, type: WidthType.DXA },
+            shading: { type: ShadingType.SOLID, color: "f8fafc", fill: "f8fafc" },
+            children: [new Paragraph({ spacing: { before: 40, after: 40 }, children: [new TextRun({ text, font: "Calibri", size: 16, bold: true, color: DOCX_COLORS.GRAY })] })],
+          });
+          const valueCell = (text, w) => new TableCell({
+            width: { size: w, type: WidthType.DXA },
+            children: [new Paragraph({ spacing: { before: 40, after: 40 }, children: [new TextRun({ text: String(text || ""), font: "Calibri", size: 20 })] })],
+          });
+          const W = [1600, 3080, 1600, 3080];
+          return new Table({
+            width: { size: 9360, type: WidthType.DXA },
+            columnWidths: W,
+            rows: [
+              new TableRow({ children: [
+                labelCell("PROJECT:", W[0]), valueCell(`${projLabel}${projNumber ? "\n" + projNumber : ""}`, W[1]),
+                labelCell("DATE SENT:", W[2]), valueCell(dateSent, W[3]),
+              ]}),
+              new TableRow({ children: [
+                labelCell("SUBJECT:", W[0]), valueCell(subject, W[1]),
+                labelCell("SUBMITTAL ID:", W[2]), valueCell(subId, W[3]),
+              ]}),
+              new TableRow({ children: [
+                labelCell("SPEC SECTION:", W[0]), valueCell(sub.specSection || "", W[1]),
+                labelCell("TRANSMITTAL ID:", W[2]), valueCell(transmittalId, W[3]),
+              ]}),
+              new TableRow({ children: [
+                labelCell("STAMP:", W[0]),
+                new TableCell({
+                  width: { size: W[1], type: WidthType.DXA },
+                  children: [new Paragraph({
+                    spacing: { before: 40, after: 40 },
+                    children: [new TextRun({ text: (stamp || "—").toUpperCase(), font: "Calibri", size: 22, bold: true, color: stampColor })],
+                  })],
+                }),
+                labelCell("VIA:", W[2]), valueCell(via, W[3]),
+              ]}),
+            ],
+          });
+        })(),
+
+        sectionLabel("DESCRIPTION:"),
         new Paragraph({
-          border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.NAVY, space: 1 } },
-          spacing: { after: 100 },
-          children: [new TextRun({ text: (sub.number || "SUB").toUpperCase(), font: "Calibri", size: 22, bold: true, color: DOCX_COLORS.BLUE })],
-        }),
-        new Paragraph({
-          spacing: { after: 240 },
-          children: [
-            new TextRun({ text: "STAMP: ", font: "Calibri", size: 24, bold: true, color: DOCX_COLORS.NAVY }),
-            new TextRun({ text: (stamp || "—").toUpperCase(), font: "Calibri", size: 26, bold: true, color: stampColor }),
-          ],
+          spacing: { after: 200 },
+          indent: { left: 1600 },
+          children: [new TextRun({ text: sub.fullDescription || sub.description || "", font: "Calibri", size: 22 })],
         }),
 
-        new Table({
-          width: { size: 9360, type: WidthType.DXA },
-          columnWidths: [2160, 7200],
-          rows: [
-            infoRow("Project:",        projLabel),
-            infoRow("Submittal No.:",  sub.number || ""),
-            infoRow("Spec Section:",   sub.specSection || ""),
-            infoRow("Description:",    sub.description || ""),
-            infoRow("Discipline:",     sub.discipline || ""),
-            infoRow("From:",           sub.from || ""),
-            infoRow("Date Received:",  sub.dateReceived || ""),
-            infoRow("Due Date:",       sub.dueDate || ""),
-            infoRow("Returned:",       dateReturned || ""),
-            infoRow("Status:",         status || "Returned"),
-            infoRow("Reviewer:",       reviewer),
-          ],
-        }),
+        sectionLabel("REVIEW:"),
+        buildReviewBox(),
 
         new Paragraph({
-          spacing: { before: 280, after: 100 },
-          children: [new TextRun({ text: "REVIEW COMMENTS", font: "Calibri", size: 22, bold: true, color: DOCX_COLORS.NAVY })],
+          spacing: { before: 240, after: 60 },
+          pageBreakBefore: true,
+          children: [new TextRun({ text: "FROM", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })],
         }),
-        ...(block(comments || "(no comments)", { size: 22 })),
-
-        new Paragraph({
-          spacing: { before: 400 },
-          border: { top: { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.LIGHT, space: 1 } },
-          children: [
-            new TextRun({ text: `Generated: ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}     `, font: "Calibri", size: 18, color: DOCX_COLORS.GRAY }),
-            new TextRun({ text: "Setty & Associates", font: "Calibri", size: 18, bold: true, color: DOCX_COLORS.NAVY }),
-          ],
-        }),
+        fromTable,
+        new Paragraph({ spacing: { before: 240, after: 60 }, children: [new TextRun({ text: "TO", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })] }),
+        toTable,
+        new Paragraph({ spacing: { before: 240, after: 60 }, children: [new TextRun({ text: "DESCRIPTION OF CONTENTS", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })] }),
+        contentsTable,
+        new Paragraph({ spacing: { before: 240, after: 60 }, children: [new TextRun({ text: "COPIES:", font: "Calibri", size: 16, color: DOCX_COLORS.GRAY })] }),
+        new Paragraph({ children: [new TextRun({ text: reviewer, font: "Calibri", size: 20 })] }),
       ],
     }],
   });
@@ -4920,6 +7151,44 @@ function nextAutoRfiNumber() {
   return "RFI-" + String(count).padStart(3, "0");
 }
 
+// Seed a description textarea with the email's plain-text body. Async —
+// Office hands the body back on a callback — so the fill is guarded: only
+// applied if the field is still empty when the text arrives (never overwrite
+// something the user started typing) and only if the pinned pane hasn't
+// switched to a different email mid-fetch. Quoted reply history is cut at the
+// first "From:" / "On … wrote:" marker since an RFI/submittal description
+// wants the new ask, not the whole thread.
+function seedDescriptionFromEmailBody(fieldId, maxChars = 600) {
+  const item = emailItem;
+  void (async () => {
+    const raw = await getBodyTextReliable(item);
+    if (!raw) return;
+    if (emailItem !== item) return;
+    const el = document.getElementById(fieldId);
+    if (!el || el.value.trim()) return;
+    let text = raw.replace(/\r\n/g, "\n").trim();
+    const cut = text.search(/\n\s*(From:|-{3,}\s*Original Message|On .{10,80} wrote:)/i);
+    if (cut > 0) text = text.slice(0, cut).trim();
+    if (text.length > maxChars) text = text.slice(0, maxChars).trimEnd() + "…";
+    if (text) el.value = text;
+  })();
+}
+
+// Default an assignee <select> to the project's Setty PM when they're on the
+// team roster — the most common routing for incoming RFIs/submittals. The
+// dropdown options are "staff:<member.id>", so match the PM by name.
+function defaultAssigneeToPm(selectId) {
+  const pmName = (selectedProject?.settyPm || "").trim().toLowerCase();
+  if (!pmName) return;
+  const pm = (selectedProject?.teamMembers || []).find(m =>
+    m?.id && (m.name || "").trim().toLowerCase() === pmName
+  );
+  const sel = document.getElementById(selectId);
+  if (pm && sel && sel.querySelector(`option[value="staff:${pm.id}"]`)) {
+    sel.value = "staff:" + pm.id;
+  }
+}
+
 function prefillRfi() {
   document.getElementById("rfiTitle").value = emailItem?.subject || "";
   document.getElementById("rfiNumber").value = nextAutoRfiNumber();
@@ -4931,6 +7200,8 @@ function prefillRfi() {
   // Procore/ACC/etc.
   document.getElementById("rfiReceivedVia").value = "Email";
   populateRfiAssigneeDropdown();
+  defaultAssigneeToPm("rfiAssignedTo");
+  seedDescriptionFromEmailBody("rfiDescription");
   setRfiMode("new");
   renderRfiPicker();
 }
@@ -4977,33 +7248,35 @@ async function doSaveRfi() {
       const discCode = getDisciplineCode(discipline);
       const received = new Date();
 
-      // Build the new folder structure: <projFolder>/RFIs/<discCode>/<RFI-NNN>/IN
-      // The IN folder gets the incoming email. The RFI root folder is what
-      // gets stored on the RFI record so users navigate to the RFI level
-      // (not the IN subfolder) when clicking SharePoint links in PMS.
-      let spFolderUrl = "";
-      let inFolderWebUrl = ""; // Specific URL of the /IN folder (for email body link)
+      // Build the new folder structure: <projFolder>/RFIs/<discCode>/<RFI-NNN>/IN/<date subject>
+      // The per-email subfolder under /IN means multiple emails to the same RFI
+      // coexist without colliding on "email.html". The RFI root URL is what
+      // gets stored on the record so PMS navigation lands at the RFI level.
+      let spFolderUrl = "";    // RFI root URL (stored on the record)
+      let inFolderWebUrl = ""; // /IN folder URL (for the assignment email body link)
+      let emailFolderUrl = ""; // specific per-email subfolder (for audit log)
+      let spUploadError = "";
       if (freshProject.projectFolderUrl) {
         try {
           const token = await getToken();
           const { driveId } = await resolveSpIds();
           const projFolderName = decodeURIComponent(freshProject.projectFolderUrl.split("/").pop());
-          // Sanitize RFI number for folder name (in case user enters "RFI/external#-001" etc.)
           const safeRfiNumber = rfiNumber.replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
           const rfisPath = await ensureSpFolder(driveId, token, projFolderName, "RFIs");
           const discPath = await ensureSpFolder(driveId, token, rfisPath, discCode);
           const rfiPath  = await ensureSpFolder(driveId, token, discPath, safeRfiNumber);
-          const inPath   = await ensureSpFolder(driveId, token, rfiPath, "IN");
-          // Sidecar at the RFI level so PMS-side reconcile knows what it represents
           await writeSpMetadataSidecar(driveId, token, rfiPath, buildAddinMetadata(freshProject, "rfi"));
-          await uploadEmailAndAttachments(driveId, token, inPath, snapItem);
-          // Build web URLs. SP_BASE_URL + encoded path segments.
-          const rfiPathEncoded = rfiPath.split("/").map(encodeURIComponent).join("/");
-          const inPathEncoded  = inPath.split("/").map(encodeURIComponent).join("/");
-          spFolderUrl     = SP_BASE_URL + "/" + rfiPathEncoded;
-          inFolderWebUrl  = SP_BASE_URL + "/" + inPathEncoded;
+          // Upload via the shared helper — per-email subfolder, real error
+          // propagation. Throws on actual upload failure so we know.
+          const uploadResult = await uploadEmailToArtifactInFolder({
+            driveId, token, artifactRootPath: rfiPath, snapItem,
+          });
+          spFolderUrl    = SP_BASE_URL + "/" + rfiPath.split("/").map(encodeURIComponent).join("/");
+          inFolderWebUrl = uploadResult.inFolderUrl;
+          emailFolderUrl = uploadResult.emailFolderUrl;
         } catch (e) {
           console.warn("RFI SP upload failed:", e.message);
+          spUploadError = e.message;
         }
       }
 
@@ -5061,18 +7334,60 @@ async function doSaveRfi() {
       // Refresh the "Logged as RFI" chip so the main view reflects the new state
       // when the user navigates back from the RFI form.
       try { refreshLoggedArtifactChips(); } catch {}
+    try { refreshLinkToTargetDropdown(); } catch {}
 
       const baseMsg = "✓ " + rfiNumber + " logged" + (spFolderUrl ? " · filed to SharePoint" : "");
       const draftMsg = draftOpened ? " · ✉️ Draft opened" : (assignee?.email ? "" : (assignee ? " · ⚠ assignee has no email on file" : ""));
+      const errMsg = spUploadError ? ` · ⚠ SP upload failed: ${spUploadError.slice(0, 120)}` : "";
       return {
-        sp_folder_url:  spFolderUrl || null,
-        status:         spFolderUrl ? "success" : "partial",
-        error:          spFolderUrl ? null : "RFI logged without SharePoint upload",
-        successMessage: baseMsg + draftMsg,
+        // sp_folder_url points at the per-email subfolder so the reconcile
+        // sweep checks the right place. Falls back to the RFI root, then null,
+        // depending on which step succeeded.
+        sp_folder_url:  emailFolderUrl || spFolderUrl || null,
+        status:         emailFolderUrl ? "success" : (spFolderUrl ? "partial" : "partial"),
+        error:          emailFolderUrl ? null : (spUploadError || "RFI logged without SharePoint upload"),
+        successMessage: baseMsg + draftMsg + errMsg,
       };
     }
   );
 }
+// Upload an email + its attachments INTO an RFI/Submittal's /IN folder, using
+// a per-email subfolder so multiple emails coexist without colliding on
+// "email.html". Matches the structure the project's main Emails folder uses.
+//
+// Returns { emailPath, emailFolderUrl, inPath, inFolderUrl, attCount } so
+// callers can audit-log the precise upload location AND store the artifact
+// root URL on the record (for navigation).
+//
+// Throws on creation failure so callers can surface the real error instead
+// of silently filing a "logged without SharePoint upload" status.
+async function uploadEmailToArtifactInFolder({ driveId, token, artifactRootPath, snapItem }) {
+  if (!artifactRootPath) throw new Error("artifactRootPath missing");
+  const inPath = await ensureSpFolder(driveId, token, artifactRootPath, "IN");
+  // Per-email subfolder. Format mirrors the project Emails folder:
+  // "YYYY-MM-DD <sanitized subject>". Capped at 60 chars to keep the path
+  // length comfortably under SharePoint's 400-char URL ceiling.
+  const dateObj = new Date(snapItem?.dateTimeCreated || Date.now());
+  const datePart = dateObj.getFullYear() + "-" +
+                   String(dateObj.getMonth() + 1).padStart(2, "0") + "-" +
+                   String(dateObj.getDate()).padStart(2, "0");
+  const subject = (snapItem?.subject || "Email")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+  const emailFolderName = (datePart + " " + subject).trim() || (datePart + " Email");
+  const emailPath = await ensureSpFolder(driveId, token, inPath, emailFolderName);
+  const attCount = await uploadEmailAndAttachments(driveId, token, emailPath, snapItem);
+  return {
+    emailPath,
+    emailFolderUrl: SP_BASE_URL + "/" + emailPath.split("/").map(encodeURIComponent).join("/"),
+    inPath,
+    inFolderUrl:    SP_BASE_URL + "/" + inPath.split("/").map(encodeURIComponent).join("/"),
+    attCount,
+  };
+}
+
 // ─── LOG RFI RESPONSE ────────────────────────────────────────────────────────
 // Opens the response view for a specific RFI. Pre-fills today's date and the
 // current default status ("Responded"). The button that calls this is rendered
@@ -5128,24 +7443,26 @@ async function submitRfiResponse() {
     if (selectedProject?.projectFolderUrl) {
       const token = await getToken();
       const { driveId } = await resolveSpIds();
-      let rfiRootPath = spDrivePath(rfi.spFolderUrl);
-      if (!rfiRootPath) {
-        const projFolderName = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
-        const discCode = getDisciplineCode(rfi.discipline);
-        const safeRfiNumber = (rfi.number || "RFI-???").replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
-        const rfisPath = await ensureSpFolder(driveId, token, projFolderName, "RFIs");
-        const discPath = await ensureSpFolder(driveId, token, rfisPath, discCode);
-        rfiRootPath    = await ensureSpFolder(driveId, token, discPath, safeRfiNumber);
-      }
+      // ALWAYS construct the new-structure path for response OUT regardless of
+      // where the RFI was originally filed. Legacy RFIs (logged before the
+      // RFIs/<DiscCode>/RFI-NNN convention) keep their spFolderUrl pointing
+      // at the old flat folder, but the response transmittal should land in
+      // the canonical new path so the team can find it predictably. The new
+      // discipline-coded path is created if it doesn't exist.
+      const projFolderName = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+      const discCode = getDisciplineCode(rfi.discipline);
+      const safeRfiNumber = (rfi.number || "RFI-???").replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+      const rfisPath = await ensureSpFolder(driveId, token, projFolderName, "RFIs");
+      const discPath = await ensureSpFolder(driveId, token, rfisPath, discCode);
+      const rfiRootPath = await ensureSpFolder(driveId, token, discPath, safeRfiNumber);
       const outPath = await ensureSpFolder(driveId, token, rfiRootPath, "OUT");
-      // The IN folder may or may not exist; we link to it best-effort. We don't
-      // create it here — if the user only filed via PMS and never via the
-      // add-in, there might never have been an /IN, and a stub folder would
-      // be misleading. The chip link can simply 404 in that case.
+      // /IN is referenced for the email link, not created here — if no IN
+      // folder exists yet (e.g. PMS-only filings), the chip link 404s, which
+      // is the honest signal.
       const inPath = rfiRootPath + "/IN";
 
-      // 3. Upload the DOCX to OUT. Uses the same verified upload path as
-      // attachments so it gets the same integrity guarantees.
+      // Upload the DOCX to OUT via the verified attachment path so it gets the
+      // same integrity guarantees as everything else.
       const safeName = `${(rfi.number || "RFI").replace(/[\\/:*?"<>|]/g, "-")}_Response.docx`;
       const bytes = new Uint8Array(await docxBlob.arrayBuffer());
       await uploadAttachmentToSharePoint(
@@ -5186,7 +7503,7 @@ async function submitRfiResponse() {
     // fall back to the assignee if there's no usable sender email.
     const recipientEmail = _guessEmailForRfi(rfi, selectedProject);
     const subjectLine = `${rfi.number} Response · ${selectedProject.projectNumber || ""} · ${rfi.title || ""}`.trim();
-    const htmlBody = _buildRfiResponseEmailHtml({ rfi, project: selectedProject, response: responseText, dateResponded, outFolderUrl: outFolderWebUrl, inFolderUrl: inFolderWebUrl });
+    const htmlBody = _buildRfiResponseEmailHtml({ rfi, project: selectedProject, response: responseText, dateResponded, outFolderUrl: outFolderWebUrl, inFolderUrl: inFolderWebUrl, status: newStatus });
     const draftOpened = openComposeDraft({
       toEmail: recipientEmail?.email || "",
       toName:  recipientEmail?.name  || "",
@@ -5203,10 +7520,11 @@ async function submitRfiResponse() {
     // Slight delay so the success message is visible before nav.
     setTimeout(() => {
       try { refreshLoggedArtifactChips(); } catch {}
+    try { refreshLinkToTargetDropdown(); } catch {}
       showView("mainView");
     }, 1500);
   } catch (e) {
-    setStatus("rfiResponseStatusMsg", "error", "✗ " + e.message);
+    setStatus("rfiResponseStatusMsg", "error", "✗ " + humanizeError(e));
     console.error("[rfi-response]", e);
   } finally {
     if (submitBtn) submitBtn.disabled = false;
@@ -5237,23 +7555,90 @@ function _guessEmailForRfi(rfi, project) {
   return null;
 }
 
-function _buildRfiResponseEmailHtml({ rfi, project, response, dateResponded, outFolderUrl, inFolderUrl }) {
+function _buildRfiResponseEmailHtml({ rfi, project, response, dateResponded, outFolderUrl, inFolderUrl, status }) {
   const esc = (s) => String(s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c]);
-  const projLabel = [project.projectNumber, project.name].filter(Boolean).join(" — ");
-  const responseEsc = esc(response).replace(/\n/g, "<br>");
-  const links = [];
-  if (outFolderUrl) links.push(`<a href="${esc(outFolderUrl)}">📁 Response folder (OUT) — formal DOCX</a>`);
-  if (inFolderUrl)  links.push(`<a href="${esc(inFolderUrl)}">📁 Original RFI folder (IN)</a>`);
+  const projLabel = [project.projectNumber, project.name].filter(Boolean).join(" ");
+  const responderName = msalAccount?.name || msalAccount?.username || "";
+  const dateDisplay = dateResponded || new Date().toISOString().slice(0, 10);
+  const purpose = status === "Responded" ? "Answered" : (status || "Answered");
+  const senderId = rfi.number || "";
+
+  // Format response as bullet list if the user used "- " / "• " / "* " line
+  // prefixes; otherwise render line breaks as <br>.
+  function formatResponse(text) {
+    const raw = String(text || "").trim();
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    const hasBullets = lines.some(l => /^[-•*]\s+/.test(l.trim()));
+    if (!hasBullets) {
+      return lines.map(l => esc(l)).join("<br>");
+    }
+    return "<ul style='margin:6px 0 6px 18px;padding:0'>" +
+      lines.map(l => {
+        const stripped = l.trim().replace(/^[-•*]\s+/, "");
+        return `<li style='margin-bottom:4px'>${esc(stripped)}</li>`;
+      }).join("") +
+      "</ul>";
+  }
+
+  const responseHtml = formatResponse(response);
+  const generalNotationsHtml = RFI_GENERAL_NOTATIONS.map(p => `<p style="margin:8px 0">${esc(p)}</p>`).join("");
+
+  // Recipients block — best-effort from rfi.from + assignee/sub
+  const recipients = _resolveRfiResponseRecipients(rfi, project);
+  const toBlock = recipients.length
+    ? recipients.map(r => {
+        const company = r.company ? ` (${esc(r.company)})` : "";
+        return esc(r.name) + company;
+      }).join("; ")
+    : esc(rfi.from || "(no recipient on record)");
+
+  const senderName = recipients[0]?.name || rfi.from || "";
+  const senderCompany = recipients[0]?.company || "";
+
   return `
-    <p>Hi,</p>
-    <p>Please see our response to <strong>${esc(rfi.number)}</strong> below. The formal response cover sheet is in the SharePoint folder linked at the bottom.</p>
-    <p><strong>Project:</strong> ${esc(projLabel)}<br>
-       <strong>RFI:</strong> ${esc(rfi.number)} — ${esc(rfi.title || "")}<br>
-       <strong>Date Responded:</strong> ${esc(dateResponded)}</p>
-    <p><strong>Response:</strong></p>
-    <p style="margin-left:12px">${responseEsc}</p>
-    ${links.map(l => `<p>${l}</p>`).join("")}
-    <p>Thanks,<br>${esc(msalAccount?.name || "")}</p>
+<div style="font-family: Calibri, Arial, sans-serif; font-size: 14px; color: #1f2937;">
+
+  <p style="margin:6px 0"><strong>Project:</strong> ${esc(projLabel)}</p>
+
+  <p style="margin:14px 0 8px 0; font-weight:bold;">Notification about RFI ${esc(rfi.title || "")}</p>
+
+  <p style="margin:6px 0">This email contains the response for an RFI.</p>
+
+  <hr style="border:none; border-top:1px solid #e5e7eb; margin:18px 0">
+
+  <p style="margin:6px 0; font-weight:bold; font-size:16px;">Answer</p>
+
+  <p style="margin:10px 0"><strong>Response (${esc(purpose)}) from:</strong> ${esc(responderName)}</p>
+
+  <p style="margin:10px 0 4px 0"><strong>Remarks:</strong></p>
+
+  <p style="margin:10px 0; font-weight:bold;">General Notations:</p>
+  ${generalNotationsHtml}
+
+  <p style="margin:14px 0 4px 0; font-weight:bold;">Response:</p>
+  <div style="margin-left:6px">${responseHtml}</div>
+
+  <p style="margin:20px 0 4px 0">${esc(responderName)}<br>
+  Setty &amp; Associates<br>
+  ${esc(dateDisplay)}</p>
+
+  <hr style="border:none; border-top:1px solid #e5e7eb; margin:18px 0">
+
+  <p style="margin:6px 0; font-weight:bold;">RFI Info</p>
+  <p style="margin:4px 0"><strong>To:</strong> ${toBlock}</p>
+  <p style="margin:4px 0"><strong>From:</strong> ${esc(senderName)}${senderCompany ? " (" + esc(senderCompany) + ")" : ""}</p>
+  <p style="margin:4px 0"><strong>Purpose:</strong> ${esc(purpose)}</p>
+  <p style="margin:4px 0"><strong>Sender ID:</strong> ${esc(senderId)}</p>
+  <p style="margin:4px 0"><strong>Expiration Date:</strong> None</p>
+
+  ${outFolderUrl || inFolderUrl ? `
+    <hr style="border:none; border-top:1px solid #e5e7eb; margin:18px 0">
+    <p style="margin:6px 0; font-weight:bold;">Transferred Files / Links</p>
+    ${outFolderUrl ? `<p style="margin:4px 0"><a href="${esc(outFolderUrl)}">📁 RFI Response folder (OUT) — cover sheet DOCX</a></p>` : ""}
+    ${inFolderUrl  ? `<p style="margin:4px 0"><a href="${esc(inFolderUrl)}">📁 Original RFI folder (IN)</a></p>` : ""}
+  ` : ""}
+
+</div>
   `.trim();
 }
 
@@ -5267,10 +7652,9 @@ async function doFileToExistingRfi() {
     async ({ snapItem }) => {
       const token = await getToken();
       const { driveId } = await resolveSpIds();
-      // Resolve the RFI's root folder. If the RFI was logged before the new
-      // structure was introduced, rfi.spFolderUrl points at the old flat
-      // folder (e.g. <proj>/RFIs/RFI-001 Title). Creating "IN" inside it
-      // still works — the new layout coexists with the old.
+      // Resolve the RFI's root folder. If the RFI predates the new structure,
+      // rfi.spFolderUrl points at the old flat folder; creating IN + per-email
+      // subfolders inside still works.
       let rfiRootPath = spDrivePath(rfi.spFolderUrl);
       if (!rfiRootPath) {
         if (!selectedProject.projectFolderUrl) throw new Error("No SharePoint folder on this project. Create one in the PMS first.");
@@ -5281,9 +7665,11 @@ async function doFileToExistingRfi() {
         const discPath = await ensureSpFolder(driveId, token, rfisPath, discCode);
         rfiRootPath    = await ensureSpFolder(driveId, token, discPath, safeRfiNumber);
       }
-      // All incoming correspondence for an RFI lands in the IN subfolder.
-      const inPath  = await ensureSpFolder(driveId, token, rfiRootPath, "IN");
-      const attCount = await uploadEmailAndAttachments(driveId, token, inPath, snapItem);
+      // Per-email subfolder under /IN so multiple filed emails coexist.
+      const uploadResult = await uploadEmailToArtifactInFolder({
+        driveId, token, artifactRootPath: rfiRootPath, snapItem,
+      });
+      const attCount = uploadResult.attCount;
       let finalUrl = rfi.spFolderUrl;
       if (!rfi.spFolderUrl) {
         finalUrl = SP_BASE_URL + "/" + rfiRootPath.split("/").map(encodeURIComponent).join("/");
@@ -5299,7 +7685,9 @@ async function doFileToExistingRfi() {
         (attempted > 0 && attCount < attempted) ? "partial" :
         "success";
       return {
-        sp_folder_url:  finalUrl,
+        // sp_folder_url points at the per-email subfolder so reconcile finds
+        // the files in the right place.
+        sp_folder_url:  uploadResult.emailFolderUrl,
         status,
         error:          status === "success" ? null : `${attCount}/${attempted} uploaded`,
         successMessage: "✓ Filed to " + rfi.number + " · IN" + attMsg,
@@ -5358,6 +7746,8 @@ function prefillSub() {
   document.getElementById("subAssignedTo").value = "";
   document.getElementById("subReceivedVia").value = "Email";
   populateSubAssigneeDropdown();
+  defaultAssigneeToPm("subAssignedTo");
+  seedDescriptionFromEmailBody("subFullDescription");
   setSubMode("new");
   renderSubPicker();
 }
@@ -5402,9 +7792,11 @@ async function doSaveSub() {
       const discCode = getDisciplineCode(discipline);
       const received = new Date();
 
-      // New folder structure: <projFolder>/Submittals/<discCode>/<SUB-NNN>/IN
+      // New folder structure: <projFolder>/Submittals/<discCode>/<SUB-NNN>/IN/<date subject>
       let spFolderUrl = "";
       let inFolderWebUrl = "";
+      let emailFolderUrl = "";
+      let spUploadError = "";
       if (freshProject.projectFolderUrl) {
         try {
           const token = await getToken();
@@ -5414,15 +7806,16 @@ async function doSaveSub() {
           const subsPath = await ensureSpFolder(driveId, token, projFolderName, "Submittals");
           const discPath = await ensureSpFolder(driveId, token, subsPath, discCode);
           const subPath  = await ensureSpFolder(driveId, token, discPath, safeSubNumber);
-          const inPath   = await ensureSpFolder(driveId, token, subPath, "IN");
           await writeSpMetadataSidecar(driveId, token, subPath, buildAddinMetadata(freshProject, "submittal"));
-          await uploadEmailAndAttachments(driveId, token, inPath, snapItem);
-          const subPathEncoded = subPath.split("/").map(encodeURIComponent).join("/");
-          const inPathEncoded  = inPath.split("/").map(encodeURIComponent).join("/");
-          spFolderUrl    = SP_BASE_URL + "/" + subPathEncoded;
-          inFolderWebUrl = SP_BASE_URL + "/" + inPathEncoded;
+          const uploadResult = await uploadEmailToArtifactInFolder({
+            driveId, token, artifactRootPath: subPath, snapItem,
+          });
+          spFolderUrl    = SP_BASE_URL + "/" + subPath.split("/").map(encodeURIComponent).join("/");
+          inFolderWebUrl = uploadResult.inFolderUrl;
+          emailFolderUrl = uploadResult.emailFolderUrl;
         } catch (e) {
           console.warn("Submittal SP upload failed:", e.message);
+          spUploadError = e.message;
         }
       }
 
@@ -5476,14 +7869,16 @@ async function doSaveSub() {
       document.getElementById("subReceivedVia").value = "Email";
 
       try { refreshLoggedArtifactChips(); } catch {}
+    try { refreshLinkToTargetDropdown(); } catch {}
 
       const baseMsg = "✓ " + subNumber + " logged" + (spFolderUrl ? " · filed to SharePoint" : "");
       const draftMsg = draftOpened ? " · ✉️ Draft opened" : (assignee && !assignee.email ? " · ⚠ assignee has no email on file" : "");
+      const errMsg = spUploadError ? ` · ⚠ SP upload failed: ${spUploadError.slice(0, 120)}` : "";
       return {
-        sp_folder_url:  spFolderUrl || null,
-        status:         spFolderUrl ? "success" : "partial",
-        error:          spFolderUrl ? null : "Submittal logged without SharePoint upload",
-        successMessage: baseMsg + draftMsg,
+        sp_folder_url:  emailFolderUrl || spFolderUrl || null,
+        status:         emailFolderUrl ? "success" : "partial",
+        error:          emailFolderUrl ? null : (spUploadError || "Submittal logged without SharePoint upload"),
+        successMessage: baseMsg + draftMsg + errMsg,
       };
     }
   );
@@ -5529,15 +7924,15 @@ async function submitSubReview() {
     if (selectedProject?.projectFolderUrl) {
       const token = await getToken();
       const { driveId } = await resolveSpIds();
-      let subRootPath = spDrivePath(sub.spFolderUrl);
-      if (!subRootPath) {
-        const projFolderName = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
-        const discCode = getDisciplineCode(sub.discipline);
-        const safeSubNumber = (sub.number || "SUB-???").replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
-        const subsPath = await ensureSpFolder(driveId, token, projFolderName, "Submittals");
-        const discPath = await ensureSpFolder(driveId, token, subsPath, discCode);
-        subRootPath    = await ensureSpFolder(driveId, token, discPath, safeSubNumber);
-      }
+      // ALWAYS construct the new-structure path for review OUT regardless of
+      // where the submittal was originally filed. Matches the RFI Log Response
+      // behavior — review transmittal lands at Submittals/<DiscCode>/SUB-NNN/OUT/.
+      const projFolderName = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+      const discCode = getDisciplineCode(sub.discipline);
+      const safeSubNumber = (sub.number || "SUB-???").replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
+      const subsPath = await ensureSpFolder(driveId, token, projFolderName, "Submittals");
+      const discPath = await ensureSpFolder(driveId, token, subsPath, discCode);
+      const subRootPath = await ensureSpFolder(driveId, token, discPath, safeSubNumber);
       const outPath = await ensureSpFolder(driveId, token, subRootPath, "OUT");
       const inPath  = subRootPath + "/IN";
 
@@ -5582,6 +7977,7 @@ async function submitSubReview() {
     const htmlBody = _buildSubReviewEmailHtml({
       sub, project: selectedProject, stamp, comments, dateReturned,
       outFolderUrl: outFolderWebUrl, inFolderUrl: inFolderWebUrl,
+      status: newStatus,
     });
     const draftOpened = openComposeDraft({
       toEmail: recipientEmail?.email || "",
@@ -5597,10 +7993,11 @@ async function submitSubReview() {
 
     setTimeout(() => {
       try { refreshLoggedArtifactChips(); } catch {}
+    try { refreshLinkToTargetDropdown(); } catch {}
       showView("mainView");
     }, 1500);
   } catch (e) {
-    setStatus("subReviewStatusMsg", "error", "✗ " + e.message);
+    setStatus("subReviewStatusMsg", "error", "✗ " + humanizeError(e));
     console.error("[sub-review]", e);
   } finally {
     if (submitBtn) submitBtn.disabled = false;
@@ -5622,28 +8019,88 @@ function _guessEmailForSub(sub, project) {
   return null;
 }
 
-function _buildSubReviewEmailHtml({ sub, project, stamp, comments, dateReturned, outFolderUrl, inFolderUrl }) {
+function _buildSubReviewEmailHtml({ sub, project, stamp, comments, dateReturned, outFolderUrl, inFolderUrl, status }) {
   const esc = (s) => String(s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c]);
-  const projLabel = [project.projectNumber, project.name].filter(Boolean).join(" — ");
+  const projLabel = [project.projectNumber, project.name].filter(Boolean).join(" ");
+  const reviewerName = msalAccount?.name || msalAccount?.username || "";
+  const dateDisplay = dateReturned || new Date().toISOString().slice(0, 10);
+  const purpose = stamp || "Reviewed";
+  const subId = sub.number || "";
   const stampColor =
     stamp === "Approved"            ? "#059669" :
     stamp === "Approved as Noted"   ? "#0891b2" :
     stamp === "Revise and Resubmit" ? "#ea580c" :
     stamp === "Rejected"            ? "#b91c1c" : "#1e3a8a";
-  const commentsEsc = esc(comments).replace(/\n/g, "<br>");
-  const links = [];
-  if (outFolderUrl) links.push(`<a href="${esc(outFolderUrl)}">📁 Review folder (OUT) — formal DOCX</a>`);
-  if (inFolderUrl)  links.push(`<a href="${esc(inFolderUrl)}">📁 Original submittal folder (IN)</a>`);
+
+  function formatBody(text) {
+    const raw = String(text || "").trim();
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    const hasBullets = lines.some(l => /^[-•*]\s+/.test(l.trim()));
+    if (!hasBullets) return lines.map(l => esc(l)).join("<br>");
+    return "<ul style='margin:6px 0 6px 18px;padding:0'>" +
+      lines.map(l => {
+        const stripped = l.trim().replace(/^[-•*]\s+/, "");
+        return `<li style='margin-bottom:4px'>${esc(stripped)}</li>`;
+      }).join("") + "</ul>";
+  }
+  const commentsHtml = formatBody(comments);
+  const generalNotationsHtml = SUB_GENERAL_NOTATIONS.map(p => `<p style="margin:8px 0">${esc(p)}</p>`).join("");
+
+  const recipients = _resolveSubReviewRecipients(sub, project);
+  const toBlock = recipients.length
+    ? recipients.map(r => esc(r.name) + (r.company ? ` (${esc(r.company)})` : "")).join("; ")
+    : esc(sub.from || "(no recipient on record)");
+  const senderName = recipients[0]?.name || sub.from || "";
+  const senderCompany = recipients[0]?.company || "";
+
   return `
-    <p>Hi,</p>
-    <p>We've completed our review of <strong>${esc(sub.number)}</strong>. The formal review cover sheet (with stamp + comments) is in the SharePoint folder linked below.</p>
-    <p><strong>Project:</strong> ${esc(projLabel)}<br>
-       <strong>Submittal:</strong> ${esc(sub.number)}${sub.specSection ? " · Spec " + esc(sub.specSection) : ""}<br>
-       <strong>Stamp:</strong> <span style="color:${stampColor};font-weight:bold">${esc(stamp)}</span><br>
-       <strong>Date Returned:</strong> ${esc(dateReturned)}</p>
-    ${comments ? `<p><strong>Comments:</strong></p><p style="margin-left:12px">${commentsEsc}</p>` : ""}
-    ${links.map(l => `<p>${l}</p>`).join("")}
-    <p>Thanks,<br>${esc(msalAccount?.name || "")}</p>
+<div style="font-family: Calibri, Arial, sans-serif; font-size: 14px; color: #1f2937;">
+
+  <p style="margin:6px 0"><strong>Project:</strong> ${esc(projLabel)}</p>
+
+  <p style="margin:14px 0 8px 0; font-weight:bold;">Notification about Submittal ${esc(sub.description || "")}</p>
+
+  <p style="margin:6px 0">This email contains the review for a submittal.</p>
+
+  <hr style="border:none; border-top:1px solid #e5e7eb; margin:18px 0">
+
+  <p style="margin:6px 0; font-weight:bold; font-size:16px;">Review</p>
+
+  <p style="margin:10px 0"><strong>Review (${esc(purpose)}) by:</strong> ${esc(reviewerName)}</p>
+
+  <p style="margin:10px 0"><strong>Stamp:</strong> <span style="color:${stampColor};font-weight:bold;text-transform:uppercase">${esc(stamp || "—")}</span></p>
+
+  <p style="margin:10px 0 4px 0"><strong>Remarks:</strong></p>
+
+  <p style="margin:10px 0; font-weight:bold;">General Notations:</p>
+  ${generalNotationsHtml}
+
+  ${comments ? `
+    <p style="margin:14px 0 4px 0; font-weight:bold;">Comments:</p>
+    <div style="margin-left:6px">${commentsHtml}</div>
+  ` : ""}
+
+  <p style="margin:20px 0 4px 0">${esc(reviewerName)}<br>
+  Setty &amp; Associates<br>
+  ${esc(dateDisplay)}</p>
+
+  <hr style="border:none; border-top:1px solid #e5e7eb; margin:18px 0">
+
+  <p style="margin:6px 0; font-weight:bold;">Submittal Info</p>
+  <p style="margin:4px 0"><strong>To:</strong> ${toBlock}</p>
+  <p style="margin:4px 0"><strong>From:</strong> ${esc(senderName)}${senderCompany ? " (" + esc(senderCompany) + ")" : ""}</p>
+  <p style="margin:4px 0"><strong>Purpose:</strong> ${esc(purpose)}</p>
+  <p style="margin:4px 0"><strong>Sender ID:</strong> ${esc(subId)}</p>
+  ${sub.specSection ? `<p style="margin:4px 0"><strong>Spec Section:</strong> ${esc(sub.specSection)}</p>` : ""}
+
+  ${outFolderUrl || inFolderUrl ? `
+    <hr style="border:none; border-top:1px solid #e5e7eb; margin:18px 0">
+    <p style="margin:6px 0; font-weight:bold;">Transferred Files / Links</p>
+    ${outFolderUrl ? `<p style="margin:4px 0"><a href="${esc(outFolderUrl)}">📁 Submittal Review folder (OUT) — cover sheet DOCX</a></p>` : ""}
+    ${inFolderUrl  ? `<p style="margin:4px 0"><a href="${esc(inFolderUrl)}">📁 Original submittal folder (IN)</a></p>` : ""}
+  ` : ""}
+
+</div>
   `.trim();
 }
 
@@ -5669,9 +8126,11 @@ async function doFileToExistingSub() {
         const discPath = await ensureSpFolder(driveId, token, subsPath, discCode);
         subRootPath    = await ensureSpFolder(driveId, token, discPath, safeSubNumber);
       }
-      // Incoming correspondence for a submittal lands in the IN subfolder.
-      const inPath = await ensureSpFolder(driveId, token, subRootPath, "IN");
-      const attCount = await uploadEmailAndAttachments(driveId, token, inPath, snapItem);
+      // Per-email subfolder under /IN so multiple filed emails coexist.
+      const uploadResult = await uploadEmailToArtifactInFolder({
+        driveId, token, artifactRootPath: subRootPath, snapItem,
+      });
+      const attCount = uploadResult.attCount;
       let finalUrl = sub.spFolderUrl;
       if (!sub.spFolderUrl) {
         finalUrl = SP_BASE_URL + "/" + subRootPath.split("/").map(encodeURIComponent).join("/");
@@ -5687,7 +8146,8 @@ async function doFileToExistingSub() {
         (attempted > 0 && attCount < attempted) ? "partial" :
         "success";
       return {
-        sp_folder_url:  finalUrl,
+        // Audit log points at the per-email subfolder so reconcile finds files there.
+        sp_folder_url:  uploadResult.emailFolderUrl,
         status,
         error:          status === "success" ? null : `${attCount}/${attempted} uploaded`,
         successMessage: "✓ Filed to " + sub.number + " · IN" + attMsg,
@@ -5721,14 +8181,37 @@ async function createMilestoneCalendarEvent(milestone, project) {
   const endStr = endD.getFullYear() + "-" + String(endD.getMonth()+1).padStart(2,"0") + "-" + String(endD.getDate()).padStart(2,"0");
   const prefix  = project.projectNumber ? "[" + project.projectNumber + "] " : "";
   const subject = prefix + project.name + " — " + milestone.name;
+  const pmName  = (project.settyPm || "").trim();
   const event = {
     subject,
     isAllDay: true,
+    // Surface the PM on the calendar's Location line so a glance at the day
+    // view shows who owns the milestone. Graph's `location` is an object.
+    ...(pmName ? { location: { displayName: "PM: " + pmName } } : {}),
+    // No reminder — these are reference markers on the calendar, not things to
+    // be alerted about. Must be explicit: omitting it lets Graph apply the
+    // mailbox's default reminder, which was spamming everyone.
+    isReminderOn: false,
     start: { dateTime: milestone.dueDate + "T00:00:00", timeZone: "Eastern Standard Time" },
     end:   { dateTime: endStr          + "T00:00:00", timeZone: "Eastern Standard Time" },
+    categories: ["PMS Milestone"],
   };
   try {
     const token = await getToken();
+    // Carry the source email's body into the event so the calendar entry has
+    // the context it came from. Best-effort: skipped for manual entries,
+    // appointments, or if the body can't be fetched (getEmailBodyHtml → "").
+    try {
+      const bodyHtml = (currentItemKind === "message") ? await getEmailBodyHtml(token) : "";
+      if (bodyHtml) {
+        const srcSubject = (emailItem?.subject || "").trim();
+        const srcFrom    = (emailFrom || emailFromAddress || "").trim();
+        const header = (srcSubject || srcFrom)
+          ? `<p style="margin:0 0 8px"><b>From email:</b> ${escHtml(srcSubject)}${srcFrom ? " — " + escHtml(srcFrom) : ""}</p><hr>`
+          : "";
+        event.body = { contentType: "HTML", content: header + bodyHtml };
+      }
+    } catch { /* body is a nice-to-have; never block the event on it */ }
     const calId = await getNYCCalendarId();
     const path  = calId ? "/me/calendars/" + calId + "/events" : "/me/events";
     const res   = await graphFetch("POST", path, event, token);
@@ -6012,15 +8495,25 @@ async function doSaveMilestone() {
 
     const projLabel = (selectedProject.projectNumber ? selectedProject.projectNumber + " — " : "") + selectedProject.name;
     const pep = pickQuip(NEW_MILESTONE_QUIPS);
-    if (calResult.success) {
-      const calLabel = calResult.onShared ? "NYC Shared Calendar" : "your personal calendar";
-      setStatus("milestoneStatus", "success", pep + " Saved to " + projLabel + " · synced to " + calLabel);
-    } else {
-      setStatus("milestoneStatus", "success", pep + " Saved to " + projLabel + " (calendar sync failed: " + calResult.error + ")");
-    }
-    document.getElementById("milestoneForm").style.display = "none";
+    const calLabel = calResult.onShared ? "NYC Shared Calendar" : "your personal calendar";
+    const successMsg = calResult.success
+      ? pep + " Saved to " + projLabel + " · synced to " + calLabel
+      : pep + " Saved to " + projLabel + " (calendar sync failed: " + calResult.error + ")";
+    setStatus("milestoneStatus", "success", successMsg);
+    // Auto-return to the main pane after a beat — staying on a bare status +
+    // back button cost an extra click on every milestone save. The success
+    // message carries over to the main status slot so it isn't lost.
+    setTimeout(() => {
+      // Skip if the user already navigated somewhere else in the meantime.
+      if (!document.getElementById("datesView")?.classList.contains("active")) return;
+      const form = document.getElementById("milestoneForm");
+      if (form) form.style.display = "none";
+      setStatus("milestoneStatus", "", "");
+      showView("mainView");
+      setStatus("actionStatus", "success", successMsg);
+    }, 1200);
   } catch(e) {
-    setStatus("milestoneStatus", "error", "✗ " + e.message);
+    setStatus("milestoneStatus", "error", "✗ " + humanizeError(e));
   } finally {
     saveInFlight = false;
   }
@@ -6031,47 +8524,262 @@ async function doSaveMilestone() {
 // saving, so they can immediately move on to the next person without losing
 // their place. Cleared per-email in loadItemContext.
 const _sessionSavedContactEmails = new Set();
+// Where the contact form should return to on Back / after save. Defaults to the
+// participant list; the enrich-from-main shortcut sets it to "mainView" so the
+// user lands back where they started with the (now-cleared) nudge.
+let _contactReturnView = "peopleView";
+// Main-view button click: when the button exists only to enrich the sender from
+// their signature, skip the participant list and open their form directly.
+// Otherwise behave as before and show the list.
+function onAddParticipantClick() {
+  const { enrichOnly } = peopleButtonMode();
+  if (enrichOnly) {
+    const senderAddr = (emailFromAddress || "").trim().toLowerCase();
+    const sender = (emailParticipants || []).find(p => (p.emailAddress || "").trim().toLowerCase() === senderAddr);
+    if (sender) {
+      _contactReturnView = "mainView";
+      prefillContactFromParticipant(sender);
+      return;
+    }
+  }
+  _contactReturnView = "peopleView";
+  showPeopleView();
+}
+// After a contact save, return where the user came from. From the enrich-from-
+// main shortcut that's the main screen; the badge refresh clears the nudge
+// (the sender is now in _sessionSavedContactEmails). From the list it's the list,
+// preserving the "work through several participants" flow.
+function returnAfterContactSave() {
+  if (_contactReturnView === "mainView") {
+    showView("mainView");
+    updatePeopleButtonBadge();
+  } else {
+    showPeopleView();
+  }
+}
 function showPeopleView() {
+  // Rows opened from here return to the list (not main) — the enrich-from-main
+  // shortcut overrides this before opening the form.
+  _contactReturnView = "peopleView";
   const list = document.getElementById("participantList");
-  if (!emailParticipants.length) {
-    list.innerHTML = '<p style="font-size:12px;color:var(--text-soft);">No participants found.</p>';
+  // Setty staff are managed via the project's Teams tab in PMS — leave them
+  // out of the list entirely instead of rendering inert rows.
+  const externalRows = (emailParticipants || [])
+    .map((p, i) => ({ p, i, st: getParticipantDirectoryStatus(p) }))
+    .filter(r => !r.st.internal);
+  if (!externalRows.length) {
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-soft);">No external participants on this email.</p>';
   } else {
     const labelColor = { From: "#c50f1f", To: "#0f6cbd", CC: "#0e6d5c", Required: "#0f6cbd", Optional: "#616161", Organizer: "#c50f1f" };
     const labelBg    = { From: "#fde7e9", To: "#eaf3fb", CC: "#e0f5f0", Required: "#eaf3fb", Optional: "#f3f2f1", Organizer: "#fde7e9" };
-    list.innerHTML = emailParticipants.map((p, i) => {
-      const emailKey = (p.emailAddress || "").toLowerCase();
-      const alreadyAdded = emailKey && _sessionSavedContactEmails.has(emailKey);
+    // Sort the people worth capturing to the top: unknown first, then known-
+    // globally-but-new-to-this-project, then fully filed. Stable within
+    // groups (From/To/CC order preserved via original index).
+    const rows = externalRows;
+    const rank = r => r.st.isNew ? 0 : (r.st.globalHit && !r.st.inProject && !r.st.sessionSaved ? 1 : 2);
+    rows.sort((a, b) => rank(a) - rank(b) || a.i - b.i);
+    list.innerHTML = rows.map(({ p, i, st }) => {
+      const fullyFiled = st.sessionSaved || st.inProject;
+      let statusHtml = "";
+      if (st.sessionSaved) {
+        statusHtml = '<span class="pill added">✓ Added</span>';
+      } else if (st.inProject) {
+        statusHtml = '<span class="pill added" title="Already in this project\'s directory">✓ On project</span>';
+      } else if (st.globalHit) {
+        const company = escHtml(st.globalHit.client?.name || "directory");
+        statusHtml = `<span class="pill added company" title="Already in the global directory under ${company}">✓ ${company}</span>`
+          + (selectedProject
+            ? `<button type="button" class="quick-add-proj" data-idx="${i}" title="Add to ${escHtml(selectedProject.name || "this project")}'s directory — no retyping">+ project</button>`
+            : "");
+      } else {
+        statusHtml = '<span class="pill" style="background:var(--primary);color:#fff;" title="Not in any directory yet — click the row to add">+ Add</span>';
+      }
       return `
-      <div class="participant-row${alreadyAdded ? ' added' : ''}" data-idx="${i}">
-        <div style="flex:1;min-width:0;">
+      <div class="participant-row${fullyFiled ? ' added' : ''}" data-idx="${i}"${fullyFiled ? ' style="opacity:0.8;"' : ''}>
+        <div class="participant-id">
           <div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${escHtml(p.displayName || p.emailAddress)}
           </div>
-          <div style="font-size:11px;color:var(--text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+          ${p.displayName && p.displayName !== p.emailAddress ? `<div style="font-size:11px;color:var(--text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${escHtml(p.emailAddress || "")}
-          </div>
+          </div>` : ""}
         </div>
-        ${alreadyAdded ? '<span class="pill added">✓ Added</span>' : ''}
+        ${statusHtml}
         <span class="pill" style="background:${labelBg[p.label]||'var(--surface-2)'};color:${labelColor[p.label]||'var(--text-soft)'};">
           ${escHtml(p.label || "")}
         </span>
       </div>`;
     }).join("");
     list.querySelectorAll(".participant-row").forEach(el => {
+      // data-idx is the participant's index in emailParticipants (assigned
+      // before the internal-staff filter), so lookups stay correct.
       el.onclick = () => prefillContactFromParticipant(emailParticipants[+el.dataset.idx]);
     });
+    list.querySelectorAll(".quick-add-proj").forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        quickAddToProjectDirectory(+btn.dataset.idx, btn);
+      };
+    });
+    // Nudge: the sender is already filed but their record has neither title nor
+    // phone — this email's signature can fill both in one tap. Skipped when
+    // another action just posted a status (e.g. quick-add success).
+    const senderRec = senderNeedsEnrichment();
+    const statusEl = document.getElementById("peopleStatus");
+    if (senderRec && statusEl && !statusEl.textContent) {
+      setStatus("peopleStatus", "info", "💡 " + (senderRec.name || emailFrom || "The sender") + "'s saved contact has no title or phone — tap their row to fill it from this email's signature.");
+    }
   }
+  updatePeopleButtonBadge();
   showView("peopleView");
+}
+
+// One-click "+ project": the person is already in the global directory, so
+// copy their existing record into the selected project's directory without
+// making the user re-type anything on the contact form.
+async function quickAddToProjectDirectory(idx, btnEl) {
+  const p = emailParticipants[idx];
+  const hit = findGlobalContact(p?.emailAddress || "");
+  if (!hit || !selectedProject) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "adding…"; }
+  const ct = hit.contact;
+  const dirEntry = {
+    id: uid(),
+    name: ct.name || p.displayName || "",
+    title: ct.title || "",
+    email: ct.email || p.emailAddress || "",
+    phone: ct.phone || "",
+    company: hit.client?.name || "",
+    type: "Other",
+    addedAt: new Date().toISOString(),
+    addedBy: msalAccount?.username || "",
+    addedFromEmail: emailItem?.itemId || "",
+    notes: "",
+  };
+  const emailLc = (dirEntry.email || "").toLowerCase();
+  try {
+    await applyLocalChangeAndSave(selectedProject.id, fresh => {
+      const dir = fresh.directory || [];
+      if (emailLc && dir.some(d => (d.email || "").toLowerCase() === emailLc)) return fresh;
+      return { ...fresh, directory: [...dir, dirEntry] };
+    });
+    setStatus("peopleStatus", "success", "✓ Added " + (dirEntry.name || dirEntry.email) + " to " + (selectedProject.name || "project") + " directory.");
+    // Re-render: applyLocalChangeAndSave updated selectedProject locally, so
+    // the row flips to "✓ On project" and re-sorts on its own.
+    showPeopleView();
+  } catch (e) {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = "+ project"; }
+    setStatus("peopleStatus", "error", "✗ " + humanizeError(e));
+  }
 }
 function prefillContactFromParticipant(p) {
   const matchedClient = getClientByEmail(p.emailAddress || "");
-  document.getElementById("contactName").value    = p.displayName || "";
-  document.getElementById("contactTitle").value   = "";
+  // Known contact → show what's already on file, so opening the form doubles
+  // as a record check. Signature parsing then fills only what's still blank.
+  const existing = findGlobalContact(p.emailAddress || "")?.contact || null;
+  document.getElementById("contactName").value    = existing?.name  || p.displayName || "";
+  document.getElementById("contactTitle").value   = existing?.title || "";
   document.getElementById("contactCompany").value = matchedClient?.name || "";
   document.getElementById("contactEmail").value   = p.emailAddress || "";
-  document.getElementById("contactPhone").value   = "";
+  document.getElementById("contactPhone").value   = existing?.phone || "";
   setStatus("contactStatus", "", "");
+  maybePrefillFromSignature(p);
   showView("contactView");
+}
+
+// ── SIGNATURE PARSING (title + phone prefill) ────────────────────────────────
+// When the person being added is the SENDER, their signature block is at the
+// bottom of this email — scrape title and phone from it so the contact form
+// is a confirm, not a typing exercise. To/CC participants are skipped: their
+// signatures only appear in quoted history (if at all), and pulling a title
+// from the wrong person's signature is worse than leaving the field blank.
+function maybePrefillFromSignature(p) {
+  const pAddr = (p?.emailAddress || "").trim().toLowerCase();
+  const senderAddr = (emailFromAddress || "").trim().toLowerCase();
+  if (!pAddr || pAddr !== senderAddr) return;
+  const item = emailItem;
+  void (async () => {
+    const bodyText = await getBodyTextReliable(item);
+    if (bodyText === null) { console.info("[signature] body unavailable after retries — prefill skipped"); return; }
+    if (emailItem !== item) return; // pinned pane switched emails mid-fetch
+    // Bail if the form has moved on to a different person meanwhile.
+    const emailField = document.getElementById("contactEmail");
+    if (!emailField || (emailField.value || "").trim().toLowerCase() !== pAddr) return;
+    const company = document.getElementById("contactCompany")?.value || "";
+    const sig = parseSenderSignature(bodyText, p.displayName || emailFrom || "", company);
+    const titleEl = document.getElementById("contactTitle");
+    const phoneEl = document.getElementById("contactPhone");
+    if (sig.title && titleEl && !titleEl.value.trim()) titleEl.value = sig.title;
+    if (sig.phone && phoneEl && !phoneEl.value.trim()) phoneEl.value = sig.phone;
+  })();
+}
+
+// Job-title vocabulary for the fallback scan. AEC-heavy on purpose — extend
+// this list if a common title at your consultants/GCs slips through.
+const SIGNATURE_TITLE_WORDS = /\b(engineer|architect|manager|director|principal|president|vice president|associate|designer|coordinator|administrator|estimator|superintendent|partner|owner|founder|specialist|consultant|surveyor|planner|drafter|technician|officer|executive|chief|lead|vp|ceo|coo|cfo|pm|leed)\b/i;
+const SIGNATURE_PHONE_RE = /(\+?\d{1,2}[\s.\-])?(\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(\s?(x|ext\.?)\s?\d{1,5})?/;
+
+function parseSenderSignature(bodyText, senderName, companyName) {
+  const out = { title: "", phone: "" };
+  let text = (bodyText || "").replace(/\r\n/g, "\n");
+  // Only the current message — signatures in quoted history belong to other
+  // people (or older versions of this one).
+  const cut = text.search(/\n\s*(From:|-{3,}\s*Original Message|On .{10,80} wrote:)/i);
+  if (cut > 0) text = text.slice(0, cut);
+  // Signature = the tail of the message.
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean).slice(-15);
+  if (!lines.length) return out;
+
+  const companyLc = (companyName || "").trim().toLowerCase();
+  const nameTokens = (senderName || "").toLowerCase().split(/[\s,]+/).filter(t => t.length > 1 && !/^(jr|sr|ii|iii|iv|pe|aia|leed)\.?$/.test(t));
+  const isNameLine  = l => { const lc = l.toLowerCase(); return nameTokens.length >= 1 && nameTokens.filter(t => lc.includes(t)).length >= Math.min(2, nameTokens.length); };
+  const isNoiseLine = l => /@/.test(l) || /\b(www\.|https?:)/i.test(l) || SIGNATURE_PHONE_RE.test(l);
+  const isCompanyLine = l => !!companyLc && l.toLowerCase().includes(companyLc);
+  const titleOk = l => l.length >= 3 && l.length <= 70 && /[a-z]/i.test(l) && !isNoiseLine(l) && !isCompanyLine(l) && !isNameLine(l);
+  // Multi-part lines ("Senior PM | RPH Architects") — judge each segment.
+  const titleFromLine = l => {
+    for (const seg of l.split(/\s*[|•·]\s*/)) {
+      if (titleOk(seg)) return seg.trim();
+    }
+    return "";
+  };
+
+  // Primary: the line right after the sender's name in the signature block
+  // (Name / Title / Company is the overwhelmingly common layout). Search from
+  // the bottom up so a "Hi Bob," greeting line can't be mistaken for the sig.
+  for (let i = lines.length - 1; i >= 0 && !out.title; i--) {
+    if (!isNameLine(lines[i])) continue;
+    for (const next of [lines[i + 1], lines[i + 2]]) {
+      if (!next) break;
+      const t = titleFromLine(next);
+      if (t) { out.title = t; break; }
+    }
+    break; // bottom-most name line is the signature; don't keep walking up
+  }
+  // Fallback: any tail line that uses job-title vocabulary.
+  if (!out.title) {
+    for (const l of lines) {
+      const t = titleFromLine(l);
+      if (t && SIGNATURE_TITLE_WORDS.test(t)) { out.title = t; break; }
+    }
+  }
+
+  // Phone: prefer cell/mobile, then direct, then anything. Label is whatever
+  // short tag precedes the number ("C:", "Cell", "M.", "Direct") — a line can
+  // carry several numbers ("T 212… | C 917…"), so every match is scored.
+  let best = null;
+  for (const l of lines) {
+    const re = new RegExp(SIGNATURE_PHONE_RE.source, "g");
+    let m;
+    while ((m = re.exec(l)) !== null) {
+      const prefix = l.slice(0, m.index).toLowerCase();
+      const score = /\b(c|cell|m|mob|mobile)[.: )]*$/.test(prefix) ? 3
+                  : /\b(d|direct|dd)[.: )]*$/.test(prefix) ? 2 : 1;
+      if (!best || score > best.score) best = { value: m[0].trim(), score };
+    }
+  }
+  if (best) out.phone = best.value;
+  return out;
 }
 function projectPmsUrl(project) {
   if (!project) return "";
@@ -6127,6 +8835,22 @@ function openExternalUrl(url) {
   }
   window.open(url, "_blank");
 }
+// Opens the original email behind a watchlist row. Prefers Outlook's native
+// message form so desktop users stay in their client; falls back to the web
+// link (OWA in a browser) when there's no item id or the native call fails.
+function openWatchlistEmail(itemId, webLink) {
+  if (itemId) {
+    try {
+      if (Office?.context?.mailbox?.displayMessageForm) {
+        Office.context.mailbox.displayMessageForm(itemId);
+        return;
+      }
+    } catch (e) {
+      console.warn("displayMessageForm failed, falling back to web link:", e);
+    }
+  }
+  if (webLink) openExternalUrl(webLink);
+}
 function normalizeEmail(v) {
   return (v || "").trim().toLowerCase();
 }
@@ -6151,25 +8875,60 @@ async function doSaveContact() {
   if (saveInFlight) { setStatus("contactStatus", "info", "⏳ Another save is in progress; please wait."); return; }
   saveInFlight = true;
   setStatus("contactStatus", "info", "⏳ Saving…");
+  let resolvedCompany = ""; // which company the contact actually landed under (for the success message)
   try {
     if (saveTo === "client") {
       // V2: write to pms_clients (per-client rows). Previously this PATCHed
       // pms_data.clients (legacy singleton blob), which post-migration is
       // never re-read by PMS — so the contact silently disappeared. Now we
       // upsert the client row directly.
-      const targetCompany = (company || name).trim();
+      //
+      // Company resolution order:
+      //   1. what the user typed in the Company field
+      //   2. an existing directory company whose contacts share this email's
+      //      domain — prevents auto-creating a company named after the PERSON
+      //      when the field is blank (June 2026: "Kunwar Rana" became a
+      //      Global Directory company even though Code Green already held
+      //      @codegreen.com contacts)
+      //   3. the person's name (legacy last resort)
+      const domainClient = !company ? getClientByEmail(email) : null;
+      const targetCompany = (company || domainClient?.name || name).trim();
       // Per-contact role removed from the schema (was redundant once company
       // discipline + per-project relationship were split). `lastContacted` is
       // stamped here so every Outlook-driven capture auto-updates recency —
       // the field no longer needs manual entry in PMS.
       const today = new Date().toISOString().slice(0, 10);
       const contact = { id: uid(), name, title, email, phone, lastContacted: today };
-      // Find existing client by exact (case-insensitive) name match
-      const queryUrl = SUPABASE_URL + "/rest/v1/pms_clients?select=id,client,version";
+      // Find existing client by exact (case-insensitive) name match.
+      // Narrow server-side with ilike so we don't download the whole clients
+      // table on every contact save — escape LIKE metacharacters so names
+      // containing % _ * match literally, and wrap in wildcards so DB names
+      // with stray whitespace padding still come back. The .find() below
+      // remains the authority (same trim/lowercase equality as before).
+      const likeSafe = targetCompany.replace(/\\/g, "\\\\").replace(/[%_*]/g, m => "\\" + m);
+      const queryUrl = SUPABASE_URL + "/rest/v1/pms_clients?select=id,client,version&client->>name=ilike." + encodeURIComponent("*" + likeSafe + "*");
       const all = await fetch(queryUrl, { headers: SB_HEADERS });
       if (!all.ok) throw new Error("pms_clients GET HTTP " + all.status);
       const rows = await all.json();
-      const existing = (rows || []).find(r => r.client?.name && r.client.name.trim().toLowerCase() === targetCompany.toLowerCase());
+      let existing = (rows || []).find(r => r.client?.name && r.client.name.trim().toLowerCase() === targetCompany.toLowerCase());
+      // Exact match failed → normalized fallbacks before concluding "new
+      // company". Squash punctuation/spacing/legal suffixes (LLP, PC, …),
+      // then allow prefix containment: "OGS" ≈ "OGS - New York State",
+      // "Code Green" ≈ "Code Green Solutions". Exact-only matching is what
+      // created the second OGS row in the Global Directory (June 2026).
+      // Mirrors companySquash()/findDuplicateCompanies() in SettyPMS.html.
+      if (!existing) {
+        const squashName = s => (s || "").toLowerCase()
+          .replace(/\b(llp|llc|inc|pc|pllc|dpc|corp|co|ltd|pa)\b\.?/g, "")
+          .replace(/[^a-z0-9]/g, "");
+        const targetSquash = squashName(targetCompany);
+        existing = (rows || []).find(r => targetSquash && squashName(r.client?.name) === targetSquash)
+          || (rows || []).find(r => {
+               const n = squashName(r.client?.name);
+               return targetSquash.length >= 3 && n.length >= 3 && (n.startsWith(targetSquash) || targetSquash.startsWith(n));
+             });
+      }
+      resolvedCompany = existing?.client?.name || targetCompany;
       if (existing) {
         const ec = existing.client;
         ec.contacts = ec.contacts || [];
@@ -6182,9 +8941,17 @@ async function doSaveContact() {
           return !targetE && targetN && n === targetN;
         });
         if (dupIdx >= 0) {
-          // Don't duplicate — just bump lastContacted on the existing record so
-          // recency stays accurate even when the same person emails repeatedly.
-          ec.contacts = ec.contacts.map((c, i) => i === dupIdx ? { ...c, lastContacted: today } : c);
+          // Don't duplicate — bump lastContacted, and backfill any fields the
+          // existing record is missing (older contacts predate signature
+          // extraction, so title/phone are often blank). Existing values
+          // always win: this enriches, never overwrites.
+          ec.contacts = ec.contacts.map((c, i) => i === dupIdx ? {
+            ...c,
+            name:  c.name  || name,
+            title: c.title || title,
+            phone: c.phone || phone,
+            lastContacted: today,
+          } : c);
         } else {
           ec.contacts = [...ec.contacts, contact];
         }
@@ -6199,6 +8966,23 @@ async function doSaveContact() {
         if (!res.ok) throw new Error("pms_clients PATCH HTTP " + res.status);
         const result = await res.json();
         if (!result || result.length === 0) throw new Error("Client modified by someone else. Retry from Outlook.");
+        // Sync the in-memory directory with what we just persisted. allClients is
+        // loaded once per session (and cached), NOT refetched per email — without
+        // this, findGlobalContact keeps returning the stale, pre-enrichment record,
+        // so the signature nudge re-fires every time the email is reopened even
+        // though the title/phone are now saved.
+        const _cid = ec.id || existing.id;
+        const _savedLc = (email || "").trim().toLowerCase();
+        let _synced = false;
+        allClients = (allClients || []).map(c => {
+          if (_synced) return c;
+          const idHit = _cid && c?.id === _cid;
+          const emailHit = _savedLc && (c?.contacts || []).some(x => (x.email || "").trim().toLowerCase() === _savedLc);
+          if (idHit || emailHit) { _synced = true; return ec; }
+          return c;
+        });
+        if (!_synced) allClients = [...(allClients || []), ec];
+        renderCompanySuggestions();
       } else {
         // New client — INSERT. Discipline `types` left empty; the user
         // categorizes in PMS Global Directory (multi-choice picker).
@@ -6238,12 +9022,26 @@ async function doSaveContact() {
         try {
           await applyLocalChangeAndSave(selectedProject.id, fresh => {
             const dir = fresh.directory || [];
-            // Dedup by email when present; if no email, allow add (user can
-            // clean up later — the alternative is silently dropping entries
-            // that are otherwise valid).
-            if (emailLc && dir.some(d => (d.email || "").toLowerCase() === emailLc)) {
-              return fresh;
+            // Already on this project? Backfill only the blank fields (enrich,
+            // never overwrite) so a captured title/phone reaches the project's
+            // directory too — not just the global one. Without this, the
+            // project "people on this job" entry stays blank and the enrichment
+            // nudge keeps re-firing for project-filed senders.
+            const existingIdx = emailLc ? dir.findIndex(d => (d.email || "").toLowerCase() === emailLc) : -1;
+            if (existingIdx >= 0) {
+              const cur = dir[existingIdx];
+              if ((cur.title || "").trim() && (cur.phone || "").trim()) return fresh; // nothing to fill
+              const nextDir = dir.slice();
+              nextDir[existingIdx] = {
+                ...cur,
+                name:  cur.name  || name,
+                title: cur.title || title,
+                phone: cur.phone || phone,
+              };
+              return { ...fresh, directory: nextDir };
             }
+            // No email to dedup on → allow the add (user can clean up later; the
+            // alternative is silently dropping otherwise-valid entries).
             return { ...fresh, directory: [...dir, dirEntry] };
           });
         } catch (dirErr) {
@@ -6272,8 +9070,11 @@ async function doSaveContact() {
     // is almost always working through several participants in sequence.
     const savedEmailKey = (email || "").toLowerCase();
     if (savedEmailKey) _sessionSavedContactEmails.add(savedEmailKey);
+    // resolvedCompany may differ from what was typed (domain match or
+    // normalized-name match) — show where the contact ACTUALLY landed so a
+    // silent redirect is never invisible to the user.
     const destLabel = saveTo === "client"
-      ? (company || name)
+      ? (resolvedCompany || company || name)
       : ((selectedProject?.projectNumber ? selectedProject.projectNumber + " — " : "") + (selectedProject?.name || "project POC"));
     // When saved to a client AND a project is tagged, the contact also lands
     // in the project's directory — surface that in the success message so users
@@ -6282,7 +9083,7 @@ async function doSaveContact() {
     const dirSuffix = alsoInDirectory ? " · added to " + (selectedProject.name || "project") + " directory." : "";
     setStatus("actionStatus", "success", "✓ Saved " + (name || email) + " to " + destLabel + "." + dirSuffix);
     setStatus("contactStatus", "", "");
-    showPeopleView();
+    returnAfterContactSave();
     return;
   } catch (e) {
     if (e.message === "__DUP__") {
@@ -6292,10 +9093,10 @@ async function doSaveContact() {
       if (savedEmailKey) _sessionSavedContactEmails.add(savedEmailKey);
       setStatus("actionStatus", "info", "Already in this project's POC list — no duplicate added.");
       setStatus("contactStatus", "", "");
-      showPeopleView();
+      returnAfterContactSave();
       return;
     }
-    setStatus("contactStatus", "error", "✗ " + e.message);
+    setStatus("contactStatus", "error", "✗ " + humanizeError(e));
   } finally {
     saveInFlight = false;
   }
@@ -6356,11 +9157,54 @@ setTimeout(() => {
     loading.innerHTML = '<p style="color:#94a3b8;font-size:12px;text-align:center;padding:0 16px;">Open this add-in from Outlook.<br/>To sideload, use the manifest.xml file.</p>';
   }
 }, 5000);
+// While a "⏳ …" busy message is showing, this holds its element id so the
+// attachment upload loop can push progress updates ("2/5") into the same slot.
+let _busyStatusElId = null;
+
 function setStatus(elId, type, msg) {
   const el = document.getElementById(elId);
   if (!el) return;
   el.className = "status-msg" + (msg ? " show " + type : "");
-  el.textContent = msg;
+  // "⏳" prefix = busy message. Swap the static emoji for the animated
+  // spinner so users can tell a working save from a stuck one — every
+  // existing call site opts in just by keeping the emoji convention.
+  if (msg && msg.startsWith("⏳")) {
+    el.textContent = msg.slice(1).trim();
+    const spin = document.createElement("span");
+    spin.className = "spinner";
+    spin.style.cssText = "vertical-align:-2px;margin-right:6px;";
+    el.prepend(spin);
+    _busyStatusElId = elId;
+  } else {
+    el.textContent = msg;
+    if (_busyStatusElId === elId) _busyStatusElId = null;
+  }
+}
+
+// Map raw API/SDK failures to plain-language guidance. The raw message still
+// goes to the console for debugging — the line the user sees should say what
+// happened and what to DO, never an HTTP status or a JSON dump.
+function humanizeError(err) {
+  const raw = (err?.message || String(err || "")).trim();
+  console.warn("[error shown to user]", raw);
+  const m = raw.toLowerCase();
+  if (m.includes("graph 401") || m.includes("interaction_required") || m.includes("login_required") || m.includes("not signed in"))
+    return "Your session expired — sign out (⋯ menu) and back in, then retry.";
+  if (m.includes("graph 403"))
+    return "You don't have permission for that SharePoint location — check your access with IT.";
+  if (m.includes("graph 404"))
+    return "Outlook hasn't synced this message to the cloud yet — wait a few seconds and retry.";
+  if (m.includes("graph 429") || m.includes("graph 503") || m.includes("graph 504"))
+    return "Microsoft is throttling requests right now — wait a moment and retry.";
+  if (m.includes("save conflict") || m.includes("modified by someone else"))
+    return "Someone else updated this project at the same moment. Retry — the add-in re-reads the latest version before saving.";
+  if (m.includes("failed to fetch") || m.includes("networkerror") || m.includes("network error") || m.includes("load failed"))
+    return "Network hiccup — check your connection (VPN?) and retry.";
+  if (m.includes("quota"))
+    return "Browser storage is full — the save went through, but offline caching is paused.";
+  // Unknown failure: show the message but capped so a stray API body can't
+  // flood the status line.
+  return raw.length > 160 ? raw.slice(0, 160) + "…" : raw;
 }
 
 // ─── QUICK TEXT + EMAIL TEMPLATES ─────────────────────────────────────────────

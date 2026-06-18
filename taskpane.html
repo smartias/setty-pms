@@ -8,7 +8,7 @@
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
-  <script>window.__appVersion = "2026-05-11-rename-fix";</script>
+  <script>window.__appVersion = "2026-06-10-company-dedup-guard";</script>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   <script src="msal-browser.min.js"></script>
   <!-- pako: zlib in JS — compresses email HTML bodies before storing in Supabase -->
@@ -71,6 +71,53 @@
     .header-sub {
       font-size: 11px;
       color: var(--text-faint);
+    }
+    /* Pin reminder banner — replaces the old red main-view header. Deliberately
+       the most colorful thing in the pane so new users actually notice the pin;
+       the emoji wiggles every couple of seconds to draw the eye without being
+       a strobe. Disappears forever once dismissed or once pinning is detected. */
+    #pinHintBanner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--primary-soft);
+      border: 1px solid #b7daf2;
+      border-radius: 4px;
+      padding: 8px 10px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: var(--primary-hov);
+      font-weight: 600;
+      line-height: 1.4;
+    }
+    #pinHintBanner .pin-emoji {
+      font-size: 16px;
+      animation: pinWiggle 2.6s ease-in-out infinite;
+    }
+    @keyframes pinWiggle {
+      0%, 72%, 100% { transform: rotate(0deg); }
+      78%  { transform: rotate(-16deg); }
+      84%  { transform: rotate(12deg); }
+      90%  { transform: rotate(-6deg); }
+      96%  { transform: rotate(0deg); }
+    }
+    #pinHintBanner button {
+      background: transparent;
+      border: none;
+      color: var(--primary-hov);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 0 2px;
+      line-height: 1;
+    }
+    /* Version footer — faint, out of the way; hover for version, 5x click for credits */
+    #versionFooter {
+      margin-top: 14px;
+      text-align: right;
+      font-size: 10px;
+      color: var(--text-faint);
+      user-select: none;
+      cursor: default;
     }
     .email-preview {
       background: var(--surface);
@@ -156,6 +203,16 @@
       border-color: transparent;
     }
     .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+    /* Attention state — applied to "Add Participant to Contacts" when the
+       current email has people not yet in any directory. Tinted rather than
+       solid so it pops against the secondary buttons without competing with
+       the primary save actions. */
+    .btn-has-new {
+      background: #eaf3fb;
+      color: var(--primary);
+      border-color: var(--primary);
+    }
+    .btn-has-new:hover:not(:disabled) { background: #d7e9f8; }
     /* Legacy color classes mapped to subdued accents (used in subviews — note/RFI/etc.) */
     .btn-blue    { background: var(--primary-soft); color: var(--primary-hov); border-color: #b7daf2; }
     .btn-blue:hover:not(:disabled)    { background: #d6e9f7; }
@@ -534,6 +591,96 @@
     .suggestion-chip .sc-num { font-size: 11px; color: var(--text-faint); font-family: "Consolas", monospace; }
     .suggestion-chip .sc-name { font-size: 13px; color: var(--text); font-weight: 600; }
     .suggestion-chip .sc-reason { font-size: 11px; color: var(--text-soft); margin-top: 2px; }
+    /* Response watchlist — amber to read as a "you owe a reply" nudge, distinct
+       from the blue suggestion blocks. */
+    .watchlist-block {
+      background: var(--warn-bg);
+      border: 1px solid #f1d875;
+      border-radius: 4px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+    }
+    .watchlist-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .watchlist-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--warn);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .watchlist-refresh {
+      background: transparent;
+      border: none;
+      color: var(--warn);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .wl-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 6px 8px;
+      margin-bottom: 4px;
+    }
+    .wl-item:last-child { margin-bottom: 0; }
+    .wl-main { flex: 1; min-width: 0; }
+    .wl-subject {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    /* Subject rendered as a button when a deep link to the email exists. */
+    .wl-open {
+      display: block;
+      width: 100%;
+      padding: 0;
+      margin: 0;
+      border: none;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      font-family: inherit;
+      color: var(--link, #2563eb);
+    }
+    .wl-open:hover { text-decoration: underline; }
+    .wl-meta { font-size: 11px; color: var(--text-soft); margin-top: 2px; }
+    .wl-reasons { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+    .wl-due {
+      background: var(--warn-bg);
+      color: var(--warn);
+      border: 1px solid #f1d875;
+      border-radius: 3px;
+      padding: 0 5px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .wl-dismiss {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-soft);
+      border-radius: 3px;
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+    }
+    .wl-dismiss:hover { border-color: var(--border-strong); color: var(--text); }
     /* Date variant — compact single-line chip emphasizing the milestone-create action.
        No context snippet (it never read cleanly out of email HTML), so the chip stays small. */
     .suggestion-chip.date-chip {
@@ -588,6 +735,16 @@
       border: 1px solid transparent;
     }
     .pill.added { background: var(--success-bg); color: var(--success); border-color: #b6e3b6; }
+    /* Company pill in the participant list — long firm names must truncate,
+       never wrap or crowd out the person's name (full name in tooltip). */
+    .pill.company {
+      max-width: 84px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* The person's name always wins the space fight with the pills. */
+    .participant-row .participant-id { flex: 1; min-width: 90px; }
     .date-card {
       padding: 10px 12px;
       background: var(--surface);
@@ -613,6 +770,15 @@
     .participant-row:hover { border-color: var(--primary); background: var(--surface); }
     .participant-row.added { background: var(--success-bg); border-color: #b6e3b6; }
     .participant-row.added:hover { background: #c8eec8; }
+    .quick-add-proj {
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; margin-left: 4px;
+      border: 1px solid var(--primary); border-radius: 12px;
+      background: var(--bg); color: var(--primary);
+      cursor: pointer; white-space: nowrap; flex-shrink: 0;
+    }
+    .quick-add-proj:hover:not(:disabled) { background: var(--primary); color: #fff; }
+    .quick-add-proj:disabled { opacity: 0.6; cursor: default; }
 
     /* Native <details> styling for the "More" expander */
     details.more-expander { margin-top: 6px; }
@@ -664,8 +830,8 @@
 <div id="signInView">
   <div class="header">
     <div>
-      <div class="header-logo">SETTY PMS</div>
-      <div class="header-sub">Project Management System</div>
+      <div class="header-logo">SETTY DMS</div>
+      <div class="header-sub">Decision Management System</div>
     </div>
   </div>
   <p style="color:var(--text);font-size:13px;margin-bottom:10px;font-weight:600;">
@@ -686,11 +852,13 @@
 
 <!-- Main View -->
 <div id="mainView">
-  <div class="header">
-    <div style="flex:1">
-      <div class="header-logo">SETTY PMS</div>
-    </div>
-    <button class="btn-ghost btn" style="width:auto;padding:4px 10px;font-size:11px;min-height:0;" id="signOutBtn">Sign out</button>
+  <!-- Pin reminder — shown until dismissed, or until ItemChanged fires
+       (ItemChanged only fires while the pane is pinned, so receiving one
+       doubles as "user already pinned" detection — see markPanePinned()). -->
+  <div id="pinHintBanner" style="display:none;">
+    <span class="pin-emoji">📌</span>
+    <span style="flex:1">Pin this pane so it stays open as you move between emails — click the pin in the top-right corner.</span>
+    <button id="pinHintDismiss" type="button" title="Got it — don't show again">✕</button>
   </div>
 
   <div class="email-preview">
@@ -700,13 +868,26 @@
   <!-- Rare ambient observation. ~8% of email opens. Pure flavor, no info. -->
   <div id="aecQuipLine" style="display:none;"></div>
 
+  <!-- Response watchlist — client emails that look like they need a reply and
+       haven't been answered yet. Populated by renderResponseWatchlist(); each
+       row's open/answered state is verified live against Graph at render time. -->
+  <div id="responseWatchlistBlock" class="watchlist-block" style="display:none;">
+    <div class="watchlist-head">
+      <div class="watchlist-label">📨 Awaiting your reply (<span id="responseWatchlistCount">0</span>)</div>
+      <button type="button" id="responseWatchlistRefresh" class="watchlist-refresh" title="Re-check the watchlist">↻</button>
+    </div>
+    <div id="responseWatchlistList"></div>
+  </div>
+
+  <!-- (Email sweep moved into "More actions" at the bottom — used less often.) -->
+
   <!-- Project suggestion chips — shown when no project tag exists for this thread -->
   <div id="suggestionBlock" class="suggestion-block" style="display:none;">
     <div class="suggestion-label">💡 <span id="suggestionLabelText">Possible projects</span></div>
     <div id="suggestionChips"></div>
   </div>
 
-  <div class="project-search-wrapper">
+  <div class="project-search-wrapper" id="projectSearchWrapper">
     <label>Project</label>
     <input type="text" id="projectSearch" placeholder="Search by name or number…" autocomplete="off"/>
     <div id="projectDropdown"></div>
@@ -751,15 +932,34 @@
        sourceItemId matches the current email. Empty by default. -->
   <div id="loggedAsArtifactChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
 
+  <!-- Optional link target: when the selected project has open RFIs or
+       Submittals, this dropdown lets the user link the current email to one.
+       Picking a target + hitting Save SP/Save to Project files the email
+       normally AND copies it into the linked RFI/Sub's /IN folder, plus
+       updates the RFI/Sub's links[] to reference the email record.
+       Populated by refreshLinkToTargetDropdown(). Hidden when no open
+       RFIs/Subs exist on the selected project. -->
+  <div id="linkToRow" style="display:none;margin-bottom:8px;">
+    <label style="font-size:11px;color:#64748b;font-weight:600;display:block;margin-bottom:3px;">
+      📎 Also link this email to:
+      <span style="font-weight:400;font-size:10px;">(files a copy into the RFI/Sub's /IN folder)</span>
+    </label>
+    <select id="linkToTarget" style="width:100%;">
+      <option value="">— Standalone (no linking) —</option>
+    </select>
+  </div>
+
   <!-- Primary action zone — the 80/20 actions, always visible.
        Twin-save row: SharePoint (email + attachments) and Project Record (email body copy). -->
   <div class="save-row">
     <button class="btn btn-primary" id="saveSpBtn">📁 Save to SharePoint</button>
-    <button class="btn btn-primary" id="saveRecordBtn">🗂️ Save to Project</button>
+    <!-- "Save to Project" retired — auto-file on tag covers it. Kept hidden in the
+         DOM because the save logic references it; it's just no longer shown. -->
+    <button class="btn btn-primary" id="saveRecordBtn" style="display:none;">🗂️ Save to Project</button>
   </div>
   <div class="save-row-caption">
     <span id="saveSpCaption">Email + attachments → SharePoint + record</span>
-    <span id="saveRecordCaption">Email body → project record only</span>
+    <span id="saveRecordCaption" style="display:none;"></span>
   </div>
   <!-- Post-save confirmation — replaces the save buttons once the email is filed.
        Big check + summary line so the "done" state actually feels done.
@@ -772,21 +972,39 @@
       <a id="scSharePointLink" href="#" style="display:none;">📂 Open SharePoint folder →</a>
     </div>
   </div>
-  <button class="btn btn-onenote" id="logNoteBtn">📓 Log as Note</button>
-  <button class="btn btn-teams" id="sendToTeamsBtn">💬 Send to Teams Channel</button>
-  <button class="btn btn-secondary" id="newActionItemBtn">✅ New Action Item</button>
+  <!-- Featured when this email has people worth capturing (badge + tint via
+       updatePeopleButtonBadge); hidden entirely when there's nothing to add,
+       so it never takes space as a dead button. -->
+  <button class="btn btn-secondary" id="addParticipantBtn" style="display:none;">👥 Add Participant to Contacts</button>
 
   <!-- More — collapsed by default; persists open state in localStorage -->
   <details class="more-expander" id="moreActions">
     <summary>More actions</summary>
     <div class="more-body">
+      <button class="btn btn-onenote" id="logNoteBtn">📓 Log as Note</button>
+      <button class="btn btn-teams" id="sendToTeamsBtn">💬 Send to Teams Channel</button>
+      <button class="btn btn-secondary" id="newActionItemBtn">✅ New Action Item</button>
+      <hr class="divider"/>
       <button class="btn btn-secondary" id="logRfiBtn">🔵 Log as RFI</button>
       <button class="btn btn-secondary" id="logSubBtn">📋 Log as Submittal</button>
       <hr class="divider"/>
       <button class="btn btn-secondary" id="manualMilestoneBtn">📅 New Milestone</button>
-      <button class="btn btn-secondary" id="addParticipantBtn">👥 Add Participant to Contacts</button>
       <hr class="divider"/>
       <button class="btn btn-ghost" id="openDashboardBtn">📊 Open PMS Dashboard</button>
+      <button class="btn btn-ghost" id="signOutBtn">Sign out</button>
+      <hr class="divider"/>
+      <!-- Email sweep — bulk-file recent Focused mail to projects (used less often). -->
+      <div id="sweepBlock" class="watchlist-block">
+        <div class="watchlist-head">
+          <div class="watchlist-label">🧹 Sweep recent mail</div>
+          <span>
+            <button type="button" id="sweepRunBtn" class="watchlist-refresh" title="Preview only — writes nothing">Preview</button>
+            <button type="button" id="sweepFileBtn" class="watchlist-refresh" title="File confident matches and queue the rest for review">Run &amp; file</button>
+          </span>
+        </div>
+        <div id="sweepStatus" style="font-size:12px;color:#666;margin:4px 0;"></div>
+        <div id="sweepResults" style="max-height:280px;overflow:auto;"></div>
+      </div>
     </div>
   </details>
 
@@ -811,6 +1029,10 @@
     </div>
     <div id="quickTextStatus" class="status" style="display:none"></div>
   </div>
+
+  <!-- Version footer — inherits the logo's old jobs: hover shows the version
+       (cache debugging) and 5 clicks reveal the credits card. -->
+  <div id="versionFooter"></div>
 </div>
 
 <!-- Note View -->
@@ -1043,6 +1265,7 @@
   <p style="font-size:11px;color:#64748b;margin-bottom:12px;line-height:1.5;">
     Select a participant to add them to Clients or a Project POC. Duplicate contacts are skipped automatically.
   </p>
+  <div id="peopleStatus" class="status-msg"></div>
   <div id="participantList"></div>
 </div>
 
@@ -1073,6 +1296,12 @@
   <button class="btn btn-teal" id="saveContactBtn">💾 Save Contact</button>
 </div>
 
-<script src="taskpane.js"></script>
+<!--
+  Cache-bust: bump the ?v=YYYYMMDD-N value below whenever taskpane.js is
+  deployed so Office's WebView2 fetches the new file instead of serving a
+  cached one. Without this, even a full Outlook restart can keep loading
+  stale JS until the WebView2 cache naturally expires.
+-->
+<script src="taskpane.js?v=20260529-2"></script>
 </body>
 </html>
