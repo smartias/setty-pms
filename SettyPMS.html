@@ -16703,6 +16703,21 @@ const EmailIframe = React.memo(function EmailIframe({ html }) {
   );
 });
 
+// Group a newest-first email list into conversation threads for the log view.
+// First email seen per conversation is the latest (list is email_date desc), so
+// its subject/date represent the thread. Emails without a conversationId stand alone.
+function groupEmailsByThread(list) {
+  const groups = [];
+  const byKey = new Map();
+  (list || []).forEach((email, i) => {
+    const key = email.conversationId || ("solo-" + (email.msgId || email.id || i));
+    let g = byKey.get(key);
+    if (!g) { g = { key, subject: email.subject, latestDate: email.date, emails: [], count: 0 }; byKey.set(key, g); groups.push(g); }
+    g.emails.push(email);
+    g.count++;
+  });
+  return groups;
+}
 function EmailsView({ project, onChange }) {
   const toText = (value, fallback = "") => {
     if (typeof value === "string") return value;
@@ -16726,6 +16741,7 @@ function EmailsView({ project, onChange }) {
   const [spSaveState, setSpSaveState] = useState({}); // msgId -> {status, msg}
   const [shareState, setShareState] = useState({}); // msgId -> {status, msg}
   const [liveBody, setLiveBody] = useState({}); // { [msgId]: html string } — Outlook live-fetched
+  const [openThreads, setOpenThreads] = useState({}); // conversationId -> bool (log view thread groups)
 
   // ── Phase 6b: server-side reads from pms_project_emails ────────────────────
   // `emails` is the loaded page (metadata only, no bodies). It replaces what
@@ -17479,8 +17495,10 @@ function EmailsView({ project, onChange }) {
       )}
       {emails.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-          {emails.map((email, idx) => {
-            const emailId = email.msgId || email.id || ("legacy-" + idx);
+          {groupEmailsByThread(emails).map((grp) => {
+            const threadOpen = grp.count === 1 || !!openThreads[grp.key];
+            const renderCard = (email, idx) => {
+            const emailId = email.msgId || email.id || ("legacy-" + grp.key + "-" + idx);
             const isOpen = expanded === emailId;
             const body = liveBody[emailId] || email.bodyText || "";
             const isFetching = fetchingBody === emailId;
@@ -17644,6 +17662,26 @@ function EmailsView({ project, onChange }) {
                         </Btn>
                       </div>
                     </div>
+                  </div>
+                )}
+              </div>
+            );
+            };
+            if (grp.count === 1) return renderCard(grp.emails[0], 0);
+            return (
+              <div key={grp.key} style={{ border: `1px solid ${P.border}`, borderRadius: 8, overflow: "hidden", marginBottom: 4, background: P.card }}>
+                <div onClick={() => setOpenThreads(s => ({ ...s, [grp.key]: !s[grp.key] }))}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13 }}
+                  onMouseOver={e => e.currentTarget.style.background = P.accentDim}
+                  onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                  <span style={{ flexShrink: 0, color: P.textDim }}>{threadOpen ? "▾" : "▸"}</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{toText(grp.subject, "(no subject)")}</span>
+                  <span style={{ flexShrink: 0, fontSize: 11, color: P.accent, background: P.accentDim, borderRadius: 10, padding: "1px 8px" }}>💬 {grp.count}</span>
+                  <span style={{ flexShrink: 0, fontSize: 11, color: P.textDim }}>{grp.latestDate ? new Date(grp.latestDate).toLocaleDateString("en-US", { month: "numeric", day: "numeric", year: "numeric" }) : ""}</span>
+                </div>
+                {threadOpen && (
+                  <div style={{ borderTop: `1px solid ${P.border}`, padding: "6px 8px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
+                    {grp.emails.map((email, i) => renderCard(email, i))}
                   </div>
                 )}
               </div>
