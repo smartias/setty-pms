@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-22-pms-v55-milestone-dates-independent-pin";
+    window.__appVersion = "2026-06-22-pms-v55-milestone-dates-independent-pinfix";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -922,21 +922,6 @@ async function sbFetchV2(method, path, body, extraPrefer = "") {
   return text ? JSON.parse(text) : null;
 }
 
-// Page a GET past PostgREST's 1000-row response cap, returning ALL rows. `path`
-// must already include its query string AND a stable &order=<unique-ish key> so
-// offset paging stays disjoint across pages. Shares sbFetchV2's throw-on-error
-// contract, so callers wrap it in the same try/catch they'd use for sbFetchV2.
-async function sbFetchAllV2(path) {
-  const out = [];
-  const PAGE = 1000;
-  for (let offset = 0; offset < 500000; offset += PAGE) {
-    const rows = await sbFetchV2("GET", path + "&limit=" + PAGE + "&offset=" + offset);
-    if (rows && rows.length) out.push(...rows);
-    if (!rows || rows.length < PAGE) break;   // last page reached
-  }
-  return out;
-}
-
 // ── MIGRATION ────────────────────────────────────────────────────────────────
 // Reads the old pms_data singleton, writes per-project + per-client rows,
 // flips the migration_status flag. Idempotent: if it crashes mid-flight, the
@@ -1097,9 +1082,8 @@ async function markMigrationComplete() {
 async function loadStateV2() {
   // Parallel fetch all three tables — saves ~200ms on slower networks.
   const [projectRows, clientRows, metaRows] = await Promise.all([
-    // Page projects + clients past the 1000-row cap; meta is a single row.
-    sbFetchAllV2("/rest/v1/pms_projects?select=id,project,version,updated_at&order=id.asc"),
-    sbFetchAllV2("/rest/v1/pms_clients?select=id,client,version,updated_at&order=id.asc"),
+    sbFetchV2("GET", "/rest/v1/pms_projects?select=id,project,version,updated_at"),
+    sbFetchV2("GET", "/rest/v1/pms_clients?select=id,client,version,updated_at"),
     sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
   ]);
 
@@ -1300,28 +1284,27 @@ async function loadEmailBody(recordId) {
 }
 
 // All saved msg_ids for a project. Used to dedupe Outlook-search results
-// against the entire saved set (not just the loaded page). Result is just
-// strings (msg_ids). Paged past PostgREST's 1000-row cap (ordered by the unique
-// record_id so pages stay disjoint): an unpaged read truncates at 1000, and on a
-// project with >1000 filed emails the dropped ids would re-surface already-saved
-// mail as "new". (Today's busiest project is ~413, so this is headroom.)
+// against the entire saved set (not just the loaded page). One round-trip
+// per project session; result is bounded by saved-email count and is just
+// strings, so cheap even at 10K+ rows.
 async function loadProjectMsgIds(projectId) {
   if (!projectId) return new Set();
-  const rows = await sbFetchAllV2(
-    "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(projectId) +
-    "&select=msg_id&order=record_id.asc");
+  const path = "/rest/v1/pms_project_emails" +
+               "?project_id=eq." + encodeURIComponent(projectId) +
+               "&select=msg_id";
+  const rows = await sbFetchV2("GET", path);
   return new Set((rows || []).map(r => r.msg_id).filter(Boolean));
 }
 
-// Distinct senders for a project — feeds the sender filter dropdown. Paged past
-// the 1000-row cap with a record_id tiebreaker so pages stay disjoint; without
-// paging a project with >1000 filed emails would lose every sender that sorts
-// after row 1000 from the dropdown.
+// Distinct senders for a project — feeds the sender filter dropdown.
+// Cheap: indexed scan, no table scan.
 async function loadProjectSenders(projectId) {
   if (!projectId) return [];
-  const rows = await sbFetchAllV2(
-    "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(projectId) +
-    "&select=from_address&order=from_address.asc,record_id.asc");
+  const path = "/rest/v1/pms_project_emails" +
+               "?project_id=eq." + encodeURIComponent(projectId) +
+               "&select=from_address" +
+               "&order=from_address.asc";
+  const rows = await sbFetchV2("GET", path);
   // De-dupe client-side (PostgREST has no DISTINCT). Cheap because the result
   // is bounded by unique senders, not total emails.
   const seen = new Set();
@@ -2420,44 +2403,26 @@ async function resolveSpIds() {
 
 const FILING_LOG_TABLE_PMS = "pms_filing_log";
 
-// Page an anon-key GET past PostgREST's 1000-row response cap, returning ALL rows.
-// `tableQuery` is everything after the table name (?select=...&filters) and MUST
-// end with a stable &order on a unique-ish key so offset paging stays disjoint.
-// (Replaces the old &limit=2000, which silently capped at 1000 anyway.)
-async function fetchAllAnon(tableQuery, label) {
-  const out = [];
-  const PAGE = 1000;
-  const headers = {
-    "apikey": SUPABASE_ANON_KEY,
-    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-  };
-  for (let offset = 0; offset < 500000; offset += PAGE) {
-    const res = await fetchWithRetry(
-      SUPABASE_URL + "/rest/v1/" + tableQuery + "&limit=" + PAGE + "&offset=" + offset,
-      { headers }, { label, maxAttempts: 2 });
-    if (!res.ok) throw new Error(label + " HTTP " + res.status);
-    const rows = await res.json();
-    if (rows && rows.length) out.push(...rows);
-    if (!rows || rows.length < PAGE) break;   // last page reached
-  }
-  return out;
-}
-
-// Fetch recent filing log rows. Default scope: last 90 days, success/partial/
-// verified rows only (we don't re-check known failures). Paged past the 1000-row
-// cap so a high-volume 90-day window isn't silently truncated (the old &limit=2000
-// was a no-op — PostgREST caps every response at 1000 regardless).
+// Fetch recent filing log rows. Default scope: last 90 days, success/partial
+// rows only (we don't need to re-check known failures). Capped at 2000 to keep
+// the request lightweight; if you have higher volume, the reconcile can page.
 async function fetchFilingLogForReconcile(daysBack = 90) {
   const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
   // We pull both 'success' and 'partial' (partial = some files uploaded);
   // 'failed' rows have nothing to verify on SharePoint.
-  return fetchAllAnon(
-    FILING_LOG_TABLE_PMS +
-      "?select=id,created_at,project_id,msg_id,operation,sp_folder_url,files,email_subject,status" +
-      "&created_at=gte." + encodeURIComponent(sinceIso) +
-      "&status=in.(success,partial,verified)" +
-      "&order=created_at.desc,id.desc",
-    "sb filing-log reconcile");
+  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
+    "?select=id,created_at,project_id,msg_id,operation,sp_folder_url,files,email_subject,status" +
+    "&created_at=gte." + encodeURIComponent(sinceIso) +
+    "&status=in.(success,partial,verified)" +
+    "&order=created_at.desc&limit=2000";
+  const res = await fetchWithRetry(url, {
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+    },
+  }, { label: "sb filing-log reconcile", maxAttempts: 2 });
+  if (!res.ok) throw new Error("filing-log fetch HTTP " + res.status);
+  return res.json();
 }
 
 // Convert a SharePoint webUrl into a drive-relative path. The audit log stores
@@ -2718,16 +2683,20 @@ async function runFilingReconcile({ daysBack = 90, deepHash = false, onProgress 
 
 async function fetchTransmittalStatusMap(daysBack = 365) {
   const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
+    "?select=msg_id,sp_folder_url,files,created_at" +
+    "&operation=eq.transmittal-generated" +
+    "&created_at=gte." + encodeURIComponent(sinceIso) +
+    "&order=created_at.desc&limit=2000";
   try {
-    // Paged past the 1000-row cap (id tiebreaker keeps pages disjoint); the old
-    // &limit=2000 silently capped at 1000.
-    const rows = await fetchAllAnon(
-      FILING_LOG_TABLE_PMS +
-        "?select=msg_id,sp_folder_url,files,created_at" +
-        "&operation=eq.transmittal-generated" +
-        "&created_at=gte." + encodeURIComponent(sinceIso) +
-        "&order=created_at.desc,id.desc",
-      "sb transmittal-status fetch");
+    const res = await fetchWithRetry(url, {
+      headers: {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+      },
+    }, { label: "sb transmittal-status fetch", maxAttempts: 2 });
+    if (!res.ok) return new Map();
+    const rows = await res.json();
     const map = new Map();
     for (const r of rows || []) {
       // Extract milestoneId from msg_id (format: "milestone:<id>") or fall back
@@ -6994,7 +6963,8 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     const ph = phases.find(p => p.code === ms.phase);
     const newMilestones = milestones.map(m => {
       if (m.id !== id) return m;
-      const { dueDateManual, ...rest } = m;
+      const rest = { ...m };
+      delete rest.dueDateManual;   // object-spread + delete, NOT object-rest — avoids Babel's _excluded helper colliding across the two <script type=text/babel> blocks
       return ph && ph.endDate ? { ...rest, dueDate: ph.endDate } : rest;
     });
     onChange({ ...project, milestones: newMilestones }, { notifyTeams: false });
@@ -17185,9 +17155,10 @@ function EmailsView({ project, onChange }) {
       };
     }));
 
-    // Emails persist to pms_project_emails (below), not into the project blob.
-    // Update the local `emails` page so the UI re-renders immediately.
-    // Prepend toAdd to local state since the list is date-desc.
+    // Dual-write: update project.emails[] (parent state) AND the local
+    // `emails` page (so the UI re-renders immediately without waiting for
+    // a refetch). Prepend toAdd to local state since the list is date-desc.
+    onChange({ ...project, emails: [...(project.emails || []), ...toAdd] });
     setEmails(prev => [...toAdd, ...prev]);
     setSavedMsgIds(prev => {
       const next = new Set(prev);
@@ -17235,8 +17206,9 @@ function EmailsView({ project, onChange }) {
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
       // Persist the SP folder URL on the email record so it survives page refresh.
-      // Update the local page; the row is patched in pms_project_emails below.
+      // Dual-write: update both project.emails[] (parent state) and the local page.
       const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
+      onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
       setEmails(prev => prev.map(patchSpUrl));
       // Also patch the new table. Fire-and-forget — local state already updated.
       if (email.id) {
@@ -17250,8 +17222,8 @@ function EmailsView({ project, onChange }) {
 
   function deleteEmail(msgId) {
     const target = emails.find(e => e.msgId === msgId);
-    // Remove from the local page + savedMsgIds; the row is deleted from
-    // pms_project_emails below.
+    // Dual-write delete: parent project.emails[], local page, savedMsgIds set.
+    onChange({ ...project, emails: (project.emails || []).filter(e => e.msgId !== msgId) });
     setEmails(prev => prev.filter(e => e.msgId !== msgId));
     setSavedMsgIds(prev => { const next = new Set(prev); next.delete(msgId); return next; });
     if (expanded === msgId) setExpanded(null);
@@ -17279,11 +17251,11 @@ function EmailsView({ project, onChange }) {
         if (existing && !existing.bodyHtmlCompressed) {
           const compressed = compressHtml(html);
           if (compressed) {
-            // Cache the body in the local page; it is also persisted to
-            // pms_project_emails below so future opens skip the live fetch.
+            // Dual-write the cached body: parent project.emails[] AND local page.
             const patchBody = e => e.msgId === msgId
               ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
               : e;
+            onChange({ ...project, emails: (project.emails || []).map(patchBody) });
             setEmails(prev => prev.map(patchBody));
             // Also persist to the new table so future opens skip the live fetch.
             if (existing.id) {
@@ -19739,7 +19711,8 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 const ph = (proj.phases || []).find(p => p.code === m.phase);
                 const newMilestones = (proj.milestones || []).map(x => {
                   if (x.id !== m.id) return x;
-                  const { dueDateManual, ...rest } = x;
+                  const rest = { ...x };
+                  delete rest.dueDateManual;   // object-spread + delete, NOT object-rest — avoids Babel's _excluded helper colliding across script blocks
                   return ph && ph.endDate ? { ...rest, dueDate: ph.endDate } : rest;
                 });
                 onUpdateProject({ ...proj, milestones: newMilestones });
@@ -26322,16 +26295,15 @@ function App() {
         "Authorization": "Bearer " + SUPABASE_ANON_KEY,
       };
       let projects = [], termContracts = [], staff = [], clients = [], cloudUpdatedAt = null, source = "v2";
-      // Page projects + clients past the 1000-row cap so a backup taken after the
-      // tables cross 1000 rows isn't silently truncated (a short backup is worse
-      // than a short UI load). meta is a single row. On any V2 read error we leave
-      // the arrays empty so the legacy pms_data fallback below still runs.
-      try {
-        const [pRows, cRows, mRows] = await Promise.all([
-          sbFetchAllV2("/rest/v1/pms_projects?select=project,updated_at&order=id.asc"),
-          sbFetchAllV2("/rest/v1/pms_clients?select=client,updated_at&order=id.asc"),
-          sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
-        ]);
+      const [pRes, cRes, mRes] = await Promise.all([
+        fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project,updated_at", { headers: sbHeaders }),
+        fetch(SUPABASE_URL + "/rest/v1/pms_clients?select=client,updated_at", { headers: sbHeaders }),
+        fetch(SUPABASE_URL + "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at", { headers: sbHeaders }),
+      ]);
+      if (pRes.ok && cRes.ok && mRes.ok) {
+        const pRows = await pRes.json();
+        const cRows = await cRes.json();
+        const mRows = await mRes.json();
         projects = (pRows || []).map(r => r.project).filter(Boolean);
         clients  = (cRows || []).map(r => r.client).filter(Boolean);
         const meta = mRows?.[0]?.data || {};
@@ -26344,8 +26316,6 @@ function App() {
           mRows?.[0]?.updated_at,
         ].filter(Boolean);
         cloudUpdatedAt = stamps.sort().slice(-1)[0] || null;
-      } catch (v2err) {
-        console.warn("V2 backup read failed, will try legacy pms_data:", v2err.message);
       }
 
       // Fallback to V1 if V2 returned nothing (migration not yet run)
