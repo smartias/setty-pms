@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-12-pms-v54-last-filed-email";
+    window.__appVersion = "2026-06-22-pms-v55-milestone-dates-independent-pin";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -286,6 +286,7 @@ function projectWithRebuiltSchedule(project, newStartDate) {
   );
   const newMilestones = (project.milestones || []).map(m => {
     if (m.type !== "billable" || !m.phase) return m;
+    if (m.dueDateManual) return m;   // pinned: user set this date by hand — a rebuild must not clobber it
     const dates = phaseDatesByCode[m.phase];
     if (!dates) return m;
     return { ...m, startDate: dates.startDate, dueDate: dates.dueDate };
@@ -921,6 +922,21 @@ async function sbFetchV2(method, path, body, extraPrefer = "") {
   return text ? JSON.parse(text) : null;
 }
 
+// Page a GET past PostgREST's 1000-row response cap, returning ALL rows. `path`
+// must already include its query string AND a stable &order=<unique-ish key> so
+// offset paging stays disjoint across pages. Shares sbFetchV2's throw-on-error
+// contract, so callers wrap it in the same try/catch they'd use for sbFetchV2.
+async function sbFetchAllV2(path) {
+  const out = [];
+  const PAGE = 1000;
+  for (let offset = 0; offset < 500000; offset += PAGE) {
+    const rows = await sbFetchV2("GET", path + "&limit=" + PAGE + "&offset=" + offset);
+    if (rows && rows.length) out.push(...rows);
+    if (!rows || rows.length < PAGE) break;   // last page reached
+  }
+  return out;
+}
+
 // ── MIGRATION ────────────────────────────────────────────────────────────────
 // Reads the old pms_data singleton, writes per-project + per-client rows,
 // flips the migration_status flag. Idempotent: if it crashes mid-flight, the
@@ -1081,8 +1097,9 @@ async function markMigrationComplete() {
 async function loadStateV2() {
   // Parallel fetch all three tables — saves ~200ms on slower networks.
   const [projectRows, clientRows, metaRows] = await Promise.all([
-    sbFetchV2("GET", "/rest/v1/pms_projects?select=id,project,version,updated_at"),
-    sbFetchV2("GET", "/rest/v1/pms_clients?select=id,client,version,updated_at"),
+    // Page projects + clients past the 1000-row cap; meta is a single row.
+    sbFetchAllV2("/rest/v1/pms_projects?select=id,project,version,updated_at&order=id.asc"),
+    sbFetchAllV2("/rest/v1/pms_clients?select=id,client,version,updated_at&order=id.asc"),
     sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
   ]);
 
@@ -1283,27 +1300,28 @@ async function loadEmailBody(recordId) {
 }
 
 // All saved msg_ids for a project. Used to dedupe Outlook-search results
-// against the entire saved set (not just the loaded page). One round-trip
-// per project session; result is bounded by saved-email count and is just
-// strings, so cheap even at 10K+ rows.
+// against the entire saved set (not just the loaded page). Result is just
+// strings (msg_ids). Paged past PostgREST's 1000-row cap (ordered by the unique
+// record_id so pages stay disjoint): an unpaged read truncates at 1000, and on a
+// project with >1000 filed emails the dropped ids would re-surface already-saved
+// mail as "new". (Today's busiest project is ~413, so this is headroom.)
 async function loadProjectMsgIds(projectId) {
   if (!projectId) return new Set();
-  const path = "/rest/v1/pms_project_emails" +
-               "?project_id=eq." + encodeURIComponent(projectId) +
-               "&select=msg_id";
-  const rows = await sbFetchV2("GET", path);
+  const rows = await sbFetchAllV2(
+    "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(projectId) +
+    "&select=msg_id&order=record_id.asc");
   return new Set((rows || []).map(r => r.msg_id).filter(Boolean));
 }
 
-// Distinct senders for a project — feeds the sender filter dropdown.
-// Cheap: indexed scan, no table scan.
+// Distinct senders for a project — feeds the sender filter dropdown. Paged past
+// the 1000-row cap with a record_id tiebreaker so pages stay disjoint; without
+// paging a project with >1000 filed emails would lose every sender that sorts
+// after row 1000 from the dropdown.
 async function loadProjectSenders(projectId) {
   if (!projectId) return [];
-  const path = "/rest/v1/pms_project_emails" +
-               "?project_id=eq." + encodeURIComponent(projectId) +
-               "&select=from_address" +
-               "&order=from_address.asc";
-  const rows = await sbFetchV2("GET", path);
+  const rows = await sbFetchAllV2(
+    "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(projectId) +
+    "&select=from_address&order=from_address.asc,record_id.asc");
   // De-dupe client-side (PostgREST has no DISTINCT). Cheap because the result
   // is bounded by unique senders, not total emails.
   const seen = new Set();
@@ -2402,26 +2420,44 @@ async function resolveSpIds() {
 
 const FILING_LOG_TABLE_PMS = "pms_filing_log";
 
-// Fetch recent filing log rows. Default scope: last 90 days, success/partial
-// rows only (we don't need to re-check known failures). Capped at 2000 to keep
-// the request lightweight; if you have higher volume, the reconcile can page.
+// Page an anon-key GET past PostgREST's 1000-row response cap, returning ALL rows.
+// `tableQuery` is everything after the table name (?select=...&filters) and MUST
+// end with a stable &order on a unique-ish key so offset paging stays disjoint.
+// (Replaces the old &limit=2000, which silently capped at 1000 anyway.)
+async function fetchAllAnon(tableQuery, label) {
+  const out = [];
+  const PAGE = 1000;
+  const headers = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+  };
+  for (let offset = 0; offset < 500000; offset += PAGE) {
+    const res = await fetchWithRetry(
+      SUPABASE_URL + "/rest/v1/" + tableQuery + "&limit=" + PAGE + "&offset=" + offset,
+      { headers }, { label, maxAttempts: 2 });
+    if (!res.ok) throw new Error(label + " HTTP " + res.status);
+    const rows = await res.json();
+    if (rows && rows.length) out.push(...rows);
+    if (!rows || rows.length < PAGE) break;   // last page reached
+  }
+  return out;
+}
+
+// Fetch recent filing log rows. Default scope: last 90 days, success/partial/
+// verified rows only (we don't re-check known failures). Paged past the 1000-row
+// cap so a high-volume 90-day window isn't silently truncated (the old &limit=2000
+// was a no-op — PostgREST caps every response at 1000 regardless).
 async function fetchFilingLogForReconcile(daysBack = 90) {
   const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
   // We pull both 'success' and 'partial' (partial = some files uploaded);
   // 'failed' rows have nothing to verify on SharePoint.
-  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
-    "?select=id,created_at,project_id,msg_id,operation,sp_folder_url,files,email_subject,status" +
-    "&created_at=gte." + encodeURIComponent(sinceIso) +
-    "&status=in.(success,partial,verified)" +
-    "&order=created_at.desc&limit=2000";
-  const res = await fetchWithRetry(url, {
-    headers: {
-      "apikey": SUPABASE_ANON_KEY,
-      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-    },
-  }, { label: "sb filing-log reconcile", maxAttempts: 2 });
-  if (!res.ok) throw new Error("filing-log fetch HTTP " + res.status);
-  return res.json();
+  return fetchAllAnon(
+    FILING_LOG_TABLE_PMS +
+      "?select=id,created_at,project_id,msg_id,operation,sp_folder_url,files,email_subject,status" +
+      "&created_at=gte." + encodeURIComponent(sinceIso) +
+      "&status=in.(success,partial,verified)" +
+      "&order=created_at.desc,id.desc",
+    "sb filing-log reconcile");
 }
 
 // Convert a SharePoint webUrl into a drive-relative path. The audit log stores
@@ -2682,20 +2718,16 @@ async function runFilingReconcile({ daysBack = 90, deepHash = false, onProgress 
 
 async function fetchTransmittalStatusMap(daysBack = 365) {
   const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
-    "?select=msg_id,sp_folder_url,files,created_at" +
-    "&operation=eq.transmittal-generated" +
-    "&created_at=gte." + encodeURIComponent(sinceIso) +
-    "&order=created_at.desc&limit=2000";
   try {
-    const res = await fetchWithRetry(url, {
-      headers: {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-      },
-    }, { label: "sb transmittal-status fetch", maxAttempts: 2 });
-    if (!res.ok) return new Map();
-    const rows = await res.json();
+    // Paged past the 1000-row cap (id tiebreaker keeps pages disjoint); the old
+    // &limit=2000 silently capped at 1000.
+    const rows = await fetchAllAnon(
+      FILING_LOG_TABLE_PMS +
+        "?select=msg_id,sp_folder_url,files,created_at" +
+        "&operation=eq.transmittal-generated" +
+        "&created_at=gte." + encodeURIComponent(sinceIso) +
+        "&order=created_at.desc,id.desc",
+      "sb transmittal-status fetch");
     const map = new Map();
     for (const r of rows || []) {
       // Extract milestoneId from msg_id (format: "milestone:<id>") or fall back
@@ -6906,17 +6938,24 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     if (ms.id !== id) return ms;
     const updated = { ...ms, [field]: val };
     if (field === "pctComplete") updated.status = milestoneStatus(+val);
+    // A hand-edited due date is "pinned" so a later schedule rebuild or phase
+    // change won't silently move it. Only meaningful for billable milestones —
+    // the overwrite paths never touch non-billable ones.
+    if (field === "dueDate" && ms.type === "billable") updated.dueDateManual = true;
     return updated;
   });
 
+  // Milestone dates are INDEPENDENT: editing a milestone's due date changes only
+  // that milestone — it no longer drags its phase's end date. This makes billable
+  // and non-billable milestones behave identically, and matches the Dashboard
+  // editor (updateMilestoneField), so the two date-editors can't drift out of
+  // sync (that drift was the source of "the date didn't stick / had to reopen").
+  // The "forwards" direction is unchanged: the start-date schedule build and
+  // explicit phase-row edits still flow phase dates DOWN into billable milestones.
   let newPhases = phases;
-  if (field === "dueDate") {
-    if (m && m.type === "billable") {
-      newPhases = phases.map(p => p.code === m.phase ? { ...p, endDate: val } : p);
-    }
-    if (calMap[id]) {
-      setCalState(s => ({ ...s, [id]: "stale" }));
-    }
+  if (field === "dueDate" && calMap[id]) {
+    // Date moved out from under a synced Outlook event — flag it for re-sync.
+    setCalState(s => ({ ...s, [id]: "stale" }));
   }
 
   onChange(
@@ -6947,6 +6986,20 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   }
 }
 
+  // Clear the "manual" pin on a milestone's due date and snap it back onto the
+  // phase schedule (the phase's current end date), so it follows rebuilds again.
+  function clearMilestoneDatePin(id) {
+    const ms = milestones.find(x => x.id === id);
+    if (!ms) return;
+    const ph = phases.find(p => p.code === ms.phase);
+    const newMilestones = milestones.map(m => {
+      if (m.id !== id) return m;
+      const { dueDateManual, ...rest } = m;
+      return ph && ph.endDate ? { ...rest, dueDate: ph.endDate } : rest;
+    });
+    onChange({ ...project, milestones: newMilestones }, { notifyTeams: false });
+  }
+
   function updatePhaseDuration(phId, newDays) {
     const ph = phases.find(p => p.id === phId);
     if (!ph || !ph.startDate) return;
@@ -6955,7 +7008,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     const newPhases = phases.map(p => p.id === phId ? { ...p, endDate: newEndStr } : p);
     let newMilestones = milestones;
     newMilestones = milestones.map(m =>
-      m.type === "billable" && m.phase === ph.code ? { ...m, dueDate: newEndStr } : m
+      m.type === "billable" && m.phase === ph.code && !m.dueDateManual ? { ...m, dueDate: newEndStr } : m
     );
     onChange({ ...project, phases: newPhases, milestones: newMilestones });
   }
@@ -6967,10 +7020,10 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       const ph = phases.find(p => p.id === phId);
       if (ph) {
         newMilestones = milestones.map(m =>
-          m.type === "billable" && m.phase === ph.code ? { ...m, dueDate: val } : m
+          m.type === "billable" && m.phase === ph.code && !m.dueDateManual ? { ...m, dueDate: val } : m
         );
-        // Mark affected synced milestones as stale
-        const staleIds = milestones.filter(m => m.type === "billable" && m.phase === ph.code && calMap[m.id]).map(m => m.id);
+        // Mark affected synced milestones as stale (skip pinned — their date didn't move)
+        const staleIds = milestones.filter(m => m.type === "billable" && m.phase === ph.code && !m.dueDateManual && calMap[m.id]).map(m => m.id);
         if (staleIds.length) setCalState(s => { const n = {...s}; staleIds.forEach(id => n[id] = "stale"); return n; });
       }
     }
@@ -7472,6 +7525,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                   {isComplete ? (
                     <span style={{ color: P.textDim, fontSize: 12 }}>{m.dueDate ? fmtDate(m.dueDate) : "—"}</span>
                   ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                   <input type="date" value={m.dueDate || ""}
                     onFocus={() => {
                       if (!frozenOrder) {
@@ -7490,6 +7544,12 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                       setTimeout(() => setRecentlyEditedId(id => id === m.id ? null : id), 1500);
                     }}
                     onChange={e => updateMilestone(m.id, "dueDate", e.target.value, false, { debounceTeams: true, teamsDelay: 1000 })} />
+                    {m.type === "billable" && m.dueDateManual && (
+                      <button onClick={() => clearMilestoneDatePin(m.id)}
+                        title="Date set manually — it won't move when the schedule is rebuilt from the start date or a phase change. Click to put it back on the phase schedule."
+                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>📌</button>
+                    )}
+                  </div>
                   )}
                 </td>
                 <td>
@@ -17125,10 +17185,9 @@ function EmailsView({ project, onChange }) {
       };
     }));
 
-    // Dual-write: update project.emails[] (parent state) AND the local
-    // `emails` page (so the UI re-renders immediately without waiting for
-    // a refetch). Prepend toAdd to local state since the list is date-desc.
-    onChange({ ...project, emails: [...(project.emails || []), ...toAdd] });
+    // Emails persist to pms_project_emails (below), not into the project blob.
+    // Update the local `emails` page so the UI re-renders immediately.
+    // Prepend toAdd to local state since the list is date-desc.
     setEmails(prev => [...toAdd, ...prev]);
     setSavedMsgIds(prev => {
       const next = new Set(prev);
@@ -17176,9 +17235,8 @@ function EmailsView({ project, onChange }) {
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
       // Persist the SP folder URL on the email record so it survives page refresh.
-      // Dual-write: update both project.emails[] (parent state) and the local page.
+      // Update the local page; the row is patched in pms_project_emails below.
       const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
-      onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
       setEmails(prev => prev.map(patchSpUrl));
       // Also patch the new table. Fire-and-forget — local state already updated.
       if (email.id) {
@@ -17192,8 +17250,8 @@ function EmailsView({ project, onChange }) {
 
   function deleteEmail(msgId) {
     const target = emails.find(e => e.msgId === msgId);
-    // Dual-write delete: parent project.emails[], local page, savedMsgIds set.
-    onChange({ ...project, emails: (project.emails || []).filter(e => e.msgId !== msgId) });
+    // Remove from the local page + savedMsgIds; the row is deleted from
+    // pms_project_emails below.
     setEmails(prev => prev.filter(e => e.msgId !== msgId));
     setSavedMsgIds(prev => { const next = new Set(prev); next.delete(msgId); return next; });
     if (expanded === msgId) setExpanded(null);
@@ -17221,11 +17279,11 @@ function EmailsView({ project, onChange }) {
         if (existing && !existing.bodyHtmlCompressed) {
           const compressed = compressHtml(html);
           if (compressed) {
-            // Dual-write the cached body: parent project.emails[] AND local page.
+            // Cache the body in the local page; it is also persisted to
+            // pms_project_emails below so future opens skip the live fetch.
             const patchBody = e => e.msgId === msgId
               ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
               : e;
-            onChange({ ...project, emails: (project.emails || []).map(patchBody) });
             setEmails(prev => prev.map(patchBody));
             // Also persist to the new table so future opens skip the live fetch.
             if (existing.id) {
@@ -19387,7 +19445,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                               {milestone ? (
                                 <input type="date" value={milestone.dueDate || ""}
                                   onChange={e => {
-                                    const newMilestones = (p.milestones || []).map(m => m.id === milestone.id ? { ...m, dueDate: e.target.value } : m);
+                                    const newMilestones = (p.milestones || []).map(m => m.id === milestone.id ? { ...m, dueDate: e.target.value, ...(m.type === "billable" ? { dueDateManual: true } : {}) } : m);
                                     onUpdateProject({ ...p, milestones: newMilestones });
                                   }}
                                   style={{ fontSize: 11, width: 120 }} />
@@ -19660,7 +19718,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 const proj = projects.find(p => p.id === m.projectId);
                 if (!proj) return;
                 const newMilestones = (proj.milestones || []).map(x =>
-                  x.id === m.id ? { ...x, [field]: val } : x
+                  x.id === m.id
+                    ? { ...x, [field]: val, ...(field === "dueDate" && x.type === "billable" ? { dueDateManual: true } : {}) }
+                    : x
                 );
                 onUpdateProject({ ...proj, milestones: newMilestones });
                 if (field === "pctComplete" && +val >= 100 && (m.pctComplete || 0) < 100) {
@@ -19670,6 +19730,19 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   const amount = calcInvoiceAmount(m, +val, proj);
                   if (amount > 0) setDashInvoicePrompt({ milestone: m, project: proj, newPct: +val, invoiceAmount: amount });
                 }
+              }
+              // Release the pin and snap the date back onto the phase schedule.
+              function clearDatePin() {
+                if (!onUpdateProject) return;
+                const proj = projects.find(p => p.id === m.projectId);
+                if (!proj) return;
+                const ph = (proj.phases || []).find(p => p.code === m.phase);
+                const newMilestones = (proj.milestones || []).map(x => {
+                  if (x.id !== m.id) return x;
+                  const { dueDateManual, ...rest } = x;
+                  return ph && ph.endDate ? { ...rest, dueDate: ph.endDate } : rest;
+                });
+                onUpdateProject({ ...proj, milestones: newMilestones });
               }
               const isJustCompleted = justCompleted.has(m.id);
               const isRecentlyEdited = recentlyEditedId === m.id;
@@ -19728,6 +19801,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                       : <Badge color={m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }} text={m.type === "billable" ? "Billable" : "Non-Billable"} />}
                   </td>
                   <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                     <input type="date" value={m.dueDate || ""}
                       onFocus={() => {
                         if (["rfi","submittal"].includes(m.type)) return;
@@ -19748,6 +19822,12 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                         borderColor: isOverdue ? P.red : ["rfi","submittal"].includes(m.type) ? "transparent" : P.border,
                         color: isOverdue ? P.red : P.text,
                         background: ["rfi","submittal"].includes(m.type) ? "transparent" : undefined }} />
+                    {m.type === "billable" && m.dueDateManual && (
+                      <button onClick={() => clearDatePin()}
+                        title="Date set manually — it won't move when the schedule is rebuilt from the start date or a phase change. Click to put it back on the phase schedule."
+                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>📌</button>
+                    )}
+                    </div>
                   </td>
                   <td>
                     {["rfi","submittal"].includes(m.type) ? (
@@ -26242,15 +26322,16 @@ function App() {
         "Authorization": "Bearer " + SUPABASE_ANON_KEY,
       };
       let projects = [], termContracts = [], staff = [], clients = [], cloudUpdatedAt = null, source = "v2";
-      const [pRes, cRes, mRes] = await Promise.all([
-        fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project,updated_at", { headers: sbHeaders }),
-        fetch(SUPABASE_URL + "/rest/v1/pms_clients?select=client,updated_at", { headers: sbHeaders }),
-        fetch(SUPABASE_URL + "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at", { headers: sbHeaders }),
-      ]);
-      if (pRes.ok && cRes.ok && mRes.ok) {
-        const pRows = await pRes.json();
-        const cRows = await cRes.json();
-        const mRows = await mRes.json();
+      // Page projects + clients past the 1000-row cap so a backup taken after the
+      // tables cross 1000 rows isn't silently truncated (a short backup is worse
+      // than a short UI load). meta is a single row. On any V2 read error we leave
+      // the arrays empty so the legacy pms_data fallback below still runs.
+      try {
+        const [pRows, cRows, mRows] = await Promise.all([
+          sbFetchAllV2("/rest/v1/pms_projects?select=project,updated_at&order=id.asc"),
+          sbFetchAllV2("/rest/v1/pms_clients?select=client,updated_at&order=id.asc"),
+          sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
+        ]);
         projects = (pRows || []).map(r => r.project).filter(Boolean);
         clients  = (cRows || []).map(r => r.client).filter(Boolean);
         const meta = mRows?.[0]?.data || {};
@@ -26263,6 +26344,8 @@ function App() {
           mRows?.[0]?.updated_at,
         ].filter(Boolean);
         cloudUpdatedAt = stamps.sort().slice(-1)[0] || null;
+      } catch (v2err) {
+        console.warn("V2 backup read failed, will try legacy pms_data:", v2err.message);
       }
 
       // Fallback to V1 if V2 returned nothing (migration not yet run)
