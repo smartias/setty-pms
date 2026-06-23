@@ -1329,10 +1329,19 @@ async function deleteProjectEmail(recordId) {
 async function updateProjectEmailSpFolder(recordId, spFolderUrl) {
   if (!recordId) return;
   const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
-  await sbFetchV2("PATCH", path, {
+  // return=representation (sbFetchV2 default) so we can confirm a row actually
+  // changed. A 0-row response means the PATCH was silently dropped — e.g. no
+  // matching record_id, or a missing RLS UPDATE policy (the historical cause of
+  // "Save to SharePoint" reverting on reload: the folder uploaded fine but the
+  // URL never persisted). Surface it instead of letting it no-op invisibly.
+  const rows = await sbFetchV2("PATCH", path, {
     sp_folder_url: spFolderUrl || "",
     saved_to_sharepoint: !!spFolderUrl,
-  }, "return=minimal");
+  });
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("sp_folder_url not persisted — no pms_project_emails row updated for record_id=" + recordId + " (check RLS UPDATE policy)");
+  }
+  return rows[0];
 }
 
 // Backfill a body onto a previously-bodyless row (e.g. legacy email re-fetched
@@ -1340,10 +1349,17 @@ async function updateProjectEmailSpFolder(recordId, spFolderUrl) {
 async function updateProjectEmailBody(recordId, bodyHtmlCompressed, bodyHtmlSize) {
   if (!recordId || !bodyHtmlCompressed) return;
   const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
-  await sbFetchV2("PATCH", path, {
+  // See updateProjectEmailSpFolder: confirm a row changed so a silently-dropped
+  // PATCH (bad record_id / missing RLS UPDATE policy) surfaces instead of
+  // leaving the row body-less after an apparently-successful backfill.
+  const rows = await sbFetchV2("PATCH", path, {
     body_html_compressed: bodyHtmlCompressed,
     body_html_size: bodyHtmlSize || 0,
-  }, "return=minimal");
+  });
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("email body not persisted — no pms_project_emails row updated for record_id=" + recordId + " (check RLS UPDATE policy)");
+  }
+  return rows[0];
 }
 
 async function saveClientV2(client, expectedVersion) {
@@ -17306,10 +17322,17 @@ function EmailsView({ project, onChange }) {
       const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
       onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
       setEmails(prev => prev.map(patchSpUrl));
-      // Also patch the new table. Fire-and-forget — local state already updated.
-      if (email.id) {
-        updateProjectEmailSpFolder(email.id, folderWebUrl)
-          .catch(err => console.warn("updateProjectEmailSpFolder failed:", err));
+      // Also persist to the pms_project_emails table so the folder link survives
+      // reload. If this fails — no record id, or the PATCH gets silently dropped
+      // (the old RLS-UPDATE gap) — the log would revert to "Save to SharePoint"
+      // next load. Surface that to the user rather than swallowing it.
+      try {
+        if (!email.id) throw new Error("email is not indexed in pms_project_emails (no record id)");
+        await updateProjectEmailSpFolder(email.id, folderWebUrl);
+      } catch (err) {
+        console.warn("updateProjectEmailSpFolder failed:", err);
+        setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", folderWebUrl,
+          msg: msg + " — ⚠ link may not persist on reload (please report this)" } }));
       }
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
