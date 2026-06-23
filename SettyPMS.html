@@ -15349,7 +15349,6 @@ function emailLogToHit(project, em, words) {
 // email senders dynamically).
 function InvestigationView({ project }) {
   const [keyword,   setKeyword]   = React.useState("");
-  const [docType,   setDocType]   = React.useState("");
   const [source,    setSource]    = React.useState("all");          // all | files | emails | notes
   const [dateRange, setDateRange] = React.useState("all");           // all | 30d | 6m | 1y | custom
   const [customFrom, setCustomFrom] = React.useState("");
@@ -15470,7 +15469,7 @@ function InvestigationView({ project }) {
   }
 
   async function doSearch() {
-    if (!keyword.trim() && !docType) { setError("Enter a keyword to search."); return; }
+    if (!keyword.trim()) { setError("Enter a keyword to search."); return; }
     setSearching(true); setError(""); setResults(null);
     try {
       // Outlook mailbox search removed — "emails" now means the PMS Email Log
@@ -15482,9 +15481,9 @@ function InvestigationView({ project }) {
       const kw = keyword.trim();
       const kwQ = kw.includes(" ") ? `"${kw}"` : kw;
 
-      // Base query — used for email + OneNote.
+      // Base query — used for OneNote (and as the base for the file query).
       // Use AND so project number + keyword must BOTH appear, not either/or.
-      const baseTerms = [scopeToProject && hasNum ? project.projectNumber : "", docType, kwQ]
+      const baseTerms = [scopeToProject && hasNum ? project.projectNumber : "", kwQ]
                           .filter(Boolean);
       const baseQ = baseTerms.join(" AND ");
 
@@ -15494,7 +15493,7 @@ function InvestigationView({ project }) {
       let fileQ = baseQ;
       if (scopeToProject && project.projectFolderUrl) {
         const folderUrl = decodeURIComponent(project.projectFolderUrl).replace(/\/$/, "");
-        const terms = [docType, kwQ].filter(Boolean).join(" ");
+        const terms = [kwQ].filter(Boolean).join(" ");
         fileQ = terms ? `${terms} path:"${folderUrl}"` : `path:"${folderUrl}"`;
       }
 
@@ -15588,13 +15587,6 @@ function InvestigationView({ project }) {
             placeholder="lead paint, fire pump, RFI-012…"
             style={{ width: "100%" }}
             onKeyDown={e => e.key === "Enter" && doSearch()} />
-        </div>
-        <div>
-          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Doc Type</div>
-          <select value={docType} onChange={e => setDocType(e.target.value)} style={{ fontSize: 12 }}>
-            <option value="">All</option>
-            {Object.values(PMS_DOC_TYPES).map(dt => <option key={dt} value={dt}>{dt}</option>)}
-          </select>
         </div>
         <Btn onClick={doSearch} disabled={searching}>
           {searching ? "⏳ Searching…" : "🔍 Investigate"}
