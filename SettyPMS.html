@@ -15259,12 +15259,71 @@ const SOURCE_META = {
   email:      { icon: "✉",  label: "Email",      color: "#10b981" },
   onenote:    { icon: "📓", label: "OneNote",    color: "#a78bfa" },
   photos:     { icon: "📷", label: "Site Photos", color: "#f59e0b" },
+  rfi:        { icon: "📨", label: "RFI",        color: "#f472b6" },
+  submittal:  { icon: "📋", label: "Submittal",  color: "#22d3ee" },
 };
+
+// Local keyword search over this project's structured records (RFIs + submittals)
+// so the Investigation timeline includes them alongside the Graph (files/email/
+// notes) hits. Returns hits in the SAME shape parseSearchHits produces
+// (id/source/title/url/date/from/summary/linkedItems) so renderHit handles them
+// with no special-casing. Records are local to the open project, so there's no
+// Graph round-trip. The matched excerpt is HTML-escaped before <mark> wrapping
+// because renderHit injects summary via dangerouslySetInnerHTML.
+function searchProjectRecords(project, kw) {
+  const words = (kw || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const escHtml = t => String(t == null ? "" : t)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const escRe = w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  function excerpt(text) {
+    const raw = String(text || "").replace(/\s+/g, " ").trim();
+    if (!raw) return "";
+    const low = raw.toLowerCase();
+    let pos = -1;
+    for (const w of words) { const i = low.indexOf(w); if (i >= 0 && (pos < 0 || i < pos)) pos = i; }
+    const start = pos > 60 ? pos - 60 : 0;
+    let slice = raw.slice(start, start + 240);
+    if (start > 0) slice = "…" + slice;
+    if (start + 240 < raw.length) slice += "…";
+    let html = escHtml(slice);
+    for (const w of words) html = html.replace(new RegExp("(" + escRe(w) + ")", "gi"), "<mark>$1</mark>");
+    return html;
+  }
+  const matches = hay => { const h = hay.toLowerCase(); return words.every(w => h.includes(w)); };
+  const hits = [];
+  (project.rfis || []).forEach(r => {
+    const hay = [r.number, r.title, r.description, r.response, r.notes].filter(Boolean).join("  ");
+    if (!matches(hay)) return;
+    hits.push({
+      id: "rec-rfi-" + r.id, source: "rfi",
+      title: "RFI " + (r.number || "") + (r.title ? ": " + r.title : ""),
+      url: "", date: r.dateResponded || r.dateReceived || "", from: r.from || "",
+      summary: (r.status ? "<strong>" + escHtml(r.status) + "</strong> · " : "")
+        + excerpt([r.description, r.response].filter(Boolean).join("  —  ")),
+      linkedItems: [],
+    });
+  });
+  (project.submittals || []).forEach(s => {
+    const hay = [s.number, s.specSection, s.description, s.comments, s.notes].filter(Boolean).join("  ");
+    if (!matches(hay)) return;
+    hits.push({
+      id: "rec-sub-" + s.id, source: "submittal",
+      title: "Submittal " + (s.number || "") + (s.description ? ": " + s.description : ""),
+      url: "", date: s.dateReturned || s.dateReceived || "", from: s.from || "",
+      summary: (s.status ? "<strong>" + escHtml(s.status) + "</strong> · " : "")
+        + excerpt([s.specSection ? "Spec " + s.specSection : "", s.comments].filter(Boolean).join("  —  ")),
+      linkedItems: [],
+    });
+  });
+  return hits;
+}
 
 // ── Investigation view ───────────────────────────────────────────────────────
 // Project-forensic search across SharePoint files, Outlook email, OneNote
-// notes, and project photos. Renamed from "Intelligence" because the use case
-// is investigative: "what's the history of <topic> on this project?"
+// notes, project photos, and the project's own RFI/submittal records. Renamed
+// from "Intelligence" because the use case is investigative: "what's the history
+// of <topic> on this project?"
 //
 // Result presentation is a chronological timeline (grouped by month) so the
 // user can see how an issue evolved over time. Filters operate on the result
@@ -15420,22 +15479,35 @@ function InvestigationView({ project }) {
         fileQ = terms ? `${terms} path:"${folderUrl}"` : `path:"${folderUrl}"`;
       }
 
-      const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
-      let hits = parseSearchHits(raw, project);
+      // Graph search (files / emails / notes). Skipped when the user has narrowed
+      // Source to just Records — that path is purely local, no network call.
+      let hits = [];
+      if (source !== "records") {
+        const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
+        hits = parseSearchHits(raw, project);
 
-      // Microsoft Graph's /search/query is relevance-ranked — `AND` is a ranking
-      // hint, not a hard filter. So docs that strongly match the project number
-      // can come back even if the keyword barely matched (or didn't). Enforce
-      // keyword presence client-side against title + summary. For multi-word
-      // keywords, require every word to appear separately (not the full phrase)
-      // — Graph tokenizes, and matched terms in the summary may be split across
-      // <mark> tags which would defeat a full-phrase substring check.
-      if (kw) {
-        const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
-        hits = hits.filter(h => {
-          const haystack = ((h.title || "") + " " + (h.summary || "")).toLowerCase();
-          return words.every(w => haystack.includes(w));
-        });
+        // Microsoft Graph's /search/query is relevance-ranked — `AND` is a ranking
+        // hint, not a hard filter. So docs that strongly match the project number
+        // can come back even if the keyword barely matched (or didn't). Enforce
+        // keyword presence client-side against title + summary. For multi-word
+        // keywords, require every word to appear separately (not the full phrase)
+        // — Graph tokenizes, and matched terms in the summary may be split across
+        // <mark> tags which would defeat a full-phrase substring check.
+        if (kw) {
+          const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
+          hits = hits.filter(h => {
+            const haystack = ((h.title || "") + " " + (h.summary || "")).toLowerCase();
+            return words.every(w => haystack.includes(w));
+          });
+        }
+      }
+
+      // Local records search — this project's RFIs & submittals. Always project-
+      // local (we only hold the open project's records), so it runs for "all" and
+      // the dedicated "records" source. Re-sort the merged set newest-first.
+      if ((source === "all" || source === "records") && kw) {
+        hits = hits.concat(searchProjectRecords(project, kw));
+        hits.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
       }
 
       setResults(hits);
@@ -15455,12 +15527,12 @@ function InvestigationView({ project }) {
 
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12, lineHeight: 1.55 }}>
         Investigate the history of any topic on this project — find when it was first raised,
-        who was involved, and how it was resolved. Searches across files, emails, and notes.
+        who was involved, and how it was resolved. Searches across files, emails, notes, RFIs, and submittals.
       </div>
 
       {/* ── Collapsible "what gets searched" panel ─────────────────────── */}
       {showHowItWorks && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginBottom: 16 }}>
           {[
             { icon: "📁", label: "SharePoint Files",
               desc: "Reads inside PDFs, Word docs, drawings, and specs stored in the project folder. New uploads may take 15–30 min to appear." },
@@ -15468,6 +15540,8 @@ function InvestigationView({ project }) {
               desc: "Searches email subject lines and message body text. Does not search inside email attachments." },
             { icon: "📓", label: "OneNote Notes",
               desc: "Searches meeting notes, decisions, and action items saved to the project notebook." },
+            { icon: "📋", label: "RFIs & Submittals",
+              desc: "Searches this project's RFI and submittal logs — number, subject, question/answer, spec section, review comments, and notes. Instant (no upload lag)." },
           ].map(({ icon, label, desc }) => (
             <div key={label} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 12px" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: P.text, marginBottom: 4 }}>{icon} {label}</div>
@@ -15506,6 +15580,7 @@ function InvestigationView({ project }) {
           { v: "files",  label: "📁 Files" },
           { v: "emails", label: "✉️ Email" },
           { v: "notes",  label: "📓 Notes" },
+          { v: "records", label: "📋 RFIs/Subs" },
         ].map(opt => (
           <button key={opt.v} onClick={() => setSource(opt.v)}
             style={{
