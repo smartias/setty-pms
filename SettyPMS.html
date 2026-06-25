@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-22-pms-v55-milestone-dates-independent-pinfix";
+    window.__appVersion = "2026-06-25-pms-v56-onenote-sections-feefix";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -72,7 +72,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel" data-presets="react">
+  <script type="text/x-pms-jsx" data-presets="react">
 
 
 
@@ -922,6 +922,21 @@ async function sbFetchV2(method, path, body, extraPrefer = "") {
   return text ? JSON.parse(text) : null;
 }
 
+// Page a GET past PostgREST's 1000-row response cap, returning ALL rows. `path`
+// must already include its query string AND a stable &order=<unique-ish key> so
+// offset paging stays disjoint across pages. Shares sbFetchV2's throw-on-error
+// contract, so callers wrap it in the same try/catch they'd use for sbFetchV2.
+async function sbFetchAllV2(path) {
+  const out = [];
+  const PAGE = 1000;
+  for (let offset = 0; offset < 500000; offset += PAGE) {
+    const rows = await sbFetchV2("GET", path + "&limit=" + PAGE + "&offset=" + offset);
+    if (rows && rows.length) out.push(...rows);
+    if (!rows || rows.length < PAGE) break;   // last page reached
+  }
+  return out;
+}
+
 // ── MIGRATION ────────────────────────────────────────────────────────────────
 // Reads the old pms_data singleton, writes per-project + per-client rows,
 // flips the migration_status flag. Idempotent: if it crashes mid-flight, the
@@ -1082,8 +1097,9 @@ async function markMigrationComplete() {
 async function loadStateV2() {
   // Parallel fetch all three tables — saves ~200ms on slower networks.
   const [projectRows, clientRows, metaRows] = await Promise.all([
-    sbFetchV2("GET", "/rest/v1/pms_projects?select=id,project,version,updated_at"),
-    sbFetchV2("GET", "/rest/v1/pms_clients?select=id,client,version,updated_at"),
+    // Page projects + clients past the 1000-row cap; meta is a single row.
+    sbFetchAllV2("/rest/v1/pms_projects?select=id,project,version,updated_at&order=id.asc"),
+    sbFetchAllV2("/rest/v1/pms_clients?select=id,client,version,updated_at&order=id.asc"),
     sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
   ]);
 
@@ -2419,26 +2435,44 @@ async function resolveSpIds() {
 
 const FILING_LOG_TABLE_PMS = "pms_filing_log";
 
-// Fetch recent filing log rows. Default scope: last 90 days, success/partial
-// rows only (we don't need to re-check known failures). Capped at 2000 to keep
-// the request lightweight; if you have higher volume, the reconcile can page.
+// Page an anon-key GET past PostgREST's 1000-row response cap, returning ALL rows.
+// `tableQuery` is everything after the table name (?select=...&filters) and MUST
+// end with a stable &order on a unique-ish key so offset paging stays disjoint.
+// (Replaces the old &limit=2000, which silently capped at 1000 anyway.)
+async function fetchAllAnon(tableQuery, label) {
+  const out = [];
+  const PAGE = 1000;
+  const headers = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+  };
+  for (let offset = 0; offset < 500000; offset += PAGE) {
+    const res = await fetchWithRetry(
+      SUPABASE_URL + "/rest/v1/" + tableQuery + "&limit=" + PAGE + "&offset=" + offset,
+      { headers }, { label, maxAttempts: 2 });
+    if (!res.ok) throw new Error(label + " HTTP " + res.status);
+    const rows = await res.json();
+    if (rows && rows.length) out.push(...rows);
+    if (!rows || rows.length < PAGE) break;   // last page reached
+  }
+  return out;
+}
+
+// Fetch recent filing log rows. Default scope: last 90 days, success/partial/
+// verified rows only (we don't re-check known failures). Paged past the 1000-row
+// cap so a high-volume 90-day window isn't silently truncated (the old &limit=2000
+// was a no-op — PostgREST caps every response at 1000 regardless).
 async function fetchFilingLogForReconcile(daysBack = 90) {
   const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
   // We pull both 'success' and 'partial' (partial = some files uploaded);
   // 'failed' rows have nothing to verify on SharePoint.
-  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
-    "?select=id,created_at,project_id,msg_id,operation,sp_folder_url,files,email_subject,status" +
-    "&created_at=gte." + encodeURIComponent(sinceIso) +
-    "&status=in.(success,partial,verified)" +
-    "&order=created_at.desc&limit=2000";
-  const res = await fetchWithRetry(url, {
-    headers: {
-      "apikey": SUPABASE_ANON_KEY,
-      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-    },
-  }, { label: "sb filing-log reconcile", maxAttempts: 2 });
-  if (!res.ok) throw new Error("filing-log fetch HTTP " + res.status);
-  return res.json();
+  return fetchAllAnon(
+    FILING_LOG_TABLE_PMS +
+      "?select=id,created_at,project_id,msg_id,operation,sp_folder_url,files,email_subject,status" +
+      "&created_at=gte." + encodeURIComponent(sinceIso) +
+      "&status=in.(success,partial,verified)" +
+      "&order=created_at.desc,id.desc",
+    "sb filing-log reconcile");
 }
 
 // Convert a SharePoint webUrl into a drive-relative path. The audit log stores
@@ -2699,20 +2733,16 @@ async function runFilingReconcile({ daysBack = 90, deepHash = false, onProgress 
 
 async function fetchTransmittalStatusMap(daysBack = 365) {
   const sinceIso = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-  const url = SUPABASE_URL + "/rest/v1/" + FILING_LOG_TABLE_PMS +
-    "?select=msg_id,sp_folder_url,files,created_at" +
-    "&operation=eq.transmittal-generated" +
-    "&created_at=gte." + encodeURIComponent(sinceIso) +
-    "&order=created_at.desc&limit=2000";
   try {
-    const res = await fetchWithRetry(url, {
-      headers: {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-      },
-    }, { label: "sb transmittal-status fetch", maxAttempts: 2 });
-    if (!res.ok) return new Map();
-    const rows = await res.json();
+    // Paged past the 1000-row cap (id tiebreaker keeps pages disjoint); the old
+    // &limit=2000 silently capped at 1000.
+    const rows = await fetchAllAnon(
+      FILING_LOG_TABLE_PMS +
+        "?select=msg_id,sp_folder_url,files,created_at" +
+        "&operation=eq.transmittal-generated" +
+        "&created_at=gte." + encodeURIComponent(sinceIso) +
+        "&order=created_at.desc,id.desc",
+      "sb transmittal-status fetch");
     const map = new Map();
     for (const r of rows || []) {
       // Extract milestoneId from msg_id (format: "milestone:<id>") or fall back
@@ -5635,6 +5665,45 @@ function printFeeProposal(project) {
 }
 
 
+// ── CommitInput ──────────────────────────────────────────────────────────────
+// Input that keeps the value you're typing in LOCAL state and only writes it
+// back to the project on blur or Enter — not on every keystroke.
+//
+// Why: the Fee Calculator's fields were controlled inputs bound to the global
+// `projects` state, so every keystroke fired setProjects → a full app re-render
+// (re-running every fee calc) before the character could even paint. That is the
+// typing lag. Holding the draft locally keeps keystrokes off global state, so a
+// fee cell is instant no matter how large the project is; commit-on-blur also
+// collapses one autosave per keystroke into one per field.
+//
+// `inputProps` carries the static <input> props (type/min/step/placeholder/
+// style) and is spread in JSX (a safe _extends spread). Do NOT rewrite this as a
+// `({ value, onCommit, ...rest })` parameter — object-REST destructuring emits
+// Babel's _objectWithoutProperties/_excluded helper, which collides across this
+// file's two <script type=text/babel> blocks. Plain destructuring (below) does
+// not. See [[babel-multiblock-excluded-trap]].
+function CommitInput({ value, onCommit, inputProps }) {
+  const canonical = value == null ? "" : String(value);
+  const [draft, setDraft] = useState(canonical);
+  const [editing, setEditing] = useState(false);
+  // Re-sync to the committed value when it changes from the outside (reset
+  // buttons, lock/unlock, recalcs) — but never yank text out from under a typer.
+  useEffect(() => { if (!editing) setDraft(canonical); }, [canonical, editing]);
+  return (
+    <input
+      {...inputProps}
+      value={draft}
+      onFocus={() => setEditing(true)}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={() => { setEditing(false); onCommit(draft); }}
+      onKeyDown={e => {
+        if (e.key === "Enter") { e.target.blur(); }
+        else if (e.key === "Escape") { setDraft(canonical); setEditing(false); e.target.blur(); }
+      }}
+    />
+  );
+}
+
 function FeeCalculator({ project, onChange }) {
   const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const effectiveDiscs = getEffectiveDisciplines(project);
@@ -5932,10 +6001,10 @@ function FeeCalculator({ project, onChange }) {
           </select>
         </Field>
         <Field label="Square Footage">
-          <input type="number" value={project.squareFootage || ""} onChange={e => setField("squareFootage", +e.target.value)} placeholder="0" style={{ width: "100%" }} />
+          <CommitInput value={project.squareFootage || ""} onCommit={v => setField("squareFootage", +v)} inputProps={{ type: "number", placeholder: "0", style: { width: "100%" } }} />
         </Field>
         <Field label="Manual Construction Cost (overrides SF calc)">
-          <input type="number" value={project.manualConstructionCost || ""} onChange={e => setField("manualConstructionCost", +e.target.value)} placeholder="Leave 0 to use SF × Cost/SF" style={{ width: "100%" }} />
+          <CommitInput value={project.manualConstructionCost || ""} onCommit={v => setField("manualConstructionCost", +v)} inputProps={{ type: "number", placeholder: "Leave 0 to use SF × Cost/SF", style: { width: "100%" } }} />
         </Field>
         <Field label="Project Start Date">
           <input type="date" value={project.startDate || ""} onChange={e => setField("startDate", e.target.value)} style={{ width: "100%" }} />
@@ -5992,11 +6061,12 @@ function FeeCalculator({ project, onChange }) {
           <div style={{ marginTop: 6 }}>
             <label style={{ fontSize: 11, color: P.textDim, display: "block", marginBottom: 4 }}>Override $/SF:</label>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input type="number" min="0" step="5"
+              <CommitInput
                 value={project.manualRSMeansCostPerSF || ""}
-                onChange={e => setField("manualRSMeansCostPerSF", +e.target.value)}
-                placeholder={String(RS_MEANS_COST_PER_SF[project.buildingCategory] || 300)}
-                style={{ width: 90, borderColor: project.manualRSMeansCostPerSF > 0 ? P.yellow : P.border }}
+                onCommit={v => setField("manualRSMeansCostPerSF", +v)}
+                inputProps={{ type: "number", min: "0", step: "5",
+                  placeholder: String(RS_MEANS_COST_PER_SF[project.buildingCategory] || 300),
+                  style: { width: 90, borderColor: project.manualRSMeansCostPerSF > 0 ? P.yellow : P.border } }}
               />
               {project.manualRSMeansCostPerSF > 0 && (
                 <button onClick={() => setField("manualRSMeansCostPerSF", 0)}
@@ -6014,12 +6084,12 @@ function FeeCalculator({ project, onChange }) {
             {project.manualSettyFee > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: P.yellow, background: P.yellowDim, padding: "1px 6px", borderRadius: 8 }}>overridden</span>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-            <input
-              type="number" min="0" step="1000"
+            <CommitInput
               value={project.manualSettyFee || ""}
-              onChange={e => setField("manualSettyFee", +e.target.value)}
-              placeholder={fmt(calcedFee)}
-              style={{ width: 130, fontWeight: 700, fontSize: 14, color: project.manualSettyFee > 0 ? P.yellow : P.green, borderColor: project.manualSettyFee > 0 ? P.yellow : P.border }}
+              onCommit={v => setField("manualSettyFee", +v)}
+              inputProps={{ type: "number", min: "0", step: "1000",
+                placeholder: fmt(calcedFee),
+                style: { width: 130, fontWeight: 700, fontSize: 14, color: project.manualSettyFee > 0 ? P.yellow : P.green, borderColor: project.manualSettyFee > 0 ? P.yellow : P.border } }}
             />
             {project.manualSettyFee > 0 && (
               <button onClick={() => setField("manualSettyFee", 0)}
@@ -6098,11 +6168,11 @@ function FeeCalculator({ project, onChange }) {
                 <td style={{ fontFamily: "JetBrains Mono", color: P.textDim }}>{(defaultPct * 100).toFixed(2)}%</td>
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input
-                      type="number" step="0.1" min="0" max="100"
+                    <CommitInput
                       value={parseFloat((effective * 100).toFixed(2))}
-                      onChange={e => setDisciplineOverride(disc, +e.target.value / 100)}
-                      style={{ width: 85, fontFamily: "JetBrains Mono", borderColor: isOverridden ? P.yellow : P.border }}
+                      onCommit={v => setDisciplineOverride(disc, +v / 100)}
+                      inputProps={{ type: "number", step: "0.1", min: "0", max: "100",
+                        style: { width: 85, fontFamily: "JetBrains Mono", borderColor: isOverridden ? P.yellow : P.border } }}
                     />
                     {isOverridden ? (
                       <button onClick={() => setDisciplineOverride(disc, defaultPct)}
@@ -6249,24 +6319,25 @@ function FeeCalculator({ project, onChange }) {
                     style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 3, color: idx === phasedFees.length - 1 ? P.textDim : P.accentLight, cursor: idx === phasedFees.length - 1 ? "default" : "pointer", fontSize: 10, padding: "1px 5px", lineHeight: 1 }}>▼</button>
                 </div>
               </td>
-              <td><input value={ph.code} onChange={e => updatePhase(idx, { code: e.target.value })} style={{ width: 60 }} /></td>
-              <td><input value={ph.name} onChange={e => updatePhase(idx, { name: e.target.value })} style={{ width: 180 }} /></td>
+              <td><CommitInput value={ph.code} onCommit={v => updatePhase(idx, { code: v })} inputProps={{ style: { width: 60 } }} /></td>
+              <td><CommitInput value={ph.name} onCommit={v => updatePhase(idx, { name: v })} inputProps={{ style: { width: 180 } }} /></td>
               <td>
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <input type="number" step="1" min="0" max="100"
+                  <CommitInput
                     value={Math.round(ph.pct * 100)}
-                    onChange={e => updatePhase(idx, { pct: +e.target.value / 100 })}
-                    style={{ width: 60 }} />
+                    onCommit={v => updatePhase(idx, { pct: +v / 100 })}
+                    inputProps={{ type: "number", step: "1", min: "0", max: "100", style: { width: 60 } }} />
                   <span style={{ color: P.textMuted, fontSize: 12 }}>%</span>
                 </div>
               </td>
               <td>
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <input type="number" min="0" step="500"
+                  <CommitInput
                     value={ph.manualFee > 0 ? ph.manualFee : ""}
-                    onChange={e => updatePhase(idx, { manualFee: +e.target.value })}
-                    placeholder={fmt(ph.calcedFee ?? ph.fee)}
-                    style={{ width: 110, fontFamily: "JetBrains Mono", borderColor: ph.manualFee > 0 ? P.yellow : P.border, color: ph.manualFee > 0 ? P.yellow : P.text }}
+                    onCommit={v => updatePhase(idx, { manualFee: +v })}
+                    inputProps={{ type: "number", min: "0", step: "500",
+                      placeholder: fmt(ph.calcedFee ?? ph.fee),
+                      style: { width: 110, fontFamily: "JetBrains Mono", borderColor: ph.manualFee > 0 ? P.yellow : P.border, color: ph.manualFee > 0 ? P.yellow : P.text } }}
                   />
                   {ph.manualFee > 0 && (
                     <button onClick={() => updatePhase(idx, { manualFee: 0 })}
@@ -6285,13 +6356,14 @@ function FeeCalculator({ project, onChange }) {
                 return (
                   <td key={s.id}>
                     <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                      <input type="number" min="0" step="500"
+                      <CommitInput
                         value={isOverridden ? (phaseSubFees[ph.id] || {})[s.id] : ""}
-                        placeholder={fmt(subFee)}
-                        onChange={e => setPhaseSubFee(ph.id, s.id, e.target.value)}
-                        style={{ width: 100, fontFamily: "JetBrains Mono", fontSize: 12,
-                          borderColor: isOverridden ? P.purple : P.border,
-                          color: isOverridden ? P.purple : P.text }}
+                        onCommit={v => setPhaseSubFee(ph.id, s.id, v)}
+                        inputProps={{ type: "number", min: "0", step: "500",
+                          placeholder: fmt(subFee),
+                          style: { width: 100, fontFamily: "JetBrains Mono", fontSize: 12,
+                            borderColor: isOverridden ? P.purple : P.border,
+                            color: isOverridden ? P.purple : P.text } }}
                       />
                       {isOverridden && (
                         <button onClick={() => setPhaseSubFee(ph.id, s.id, "")}
@@ -14223,7 +14295,7 @@ function CalendarView({ project, onChange }) {
 
 
 </script>
-<script type="text/babel" data-presets="react">
+<script type="text/x-pms-jsx" data-presets="react">
 
 function printWeeklyDeliverables(projects) {
   const today = new Date();
@@ -26414,15 +26486,16 @@ function App() {
         "Authorization": "Bearer " + SUPABASE_ANON_KEY,
       };
       let projects = [], termContracts = [], staff = [], clients = [], cloudUpdatedAt = null, source = "v2";
-      const [pRes, cRes, mRes] = await Promise.all([
-        fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project,updated_at", { headers: sbHeaders }),
-        fetch(SUPABASE_URL + "/rest/v1/pms_clients?select=client,updated_at", { headers: sbHeaders }),
-        fetch(SUPABASE_URL + "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at", { headers: sbHeaders }),
-      ]);
-      if (pRes.ok && cRes.ok && mRes.ok) {
-        const pRows = await pRes.json();
-        const cRows = await cRes.json();
-        const mRows = await mRes.json();
+      // Page projects + clients past the 1000-row cap so a backup taken after the
+      // tables cross 1000 rows isn't silently truncated (a short backup is worse
+      // than a short UI load). meta is a single row. On any V2 read error we leave
+      // the arrays empty so the legacy pms_data fallback below still runs.
+      try {
+        const [pRows, cRows, mRows] = await Promise.all([
+          sbFetchAllV2("/rest/v1/pms_projects?select=project,updated_at&order=id.asc"),
+          sbFetchAllV2("/rest/v1/pms_clients?select=client,updated_at&order=id.asc"),
+          sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
+        ]);
         projects = (pRows || []).map(r => r.project).filter(Boolean);
         clients  = (cRows || []).map(r => r.client).filter(Boolean);
         const meta = mRows?.[0]?.data || {};
@@ -26435,6 +26508,8 @@ function App() {
           mRows?.[0]?.updated_at,
         ].filter(Boolean);
         cloudUpdatedAt = stamps.sort().slice(-1)[0] || null;
+      } catch (v2err) {
+        console.warn("V2 backup read failed, will try legacy pms_data:", v2err.message);
       }
 
       // Fallback to V1 if V2 returned nothing (migration not yet run)
@@ -27328,5 +27403,40 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
 
 </script>
+  <!-- JSX boot + transpile cache: blocks above are text/x-pms-jsx so Babel does
+       NOT auto-run them. Transpile each once, cache (pako-deflated) in
+       localStorage keyed by __appVersion so a deploy auto-invalidates; later
+       loads skip the ~1.5MB in-browser transpile. Any failure falls back to a
+       fresh transpile - never worse than before. -->
+  <script>
+  (function () {
+"use strict";
+var TYPE = 'text/x-pms-jsx';
+var KEY = 'pmsJsx:' + (window.__appVersion || 'dev') + ':';
+function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+try { for (var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i);
+  if (k && k.indexOf('pmsJsx:')===0 && k.indexOf(KEY)!==0) localStorage.removeItem(k); } } catch(e){}
+function inflate(b64){ var s=atob(b64), a=new Uint8Array(s.length);
+  for (var i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return pako.inflate(a,{to:'string'}); }
+function deflate(str){ var d=pako.deflate(str), s='';
+  for (var i=0;i<d.length;i++) s+=String.fromCharCode(d[i]); return btoa(s); }
+function compile(src, idx){
+  if (window.pako){ var c=lsGet(KEY+idx); if (c){ try { return inflate(c); } catch(e){} } }
+  var code = Babel.transform(src, { presets: ['react'] }).code;
+  if (window.pako){ try { lsSet(KEY+idx, deflate(code)); } catch(e){} }
+  return code;
+}
+function exec(code){ var s=document.createElement('script'); s.text=code; document.head.appendChild(s); }
+function run(){
+  try {
+    var b=document.querySelectorAll('script[type="'+TYPE+'"]');
+    for (var i=0;i<b.length;i++) exec(compile(b[i].textContent, i));
+  } catch(e){ console.error('[pms-boot] failed to start app:', e); throw e; }
+}
+if (window.Babel) run();
+else { var t=setInterval(function(){ if (window.Babel){ clearInterval(t); run(); } }, 20); }
+})();
+  </script>
 </body>
 </html>
