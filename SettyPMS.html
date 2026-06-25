@@ -72,7 +72,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel" data-presets="react">
+  <script type="text/x-pms-jsx" data-presets="react">
 
 
 
@@ -14295,7 +14295,7 @@ function CalendarView({ project, onChange }) {
 
 
 </script>
-<script type="text/babel" data-presets="react">
+<script type="text/x-pms-jsx" data-presets="react">
 
 function printWeeklyDeliverables(projects) {
   const today = new Date();
@@ -27403,5 +27403,40 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 
 
 </script>
+  <!-- JSX boot + transpile cache: blocks above are text/x-pms-jsx so Babel does
+       NOT auto-run them. Transpile each once, cache (pako-deflated) in
+       localStorage keyed by __appVersion so a deploy auto-invalidates; later
+       loads skip the ~1.5MB in-browser transpile. Any failure falls back to a
+       fresh transpile - never worse than before. -->
+  <script>
+  (function () {
+"use strict";
+var TYPE = 'text/x-pms-jsx';
+var KEY = 'pmsJsx:' + (window.__appVersion || 'dev') + ':';
+function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+try { for (var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i);
+  if (k && k.indexOf('pmsJsx:')===0 && k.indexOf(KEY)!==0) localStorage.removeItem(k); } } catch(e){}
+function inflate(b64){ var s=atob(b64), a=new Uint8Array(s.length);
+  for (var i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return pako.inflate(a,{to:'string'}); }
+function deflate(str){ var d=pako.deflate(str), s='';
+  for (var i=0;i<d.length;i++) s+=String.fromCharCode(d[i]); return btoa(s); }
+function compile(src, idx){
+  if (window.pako){ var c=lsGet(KEY+idx); if (c){ try { return inflate(c); } catch(e){} } }
+  var code = Babel.transform(src, { presets: ['react'] }).code;
+  if (window.pako){ try { lsSet(KEY+idx, deflate(code)); } catch(e){} }
+  return code;
+}
+function exec(code){ var s=document.createElement('script'); s.text=code; document.head.appendChild(s); }
+function run(){
+  try {
+    var b=document.querySelectorAll('script[type="'+TYPE+'"]');
+    for (var i=0;i<b.length;i++) exec(compile(b[i].textContent, i));
+  } catch(e){ console.error('[pms-boot] failed to start app:', e); throw e; }
+}
+if (window.Babel) run();
+else { var t=setInterval(function(){ if (window.Babel){ clearInterval(t); run(); } }, 20); }
+})();
+  </script>
 </body>
 </html>
