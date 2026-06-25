@@ -8,7 +8,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Site Report</title>
   <script>
-    window.__appVersion = "2026-05-12-sitereport-v1";
+    window.__appVersion = "2026-06-19-sitereport-storage";
 
     // Auto-update banner — same pattern as transmittal.html / SettyFieldPhotos.
     async function _checkForUpdate() {
@@ -537,11 +537,15 @@ let msalApp = null;
 let msalAccount = null;
 let pmsProjects = [];
 let selectedProject = null;
-// items: array of { id, discipline, location, description, notes, photoDataUrl, enteredBy }
+// items: array of { id, discipline, location, description, notes, photoDataUrl, photoPath, enteredBy }
+//   photoDataUrl = in-memory renderable src (data: URL when freshly captured, or
+//   the resolved public Storage URL after load). photoPath = the persisted
+//   Storage object path — the JSONB stores ONLY this, never the image bytes.
 // The item's display number is computed on render, not stored. Numbers depend
 // on whatever rule lives in nextNumberFor() below.
 let items = [];
-// plans: array of { id, label, imageDataUrl, addedBy, addedAt }
+// plans: array of { id, label, imageDataUrl, imagePath, addedBy, addedAt }
+//   imageDataUrl/imagePath mirror the item photo split above.
 // Each item may carry { pin: { planId, x, y } } where x/y are percentages
 // 0..1 of the plan image — survives any rescale on render/export.
 let plans = [];
@@ -558,6 +562,109 @@ let lastUsedPlanId = "";
 let pickedPhotoDataUrl = null;
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
+
+// ─── STORAGE (Phase 7: images live in Supabase Storage, not the report JSONB) ──
+// Site-report photos and plan images used to be base64-embedded in the `report`
+// JSONB, which bloated pms_site_reports (35 MB across 4 rows) and made every
+// list/load detoast megabytes of image data. They now live in the public
+// `site-report-photos` bucket; the JSONB carries only a path
+// (item.photoPath / plan.imagePath).
+//
+// INVARIANT: on disk the report holds only paths. In memory we keep
+// item.photoDataUrl / plan.imageDataUrl as a *renderable src* — a fresh data:
+// URL right after capture, or the resolved public URL after load — so all the
+// render code stays unchanged (a Storage URL is a drop-in <img src>). The two
+// places that matter are loadExistingReportById() (resolve path → URL) and
+// doSaveReport() (upload any data: URL, then persist only the path).
+const PHOTO_BUCKET = "site-report-photos";
+function isDataUrl(s) { return typeof s === "string" && s.startsWith("data:"); }
+function storageObjectPath(path) { return String(path).split("/").map(encodeURIComponent).join("/"); }
+function storagePublicUrl(path) {
+  return SUPABASE_URL + "/storage/v1/object/public/" + PHOTO_BUCKET + "/" + storageObjectPath(path);
+}
+function extFromDataUrl(dataUrl) {
+  const head = dataUrl.slice(0, 40);
+  if (head.startsWith("data:image/png"))  return "png";
+  if (head.startsWith("data:image/gif"))  return "gif";
+  if (head.startsWith("data:image/webp")) return "webp";
+  return "jpg"; // jpeg, or anything mislabeled (some captures claim png but are jpeg)
+}
+function dataUrlToBlob(dataUrl) {
+  const comma = dataUrl.indexOf(",");
+  const mime  = (dataUrl.slice(5, comma).split(";")[0]) || "application/octet-stream";
+  const bin   = atob(dataUrl.slice(comma + 1));
+  const arr   = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+// Upload a data: URL to Storage at `path`; returns the path. Item photos are
+// JPEG-compressed (camera shots are huge — mirrors the SharePoint push); plan
+// images upload as-is so CAD line-art / sheet text stays crisp. x-upsert lets a
+// re-saved or replaced image overwrite the same object.
+async function uploadDataUrlToStorage(dataUrl, path, { compress }) {
+  const body = compress ? await compressDataUrl(dataUrl, 0.85, 2200) : dataUrlToBlob(dataUrl);
+  const res = await fetch(SUPABASE_URL + "/storage/v1/object/" + PHOTO_BUCKET + "/" + storageObjectPath(path), {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_ANON, Authorization: "Bearer " + SUPABASE_ANON,
+      "Content-Type": body.type || "application/octet-stream", "x-upsert": "true",
+    },
+    body,
+  });
+  if (!res.ok) throw new Error("Storage upload HTTP " + res.status + " — " + (await res.text()));
+  return path;
+}
+// Fetch image bytes for the Word export from either a data: URL (unsaved) or an
+// http Storage URL (saved/loaded). Returns { data: ArrayBuffer, type } for ImageRun.
+async function imageBytesForDoc(src) {
+  if (isDataUrl(src)) {
+    const comma = src.indexOf(",");
+    const bin = atob(src.slice(comma + 1));
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const head = src.slice(0, 40);
+    const type = head.startsWith("data:image/png") ? "png" : head.startsWith("data:image/gif") ? "gif" : "jpg";
+    return { data: arr.buffer, type };
+  }
+  const res = await fetch(src);
+  if (!res.ok) throw new Error("image fetch HTTP " + res.status);
+  const buf = await res.arrayBuffer();
+  const ct  = (res.headers.get("content-type") || "").toLowerCase();
+  const type = ct.includes("png") ? "png" : ct.includes("gif") ? "gif" : "jpg";
+  return { data: buf, type };
+}
+// Serialize one item/plan for persistence: upload any freshly-captured data:
+// URL to Storage, then return a copy that carries ONLY the path (never bytes or
+// a URL). A data: URL always means "new capture" (covers add AND edit-replace),
+// so it's (re)uploaded to a stable per-id path that overwrites cleanly.
+async function serializeItemForSave(it) {
+  let photoPath = null;
+  if (isDataUrl(it.photoDataUrl)) {
+    photoPath = reportId + "/items/" + it.id + ".jpg";
+    await uploadDataUrlToStorage(it.photoDataUrl, photoPath, { compress: true });
+    it.photoPath = photoPath;                       // remember so we don't re-upload
+    it.photoDataUrl = storagePublicUrl(photoPath);  // keep it renderable in-memory
+  } else if (it.photoDataUrl && it.photoPath) {
+    photoPath = it.photoPath;                        // already stored; keep the path
+  }
+  const { photoDataUrl, photoPath: _drop, ...rest } = it;
+  if (photoPath) rest.photoPath = photoPath;
+  return rest;
+}
+async function serializePlanForSave(pl) {
+  let imagePath = null;
+  if (isDataUrl(pl.imageDataUrl)) {
+    imagePath = reportId + "/plans/" + pl.id + "." + extFromDataUrl(pl.imageDataUrl);
+    await uploadDataUrlToStorage(pl.imageDataUrl, imagePath, { compress: false });
+    pl.imagePath = imagePath;
+    pl.imageDataUrl = storagePublicUrl(imagePath);
+  } else if (pl.imageDataUrl && pl.imagePath) {
+    imagePath = pl.imagePath;
+  }
+  const { imageDataUrl, imagePath: _drop, ...rest } = pl;
+  if (imagePath) rest.imagePath = imagePath;
+  return rest;
+}
 
 // ─── NUMBERING ───────────────────────────────────────────────────────────────
 // TODO(you): decide how per-discipline numbers behave on delete/reorder.
@@ -771,8 +878,14 @@ async function loadExistingReportById(id, silent) {
     reportVersion = row.version;
     reportUpdatedAt = row.updated_at;
     reportStatus = r.status || "in_progress";
-    items = r.items || [];
-    plans = r.plans || [];
+    // Phase 7: resolve Storage paths to renderable public URLs so the existing
+    // render code (which reads photoDataUrl / imageDataUrl) works unchanged.
+    items = (r.items || []).map(it =>
+      (it.photoPath && !isDataUrl(it.photoDataUrl))
+        ? { ...it, photoDataUrl: storagePublicUrl(it.photoPath) } : it);
+    plans = (r.plans || []).map(pl =>
+      (pl.imagePath && !isDataUrl(pl.imageDataUrl))
+        ? { ...pl, imageDataUrl: storagePublicUrl(pl.imagePath) } : pl);
     const project = pmsProjects.find(p => p.id === row.project_id);
     if (!project) { setGlobalStatus("error", "Project for this report was not found."); return; }
     selectProject(project);
@@ -1564,6 +1677,7 @@ function editReplacePhotoFromProject() {
 function editClearPhoto() {
   if (!editingItem) return;
   editingItem.photoDataUrl = null;
+  delete editingItem.photoPath;   // Phase 7: drop the Storage reference too
   editingItem.pendingUpload = false;
   delete editingItem.uploadedAt;
   delete editingItem.uploadedPath;
@@ -1775,22 +1889,43 @@ async function doSaveReport(opts) {
   if (!visitDate) { if (!silent) setGlobalStatus("error", "Set a visit date first."); return false; }
 
   const nowIso = new Date().toISOString();
+  // "creating" is keyed on version (0 until a successful INSERT), NOT on
+  // reportId — reportId is assigned below before the Storage uploads, so if an
+  // upload fails on a brand-new report the next save must still retry the INSERT
+  // (reusing the same stable image paths) rather than wrongly PATCHing.
+  const creating = reportVersion === 0;
+  if (!reportId) reportId = uid();
+
+  // Phase 7: photos/plan images live in Supabase Storage, not the JSONB.
+  // Upload any freshly-captured data: URLs now; persist ONLY the path. If an
+  // upload fails we bail before writing the row, so nothing is lost (the image
+  // is still in memory as a data: URL and the next save retries).
+  let itemsForSave, plansForSave;
+  try {
+    itemsForSave = [];
+    for (const it of items) itemsForSave.push(await serializeItemForSave(it));
+    plansForSave = [];
+    for (const pl of plans) plansForSave.push(await serializePlanForSave(pl));
+  } catch (e) {
+    setGlobalStatus("error", "Couldn't upload an image to storage: " + e.message);
+    return false;
+  }
+
   const report = {
     projectId:    selectedProject.id,
     visitDate,
     weather:      document.getElementById("weather").value.trim(),
     generalNotes: document.getElementById("generalNotes").value.trim(),
     status:       reportStatus,
-    items,
-    plans,
+    items:        itemsForSave,
+    plans:        plansForSave,
     createdBy:    msalAccount.username || msalAccount.name || "",
     updatedAt:    nowIso,
   };
 
   if (!silent) setGlobalStatus("info", "⏳ Saving report data…");
   try {
-    if (!reportId) {
-      reportId = uid();
+    if (creating) {
       const res = await fetch(SUPABASE_URL + "/rest/v1/pms_site_reports", {
         method: "POST", headers: { ...SB_HEADERS, "Prefer": "return=representation" },
         body: JSON.stringify({ id: reportId, project_id: selectedProject.id, report, version: 1, updated_at: new Date().toISOString() }),
@@ -1994,6 +2129,16 @@ async function generateWordDoc(report) {
     }
   }
 
+  // Phase 7: a photo may be a data: URL (unsaved) or an http Storage URL.
+  // Pre-fetch every photo's bytes up front so the synchronous ImageRun
+  // construction below has them ready. Unreadable photos are simply skipped.
+  const photoBytesById = {};
+  await Promise.all((report.items || []).map(async it => {
+    const src = it.photoDataUrl || (it.photoPath ? storagePublicUrl(it.photoPath) : null);
+    if (!src) return;
+    try { photoBytesById[it.id] = await imageBytesForDoc(src); } catch (e) { /* skip unreadable */ }
+  }));
+
   const itemBlocks = [];
   const byDiscipline = {};
   report.items.forEach(i => { (byDiscipline[i.discipline] = byDiscipline[i.discipline] || []).push(i); });
@@ -2012,12 +2157,13 @@ async function generateWordDoc(report) {
     list.forEach((it, idx) => {
       const num = numberForItem(it, idx);
       const photoCellChildren = [];
-      if (it.photoDataUrl) {
+      const pb = photoBytesById[it.id];
+      if (pb) {
         try {
           photoCellChildren.push(new Paragraph({ children: [new ImageRun({
-            data: dataUrlToBuf(it.photoDataUrl),
+            data: pb.data,
             transformation: { width: 280, height: 210 },
-            type: detectImageType(it.photoDataUrl),
+            type: pb.type,
           })]}));
         } catch (e) {
           photoCellChildren.push(new Paragraph({ children: [new TextRun({ text: "(photo unreadable)", font: "Calibri", size: 16, color: GRAY, italics: true })] }));
@@ -2119,6 +2265,7 @@ function sanitizeFilename(s) {
 async function compressDataUrl(dataUrl, quality = 0.8, maxWidth = 2000) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    img.crossOrigin = "anonymous"; // allow canvas read-back when src is a Storage URL
     img.onload = () => {
       const scale = Math.min(1, maxWidth / img.naturalWidth);
       const w = Math.round(img.naturalWidth * scale);
@@ -2204,9 +2351,10 @@ async function processPendingUploads() {
 async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
   const img = await new Promise((resolve, reject) => {
     const i = new Image();
+    i.crossOrigin = "anonymous"; // Storage URLs are cross-origin; needed for canvas export
     i.onload = () => resolve(i);
     i.onerror = () => reject(new Error("Plan image failed to load"));
-    i.src = plan.imageDataUrl;
+    i.src = plan.imageDataUrl || (plan.imagePath ? storagePublicUrl(plan.imagePath) : "");
   });
 
   // Scale to a reasonable max width to keep the docx size manageable. 1600px

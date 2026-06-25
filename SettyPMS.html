@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-22-pms-v55-milestone-dates-independent-pin";
+    window.__appVersion = "2026-06-25-pms-v56-onenote-sections-feefix";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1300,28 +1300,27 @@ async function loadEmailBody(recordId) {
 }
 
 // All saved msg_ids for a project. Used to dedupe Outlook-search results
-// against the entire saved set (not just the loaded page). Result is just
-// strings (msg_ids). Paged past PostgREST's 1000-row cap (ordered by the unique
-// record_id so pages stay disjoint): an unpaged read truncates at 1000, and on a
-// project with >1000 filed emails the dropped ids would re-surface already-saved
-// mail as "new". (Today's busiest project is ~413, so this is headroom.)
+// against the entire saved set (not just the loaded page). One round-trip
+// per project session; result is bounded by saved-email count and is just
+// strings, so cheap even at 10K+ rows.
 async function loadProjectMsgIds(projectId) {
   if (!projectId) return new Set();
-  const rows = await sbFetchAllV2(
-    "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(projectId) +
-    "&select=msg_id&order=record_id.asc");
+  const path = "/rest/v1/pms_project_emails" +
+               "?project_id=eq." + encodeURIComponent(projectId) +
+               "&select=msg_id";
+  const rows = await sbFetchV2("GET", path);
   return new Set((rows || []).map(r => r.msg_id).filter(Boolean));
 }
 
-// Distinct senders for a project — feeds the sender filter dropdown. Paged past
-// the 1000-row cap with a record_id tiebreaker so pages stay disjoint; without
-// paging a project with >1000 filed emails would lose every sender that sorts
-// after row 1000 from the dropdown.
+// Distinct senders for a project — feeds the sender filter dropdown.
+// Cheap: indexed scan, no table scan.
 async function loadProjectSenders(projectId) {
   if (!projectId) return [];
-  const rows = await sbFetchAllV2(
-    "/rest/v1/pms_project_emails?project_id=eq." + encodeURIComponent(projectId) +
-    "&select=from_address&order=from_address.asc,record_id.asc");
+  const path = "/rest/v1/pms_project_emails" +
+               "?project_id=eq." + encodeURIComponent(projectId) +
+               "&select=from_address" +
+               "&order=from_address.asc";
+  const rows = await sbFetchV2("GET", path);
   // De-dupe client-side (PostgREST has no DISTINCT). Cheap because the result
   // is bounded by unique senders, not total emails.
   const seen = new Set();
@@ -1346,10 +1345,19 @@ async function deleteProjectEmail(recordId) {
 async function updateProjectEmailSpFolder(recordId, spFolderUrl) {
   if (!recordId) return;
   const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
-  await sbFetchV2("PATCH", path, {
+  // return=representation (sbFetchV2 default) so we can confirm a row actually
+  // changed. A 0-row response means the PATCH was silently dropped — e.g. no
+  // matching record_id, or a missing RLS UPDATE policy (the historical cause of
+  // "Save to SharePoint" reverting on reload: the folder uploaded fine but the
+  // URL never persisted). Surface it instead of letting it no-op invisibly.
+  const rows = await sbFetchV2("PATCH", path, {
     sp_folder_url: spFolderUrl || "",
     saved_to_sharepoint: !!spFolderUrl,
-  }, "return=minimal");
+  });
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("sp_folder_url not persisted — no pms_project_emails row updated for record_id=" + recordId + " (check RLS UPDATE policy)");
+  }
+  return rows[0];
 }
 
 // Backfill a body onto a previously-bodyless row (e.g. legacy email re-fetched
@@ -1357,10 +1365,17 @@ async function updateProjectEmailSpFolder(recordId, spFolderUrl) {
 async function updateProjectEmailBody(recordId, bodyHtmlCompressed, bodyHtmlSize) {
   if (!recordId || !bodyHtmlCompressed) return;
   const path = "/rest/v1/pms_project_emails?record_id=eq." + encodeURIComponent(recordId);
-  await sbFetchV2("PATCH", path, {
+  // See updateProjectEmailSpFolder: confirm a row changed so a silently-dropped
+  // PATCH (bad record_id / missing RLS UPDATE policy) surfaces instead of
+  // leaving the row body-less after an apparently-successful backfill.
+  const rows = await sbFetchV2("PATCH", path, {
     body_html_compressed: bodyHtmlCompressed,
     body_html_size: bodyHtmlSize || 0,
-  }, "return=minimal");
+  });
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("email body not persisted — no pms_project_emails row updated for record_id=" + recordId + " (check RLS UPDATE policy)");
+  }
+  return rows[0];
 }
 
 async function saveClientV2(client, expectedVersion) {
@@ -15329,15 +15344,92 @@ function parseSearchHits(rawResults, project) {
 
 const SOURCE_META = {
   sharepoint: { icon: "📁", label: "SharePoint", color: "#60a5fa" },
-  email:      { icon: "✉",  label: "Email",      color: "#10b981" },
+  email:      { icon: "✉",  label: "Email Log",  color: "#10b981" },
   onenote:    { icon: "📓", label: "OneNote",    color: "#a78bfa" },
   photos:     { icon: "📷", label: "Site Photos", color: "#f59e0b" },
+  rfi:        { icon: "📨", label: "RFI",        color: "#f472b6" },
+  submittal:  { icon: "📋", label: "Submittal",  color: "#22d3ee" },
 };
 
+// HTML-escape — renderHit injects summary via dangerouslySetInnerHTML, so any
+// imported/free text must be escaped before it reaches the DOM.
+function _escHtml(t) {
+  return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+// Escape `text`, window it around the first keyword match, and wrap matches in
+// <mark>. Shared by record hits and email-log hits.
+function highlightExcerpt(text, words) {
+  const escRe = w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  const low = raw.toLowerCase();
+  let pos = -1;
+  for (const w of words) { const i = low.indexOf(w); if (i >= 0 && (pos < 0 || i < pos)) pos = i; }
+  const start = pos > 60 ? pos - 60 : 0;
+  let slice = raw.slice(start, start + 240);
+  if (start > 0) slice = "…" + slice;
+  if (start + 240 < raw.length) slice += "…";
+  let html = _escHtml(slice);
+  for (const w of words) html = html.replace(new RegExp("(" + escRe(w) + ")", "gi"), "<mark>$1</mark>");
+  return html;
+}
+
+// Local keyword search over this project's structured records (RFIs + submittals)
+// so the Investigation timeline includes them alongside the file/note hits.
+// Returns hits in the SAME shape parseSearchHits produces, so renderHit needs no
+// special-casing. In-memory (no round-trip).
+function searchProjectRecords(project, kw) {
+  const words = (kw || "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const matches = hay => { const h = hay.toLowerCase(); return words.every(w => h.includes(w)); };
+  const hits = [];
+  (project.rfis || []).forEach(r => {
+    const hay = [r.number, r.title, r.description, r.response, r.notes].filter(Boolean).join("  ");
+    if (!matches(hay)) return;
+    hits.push({
+      id: "rec-rfi-" + r.id, source: "rfi",
+      title: "RFI " + (r.number || "") + (r.title ? ": " + r.title : ""),
+      url: "", date: r.dateResponded || r.dateReceived || "", from: r.from || "",
+      summary: (r.status ? "<strong>" + _escHtml(r.status) + "</strong> · " : "")
+        + highlightExcerpt([r.description, r.response].filter(Boolean).join("  —  "), words),
+      linkedItems: [],
+    });
+  });
+  (project.submittals || []).forEach(s => {
+    const hay = [s.number, s.specSection, s.description, s.comments, s.notes].filter(Boolean).join("  ");
+    if (!matches(hay)) return;
+    hits.push({
+      id: "rec-sub-" + s.id, source: "submittal",
+      title: "Submittal " + (s.number || "") + (s.description ? ": " + s.description : ""),
+      url: "", date: s.dateReturned || s.dateReceived || "", from: s.from || "",
+      summary: (s.status ? "<strong>" + _escHtml(s.status) + "</strong> · " : "")
+        + highlightExcerpt([s.specSection ? "Spec " + s.specSection : "", s.comments].filter(Boolean).join("  —  "), words),
+      linkedItems: [],
+    });
+  });
+  return hits;
+}
+
+// Map a logged-email record (from loadProjectEmails — server-side ILIKE over
+// subject/sender/body_text in pms_project_emails) to an Investigation hit. This
+// is the project's curated email record, NOT the live Outlook mailbox.
+function emailLogToHit(project, em, words) {
+  return {
+    id: "log-email-" + em.id, source: "email",
+    title: em.subject || "(no subject)",
+    url: em.spFolderUrl || "",
+    date: em.date || "",
+    from: em.from || em.fromAddress || "",
+    summary: highlightExcerpt(em.preview || "", words),
+    linkedItems: findLinkedByUrl(project, em.spFolderUrl || ""),
+  };
+}
+
 // ── Investigation view ───────────────────────────────────────────────────────
-// Project-forensic search across SharePoint files, Outlook email, OneNote
-// notes, and project photos. Renamed from "Intelligence" because the use case
-// is investigative: "what's the history of <topic> on this project?"
+// Project-forensic search across SharePoint files, the project email log,
+// OneNote notes, project photos, and the project's own RFI/submittal records.
+// Renamed from "Intelligence" because the use case is investigative: "what's the
+// history of <topic> on this project?"
 //
 // Result presentation is a chronological timeline (grouped by month) so the
 // user can see how an issue evolved over time. Filters operate on the result
@@ -15345,7 +15437,6 @@ const SOURCE_META = {
 // email senders dynamically).
 function InvestigationView({ project }) {
   const [keyword,   setKeyword]   = React.useState("");
-  const [docType,   setDocType]   = React.useState("");
   const [source,    setSource]    = React.useState("all");          // all | files | emails | notes
   const [dateRange, setDateRange] = React.useState("all");           // all | 30d | 6m | 1y | custom
   const [customFrom, setCustomFrom] = React.useState("");
@@ -15466,20 +15557,21 @@ function InvestigationView({ project }) {
   }
 
   async function doSearch() {
-    if (!keyword.trim() && !docType) { setError("Enter a keyword to search."); return; }
+    if (!keyword.trim()) { setError("Enter a keyword to search."); return; }
     setSearching(true); setError(""); setResults(null);
     try {
-      const entityTypes = source === "files"  ? ["driveItem"]
-                        : source === "emails" ? ["message"]
-                        : source === "notes"  ? ["onenotePage"]
-                        : ["driveItem", "message", "onenotePage"];
+      // Outlook mailbox search removed — "emails" now means the PMS Email Log
+      // (pms_project_emails), fetched below. Graph covers files + notes only.
+      const entityTypes = source === "files" ? ["driveItem"]
+                        : source === "notes" ? ["onenotePage"]
+                        : ["driveItem", "onenotePage"];
       // Quote multi-word keywords so Graph treats them as an exact phrase, not word1 OR word2
       const kw = keyword.trim();
       const kwQ = kw.includes(" ") ? `"${kw}"` : kw;
 
-      // Base query — used for email + OneNote.
+      // Base query — used for OneNote (and as the base for the file query).
       // Use AND so project number + keyword must BOTH appear, not either/or.
-      const baseTerms = [scopeToProject && hasNum ? project.projectNumber : "", docType, kwQ]
+      const baseTerms = [scopeToProject && hasNum ? project.projectNumber : "", kwQ]
                           .filter(Boolean);
       const baseQ = baseTerms.join(" AND ");
 
@@ -15489,28 +15581,51 @@ function InvestigationView({ project }) {
       let fileQ = baseQ;
       if (scopeToProject && project.projectFolderUrl) {
         const folderUrl = decodeURIComponent(project.projectFolderUrl).replace(/\/$/, "");
-        const terms = [docType, kwQ].filter(Boolean).join(" ");
+        const terms = [kwQ].filter(Boolean).join(" ");
         fileQ = terms ? `${terms} path:"${folderUrl}"` : `path:"${folderUrl}"`;
       }
 
-      const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
-      let hits = parseSearchHits(raw, project);
+      // Graph search (files / notes). Skipped when Source is narrowed to a
+      // non-Graph source — Records (in-memory) or the Email Log (its own fetch).
+      let hits = [];
+      if (source !== "records" && source !== "emails") {
+        const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
+        hits = parseSearchHits(raw, project);
 
-      // Microsoft Graph's /search/query is relevance-ranked — `AND` is a ranking
-      // hint, not a hard filter. So docs that strongly match the project number
-      // can come back even if the keyword barely matched (or didn't). Enforce
-      // keyword presence client-side against title + summary. For multi-word
-      // keywords, require every word to appear separately (not the full phrase)
-      // — Graph tokenizes, and matched terms in the summary may be split across
-      // <mark> tags which would defeat a full-phrase substring check.
-      if (kw) {
-        const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
-        hits = hits.filter(h => {
-          const haystack = ((h.title || "") + " " + (h.summary || "")).toLowerCase();
-          return words.every(w => haystack.includes(w));
-        });
+        // Microsoft Graph's /search/query is relevance-ranked — `AND` is a ranking
+        // hint, not a hard filter. So docs that strongly match the project number
+        // can come back even if the keyword barely matched (or didn't). Enforce
+        // keyword presence client-side against title + summary. For multi-word
+        // keywords, require every word to appear separately (not the full phrase)
+        // — Graph tokenizes, and matched terms in the summary may be split across
+        // <mark> tags which would defeat a full-phrase substring check.
+        if (kw) {
+          const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
+          hits = hits.filter(h => {
+            const haystack = ((h.title || "") + " " + (h.summary || "")).toLowerCase();
+            return words.every(w => haystack.includes(w));
+          });
+        }
       }
 
+      // Local records search — this project's RFIs & submittals (in-memory).
+      if ((source === "all" || source === "records") && kw) {
+        hits = hits.concat(searchProjectRecords(project, kw));
+      }
+
+      // PMS Email Log search — server-side ILIKE over subject/sender/full body in
+      // pms_project_emails (replaces the old Outlook mailbox search). One fetch;
+      // a failure here must not drop the other results.
+      if ((source === "all" || source === "emails") && kw && project.id) {
+        try {
+          const logEmails = await loadProjectEmails(project.id, { search: kw, limit: 50 });
+          const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
+          hits = hits.concat(logEmails.map(em => emailLogToHit(project, em, words)));
+        } catch (e) { /* keep file/note/record results if the log fetch fails */ }
+      }
+
+      // Merge order: re-sort newest-first across all sources.
+      hits.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
       setResults(hits);
     } catch (e) { setError("✗ " + e.message); }
     setSearching(false);
@@ -15528,19 +15643,21 @@ function InvestigationView({ project }) {
 
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12, lineHeight: 1.55 }}>
         Investigate the history of any topic on this project — find when it was first raised,
-        who was involved, and how it was resolved. Searches across files, emails, and notes.
+        who was involved, and how it was resolved. Searches across files, the project email log, notes, RFIs, and submittals.
       </div>
 
       {/* ── Collapsible "what gets searched" panel ─────────────────────── */}
       {showHowItWorks && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginBottom: 16 }}>
           {[
             { icon: "📁", label: "SharePoint Files",
               desc: "Reads inside PDFs, Word docs, drawings, and specs stored in the project folder. New uploads may take 15–30 min to appear." },
-            { icon: "✉️", label: "Outlook Email",
-              desc: "Searches email subject lines and message body text. Does not search inside email attachments." },
+            { icon: "✉️", label: "Email Log",
+              desc: "Searches the project's logged emails — subject, sender, and full body text — including emails filed by teammates. This is the project record, not your personal Outlook inbox." },
             { icon: "📓", label: "OneNote Notes",
               desc: "Searches meeting notes, decisions, and action items saved to the project notebook." },
+            { icon: "📋", label: "RFIs & Submittals",
+              desc: "Searches this project's RFI and submittal logs — number, subject, question/answer, spec section, review comments, and notes. Instant (no upload lag)." },
           ].map(({ icon, label, desc }) => (
             <div key={label} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: "10px 12px" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: P.text, marginBottom: 4 }}>{icon} {label}</div>
@@ -15559,13 +15676,6 @@ function InvestigationView({ project }) {
             style={{ width: "100%" }}
             onKeyDown={e => e.key === "Enter" && doSearch()} />
         </div>
-        <div>
-          <div style={{ fontSize: 11, color: P.textDim, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>Doc Type</div>
-          <select value={docType} onChange={e => setDocType(e.target.value)} style={{ fontSize: 12 }}>
-            <option value="">All</option>
-            {Object.values(PMS_DOC_TYPES).map(dt => <option key={dt} value={dt}>{dt}</option>)}
-          </select>
-        </div>
         <Btn onClick={doSearch} disabled={searching}>
           {searching ? "⏳ Searching…" : "🔍 Investigate"}
         </Btn>
@@ -15577,8 +15687,9 @@ function InvestigationView({ project }) {
         {[
           { v: "all",    label: "All" },
           { v: "files",  label: "📁 Files" },
-          { v: "emails", label: "✉️ Email" },
+          { v: "emails", label: "✉️ Email Log" },
           { v: "notes",  label: "📓 Notes" },
+          { v: "records", label: "📋 RFIs/Subs" },
         ].map(opt => (
           <button key={opt.v} onClick={() => setSource(opt.v)}
             style={{
@@ -17228,9 +17339,10 @@ function EmailsView({ project, onChange }) {
       };
     }));
 
-    // Emails persist to pms_project_emails (below), not into the project blob.
-    // Update the local `emails` page so the UI re-renders immediately.
-    // Prepend toAdd to local state since the list is date-desc.
+    // Dual-write: update project.emails[] (parent state) AND the local
+    // `emails` page (so the UI re-renders immediately without waiting for
+    // a refetch). Prepend toAdd to local state since the list is date-desc.
+    onChange({ ...project, emails: [...(project.emails || []), ...toAdd] });
     setEmails(prev => [...toAdd, ...prev]);
     setSavedMsgIds(prev => {
       const next = new Set(prev);
@@ -17278,13 +17390,21 @@ function EmailsView({ project, onChange }) {
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
       // Persist the SP folder URL on the email record so it survives page refresh.
-      // Update the local page; the row is patched in pms_project_emails below.
+      // Dual-write: update both project.emails[] (parent state) and the local page.
       const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
+      onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
       setEmails(prev => prev.map(patchSpUrl));
-      // Also patch the new table. Fire-and-forget — local state already updated.
-      if (email.id) {
-        updateProjectEmailSpFolder(email.id, folderWebUrl)
-          .catch(err => console.warn("updateProjectEmailSpFolder failed:", err));
+      // Also persist to the pms_project_emails table so the folder link survives
+      // reload. If this fails — no record id, or the PATCH gets silently dropped
+      // (the old RLS-UPDATE gap) — the log would revert to "Save to SharePoint"
+      // next load. Surface that to the user rather than swallowing it.
+      try {
+        if (!email.id) throw new Error("email is not indexed in pms_project_emails (no record id)");
+        await updateProjectEmailSpFolder(email.id, folderWebUrl);
+      } catch (err) {
+        console.warn("updateProjectEmailSpFolder failed:", err);
+        setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", folderWebUrl,
+          msg: msg + " — ⚠ link may not persist on reload (please report this)" } }));
       }
     } catch(e) {
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "error", msg: "✗ " + (e.message || "Unknown error") } }));
@@ -17293,8 +17413,8 @@ function EmailsView({ project, onChange }) {
 
   function deleteEmail(msgId) {
     const target = emails.find(e => e.msgId === msgId);
-    // Remove from the local page + savedMsgIds; the row is deleted from
-    // pms_project_emails below.
+    // Dual-write delete: parent project.emails[], local page, savedMsgIds set.
+    onChange({ ...project, emails: (project.emails || []).filter(e => e.msgId !== msgId) });
     setEmails(prev => prev.filter(e => e.msgId !== msgId));
     setSavedMsgIds(prev => { const next = new Set(prev); next.delete(msgId); return next; });
     if (expanded === msgId) setExpanded(null);
@@ -17322,11 +17442,11 @@ function EmailsView({ project, onChange }) {
         if (existing && !existing.bodyHtmlCompressed) {
           const compressed = compressHtml(html);
           if (compressed) {
-            // Cache the body in the local page; it is also persisted to
-            // pms_project_emails below so future opens skip the live fetch.
+            // Dual-write the cached body: parent project.emails[] AND local page.
             const patchBody = e => e.msgId === msgId
               ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
               : e;
+            onChange({ ...project, emails: (project.emails || []).map(patchBody) });
             setEmails(prev => prev.map(patchBody));
             // Also persist to the new table so future opens skip the live fetch.
             if (existing.id) {

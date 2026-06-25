@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-05-03-transmittal-v3";
+    window.__appVersion = "2026-06-12-transmittal-v4-portal-publish";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -498,7 +498,7 @@
           <button class="btn btn-send" id="sendToClientBtn" disabled title="Generate the transmittal first">2c. ✉️ Package &amp; Draft Email</button>
         </div>
         <div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5">
-          <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow: zips the drawings + cover, uploads to SharePoint, creates a 30-day share link, then opens an Outlook draft for you to review. Nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
+          <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow. Projects with a Client Portal: the checked files + cover are published to a dated folder under <strong>Setty Deliverables</strong> and the email links there (no expiry — clients use their portal access). Projects without a portal: files are zipped and shared via a 30-day anonymous link. Either way an Outlook draft opens for review — nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
         </div>
       </div>
     </div>
@@ -532,6 +532,10 @@ const MSAL_CONFIG = {
   system: { allowNativeBroker: false },
 };
 const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All", "Mail.ReadWrite"];
+// NYSharesite (client portal) drive — same constant PMS uses for portal
+// folder creation. Transmittal sends publish into "<project>/Setty
+// Deliverables/<dated folder>" here when the project has a portal.
+const SP_NYSHARE_DRIVE_ID = "b!SaMkH0tf00uoxA0tJ16JZk3twzAjpPVIiKbmf40CKBjNhrOxU3cMTZTIYq6CXDLJ";
 const LOGIN_SCOPES  = ["User.Read", "openid", "profile"];
 const SP_DRIVE_ID   = "b!your-drive-id"; // resolved at runtime
 const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
@@ -1693,15 +1697,18 @@ async function saveToSharePoint() {
 }
 
 // ─── SEND TO CLIENT ───────────────────────────────────────────────────────────
-// Bundles all folder files + the generated transmittal .docx into one .zip,
-// uploads it to the Outgoing folder, creates an anonymous time-limited download
-// link, logs the send to the "Transmittals Sent" SharePoint list, and opens an
-// Outlook compose window pre-filled with the link.
+// Two delivery modes, chosen automatically:
 //
-// Architecture decision: each file is shareable in this library but the folder
-// itself isn't (governance policy on the Project Document Library). Zipping
-// everything into one shareable file is the workaround that also gives clients
-// a cleaner one-click download UX.
+// PORTAL (project has Setty Deliverables folders set up via PMS): selected
+// files + cover docx are copied into a new dated subfolder under the
+// project's "Setty Deliverables" in NYSharesite, and the email links to that
+// folder. Clients use their standing portal access (Manage Sharing invites) —
+// no anonymous link, no expiry.
+//
+// ZIP FALLBACK (no portal — ad-hoc sends, legacy projects): files are zipped,
+// uploaded to the Outgoing folder, and shared via a 30-day anonymous link.
+// (The Outgoing *folder* itself isn't shareable — governance policy on the
+// Project Document Library — which is why the zip workaround exists.)
 
 const TRANSMITTALS_AUDIT_LIST = "Transmittals Sent";
 const ANONYMOUS_LINK_EXPIRY_DAYS = 30;
@@ -1721,10 +1728,6 @@ async function sendToClient() {
     setStatus("sendStatus", "error", "✗ Click 'Generate Transmittal (.docx)' first — the cover sheet must be in memory.");
     return;
   }
-  if (typeof JSZip === "undefined") {
-    setStatus("sendStatus", "error", "✗ ZIP library failed to load.");
-    return;
-  }
   const recipientEmail = (document.getElementById("recipientEmail").value || "").trim();
   if (!recipientEmail || !recipientEmail.includes("@")) {
     setStatus("sendStatus", "error", "✗ Enter a valid recipient email.");
@@ -1733,25 +1736,25 @@ async function sendToClient() {
 
   btn.disabled = true;
   try {
-    // ── 1. Build the zip (all folder files + transmittal cover) ─────────────
+    // ── 1. Download the selected files (common to both delivery modes) ──────
     // Use authenticated /content endpoint rather than @microsoft.graph.downloadUrl —
     // the latter is a pre-signed CDN URL that expires ~1 hour after the folder was
     // loaded, which silently broke sends triggered later in the same session.
-    const zip = new JSZip();
     let totalBytes = 0;
     const downloadToken = await getToken();
 
     // Same include-filter the download-ZIP path uses — keep the package in
     // sync with the cover docx. See the comment in zipFiles() for the why.
     const includedFilenames = new Set((sheets || []).filter(s => s.include && s.filename).map(s => s.filename));
-    const filesToZip = folderFiles.filter(f => includedFilenames.has(f.name));
-    if (filesToZip.length === 0) {
+    const filesToSend = folderFiles.filter(f => includedFilenames.has(f.name));
+    if (filesToSend.length === 0) {
       throw new Error("No files selected — check at least one row before sending.");
     }
 
-    for (let i = 0; i < filesToZip.length; i++) {
-      const f = filesToZip[i];
-      setStatus("sendStatus", "info", `⏳ Adding ${f.name} (${i + 1}/${filesToZip.length})…`);
+    const fileBlobs = [];
+    for (let i = 0; i < filesToSend.length; i++) {
+      const f = filesToSend[i];
+      setStatus("sendStatus", "info", `⏳ Reading ${f.name} (${i + 1}/${filesToSend.length})…`);
       const resp = await fetch(
         `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${f.id}/content`,
         { headers: { "Authorization": "Bearer " + downloadToken } }
@@ -1759,58 +1762,87 @@ async function sendToClient() {
       if (!resp.ok) throw new Error(`Download failed for ${f.name}: HTTP ${resp.status}`);
       const blob = await resp.blob();
       totalBytes += blob.size;
-      zip.file(f.name, blob);
+      fileBlobs.push({ name: f.name, blob });
     }
-    // Include the transmittal cover docx (already in memory after Generate)
-    zip.file(generatedFileName, generatedBlob);
     totalBytes += generatedBlob.size;
 
-    setStatus("sendStatus", "info", "⏳ Compressing…");
-    const zipBlob = await zip.generateAsync({
-      type: "blob",
-      compression: "DEFLATE",
-      compressionOptions: { level: 6 },
-    });
-    const zipName = buildArchiveFileName();
+    // ── 2. Pick delivery mode: Client Portal when the project has Setty
+    //       Deliverables folders, zip + anonymous link otherwise. ─────────────
+    const projNum = (document.getElementById("projectNumber").value || "").trim();
+    const proj = (pmsProjects || []).find(p => p.projectNumber === projNum) || null;
+    const portalUrl = proj && proj.settyDeliverablesFolderUrl;
 
-    // ── 2. Upload zip via chunked upload session (handles files >4MB) ───────
-    setStatus("sendStatus", "info", `⏳ Uploading ${(zipBlob.size / 1024 / 1024).toFixed(1)} MB to SharePoint…`);
-    const uploadedItem = await uploadLargeFileToFolder(zipBlob, zipName);
+    let linkUrl, linkLabel, expiryIso = null, packageName, deliveryMode;
 
-    // ── 3. Create anonymous 30-day view link ────────────────────────────────
-    setStatus("sendStatus", "info", "⏳ Creating share link…");
-    const linkInfo = await createAnonymousLink(uploadedItem.id);
+    if (portalUrl) {
+      // PORTAL: copy files into a dated Setty Deliverables subfolder.
+      deliveryMode = "portal";
+      const portal = await publishToPortal(fileBlobs, portalUrl);
+      linkUrl     = portal.webUrl;
+      linkLabel   = portal.folderName;
+      packageName = portal.folderName;
+    } else {
+      // ZIP FALLBACK: bundle + anonymous 30-day link.
+      deliveryMode = "zip";
+      if (typeof JSZip === "undefined") throw new Error("ZIP library failed to load.");
+      const zip = new JSZip();
+      fileBlobs.forEach(f => zip.file(f.name, f.blob));
+      zip.file(generatedFileName, generatedBlob);
 
-    // ── 4. Append audit row to Transmittals Sent list (non-fatal) ───────────
+      setStatus("sendStatus", "info", "⏳ Compressing…");
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+      const zipName = buildArchiveFileName();
+
+      setStatus("sendStatus", "info", `⏳ Uploading ${(zipBlob.size / 1024 / 1024).toFixed(1)} MB to SharePoint…`);
+      const uploadedItem = await uploadLargeFileToFolder(zipBlob, zipName);
+
+      setStatus("sendStatus", "info", "⏳ Creating share link…");
+      const linkInfo = await createAnonymousLink(uploadedItem.id);
+      linkUrl     = linkInfo.link.webUrl;
+      linkLabel   = zipName;
+      expiryIso   = linkInfo.expirationDateTime;
+      packageName = zipName;
+    }
+
+    // ── 3. Append audit row to Transmittals Sent list (non-fatal) ───────────
     setStatus("sendStatus", "info", "⏳ Logging transmittal…");
     try {
-      await appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmail, totalBytes, zipName });
+      await appendTransmittalAuditRow({
+        linkInfo: { link: { webUrl: linkUrl }, expirationDateTime: expiryIso },
+        recipientEmail, totalBytes, zipName: packageName,
+      });
     } catch (auditErr) {
       console.warn("Audit log write failed (non-fatal):", auditErr);
-      setStatus("sendStatus", "warn", "⚠ Email is ready but audit log write failed — copy the link manually if needed: " + linkInfo.link.webUrl);
+      setStatus("sendStatus", "warn", "⚠ Email is ready but audit log write failed — copy the link manually if needed: " + linkUrl);
       // Continue — the email is still useful even if the audit row didn't write.
     }
     // Refresh the history panel so a successful send shows up immediately.
     void loadTransmittalHistory();
 
-    // ── 5. Create an Outlook draft via Graph (HTML body so the share URL can
+    // ── 4. Create an Outlook draft via Graph (HTML body so the share URL can
     //       hide behind a readable label) and open it for review. ─────────────
     setStatus("sendStatus", "info", "⏳ Creating Outlook draft…");
     const draft = await createOutlookDraft({
       recipientEmail,
       ccEmails: (ccRecipients || []).map(r => r.email).filter(Boolean),
-      linkUrl: linkInfo.link.webUrl,
-      expiryDate: linkInfo.expirationDateTime,
+      linkUrl,
+      linkLabel,
+      expiryDate: expiryIso, // null for portal sends — no expiry line in the email
     });
     window.open(draft.webLink, "_blank");
 
-    setStatus("sendStatus", "success",
-      `✓ Package uploaded (${(zipBlob.size / 1024 / 1024).toFixed(1)} MB). ` +
-      `Outlook draft open — review and click Send. Link expires ${new Date(linkInfo.expirationDateTime).toLocaleDateString()}.`);
+    setStatus("sendStatus", "success", deliveryMode === "portal"
+      ? `✓ ${fileBlobs.length + 1} file${fileBlobs.length ? "s" : ""} published to the Client Portal (${packageName}). Outlook draft open — review and click Send.`
+      : `✓ Package uploaded. Outlook draft open — review and click Send. Link expires ${new Date(expiryIso).toLocaleDateString()}.`);
     void logTransmittalGenerated("send-email", {
       recipientEmail,
-      packageSizeMB: +(zipBlob.size / 1024 / 1024).toFixed(2),
-      linkExpiresAt: linkInfo.expirationDateTime,
+      deliveryMode,
+      packageSizeMB: +(totalBytes / 1024 / 1024).toFixed(2),
+      linkExpiresAt: expiryIso || undefined,
     });
   } catch (e) {
     setStatus("sendStatus", "error", "✗ " + e.message);
@@ -1824,9 +1856,17 @@ async function sendToClient() {
 // Graph's simple PUT /content has a 4MB ceiling — fine for the cover .docx but
 // not for a zip containing PDFs of drawing sets. Upload sessions handle any
 // size by chunking, returning the final driveItem when the last chunk lands.
-async function uploadLargeFileToFolder(blob, fileName) {
+// opts.driveId / opts.parentPath override the destination — used by the
+// portal publish flow to upload into NYSharesite instead of the source
+// Outgoing folder. Defaults preserve the original behavior.
+async function uploadLargeFileToFolder(blob, fileName, opts = {}) {
+  const destDriveId = opts.driveId    || resolvedDriveId;
+  const destPath    = opts.parentPath || resolvedFolderPath;
   const token = await getToken();
-  const sessionPath = `/drives/${resolvedDriveId}/root:/${encodeURIComponent(resolvedFolderPath)}/${encodeURIComponent(fileName)}:/createUploadSession`;
+  // Encode per-segment so "/" separators survive (Graph accepts %2F too, but
+  // per-segment is unambiguous for nested portal paths).
+  const encodedPath = destPath.split("/").map(encodeURIComponent).join("/");
+  const sessionPath = `/drives/${destDriveId}/root:/${encodedPath}/${encodeURIComponent(fileName)}:/createUploadSession`;
 
   const sessionRes = await fetch("https://graph.microsoft.com/v1.0" + sessionPath, {
     method: "POST",
@@ -1867,6 +1907,67 @@ async function uploadLargeFileToFolder(blob, fileName) {
   return uploadedItem;
 }
 
+// ─── PUBLISH TO CLIENT PORTAL ─────────────────────────────────────────────────
+// Copies the selected files + cover docx into a new dated subfolder under the
+// project's "Setty Deliverables" portal folder (NYSharesite). The email then
+// links to that folder — clients use their standing portal access (granted
+// via PMS Manage Sharing) instead of an anonymous expiring link.
+async function publishToPortal(fileBlobs, settyDeliverablesUrl) {
+  // Resolve the Deliverables folder's drive-root-relative path from its webUrl.
+  // Stored URLs look like:
+  //   https://setty.sharepoint.com/sites/NYSharesite/Shared%20Documents/{proj}/Setty%20Deliverables
+  const decoded = decodeURIComponent(settyDeliverablesUrl);
+  const marker = "/Shared Documents/";
+  const idx = decoded.indexOf(marker);
+  if (idx === -1) {
+    throw new Error("Unrecognized Setty Deliverables URL — expected a NYSharesite Shared Documents path. Re-create the portal folders from PMS.");
+  }
+  const deliverablesPath = decoded.slice(idx + marker.length).replace(/\/+$/, "");
+  const encodeSegs = p => p.split("/").map(encodeURIComponent).join("/");
+
+  // Dated folder: today + milestone, stripping any leading date already in
+  // the milestone name so we don't get "2026_06_12 2026_04_16 Comment Response".
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "_");
+  const milestoneRaw = (resolvedFolderPath || "").split("/").pop()
+    || document.getElementById("issuedFor").value || "Transmittal";
+  const milestoneClean = milestoneRaw.replace(/^\d{4}[_-]\d{2}[_-]\d{2}\s*[-–]?\s*/, "").trim();
+  const folderName = (today + " " + (milestoneClean || "Transmittal"))
+    .replace(/[\\/:*?"<>|#%]/g, "-").trim().slice(0, 100);
+  const folderPath = deliverablesPath + "/" + folderName;
+
+  // Get-or-create the dated folder (re-sending the same milestone the same
+  // day reuses the folder; uploads replace files of the same name).
+  let folder = null;
+  try {
+    folder = await graphFetch("GET", "/drives/" + SP_NYSHARE_DRIVE_ID + "/root:/" + encodeSegs(folderPath));
+  } catch (e) { /* 404 → create below */ }
+  if (!folder || !folder.id) {
+    try {
+      folder = await graphFetch("POST",
+        "/drives/" + SP_NYSHARE_DRIVE_ID + "/root:/" + encodeSegs(deliverablesPath) + ":/children",
+        { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
+    } catch (createErr) {
+      // Race: someone created it between GET and POST — confirm with re-GET.
+      folder = await graphFetch("GET", "/drives/" + SP_NYSHARE_DRIVE_ID + "/root:/" + encodeSegs(folderPath));
+    }
+  }
+  if (!folder || !folder.id || !folder.webUrl) {
+    throw new Error("Could not create the dated portal folder. Check that the Setty Deliverables folder still exists in NYSharesite.");
+  }
+
+  // Upload every file into the dated folder (chunked — handles large PDFs).
+  for (let i = 0; i < fileBlobs.length; i++) {
+    const f = fileBlobs[i];
+    setStatus("sendStatus", "info", `⏳ Publishing ${f.name} (${i + 1}/${fileBlobs.length}) to Client Portal…`);
+    await uploadLargeFileToFolder(f.blob, f.name, { driveId: SP_NYSHARE_DRIVE_ID, parentPath: folderPath });
+  }
+  // The transmittal cover docx travels with the set.
+  setStatus("sendStatus", "info", "⏳ Publishing transmittal cover…");
+  await uploadLargeFileToFolder(generatedBlob, generatedFileName, { driveId: SP_NYSHARE_DRIVE_ID, parentPath: folderPath });
+
+  return { webUrl: folder.webUrl, folderName, folderPath };
+}
+
 // ─── CREATE ANONYMOUS LINK ────────────────────────────────────────────────────
 async function createAnonymousLink(itemId) {
   const expiry = new Date();
@@ -1903,12 +2004,18 @@ async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmai
     : recipientEmail;
 
   // FilesIncluded as newline-separated text — preserves the exact list
-  // sent even if files are later renamed/deleted in SharePoint.
-  const filesIncluded = folderFiles.map(f => f.name).concat([generatedFileName]).join("\n");
+  // sent even if files are later renamed/deleted in SharePoint. Use the same
+  // include-filter the send used, not all folder files.
+  const sentNames = (sheets || []).filter(s => s.include && s.filename).map(s => s.filename);
+  const filesIncluded = (sentNames.length ? sentNames : folderFiles.map(f => f.name))
+    .concat([generatedFileName]).join("\n");
 
   // SharePoint DateTime columns can reject ISO strings carrying millisecond
-  // precision — strip ".123Z" down to "Z".
-  const linkExpiry = (linkInfo.expirationDateTime || "").replace(/\.\d{3}Z$/, "Z");
+  // precision — strip ".123Z" down to "Z". Portal sends have no expiry —
+  // omit the field entirely rather than writing an empty string.
+  const linkExpiry = linkInfo.expirationDateTime
+    ? linkInfo.expirationDateTime.replace(/\.\d{3}Z$/, "Z")
+    : null;
 
   const fields = {
     Title: `${projectNumber || "—"} - ${milestoneName}`.slice(0, 255),
@@ -1919,17 +2026,19 @@ async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmai
     ZipFileName: zipName,
     // Hyperlink columns require { Url, Description } object form via Graph.
     AnonymousLink: { Url: linkInfo.link.webUrl, Description: zipName },
-    LinkExpiry: linkExpiry,
     FilesIncluded: filesIncluded,
-    FileCount: folderFiles.length + 1,
+    FileCount: (sentNames.length || folderFiles.length) + 1,
     TotalSizeMB: Number((totalBytes / 1024 / 1024).toFixed(2)),
     SenderUPN: senderUpn,
     SenderDisplayName: senderName,
     CustomMessage: "",
     Status: "Sent",
   };
-  // Only include the Hyperlink column when we actually have a URL — passing
-  // an explicit null can trigger HTTP 400 invalidRequest on a typed column.
+  // Only include typed columns when we actually have a value — passing an
+  // explicit null can trigger HTTP 400 invalidRequest.
+  if (linkExpiry) {
+    fields.LinkExpiry = linkExpiry;
+  }
   if (folderUrl) {
     fields.OutgoingFolderUrl = { Url: decodeURIComponent(folderUrl), Description: "Source folder" };
   }
@@ -2038,7 +2147,7 @@ function renderHistoryTable(items) {
 // fires only for client-originated drafts, so Graph-created drafts arrive
 // signature-less. You'll type/paste your signature in the draft before
 // sending. (This was an intentional choice for cleaner link display.)
-async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, expiryDate }) {
+async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, linkLabel, expiryDate }) {
   const projectName   = document.getElementById("projectName").value || "";
   const projectNumber = document.getElementById("projectNumber").value || "";
   const recipientName = document.getElementById("recipientName").value || "";
@@ -2053,13 +2162,14 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, expiryDat
   // across the file name, audit log, and email. Falls back to issuedFor for
   // ad-hoc transmittals where no folder is selected.
   const milestone = (resolvedFolderPath || "").split("/").pop() || issuedFor || "Transmittal";
-  const expiryFormatted = new Date(expiryDate).toLocaleDateString("en-US", {
-    year: "numeric", month: "short", day: "numeric",
-  });
+  // Portal sends pass expiryDate = null (standing portal access, no expiry).
+  const expiryFormatted = expiryDate
+    ? new Date(expiryDate).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+    : null;
 
   const { subject, html } = buildEmailBody({
     projectName, projectNumber, recipientName, issuedFor, milestone,
-    linkUrl, expiryDate: expiryFormatted, fileList, includedSheets,
+    linkUrl, linkLabel, expiryDate: expiryFormatted, fileList, includedSheets,
   });
 
   const payload = {
@@ -2109,7 +2219,9 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
   const todayISO = new Date().toISOString().slice(0, 10);
   const base = [projectName, milestone].filter(Boolean).join("_");
   const subjectLine  = (base ? base + "_" : "") + "Transmittal";
-  const packageLabel = (base ? base + "_" : "") + todayISO;
+  // Portal sends pass the dated folder name as linkLabel; zip sends fall back
+  // to the generated package label.
+  const packageLabel = linkLabel || ((base ? base + "_" : "") + todayISO);
 
   // Mirror of the DOCX "Transmitted Documents" table — gives the recipient an
   // at-a-glance manifest without opening the cover doc. Inline styles
@@ -2148,13 +2260,18 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
       `</table>`;
   }
 
+  // Expiring anonymous link (zip mode) vs standing portal access (portal mode).
+  const accessLine = expiryDate
+    ? `Link expires ${expiryDate}.`
+    : `The files are available in your SETTY client portal — sign in with your invited email to access them.`;
+
   return {
     subject: subjectLine,
     html:
       `${greeting}<br><br>` +
       `${issuedFor} package:<br><br>` +
-      `<a href="${linkUrl}">${packageLabel}</a><br><br>` +
-      `Link expires ${expiryDate}.<br><br>` +
+      `<a href="${linkUrl}">${esc(packageLabel)}</a><br><br>` +
+      `${accessLine}<br><br>` +
       tableHtml,
   };
 }
