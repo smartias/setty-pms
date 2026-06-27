@@ -353,7 +353,7 @@ const SUB_FIELDS=[ {k:"number",l:"Submittal #"},{k:"specSection",l:"Spec Section
 function blankRFI(){ const t=today(); return {id:"",number:"",title:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,5),dateResponded:"",response:"",status:"Open",notes:"",spFolderUrl:"",links:[]}; }
 function blankSub(){ const t=today(); return {id:"",number:"",specSection:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,10),dateReturned:"",comments:"",status:"Received",stamp:"—",resubNumber:0,notes:"",spFolderUrl:"",links:[],registerItemId:""}; }
 
-let EDIT=null;
+let EDIT=null, EDIT_TEAM=[], EDIT_SUBS=[];
 async function openEditor(kind, id){
   const fields = kind==="rfi"?RFI_FIELDS:SUB_FIELDS;
   const list = kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
@@ -362,10 +362,10 @@ async function openEditor(kind, id){
   if(isNew){ rec = kind==="rfi"?blankRFI():blankSub(); rec.number = (kind==="rfi"?"RFI-":"SUB-")+String(list.length+1).padStart(3,"0"); }
   else { rec = list.find(r=>r.id===id); if(!rec) return; }
   const projId = rec.__projId||CURRENT.proj.id;
-  EDIT={kind,isNew,id:rec.id,projId};
+  EDIT={kind,isNew,id:rec.id,projId,projName:rec.__projName||CURRENT.proj.name||""};
   let team=(CURRENT.teams&&CURRENT.teams[projId])||[], subs=[];
   try{ const pr=await fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`); if(pr[0]){ team=pr[0].team||team; subs=pr[0].subs||[]; } }catch(e){}
-  team=team.filter(t=>t&&(t.name||t.role));
+  team=team.filter(t=>t&&(t.name||t.role)); EDIT_TEAM=team; EDIT_SUBS=subs;
   const grid = fields.map(f=>{
     const v = rec[f.k]==null?"":rec[f.k];
     let input;
@@ -391,7 +391,11 @@ async function openEditor(kind, id){
   document.getElementById("modal").innerHTML =
     `<div class="mhead"><h3>${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><span class="x" onclick="closeEditor()">✕</span></div>`+
     `<div class="grid">${grid}${extra}</div>`+
-    `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}<span class="by">${by}</span><span class="spacer"></span>`+
+    `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
+    `<button class="ghost" style="font-size:12px" title="Open a pre-filled draft in Outlook" onclick="emailAction('${kind}','assign')">✉ Assign</button>`+
+    `<button class="ghost" style="font-size:12px" title="Draft an email to the subconsultant" onclick="emailAction('${kind}','sub')">✉ Forward to Sub</button>`+
+    `<button class="ghost" style="font-size:12px" title="Draft the ${kind==='rfi'?'response':'return'} email" onclick="emailAction('${kind}','respond')">✉ ${kind==='rfi'?'Draft Response':'Draft Return'}</button>`+
+    `<span class="by">${by}</span><span class="spacer"></span>`+
     `<button onclick="closeEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`;
   document.getElementById("overlay").classList.add("show");
 }
@@ -403,6 +407,22 @@ function collectEdits(kind){
   const sub=document.getElementById("f_subAssigned"); if(sub) e.subAssigned=sub.value;
   const sp=document.getElementById("f_spFolderUrl"); if(sp) e.spFolderUrl=sp.value;
   return e;
+}
+function mailto(to, subject, body){ window.location.href="mailto:"+(to||"")+"?subject="+encodeURIComponent(subject||"")+"&body="+encodeURIComponent(body||""); }
+function emailAction(kind, which){
+  const g=k=>{const e=document.getElementById("f_"+k);return e?e.value:"";};
+  const num=g("number"), title=g("title")||g("description"), desc=g("description"), from=g("from"), due=g("dueDate"), resp=g("response"), spec=g("specSection"), comments=g("comments"), stamp=g("stamp");
+  const proj=(EDIT&&EDIT.projName)?` · ${EDIT.projName}`:"";
+  const lbl=(kind==="rfi"?"RFI ":"Submittal ")+num;
+  if(which==="assign"){
+    const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
+    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n`);
+  } else if(which==="sub"){
+    const sv=g("subAssigned"); const so=EDIT_SUBS.find(s=>((s&&s.name)||(s&&s.company)||String(s))===sv);
+    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n`);
+  } else {
+    mailto("", `RE: ${lbl} — ${title}${proj}`, kind==="rfi" ? `Response to ${lbl}: ${title}\n\n${resp||"[your response]"}\n\nOriginal question:\n${desc}\n` : `Submittal ${num} ${spec} returned${stamp&&stamp!=="—"?" — "+stamp:""}\n\n${comments||"[review comments]"}\n`);
+  }
 }
 async function saveEditor(){
   if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
