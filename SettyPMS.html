@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-26-pms-v58-owner-overview-box";
+    window.__appVersion = "2026-06-27-pms-v59-company-certs-ownersrep";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22017,7 +22017,17 @@ const GLOBAL_COMPANY_TYPES = [
   "Structural Engineer", "Cost Estimator", "Construction Manager",
   "General Contractor", "Environmental", "MEPFP Engineer",
   "Specialty Consultant", "Code/Permit Consultant", "Civil Engineer",
+  "Owners Rep",
 ];
+
+// Business diversity / small-business certifications. Orthogonal to the
+// discipline taxonomy above — a firm holds these *in addition to* its
+// discipline, and can hold several at once (e.g. MBE + WBE). Stored on the
+// company's `certs[]` array.
+//   MBE    = Minority Business Enterprise
+//   WBE    = Women Business Enterprise
+//   SDVOSB = Service-Disabled Veteran-Owned Small Business
+const COMPANY_CERTIFICATIONS = ["MBE", "WBE", "SDVOSB"];
 
 // Normalize legacy single-string `type` into the new `types[]` array.
 // Old values ("Client" / "Prime/GC" / "Both") don't map to the new
@@ -22025,6 +22035,12 @@ const GLOBAL_COMPANY_TYPES = [
 function getCompanyTypes(c) {
   if (Array.isArray(c.types)) return c.types;
   return [];
+}
+
+// Certifications are a clean opt-in array — no legacy single-string form to
+// migrate (the field is new), so a plain array guard is all we need.
+function getCompanyCerts(c) {
+  return Array.isArray(c.certs) ? c.certs : [];
 }
 
 // ─── DUPLICATE COMPANY DETECTION ──────────────────────────────────────────────
@@ -22106,6 +22122,7 @@ function newClient(overrides) {
     id: uid(),
     name: "",
     types: [],
+    certs: [],
     contacts: [],
     ...overrides,
   };
@@ -22193,9 +22210,19 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     cancelEdit();
   }
 
+  // Delete now lives on the edit form (not the dashboard row), so the warning
+  // about linked projects lives here too. After removing, fall back to the
+  // list — the form we were editing is gone.
   function deleteClient(id) {
-    if (!window.confirm("Remove this company from the directory?")) return;
-    onUpdateClients(clients.filter(c => c.id !== id));
+    const c = clients.find(x => x.id === id);
+    const name = c ? c.name : "this company";
+    const linkedCount = (projects || []).filter(p => p.client === name || p.prime === name).length;
+    const msg = linkedCount > 0
+      ? "Remove \"" + name + "\" from the directory?\n\n⚠ This company appears on " + linkedCount + " project" + (linkedCount !== 1 ? "s" : "") + ". Removing it does not change those projects, but the company name will no longer link back here."
+      : "Remove \"" + name + "\" from the directory?";
+    if (!window.confirm(msg)) return;
+    onUpdateClients(clients.filter(x => x.id !== id));
+    cancelEdit();
   }
 
   const filtered = clients.filter(c => {
@@ -22204,6 +22231,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     if (c.name.toLowerCase().includes(q)) return true;
     if ((c.contacts||[]).some(ct => ct.name.toLowerCase().includes(q) || ct.email.toLowerCase().includes(q))) return true;
     if (getCompanyTypes(c).some(t => t.toLowerCase().includes(q))) return true;
+    if (getCompanyCerts(c).some(t => t.toLowerCase().includes(q))) return true;
     return false;
   }).sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" }));
 
@@ -22211,6 +22239,9 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
   // per-type colors would just become noise. Active = accent, idle = muted.
   const TYPE_CHIP_ACTIVE = { bg: P.accentDim, text: P.accentLight, border: P.accent };
   const TYPE_CHIP_IDLE   = { bg: "transparent", text: P.textDim, border: P.border };
+  // Certifications get a distinct green so they read as a different axis from
+  // the accent-colored discipline chips, both in the form and the table.
+  const CERT_CHIP_ACTIVE = { bg: P.greenDim, text: P.green, border: P.green };
 
   function addContact() {
     setForm({ ...form, contacts: [...(form.contacts||[]), newContact()] });
@@ -22258,6 +22289,26 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
               </div>
               <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>Pick all that apply — a firm can be both, e.g. MEPFP Engineer + Specialty Consultant.</div>
             </Field>
+            <Field label="Certifications">
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {COMPANY_CERTIFICATIONS.map(t => {
+                  const selected = getCompanyCerts(form);
+                  const on = selected.includes(t);
+                  const chip = on ? CERT_CHIP_ACTIVE : TYPE_CHIP_IDLE;
+                  return (
+                    <button key={t} onClick={() => {
+                      const next = on ? selected.filter(x => x !== t) : [...selected, t];
+                      setForm({ ...form, certs: next });
+                    }}
+                      style={{ padding: "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        background: chip.bg, color: chip.text, border: "1px solid " + chip.border }}>
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>Diversity / small-business designations — MBE, WBE, SDVOSB. Pick all that apply.</div>
+            </Field>
             <CompanyDupWarning matches={dupCompanies} hard={!!hardDupCompany} confirmed={dupConfirmed}
               onPick={c => startEdit(c)} />
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
@@ -22267,6 +22318,9 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                   : (editingId === "__new__" ? "Add Company" : "Save Changes")}
               </Btn>
               <Btn variant="ghost" onClick={cancelEdit}>Cancel</Btn>
+              {editingId !== "__new__" && (
+                <Btn variant="danger" onClick={() => deleteClient(editingId)} style={{ marginLeft: "auto" }}>Delete Company</Btn>
+              )}
             </div>
           </div>
           {/* Linked Projects */}
@@ -22395,6 +22449,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
             <tr>
               <th>Company</th>
               <th>Type</th>
+              <th>Certs</th>
               <th>Contacts</th>
               <th>Primary Contact</th>
               <th>Projects</th>
@@ -22404,6 +22459,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
           <tbody>
             {filtered.map(c => {
               const types = getCompanyTypes(c);
+              const certs = getCompanyCerts(c);
               const contacts = c.contacts || [];
               const primary = contacts[0];
               return (
@@ -22414,6 +22470,13 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                       ? <span style={{ color: P.textDim, fontSize: 12 }}>—</span>
                       : <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                           {types.map(t => <Badge key={t} color={TYPE_CHIP_ACTIVE} text={t} />)}
+                        </div>}
+                  </td>
+                  <td>
+                    {certs.length === 0
+                      ? <span style={{ color: P.textDim, fontSize: 12 }}>—</span>
+                      : <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                          {certs.map(t => <Badge key={t} color={CERT_CHIP_ACTIVE} text={t} />)}
                         </div>}
                   </td>
                   <td style={{ color: P.textMuted }}>{contacts.length || "—"}</td>
@@ -22437,10 +22500,9 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                     })()}
                   </td>
                   <td onClick={e => e.stopPropagation()}>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <Btn small variant="ghost" onClick={() => startEdit(c)}>Edit</Btn>
-                      <Btn small variant="danger" onClick={() => { const linkedCount = (projects||[]).filter(p => p.client === c.name || p.prime === c.name).length; const msg = linkedCount > 0 ? "Remove \"" + c.name + "\" from the client directory?\n\n⚠ This client appears on " + linkedCount + " project" + (linkedCount !== 1 ? "s" : "") + ". Removing them does not change those projects, but the client name will no longer link back here." : "Remove \"" + c.name + "\" from the client directory?"; if (window.confirm(msg)) deleteClient(c.id); }}>✕</Btn>
-                    </div>
+                    {/* Delete moved to the edit form — the row only opens the
+                        record now (whole row is also click-to-edit). */}
+                    <Btn small variant="ghost" onClick={() => startEdit(c)}>Edit</Btn>
                   </td>
                 </tr>
               );
