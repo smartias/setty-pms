@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-26-pms-v57-owner-agency";
+    window.__appVersion = "2026-06-26-pms-v58-owner-overview-box";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16743,6 +16743,19 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </div>
             </Field>
             <Field label="Prime's Project Number"><input value={project.primeProjectNumber || ""} onChange={e => updateField("primeProjectNumber", e.target.value)} style={{ width: "100%" }} placeholder="Prime's internal project #" /></Field>
+            <Field label="Owner / Agency">
+              <CompanyTypeahead
+                value={project.owner || ""}
+                onChange={val => updateField("owner", val)}
+                clients={clients}
+                filter="owner"
+                placeholder="Owner / agency at top of chain (e.g. NYCEDC, SUNY)"
+                onAddClient={onAddClient}
+              />
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 4, lineHeight: 1.4 }}>
+                The project owner / public agency — sits above the Prime. Shows as a gold chip in the directory and the contracting chain.
+              </div>
+            </Field>
 
             {isPipeline(project) ? (
               <Field label="Proposal Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
