@@ -1873,10 +1873,19 @@ Setty
 const SETTY_TEMPLATES = [
   { key: "kickoff",     label: "Kick-Off Form",                             icon: "🤝", action: "onenote", section: "Internal Meetings", search: "Kick off Form",               reusable: false },
   { key: "pcm",         label: "Project Coordination Meeting Agenda",        icon: "📋", action: "onenote", section: "Internal Meetings", search: "Project Coordination Meeting", reusable: true  },
-  { key: "comment",     label: "Comment Response Template SA",               icon: "📝", action: "copy",    search: "Comment Response",     copyLabel: "Comment Response", reusable: true  },
-  { key: "esi",         label: "Engineers Supplemental Instructions SA",     icon: "📝", action: "copy",    search: "Engineers Supplemental", copyLabel: "ESI",              reusable: true  },
   { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead",             copyLabel: "Letter",           reusable: true  },
 ];
+
+// A SharePoint Office-doc webUrl, opened directly, makes the browser DOWNLOAD the
+// file — which then opens in desktop Word's read-only "Protected View" (the
+// "isn't editable" complaint). Appending ?web=1&action=edit forces the file to
+// open in Word/Excel/PowerPoint for the web in edit mode instead. OneNote and
+// other non-Office URLs pass through untouched. (We avoid the ms-word:ofe
+// protocol — it errors on SharePoint paths; see [[feedback-msword-protocol]].)
+function toEditableOfficeUrl(url) {
+  if (!url || !/\.(docx?|xlsx?|pptx?)(\?|$)/i.test(url)) return url;
+  return url + (url.includes("?") ? "&" : "?") + "web=1&action=edit";
+}
 
 function TemplatesPanel({ project, staff }) {
   const storageKey = `pms_tpl_links_${project.id}`;
@@ -1950,7 +1959,7 @@ function TemplatesPanel({ project, staff }) {
                 {tpl.action === "onenote" ? "→ OneNote" : "→ Teams SharePoint"}
               </div>
               {isDone && url && (
-                <a href={url} target="_blank" rel="noopener noreferrer"
+                <a href={toEditableOfficeUrl(url)} target="_blank" rel="noopener noreferrer"
                   style={{ fontSize: 11, color: P.accentLight }}>
                   {tpl.reusable ? "Last created ↗" : "Open ↗"}
                 </a>
@@ -1958,7 +1967,7 @@ function TemplatesPanel({ project, staff }) {
               {errMsg && <div style={{ fontSize: 10, color: P.red, marginTop: 2 }}>{errMsg}</div>}
             </div>
             {isLocked ? (
-              <button onClick={() => window.open(url, "_blank")}
+              <button onClick={() => window.open(toEditableOfficeUrl(url), "_blank")}
                 style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5,
                   cursor: "pointer", border: "1px solid " + P.green,
                   background: P.green, color: "#fff",
@@ -26812,7 +26821,10 @@ function renameCompanyAcrossProjects(oldName, newName) {
     setView(`project:${p.id}`);
   }
 
-  const allPMs = useMemo(() => ["All", ...new Set(projects.map(p => p.projectManager).filter(Boolean))], [projects]);
+  const NO_PM_FILTER = "⚠ No PM assigned";
+  // Always offer the "No PM" filter so unassigned projects are one click away,
+  // even when the current list happens to have none.
+  const allPMs = useMemo(() => ["All", NO_PM_FILTER, ...new Set(projects.map(p => p.projectManager).filter(Boolean))], [projects]);
   const allQAQC = useMemo(() => {
     const names = new Set();
     projects.forEach(p => (p.teamMembers || []).forEach(m => { if (m.isQAQC && m.name) names.add(m.name); }));
@@ -26826,7 +26838,8 @@ function renameCompanyAcrossProjects(oldName, newName) {
       if (p.archived !== archived) return false;
       if (!archived && !isAwarded(p)) return false; // awarded-only in list view
       if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.projectNumber || "").toLowerCase().includes(search.toLowerCase())) return false;
-      if (filterPM !== "All" && p.projectManager !== filterPM) return false;
+      if (filterPM === NO_PM_FILTER) { if ((p.projectManager || "").trim()) return false; }
+      else if (filterPM !== "All" && p.projectManager !== filterPM) return false;
       if (filterQAQC !== "All" && !(p.teamMembers || []).some(m => m.isQAQC && m.name === filterQAQC)) return false;
       if (filterStatus !== "All" && p.status !== filterStatus) return false;
       if (filterContract !== "All" && p.contractStatus !== filterContract) return false;
