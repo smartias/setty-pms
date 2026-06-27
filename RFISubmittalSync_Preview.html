@@ -225,15 +225,30 @@ async function init(){
 }
 function rebuildPicker(){ const f=(document.getElementById("filter").value||"").toLowerCase(); const sel=document.getElementById("picker"); const keep=sel.value;
   const list=PROJECTS.filter(p=>!f||(p.number+" "+p.name).toLowerCase().includes(f));
-  sel.innerHTML=list.map(p=>`<option value="${p.id}">${p.activity?"⚡ ":""}${esc(p.number?p.number+" — ":"")}${esc(p.name)}</option>`).join("");
-  if(list.some(p=>p.id===keep)) sel.value=keep; }
+  sel.innerHTML=`<option value="__ALL__">★ All projects (${PROJECTS.length})</option>`+list.map(p=>`<option value="${p.id}">${p.activity?"⚡ ":""}${esc(p.number?p.number+" — ":"")}${esc(p.name)}</option>`).join("");
+  if(keep==="__ALL__"||list.some(p=>p.id===keep)) sel.value=keep; }
 
+async function selectAll(){
+  document.getElementById("out").innerHTML=`<p class="empty">Loading all Construction-Admin projects…</p>`;
+  try{
+    const ids=PROJECTS.map(p=>p.id); if(!ids.length){ document.getElementById("out").innerHTML=`<p class="empty">No CA projects.</p>`; return; }
+    const rows=await fetchJson(`pms_projects?id=in.(${ids.join(",")})&select=id,name:project->>name,number:project->>projectNumber,rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`);
+    const tag=(arr,row)=>(arr||[]).map(r=>({...r,__projId:row.id,__projName:row.name||"",__projNum:row.number||""}));
+    const rfis=[], subs=[], teams={};
+    for(const row of rows){ rfis.push(...tag(row.rfis,row)); subs.push(...tag(row.submittals,row)); teams[row.id]=row.team||[]; }
+    const byP=(a,b)=>String(a.__projNum||a.__projName).localeCompare(String(b.__projNum||b.__projName))||String(a.number).localeCompare(String(b.number));
+    rfis.sort(byP); subs.sort(byP);
+    CURRENT={ proj:{id:"__ALL__",name:"All Construction-Admin projects"}, allMode:true, rfis, submittals:subs, inbox:{rfi:[],submittal:[]}, teams };
+    renderProject();
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
+}
 async function selectProject(pid){
+  if(pid==="__ALL__") return selectAll();
   const proj=PROJECTS.find(p=>p.id===pid); if(!proj)return;
   document.getElementById("out").innerHTML=`<p class="empty">Loading ${esc(proj.name)}…</p>`;
   try{
     const [projRows, emails]=await Promise.all([
-      fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals`),
+      fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`),
       fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
@@ -247,7 +262,7 @@ async function selectProject(pid){
       }
       inbox[v.kind]=items;
     }
-    CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox };
+    CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox, teams:{[pid]:(logged.team||[])} };
     renderProject();
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
 }
@@ -259,12 +274,28 @@ function clearFilters(){ FILTER={type:"all",disc:"all",status:"all",text:""};
 function passFilter(r){
   if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
   if(FILTER.status!=="all" && (r.status||"")!==FILTER.status) return false;
-  if(FILTER.text){ const hay=((r.number||"")+" "+(r.title||"")+" "+(r.description||"")+" "+(r.specSection||"")+" "+(r.from||"")).toLowerCase(); if(!hay.includes(FILTER.text)) return false; }
+  if(FILTER.text){ const hay=((r.number||"")+" "+(r.title||"")+" "+(r.description||"")+" "+(r.specSection||"")+" "+(r.from||"")+" "+(r.__projNum||"")+" "+(r.__projName||"")).toLowerCase(); if(!hay.includes(FILTER.text)) return false; }
   return true;
 }
 
 /* =========================== RENDER =========================== */
 function statusPill(s){ const c=STATUS_COLOR[s]||{bg:"#1a1a1a",t:"#94a3b8"}; return `<span class="pill" style="background:${c.bg};color:${c.t}">${esc(s||"—")}</span>`; }
+function teamOf(r){ return (CURRENT.teams&&CURRENT.teams[r.__projId||CURRENT.proj.id])||[]; }
+function assigneeNames(r){ const team=teamOf(r); const names=(r.assignedTo||[]).map(id=>{const m=team.find(t=>t.id===id);return m?(m.name||m.role):null;}).filter(Boolean); let s=names.join(", "); if(r.subAssigned) s+=(s?" · ":"")+"sub: "+r.subAssigned; return s; }
+function csvCell(v){ v=String(v==null?"":v); return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+function exportCSV(kind){
+  const rows=(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).filter(passFilter); const am=CURRENT.allMode;
+  const cols = kind==="rfi"
+    ? [["Project",r=>r.__projNum||r.__projName],["RFI #",r=>r.number],["Title",r=>r.title],["Discipline",r=>r.discipline],["From",r=>r.from],["Assigned",r=>assigneeNames(r)],["Received",r=>r.dateReceived],["Due",r=>r.dueDate],["Responded",r=>r.dateResponded],["Status",r=>r.status],["Response",r=>r.response],["Notes",r=>r.notes]]
+    : [["Project",r=>r.__projNum||r.__projName],["Submittal #",r=>r.number],["Spec",r=>r.specSection],["Description",r=>r.description],["Discipline",r=>r.discipline],["Assigned",r=>assigneeNames(r)],["Stamp",r=>r.stamp],["Received",r=>r.dateReceived],["Due",r=>r.dueDate],["Returned",r=>r.dateReturned],["Status",r=>r.status],["Comments",r=>r.comments],["Notes",r=>r.notes]];
+  const use = am?cols:cols.filter(c=>c[0]!=="Project");
+  const lines=[use.map(c=>csvCell(c[0])).join(",")];
+  for(const r of rows) lines.push(use.map(c=>csvCell(c[1](r))).join(","));
+  const blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+  a.download=`${kind==="rfi"?"RFIs":"Submittals"}_${String(CURRENT.proj.number||CURRENT.proj.name||"all").replace(/[^\w.-]+/g,"_")}_${today()}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
 function renderProject(){
   const out=document.getElementById("out"); out.innerHTML=""; document.getElementById("filterbar").style.display="flex";
   let total=0, shownTot=0;
@@ -277,8 +308,10 @@ function renderSection(kind, title, logged, inbox){
   const sec=document.createElement("section"); sec.className="sec";
   const news=inbox.filter(i=>i.verdict==="new");
   const shown=logged.filter(passFilter);
+  const am=CURRENT.allMode;
   let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
-    `<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button></div>`;
+    `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
+    (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:`<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button>`)+`</div>`;
   if(news.length){
     const head = kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Status</th><th>Due</th><th>Asked by</th><th class='right'>Import</th>"
                               : "<th>Item</th><th>Title</th><th>Spec</th><th>Status</th><th>Due</th><th class='right'>Import</th>";
@@ -292,15 +325,18 @@ function renderSection(kind, title, logged, inbox){
   }
   if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from Procore/Forma above.</div>`; }
   else {
-    const head = kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Discipline</th><th>From</th><th>Due</th><th>Status</th><th>Updated by</th>"
-                              : "<th>Item</th><th>Title / Spec</th><th>Discipline</th><th>Stamp</th><th>Due</th><th>Status</th><th>Updated by</th>";
+    const pcol=am?"<th>Project</th>":"";
+    const head = pcol + (kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Discipline</th><th>From</th><th>Assigned</th><th>Due</th><th>Status</th><th>Updated by</th>"
+                              : "<th>Item</th><th>Title / Spec</th><th>Discipline</th><th>Assigned</th><th>Stamp</th><th>Due</th><th>Status</th><th>Updated by</th>");
     const rows=shown.map(r=>{
       const by=r.syncEditedBy||r.loggedBy||"";
+      const pc=am?`<td class="muted" title="${esc(r.__projName||"")}">${esc(r.__projNum||r.__projName||"")}</td>`:"";
+      const asg=esc(assigneeNames(r));
       const c = kind==="rfi"
-        ? `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.title||r.description||"—")}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`
-        : `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.description||r.title||"—")}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`;
-      return `<tr class="click" onclick='openEditor("${kind}",${esc(JSON.stringify(r.id))})'>${c}</tr>`; }).join("");
-    html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=7 class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
+        ? `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.title||r.description||"—")}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`
+        : `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.description||r.title||"—")}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`;
+      return `<tr class="click" onclick='openEditor("${kind}",${esc(JSON.stringify(r.id))})'>${pc}${c}</tr>`; }).join("");
+    html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=${am?9:8} class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
   }
   sec.innerHTML=html; return {el:sec, total:logged.length, shown:shown.length};
 }
@@ -318,15 +354,18 @@ function blankRFI(){ const t=today(); return {id:"",number:"",title:"",descripti
 function blankSub(){ const t=today(); return {id:"",number:"",specSection:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,10),dateReturned:"",comments:"",status:"Received",stamp:"—",resubNumber:0,notes:"",spFolderUrl:"",links:[],registerItemId:""}; }
 
 let EDIT=null;
-function openEditor(kind, id){
+async function openEditor(kind, id){
   const fields = kind==="rfi"?RFI_FIELDS:SUB_FIELDS;
   const list = kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
   const isNew = !id;
   let rec;
   if(isNew){ rec = kind==="rfi"?blankRFI():blankSub(); rec.number = (kind==="rfi"?"RFI-":"SUB-")+String(list.length+1).padStart(3,"0"); }
   else { rec = list.find(r=>r.id===id); if(!rec) return; }
-  EDIT={kind,isNew,id:rec.id};
-  const sp = rec.spFolderUrl ? `<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer">📁 source email folder</a>` : "";
+  const projId = rec.__projId||CURRENT.proj.id;
+  EDIT={kind,isNew,id:rec.id,projId};
+  let team=(CURRENT.teams&&CURRENT.teams[projId])||[], subs=[];
+  try{ const pr=await fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`); if(pr[0]){ team=pr[0].team||team; subs=pr[0].subs||[]; } }catch(e){}
+  team=team.filter(t=>t&&(t.name||t.role));
   const grid = fields.map(f=>{
     const v = rec[f.k]==null?"":rec[f.k];
     let input;
@@ -335,11 +374,24 @@ function openEditor(kind, id){
     else input=`<input id="f_${f.k}" type="${f.t||"text"}" value="${esc(v)}">`;
     return `<div class="fld ${f.full?"full":""}"><label>${esc(f.l)}</label>${input}</div>`;
   }).join("");
+  const cur=new Set(rec.assignedTo||[]);
+  const asgHtml = team.length ? team.map(t=>`<label style="display:inline-flex;align-items:center;gap:5px;margin:2px 12px 2px 0;font-size:12px;white-space:nowrap"><input type="checkbox" class="asg" value="${esc(t.id)}" ${cur.has(t.id)?"checked":""}> ${esc(t.name||t.role)}${(t.role&&t.name)?` <span class="muted">(${esc(t.role)})</span>`:""}</label>`).join("") : `<span class="muted" style="font-size:12px">No team members on this project — set them up in the PMS.</span>`;
+  const subVal=rec.subAssigned||"";
+  const subName=s=>(s&&typeof s==="object")?(s.name||s.company||s.discipline||""):String(s||"");
+  const subHtml = (subs&&subs.length)
+    ? `<select id="f_subAssigned"><option value="">— none —</option>${subs.map(s=>{const n=subName(s);return `<option ${n===subVal?"selected":""}>${esc(n)}</option>`;}).join("")}</select>`
+    : `<input id="f_subAssigned" value="${esc(subVal)}" placeholder="subconsultant (optional)">`;
+  const spHtml = `<div style="display:flex;gap:6px"><input id="f_spFolderUrl" value="${esc(rec.spFolderUrl||"")}" placeholder="paste SharePoint folder URL" style="flex:1">`+
+    (rec.spFolderUrl?`<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer" style="background:#0078d4;color:#fff;border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center">📁 Open</a>`:"")+`</div>`+
+    `<div class="muted" style="font-size:11px;margin-top:3px">Creating a new folder needs Microsoft sign-in — do that in the main PMS, then paste the link here.</div>`;
+  const extra = `<div class="fld full"><label>Assigned to</label><div style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
+    `<div class="fld full"><label>Subconsultant (optional)</label>${subHtml}</div>`+
+    `<div class="fld full"><label>SharePoint folder</label>${spHtml}</div>`;
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
   document.getElementById("modal").innerHTML =
     `<div class="mhead"><h3>${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><span class="x" onclick="closeEditor()">✕</span></div>`+
-    `<div class="grid">${grid}</div>`+
-    `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}<span class="by">${by} ${sp}</span><span class="spacer"></span>`+
+    `<div class="grid">${grid}${extra}</div>`+
+    `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}<span class="by">${by}</span><span class="spacer"></span>`+
     `<button onclick="closeEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`;
   document.getElementById("overlay").classList.add("show");
 }
@@ -347,6 +399,9 @@ function closeEditor(){ document.getElementById("overlay").classList.remove("sho
 function collectEdits(kind){
   const fields=kind==="rfi"?RFI_FIELDS:SUB_FIELDS; const e={};
   for(const f of fields){ const el=document.getElementById("f_"+f.k); if(!el)continue; let v=el.value; if(f.t==="number")v=Number(v)||0; e[f.k]=v; }
+  e.assignedTo=[...document.querySelectorAll(".asg:checked")].map(c=>c.value);
+  const sub=document.getElementById("f_subAssigned"); if(sub) e.subAssigned=sub.value;
+  const sp=document.getElementById("f_spFolderUrl"); if(sp) e.spFolderUrl=sp.value;
   return e;
 }
 async function saveEditor(){
@@ -357,7 +412,7 @@ async function saveEditor(){
     await writeArray(arrKey, arr=>{
       if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
       return arr.map(r=> r.id===id ? {...r, ...edits} : r);
-    });
+    }, false, EDIT.projId);
     closeEditor(); toast(isNew?"Added to log ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
   }catch(err){ toast(err.message, false); }
 }
@@ -365,7 +420,7 @@ async function deleteRecord(){
   if(!EDIT||EDIT.isNew)return; const {kind,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
   const rec=(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).find(r=>r.id===id);
   if(!confirm(`Delete ${rec?.number||""} — "${rec?.title||rec?.description||""}"?\n\nThis removes it from the log and cannot be undone.`)) return;
-  try{ await writeArray(arrKey, arr=>arr.filter(r=>r.id!==id)); closeEditor(); toast("Deleted ✓", true); selectProject(CURRENT.proj.id); }
+  try{ await writeArray(arrKey, arr=>arr.filter(r=>r.id!==id), false, EDIT.projId); closeEditor(); toast("Deleted ✓", true); selectProject(CURRENT.proj.id); }
   catch(err){ toast(err.message, false); }
 }
 
@@ -383,8 +438,8 @@ async function importSelected(kind){
 }
 
 /* =========================== WRITE (version-guarded, mirrors saveProjectV2) =========================== */
-async function writeArray(arrKey, mutate, returnAdded){
-  const pid=CURRENT.proj.id;
+async function writeArray(arrKey, mutate, returnAdded, projId){
+  const pid=projId||CURRENT.proj.id;
   const rows=await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
   if(!rows.length) throw new Error("Project not found.");
   const proj=rows[0].project, ver=rows[0].version;
