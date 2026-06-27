@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-27-pms-v59-company-certs-ownersrep";
+    window.__appVersion = "2026-06-27-pms-v60-timeline-sla-templates";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1873,10 +1873,19 @@ Setty
 const SETTY_TEMPLATES = [
   { key: "kickoff",     label: "Kick-Off Form",                             icon: "🤝", action: "onenote", section: "Internal Meetings", search: "Kick off Form",               reusable: false },
   { key: "pcm",         label: "Project Coordination Meeting Agenda",        icon: "📋", action: "onenote", section: "Internal Meetings", search: "Project Coordination Meeting", reusable: true  },
-  { key: "comment",     label: "Comment Response Template SA",               icon: "📝", action: "copy",    search: "Comment Response",     copyLabel: "Comment Response", reusable: true  },
-  { key: "esi",         label: "Engineers Supplemental Instructions SA",     icon: "📝", action: "copy",    search: "Engineers Supplemental", copyLabel: "ESI",              reusable: true  },
   { key: "letterhead",  label: "Letterhead SA",                              icon: "📄", action: "copy",    search: "Letterhead",             copyLabel: "Letter",           reusable: true  },
 ];
+
+// A SharePoint Office-doc webUrl, opened directly, makes the browser DOWNLOAD the
+// file — which then opens in desktop Word's read-only "Protected View" (the
+// "isn't editable" complaint). Appending ?web=1&action=edit forces the file to
+// open in Word/Excel/PowerPoint for the web in edit mode instead. OneNote and
+// other non-Office URLs pass through untouched. (We avoid the ms-word:ofe
+// protocol — it errors on SharePoint paths; see [[feedback-msword-protocol]].)
+function toEditableOfficeUrl(url) {
+  if (!url || !/\.(docx?|xlsx?|pptx?)(\?|$)/i.test(url)) return url;
+  return url + (url.includes("?") ? "&" : "?") + "web=1&action=edit";
+}
 
 function TemplatesPanel({ project, staff }) {
   const storageKey = `pms_tpl_links_${project.id}`;
@@ -1950,7 +1959,7 @@ function TemplatesPanel({ project, staff }) {
                 {tpl.action === "onenote" ? "→ OneNote" : "→ Teams SharePoint"}
               </div>
               {isDone && url && (
-                <a href={url} target="_blank" rel="noopener noreferrer"
+                <a href={toEditableOfficeUrl(url)} target="_blank" rel="noopener noreferrer"
                   style={{ fontSize: 11, color: P.accentLight }}>
                   {tpl.reusable ? "Last created ↗" : "Open ↗"}
                 </a>
@@ -1958,7 +1967,7 @@ function TemplatesPanel({ project, staff }) {
               {errMsg && <div style={{ fontSize: 10, color: P.red, marginTop: 2 }}>{errMsg}</div>}
             </div>
             {isLocked ? (
-              <button onClick={() => window.open(url, "_blank")}
+              <button onClick={() => window.open(toEditableOfficeUrl(url), "_blank")}
                 style={{ padding: "4px 11px", fontSize: 11, borderRadius: 5,
                   cursor: "pointer", border: "1px solid " + P.green,
                   background: P.green, color: "#fff",
@@ -9582,6 +9591,41 @@ function isOverdue(item) {
   return new Date(item.dueDate + "T00:00:00") < new Date();
 }
 
+// ── SLA / deadline urgency ────────────────────────────────────────────────────
+// A graduated "how close is this deadline" chip for any dated, status-bearing
+// item (RFIs, submittals, action items). Closed/stopped items get no chip — the
+// status badge already says they're done, and a green "Due in 12d" on a closed
+// item is just noise.
+//
+// Which statuses mean "the clock has stopped" per type:
+const RFI_CLOSED_STATUSES = ["Closed", "Void", "Responded", "Returned"];
+const SUBMITTAL_CLOSED_STATUSES = ["Returned", "Void"];
+
+// Sara — "due soon" threshold (calendar days). Anything inside this window but
+// not yet overdue shows amber instead of green. Tune to taste.
+const SLA_DUE_SOON_DAYS = 2;
+
+function slaState(dueDate, isClosed) {
+  if (!dueDate || isClosed) return null;                 // no date, or clock stopped → no chip
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((new Date(dueDate + "T00:00:00") - today) / 86400000);
+  if (days < 0)                    return { label: "Overdue " + (-days) + "d", color: P.red };
+  if (days === 0)                  return { label: "Due today",                color: P.red };
+  if (days <= SLA_DUE_SOON_DAYS)   return { label: "Due in " + days + "d",     color: P.yellow };
+  return { label: "Due in " + days + "d", color: P.green };
+}
+
+function SlaChip({ dueDate, isClosed }) {
+  const s = slaState(dueDate, isClosed);
+  if (!s) return null;
+  return (
+    <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 10, fontSize: 10.5, fontWeight: 700,
+      background: s.color + "22", color: s.color, border: "1px solid " + s.color + "55", whiteSpace: "nowrap" }}>
+      {s.label}
+    </span>
+  );
+}
+
 function newRFI(cos, dueDays) {
   const today = new Date().toISOString().slice(0, 10);
   const num = cos.length + 1;
@@ -10031,8 +10075,9 @@ function RFIsView({ project, onChange, staff, clients }) {
                     {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>Unassigned</span>}
                   </td>
                   <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{r.dateReceived || "—"}</td>
-                  <td style={{ fontSize: 12, whiteSpace: "nowrap", color: overdue ? P.red : P.textMuted, fontWeight: overdue ? 700 : 400 }}>
-                    {r.dueDate || "—"}{overdue ? " ⚠" : ""}
+                  <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                    <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{r.dueDate || "—"}</div>
+                    <SlaChip dueDate={r.dueDate} isClosed={RFI_CLOSED_STATUSES.includes(r.status)} />
                   </td>
                   <td><Badge color={sc} text={r.status} /></td>
                   <td>
@@ -10233,8 +10278,9 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                     {assigneeNames.length > 0 ? assigneeNames.join(", ") : <span style={{ color: P.textDim }}>—</span>}
                   </td>
                   <td style={{ fontSize: 12, color: P.textMuted, whiteSpace: "nowrap" }}>{s.dateReceived || "—"}</td>
-                  <td style={{ fontSize: 12, whiteSpace: "nowrap", color: overdue ? P.red : P.textMuted, fontWeight: overdue ? 700 : 400 }}>
-                    {s.dueDate || "—"}{overdue ? " ⚠" : ""}
+                  <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                    <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{s.dueDate || "—"}</div>
+                    <SlaChip dueDate={s.dueDate} isClosed={SUBMITTAL_CLOSED_STATUSES.includes(s.status)} />
                   </td>
                   <td>{s.stamp && s.stamp !== "—" ? <Badge color={stc} text={s.stamp} /> : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}</td>
                   <td><Badge color={sc} text={s.status} /></td>
@@ -14300,400 +14346,6 @@ function CalendarView({ project, onChange }) {
 </script>
 <script type="text/x-pms-jsx" data-presets="react">
 
-function printWeeklyDeliverables(projects) {
-  const today = new Date();
-  const todayStr = localDateStr(today);
-  // Get Monday and Friday of current week
-  const day = today.getDay();
-  const diffMon = day === 0 ? -6 : 1 - day;
-  const monDate = new Date(today); monDate.setDate(today.getDate() + diffMon);
-  const friDate = new Date(monDate); friDate.setDate(monDate.getDate() + 4);
-  const weekStart = localDateStr(monDate);
-  const weekEnd   = localDateStr(friDate);
-
-  const fmtD = d => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-
-  // Collect all milestones due this week across all active projects
-  const active = projects.filter(p => !p.archived);
-  const items = [];
-  active.forEach(proj => {
-    (proj.milestones || []).forEach(m => {
-      if (!m.dueDate) return;
-      if (m.dueDate >= weekStart && m.dueDate <= weekEnd) {
-        items.push({
-          dueDate: m.dueDate,
-          projectName: proj.name || "—",
-          projectNumber: proj.projectNumber || "—",
-          pm: proj.projectManager || "—",
-          milestoneName: m.name || "—",
-          phase: m.phaseName || m.phase || "—",
-          status: m.pctComplete >= 100 ? "Complete" : m.pctComplete > 0 ? "In Progress" : "Not Started",
-          pct: m.pctComplete || 0,
-          notes: m.notes || "",
-        });
-      }
-    });
-  });
-
-  // Sort by date then project
-  items.sort((a, b) => a.dueDate !== b.dueDate ? (a.dueDate > b.dueDate ? 1 : -1) : a.projectName.localeCompare(b.projectName));
-
-  const statusColor = s => s === "Complete" ? "#1a7a34" : s === "In Progress" ? "#b45309" : "#44546A";
-  const statusBg    = s => s === "Complete" ? "#e6f4ea"  : s === "In Progress" ? "#fff3e0"  : "#f0f0f0";
-
-  // Group by day
-  const DAY_LABELS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-  const byDay = {};
-  items.forEach(it => {
-    if (!byDay[it.dueDate]) byDay[it.dueDate] = [];
-    byDay[it.dueDate].push(it);
-  });
-  const sortedDays = Object.keys(byDay).sort();
-
-  let rowIdx = 0;
-  const rows = items.length ? sortedDays.map(dateKey => {
-    const dayItems = byDay[dateKey];
-    const dow = new Date(dateKey + "T00:00:00").getDay();
-    const dayHeader = `
-      <tr>
-        <td colspan="8" style="background:#1F3864;color:#fff;font-weight:700;font-size:10pt;padding:8px 10px;letter-spacing:0.3px;">
-          ${DAY_LABELS[dow]} &mdash; ${fmtD(dateKey)}
-          <span style="font-weight:400;font-size:8.5pt;margin-left:12px;opacity:0.8;">${dayItems.length} deliverable${dayItems.length !== 1 ? "s" : ""}</span>
-        </td>
-      </tr>`;
-    const itemRows = dayItems.map(it => {
-      const bg = rowIdx++ % 2 === 0 ? "" : "background:#F8F8F8;";
-      return `
-      <tr style="${bg}">
-        <td style="font-weight:600;">${it.projectName}</td>
-        <td style="font-family:monospace;font-size:9pt;">${it.projectNumber}</td>
-        <td style="font-weight:500;">${it.milestoneName}</td>
-        <td style="color:#44546A;font-size:9pt;">${it.phase}</td>
-        <td>${it.pm}</td>
-        <td>
-          <span style="background:${statusBg(it.status)};color:${statusColor(it.status)};padding:2px 8px;border-radius:8px;font-size:8pt;font-weight:600;white-space:nowrap;">
-            ${it.status}${it.pct > 0 && it.pct < 100 ? " (" + it.pct + "%)" : ""}
-          </span>
-        </td>
-        <td style="color:#44546A;font-size:9pt;">${it.notes || "—"}</td>
-      </tr>`;
-    }).join("");
-    return dayHeader + itemRows;
-  }).join("") : `
-    <tr><td colspan="7" style="text-align:center;padding:24px;color:#44546A;font-style:italic;">No deliverables due this week.</td></tr>`;
-
-  const html = `
-    <div class="doc-header">
-      <div>
-        ${DOC_LOGO_HTML}
-      </div>
-      <div class="doc-type-badge">
-        <div class="doc-type">WEEKLY DELIVERABLES</div>
-        <div class="doc-number">Week of ${fmtD(weekStart)}</div>
-        <div style="font-size:9pt;color:#44546A;margin-top:6px;">Through ${fmtD(weekEnd)}</div>
-      </div>
-    </div>
-
-    <div style="background:#f0f4ff;border-left:4px solid #2F5496;padding:10px 16px;border-radius:0 6px 6px 0;margin-bottom:20px;font-size:10pt;color:#1F3864;">
-      <strong>${items.length} deliverable${items.length !== 1 ? "s" : ""}</strong> due ${fmtD(weekStart)} – ${fmtD(weekEnd)}
-      · <span style="color:#44546A;">${[...new Set(items.map(i => i.projectNumber))].filter(n => n !== "—").join(", ") || "No active projects"}</span>
-    </div>
-
-    <table class="line-items">
-      <thead>
-        <tr>
-          <th>Project</th>
-          <th>Proj #</th>
-          <th>Milestone</th>
-          <th>Phase</th>
-          <th>PM</th>
-          <th>Status</th>
-          <th>Notes</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-
-    <div class="doc-footer">
-      <span>SETTY &amp; Associates, LTD, PC</span>
-      <span>Weekly Deliverables · Week of ${fmtD(weekStart)}</span>
-      <span>Printed ${fmtD(todayStr)}</span>
-    </div>
-  `;
-  printDocument(html, "Weekly Deliverables — " + fmtD(weekStart));
-}
-
-function TeamCalendar({ projects, onNavigateToProject }) {
-  const today = new Date();
-  const [calYear, setCalYear] = useState(today.getFullYear());
-  const [calMonth, setCalMonth] = useState(today.getMonth());
-  const [selected, setSelected] = useState(null);
-  const [filterProject, setFilterProject] = useState("All");
-
-  const active = projects.filter(p => !p.archived);
-
-  // Assign a distinct color per project
-  const PROJECT_CAL_COLORS = ["#3b82f6","#10b981","#8b5cf6","#f59e0b","#ef4444","#06b6d4","#ec4899","#84cc16","#f97316","#6366f1"];
-  const projectColorMap = {};
-  active.forEach((p, i) => { projectColorMap[p.id] = PROJECT_CAL_COLORS[i % PROJECT_CAL_COLORS.length]; });
-
-  const allMilestones = active
-    .filter(p => filterProject === "All" || p.id === filterProject)
-    .flatMap(p => (p.milestones || []).map(m => ({ ...m, projectName: p.name, projectNumber: p.projectNumber || "", projectId: p.id, pm: p.projectManager })));
-
-  function prevMonth() {
-    if (calMonth === 0) { setCalYear(y => y - 1); setCalMonth(11); } else setCalMonth(m => m - 1);
-    setSelected(null);
-  }
-  function nextMonth() {
-    if (calMonth === 11) { setCalYear(y => y + 1); setCalMonth(0); } else setCalMonth(m => m + 1);
-    setSelected(null);
-  }
-  function goToday() { setCalYear(today.getFullYear()); setCalMonth(today.getMonth()); setSelected(null); }
-
-  const daysInMonth = getDaysInMonth(calYear, calMonth);
-  const firstDay = getFirstDayOfMonth(calYear, calMonth);
-  const cells = Array(firstDay).fill(null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1));
-  while (cells.length % 7 !== 0) cells.push(null);
-
-  function getMilestonesForDay(day) {
-    const dateStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
-    return allMilestones.filter(m => m.dueDate === dateStr);
-  }
-
-  const isToday = (day) => day && today.getFullYear() === calYear && today.getMonth() === calMonth && today.getDate() === day;
-
-  // Count milestones this month for the header
-  const monthStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}`;
-  const thisMonthCount = allMilestones.filter(m => (m.dueDate || "").startsWith(monthStr)).length;
-
-  // ── Outlook sync state ──
-  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | done | error
-  const [syncLog, setSyncLog] = useState([]); // [{name, status, message}]
-  const [syncedCount, setSyncedCount] = useState(0);
-  const [showSyncLog, setShowSyncLog] = useState(false);
-
-  // All milestones with a due date (across all projects, not just filtered view)
-  const allSyncableMilestones = active.flatMap(p =>
-    (p.milestones || [])
-      .filter(m => m.dueDate)
-      .map(m => ({ ...m, projectName: p.name, projectNumber: p.projectNumber || "", projectId: p.id }))
-  );
-
-  async function syncToOutlook() {
-    setSyncStatus("syncing");
-    setSyncLog([]);
-    setSyncedCount(0);
-
-    // Event IDs stored in milestone.calendarEventId (Supabase) — no localStorage needed
-    const log = [];
-    let successCount = 0;
-    // Track updates: { projectId -> { milestoneId -> eventId } }
-    const projectMilestoneUpdates = {};
-
-    for (let i = 0; i < allSyncableMilestones.length; i++) {
-      const m = allSyncableMilestones[i];
-      const existingEventId = m.calendarEventId || null;
-      setSyncLog([...log, { name: `${m.projectName} — ${m.name}`, status: "pending" }]);
-
-      const result = await createOrUpdateCalendarEvent(m, m.projectName, m.projectNumber, existingEventId, m.pm);
-
-      if (result.success) {
-        if (!projectMilestoneUpdates[m.projectId]) projectMilestoneUpdates[m.projectId] = {};
-        projectMilestoneUpdates[m.projectId][m.id] = result.eventId;
-        log.push({ name: `${m.projectName} — ${m.name}`, status: "success", message: existingEventId ? "Updated" : "Created" });
-        successCount++;
-      } else {
-        log.push({ name: `${m.projectName} — ${m.name}`, status: "error", message: result.error });
-      }
-      setSyncLog([...log]);
-      setSyncedCount(successCount);
-    }
-
-    // Write eventIds back into project milestone objects via onUpdateProject
-    Object.entries(projectMilestoneUpdates).forEach(([projectId, milestoneUpdates]) => {
-      const proj = projects.find(p => p.id === projectId);
-      if (!proj) return;
-      const newMilestones = (proj.milestones || []).map(m =>
-        milestoneUpdates[m.id] ? { ...m, calendarEventId: milestoneUpdates[m.id] } : m
-      );
-      onUpdateProject({ ...proj, milestones: newMilestones });
-    });
-    setSyncStatus(log.some(l => l.status === "error") ? "done_with_errors" : "done");
-    setShowSyncLog(true);
-  }
-
-  return (
-    <div style={{ padding: "24px 32px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-        <div>
-          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Team Calendar</div>
-          <div style={{ color: P.textMuted, fontSize: 13 }}>{thisMonthCount} milestone{thisMonthCount !== 1 ? "s" : ""} due in {MONTH_NAMES[calMonth]}</div>
-        </div>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <select value={filterProject} onChange={e => setFilterProject(e.target.value)} style={{ width: 220 }}>
-            <option value="All">All Projects</option>
-            {active.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-          <Btn small variant="ghost" onClick={() => printWeeklyDeliverables(active)}>🖨 Weekly Report</Btn>
-
-        </div>
-      </div>
-
-      {/* Sync log */}
-      {showSyncLog && syncLog.length > 0 && (
-        <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 16, marginBottom: 20, maxHeight: 260, overflowY: "auto" }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Sync Log → NYC Shared Calendar (sara.arias@setty.com) — {syncedCount}/{allSyncableMilestones.length} events</div>
-          {syncLog.map((l, i) => (
-            <div key={i} style={{ padding: "5px 0", borderBottom: `1px solid ${P.border}`, fontSize: 12 }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                <span style={{ color: l.status === "success" ? P.green : P.red, minWidth: 16, marginTop: 1 }}>
-                  {l.status === "success" ? "✓" : "✗"}
-                </span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: P.text, fontWeight: 500 }}>{l.name}</div>
-                  {l.status === "error" && (
-                    <div style={{ color: P.red, fontSize: 11, marginTop: 2 }}>{l.message}</div>
-                  )}
-                  {l.status === "error" && l.debug && (
-                    <pre style={{ color: P.textDim, fontSize: 10, marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-all", background: "#0a0c14", padding: "6px 8px", borderRadius: 4, maxHeight: 120, overflowY: "auto" }}>{l.debug}</pre>
-                  )}
-                  {l.status === "success" && (
-                    <div style={{ color: P.green, fontSize: 11, marginTop: 2 }}>{l.message}</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Nav */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
-        <Btn small variant="ghost" onClick={prevMonth}>‹ Prev</Btn>
-        <div style={{ fontWeight: 700, fontSize: 16, minWidth: 180, textAlign: "center" }}>{MONTH_NAMES[calMonth]} {calYear}</div>
-        <Btn small variant="ghost" onClick={nextMonth}>Next ›</Btn>
-        <Btn small variant="ghost" onClick={goToday}>Today</Btn>
-      </div>
-
-      {/* Project color legend */}
-      {filterProject === "All" && (
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-          {active.map(p => (
-            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-              <div style={{ width: 10, height: 10, borderRadius: "50%", background: projectColorMap[p.id] }} />
-              <span style={{ color: P.textMuted }}>{p.name || "Unnamed"}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Calendar grid */}
-      <div style={{ border: `1px solid ${P.border}`, borderRadius: 10, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: P.bg }}>
-          {DAY_NAMES.map(d => (
-            <div key={d} style={{ padding: "8px 0", textAlign: "center", fontSize: 11, fontWeight: 600, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em" }}>{d}</div>
-          ))}
-        </div>
-        {Array.from({ length: cells.length / 7 }, (_, wi) => (
-          <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }}>
-            {cells.slice(wi * 7, wi * 7 + 7).map((day, di) => {
-              const dayMilestones = day ? getMilestonesForDay(day) : [];
-              const isSelected = selected?.day === day;
-              const isTodayCell = isToday(day);
-              return (
-                <div key={di}
-                  onClick={() => day && setSelected(isSelected ? null : { day, milestones: dayMilestones })}
-                  style={{
-                    minHeight: 80,
-                    borderTop: `1px solid ${P.border}`,
-                    borderRight: di < 6 ? `1px solid ${P.border}` : "none",
-                    padding: "6px 8px",
-                    background: isSelected ? P.accentDim : day ? P.card : P.bg,
-                    cursor: day ? "pointer" : "default",
-                    transition: "background .1s",
-                  }}
-                  onMouseEnter={e => { if (day && !isSelected) e.currentTarget.style.background = P.cardHover; }}
-                  onMouseLeave={e => { if (day && !isSelected) e.currentTarget.style.background = P.card; }}
-                >
-                  {day && (
-                    <>
-                      <div style={{
-                        fontSize: 13, fontWeight: isTodayCell ? 700 : 400,
-                        color: isTodayCell ? "#fff" : P.textMuted,
-                        background: isTodayCell ? P.accent : "transparent",
-                        width: 24, height: 24, borderRadius: "50%",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        marginBottom: 4,
-                      }}>{day}</div>
-                      {dayMilestones.slice(0, 3).map(m => {
-                        const dotColor = projectColorMap[m.projectId] || P.accent;
-                        const st = milestoneStatus(m.pctComplete);
-                        return (
-                          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
-                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: st === "Completed" ? P.green : dotColor, flexShrink: 0 }} />
-                            <span style={{ fontSize: 10, color: P.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "calc(100% - 12px)" }}>{m.name}</span>
-                          </div>
-                        );
-                      })}
-                      {dayMilestones.length > 3 && (
-                        <div style={{ fontSize: 10, color: P.textDim }}>+{dayMilestones.length - 3} more</div>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-
-      {/* Day detail panel */}
-      {selected && (
-        <div style={{ marginTop: 20, background: P.card, border: `1px solid ${P.border}`, borderRadius: 10, padding: 20 }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>
-            {MONTH_NAMES[calMonth]} {selected.day}, {calYear}
-            {selected.milestones.length === 0 && <span style={{ color: P.textDim, fontWeight: 400, fontSize: 13, marginLeft: 12 }}>Nothing logged</span>}
-          </div>
-          {selected.milestones.map(m => {
-            const st = milestoneStatus(m.pctComplete);
-            const stColor = MILESTONE_STATUS_COLORS[st] || MILESTONE_STATUS_COLORS["Not Started"];
-            const dotColor = projectColorMap[m.projectId] || P.accent;
-            const typeColor = m.type === "billable" ? { bg: P.accentDim, text: P.accentLight }
-              : m.type === "change-order" ? { bg: P.yellowDim, text: P.yellow }
-              : { bg: P.purpleDim, text: P.purple };
-            return (
-              <div key={m.id} style={{ padding: "10px 14px", marginBottom: 8, background: P.bg, borderRadius: 8, border: `1px solid ${P.border}` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{m.name}</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                        <div style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor }} />
-                        <button onClick={() => onNavigateToProject(m.projectId)}
-                          style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 12, padding: 0, fontWeight: 600 }}>
-                          {m.projectName}
-                        </button>
-                      </div>
-                      <Badge color={typeColor} text={m.type === "billable" ? "Billable" : m.type === "change-order" ? "Change Order" : "Non-Billable"} />
-                      <span style={{ fontSize: 12, color: P.textDim }}>Phase: {m.phase}</span>
-                      {m.fee > 0 && <span style={{ fontSize: 12, color: P.green, fontFamily: "JetBrains Mono" }}>{fmt(m.fee)}</span>}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 80 }}><ProgressBar pct={m.pctComplete || 0} color={m.pctComplete >= 100 ? P.green : P.accent} /></div>
-                    <span style={{ fontSize: 12, fontFamily: "JetBrains Mono", color: P.textMuted, minWidth: 32 }}>{m.pctComplete || 0}%</span>
-                    <Badge color={stColor} text={st} />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 
 // ─── SUBCONSULTANTS ───────────────────────────────────────────────────────────
@@ -16359,7 +16011,7 @@ const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator
 // changes which section the tab nests under.
 const TAB_GROUPS = [
   { name: "Overview",                    tabs: ["Overview", "Directory", "Scope", "Contract"] },
-  { name: "Project Record",              tabs: ["Investigation", "Notes", "Emails"] },
+  { name: "Project Record",              tabs: ["Timeline", "Investigation", "Notes", "Emails"] },
   { name: "Fee",                         tabs: ["Fee Calculator", "Change Orders"] },
   { name: "Team",                        tabs: ["Team"] },
   { name: "Schedule",                    tabs: ["Schedule", "Gantt"] },
@@ -16370,6 +16022,202 @@ const TAB_GROUPS = [
   { name: "Photos",                      tabs: ["Photos"] },
 ];
 const PIPELINE_HIDDEN_TABS = ["Change Orders", "RFIs", "Submittals", "Gantt"];
+
+// ── Project Timeline ─────────────────────────────────────────────────────────
+// A two-sided "now" line for ONE project: upcoming due-dates above the NOW
+// divider, recent activity below it. PURELY DERIVED — it reads arrays already
+// on the project object and writes nothing. No new DB rows, no migration, and
+// nothing added to the V2 load. (Emails come from the inline project.emails[]
+// mirror; if that ever looks thin for a project, swap the email source in
+// collectTimelineEvents for a loadProjectEmails(project.id, …) fetch like
+// EmailsView does — that's the only thing here that touches a non-inline array.)
+
+// One chip + color/icon per event source. Order = chip order.
+const TIMELINE_KINDS = [
+  { key: "email",     label: "Emails",       icon: "✉️", color: P.accentLight },
+  { key: "note",      label: "Notes",        icon: "📝", color: P.purple },
+  { key: "milestone", label: "Milestones",   icon: "🎯", color: P.green },
+  { key: "rfi",       label: "RFIs",         icon: "❓",       color: "#60a5fa" },
+  { key: "submittal", label: "Submittals",   icon: "📋", color: "#34d399" },
+  { key: "action",    label: "Action Items", icon: "✅",       color: P.yellow },
+];
+const TL_COLOR = Object.fromEntries(TIMELINE_KINDS.map(k => [k.key, k.color]));
+const TL_ICON  = Object.fromEntries(TIMELINE_KINDS.map(k => [k.key, k.icon]));
+
+// ──────────────────────────────────────────────────────────────────────────────
+// How much history should the timeline surface? Per-TYPE windows (in days):
+// how long each kind of past event lingers below the NOW line. The signal value
+// of each source differs — a CC'd email ages out fast, but a logged meeting or a
+// completed milestone is worth keeping around far longer — so each gets its own
+// horizon. Overdue / still-open items are ALWAYS kept regardless of these, so a
+// stale RFI never silently drops off the bottom.
+//
+// Sara — tune these freely. Raise a number to keep that source longer; lower it
+// to declutter. A kind not listed falls back to the default below.
+const TIMELINE_PAST_DAYS = {
+  email:     60,    // high volume → keep it tight
+  note:      365,   // meetings / decisions are high-signal → keep a year
+  milestone: 365,   // completed milestones = real project history
+  rfi:       180,   // ~2 quarters of CA history
+  submittal: 180,
+  action:    365,   // closed action items worth remembering
+};
+const TIMELINE_PAST_DAYS_DEFAULT = 120;
+
+function keepPastEvent(ev, daysAgo) {
+  if (ev.overdue) return true;            // never hide something still open & late
+  const window = TIMELINE_PAST_DAYS[ev.kind] ?? TIMELINE_PAST_DAYS_DEFAULT;
+  return daysAgo <= window;
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Flatten the project's parallel arrays into one list of timeline events.
+// Each event: { dateStr:"YYYY-MM-DD", kind, title, sub, overdue }.
+function collectTimelineEvents(project) {
+  const out = [];
+  const pastDue = d => !!d && new Date(d + "T00:00:00") < new Date();
+  const add = (dateStr, kind, title, sub, overdue) => {
+    if (!dateStr) return;                                  // undated record → off the time axis
+    out.push({ dateStr: String(dateStr).slice(0, 10), kind, title: title || "—", sub: sub || "", overdue: !!overdue });
+  };
+
+  // PAST — emails (when sent/received)
+  (project.emails || []).forEach(em =>
+    add(em.date, "email", em.subject || "(no subject)", em.from || ""));
+
+  // PAST — notes & meetings (when logged); action items are handled below
+  (project.notes || []).forEach(n => {
+    if (!n.actionItem) add(n.createdAt, "note", n.category || "Note", (n.body || "").replace(/\s+/g, " ").slice(0, 90));
+  });
+
+  // SCHEDULE — milestones (their due date). Overdue only if NOT completed —
+  // milestones use "Completed"/pctComplete, not the RFI status words isOverdue knows.
+  (project.milestones || []).forEach(m => {
+    if (!m.name || !m.dueDate || m.cancelled) return;
+    const od = pastDue(m.dueDate) && m.status !== "Completed" && (m.pctComplete || 0) < 100;
+    add(m.dueDate, "milestone", m.name, m.phase || "", od);
+  });
+
+  // SCHEDULE — RFIs (isOverdue() already knows which statuses stop the clock)
+  (project.rfis || []).forEach(r =>
+    add(r.dueDate, "rfi", (r.number ? r.number + " · " : "") + (r.title || "RFI"), r.status || "", isOverdue(r)));
+
+  // SCHEDULE — submittals
+  (project.submittals || []).forEach(s =>
+    add(s.dueDate, "submittal", (s.number ? s.number + " · " : "") + (s.specSection || s.description || "Submittal"), s.status || "", isOverdue(s)));
+
+  // SCHEDULE — open action items (notes flagged actionItem, not yet done)
+  (project.notes || []).forEach(n => {
+    if (n.actionItem && (n.actionStatus || "open") !== "done")
+      add(n.actionDueDate, "action", (n.body || "Action item").replace(/\s+/g, " ").slice(0, 70),
+          n.actionOwner ? "owner: " + n.actionOwner : "", pastDue(n.actionDueDate));
+  });
+
+  return out;
+}
+
+function TimelineView({ project }) {
+  const [hidden, setHidden] = React.useState({});         // { kind: true } = hidden
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const { upcoming, past } = React.useMemo(() => {
+    const now = new Date(todayStr + "T00:00:00");
+    const up = [], pa = [];
+    collectTimelineEvents(project).forEach(ev => {
+      if (hidden[ev.kind]) return;
+      if (ev.dateStr >= todayStr) up.push(ev);
+      else {
+        const daysAgo = Math.round((now - new Date(ev.dateStr + "T00:00:00")) / 86400000);
+        if (keepPastEvent(ev, daysAgo)) pa.push(ev);
+      }
+    });
+    up.sort((a, b) => b.dateStr.localeCompare(a.dateStr));  // furthest future on top, nearest just above NOW
+    pa.sort((a, b) => b.dateStr.localeCompare(a.dateStr));  // most recent just below NOW
+    return { upcoming: up, past: pa };
+  }, [project, hidden, todayStr]);
+
+  const fmtDay = iso => new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  const Row = ({ ev }) => (
+    <div style={{ display: "flex", gap: 10, padding: "7px 0", alignItems: "baseline", borderBottom: `1px solid ${P.border}` }}>
+      <div style={{ width: 100, flexShrink: 0, fontSize: 11, color: P.textDim, fontFamily: "monospace" }}>{fmtDay(ev.dateStr)}</div>
+      <div style={{ width: 18, flexShrink: 0, textAlign: "center" }}>{TL_ICON[ev.kind]}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ color: ev.overdue ? P.red : P.text, fontSize: 13, fontWeight: ev.overdue ? 700 : 500 }}>
+          {ev.overdue ? "⚠ " : ""}{ev.title}
+        </span>
+        {ev.sub ? <span style={{ color: P.textDim, fontSize: 12, marginLeft: 8 }}>{ev.sub}</span> : null}
+      </div>
+      <div style={{ flexShrink: 0, width: 4, alignSelf: "stretch", borderRadius: 2, background: TL_COLOR[ev.kind] }} />
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: 840 }}>
+      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Timeline</div>
+      <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>
+        Upcoming deadlines above the line, recent activity below — the whole job in one scroll.
+      </div>
+
+      {/* Kind filter chips */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
+        {TIMELINE_KINDS.map(k => {
+          const on = !hidden[k.key];
+          return (
+            <button key={k.key} onClick={() => setHidden(h => ({ ...h, [k.key]: on }))}
+              style={{ background: on ? k.color + "22" : "transparent", border: `1px solid ${on ? k.color : P.border}`,
+                color: on ? k.color : P.textDim, borderRadius: 14, padding: "3px 10px", fontSize: 11.5, cursor: "pointer" }}>
+              {k.icon} {k.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Upcoming (furthest future on top → nearest just above NOW) */}
+      {upcoming.length > 0 && upcoming.map((ev, i) => <Row key={"u" + i} ev={ev} />)}
+
+      {/* NOW divider */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "12px 0" }}>
+        <div style={{ flex: 1, height: 2, background: P.accent }} />
+        <div style={{ fontSize: 11, fontWeight: 700, color: P.accentLight, letterSpacing: 1 }}>NOW · {fmtDay(todayStr)}</div>
+        <div style={{ flex: 1, height: 2, background: P.accent }} />
+      </div>
+
+      {/* Past (most recent just below NOW → oldest at bottom) */}
+      {past.length > 0
+        ? past.map((ev, i) => <Row key={"p" + i} ev={ev} />)
+        : <div style={{ color: P.textDim, fontSize: 12, padding: "8px 0" }}>No recent activity in the current window.</div>}
+
+      {upcoming.length === 0 && past.length === 0 && (
+        <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0", textAlign: "center" }}>
+          Nothing to show yet — emails, notes, milestones, RFIs, submittals, and action items will appear here as they're added.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Archive guard ─────────────────────────────────────────────────────────────
+// Called by the Archive button before a project is archived (never on unarchive).
+// Returns null to allow archiving silently, or a short warning STRING surfaced in an
+// extra "are you sure" confirm (the button prepends "⚠ This project still has …").
+// Warns on open work: open action items, open RFIs, open submittals.
+//
+// TODO (Sara): tune to taste. To also warn on unbilled billable milestones, add:
+//   const openMs = (project.milestones||[]).filter(m => m.type === "billable" && m.status !== "Completed" && !m.cancelled).length;
+//   if (openMs) parts.push(openMs + " unbilled billable milestone" + (openMs > 1 ? "s" : ""));
+function archiveBlockers(project) {
+  const parts = [];
+  const openAI = (project.notes || []).filter(n => n.actionItem && (n.actionStatus || "open") !== "done").length;
+  if (openAI) parts.push(openAI + " open action item" + (openAI > 1 ? "s" : ""));
+  const openRfis = (project.rfis || []).filter(r => r.status === "Open" || r.status === "Pending Sub Response").length;
+  if (openRfis) parts.push(openRfis + " open RFI" + (openRfis > 1 ? "s" : ""));
+  const SUB_OPEN = ["Received", "Under Review", "Pending Sub Review", "Resubmittal Required"];
+  const openSubs = (project.submittals || []).filter(s => SUB_OPEN.includes(s.status)).length;
+  if (openSubs) parts.push(openSubs + " open submittal" + (openSubs > 1 ? "s" : ""));
+  if (!parts.length) return null;
+  return parts.length === 1 ? parts[0] : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+}
 
 function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
   const [tab, setTab] = useState("Overview");
@@ -16644,7 +16492,10 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               if (project.archived) {
                 if (window.confirm("Unarchive \"" + project.name + "\"?\n\nThis will make it visible in the active projects list again.")) updateField("archived", false);
               } else {
-                if (window.confirm("Archive \"" + project.name + "\"?\n\nArchived projects are hidden from the main list and dashboards. You can unarchive at any time.")) updateField("archived", true);
+                const blocker = archiveBlockers(project);
+                const base = "Archive \"" + project.name + "\"?\n\nArchived projects are hidden from the main list and dashboards. You can unarchive at any time.";
+                const msg = blocker ? ("⚠ This project still has " + blocker + ".\n\n" + base) : base;
+                if (window.confirm(msg)) updateField("archived", true);
               }
             }}>
             {project.archived ? "Unarchive" : "Archive"}
@@ -16888,6 +16739,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Checklists" && <ProjectChecklistsView project={project} onChange={onUpdate} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
         {tab === "Gantt" && <GanttView project={project} />}
+        {tab === "Timeline" && <TimelineView project={project} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
         {tab === "Emails" && <EmailsView project={project} onChange={onUpdate} />}
         {tab === "Reimbursables" && <ReimbursablesView project={project} onChange={onUpdate} />}
@@ -18386,7 +18238,7 @@ function NotesView({ project, onChange }) {
               {"\u00b7"} {n.body.length > 120 ? n.body.slice(0, 120) + "\u2026" : n.body}
               <span style={{ color: P.textDim, marginLeft: 8 }}>{"\u2014"} {n.actionOwner || n.author}</span>
               {n.actionDueDate && (
-                <span style={{ color: P.textDim, marginLeft: 6 }}>due {n.actionDueDate}</span>
+                <span style={{ marginLeft: 8 }}><SlaChip dueDate={n.actionDueDate} isClosed={false} /></span>
               )}
             </div>
           ))}
@@ -26048,7 +25900,7 @@ function App() {
   const [view, setView] = useState(() => {
     // Deep link: read hash on load e.g. #project:SAPX246008.00
     const hash = window.location.hash.slice(1);
-    if (hash.startsWith("project:") || ["dashboard","list","calendar","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
+    if (hash.startsWith("project:") || ["dashboard","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
       return hash;
     }
     return "dashboard";
@@ -26969,7 +26821,10 @@ function renameCompanyAcrossProjects(oldName, newName) {
     setView(`project:${p.id}`);
   }
 
-  const allPMs = useMemo(() => ["All", ...new Set(projects.map(p => p.projectManager).filter(Boolean))], [projects]);
+  const NO_PM_FILTER = "⚠ No PM assigned";
+  // Always offer the "No PM" filter so unassigned projects are one click away,
+  // even when the current list happens to have none.
+  const allPMs = useMemo(() => ["All", NO_PM_FILTER, ...new Set(projects.map(p => p.projectManager).filter(Boolean))], [projects]);
   const allQAQC = useMemo(() => {
     const names = new Set();
     projects.forEach(p => (p.teamMembers || []).forEach(m => { if (m.isQAQC && m.name) names.add(m.name); }));
@@ -26983,7 +26838,8 @@ function renameCompanyAcrossProjects(oldName, newName) {
       if (p.archived !== archived) return false;
       if (!archived && !isAwarded(p)) return false; // awarded-only in list view
       if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.projectNumber || "").toLowerCase().includes(search.toLowerCase())) return false;
-      if (filterPM !== "All" && p.projectManager !== filterPM) return false;
+      if (filterPM === NO_PM_FILTER) { if ((p.projectManager || "").trim()) return false; }
+      else if (filterPM !== "All" && p.projectManager !== filterPM) return false;
       if (filterQAQC !== "All" && !(p.teamMembers || []).some(m => m.isQAQC && m.name === filterQAQC)) return false;
       if (filterStatus !== "All" && p.status !== filterStatus) return false;
       if (filterContract !== "All" && p.contractStatus !== filterContract) return false;
@@ -27060,7 +26916,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Pending COs", key: "pendingcos" }, { label: "Calendar", key: "calendar" }, { label: "Staff", key: "staff" }, { label: "Global Directory", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Pending COs", key: "pendingcos" }, { label: "Staff", key: "staff" }, { label: "Global Directory", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -27121,7 +26977,6 @@ function renameCompanyAcrossProjects(oldName, newName) {
       {loadErrorBanner}
 
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} staff={staff} />}
-      {view === "calendar" && <TeamCalendar projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onRenameCompany={renameCompanyAcrossProjects} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
