@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-27-pms-v60-timeline-sla-templates";
+    window.__appVersion = "2026-06-27-pms-v61-billing-method";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16662,6 +16662,16 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </select>
             </Field>
 
+            <Field label="Billing Method">
+              <select value={project.billingMethod || ""} onChange={e => updateField("billingMethod", e.target.value)} style={{ width: "100%" }}>
+                <option value="">— Select —</option>
+                <option>Milestone</option>
+                <option>Percent Complete</option>
+                <option>Hourly</option>
+                <option>Unit Price</option>
+                <option>Mixed</option>
+              </select>
+            </Field>
             <Field label="Project Address" style={{ gridColumn: "1 / -1" }}>
               <input value={project.projectAddress || ""} onChange={e => updateField("projectAddress", e.target.value)} style={{ width: "100%" }} placeholder="Street address" />
             </Field>
