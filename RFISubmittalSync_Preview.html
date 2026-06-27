@@ -3,58 +3,108 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RFI / Submittal Sync — Procore &amp; Autodesk Forma</title>
+<title>RFI / Submittal Tracker — Setty</title>
 <style>
-  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0; --muted:#94a3b8;
-          --new:#f59e0b; --matched:#475569; --ok:#10b981; --accent:#38bdf8; --update:#0ea5e9; }
+  :root { --bg:#0f172a; --card:#1e293b; --card2:#172033; --line:#334155; --txt:#e2e8f0; --muted:#94a3b8;
+          --new:#f59e0b; --matched:#475569; --ok:#10b981; --accent:#38bdf8; --update:#0ea5e9; --danger:#ef4444; }
   * { box-sizing:border-box; }
   body { margin:0; font:14px/1.5 system-ui,Segoe UI,sans-serif; background:var(--bg); color:var(--txt); }
-  header { padding:16px 24px; border-bottom:1px solid var(--line); }
-  h1 { font-size:18px; margin:0 0 4px; }
-  .banner { background:#14532d; color:#bbf7d0; padding:8px 24px; font-size:13px; }
-  .banner b { color:#fff; }
-  .pickbar { padding:14px 24px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:#0b1220; }
+  a { color:var(--accent); }
+  header { padding:16px 24px 12px; border-bottom:1px solid var(--line); }
+  h1 { font-size:18px; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:13px; }
+  .pickbar { padding:12px 24px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:#0b1220; }
   .pickbar select, .pickbar input { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:7px; padding:7px 10px; font-size:13px; }
-  .pickbar select { min-width:360px; }
-  main { padding:8px 24px 80px; }
-  .src { margin-top:20px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .src h2 { font-size:14px; margin:0; padding:11px 16px; background:var(--card); border-bottom:1px solid var(--line); }
-  .src h2 small { color:var(--muted); font-weight:400; }
-  .summary { padding:10px 16px; color:var(--muted); border-bottom:1px solid var(--line); }
-  .summary b { color:var(--accent); }
+  .pickbar select#picker { min-width:340px; }
+  .pickbar .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .picknote { color:var(--muted); font-size:12px; }
+  .guide { margin:14px 24px 0; border:1px solid #1e3a5f; background:#0e1b2e; border-radius:10px; }
+  .guide h3 { margin:0; padding:10px 14px; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:8px; }
+  .guide .body { padding:0 16px 14px; font-size:13px; color:#cbd5e1; }
+  .guide ol { margin:6px 0; padding-left:20px; } .guide li { margin:3px 0; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; font-size:12px; color:var(--muted); align-items:center; }
+  main { padding:8px 24px 90px; }
+  .sec { margin-top:20px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .sec > .head { display:flex; align-items:center; gap:10px; padding:11px 16px; background:var(--card); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .sec > .head h2 { font-size:15px; margin:0; } .sec > .head .count { color:var(--muted); font-weight:400; font-size:13px; }
+  .sec > .head .spacer { flex:1; }
+  .inbox { background:#1a2436; border-bottom:1px solid var(--line); }
+  .inbox .ihead { padding:9px 16px; font-size:13px; color:#fbbf24; font-weight:600; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-weight:600; }
-  td.title { max-width:300px; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; }
-  .badge.new { background:var(--new); color:#1c1917; }
-  .badge.matched { background:var(--matched); color:#cbd5e1; }
+  th,td { text-align:left; padding:7px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  tbody tr.click { cursor:pointer; } tbody tr.click:hover { background:#1a2233; }
+  td.title { max-width:340px; }
+  .num { font-family:ui-monospace,Menlo,Consolas,monospace; font-weight:700; color:var(--accent); white-space:nowrap; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; white-space:nowrap; }
+  .badge.new { background:var(--new); color:#1c1917; } .badge.matched { background:var(--matched); color:#cbd5e1; }
   .badge.update { background:var(--update); color:#082f49; }
-  .status { font-weight:600; }
-  .muted { color:var(--muted); }
-  .note { color:var(--muted); padding:16px; font-size:13px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:600; }
+  .muted { color:var(--muted); } .right { text-align:right; }
+  .empty { padding:16px; color:var(--muted); font-size:13px; }
   .err { color:#fca5a5; padding:12px 16px; }
-  .actions { padding:14px 16px; border-top:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-  button.imp { background:var(--ok); color:#04240f; border:none; padding:9px 16px; border-radius:8px; cursor:pointer; font-weight:700; }
-  button.imp:disabled { background:#334155; color:#64748b; cursor:not-allowed; }
-  .res { font-size:13px; font-weight:600; }
-  .res.ok { color:var(--ok); } .res.bad { color:#fca5a5; }
+  .actions { padding:12px 16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; cursor:pointer; border-radius:8px; border:1px solid var(--line); padding:7px 13px; background:#334155; color:#e2e8f0; font-weight:600; }
+  button.primary { background:var(--accent); color:#04240f; border:none; } button.go { background:var(--ok); color:#04240f; border:none; }
+  button.danger { background:transparent; color:var(--danger); border-color:#7f1d1d; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
   input[type=checkbox]{ width:16px; height:16px; cursor:pointer; }
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:flex-start; justify-content:center; padding:40px 16px; overflow:auto; z-index:50; }
+  .overlay.show { display:flex; }
+  .modal { background:var(--card); border:1px solid var(--line); border-radius:12px; width:680px; max-width:100%; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  .modal .mhead { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; }
+  .modal .mhead h3 { margin:0; font-size:16px; } .modal .mhead .x { margin-left:auto; cursor:pointer; color:var(--muted); font-size:20px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:16px 18px; }
+  .fld { display:flex; flex-direction:column; gap:4px; } .fld.full { grid-column:1 / -1; }
+  .fld label { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:700; }
+  .fld input, .fld select, .fld textarea { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; }
+  .fld textarea { min-height:60px; resize:vertical; }
+  .mfoot { padding:14px 18px; border-top:1px solid var(--line); display:flex; gap:10px; align-items:center; }
+  .mfoot .spacer { flex:1; } .mfoot .by { font-size:11px; color:var(--muted); }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#0b1220; border:1px solid var(--line); border-radius:10px; padding:10px 16px; font-size:13px; font-weight:600; display:none; z-index:60; }
+  .toast.show { display:block; } .toast.ok { color:var(--ok); border-color:#14532d; } .toast.bad { color:#fca5a5; border-color:#7f1d1d; }
 </style>
 </head>
 <body>
-<div class="banner">Reads &amp; writes the <b>same</b> PMS data the main app uses. <b>Import</b> appends <b>slim</b> records (metadata + a link back to the source email) — it never copies email bodies, and never edits records you already have.</div>
 <header>
-  <h1>RFI / Submittal Sync — Procore &amp; Autodesk Forma</h1>
-  <div class="muted">Pick a project, review what arrived via Procore/Forma notification emails, and append the new ones to its RFI/Submittal log.</div>
+  <h1>RFI / Submittal Tracker</h1>
+  <div class="sub">Construction-Administration RFIs &amp; submittals — log by hand or pull them in from Procore / Autodesk Forma. Saves to the same place as the main PMS.</div>
 </header>
+
 <div class="pickbar">
   <label class="muted" for="filter">Project</label>
-  <input id="filter" placeholder="type to filter…" oninput="rebuildPicker()" />
+  <input id="filter" placeholder="filter projects…" oninput="rebuildPicker()" style="width:150px" />
   <select id="picker" onchange="selectProject(this.value)"></select>
-  <span id="picknote" class="muted"></span>
+  <span id="picknote" class="picknote"></span>
+  <span class="right">
+    <label class="muted" for="who">You</label>
+    <input id="who" placeholder="your name (for the log)" style="width:170px" oninput="saveWho()" />
+  </span>
 </div>
-<main id="out"><p class="note">Loading projects…</p></main>
+
+<div class="guide" id="guide">
+  <h3 onclick="toggleGuide()"><span id="gchev">▾</span> ℹ️ How this works <span class="muted" style="font-weight:400">(click to collapse)</span></h3>
+  <div class="body" id="gbody">
+    <ol>
+      <li><b>Pick your project.</b> Only jobs marked <b>"In Construction Administration"</b> appear. A ⚡ means it has Procore/Forma emails ready to pull in.</li>
+      <li><b>See everything logged.</b> Click any RFI or submittal row to open and edit it. Use <b>+ Add</b> to log a new one by hand (for items that don't come through Procore/Forma — e.g. emailed or PDF transmittals).</li>
+      <li><b>Pull in Procore / Forma items.</b> New ones show in the amber <b>📥 To import</b> strip — tick the ones you want and click Import. They become normal RFIs/submittals you can then edit.</li>
+    </ol>
+    <div class="muted" style="font-size:12px">Put your name in the <b>“You”</b> box (top-right) so the log shows who added or changed each item. Safe by design: it never overwrites someone else's edit (it asks you to refresh instead), and importing the same item twice does nothing.</div>
+    <div class="legend">
+      <span><span class="badge new">NEW</span> in Procore/Forma, not yet in your log</span>
+      <span><span class="badge matched">matched</span> already logged here</span>
+      <span><span class="badge update">UPDATE</span> a newer revision exists — review by hand</span>
+    </div>
+  </div>
+</div>
+
+<main id="out"><p class="empty">Loading projects…</p></main>
+
+<div class="overlay" id="overlay" onclick="if(event.target===this)closeEditor()">
+  <div class="modal" id="modal"></div>
+</div>
+<div class="toast" id="toast"></div>
 
 <script>
 /* ---- Supabase config (same anon path SettyPMS.html uses, ~line 695) ---- */
@@ -62,253 +112,266 @@ const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 const H = { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_ANON_KEY };
 
-/* Per-vendor routing: which sender → which kind/parser. */
+const CA_STATUS = "In Construction Administration";
 const VENDORS = [
   { match:/procoretech/i, vendor:"Procore",        kind:"rfi",       arrKey:"rfis",       parse:parseProcore },
   { match:/forma/i,       vendor:"Autodesk Forma", kind:"submittal", arrKey:"submittals", parse:parseForma   },
 ];
 
-/* ===== STATUS MAPPING (approved) ===== */
+/* ---- enums (mirror SettyPMS.html) ---- */
+const RFI_STATUSES = ["Open","Pending Sub Response","Responded","Closed","Void"];
+const SUB_STATUSES = ["Received","Under Review","Pending Sub Review","Returned","Resubmittal Required","Void"];
+const SUB_STAMPS   = ["Approved","Approved as Noted","Revise and Resubmit","Rejected","—"];
+const RFI_DISC = ["Mechanical","Electrical","Plumbing","Fire Protection","Technology","Multi-Discipline","Other"];
+const SUB_DISC = ["Mechanical","Electrical","Plumbing","Fire Protection","Technology","Architectural","Structural","Civil","Other"];
+const STATUS_COLOR = {
+  "Open":{bg:"#1e3a5f",t:"#60a5fa"}, "Pending Sub Response":{bg:"#3b2a1a",t:"#f59e0b"}, "Responded":{bg:"#1a3a2a",t:"#34d399"},
+  "Closed":{bg:"#1a1a2e",t:"#94a3b8"}, "Void":{bg:"#1a1a1a",t:"#6b7280"},
+  "Received":{bg:"#1e3a5f",t:"#60a5fa"}, "Under Review":{bg:"#2a1a3b",t:"#a78bfa"}, "Pending Sub Review":{bg:"#3b2a1a",t:"#f59e0b"},
+  "Returned":{bg:"#1a3a2a",t:"#34d399"}, "Resubmittal Required":{bg:"#3b1a1a",t:"#f87171"},
+};
+
+/* status mapping for sync (approved) */
 const RFI_STATUS = { "New RFI":"Open", "Response to RFI":"Responded", "Status Update on RFI":"Responded", "RFI Closed":"Closed" };
 const SUB_STATUS = { "open":"Received", "required":"Received", "closed":"Returned", "void":"Void" };
 const SUB_REVISION_STATUS = "Resubmittal Required";
 
-/* ===== MATCHING — NEW vs already-logged (append-only) ===== */
-function matchRFI(extNum, title, loggedRFIs){
-  const t = (title||"").toLowerCase().trim();
-  return loggedRFIs.find(r => digits(r.number) === extNum)
-      || loggedRFIs.find(r => t && (r.title||"").toLowerCase().includes(t)) || null;
-}
-function matchSubmittal(extNum, loggedSubs){
-  const hits = loggedSubs.filter(s => itemSeg(s.number) === extNum);
-  return hits.length ? { row:hits[0], maxRev:Math.max(...hits.map(s=>revSeg(s.number))) } : null;
-}
-const digits  = s => (String(s||"").match(/\d+/)||[""])[0].replace(/^0+/,"") || "0";
-const itemSeg = s => { const m=String(s||"").match(/-(\d+)-\d+$/); return m? String(+m[1]) : null; };
-const revSeg  = s => { const m=String(s||"").match(/-(\d+)$/);     return m? +m[1] : 0; };
+/* ---- small utils ---- */
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const uid = () => Math.random().toString(36).slice(2,10);
+const today = () => new Date().toISOString().slice(0,10);
+function addWD(dateStr, days){ const d=new Date((dateStr||today())+"T00:00:00"); let c=0; while(c<days){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6)c++; } return d.toISOString().slice(0,10); }
+function getWho(){ return (document.getElementById("who").value||"").trim(); }
+function saveWho(){ try{ localStorage.setItem("rfiTrackUser", getWho()); }catch(e){} }
+function toast(msg, ok){ const t=document.getElementById("toast"); t.textContent=msg; t.className="toast show "+(ok?"ok":"bad"); setTimeout(()=>t.className="toast",3500); }
+function toggleGuide(){ const b=document.getElementById("gbody"), c=document.getElementById("gchev"); const open=b.style.display!=="none"; b.style.display=open?"none":"block"; c.textContent=open?"▸":"▾"; try{localStorage.setItem("rfiTrackGuide",open?"0":"1");}catch(e){} }
 
-/* ---- helpers ---- */
-function normDate(s){
-  if(!s) return "";
-  const m = s.match(/([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})/); if(!m) return "";
-  const mo = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(m[1].slice(0,3).toLowerCase());
-  return mo<0 ? "" : `${m[3]}-${String(mo+1).padStart(2,"0")}-${m[2].padStart(2,"0")}`;
-}
+/* ---- sync parse helpers ---- */
+function normDate(s){ if(!s)return""; const m=s.match(/([A-Za-z]{3,9})\s+(\d{1,2}),\s*(\d{4})/); if(!m)return""; const mo=["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(m[1].slice(0,3).toLowerCase()); return mo<0?"":`${m[3]}-${String(mo+1).padStart(2,"0")}-${m[2].padStart(2,"0")}`; }
 const dayOf = iso => (iso||"").slice(0,10);
-const between = (body,a,b) => {
-  const i = body.indexOf(a); if(i<0) return "";
-  let j = b.map(x=>{const k=body.indexOf(x,i+a.length); return k<0?Infinity:k;}).reduce((m,x)=>Math.min(m,x),Infinity);
-  return body.slice(i+a.length, j===Infinity?i+a.length+800:j).replace(/\s+\n/g,"\n").trim();
-};
-const label = (body,name) => {
-  const re = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\s*:?\\s*\\n+\\s*([^\\n]+)","i");
-  const m = body.match(re); return m? m[1].trim() : "";
-};
-
-/* ---- parsers (carry record_id + sp_folder_url for the email reference) ---- */
-function parseProcore(email){
-  const subj = email.subject||"", body = (email.body_text||"").replace(/\r/g,"");
-  if(/overdue RFI/i.test(subj)) return null;
-  const sm = subj.match(/(New RFI|Response to RFI|Status Update on RFI|RFI Closed)\s*,?\s*#?(\d+)/i);
-  if(!sm) return null;
-  const event = sm[1].replace(/\b\w/g,c=>c.toUpperCase()).replace(/Rfi/g,"RFI");
-  const titleM = body.match(/RFI\s+\d+:\s*(.+)/) || subj.match(/#\d+,\s*(.+)$/);
-  return { extNum:String(+sm[2]), date:email.email_date, event,
-    title:(titleM?titleM[1]:"").trim(),
-    dueDate: normDate(label(body,"Due Date")), askedBy: label(body,"Asked by"),
-    question: between(body,"Question:",["Attachments","Additional Information","Official Responses"]),
-    dateInit: normDate(label(body,"Date Initiated")),
-    recordId: email.record_id, spFolder: email.sp_folder_url||"" };
-}
-function parseForma(email){
-  const subj = email.subject||"", body = (email.body_text||"").replace(/\r/g,"");
-  const sm = subj.match(/Submittal\s*#(\d+)/i); if(!sm) return null;
-  const isRev = /new revision/i.test(subj);
-  const im = body.match(/item\s*#\d+\s*(?:\(Rev\s*(\d+)\))?\s*(.+)/i);
-  const details = body.slice(Math.max(0, body.indexOf("Item Details")));
-  return { extNum:String(+sm[1]), date:email.email_date, isRev,
-    rev: im && im[1] ? +im[1] : 0, title:(im?im[2]:"").trim(),
-    specSection: label(details,"Sub Spec Section") || label(details,"Spec Section"),
-    formaStatus: (label(details,"Status")||"").trim(), dueDate: normDate(label(details,"Due Date")),
-    ballInCourt: label(details,"Ball in court"),
-    recordId: email.record_id, spFolder: email.sp_folder_url||"" };
-}
-
-/* ---- collapse stream -> one item (latest wins) ---- */
-function collapse(events, kind){
-  const byNum = {};
-  for(const e of events){ (byNum[e.extNum] = byNum[e.extNum]||[]).push(e); }
-  return Object.entries(byNum).map(([num, evs])=>{
-    evs.sort((a,b)=> new Date(a.date)-new Date(b.date));
-    const last = evs[evs.length-1], first = evs[0];
-    if(kind==="rfi") return { extNum:num, title:last.title||first.title, status: RFI_STATUS[last.event]||"Open",
-      dueDate:last.dueDate||first.dueDate, from:first.askedBy, question:first.question||last.question,
-      dateReceived:first.dateInit, lastDate:dayOf(last.date), recordId:first.recordId, spFolder:first.spFolder };
-    const rev = Math.max(...evs.map(e=>e.rev));
-    return { extNum:num, title:last.title, specSection:last.specSection, rev,
-      status: last.isRev ? SUB_REVISION_STATUS : (SUB_STATUS[(last.formaStatus||"").toLowerCase()]||"Received"),
+const between = (body,a,b)=>{ const i=body.indexOf(a); if(i<0)return""; let j=b.map(x=>{const k=body.indexOf(x,i+a.length);return k<0?Infinity:k;}).reduce((m,x)=>Math.min(m,x),Infinity); return body.slice(i+a.length, j===Infinity?i+a.length+800:j).replace(/\s+\n/g,"\n").trim(); };
+const label = (body,name)=>{ const re=new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\s*:?\\s*\\n+\\s*([^\\n]+)","i"); const m=body.match(re); return m?m[1].trim():""; };
+function parseProcore(email){ const subj=email.subject||"",body=(email.body_text||"").replace(/\r/g,""); if(/overdue RFI/i.test(subj))return null;
+  const sm=subj.match(/(New RFI|Response to RFI|Status Update on RFI|RFI Closed)\s*,?\s*#?(\d+)/i); if(!sm)return null;
+  const event=sm[1].replace(/\b\w/g,c=>c.toUpperCase()).replace(/Rfi/g,"RFI"); const titleM=body.match(/RFI\s+\d+:\s*(.+)/)||subj.match(/#\d+,\s*(.+)$/);
+  return { extNum:String(+sm[2]), date:email.email_date, event, title:(titleM?titleM[1]:"").trim(), dueDate:normDate(label(body,"Due Date")),
+    askedBy:label(body,"Asked by"), question:between(body,"Question:",["Attachments","Additional Information","Official Responses"]),
+    dateInit:normDate(label(body,"Date Initiated")), recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
+function parseForma(email){ const subj=email.subject||"",body=(email.body_text||"").replace(/\r/g,""); const sm=subj.match(/Submittal\s*#(\d+)/i); if(!sm)return null;
+  const isRev=/new revision/i.test(subj); const im=body.match(/item\s*#\d+\s*(?:\(Rev\s*(\d+)\))?\s*(.+)/i); const details=body.slice(Math.max(0,body.indexOf("Item Details")));
+  return { extNum:String(+sm[1]), date:email.email_date, isRev, rev:im&&im[1]?+im[1]:0, title:(im?im[2]:"").trim(),
+    specSection:label(details,"Sub Spec Section")||label(details,"Spec Section"), formaStatus:(label(details,"Status")||"").trim(),
+    dueDate:normDate(label(details,"Due Date")), ballInCourt:label(details,"Ball in court"), recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
+function collapse(events, kind){ const by={}; for(const e of events){ (by[e.extNum]=by[e.extNum]||[]).push(e); }
+  return Object.entries(by).map(([num,evs])=>{ evs.sort((a,b)=>new Date(a.date)-new Date(b.date)); const last=evs[evs.length-1],first=evs[0];
+    if(kind==="rfi") return { extNum:num, title:last.title||first.title, status:RFI_STATUS[last.event]||"Open", dueDate:last.dueDate||first.dueDate,
+      from:first.askedBy, question:first.question||last.question, dateReceived:first.dateInit, lastDate:dayOf(last.date), recordId:first.recordId, spFolder:first.spFolder };
+    const rev=Math.max(...evs.map(e=>e.rev));
+    return { extNum:num, title:last.title, specSection:last.specSection, rev, status:last.isRev?SUB_REVISION_STATUS:(SUB_STATUS[(last.formaStatus||"").toLowerCase()]||"Received"),
       dueDate:last.dueDate, ballInCourt:last.ballInCourt, lastDate:dayOf(last.date), recordId:last.recordId, spFolder:last.spFolder };
-  }).sort((a,b)=> (+a.extNum)-(+b.extNum));
-}
+  }).sort((a,b)=>(+a.extNum)-(+b.extNum)); }
+const digits  = s => (String(s||"").match(/\d+/)||[""])[0].replace(/^0+/,"")||"0";
+const itemSeg = s => { const m=String(s||"").match(/-(\d+)-\d+$/); return m?String(+m[1]):null; };
+const revSeg  = s => { const m=String(s||"").match(/-(\d+)$/); return m?+m[1]:0; };
+function matchRFI(extNum,title,logged){ const t=(title||"").toLowerCase().trim(); return logged.find(r=>digits(r.number)===extNum)||logged.find(r=>t&&(r.title||"").toLowerCase().includes(t))||null; }
+function matchSub(extNum,logged){ const h=logged.filter(s=>itemSeg(s.number)===extNum); return h.length?{row:h[0],maxRev:Math.max(...h.map(s=>revSeg(s.number)))}:null; }
+function toRfiRecord(it,pid,vendor){ return { id:`sync-procore-${pid}-${it.extNum}`, number:`RFI-${String(it.extNum).padStart(3,"0")}`, title:it.title||"",
+  description:(it.question||"").replace(/\s+/g," ").trim().slice(0,200), from:it.from||"", discipline:"Mechanical", assignedTo:[], subAssigned:"",
+  dateReceived:it.dateReceived||"", dueDate:it.dueDate||"", dateResponded:(it.status==="Responded"||it.status==="Closed")?it.lastDate:"", response:"",
+  status:it.status, notes:`Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl:it.spFolder||"", links:[], source:"procore", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
+function toSubRecord(it,pid,vendor){ return { id:`sync-forma-${pid}-${it.extNum}`, number:`SUB-${String(it.extNum).padStart(3,"0")}`, specSection:it.specSection||"",
+  description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:"Mechanical", assignedTo:[], subAssigned:"", dateReceived:"", dueDate:it.dueDate||"",
+  dateReturned:it.status==="Returned"?it.lastDate:"", comments:"", status:it.status, stamp:"—", resubNumber:it.rev||0,
+  notes:`Imported from ${vendor} · Submittal #${it.extNum}${it.rev?` (Rev ${it.rev})`:""}`, spFolderUrl:it.spFolder||"", links:[], registerItemId:"", source:"forma", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
 
-/* ---- SLIM record builders (metadata + email reference; NO body copy) ---- */
-function toRfiRecord(it, pid, vendor){
-  return { id:`sync-procore-${pid}-${it.extNum}`, number:`RFI-${String(it.extNum).padStart(3,"0")}`, title:it.title||"",
-    description:(it.question||"").replace(/\s+/g," ").trim().slice(0,200), from:it.from||"", discipline:"Mechanical",
-    assignedTo:[], subAssigned:"", dateReceived:it.dateReceived||"", dueDate:it.dueDate||"",
-    dateResponded:(it.status==="Responded"||it.status==="Closed")?it.lastDate:"", response:"", status:it.status,
-    notes:`Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl:it.spFolder||"", links:[],
-    source:"procore", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" };
-}
-function toSubmittalRecord(it, pid, vendor){
-  return { id:`sync-forma-${pid}-${it.extNum}`, number:`SUB-${String(it.extNum).padStart(3,"0")}`, specSection:it.specSection||"",
-    description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:"Mechanical", assignedTo:[], subAssigned:"",
-    dateReceived:"", dueDate:it.dueDate||"", dateReturned:it.status==="Returned"?it.lastDate:"", comments:"",
-    status:it.status, stamp:"—", resubNumber:it.rev||0,
-    notes:`Imported from ${vendor} · Submittal #${it.extNum}${it.rev?` (Rev ${it.rev})`:""}`,
-    spFolderUrl:it.spFolder||"", links:[], registerItemId:"", source:"forma", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" };
-}
+async function fetchJson(path){ const r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); if(!r.ok)throw new Error(path+" -> HTTP "+r.status+" "+(await r.text()).slice(0,120)); return r.json(); }
 
-async function fetchJson(path){
-  const r = await fetch(SUPABASE_URL+"/rest/v1/"+path, { headers:H });
-  if(!r.ok) throw new Error(path+" → HTTP "+r.status+" "+(await r.text()).slice(0,120));
-  return r.json();
-}
-
-/* =========================== PROJECT PICKER =========================== */
-let PROJECTS = [];          // [{id,name,number,activity}]
-let CURRENT = null;         // loaded project view
-
-const CA_STATUS = "In Construction Administration";   // only these projects appear in the picker
+/* =========================== STATE + PICKER =========================== */
+let PROJECTS=[], CURRENT=null, FILTER={rfi:"",submittal:""};
 async function init(){
-  try {
+  try{ document.getElementById("who").value = localStorage.getItem("rfiTrackUser")||"";
+       if(localStorage.getItem("rfiTrackGuide")==="0") toggleGuide(); }catch(e){}
+  try{
     const [projRows, actRows] = await Promise.all([
       fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status&order=id.asc`),
       fetchJson(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*)&select=project_id`),
     ]);
-    const active = new Set((actRows||[]).map(r=>r.project_id));
-    PROJECTS = (projRows||[]).filter(p => (p.status||"") === CA_STATUS)
-      .map(p=>({ id:p.id, name:p.name||"(unnamed)", number:p.number||"", activity:active.has(p.id) }))
-      .sort((a,b)=> (b.activity-a.activity) || (a.number||a.name).localeCompare(b.number||b.name));
-    const caActive = PROJECTS.filter(p=>p.activity).length;
-    const stranded = active.size - caActive;            // have vendor emails but aren't marked CA
-    document.getElementById("picknote").textContent =
-      `${PROJECTS.length} In Construction Administration · ${caActive} with Procore/Forma activity ⚡`
-      + (stranded>0 ? `  ·  ${stranded} active project(s) not marked CA (hidden)` : "");
+    const active=new Set((actRows||[]).map(r=>r.project_id));
+    PROJECTS=(projRows||[]).filter(p=>(p.status||"")===CA_STATUS).map(p=>({id:p.id,name:p.name||"(unnamed)",number:p.number||"",activity:active.has(p.id)}))
+      .sort((a,b)=>(b.activity-a.activity)||(a.number||a.name).localeCompare(b.number||b.name));
+    const caActive=PROJECTS.filter(p=>p.activity).length;
+    document.getElementById("picknote").textContent=`${PROJECTS.length} In Construction Administration · ${caActive} with Procore/Forma ⚡`;
     rebuildPicker();
-    const first = PROJECTS.find(p=>p.activity) || PROJECTS[0];
-    if(first){ document.getElementById("picker").value = first.id; selectProject(first.id); }
-  } catch(e){ document.getElementById("out").innerHTML = `<p class="err">Load failed: ${esc(e.message)}</p>`; }
+    const first=PROJECTS.find(p=>p.activity)||PROJECTS[0];
+    if(first){ document.getElementById("picker").value=first.id; selectProject(first.id); }
+    else document.getElementById("out").innerHTML=`<p class="empty">No projects are marked "In Construction Administration".</p>`;
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
 }
-function rebuildPicker(){
-  const f = (document.getElementById("filter").value||"").toLowerCase();
-  const sel = document.getElementById("picker");
-  const keep = sel.value;
-  const list = PROJECTS.filter(p => !f || (p.number+" "+p.name).toLowerCase().includes(f));
-  sel.innerHTML = list.map(p =>
-    `<option value="${p.id}">${p.activity?"⚡ ":""}${esc(p.number?p.number+" — ":"")}${esc(p.name)}</option>`).join("");
-  if(list.some(p=>p.id===keep)) sel.value = keep;
-}
+function rebuildPicker(){ const f=(document.getElementById("filter").value||"").toLowerCase(); const sel=document.getElementById("picker"); const keep=sel.value;
+  const list=PROJECTS.filter(p=>!f||(p.number+" "+p.name).toLowerCase().includes(f));
+  sel.innerHTML=list.map(p=>`<option value="${p.id}">${p.activity?"⚡ ":""}${esc(p.number?p.number+" — ":"")}${esc(p.name)}</option>`).join("");
+  if(list.some(p=>p.id===keep)) sel.value=keep; }
 
 async function selectProject(pid){
-  const proj = PROJECTS.find(p=>p.id===pid); if(!proj) return;
-  document.getElementById("out").innerHTML = `<p class="note">Loading ${esc(proj.name)}…</p>`;
-  try {
-    const [projRows, emails] = await Promise.all([
+  const proj=PROJECTS.find(p=>p.id===pid); if(!proj)return;
+  FILTER={rfi:"",submittal:""};
+  document.getElementById("out").innerHTML=`<p class="empty">Loading ${esc(proj.name)}…</p>`;
+  try{
+    const [projRows, emails]=await Promise.all([
       fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals`),
-      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*)`+
-                `&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
+      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
-    const logged = projRows[0]||{}, loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
-    const groups = [];
+    const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
+    const inbox={rfi:[],submittal:[]};
     for(const v of VENDORS){
-      const parsed = emails.filter(e=>v.match.test(e.from_address||"")).map(v.parse).filter(Boolean);
-      if(!parsed.length) continue;
-      const items = collapse(parsed, v.kind);
+      const parsed=emails.filter(e=>v.match.test(e.from_address||"")).map(v.parse).filter(Boolean); if(!parsed.length)continue;
+      const items=collapse(parsed,v.kind);
       for(const it of items){
-        if(v.kind==="rfi"){ it.match=matchRFI(it.extNum,it.title,loggedRFIs); it.verdict=it.match?"matched":"new";
-                            it.record=toRfiRecord(it,pid,v.vendor); }
-        else { const m=matchSubmittal(it.extNum,loggedSubs); it.match=m&&m.row; it.loggedRev=m?m.maxRev:null;
-               it.verdict=!m?"new":(it.rev>m.maxRev?"update":"matched"); it.record=toSubmittalRecord(it,pid,v.vendor); }
+        if(v.kind==="rfi"){ it.match=matchRFI(it.extNum,it.title,loggedRFIs); it.verdict=it.match?"matched":"new"; it.record=toRfiRecord(it,pid,v.vendor); }
+        else { const m=matchSub(it.extNum,loggedSubs); it.match=m&&m.row; it.loggedRev=m?m.maxRev:null; it.verdict=!m?"new":(it.rev>m.maxRev?"update":"matched"); it.record=toSubRecord(it,pid,v.vendor); }
       }
-      groups.push({ ...v, items, emailCount:parsed.length, loggedCount:(v.kind==="rfi"?loggedRFIs:loggedSubs).length });
+      inbox[v.kind]=items;
     }
-    CURRENT = { proj, groups, loggedRFIs:loggedRFIs.length, loggedSubs:loggedSubs.length };
+    CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox };
     renderProject();
-  } catch(e){ document.getElementById("out").innerHTML = `<p class="err">Load failed: ${esc(e.message)}</p>`; }
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
 }
 
 /* =========================== RENDER =========================== */
-function renderProject(){
-  const out = document.getElementById("out"); out.innerHTML="";
-  const { proj, groups } = CURRENT;
-  if(!groups.length){
-    out.innerHTML = `<p class="note">No Procore or Autodesk Forma notification emails are filed for
-      <b>${esc(proj.name)}</b> yet. (Logged in PMS: ${CURRENT.loggedRFIs} RFIs, ${CURRENT.loggedSubs} submittals —
-      manage those in the main PMS.)</p>`;
-    return;
-  }
-  for(const g of groups){
-    const news = g.items.filter(i=>i.verdict==="new");
-    const bytes = news.reduce((n,i)=> n+JSON.stringify(i.record).length, 0);
-    const rows = g.items.map(it=>{
-      const cb = it.verdict==="new" ? `<input type="checkbox" class="pick" data-k="${g.kind}" data-ext="${it.extNum}" checked>` : "";
-      const c = g.kind==="rfi"
-        ? `<td>#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td class="status">${it.status}</td><td>${it.dueDate||"<span class=muted>—</span>"}</td><td>${esc(it.from||"")}</td>`
-        : `<td>#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td class="status">${it.status}</td><td>${it.dueDate||"<span class=muted>—</span>"}</td>`;
-      return `<tr>${c}<td>${badge(it)}</td><td>${cb}</td></tr>`;
-    }).join("");
-    const head = g.kind==="rfi"
-      ? "<th>RFI</th><th>Title</th><th>→ Status</th><th>Due</th><th>Asked by</th><th>Verdict</th><th>Import</th>"
-      : "<th>Item</th><th>Title</th><th>Spec</th><th>→ Status</th><th>Due</th><th>Verdict</th><th>Import</th>";
-    const sec = document.createElement("section"); sec.className="src";
-    sec.innerHTML = `
-      <h2>${g.vendor} · ${g.kind.toUpperCase()}s &nbsp;<small>${esc(proj.name)}</small></h2>
-      <div class="summary">Parsed <b>${g.emailCount}</b> emails → <b>${g.items.length}</b> ${g.kind}s.
-        Logged in PMS: <b>${g.loggedCount}</b>. NEW to import: <b style="color:var(--new)">${news.length}</b>
-        ${news.length?`(~${(bytes/1024).toFixed(1)} KB added)`:""}.</div>
-      <table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>
-      <div class="actions"><button class="imp" data-k="${g.kind}" ${news.length?"":"disabled"}>📥 Import selected → PMS</button>
-        <span class="res" id="res-${g.kind}"></span></div>`;
-    out.appendChild(sec);
-  }
-  out.querySelectorAll("button.imp").forEach(b => b.onclick = () => importSelected(b.dataset.k));
-}
-function badge(it){
-  if(it.verdict==="new")    return `<span class="badge new">NEW</span>`;
-  if(it.verdict==="update") return `<span class="badge update">UPDATE</span> <span class=muted>logged r${it.loggedRev}, email r${it.rev} — review manually</span>`;
-  return `<span class="badge matched">matched</span> <span class=muted>${esc(it.match?it.match.number||"":"")}</span>`;
-}
-const esc = s => String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+function statusPill(s){ const c=STATUS_COLOR[s]||{bg:"#1a1a1a",t:"#94a3b8"}; return `<span class="pill" style="background:${c.bg};color:${c.t}">${esc(s||"—")}</span>`; }
+function setFilter(kind,v){ FILTER[kind]=v.toLowerCase(); renderProject(); const el=document.getElementById("search-"+kind); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);} }
 
-/* ---- WRITE: append-only, NEW-only, version-guarded (mirrors saveProjectV2) ---- */
-async function importSelected(kind){
-  const g = CURRENT.groups.find(x=>x.kind===kind); if(!g) return;
-  const pid = CURRENT.proj.id, arrKey = g.arrKey, resEl = document.getElementById("res-"+kind);
-  const picked = new Set([...document.querySelectorAll(`.pick[data-k="${kind}"]:checked`)].map(c=>c.dataset.ext));
-  const records = g.items.filter(i=>i.verdict==="new" && picked.has(i.extNum)).map(i=>i.record);
-  if(!records.length){ resEl.textContent="Nothing selected."; return; }
-  if(!confirm(`Append ${records.length} slim ${kind} record(s) to "${CURRENT.proj.name}"?\n\n• Existing records are NOT modified.\n• Email bodies are NOT copied (a reference is stored).`)) return;
-  resEl.className="res"; resEl.textContent="Writing…";
+function renderProject(){
+  const out=document.getElementById("out"); out.innerHTML="";
+  out.appendChild(renderSection("rfi","RFIs", CURRENT.rfis, CURRENT.inbox.rfi));
+  out.appendChild(renderSection("submittal","Submittals", CURRENT.submittals, CURRENT.inbox.submittal));
+}
+function renderSection(kind, title, logged, inbox){
+  const sec=document.createElement("section"); sec.className="sec";
+  const news=inbox.filter(i=>i.verdict==="new");
+  const f=FILTER[kind];
+  const shown=logged.filter(r=>!f||((r.number||"")+" "+(r.title||r.description||"")+" "+(r.status||"")).toLowerCase().includes(f));
+  let html=`<div class="head"><h2>${title}</h2><span class="count">${logged.length} logged${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
+    `<input id="search-${kind}" placeholder="search ${kind}s…" value="${esc(f)}" style="background:var(--card2);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 9px;font-size:12px;width:160px" oninput="setFilter('${kind}',this.value)">`+
+    `<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button></div>`;
+  if(news.length){
+    const head = kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Status</th><th>Due</th><th>Asked by</th><th class='right'>Import</th>"
+                              : "<th>Item</th><th>Title</th><th>Spec</th><th>Status</th><th>Due</th><th class='right'>Import</th>";
+    const rows=inbox.map(it=>{ const cb=it.verdict==="new"?`<input type="checkbox" class="pick" data-k="${kind}" data-ext="${esc(it.extNum)}" checked>`:"";
+      const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td><td>${esc(it.from||"")}</td>`
+        : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td>`;
+      return `<tr>${c}<td class="right">${verdictBadge(it)} ${cb}</td></tr>`; }).join("");
+    html+=`<div class="inbox"><div class="ihead">📥 To import from Procore/Forma — ${news.length} new</div>`+
+      `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
+      `<div class="actions"><button class="go" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
+  }
+  if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from Procore/Forma above.</div>`; }
+  else {
+    const head = kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Discipline</th><th>From</th><th>Due</th><th>Status</th><th>Updated by</th>"
+                              : "<th>Item</th><th>Title / Spec</th><th>Discipline</th><th>Stamp</th><th>Due</th><th>Status</th><th>Updated by</th>";
+    const rows=shown.map(r=>{
+      const by=r.syncEditedBy||r.loggedBy||"";
+      const c = kind==="rfi"
+        ? `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.title||r.description||"—")}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`
+        : `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.description||r.title||"—")}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`;
+      return `<tr class="click" onclick='openEditor("${kind}",${esc(JSON.stringify(r.id))})'>${c}</tr>`; }).join("");
+    html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=7 class="empty">No ${kind}s match “${esc(f)}”.</td></tr>`}</tbody></table>`;
+  }
+  sec.innerHTML=html; return sec;
+}
+function verdictBadge(it){ if(it.verdict==="new")return`<span class="badge new">NEW</span>`;
+  if(it.verdict==="update")return`<span class="badge update">UPDATE</span>`; return`<span class="badge matched">matched</span>`; }
+
+/* =========================== EDITOR (add / edit / delete) =========================== */
+const RFI_FIELDS=[ {k:"number",l:"RFI #"},{k:"title",l:"Title",full:1},{k:"discipline",l:"Discipline",sel:RFI_DISC},{k:"status",l:"Status",sel:RFI_STATUSES},
+  {k:"from",l:"From / Asked by"},{k:"dateReceived",l:"Received",t:"date"},{k:"dueDate",l:"Due",t:"date"},{k:"dateResponded",l:"Responded",t:"date"},
+  {k:"description",l:"Question / Description",full:1,ta:1},{k:"response",l:"Response",full:1,ta:1},{k:"notes",l:"Internal notes",full:1,ta:1} ];
+const SUB_FIELDS=[ {k:"number",l:"Submittal #"},{k:"specSection",l:"Spec Section"},{k:"discipline",l:"Discipline",sel:SUB_DISC},{k:"status",l:"Status",sel:SUB_STATUSES},
+  {k:"stamp",l:"Stamp",sel:SUB_STAMPS},{k:"resubNumber",l:"Resubmittal #",t:"number"},{k:"from",l:"From / Ball in court"},{k:"dateReceived",l:"Received",t:"date"},
+  {k:"dueDate",l:"Due",t:"date"},{k:"dateReturned",l:"Returned",t:"date"},{k:"description",l:"Description",full:1,ta:1},{k:"comments",l:"Review comments",full:1,ta:1},{k:"notes",l:"Internal notes",full:1,ta:1} ];
+function blankRFI(){ const t=today(); return {id:"",number:"",title:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,5),dateResponded:"",response:"",status:"Open",notes:"",spFolderUrl:"",links:[]}; }
+function blankSub(){ const t=today(); return {id:"",number:"",specSection:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,10),dateReturned:"",comments:"",status:"Received",stamp:"—",resubNumber:0,notes:"",spFolderUrl:"",links:[],registerItemId:""}; }
+
+let EDIT=null;
+function openEditor(kind, id){
+  const fields = kind==="rfi"?RFI_FIELDS:SUB_FIELDS;
+  const list = kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
+  const isNew = !id;
+  let rec;
+  if(isNew){ rec = kind==="rfi"?blankRFI():blankSub(); rec.number = (kind==="rfi"?"RFI-":"SUB-")+String(list.length+1).padStart(3,"0"); }
+  else { rec = list.find(r=>r.id===id); if(!rec) return; }
+  EDIT={kind,isNew,id:rec.id};
+  const sp = rec.spFolderUrl ? `<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer">📁 source email folder</a>` : "";
+  const grid = fields.map(f=>{
+    const v = rec[f.k]==null?"":rec[f.k];
+    let input;
+    if(f.sel) input=`<select id="f_${f.k}">${f.sel.map(o=>`<option ${o===v?"selected":""}>${esc(o)}</option>`).join("")}</select>`;
+    else if(f.ta) input=`<textarea id="f_${f.k}">${esc(v)}</textarea>`;
+    else input=`<input id="f_${f.k}" type="${f.t||"text"}" value="${esc(v)}">`;
+    return `<div class="fld ${f.full?"full":""}"><label>${esc(f.l)}</label>${input}</div>`;
+  }).join("");
+  const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
+  document.getElementById("modal").innerHTML =
+    `<div class="mhead"><h3>${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><span class="x" onclick="closeEditor()">✕</span></div>`+
+    `<div class="grid">${grid}</div>`+
+    `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}<span class="by">${by} ${sp}</span><span class="spacer"></span>`+
+    `<button onclick="closeEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`;
+  document.getElementById("overlay").classList.add("show");
+}
+function closeEditor(){ document.getElementById("overlay").classList.remove("show"); EDIT=null; }
+function collectEdits(kind){
+  const fields=kind==="rfi"?RFI_FIELDS:SUB_FIELDS; const e={};
+  for(const f of fields){ const el=document.getElementById("f_"+f.k); if(!el)continue; let v=el.value; if(f.t==="number")v=Number(v)||0; e[f.k]=v; }
+  return e;
+}
+async function saveEditor(){
+  if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  const edits=collectEdits(kind); const who=getWho(); const now=new Date().toISOString();
+  edits.syncEditedBy=who||"(unknown)"; edits.syncEditedAt=now;
   try{
-    const rows = await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
-    if(!rows.length) throw new Error("project row not found");
-    const proj = rows[0].project, ver = rows[0].version;
-    const existing = new Set((proj[arrKey]||[]).map(r=>r.id));
-    const toAdd = records.filter(r=>!existing.has(r.id));
-    if(!toAdd.length){ resEl.className="res ok"; resEl.textContent="✓ Already imported — nothing new."; return; }
-    const before = JSON.stringify(proj).length;
-    const updated = { ...proj, [arrKey]: [ ...(proj[arrKey]||[]), ...toAdd ] };
-    const after = JSON.stringify(updated).length;
-    const r = await fetch(SUPABASE_URL+`/rest/v1/pms_projects?id=eq.${pid}&version=eq.${ver}`, {
-      method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
-      body: JSON.stringify({ project:updated, version:ver+1, updated_at:new Date().toISOString() }) });
-    const back = await r.json();
-    if(!r.ok || !back.length){ resEl.className="res bad";
-      resEl.textContent="⚠ Project changed since load (someone else saved). Re-pick the project and retry — nothing written."; return; }
-    resEl.className="res ok";
-    resEl.textContent=`✓ Added ${toAdd.length} ${kind}(s). Project grew ${(before/1024).toFixed(1)}→${(after/1024).toFixed(1)} KB (+${(after-before)} bytes). Re-pick to refresh.`;
-  }catch(e){ resEl.className="res bad"; resEl.textContent="Write failed: "+e.message; }
+    await writeArray(arrKey, arr=>{
+      if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
+      return arr.map(r=> r.id===id ? {...r, ...edits} : r);
+    });
+    closeEditor(); toast(isNew?"Added to log ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
+  }catch(err){ toast(err.message, false); }
+}
+async function deleteRecord(){
+  if(!EDIT||EDIT.isNew)return; const {kind,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  const rec=(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).find(r=>r.id===id);
+  if(!confirm(`Delete ${rec?.number||""} — "${rec?.title||rec?.description||""}"?\n\nThis removes it from the log and cannot be undone.`)) return;
+  try{ await writeArray(arrKey, arr=>arr.filter(r=>r.id!==id)); closeEditor(); toast("Deleted ✓", true); selectProject(CURRENT.proj.id); }
+  catch(err){ toast(err.message, false); }
+}
+
+/* =========================== IMPORT (sync) =========================== */
+async function importSelected(kind){
+  const arrKey=kind==="rfi"?"rfis":"submittals"; const inbox=CURRENT.inbox[kind];
+  const picked=new Set([...document.querySelectorAll(`.pick[data-k="${kind}"]:checked`)].map(c=>c.dataset.ext));
+  const records=inbox.filter(i=>i.verdict==="new"&&picked.has(i.extNum)).map(i=>i.record);
+  if(!records.length){ toast("Nothing selected.", false); return; }
+  if(!confirm(`Import ${records.length} ${kind}(s) into the log?\n\nExisting records are not modified.`)) return;
+  try{
+    const added = await writeArray(arrKey, arr=>{ const have=new Set(arr.map(r=>r.id)); const add=records.filter(r=>!have.has(r.id)); arr._added=add.length; return [...arr,...add]; }, true);
+    toast(`Imported ${added} ${kind}(s) ✓`, true); selectProject(CURRENT.proj.id);
+  }catch(err){ toast(err.message, false); }
+}
+
+/* =========================== WRITE (version-guarded, mirrors saveProjectV2) =========================== */
+async function writeArray(arrKey, mutate, returnAdded){
+  const pid=CURRENT.proj.id;
+  const rows=await fetchJson(`pms_projects?id=eq.${pid}&select=id,project,version`);
+  if(!rows.length) throw new Error("Project not found.");
+  const proj=rows[0].project, ver=rows[0].version;
+  const cur=(proj[arrKey]||[]).slice(); cur._added=0;
+  const next=mutate(cur); const added=cur._added||0;
+  const updated={...proj, [arrKey]:next};
+  const r=await fetch(SUPABASE_URL+`/rest/v1/pms_projects?id=eq.${pid}&version=eq.${ver}`,{
+    method:"PATCH", headers:{...H,"Content-Type":"application/json","Prefer":"return=representation"},
+    body:JSON.stringify({project:updated, version:ver+1, updated_at:new Date().toISOString()}) });
+  const back=await r.json();
+  if(!r.ok||!back.length) throw new Error("Project changed since you opened it (someone else saved). Re-pick the project and retry — nothing was written.");
+  return returnAdded?added:true;
 }
 
 init();
