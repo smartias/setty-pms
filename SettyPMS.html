@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-25-pms-v56-onenote-sections-feefix";
+    window.__appVersion = "2026-06-26-pms-v57-owner-agency";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11231,7 +11231,7 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
 // client, subs, GCs, owner reps, etc.). Distinct from project.projectContacts
 // (which is Setty-relationship-typed: pm, proposal, contract POCs); the
 // directory is the flat "who's on this team" reference.
-const DIRECTORY_TYPES = ["Prime", "Client", "SUB (to Setty)", "Sub (to other)", "Trade Contractor", "Vendor", "Owner Rep", "Construction Manager", "General Contractor", "Other"];
+const DIRECTORY_TYPES = ["Owner/Agency", "Prime", "Client", "SUB (to Setty)", "Sub (to other)", "Trade Contractor", "Vendor", "Owner Rep", "Construction Manager", "General Contractor", "Other"];
 function newDirectoryEntry(overrides = {}) {
   return {
     id: uid(),
@@ -11257,6 +11257,7 @@ function getCompanyAutoRoles(companyName, project) {
   const co = (companyName || "").trim().toLowerCase();
   if (!co) return [];
   const roles = [];
+  if ((project.owner || "").trim().toLowerCase() === co) roles.push("Owner/Agency");
   if ((project.prime || "").trim().toLowerCase() === co) roles.push("Prime");
   if ((project.clientName || "").trim().toLowerCase() === co) roles.push("Client");
   const subFirms = (project.subconsultants || []).map(s => (s.firm || "").trim().toLowerCase());
@@ -11278,11 +11279,12 @@ function getCompanyRoles(companyName, project) {
 // Roles available in the company-level type override picker. Excludes the
 // three auto-derived types — those are owned by their source fields.
 const COMPANY_TYPE_OPTIONS = DIRECTORY_TYPES.filter(t =>
-  t !== "Prime" && t !== "Client" && t !== "SUB (to Setty)"
+  t !== "Owner/Agency" && t !== "Prime" && t !== "Client" && t !== "SUB (to Setty)"
 );
 
 function directoryTypeColor(type) {
   switch (type) {
+    case "Owner/Agency":          return { bg: "#3a2e10",   text: "#fbbf24" };
     case "Prime":                 return { bg: P.accentDim, text: P.accentLight };
     case "Client":                return { bg: P.purpleDim, text: P.purple };
     case "SUB (to Setty)":        return { bg: P.redDim,    text: P.red };
@@ -11388,6 +11390,7 @@ function getProjectCompanies(project) {
     seen.add(k);
     companies.push({ name: t, role });
   }
+  push(project.owner, "Owner/Agency");
   push(project.prime, "Prime");
   push(project.clientName, "Client");
   (project.subconsultants || []).forEach(sub => push(sub.firm, "Sub"));
@@ -16486,6 +16489,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             // prime contract, plus any subconsultants Setty hires below us.
             // Collapses to one node when Client = Prime (1-tier sub) and
             // expands to a full chain otherwise. Clickable to inline-edit.
+            const owner  = (project.owner || "").trim();
             const prime  = (project.prime || "").trim();
             const client = (project.clientName || "").trim();
             // Defensive: drop any sub whose firm name matches Setty so we
@@ -16509,13 +16513,14 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </span>
             );
             const arrow = <span style={{ color: P.textDim, fontSize: 11 }}>→</span>;
+            const ownerTone  = { bg: "#3a2e10",    text: "#fbbf24",     border: "#b78a1a" };
             const primeTone  = { bg: P.purpleDim, text: P.purple,      border: P.purple };
             const clientTone = { bg: P.accentDim, text: P.accentLight, border: P.accent };
             const settyTone  = { bg: P.greenDim,  text: P.green,       border: P.green };
             const subTone    = { bg: P.bg,        text: P.textMuted,   border: P.border };
             const openEditor = () => setEditChain(true);
             // No data yet? Show a "Set up contracting chain" prompt instead of nothing.
-            if (!prime && !client && subs.length === 0 && !editChain) {
+            if (!owner && !prime && !client && subs.length === 0 && !editChain) {
               return (
                 <div style={{ marginTop: 8 }}>
                   <button onClick={openEditor}
@@ -16529,6 +16534,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             return (
               <div style={{ marginTop: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {owner && chip("Owner", owner, ownerTone, openEditor)}
+                  {owner && arrow}
                   {isSettyPrime ? (
                     <>
                       {chip("Client", client || "—", clientTone, openEditor)}
@@ -16574,6 +16581,10 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                 </div>
                 {editChain && (
                   <div style={{ marginTop: 8, padding: 12, background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, maxWidth: 620 }}>
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Owner / Agency</div>
+                      <CompanyTypeahead value={project.owner || ""} onChange={v => updateField("owner", v)} clients={clients} filter="owner" placeholder="Owner / agency (top of chain)" onAddClient={onAddClient} />
+                    </div>
                     <div>
                       <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Prime</div>
                       <CompanyTypeahead value={project.prime || ""} onChange={v => updateField("prime", v)} clients={clients} filter="prime" placeholder="Top-of-chain firm" onAddClient={onAddClient} />
