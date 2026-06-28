@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-27-pms-v61-billing-method";
+    window.__appVersion = "2026-06-27-pms-v62-folder-slash-fix";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -4850,7 +4850,9 @@ async function createSharePointFolder(project) {
   const num  = (project.projectNumber || "").trim();
   const name = (project.name || "Unnamed Project").trim();
   if (!num && !name) throw new Error("Project must have a number or name before creating a folder.");
-  const folderName = num ? num + " - " + name : name;
+  // SharePoint/OneDrive reject \ / : * ? " < > | in item names (Graph 400). Strip
+  // them like createContractFolder/createProposalFolder do before the POST.
+  const folderName = (num ? num + " - " + name : name).replace(/[\\/:*?"<>|]/g, "-").trim();
 
   const { siteId, driveId } = await resolveSpIds();
 
