@@ -25297,17 +25297,26 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     return d >= now && d <= in14;
   });
 
-  const byStatus = PIPELINE_STATUSES.map(s => ({
-    status: s, count: pipeline.filter(p => p.status === s).length,
+  const [confirm, setConfirm] = useState(null); // { projectId, action: "award"|"lost" }
+  const [dragId, setDragId] = useState(null);      // id of card being dragged
+  const [dragOver, setDragOver] = useState(null);  // status column hovered during drag
+
+  const feeOf = p => (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
+
+  // Kanban columns — one per pipeline status, cards sorted by proposal due date
+  const columns = PIPELINE_STATUSES.map(s => ({
+    status: s,
+    items: pipeline.filter(p => p.status === s).sort((a, b) => {
+      if (!a.proposalDueDate) return 1;
+      if (!b.proposalDueDate) return -1;
+      return a.proposalDueDate > b.proposalDueDate ? 1 : -1;
+    }),
   }));
 
-  const sorted = [...pipeline].sort((a, b) => {
-    if (!a.proposalDueDate) return 1;
-    if (!b.proposalDueDate) return -1;
-    return a.proposalDueDate > b.proposalDueDate ? 1 : -1;
-  });
-
-  const [confirm, setConfirm] = useState(null); // { projectId, action: "award"|"lost" }
+  // Drag a card onto another status column to change its status (stays in pipeline)
+  function moveTo(p, status) {
+    if (p && p.status !== status) onUpdateProject({ ...p, status });
+  }
 
   function handleAward(p) {
     onUpdateProject({ ...p, status: "Not Started", archived: false });
@@ -25338,84 +25347,73 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
         <KpiBox label="Due in 14 Days" val={dueSoon.length} color={dueSoon.length > 0 ? P.yellow : P.textMuted} />
       </div>
 
-      {/* Status pills */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
-        {byStatus.map(({ status, count }) => (
-          <div key={status} style={{ background: P.accentDim, borderRadius: 8, padding: "8px 16px", display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: P.accentLight, fontWeight: 700, fontSize: 16 }}>{count}</span>
-            <span style={{ color: P.accentLight, fontSize: 12 }}>{status}</span>
-          </div>
-        ))}
+      {/* Kanban board — one column per pipeline status; drag a card to change its status */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>Pipeline Board</div>
+        <div style={{ color: P.textDim, fontSize: 12 }}>Drag a card between columns to update its status</div>
       </div>
-
-      {/* Pipeline table */}
-      <Card>
-        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 16 }}>All Pipeline Projects</div>
-        {pipeline.length === 0 ? (
-          <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>
-            No pipeline projects. <button onClick={onAddProject} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer" }}>Add one</button>
-          </div>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Project</th>
-                <th>Client</th>
-                <th>PM</th>
-                <th>Status</th>
-                <th>Proposal Due</th>
-                <th>Probability</th>
-                <th>Fee Value</th>
-                <th>Weighted</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map(p => {
-                const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", overflowX: "auto", paddingBottom: 8 }}>
+        {columns.map(col => (
+          <div key={col.status}
+            onDragOver={e => { e.preventDefault(); if (dragOver !== col.status) setDragOver(col.status); }}
+            onDragLeave={() => setDragOver(prev => prev === col.status ? null : prev)}
+            onDrop={e => { e.preventDefault(); moveTo(pipeline.find(x => x.id === dragId), col.status); setDragId(null); setDragOver(null); }}
+            style={{ flex: "1 1 0", minWidth: 300, background: P.bg, border: `1px solid ${dragOver === col.status ? P.accent : P.border}`, borderRadius: 10, padding: 12, transition: "border-color .15s" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "0 4px" }}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>{col.status}</span>
+              <span style={{ background: P.accentDim, color: P.accentLight, borderRadius: 12, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>{col.items.length}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 120 }}>
+              {col.items.length === 0 ? (
+                <div style={{ color: P.textDim, fontSize: 12, textAlign: "center", padding: "28px 0", border: `1px dashed ${P.border}`, borderRadius: 8 }}>
+                  Drop here
+                </div>
+              ) : col.items.map(p => {
+                const fee = feeOf(p);
                 const weighted = fee * ((p.probability ?? 50) / 100);
                 const isOverdue = p.proposalDueDate && new Date(p.proposalDueDate) < now && !PAST_DUE_EXEMPT.includes(p.status);
                 const isSoon = p.proposalDueDate && !isOverdue && p.status !== "Proposal Submitted" && (() => { const d = new Date(p.proposalDueDate); const in14 = new Date(); in14.setDate(in14.getDate()+14); return d <= in14; })();
                 return (
-                  <tr key={p.id}>
-                    <td>
-                      <button onClick={() => onNavigateToProject(p.id)}
-                        style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontWeight: 600, fontSize: 13, padding: 0, textAlign: "left" }}>
-                        {p.name}
-                      </button>
-                      {p.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{p.projectNumber}</div>}
-                    </td>
-                    <td style={{ color: P.textMuted, fontSize: 13 }}>{p.clientName || "—"}</td>
-                    <td style={{ color: P.textMuted, fontSize: 13 }}>{p.projectManager || "—"}</td>
-                    <td>
-                      <span style={{ background: P.accentDim, color: P.accentLight, borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 600 }}>
-                        {p.status}
-                      </span>
-                    </td>
-                    <td style={{ color: isOverdue ? P.red : isSoon ? P.yellow : P.text, fontWeight: isOverdue || isSoon ? 600 : 400, fontSize: 13 }}>
-                      {p.proposalDueDate || "—"}
-                      {isOverdue && <span style={{ marginLeft: 4, fontSize: 10 }}>OVERDUE</span>}
-                      {isSoon && <span style={{ marginLeft: 4, fontSize: 10 }}>SOON</span>}
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <ProgressBar pct={p.probability ?? 50} color={P.accent} />
-                        <span style={{ fontSize: 12, color: P.textMuted, minWidth: 30 }}>{p.probability ?? 50}%</span>
-                      </div>
-                    </td>
-                    <td style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13 }}>{fee > 0 ? fmt(fee) : "—"}</td>
-                    <td style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: P.green }}>{fee > 0 ? fmt(weighted) : "—"}</td>
-                    <td style={{ whiteSpace: "nowrap" }}>
+                  <div key={p.id} draggable
+                    onDragStart={e => { setDragId(p.id); e.dataTransfer.effectAllowed = "move"; }}
+                    onDragEnd={() => { setDragId(null); setDragOver(null); }}
+                    style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, padding: 12, cursor: "grab", opacity: dragId === p.id ? 0.4 : 1, transition: "opacity .15s" }}>
+                    <button onClick={() => onNavigateToProject(p.id)}
+                      style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontWeight: 600, fontSize: 13, padding: 0, textAlign: "left" }}>
+                      {p.name}
+                    </button>
+                    {p.projectNumber && <div style={{ fontSize: 11, color: P.textDim, marginTop: 2 }}>{p.projectNumber}</div>}
+                    <div style={{ color: P.textMuted, fontSize: 12, marginTop: 6 }}>{p.clientName || "—"}</div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 12, color: isOverdue ? P.red : isSoon ? P.yellow : P.textMuted, fontWeight: isOverdue || isSoon ? 600 : 400 }}>
+                      <span>Due: {p.proposalDueDate || "—"}</span>
+                      {isOverdue && <span style={{ fontSize: 10 }}>OVERDUE</span>}
+                      {isSoon && <span style={{ fontSize: 10 }}>SOON</span>}
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                      <ProgressBar pct={p.probability ?? 50} color={P.accent} />
+                      <span style={{ fontSize: 12, color: P.textMuted, minWidth: 30 }}>{p.probability ?? 50}%</span>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 12, fontFamily: "JetBrains Mono, monospace" }}>
+                      <span>{fee > 0 ? fmt(fee) : "—"}</span>
+                      <span style={{ color: P.green }}>{fee > 0 ? fmt(weighted) : "—"}</span>
+                    </div>
+
+                    <div style={{ marginTop: 10, borderTop: `1px solid ${P.border}`, paddingTop: 10 }}>
                       {confirm?.projectId === p.id ? (
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                           <span style={{ fontSize: 11, color: P.textMuted }}>
                             {confirm.action === "award" ? "Mark as Awarded?" : "Mark as Lost & archive?"}
                           </span>
-                          <Btn small variant={confirm.action === "award" ? "success" : "danger"}
-                            onClick={() => confirm.action === "award" ? handleAward(p) : handleLost(p)}>
-                            Confirm
-                          </Btn>
-                          <Btn small variant="ghost" onClick={() => setConfirm(null)}>Cancel</Btn>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <Btn small variant={confirm.action === "award" ? "success" : "danger"}
+                              onClick={() => confirm.action === "award" ? handleAward(p) : handleLost(p)}>
+                              Confirm
+                            </Btn>
+                            <Btn small variant="ghost" onClick={() => setConfirm(null)}>Cancel</Btn>
+                          </div>
                         </div>
                       ) : (
                         <div style={{ display: "flex", gap: 6 }}>
@@ -25423,14 +25421,14 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                           <Btn small variant="danger" onClick={() => setConfirm({ projectId: p.id, action: "lost" })}>✗ Lost</Btn>
                         </div>
                       )}
-                    </td>
-                  </tr>
+                    </div>
+                  </div>
                 );
               })}
-            </tbody>
-          </table>
-        )}
-      </Card>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
