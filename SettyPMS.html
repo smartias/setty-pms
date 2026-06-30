@@ -21992,6 +21992,33 @@ function newClient(overrides) {
   };
 }
 
+// Star rating widget for the Global Directory — resting state shows the rounded
+// collective average; hovering previews your vote; clicking casts/updates it.
+// Clicking your own current star again clears your vote (handled by the parent).
+function StarRating({ average, count, myVote, onRate }) {
+  const [hover, setHover] = React.useState(0);
+  const display = hover || Math.round(average);
+  return (
+    <div onClick={e => e.stopPropagation()} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <div style={{ display: "flex", gap: 1 }} onMouseLeave={() => setHover(0)}>
+        {[1, 2, 3, 4, 5].map(n => (
+          <span key={n}
+            onMouseEnter={() => setHover(n)}
+            onClick={() => onRate(n)}
+            title={myVote === n ? "Your vote: " + n + " — click to clear" : "Rate " + n + " star" + (n > 1 ? "s" : "")}
+            style={{ cursor: "pointer", fontSize: 17, lineHeight: 1, color: n <= display ? P.yellow : P.border, transition: "color .1s" }}>
+            ★
+          </span>
+        ))}
+      </div>
+      <span style={{ fontSize: 10, color: P.textDim, whiteSpace: "nowrap" }}>
+        {count ? average.toFixed(1) + " · " + count + " vote" + (count !== 1 ? "s" : "") : "No votes"}
+        {myVote ? " · you: " + myVote : ""}
+      </span>
+    </div>
+  );
+}
+
 function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToProject, onRenameCompany }) {
   const [editingId, setEditingId] = React.useState(null);
   const [form, setForm] = React.useState(null);
@@ -22087,6 +22114,26 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     if (!window.confirm(msg)) return;
     onUpdateClients(clients.filter(x => x.id !== id));
     cancelEdit();
+  }
+
+  // Per-company star votes, keyed by signed-in user so one vote per person.
+  // Re-clicking your current star clears your vote. Aggregate is the average
+  // across everyone's votes; the records are shared, so all users see the same.
+  function ratingAgg(c) {
+    const ratings = c.ratings || {};
+    const vals = Object.values(ratings);
+    const count = vals.length;
+    return {
+      count,
+      average: count ? vals.reduce((a, b) => a + b, 0) / count : 0,
+      myVote: ratings[getCurrentUser()] || 0,
+    };
+  }
+  function voteCompany(c, stars) {
+    const user = getCurrentUser();
+    const ratings = { ...(c.ratings || {}) };
+    if (ratings[user] === stars) delete ratings[user]; else ratings[user] = stars;
+    onUpdateClients(clients.map(x => x.id === c.id ? { ...x, ratings } : x));
   }
 
   const filtered = clients.filter(c => {
@@ -22312,6 +22359,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
           <thead>
             <tr>
               <th>Company</th>
+              <th>Rating</th>
               <th>Type</th>
               <th>Certs</th>
               <th>Contacts</th>
@@ -22329,6 +22377,12 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
               return (
                 <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => startEdit(c)}>
                   <td style={{ fontWeight: 600 }}>{c.name}</td>
+                  <td onClick={e => e.stopPropagation()}>
+                    {(() => {
+                      const { average, count, myVote } = ratingAgg(c);
+                      return <StarRating average={average} count={count} myVote={myVote} onRate={n => voteCompany(c, n)} />;
+                    })()}
+                  </td>
                   <td>
                     {types.length === 0
                       ? <span style={{ color: P.textDim, fontSize: 12 }}>—</span>
@@ -25309,6 +25363,12 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
 
   const [confirm, setConfirm] = useState(null); // { projectId, action: "award"|"lost" }
 
+  // Slide the Status toggle: Proposal Due ⇄ Proposal Submitted (slide right = "done")
+  function toggleStatus(p) {
+    const next = p.status === "Proposal Submitted" ? "Proposal Due" : "Proposal Submitted";
+    onUpdateProject({ ...p, status: next });
+  }
+
   function handleAward(p) {
     onUpdateProject({ ...p, status: "Not Started", archived: false });
     setConfirm(null);
@@ -25361,7 +25421,6 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
               <tr>
                 <th>Project</th>
                 <th>Client</th>
-                <th>PM</th>
                 <th>Status</th>
                 <th>Proposal Due</th>
                 <th>Probability</th>
@@ -25376,6 +25435,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                 const weighted = fee * ((p.probability ?? 50) / 100);
                 const isOverdue = p.proposalDueDate && new Date(p.proposalDueDate) < now && !PAST_DUE_EXEMPT.includes(p.status);
                 const isSoon = p.proposalDueDate && !isOverdue && p.status !== "Proposal Submitted" && (() => { const d = new Date(p.proposalDueDate); const in14 = new Date(); in14.setDate(in14.getDate()+14); return d <= in14; })();
+                const submitted = p.status === "Proposal Submitted";
                 return (
                   <tr key={p.id}>
                     <td>
@@ -25386,11 +25446,20 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                       {p.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{p.projectNumber}</div>}
                     </td>
                     <td style={{ color: P.textMuted, fontSize: 13 }}>{p.clientName || "—"}</td>
-                    <td style={{ color: P.textMuted, fontSize: 13 }}>{p.projectManager || "—"}</td>
                     <td>
-                      <span style={{ background: P.accentDim, color: P.accentLight, borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 600 }}>
-                        {p.status}
-                      </span>
+                      {/* Slide toggle — slide right to mark the proposal Submitted ("done") */}
+                      <div onClick={() => toggleStatus(p)} role="switch" aria-checked={submitted}
+                        title={submitted ? "Submitted — click to move back to Due" : "Slide to mark proposal submitted"}
+                        style={{ position: "relative", width: 150, height: 26, borderRadius: 13, cursor: "pointer", userSelect: "none",
+                          background: submitted ? P.greenDim : P.accentDim, border: `1px solid ${submitted ? P.green : P.accent}`, transition: "background .2s" }}>
+                        <span style={{ position: "absolute", top: 0, bottom: 0, display: "flex", alignItems: "center",
+                          left: submitted ? 12 : 32, right: submitted ? 32 : 12, justifyContent: "center",
+                          fontSize: 11, fontWeight: 600, color: submitted ? P.green : P.accentLight, transition: "all .2s" }}>
+                          {submitted ? "Submitted ✓" : "Proposal Due"}
+                        </span>
+                        <span style={{ position: "absolute", top: 2, left: submitted ? "calc(100% - 24px)" : 2, width: 22, height: 22, borderRadius: "50%",
+                          background: submitted ? P.green : P.accentLight, transition: "left .2s" }} />
+                      </div>
                     </td>
                     <td style={{ color: isOverdue ? P.red : isSoon ? P.yellow : P.text, fontWeight: isOverdue || isSoon ? 600 : 400, fontSize: 13 }}>
                       {p.proposalDueDate || "—"}
