@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-06-27-pms-v62-folder-slash-fix";
+    window.__appVersion = "2026-07-01-pms-v63-directory-star-ratings";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1098,7 +1098,7 @@ async function loadStateV2() {
   // Parallel fetch all three tables — saves ~200ms on slower networks.
   const [projectRows, clientRows, metaRows] = await Promise.all([
     // Page projects + clients past the 1000-row cap; meta is a single row.
-    sbFetchAllV2("/rest/v1/pms_projects?select=id,project,version,updated_at&order=id.asc"),
+    sbFetchAllV2("/rest/v1/pms_projects_slim?select=id,project,version,updated_at&order=id.asc"),
     sbFetchAllV2("/rest/v1/pms_clients?select=id,client,version,updated_at&order=id.asc"),
     sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
   ]);
@@ -1330,6 +1330,24 @@ async function loadProjectSenders(projectId) {
     if (s && !seen.has(s)) { seen.add(s); out.push(s); }
   }
   return out;
+}
+
+// Lightweight email link-index for the Investigation view's findLinkedByUrl
+// cross-reference. Returns [{ subject, spFolderUrl }] for this project's emails
+// that were filed to SharePoint (only those have a URL that can match a search
+// hit). Metadata-only and fetched ONLY when a forensic search runs — never on
+// app load. Replaces the old inline project.emails[] scan, which no longer
+// ships with the slim load.
+async function loadProjectEmailLinkIndex(projectId) {
+  if (!projectId) return [];
+  const path = "/rest/v1/pms_project_emails" +
+               "?project_id=eq." + encodeURIComponent(projectId) +
+               "&select=subject,sp_folder_url" +
+               "&order=record_id.asc";
+  const rows = await sbFetchAllV2(path);
+  return (rows || [])
+    .filter(r => r.sp_folder_url)
+    .map(r => ({ subject: r.subject || "", spFolderUrl: r.sp_folder_url }));
 }
 
 // ── PHASE 6b MUTATIONS ──────────────────────────────────────────────────────
@@ -14905,7 +14923,7 @@ function normalizeUrl(url) {
 
 // Scan the project's link graph to find PMS entities connected to a search result URL.
 // Checks both explicit links[] and native URL fields (spFolderUrl, oneNoteUrl, etc.).
-function findLinkedByUrl(project, resultUrl) {
+function findLinkedByUrl(project, resultUrl, emailIndex) {
   if (!resultUrl) return [];
   const norm = normalizeUrl(resultUrl);
   const matched = [];
@@ -14915,7 +14933,6 @@ function findLinkedByUrl(project, resultUrl) {
     { list: project.changeOrders||[], type: "co",        label: e => e.number + (e.name        ? " – " + e.name        : ""), urls: [] },
     { list: project.milestones||[],   type: "milestone", label: e => e.name || e.id,                                          urls: ["outgoingFolderUrl"] },
     { list: project.notes||[],        type: "note",      label: e => (e.category||"Note") + " – " + (e.createdAt||"").slice(0, 10), urls: ["oneNoteUrl"] },
-    { list: project.emails||[],       type: "email",     label: e => e.subject || "(email)",                                  urls: ["spFolderUrl"] },
   ];
   for (const { list, type, label, urls } of defs) {
     for (const entity of list) {
@@ -14929,10 +14946,18 @@ function findLinkedByUrl(project, resultUrl) {
       }
     }
   }
+  // Emails: matched against the server-fetched link index (spFolderUrl only),
+  // since the inline project.emails[] array is no longer loaded. emailIndex is
+  // [{ subject, spFolderUrl }] from loadProjectEmailLinkIndex(); when absent
+  // (non-search callers) there are simply no email matches.
+  for (const em of (emailIndex || [])) {
+    if (em.spFolderUrl && normalizeUrl(em.spFolderUrl) === norm)
+      matched.push({ entityType: "email", entityLabel: em.subject || "(email)", linkType: "documents" });
+  }
   return matched;
 }
 
-function parseSearchHits(rawResults, project) {
+function parseSearchHits(rawResults, project, emailIndex) {
   const hits = [];
   for (const entityResult of rawResults) {
     for (const container of (entityResult.hitsContainers || [])) {
@@ -14990,7 +15015,7 @@ function parseSearchHits(rawResults, project) {
         }
 
         if (item) {
-          item.linkedItems = findLinkedByUrl(project, item.url);
+          item.linkedItems = findLinkedByUrl(project, item.url, emailIndex);
           hits.push(item);
         }
       }
@@ -15070,7 +15095,7 @@ function searchProjectRecords(project, kw) {
 // Map a logged-email record (from loadProjectEmails — server-side ILIKE over
 // subject/sender/body_text in pms_project_emails) to an Investigation hit. This
 // is the project's curated email record, NOT the live Outlook mailbox.
-function emailLogToHit(project, em, words) {
+function emailLogToHit(project, em, words, emailIndex) {
   return {
     id: "log-email-" + em.id, source: "email",
     title: em.subject || "(no subject)",
@@ -15078,7 +15103,7 @@ function emailLogToHit(project, em, words) {
     date: em.date || "",
     from: em.from || em.fromAddress || "",
     summary: highlightExcerpt(em.preview || "", words),
-    linkedItems: findLinkedByUrl(project, em.spFolderUrl || ""),
+    linkedItems: findLinkedByUrl(project, em.spFolderUrl || "", emailIndex),
   };
 }
 
@@ -15217,6 +15242,14 @@ function InvestigationView({ project }) {
     if (!keyword.trim()) { setError("Enter a keyword to search."); return; }
     setSearching(true); setError(""); setResults(null);
     try {
+      // Email link-index for cross-referencing file/note hits to filed emails
+      // (replaces the inline project.emails[] scan). One bounded, on-demand
+      // fetch; best-effort — annotation failures must not drop search results.
+      let emailIndex = [];
+      if (project.id) {
+        try { emailIndex = await loadProjectEmailLinkIndex(project.id); }
+        catch (e) { /* annotations are best-effort */ }
+      }
       // Outlook mailbox search removed — "emails" now means the PMS Email Log
       // (pms_project_emails), fetched below. Graph covers files + notes only.
       const entityTypes = source === "files" ? ["driveItem"]
@@ -15247,7 +15280,7 @@ function InvestigationView({ project }) {
       let hits = [];
       if (source !== "records" && source !== "emails") {
         const raw = await searchPmsCorpus(baseQ, entityTypes, fileQ);
-        hits = parseSearchHits(raw, project);
+        hits = parseSearchHits(raw, project, emailIndex);
 
         // Microsoft Graph's /search/query is relevance-ranked — `AND` is a ranking
         // hint, not a hard filter. So docs that strongly match the project number
@@ -15277,7 +15310,7 @@ function InvestigationView({ project }) {
         try {
           const logEmails = await loadProjectEmails(project.id, { search: kw, limit: 50 });
           const words = kw.toLowerCase().split(/\s+/).filter(Boolean);
-          hits = hits.concat(logEmails.map(em => emailLogToHit(project, em, words)));
+          hits = hits.concat(logEmails.map(em => emailLogToHit(project, em, words, emailIndex)));
         } catch (e) { /* keep file/note/record results if the log fetch fails */ }
       }
 
@@ -16027,12 +16060,10 @@ const PIPELINE_HIDDEN_TABS = ["Change Orders", "RFIs", "Submittals", "Gantt"];
 
 // ── Project Timeline ─────────────────────────────────────────────────────────
 // A two-sided "now" line for ONE project: upcoming due-dates above the NOW
-// divider, recent activity below it. PURELY DERIVED — it reads arrays already
-// on the project object and writes nothing. No new DB rows, no migration, and
-// nothing added to the V2 load. (Emails come from the inline project.emails[]
-// mirror; if that ever looks thin for a project, swap the email source in
-// collectTimelineEvents for a loadProjectEmails(project.id, …) fetch like
-// EmailsView does — that's the only thing here that touches a non-inline array.)
+// divider, recent activity below it. Mostly derived from arrays already on the
+// project object. Emails are the exception: they come from pms_project_emails
+// (fetched by TimelineView and passed into collectTimelineEvents), since the
+// inline project.emails[] array is no longer shipped with the slim V2 load.
 
 // One chip + color/icon per event source. Order = chip order.
 const TIMELINE_KINDS = [
@@ -16075,7 +16106,7 @@ function keepPastEvent(ev, daysAgo) {
 
 // Flatten the project's parallel arrays into one list of timeline events.
 // Each event: { dateStr:"YYYY-MM-DD", kind, title, sub, overdue }.
-function collectTimelineEvents(project) {
+function collectTimelineEvents(project, emailRecords) {
   const out = [];
   const pastDue = d => !!d && new Date(d + "T00:00:00") < new Date();
   const add = (dateStr, kind, title, sub, overdue) => {
@@ -16083,8 +16114,9 @@ function collectTimelineEvents(project) {
     out.push({ dateStr: String(dateStr).slice(0, 10), kind, title: title || "—", sub: sub || "", overdue: !!overdue });
   };
 
-  // PAST — emails (when sent/received)
-  (project.emails || []).forEach(em =>
+  // PAST — emails (when sent/received). Sourced from pms_project_emails via the
+  // caller (the inline project.emails[] array is no longer loaded).
+  (emailRecords || []).forEach(em =>
     add(em.date, "email", em.subject || "(no subject)", em.from || ""));
 
   // PAST — notes & meetings (when logged); action items are handled below
@@ -16122,10 +16154,23 @@ function TimelineView({ project }) {
   const [hidden, setHidden] = React.useState({});         // { kind: true } = hidden
   const todayStr = new Date().toISOString().slice(0, 10);
 
+  // Timeline emails now come from pms_project_emails (the inline project.emails[]
+  // array is no longer loaded). Fetch the recent 200 by date on mount; the
+  // per-type past window (60 days for email) trims further. Bounded + on-demand.
+  const [emailEvents, setEmailEvents] = React.useState([]);
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!project.id) { setEmailEvents([]); return; }
+    loadProjectEmails(project.id, { limit: 200 })
+      .then(rows => { if (!cancelled) setEmailEvents(rows); })
+      .catch(() => { if (!cancelled) setEmailEvents([]); });
+    return () => { cancelled = true; };
+  }, [project.id]);
+
   const { upcoming, past } = React.useMemo(() => {
     const now = new Date(todayStr + "T00:00:00");
     const up = [], pa = [];
-    collectTimelineEvents(project).forEach(ev => {
+    collectTimelineEvents(project, emailEvents).forEach(ev => {
       if (hidden[ev.kind]) return;
       if (ev.dateStr >= todayStr) up.push(ev);
       else {
@@ -16136,7 +16181,7 @@ function TimelineView({ project }) {
     up.sort((a, b) => b.dateStr.localeCompare(a.dateStr));  // furthest future on top, nearest just above NOW
     pa.sort((a, b) => b.dateStr.localeCompare(a.dateStr));  // most recent just below NOW
     return { upcoming: up, past: pa };
-  }, [project, hidden, todayStr]);
+  }, [project, hidden, todayStr, emailEvents]);
 
   const fmtDay = iso => new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
@@ -16847,10 +16892,10 @@ function EmailsView({ project, onChange }) {
 
   // ── Phase 6b: server-side reads from pms_project_emails ────────────────────
   // `emails` is the loaded page (metadata only, no bodies). It replaces what
-  // used to be derived from project.emails[] each render. Mutations still
-  // call onChange to keep project.emails[] in sync (dual-write); the local
-  // state mirror lets the UI re-render immediately without waiting for the
-  // parent prop to update.
+  // used to be derived from project.emails[] each render. pms_project_emails is
+  // now the sole store — email mutations write there directly (no inline
+  // project.emails[] mirror, which is no longer loaded). The local `emails`
+  // state re-renders the UI immediately.
   const [emails, setEmails] = useState([]);
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
@@ -17227,10 +17272,11 @@ function EmailsView({ project, onChange }) {
       };
     }));
 
-    // Dual-write: update project.emails[] (parent state) AND the local
-    // `emails` page (so the UI re-renders immediately without waiting for
-    // a refetch). Prepend toAdd to local state since the list is date-desc.
-    onChange({ ...project, emails: [...(project.emails || []), ...toAdd] });
+    // Table-only: pms_project_emails is the source of truth (written below).
+    // We no longer mirror into the inline project.emails[] array — it isn't
+    // loaded (slim view) and writing it back would truncate the archive.
+    // Update the local `emails` page so the UI re-renders immediately;
+    // prepend toAdd since the list is date-desc.
     setEmails(prev => [...toAdd, ...prev]);
     setSavedMsgIds(prev => {
       const next = new Set(prev);
@@ -17278,9 +17324,9 @@ function EmailsView({ project, onChange }) {
       const msg = "✓ Saved to Emails/" + folderName + (attachCount > 0 ? " + " + attachCount + " attachment" + (attachCount !== 1 ? "s" : "") : "");
       setSpSaveState(s => ({ ...s, [email.msgId]: { status: "done", msg, folderWebUrl } }));
       // Persist the SP folder URL on the email record so it survives page refresh.
-      // Dual-write: update both project.emails[] (parent state) and the local page.
+      // Table-only: the pms_project_emails PATCH below is the persistence; we no
+      // longer mirror into the inline project.emails[] array. Update local page only.
       const patchSpUrl = e => e.msgId === email.msgId ? { ...e, spFolderUrl: folderWebUrl } : e;
-      onChange({ ...project, emails: (project.emails || []).map(patchSpUrl) });
       setEmails(prev => prev.map(patchSpUrl));
       // Also persist to the pms_project_emails table so the folder link survives
       // reload. If this fails — no record id, or the PATCH gets silently dropped
@@ -17301,8 +17347,8 @@ function EmailsView({ project, onChange }) {
 
   function deleteEmail(msgId) {
     const target = emails.find(e => e.msgId === msgId);
-    // Dual-write delete: parent project.emails[], local page, savedMsgIds set.
-    onChange({ ...project, emails: (project.emails || []).filter(e => e.msgId !== msgId) });
+    // Table-only delete: remove from pms_project_emails (below) + local page +
+    // savedMsgIds set. No inline project.emails[] mirror.
     setEmails(prev => prev.filter(e => e.msgId !== msgId));
     setSavedMsgIds(prev => { const next = new Set(prev); next.delete(msgId); return next; });
     if (expanded === msgId) setExpanded(null);
@@ -17323,18 +17369,17 @@ function EmailsView({ project, onChange }) {
       if (data?.body?.content) {
         const html = data.body.content;
         setLiveBody(prev => ({ ...prev, [msgId]: html }));
-        // Phase 3: persist the compressed body to the project record so we never
+        // Phase 3: persist the compressed body to pms_project_emails so we never
         // need to re-fetch it. Future opens go straight to decompress + render.
-        // The save uses onChange (debounced auto-save) — no extra round-trip cost.
         const existing = emails.find(e => e.msgId === msgId);
         if (existing && !existing.bodyHtmlCompressed) {
           const compressed = compressHtml(html);
           if (compressed) {
-            // Dual-write the cached body: parent project.emails[] AND local page.
+            // Cache the compressed body on the local page; persist to
+            // pms_project_emails below. No inline project.emails[] mirror.
             const patchBody = e => e.msgId === msgId
               ? { ...e, bodyHtmlCompressed: compressed, bodyHtmlSize: html.length }
               : e;
-            onChange({ ...project, emails: (project.emails || []).map(patchBody) });
             setEmails(prev => prev.map(patchBody));
             // Also persist to the new table so future opens skip the live fetch.
             if (existing.id) {
