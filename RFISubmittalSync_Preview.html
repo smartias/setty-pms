@@ -140,6 +140,10 @@ const RFI_DISC = ["Mechanical","Electrical","Plumbing","Fire Protection","Techno
 const SUB_DISC = ["Mechanical","Electrical","Plumbing","Fire Protection","Technology","Architectural","Structural","Civil","Other"];
 const ALL_DISC = [...new Set([...RFI_DISC, ...SUB_DISC])];
 const ALL_STATUS = [...new Set([...RFI_STATUSES, ...SUB_STATUSES])];
+// "Open (active)" filter = outstanding items across BOTH types. RFI-open (Open, Pending Sub Response) and
+// submittal-open (Received, Under Review, Pending Sub Review) never share a status value, so a flat
+// membership test is unambiguous. Resubmittal Required is intentionally excluded (matches the tracker convention).
+const OPEN_STATUSES = ["Open","Pending Sub Response","Received","Under Review","Pending Sub Review"];
 const STATUS_COLOR = {
   "Open":{bg:"#1e3a5f",t:"#60a5fa"}, "Pending Sub Response":{bg:"#3b2a1a",t:"#f59e0b"}, "Responded":{bg:"#1a3a2a",t:"#34d399"},
   "Closed":{bg:"#1a1a2e",t:"#94a3b8"}, "Void":{bg:"#1a1a1a",t:"#6b7280"},
@@ -201,12 +205,13 @@ function toSubRecord(it,pid,vendor){ return { id:`sync-forma-${pid}-${it.extNum}
 async function fetchJson(path){ const r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); if(!r.ok)throw new Error(path+" -> HTTP "+r.status+" "+(await r.text()).slice(0,120)); return r.json(); }
 
 /* =========================== STATE + PICKER =========================== */
-let PROJECTS=[], CURRENT=null, FILTER={type:"all",disc:"all",status:"all",text:""};
+let PROJECTS=[], CURRENT=null, FILTER={type:"all",disc:"all",status:"__open__",text:""};
 async function init(){
   try{ document.getElementById("who").value = localStorage.getItem("rfiTrackUser")||"";
        if(localStorage.getItem("rfiTrackGuide")==="0") toggleGuide(); }catch(e){}
   document.getElementById("fDisc").innerHTML = `<option value="all">All disciplines</option>`+ALL_DISC.map(d=>`<option>${esc(d)}</option>`).join("");
-  document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option>`+ALL_STATUS.map(s=>`<option>${esc(s)}</option>`).join("");
+  document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option><option value="__open__">Open (active)</option>`+ALL_STATUS.map(s=>`<option>${esc(s)}</option>`).join("");
+  document.getElementById("fStatus").value = FILTER.status;
   try{
     const [projRows, actRows] = await Promise.all([
       fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status&order=id.asc`),
@@ -218,8 +223,7 @@ async function init(){
     const caActive=PROJECTS.filter(p=>p.activity).length;
     document.getElementById("picknote").textContent=`${PROJECTS.length} In Construction Administration · ${caActive} with Procore/Forma ⚡`;
     rebuildPicker();
-    const first=PROJECTS.find(p=>p.activity)||PROJECTS[0];
-    if(first){ document.getElementById("picker").value=first.id; selectProject(first.id); }
+    if(PROJECTS.length){ document.getElementById("picker").value="__ALL__"; selectAll(); }
     else document.getElementById("out").innerHTML=`<p class="empty">No projects are marked "In Construction Administration".</p>`;
   }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
 }
@@ -273,7 +277,8 @@ function clearFilters(){ FILTER={type:"all",disc:"all",status:"all",text:""};
   document.getElementById("fType").value="all"; document.getElementById("fDisc").value="all"; document.getElementById("fStatus").value="all"; document.getElementById("fText").value=""; renderProject(); }
 function passFilter(r){
   if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
-  if(FILTER.status!=="all" && (r.status||"")!==FILTER.status) return false;
+  if(FILTER.status==="__open__"){ if(!OPEN_STATUSES.includes(r.status||"")) return false; }
+  else if(FILTER.status!=="all" && (r.status||"")!==FILTER.status) return false;
   if(FILTER.text){ const hay=((r.number||"")+" "+(r.title||"")+" "+(r.description||"")+" "+(r.specSection||"")+" "+(r.from||"")+" "+(r.__projNum||"")+" "+(r.__projName||"")).toLowerCase(); if(!hay.includes(FILTER.text)) return false; }
   return true;
 }
@@ -326,15 +331,14 @@ function renderSection(kind, title, logged, inbox){
   if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from Procore/Forma above.</div>`; }
   else {
     const pcol=am?"<th>Project</th>":"";
-    const head = pcol + (kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Discipline</th><th>From</th><th>Assigned</th><th>Due</th><th>Status</th><th>Updated by</th>"
-                              : "<th>Item</th><th>Title / Spec</th><th>Discipline</th><th>Assigned</th><th>Stamp</th><th>Due</th><th>Status</th><th>Updated by</th>");
+    const head = pcol + (kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Discipline</th><th>From</th><th>Assigned</th><th>Received</th><th>Due</th><th>Status</th>"
+                              : "<th>Item</th><th>Title / Spec</th><th>Discipline</th><th>Assigned</th><th>Stamp</th><th>Received</th><th>Due</th><th>Status</th>");
     const rows=shown.map(r=>{
-      const by=r.syncEditedBy||r.loggedBy||"";
-      const pc=am?`<td class="muted" title="${esc(r.__projName||"")}">${esc(r.__projNum||r.__projName||"")}</td>`:"";
+      const pc=am?`<td class="muted" title="${esc(r.__projNum||"")}">${esc(r.__projName||r.__projNum||"")}</td>`:"";
       const asg=esc(assigneeNames(r));
       const c = kind==="rfi"
-        ? `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.title||r.description||"—")}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`
-        : `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.description||r.title||"—")}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td><td class="muted">${esc(by)}</td>`;
+        ? `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.title||r.description||"—")}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`
+        : `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.description||r.title||"—")}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`;
       return `<tr class="click" onclick='openEditor("${kind}",${esc(JSON.stringify(r.id))})'>${pc}${c}</tr>`; }).join("");
     html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=${am?9:8} class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
   }

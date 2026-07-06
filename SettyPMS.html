@@ -9567,6 +9567,9 @@ function AddLinkModal({ project, onAdd, onClose }) {
 
 const RFI_STATUSES    = ["Open", "Pending Sub Response", "Responded", "Closed", "Void"];
 const SUBMITTAL_STATUSES = ["Received", "Under Review", "Pending Sub Review", "Returned", "Resubmittal Required", "Void"];
+// "Open" = outstanding/active items. Resubmittal Required is intentionally excluded (rejected → out of the open bucket).
+const RFI_OPEN_STATUSES = ["Open", "Pending Sub Response"];
+const SUB_OPEN_STATUSES = ["Received", "Under Review", "Pending Sub Review"];
 const SUBMITTAL_STAMPS = ["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected", "—"];
 const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Multi-Discipline", "Other"];
 const SUBMITTAL_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Other"];
@@ -10022,7 +10025,7 @@ function RFIsView({ project, onChange, staff, clients }) {
     return true;
   });
 
-  const openCount     = rfis.filter(r => r.status === "Open").length;
+  const openCount     = rfis.filter(r => RFI_OPEN_STATUSES.includes(r.status)).length;
   const overdueCount  = rfis.filter(r => isOverdue(r)).length;
   const pendingSubCnt = rfis.filter(r => r.status === "Pending Sub Response").length;
   const staffList     = project.teamMembers || [];
@@ -10176,7 +10179,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
     return true;
   });
 
-  const openCount    = subs.filter(s => !["Returned", "Void"].includes(s.status)).length;
+  const openCount    = subs.filter(s => SUB_OPEN_STATUSES.includes(s.status)).length;
   const overdueCount = subs.filter(s => isOverdue(s)).length;
   const pendingSubCnt= subs.filter(s => s.status === "Pending Sub Review").length;
   const staffList    = project.teamMembers || [];
@@ -16259,7 +16262,8 @@ function archiveBlockers(project) {
   if (openAI) parts.push(openAI + " open action item" + (openAI > 1 ? "s" : ""));
   const openRfis = (project.rfis || []).filter(r => r.status === "Open" || r.status === "Pending Sub Response").length;
   if (openRfis) parts.push(openRfis + " open RFI" + (openRfis > 1 ? "s" : ""));
-  const SUB_OPEN = ["Received", "Under Review", "Pending Sub Review", "Resubmittal Required"];
+  // Open submittals = outstanding items; Resubmittal Required excluded (rejected → out of the open bucket). Mirrors SUB_OPEN_STATUSES in the first JSX block.
+  const SUB_OPEN = ["Received", "Under Review", "Pending Sub Review"];
   const openSubs = (project.submittals || []).filter(s => SUB_OPEN.includes(s.status)).length;
   if (openSubs) parts.push(openSubs + " open submittal" + (openSubs > 1 ? "s" : ""));
   if (!parts.length) return null;
@@ -18716,36 +18720,118 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
     ? newPct + "% of " + milestone.name + " (" + fmt(milestone.fee) + " total)" + (alreadyInvoiced > 0 ? " less prev. invoiced " + fmt(alreadyInvoiced) : "")
     : "100% of " + milestone.name;
 
+  // Internal notice TO Accounting (not a client-facing invoice). Tells them the
+  // work is complete and the highlighted amount is cleared to invoice, and shows
+  // the overall fee schedule + prior invoices for context. Fee-schedule math
+  // mirrors printInvoice() so the two never disagree — the only difference is
+  // this runs BEFORE the invoice is logged, so every project.invoices row is
+  // genuinely "prior" and we add invoiceAmount on top as "this notice".
   function buildEmailHtml() {
-    var projNum = project.projectNumber ? "<div style='font-size:11px;color:#44546A'>" + project.projectNumber + "</div>" : "";
+    var projNum  = project.projectNumber ? "<div style='font-size:11px;color:#44546A'>" + project.projectNumber + "</div>" : "";
     var primeNum = project.primeProjectNumber ? "<div style='font-size:11px;color:#44546A'>Prime #: " + project.primeProjectNumber + "</div>" : "";
-    var basisRow = alreadyInvoiced > 0
-      ? "<div style='background:#F8FAFC;border:1px solid #CBD5E1;border-radius:4px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#44546A'><strong>Billing basis:</strong> " + newPct + "% complete &nbsp;&middot;&nbsp; Milestone fee: " + fmt(milestone.fee) + " &nbsp;&middot;&nbsp; Prev. invoiced: " + fmt(alreadyInvoiced) + " &nbsp;&middot;&nbsp; This invoice: " + fmt(invoiceAmount) + "</div>"
-      : "";
-    return "<div style='font-family:Segoe UI,system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px'>"
-      + "<div style='border-bottom:3px solid #1F3864;padding-bottom:12px;margin-bottom:20px;display:flex;justify-content:space-between'>"
-        + "<div><div style='font-size:24px;font-weight:900;color:#C00000;letter-spacing:2px;line-height:1'>SETTY</div>"
-        + "<div style='font-size:8px;color:#44546A;letter-spacing:1px'>&amp; ASSOCIATES, LTD, PC</div></div>"
-        + "<div style='text-align:right'><div style='font-size:16px;font-weight:700;color:#2F5496'>INVOICE</div>"
-        + "<div style='font-size:13px;font-weight:700;color:#1F3864'>" + invNumber + "</div>"
-        + "<div style='font-size:11px;color:#44546A'>" + fmtDate(invDate) + "</div></div></div>"
-      + "<div style='display:grid;grid-template-columns:1fr 1fr;border:1px solid #CBD5E1;border-radius:4px;margin-bottom:20px;overflow:hidden'>"
+
+    // ── Fee-schedule computation (mirrors printInvoice) ──
+    var auditLocked = (project.feeAuditLog || []).filter(function(e){ return e.action === "locked" && e.settyFee; });
+    var auditFee = auditLocked.length > 0 ? auditLocked[auditLocked.length - 1].settyFee : 0;
+    var constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+    var contractFee = project.lockedSettyFee || auditFee || (project.manualSettyFee > 0 ? project.manualSettyFee : calcSettyFee(constructionCost, project)) || 0;
+    var approvedCOs = (project.changeOrders || []).filter(function(c){ return c.approved; });
+    var coTotal = approvedCOs.reduce(function(a, c){ return a + (c.fee || 0); }, 0);
+    var totalContractFee = contractFee + coTotal;
+    var billablePhases = (project.phases || []).filter(function(p){ return p.billable && p.fee > 0; });
+    var priorInvoices = project.invoices || [];
+    var totalPriorInvoiced = priorInvoices.reduce(function(a, i){ return a + (i.amount || 0); }, 0);
+    var remainingAfter = totalContractFee - (totalPriorInvoiced + invoiceAmount);
+
+    var TD = "padding:8px 12px;border-bottom:1px solid #E2E8F0;font-size:12px;";
+    var feeRows = billablePhases.map(function(ph){
+      var phaseFee = ph.fee || 0;
+      var phaseInvoiced = priorInvoices.filter(function(i){ return i.phase === ph.code; }).reduce(function(a, i){ return a + (i.amount || 0); }, 0);
+      var thisAmt = (milestone.phase === ph.code) ? invoiceAmount : 0;
+      var balance = phaseFee - (phaseInvoiced + thisAmt);
+      var isCur = milestone.phase === ph.code;
+      return "<tr style='" + (isCur ? "background:#FEF3C7;" : "") + "'>"
+        + "<td style='" + TD + "font-weight:" + (isCur ? "700" : "500") + "'>" + ph.name + (isCur ? " &nbsp;<span style='background:#B45309;color:#fff;font-size:9.5px;padding:1px 7px;border-radius:9px;font-weight:700;vertical-align:middle'>CLEAR TO INVOICE</span>" : "") + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace'>" + fmt(phaseFee) + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace;color:#64748B'>" + (phaseInvoiced > 0 ? fmt(phaseInvoiced) : "&mdash;") + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace;font-weight:700;color:" + (thisAmt > 0 ? "#B45309" : "#CBD5E1") + "'>" + (thisAmt > 0 ? fmt(thisAmt) : "&mdash;") + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace;color:" + (balance <= 0 ? "#16A34A" : "#1F3864") + "'>" + (balance <= 0 ? "✓ Billed" : fmt(balance)) + "</td>"
+        + "</tr>";
+    }).join("");
+    var coRows = approvedCOs.map(function(co){
+      var coInvoiced = priorInvoices.filter(function(i){ return i.phase === "CO" && (project.milestones || []).find(function(m){ return m.coId === co.id && m.id === i.milestoneId; }); }).reduce(function(a, i){ return a + (i.amount || 0); }, 0);
+      var thisAmt = (milestone.phase === "CO" && milestone.coId === co.id) ? invoiceAmount : 0;
+      var balance = (co.fee || 0) - (coInvoiced + thisAmt);
+      var isCur = thisAmt > 0;
+      return "<tr style='background:" + (isCur ? "#FEF3C7" : "#FFF8F0") + "'>"
+        + "<td style='" + TD + "color:#44546A;font-style:italic'>↳ CO: " + (co.name || co.number || "") + (isCur ? " &nbsp;<span style='background:#B45309;color:#fff;font-size:9.5px;padding:1px 7px;border-radius:9px;font-weight:700;vertical-align:middle;font-style:normal'>CLEAR TO INVOICE</span>" : "") + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace'>" + fmt(co.fee || 0) + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace;color:#64748B'>" + (coInvoiced > 0 ? fmt(coInvoiced) : "&mdash;") + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace;font-weight:700;color:" + (thisAmt > 0 ? "#B45309" : "#CBD5E1") + "'>" + (thisAmt > 0 ? fmt(thisAmt) : "&mdash;") + "</td>"
+        + "<td style='" + TD + "text-align:right;font-family:monospace;color:" + (balance <= 0 ? "#16A34A" : "#1F3864") + "'>" + (balance <= 0 ? "✓ Billed" : fmt(balance)) + "</td>"
+        + "</tr>";
+    }).join("");
+
+    // ── Prior-invoice history ──
+    var prevRows = priorInvoices.length
+      ? priorInvoices.map(function(i){
+          return "<tr>"
+            + "<td style='" + TD + "font-family:monospace'>" + (i.number || "&mdash;") + "</td>"
+            + "<td style='" + TD + "'>" + (i.date ? fmtDate(i.date) : "&mdash;") + "</td>"
+            + "<td style='" + TD + "'>" + (i.milestoneName || i.phaseName || i.description || "&mdash;") + "</td>"
+            + "<td style='" + TD + "text-align:right;font-family:monospace'>" + fmt(i.amount || 0) + "</td>"
+            + "</tr>";
+        }).join("")
+      : "<tr><td colspan='4' style='" + TD + "color:#64748B;font-style:italic'>No prior invoices on this project.</td></tr>";
+
+    var th = "padding:8px 12px;text-align:left;font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #CBD5E1;";
+    var thR = th + "text-align:right;";
+
+    return "<div style='font-family:Segoe UI,system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:720px'>"
+      // Internal-notice banner
+      + "<div style='background:#1F3864;color:#fff;border-radius:6px 6px 0 0;padding:14px 18px'>"
+        + "<div style='font-size:11px;letter-spacing:2px;opacity:.8'>INTERNAL &middot; ACCOUNTING NOTICE</div>"
+        + "<div style='font-size:19px;font-weight:800;margin-top:2px'>Ready to Invoice</div></div>"
+      + "<div style='border:1px solid #CBD5E1;border-top:none;border-radius:0 0 6px 6px;padding:18px'>"
+      // Greeting / instruction
+      + "<p style='margin:0 0 16px;font-size:13px;color:#1a1a1a;line-height:1.6'>Accounting &mdash; the work below is complete and <strong>cleared to invoice</strong>. Please issue an invoice to the client / prime for the highlighted amount. The overall fee schedule and prior invoices are included for reference.</p>"
+      // Project / client grid
+      + "<div style='display:grid;grid-template-columns:1fr 1fr;border:1px solid #CBD5E1;border-radius:4px;margin-bottom:16px;overflow:hidden'>"
         + "<div style='padding:12px 16px;border-right:1px solid #CBD5E1'>"
           + "<div style='font-size:10px;color:#44546A;text-transform:uppercase;margin-bottom:4px'>Project</div>"
           + "<div style='font-size:13px;font-weight:600;color:#1F3864'>" + (project.name || "—") + "</div>" + projNum + "</div>"
         + "<div style='padding:12px 16px'>"
           + "<div style='font-size:10px;color:#44546A;text-transform:uppercase;margin-bottom:4px'>Client / Prime</div>"
           + "<div style='font-size:13px;font-weight:600;color:#1F3864'>" + (project.prime || project.clientName || "—") + "</div>" + primeNum + "</div></div>"
-      + basisRow
-      + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px'>"
-        + "<thead><tr style='background:#F1F5F9'><th style='padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase'>Description</th>"
-        + "<th style='padding:8px 12px;text-align:right;font-size:11px;color:#44546A;text-transform:uppercase'>Amount</th></tr></thead>"
-        + "<tbody><tr><td style='padding:10px 12px;font-weight:500'>" + lineDesc + "</td>"
-        + "<td style='padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;color:#1F3864'>$" + Math.round(invoiceAmount).toLocaleString() + "</td></tr></tbody>"
-        + "<tfoot><tr style='background:#F1F5F9'><td style='padding:10px 12px;font-weight:700'>Total Due</td>"
-        + "<td style='padding:10px 12px;text-align:right;font-family:monospace;font-weight:700;font-size:15px;color:#1F3864'>$" + Math.round(invoiceAmount).toLocaleString() + "</td></tr></tfoot></table>"
-      + "<div style='margin-top:24px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:11px;color:#44546A'>"
-        + "SETTY &amp; Associates, Ltd, PC &nbsp;&middot;&nbsp; " + (project.name || "") + " &nbsp;&middot;&nbsp; " + invNumber + "</div></div>";
+      // Highlighted amount cleared to invoice
+      + "<div style='background:#FEF3C7;border:1px solid #F59E0B;border-radius:6px;padding:14px 18px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center'>"
+        + "<div><div style='font-size:11px;color:#92400E;text-transform:uppercase;letter-spacing:.05em;font-weight:700'>Cleared to Invoice Now</div>"
+        + "<div style='font-size:12px;color:#78350F;margin-top:2px'>" + lineDesc + "</div></div>"
+        + "<div style='font-size:26px;font-weight:800;color:#B45309;font-family:monospace;white-space:nowrap'>" + fmt(invoiceAmount) + "</div></div>"
+      // Basis line
+      + "<div style='font-size:12px;color:#44546A;margin-bottom:20px'><strong>Basis:</strong> " + (project.name ? "" : "") + milestone.name + " at " + newPct + "% complete &nbsp;&middot;&nbsp; Milestone fee " + fmt(milestone.fee) + (alreadyInvoiced > 0 ? " &nbsp;&middot;&nbsp; Previously invoiced on this milestone " + fmt(alreadyInvoiced) : "") + "</div>"
+      // Fee schedule
+      + "<div style='font-size:12px;font-weight:700;color:#1F3864;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px'>Overall Fee Schedule &amp; Billing Status</div>"
+      + "<table style='border-collapse:collapse;width:100%;margin-bottom:20px'>"
+        + "<thead><tr><th style='" + th + "'>Phase</th><th style='" + thR + "'>Phase Fee</th><th style='" + thR + "'>Prev. Billed</th><th style='" + thR + "'>This Notice</th><th style='" + thR + "'>Balance</th></tr></thead>"
+        + "<tbody>" + feeRows + coRows + "</tbody>"
+        + "<tfoot><tr style='background:#F1F5F9;font-weight:700'>"
+          + "<td style='padding:9px 12px;font-size:12px'>Contract Total" + (coTotal > 0 ? " <span style='font-weight:400;font-size:10px;color:#44546A'>(incl. " + approvedCOs.length + " CO" + (approvedCOs.length !== 1 ? "s" : "") + ")</span>" : "") + "</td>"
+          + "<td style='padding:9px 12px;text-align:right;font-family:monospace;font-size:12px'>" + fmt(totalContractFee) + "</td>"
+          + "<td style='padding:9px 12px;text-align:right;font-family:monospace;font-size:12px'>" + fmt(totalPriorInvoiced) + "</td>"
+          + "<td style='padding:9px 12px;text-align:right;font-family:monospace;font-size:12px;color:#B45309'>" + fmt(invoiceAmount) + "</td>"
+          + "<td style='padding:9px 12px;text-align:right;font-family:monospace;font-size:12px;color:" + (remainingAfter < 0 ? "#C00000" : remainingAfter === 0 ? "#16A34A" : "#1F3864") + "'>" + fmt(remainingAfter) + "</td>"
+        + "</tr></tfoot></table>"
+      // Prior invoices
+      + "<div style='font-size:12px;font-weight:700;color:#1F3864;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px'>Prior Invoices</div>"
+      + "<table style='border-collapse:collapse;width:100%;margin-bottom:8px'>"
+        + "<thead><tr><th style='" + th + "'>Invoice #</th><th style='" + th + "'>Date</th><th style='" + th + "'>Phase / Milestone</th><th style='" + thR + "'>Amount</th></tr></thead>"
+        + "<tbody>" + prevRows + "</tbody>"
+        + (priorInvoices.length ? "<tfoot><tr style='font-weight:700'><td colspan='3' style='padding:8px 12px;text-align:right;font-size:11px;color:#44546A'>Total Previously Invoiced</td><td style='padding:8px 12px;text-align:right;font-family:monospace;font-size:12px'>" + fmt(totalPriorInvoiced) + "</td></tr></tfoot>" : "")
+      + "</table>"
+      + "<div style='margin-top:20px;padding-top:10px;border-top:1px solid #CBD5E1;font-size:10px;color:#94A3B8'>"
+        + "Generated from Setty PMS &nbsp;&middot;&nbsp; " + (project.name || "") + " &nbsp;&middot;&nbsp; " + fmtDate(invDate) + " &nbsp;&middot;&nbsp; Internal use — add Accounting to the To field and send.</div>"
+      + "</div></div>";
   }
 
   async function createDraftAndLog() {
@@ -18753,7 +18839,7 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
     setMsg("");
     try {
       await createOutlookDraft({
-        subject: "Invoice " + invNumber + " \u2014 " + milestone.name + " (" + newPct + "%) \u00b7 " + (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : ""),
+        subject: "Ready to invoice: " + fmt(invoiceAmount) + " \u2014 " + (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : "") + " \u00b7 " + milestone.name + " (" + newPct + "%)",
         bodyHtml: buildEmailHtml(),
       });
       const newInvoice = {
@@ -18766,8 +18852,8 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
       };
       onLogInvoice(newInvoice);
       setStatus("done");
-      setMsg("\u2713 Draft created in Outlook Drafts \u00b7 invoice logged");
-      setTimeout(() => onClose(), 2500);
+      setMsg("\u2713 Accounting notice drafted in Outlook \u00b7 add Accounting to \u201cTo\u201d and send \u00b7 invoice logged");
+      setTimeout(() => onClose(), 3200);
     } catch(e) {
       setStatus("error");
       setMsg("\u2717 " + e.message);
@@ -18817,7 +18903,7 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
           <Btn variant="ghost" onClick={onClose}>Not Now</Btn>
           <Btn variant="success" disabled={status === "sending" || status === "done"} onClick={createDraftAndLog}>
-            {status === "sending" ? "\u23F3 Creating draft\u2026" : "\u2709 Invoice " + fmt(invoiceAmount)}
+            {status === "sending" ? "\u23F3 Creating draft\u2026" : "\u2709 Notify Accounting \u00B7 " + fmt(invoiceAmount)}
           </Btn>
         </div>
       </div>
