@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+  <meta http-equiv="Pragma" content="no-cache"/>
+  <meta http-equiv="Expires" content="0"/>
+  <title>Setty — Institutional Intelligence</title>
+  <script>
+    // Version marker + self-update banner — same pattern as SiteReport.html /
+    // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
+    window.__appVersion = "2026-07-09-intel-v2-embed";
+    async function _checkForUpdate() {
+      try {
+        const res = await fetch(location.pathname + "?_v=" + Date.now(),
+          { cache: "no-store", headers: { "Cache-Control": "no-cache" } });
+        if (!res.ok) return;
+        const text = await res.text();
+        const match = text.match(/window\.__appVersion\s*=\s*["']([^"']+)["']/);
+        const remote = match ? match[1] : null;
+        if (remote && remote !== window.__appVersion) _showUpdateBanner(remote);
+      } catch (e) { console.warn("[updater]", e.message); }
+    }
+    function _showUpdateBanner(remote) {
+      if (document.getElementById("__updateBanner")) return;
+      const banner = document.createElement("div");
+      banner.id = "__updateBanner";
+      banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+      banner.innerHTML = '<span>🔄 New version available (' + remote + '). Reload to update.</span><button id="__updateBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Reload now</button>';
+      document.body.appendChild(banner);
+      document.getElementById("__updateBtn").onclick = () => location.reload();
+    }
+    window.addEventListener("load", () => {
+      setTimeout(_checkForUpdate, 3000);
+      setInterval(_checkForUpdate, 10 * 60 * 1000);
+    });
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --navy: #1F3864; --blue: #3B82F6; --bg: #0d1117; --card: #161b22;
+      --border: #30363d; --text: #e6edf3; --dim: #94a3b8; --muted: #64748b;
+      --green: #10b981; --yellow: #f59e0b; --red: #ef4444; --accent-dim: #1e3a5f;
+      --purple: #a78bfa;
+    }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 18px 24px 60px; }
+    h1 { font-size: 22px; font-weight: 800; margin-bottom: 2px; }
+    h2 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 22px 0 10px; }
+    a { color: #60a5fa; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    label { font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
+    input, select, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit; width: 100%; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--blue); }
+    textarea { resize: vertical; }
+    button { font-family: inherit; cursor: pointer; }
+    .btn { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
+    .btn:hover { background: #233; }
+    .btn-primary { background: var(--blue); color: white; border-color: var(--blue); }
+    .btn-primary:hover { background: #2f6fd6; }
+    .btn-success { background: #064e3b; color: var(--green); border-color: var(--green); }
+    .btn-danger { background: transparent; color: var(--red); border-color: var(--red); }
+    .btn-ghost { background: transparent; color: var(--dim); border-color: var(--border); }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+    .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 12px; }
+    .header-user { font-size: 12px; color: var(--dim); }
+    .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px; font-size: 12px; color: var(--dim); cursor: pointer; }
+    .chip:hover { border-color: var(--blue); color: var(--text); }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+    .pill-blue   { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); }
+    .pill-green  { background: #064e3b; color: var(--green); border: 1px solid var(--green); }
+    .pill-yellow { background: #451a03; color: var(--yellow); border: 1px solid var(--yellow); }
+    .pill-gray   { background: #1f242c; color: var(--dim); border: 1px solid var(--border); }
+    .pill-purple { background: #2e1065; color: var(--purple); border: 1px solid var(--purple); }
+    .pill-red    { background: #450a0a; color: var(--red); border: 1px solid var(--red); }
+
+    /* Module tab bar */
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
+    .tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--dim); font-size: 13px; font-weight: 600; padding: 10px 14px; margin-bottom: -1px; display: flex; align-items: center; gap: 6px; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+    .tab .badge { background: var(--border); color: var(--text); border-radius: 10px; font-size: 10px; padding: 1px 7px; font-weight: 700; }
+    .tab.active .badge { background: var(--blue); color: #fff; }
+
+    /* Lessons toolbar */
+    .toolbar { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 16px; }
+    .toolbar .field { min-width: 150px; }
+    .toolbar .grow { flex: 1; min-width: 220px; }
+
+    /* Lesson card */
+    .lesson { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+    .lesson.draft { border-left: 3px solid var(--yellow); }
+    .lesson.approved { border-left: 3px solid var(--green); }
+    .lesson.archived { border-left: 3px solid var(--muted); opacity: .65; }
+    .lesson-top { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .lesson-summary { font-size: 14px; line-height: 1.5; font-weight: 600; color: var(--text); }
+    .lesson-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+    .lesson-sub { font-size: 12px; color: var(--dim); margin-top: 8px; line-height: 1.5; }
+    .lesson-sub b { color: var(--text); font-weight: 600; }
+    .lesson-prompt { margin-top: 8px; font-size: 12px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-style: italic; }
+    .lesson-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+    .empty { text-align: center; color: var(--muted); padding: 48px 20px; font-size: 14px; }
+    .status { font-size: 12px; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; display: none; }
+    .status.info    { background: var(--accent-dim); color: #60a5fa; display: block; }
+    .status.error   { background: #450a0a; color: var(--red); display: block; }
+    .status.success { background: #064e3b; color: var(--green); display: block; }
+
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 200; overflow-y: auto; }
+    .modal { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 22px; width: 100%; max-width: 640px; }
+    .modal h3 { font-size: 17px; font-weight: 800; margin-bottom: 16px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .form-grid .full { grid-column: 1 / -1; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .fieldset { margin-bottom: 12px; }
+
+    .brief-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .brief-grid .card { margin: 0; }
+    .brief-grid h2 { margin-top: 0; }
+    .brief-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .brief-row:last-child { border-bottom: none; }
+    /* Embed mode (inside PMS project Overview iframe): drop chrome & padding. */
+    body.embed { padding: 0; background: transparent; }
+    body.embed > .header-bar, body.embed > .tabs, body.embed > #modalMount { display: none !important; }
+    @media (max-width: 768px) { .brief-grid { grid-template-columns: 1fr; } }
+    .roadmap { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+    .roadmap .card { margin: 0; }
+    .roadmap h4 { font-size: 14px; margin-bottom: 6px; }
+    .roadmap p { font-size: 12px; color: var(--dim); line-height: 1.5; }
+
+    @media (max-width: 768px) {
+      body { padding: 12px 14px 60px; }
+      .form-grid { grid-template-columns: 1fr; }
+      input, select, textarea { font-size: 16px; }
+      .lesson-top { flex-direction: column; }
+      .lesson-actions { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header-bar">
+    <div>
+      <h1>🧠 Institutional Intelligence</h1>
+      <div class="header-user">Mined from emails, RFIs, submittals, site reports, meeting minutes &amp; QA comments ·
+        <a href="https://smartias.github.io/setty-pms/SettyPMS.html">← Back to PMS</a>
+      </div>
+    </div>
+    <div class="chip" id="userChip" title="Set who you are (used for approvals and lesson authorship)">
+      👤 <span id="userName">Set your name</span>
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="status" id="status"></div>
+  <div id="view"></div>
+
+  <!-- Modal mount -->
+  <div id="modalMount"></div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Config — shared Supabase backend (anon key, same posture as the PMS + the
+// SiteReport / FieldPhotos satellite apps). No MSAL here by design: adding a new
+// redirect URI to the Azure app registration is a permission change, so this app
+// stays anon-only and identifies the user via a locally stored name.
+// ─────────────────────────────────────────────────────────────────────────────
+const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
+const SB_HEADERS = { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPABASE_ANON, "Content-Type": "application/json" };
+
+// REST helper. Returns parsed JSON (or null). Throws on non-2xx with a readable
+// message, mirroring the PMS's sbFetchV2 contract.
+async function sb(method, path, body, prefer) {
+  const headers = { ...SB_HEADERS, "Prefer": "return=representation" + (prefer ? "," + prefer : "") };
+  const res = await fetch(SUPABASE_URL + path, {
+    method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {})
+  });
+  if (!res.ok) throw new Error("Supabase " + method + " " + res.status + ": " + (await res.text()).slice(0, 300));
+  const t = await res.text();
+  return t ? JSON.parse(t) : null;
+}
+
+// Controlled vocabularies (kept small and editable in one place).
+const DISCIPLINES = ["Mechanical","Electrical","Plumbing","Fire Protection","Structural","Architectural","Civil","Technology/Telecom","Commissioning","General"];
+const ISSUE_TYPES  = ["Coordination","Constructability","Design conflict","Code / AHJ","Utility / Service","Schedule","Cost / Estimating","Submittal","RFI","Owner requirement","Other"];
+const CONFIDENCE    = ["low","medium","high"];
+
+// The module set — the full Institutional Intelligence vision. Lessons is live;
+// the rest are schema-ready (tables exist) and light up in later passes.
+const MODULES = [
+  { key: "brief",     label: "📥 Project Brief",       table: null,                        idcol: null,          live: true  },
+  { key: "lessons",   label: "Lessons Learned",       table: "pms_lessons",               idcol: "lesson_id",   live: true  },
+  { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
+  { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: false },
+  { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: false },
+  { key: "graph",     label: "Expertise Graph",       table: "pms_expertise_edges",       idcol: null,          live: false },
+  { key: "agents",    label: "Agents",                table: "pms_ii_agent_runs",         idcol: "run_id",      live: false },
+];
+
+const state = {
+  tab: "brief",
+  user: localStorage.getItem("ii_user") || "",
+  lessons: [],
+  projects: [],
+  staff: [],
+  counts: {},
+  filter: { agency: "", discipline: "", status: "draft", origin: "", q: "" },
+  briefNum: localStorage.getItem("ii_briefNum") || "SAPX196006.00",
+  brief: null,
+  briefLoading: false,
+  practices: [],
+  practicesLoaded: false,
+  practicesLoading: false,
+  embed: false,
+  loading: true,
+};
+
+// Embed mode: /SettyIntelligence.html?embed=1&project=SAPX...  renders ONLY the
+// brief for one project, chrome hidden — used inside the PMS project Overview iframe.
+const _params = new URLSearchParams(location.search);
+if (_params.get("project")) { state.briefNum = _params.get("project").trim(); state.tab = "brief"; }
+if (_params.has("embed")) { state.embed = true; state.tab = "brief"; }
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+function toast(msg, kind) { const el = $("status"); el.className = "status " + (kind || "info"); el.textContent = msg; if (kind === "success") setTimeout(() => { el.className = "status"; }, 3500); }
+
+// ── Data loading ─────────────────────────────────────────────────────────────
+async function loadAll() {
+  state.loading = true;
+  render();
+  try {
+    const [lessons, projects, dataRows] = await Promise.all([
+      sb("GET", "/rest/v1/pms_lessons?select=*&order=date_added.desc"),
+      sb("GET", "/rest/v1/pms_projects?select=num:project->>projectNumber,name:project->>name").catch(() => []),
+      sb("GET", "/rest/v1/pms_data?id=eq.singleton&select=staff").catch(() => []),
+    ]);
+    state.lessons = lessons || [];
+    state.projects = (projects || []).map(p => ({ id: p.num, name: p.name || "" })).filter(p => p.id);
+    const rawStaff = (dataRows && dataRows[0] && dataRows[0].staff) || [];
+    state.staff = rawStaff.map(s => (typeof s === "string" ? s : (s.name || s.fullName || ""))).filter(Boolean);
+    await loadCounts();
+  } catch (e) {
+    toast("Could not load data: " + e.message, "error");
+  }
+  state.loading = false;
+  render();
+}
+
+// Row counts for the not-yet-built modules, so their tabs show live numbers and
+// prove the database wiring end to end.
+async function loadCounts() {
+  await Promise.all(MODULES.filter(m => !m.live).map(async m => {
+    try {
+      const res = await fetch(SUPABASE_URL + "/rest/v1/" + m.table + "?select=" + (m.idcol || "*") + "&limit=1",
+        { headers: { ...SB_HEADERS, "Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0" } });
+      const cr = res.headers.get("content-range") || "";     // e.g. "0-0/12"
+      state.counts[m.key] = cr.includes("/") ? parseInt(cr.split("/")[1], 10) || 0 : 0;
+    } catch (_) { state.counts[m.key] = 0; }
+  }));
+}
+
+// ── Render ───────────────────────────────────────────────────────────────────
+function render() {
+  $("userName").textContent = state.user || "Set your name";
+  renderTabs();
+  const v = $("view");
+  if (state.loading) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  if (state.tab === "brief") return renderBrief();
+  if (state.tab === "lessons") return renderLessons();
+  if (state.tab === "practices") return renderPractices();
+  renderPlaceholder(MODULES.find(m => m.key === state.tab));
+}
+
+function renderTabs() {
+  $("tabs").innerHTML = MODULES.map(m => {
+    const count = m.key === "lessons" ? state.lessons.length : (state.counts[m.key] ?? "");
+    const badge = count === "" ? "" : `<span class="badge">${count}</span>`;
+    return `<button class="tab ${state.tab === m.key ? "active" : ""}" onclick="setTab('${m.key}')">${esc(m.label)} ${badge}</button>`;
+  }).join("");
+}
+function setTab(k) { state.tab = k; render(); }
+
+// ── Project Brief — the "knowledge arrives" surface ──────────────────────────
+// Renders whatever pms_project_brief() assembles for a project. This same panel
+// is what embeds into the PMS project Overview so knowledge arrives in context.
+function setBriefNum(v) { state.briefNum = (v || "").trim(); localStorage.setItem("ii_briefNum", state.briefNum); state.brief = null; state.briefForNum = null; render(); }
+
+async function loadBrief(num) {
+  state.briefLoading = true;
+  try {
+    const j = await sb("POST", "/rest/v1/rpc/pms_project_brief", { p_number: num });
+    state.brief = j || {};
+  } catch (e) { toast("Brief failed: " + e.message, "error"); state.brief = {}; }
+  state.briefForNum = num;
+  state.briefLoading = false;
+  render();
+}
+
+function renderBrief() {
+  const projOpts = state.projects.map(p => `<option value="${esc(p.id)}">${esc(p.id)} — ${esc(p.name)}</option>`).join("");
+  const b = state.brief;
+  const ready = state.briefForNum === state.briefNum && b;
+  const body = state.briefLoading
+    ? '<div class="empty">Assembling the brief…</div>'
+    : (ready ? (b.project ? briefBodyHTML(b) : `<div class="empty">No project found for ${esc(state.briefNum)}.</div>`) : "");
+  const chrome = state.embed ? "" : `
+    <div class="toolbar">
+      <div class="grow">
+        <label>Project</label>
+        <input id="briefNum" list="briefProjList" value="${esc(state.briefNum)}"
+          onchange="setBriefNum(this.value)" placeholder="SAPX number"/>
+        <datalist id="briefProjList">${projOpts}</datalist>
+      </div>
+      <button class="btn btn-ghost" onclick="loadBrief(state.briefNum)">↻ Refresh</button>
+    </div>
+    <div class="status info" style="display:block;margin-bottom:16px">📥 This is what <b>arrives</b> on the project — assembled from the firm's record, not searched for. In the PMS it renders on the project's Overview.</div>`;
+  $("view").innerHTML = `${chrome}<div id="briefBody">${body}</div>`;
+  if (!state.briefLoading && state.briefForNum !== state.briefNum) loadBrief(state.briefNum);
+}
+
+function briefBodyHTML(b) {
+  const p = b.project || {};
+  const sec = (icon, title, inner, note) =>
+    `<div class="card"><h2>${icon} ${esc(title)}</h2>${inner || `<p style="color:var(--muted);font-size:12px">${esc(note||"Nothing yet.")}</p>`}</div>`;
+  const sim = (b.similar_projects || []).map(s =>
+    `<div class="brief-row"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span> <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></div>`).join("");
+  const maxc = Math.max(1, ...((b.common_coordination_issues||[]).map(c => c.cnt||0)));
+  const coord = (b.common_coordination_issues || []).map(c => {
+    const pct = Math.round((c.cnt / maxc) * 100);
+    const ex = (c.examples || []).filter(Boolean).slice(0,2).map(esc).join(" · ");
+    return `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px"><b>${esc(c.discipline)}</b><span class="pill pill-gray">${c.cnt}</span></div>
+      <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin:4px 0"><div style="height:100%;width:${pct}%;background:var(--blue)"></div></div>
+      ${ex?`<div style="font-size:11px;color:var(--muted)">${ex}</div>`:""}</div>`;
+  }).join("");
+  const owner = (b.typical_owner_comments || []).map(o =>
+    `<div class="brief-row" style="font-size:12px"><span class="pill pill-yellow">${esc(o.action||"comment")}</span> ${esc(o.remark||"")}</div>`).join("");
+  const lessons = (b.lessons_learned || []).map(l =>
+    `<div class="brief-row"><div style="font-size:13px;font-weight:600">${esc(l.lesson_summary)}</div>${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}<div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(l.source_reference||"")}</div></div>`).join("");
+  const reqs = (b.agency_requirements || []).map(r =>
+    `<div class="brief-row" style="font-size:12px"><b>${esc(r.preference_type||r.discipline||"")}:</b> ${esc(r.requirement_or_preference)}</div>`).join("");
+  const stds = (b.engineering_standards || []).map(s =>
+    `<div class="brief-row" style="font-size:12px"><b>${esc(s.discipline)} ${esc(s.system||"")}:</b> ${esc(s.standard_text)}</div>`).join("");
+  const ahjHTML = (b.ahjs_codes || []).map(a =>
+    `<div class="brief-row" style="font-size:12px"><b>${esc(a.ahj)}</b> <span style="color:var(--dim)">— ${esc(a.codes_standards||"")}</span>${a.mep_impact?`<div style="color:var(--muted)">${esc(a.mep_impact)}</div>`:""}</div>`).join("");
+  // Governing design standards (external agency reference) — full-width highlight.
+  const g = b.governing_standards;
+  const govLinks = (g && g.source_urls && g.source_urls.length)
+    ? g.source_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noreferrer">${esc(u.replace(/^https?:\/\//,"").split("/")[0])} ↗</a>`).join(" · ") : "";
+  const govCard = g ? `
+    <div class="card" style="border-left:3px solid var(--purple)">
+      <h2>📐 Governing design standards — ${esc(g.owner_name)}${g.construction_fund?` <span class="pill pill-gray">${esc(g.construction_fund)}</span>`:""}</h2>
+      <div style="font-size:13px;line-height:1.65">
+        <div style="margin-bottom:6px"><b>Primary standards:</b> ${esc(g.design_standards||"")}</div>
+        ${g.mep_considerations?`<div style="margin-bottom:6px"><b>Major MEP considerations:</b> ${esc(g.mep_considerations)}</div>`:""}
+        ${g.typical_projects?`<div style="margin-bottom:6px"><b>Typical projects:</b> ${esc(g.typical_projects)}</div>`:""}
+        ${govLinks?`<div style="font-size:12px;color:var(--dim);margin-top:6px">Official source: ${govLinks}</div>`:""}
+      </div>
+    </div>` : "";
+  // Regulations & sustainability — grouped by category, full-width.
+  const catLabel = { local_law: "NYC Local Laws", energy_code: "Energy Codes", sustainability: "Sustainability & Climate", resiliency: "Resiliency" };
+  const byCat = {};
+  (b.regulations || []).forEach(r => { (byCat[r.category] = byCat[r.category] || []).push(r); });
+  const regsHTML = Object.keys(catLabel).filter(c => byCat[c]).map(c => `
+    <div style="margin-bottom:12px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:5px">${esc(catLabel[c])}</div>
+      ${byCat[c].map(r => `<div class="brief-row" style="font-size:12px"><b>${esc(r.ref_code||"")}</b> ${esc(r.title||"")}${r.mep_impact?`<div style="color:var(--muted)">${esc(r.mep_impact)}</div>`:""}</div>`).join("")}
+    </div>`).join("");
+  const regsCard = (b.regulations && b.regulations.length)
+    ? `<div class="card"><h2>📜 Regulations &amp; sustainability</h2>${regsHTML}</div>` : "";
+  // Best practices — the actionable checklist, full-width highlight.
+  const bpCard = (b.best_practices && b.best_practices.length) ? `
+    <div class="card" style="border-left:3px solid var(--green)">
+      <h2>✅ Best practices for this project</h2>
+      ${b.best_practices.map(pr => `<div class="brief-row">
+        <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
+        <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
+        ${pr.trigger?`<div style="margin-top:5px">${Object.entries(pr.trigger).map(([k,v])=>`<span class="pill pill-gray">${esc(k)}: ${esc(v)}</span>`).join(" ")}</div>`:""}
+      </div>`).join("")}
+    </div>` : "";
+  return `
+    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <div style="font-size:18px;font-weight:800">${esc(p.name||p.num||"")}</div>
+      <span class="pill pill-gray">${esc(p.num||"")}</span>
+      ${p.agency?`<span class="pill pill-purple">${esc(p.agency)}</span>`:""}
+      ${p.bldg_cat?`<span class="pill pill-blue">${esc(p.bldg_cat)}</span>`:""}
+      ${p.status?`<span style="color:var(--dim);font-size:12px">${esc(p.status)}</span>`:""}
+    </div>
+    ${govCard}
+    ${bpCard}
+    <div class="brief-grid">
+      ${sec("🏛️","AHJs & codes",ahjHTML,"No AHJs matched.")}
+      ${sec("📋","Agency preferences (mined)",reqs,"None mined yet.")}
+      ${sec("🔁","Similar projects",sim,"No similar projects matched.")}
+      ${sec("⚠️","Common coordination issues",coord,"No RFI history for this cohort yet.")}
+      ${sec("💬","Typical owner comments",owner,"No reviewer comments mined yet.")}
+      ${sec("💡","Lessons learned",lessons,"No lessons matched yet.")}
+      ${sec("🛠️","Firm engineering standards",stds,"None yet.")}
+    </div>
+    ${regsCard}`;
+}
+
+// ── Best Practices module (review queue of auto-generated practices) ─────────
+async function loadPractices() {
+  state.practicesLoading = true;
+  try { state.practices = (await sb("GET", "/rest/v1/pms_best_practices?select=*&order=date_added.desc")) || []; }
+  catch (e) { toast("Load failed: " + e.message, "error"); state.practices = []; }
+  state.practicesLoaded = true; state.practicesLoading = false; render();
+}
+function renderPractices() {
+  if (!state.practicesLoaded && !state.practicesLoading) loadPractices();
+  const rows = state.practices || [];
+  const body = state.practicesLoading ? '<div class="empty">Loading…</div>'
+    : (rows.length ? rows.map(renderPracticeCard).join("")
+      : '<div class="empty">No best practices yet. They auto-generate from repeated lesson clusters (2+ lessons on the same discipline &amp; issue).</div>');
+  $("view").innerHTML = `
+    <div class="status info" style="display:block;margin-bottom:16px">✅ Auto-generated when the same lesson repeats across projects. Approve the ones that should become firm guidance — approved practices arrive on every matching project brief.</div>
+    <div id="bpList">${body}</div>`;
+}
+function renderPracticeCard(p) {
+  const conf = { low:"pill-gray", medium:"pill-yellow", high:"pill-green" }[p.confidence] || "pill-gray";
+  const statusPill = { draft:"pill-yellow", approved:"pill-green", archived:"pill-red" }[p.status] || "pill-gray";
+  const statusLabel = { draft:"needs review", approved:"approved", archived:"rejected" }[p.status] || p.status;
+  const n = (p.derived_from_lessons || []).length;
+  const actions = [
+    p.status !== "approved" ? `<button class="btn btn-success btn-sm" onclick="setPracticeStatus('${p.practice_id}','approved')">✓ Approve</button>` : "",
+    p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" onclick="setPracticeStatus('${p.practice_id}','archived')">✕ Reject</button>` : "",
+  ].filter(Boolean).join(" ");
+  return `<div class="lesson ${esc(p.status||"draft")}">
+    <div class="lesson-top"><div style="flex:1">
+      <div class="lesson-summary">${esc(p.title)}</div>
+      <div class="lesson-meta">
+        ${p.discipline?`<span class="pill pill-blue">${esc(p.discipline)}</span>`:""}
+        ${p.system?`<span class="pill pill-purple">${esc(p.system)}</span>`:""}
+        <span class="pill ${conf}">conf: ${esc(p.confidence||"—")}</span>
+        <span class="pill ${statusPill}">${esc(statusLabel)}</span>
+        <span class="pill pill-gray">from ${n} lesson${n===1?"":"s"}</span>
+      </div></div>
+      <div class="lesson-actions">${actions}</div>
+    </div>
+    <div class="lesson-sub">${esc(p.practice_text)}</div>
+    ${p.trigger?`<div class="lesson-meta" style="margin-top:6px">${Object.entries(p.trigger).map(([k,v])=>`<span class="pill pill-gray">${esc(k)}: ${esc(v)}</span>`).join(" ")}</div>`:""}
+  </div>`;
+}
+async function setPracticeStatus(id, status) {
+  try {
+    await sb("PATCH", "/rest/v1/pms_best_practices?practice_id=eq." + encodeURIComponent(id), { status, updated_at: new Date().toISOString() });
+    toast("Best practice " + status + ".", "success");
+    state.practices = (await sb("GET", "/rest/v1/pms_best_practices?select=*&order=date_added.desc")) || [];
+    render();
+  } catch (e) { toast("Update failed: " + e.message, "error"); }
+}
+
+// ── Lessons module ───────────────────────────────────────────────────────────
+function lessonsFiltered() {
+  const f = state.filter;
+  return state.lessons.filter(l => {
+    if (f.agency && (l.agency || "") !== f.agency) return false;
+    if (f.discipline && (l.discipline || "") !== f.discipline) return false;
+    if (f.status && (l.status || "") !== f.status) return false;
+    if (f.origin && (l.origin || "manual") !== f.origin) return false;
+    if (f.q) {
+      const hay = [l.lesson_summary, l.system, l.issue_type, l.project_id, l.so_person, l.source_reference, (l.tags||[]).join(" ")].join(" ").toLowerCase();
+      if (!hay.includes(f.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+
+function renderLessons() {
+  const agencies = [...new Set(state.lessons.map(l => l.agency).filter(Boolean))].sort();
+  const rows = lessonsFiltered();
+  const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
+  $("view").innerHTML = `
+    <div class="toolbar">
+      <div class="grow">
+        <label>Search</label>
+        <input id="fq" placeholder="summary, system, project, person, tag…" value="${esc(state.filter.q)}"
+          oninput="state.filter.q=this.value; renderLessonList()"/>
+      </div>
+      <div class="field">
+        <label>Agency</label>
+        <select onchange="state.filter.agency=this.value; renderLessonList()">
+          <option value="">All</option>${opt(agencies, state.filter.agency)}
+        </select>
+      </div>
+      <div class="field">
+        <label>Discipline</label>
+        <select onchange="state.filter.discipline=this.value; renderLessonList()">
+          <option value="">All</option>${opt(DISCIPLINES, state.filter.discipline)}
+        </select>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select onchange="state.filter.status=this.value; renderLessonList()">
+          <option value="">All</option>
+          <option value="draft" ${state.filter.status==="draft"?"selected":""}>Needs review</option>
+          <option value="approved" ${state.filter.status==="approved"?"selected":""}>Approved</option>
+          <option value="archived" ${state.filter.status==="archived"?"selected":""}>Rejected</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Origin</label>
+        <select onchange="state.filter.origin=this.value; renderLessonList()">
+          <option value="">All</option>
+          <option value="mined" ${state.filter.origin==="mined"?"selected":""}>🤖 Mined</option>
+          <option value="manual" ${state.filter.origin==="manual"?"selected":""}>✍ Manual</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="openMineModal()">🤖 Mine for lessons</button>
+      <button class="btn btn-ghost" onclick="openLessonForm()" title="Rarely needed — the system mines lessons automatically">＋ Add manually</button>
+    </div>
+    <div id="reviewNote"></div>
+    <div id="lessonList"></div>`;
+  renderReviewNote();
+  renderLessonList();
+}
+
+function renderLessonList() {
+  const rows = lessonsFiltered();
+  const el = $("lessonList");
+  if (!rows.length) {
+    el.innerHTML = state.lessons.length
+      ? '<div class="empty">No lessons match these filters.</div>'
+      : '<div class="empty">Nothing here yet. Click <b>🤖 Mine for lessons</b> to extract candidates from your RFIs, submittals, emails and site reports.</div>';
+    return;
+  }
+  el.innerHTML = rows.map(renderLessonCard).join("");
+}
+
+function renderReviewNote() {
+  const el = $("reviewNote"); if (!el) return;
+  const pending = state.lessons.filter(l => l.status === "draft").length;
+  const mined = state.lessons.filter(l => l.origin === "mined").length;
+  el.innerHTML = pending
+    ? `<div class="status info" style="display:block;margin-bottom:14px">🤖 ${mined} lesson${mined===1?"":"s"} mined from your project record · <b>${pending} awaiting your review</b>. Approve the ones that hold, edit to sharpen, reject the rest.</div>`
+    : "";
+}
+
+function renderLessonCard(l) {
+  const confPill = { low: "pill-gray", medium: "pill-yellow", high: "pill-green" }[l.confidence] || "pill-gray";
+  const statusPill = { draft: "pill-yellow", approved: "pill-green", archived: "pill-red" }[l.status] || "pill-gray";
+  const statusLabel = { draft: "needs review", approved: "approved", archived: "rejected" }[l.status] || l.status;
+  const proj = state.projects.find(p => p.id === l.project_id);
+  const projLabel = l.project_id ? esc(l.project_id) + (proj ? " · " + esc(proj.name) : "") : "";
+  const originBadge = l.origin === "mined"
+    ? `<span class="pill pill-purple" title="Extracted from the project record">🤖 mined</span>`
+    : `<span class="pill pill-gray">✍ manual</span>`;
+  const srcType = l.source_type ? `<span class="pill pill-blue">${esc(l.source_type)}</span>` : "";
+  const pills = [
+    originBadge, srcType,
+    l.discipline ? `<span class="pill pill-blue">${esc(l.discipline)}</span>` : "",
+    l.system ? `<span class="pill pill-purple">${esc(l.system)}</span>` : "",
+    l.issue_type ? `<span class="pill pill-gray">${esc(l.issue_type)}</span>` : "",
+    `<span class="pill ${confPill}">conf: ${esc(l.confidence||"—")}</span>`,
+    `<span class="pill ${statusPill}">${esc(statusLabel)}</span>`,
+  ].filter(Boolean).join(" ");
+  const srcChips = Array.isArray(l.linked_records) && l.linked_records.length
+    ? `<div class="lesson-sub"><b>Evidence:</b> ` + l.linked_records.map(r =>
+        `<span class="pill pill-gray" style="margin:2px 2px 0 0">${esc((r.type||"").toUpperCase())} ${esc(r.rfi_id||r.id||"")}</span>`).join("") + `</div>`
+    : "";
+  const actions = [
+    `<button class="btn btn-ghost btn-sm" onclick="openLessonForm('${l.lesson_id}')">Edit</button>`,
+    l.status !== "approved" ? `<button class="btn btn-success btn-sm" onclick="approveLesson('${l.lesson_id}')">✓ Approve</button>` : "",
+    l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" onclick="setLessonStatus('${l.lesson_id}','archived')">✕ Reject</button>` : "",
+    `<button class="btn btn-danger btn-sm" onclick="deleteLesson('${l.lesson_id}')" title="Delete permanently">🗑</button>`,
+  ].filter(Boolean).join(" ");
+  return `
+    <div class="lesson ${esc(l.status||"draft")}">
+      <div class="lesson-top">
+        <div style="flex:1">
+          <div class="lesson-summary">${esc(l.lesson_summary)}</div>
+          <div class="lesson-meta">${pills}</div>
+        </div>
+        <div class="lesson-actions">${actions}</div>
+      </div>
+      <div class="lesson-sub">
+        ${projLabel ? `<b>Project:</b> ${projLabel} &nbsp;·&nbsp; ` : ""}
+        ${l.agency ? `<b>Agency:</b> ${esc(l.agency)} &nbsp;·&nbsp; ` : ""}
+        ${l.so_person ? `<b>From:</b> ${esc(l.so_person)} &nbsp;·&nbsp; ` : ""}
+        ${l.approved_by ? `<b>Approved by:</b> ${esc(l.approved_by)} &nbsp;·&nbsp; ` : ""}
+        <b>Added:</b> ${esc((l.date_added||"").slice(0,10))}
+        ${l.source_reference ? `<br/><b>Source:</b> ${esc(l.source_reference)}` : ""}
+        ${(l.tags && l.tags.length) ? `<br/><b>Tags:</b> ${l.tags.map(esc).join(", ")}` : ""}
+      </div>
+      ${srcChips}
+      ${l.reusable_prompt ? `<div class="lesson-prompt">💡 ${esc(l.reusable_prompt)}</div>` : ""}
+    </div>`;
+}
+
+// ── Lesson form (create / edit) ──────────────────────────────────────────────
+function openLessonForm(id) {
+  const l = id ? state.lessons.find(x => x.lesson_id === id) : {};
+  const projOpts = state.projects.map(p => `<option value="${esc(p.id)}">${esc(p.id)} — ${esc(p.name)}</option>`).join("");
+  const staffOpts = state.staff.map(s => `<option value="${esc(s)}"></option>`).join("");
+  const sel = (arr, val) => `<option value=""></option>` + arr.map(a => `<option value="${esc(a)}" ${a===val?"selected":""}>${esc(a)}</option>`).join("");
+  $("modalMount").innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>${id ? "Edit Lesson" : "New Lesson"}</h3>
+        <div class="fieldset full">
+          <label>Lesson summary *</label>
+          <textarea id="f_summary" rows="3" placeholder="What happened and what we learned…">${esc(l.lesson_summary||"")}</textarea>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label>Project</label>
+            <input id="f_project" list="projList" value="${esc(l.project_id||"")}" placeholder="SAPX number"/>
+            <datalist id="projList">${projOpts}</datalist>
+          </div>
+          <div>
+            <label>Agency</label>
+            <input id="f_agency" value="${esc(l.agency||"")}" placeholder="e.g. DASNY, CUNY, SUNY, EDC"/>
+          </div>
+          <div>
+            <label>Discipline</label>
+            <select id="f_discipline">${sel(DISCIPLINES, l.discipline)}</select>
+          </div>
+          <div>
+            <label>System</label>
+            <input id="f_system" value="${esc(l.system||"")}" placeholder="e.g. Electrical service, Refrigerant piping"/>
+          </div>
+          <div>
+            <label>Issue type</label>
+            <select id="f_issue">${sel(ISSUE_TYPES, l.issue_type)}</select>
+          </div>
+          <div>
+            <label>Confidence</label>
+            <select id="f_conf">${["low","medium","high"].map(c=>`<option value="${c}" ${(l.confidence||"medium")===c?"selected":""}>${c}</option>`).join("")}</select>
+          </div>
+          <div>
+            <label>From (Setty person)</label>
+            <input id="f_person" list="staffList" value="${esc(l.so_person||"")}" placeholder="whose experience this is"/>
+            <datalist id="staffList">${staffOpts}</datalist>
+          </div>
+          <div>
+            <label>Source reference</label>
+            <input id="f_source" value="${esc(l.source_reference||"")}" placeholder="e.g. RFI 042; email 2026-03-11"/>
+          </div>
+          <div class="full">
+            <label>Reusable prompt <span style="text-transform:none;font-weight:400;color:var(--muted)">(guidance the agents / proposals will inject)</span></label>
+            <textarea id="f_prompt" rows="2" placeholder="e.g. On renovation projects, confirm utility service capacity and Con Edison pathway before DD pricing.">${esc(l.reusable_prompt||"")}</textarea>
+          </div>
+          <div class="full">
+            <label>Tags <span style="text-transform:none;font-weight:400;color:var(--muted)">(comma separated)</span></label>
+            <input id="f_tags" value="${esc((l.tags||[]).join(", "))}" placeholder="renovation, con-edison, shutdown"/>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveLesson('${id||""}')">${id ? "Save changes" : "Add lesson"}</button>
+        </div>
+      </div>
+    </div>`;
+}
+function closeModal() { $("modalMount").innerHTML = ""; }
+
+// The mining pipeline surface. Extraction runs server-side (Closeout Memory
+// Edge Function calling Claude) so no keys live in the browser. This modal
+// scopes a run and reports pipeline status.
+function openMineModal() {
+  const projOpts = state.projects.map(p => `<option value="${esc(p.id)}">${esc(p.id)} — ${esc(p.name)}</option>`).join("");
+  const SOURCES = [
+    ["RFIs + review events", true], ["Submittals + review events", true], ["Project emails", true],
+    ["Site reports", true], ["Meeting minutes (SharePoint)", false], ["QA / drawing-review comments", false], ["Closeout notes", false],
+  ];
+  $("modalMount").innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>🤖 Mine for lessons</h3>
+        <p style="font-size:13px;color:var(--dim);line-height:1.6;margin-bottom:14px">
+          The extractor reads your existing project record and proposes lesson candidates, each citing the source record.
+          Candidates land here as <b>Needs review</b> — nothing enters firm knowledge until you approve it. No forms, no manual entry.
+        </p>
+        <div class="fieldset">
+          <label>Scope</label>
+          <input id="mine_project" list="mineProjList" placeholder="All projects (leave blank) or a SAPX number"/>
+          <datalist id="mineProjList">${projOpts}</datalist>
+        </div>
+        <label>Sources</label>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px">
+          ${SOURCES.map(([s,on]) => `<span class="pill ${on?"pill-green":"pill-gray"}">${on?"✓":"◷"} ${esc(s)}</span>`).join("")}
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px">✓ wired now · ◷ queued for the next extractor pass.</p>
+        <div class="status info" style="display:block;margin-top:14px;font-size:12px">
+          Self-serve runs go live once the <code>ANTHROPIC_API_KEY</code> Supabase secret is set for the Edge Function
+          (flagged with Sara — it's a key, not an Azure permission). The 3 lessons in your queue were mined from RFIs in this project's record.
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="closeModal()">Got it</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveLesson(id) {
+  const summary = $("f_summary").value.trim();
+  if (!summary) { toast("Lesson summary is required.", "error"); return; }
+  const tags = $("f_tags").value.split(",").map(t => t.trim()).filter(Boolean);
+  const payload = {
+    lesson_summary: summary,
+    project_id: $("f_project").value.trim() || null,
+    agency: $("f_agency").value.trim() || null,
+    discipline: $("f_discipline").value || null,
+    system: $("f_system").value.trim() || null,
+    issue_type: $("f_issue").value || null,
+    confidence: $("f_conf").value,
+    so_person: $("f_person").value.trim() || null,
+    source_reference: $("f_source").value.trim() || null,
+    reusable_prompt: $("f_prompt").value.trim() || null,
+    tags,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    if (id) {
+      await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id), payload);
+      toast("Lesson updated.", "success");
+    } else {
+      payload.status = "draft";
+      await sb("POST", "/rest/v1/pms_lessons", payload);
+      toast("Lesson added as a draft.", "success");
+    }
+    closeModal();
+    await reloadLessons();
+  } catch (e) { toast("Save failed: " + e.message, "error"); }
+}
+
+async function approveLesson(id) {
+  if (!state.user) { promptUser(); if (!state.user) { toast("Set your name first (top right) so approvals are attributed.", "error"); return; } }
+  try {
+    await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id),
+      { status: "approved", approved_by: state.user, updated_at: new Date().toISOString() });
+    toast("Approved. It now feeds Best Practices and the Expertise Graph.", "success");
+    await reloadLessons();
+  } catch (e) { toast("Approve failed: " + e.message, "error"); }
+}
+
+async function setLessonStatus(id, status) {
+  try {
+    await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id),
+      { status, updated_at: new Date().toISOString() });
+    toast("Lesson " + status + ".", "success");
+    await reloadLessons();
+  } catch (e) { toast("Update failed: " + e.message, "error"); }
+}
+
+async function deleteLesson(id) {
+  if (!confirm("Delete this lesson permanently? Use Archive instead if you might want it back.")) return;
+  try {
+    await sb("DELETE", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id));
+    toast("Lesson deleted.", "success");
+    await reloadLessons();
+  } catch (e) { toast("Delete failed: " + e.message, "error"); }
+}
+
+async function reloadLessons() {
+  state.lessons = (await sb("GET", "/rest/v1/pms_lessons?select=*&order=date_added.desc")) || [];
+  render();
+}
+
+// ── Placeholder modules (schema-ready, built next) ───────────────────────────
+function renderPlaceholder(m) {
+  const blurbs = {
+    practices: "Auto-generated when the same lesson repeats across projects. Example: three lessons tagged Electrical · Service · Coordination on renovations roll up into one best practice that surfaces at kickoff on the next reno.",
+    agencies:  "A curated reference of each agency's requirements and preferences (submittal formats, review processes, design standards). Feeds the Agency Standards Agent, which checks the active project against them.",
+    standards: "Firm engineering standards and design-basis positions, keyed by discipline and system, with their code/spec source. Reusable in RFI responses and proposals.",
+    graph:     "Who knows what: Person → Discipline → Project → Agency → System → Issue, derived from approved lessons. Answers \"who has done chilled-water at CUNY?\" This view is live in the database and populates as lessons get approved.",
+    agents:    "Four background agents (Project Risk, Agency Standards, Closeout Memory, Proposal), running as Supabase Edge Functions. This tab will show their run history and findings.",
+  };
+  const count = state.counts[m.key] ?? 0;
+  $("view").innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <h2 style="margin:0">${esc(m.label)}</h2>
+        <span class="pill pill-blue">Schema ready</span>
+        <span class="pill pill-gray">${count} row${count===1?"":"s"} in <code>${esc(m.table)}</code></span>
+      </div>
+      <p style="font-size:13px;color:var(--dim);line-height:1.6;max-width:680px">${esc(blurbs[m.key]||"")}</p>
+      <p style="font-size:12px;color:var(--muted);margin-top:12px">The database table exists and is wired. The UI for this module is the next build pass.</p>
+    </div>
+    <div class="roadmap">
+      ${MODULES.filter(x=>!x.live).map(x=>`
+        <div class="card">
+          <h4>${esc(x.label)}</h4>
+          <p>${esc((blurbs[x.key]||"").slice(0,120))}…</p>
+          <div style="margin-top:8px"><span class="pill pill-gray">${state.counts[x.key]??0} rows</span></div>
+        </div>`).join("")}
+    </div>`;
+}
+
+// ── Identity (local only) ────────────────────────────────────────────────────
+function promptUser() {
+  const name = prompt("Your name (used to attribute lesson approvals and authorship):", state.user || "");
+  if (name && name.trim()) { state.user = name.trim(); localStorage.setItem("ii_user", state.user); render(); }
+}
+$("userChip").onclick = promptUser;
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+if (state.embed) document.body.classList.add("embed");
+loadAll();
+</script>
+</body>
+</html>

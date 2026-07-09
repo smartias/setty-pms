@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-01-pms-v63-directory-star-ratings";
+    window.__appVersion = "2026-07-09-pms-v64-project-intelligence";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16040,6 +16040,39 @@ function PhotosView({ project }) {
 // and was previously buried at position 17 (between "Projections" and "Photos").
 // Renamed from "Intelligence" so the label matches what users actually use it
 // for: investigating the history of a specific topic on a project.
+// ── Institutional Intelligence panel (embedded brief) ────────────────────────
+// Renders the per-project knowledge brief (similar projects, agency standards &
+// AHJs, lessons, coordination risks, regulations) assembled by the Supabase
+// pms_project_brief() function. Reuses the standalone SettyIntelligence.html in
+// embed mode via a same-origin iframe, so it stays fully isolated from the rest
+// of the PMS — if it ever fails to load, nothing else is affected.
+function ProjectIntelligencePanel({ projectNumber }) {
+  const [open, setOpen] = React.useState(true);
+  const num = (projectNumber || "").trim();
+  if (!num) return (
+    <div style={{ marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 14, color: P.textDim, fontSize: 12 }}>
+      🧠 Project Intelligence appears here once a Project Number is set.
+    </div>
+  );
+  const q = encodeURIComponent(num);
+  return (
+    <div style={{ marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: open ? 10 : 0, flexWrap: "wrap" }}>
+        <span onClick={() => setOpen(o => !o)} style={{ cursor: "pointer", fontWeight: 800, fontSize: 15, userSelect: "none" }}>
+          {open ? "▾" : "▸"} 🧠 Project Intelligence
+        </span>
+        <span style={{ fontSize: 12, color: P.textDim }}>similar projects · agency standards &amp; AHJs · lessons · coordination risks · regulations</span>
+        <div style={{ flex: 1 }} />
+        <a href={"SettyIntelligence.html?project=" + q} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: P.textMuted, textDecoration: "none" }}>Open full ↗</a>
+      </div>
+      {open && (
+        <iframe title="Project Intelligence" src={"SettyIntelligence.html?embed=1&project=" + q} loading="lazy"
+          style={{ width: "100%", height: 860, border: `1px solid ${P.border}`, borderRadius: 10, background: P.bg }} />
+      )}
+    </div>
+  );
+}
+
 const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "Checklists"];
 
 // Tab groupings — top-level "sections" the user navigates by, with the existing
@@ -16786,6 +16819,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             )}
           </div>
         )}
+        {tab === "Overview" && <ProjectIntelligencePanel projectNumber={project.projectNumber} />}
         {tab === "Fee Calculator" && <FeeCalculator project={project} onChange={onUpdate} />}
         {tab === "Schedule" && <ScheduleView project={project} onChange={onUpdate} onEagerSave={onEagerSave} />}
         {tab === "Subconsultants" && <SubsView project={project} onChange={onUpdate} clients={clients} onAddClient={onAddClient} />}
