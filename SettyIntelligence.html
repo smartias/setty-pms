@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v7-owner-coord-authorities";
+    window.__appVersion = "2026-07-09-intel-v9-owner-comment-items";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -333,13 +333,30 @@ function briefBodyHTML(b) {
   const coord = (b.common_coordination_issues || []).map(c => {
     const pct = Math.round((c.cnt / maxc) * 100);
     const ex = (c.examples || []).filter(Boolean).slice(0,3);
-    return `<div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><b>${esc(c.discipline)}</b><span style="white-space:nowrap">${coordSev(c.avg_days)} <span class="pill pill-blue">${c.cnt} RFIs</span></span></div>
+    const disc = (c.disciplines || []).filter(Boolean).join(" · ");
+    return `<div style="margin-bottom:13px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px"><b>${esc(c.theme)}</b><span style="white-space:nowrap">${coordSev(c.avg_days)} <span class="pill pill-blue">${c.cnt}</span></span></div>
       <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin:5px 0"><div style="height:100%;width:${pct}%;background:var(--blue)"></div></div>
-      ${ex.length?`<ul style="margin:4px 0 0;padding-left:16px;font-size:11.5px;color:var(--muted);line-height:1.5">${ex.map(s=>`<li>${esc(s)}</li>`).join("")}</ul>`:""}</div>`;
+      ${c.insight?`<div style="font-size:12px;color:var(--text);line-height:1.5;margin:3px 0 4px">${esc(c.insight)}</div>`:""}
+      ${disc?`<div style="font-size:11px;color:var(--dim);margin-bottom:2px">${esc(disc)}</div>`:""}
+      ${ex.length?`<div style="font-size:11px;color:var(--muted)">e.g. ${ex.map(s=>esc(s)).join(" · ")}</div>`:""}</div>`;
   }).join("");
-  // Owner review comments arrive by email (incoming, non-Setty sender, "comment"
-  // in subject/attachment), filed in the project's SharePoint Emails folder.
+  // Owner comment ITEMS mined from actual review-comment logs (Bluebeam/xlsx
+  // comment sets). On this project → its own comments; on peers → typical for
+  // the same owner/agency. The richer, verbatim signal above the email threads.
+  const oci = (b.owner_comment_items || []).map(o => {
+    const badge = o.own ? `<span class="pill pill-green">this project</span>`
+                        : `<span class="pill pill-blue">typical · ${esc(o.agency||"")}</span>`;
+    const rec = String(o.recurring)==="true" ? ` <span class="pill pill-yellow">recurring</span>` : "";
+    const disc = o.discipline ? `<span class="pill pill-gray">${esc(o.discipline)}</span> ` : "";
+    return `<div class="brief-row" style="font-size:12px">
+      <div style="margin-bottom:3px">${disc}${badge}${rec}</div>
+      <div style="color:var(--text);line-height:1.5">${esc(o.comment_text)}</div>
+      <div style="color:var(--muted);margin-top:3px;font-size:11px">${esc(o.reviewer||"")}${o.review_date?` · ${esc(o.review_date)}`:""}${o.source_file?` · 📄 ${esc(o.source_file)}`:""}</div>
+    </div>`;
+  }).join("");
+  // Owner review comments also arrive by email (incoming, non-Setty sender,
+  // "comment" in subject/attachment), filed in the project's SharePoint Emails folder.
   const owner = (b.typical_owner_comments || []).map(o => {
     const org = (o.from_address || "").split("@")[1] || "";
     const link = o.sp_folder_url ? ` <a href="${esc(o.sp_folder_url)}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>` : "";
@@ -370,10 +387,7 @@ function briefBodyHTML(b) {
     const low = (t.rating != null && Number(t.rating) <= 2) ? ` <span class="pill pill-red">heads-up</span>` : "";
     return `<div class="brief-row" style="font-size:12px"><b>${esc(t.role)}:</b> ${esc(t.firm||"")} — ${r}${low}</div>`;
   }).join("");
-  const partnerRows = (b.rated_partners || []).slice(0,6).map(pn =>
-    `<div class="brief-row" style="font-size:12px"><span style="color:var(--yellow)">${stars(pn.rating)}</span> ${esc(pn.rating)} · ${esc(pn.firm)}${(pn.types&&pn.types.length)?` <span style="color:var(--muted)">${esc(pn.types.join(", "))}</span>`:""}</div>`).join("");
-  const teamInner = (teamRows || "") +
-    (partnerRows ? `<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin:${teamRows?"10px":"0"} 0 5px">Top-rated partners</div>${partnerRows}` : "");
+  const teamInner = teamRows || "";
   // Project analysis — scope risks, open requests from minutes, owner directives.
   const sevPill = { high: "pill-red", medium: "pill-yellow", low: "pill-gray" };
   const catLabelA = { scope_risk: "⚠️ Scope risks", open_request: "📋 Open requests (from minutes)", owner_directive: "💬 Owner / agency directives" };
@@ -458,8 +472,10 @@ function briefBodyHTML(b) {
       ${sec("🏛️","AHJs, utilities & codes",ahjHTML,"Set the project city to resolve AHJs & utility.")}
       ${sec("📋","Agency preferences (mined)",reqs,"None mined yet.")}
       ${sec("🔁","Similar projects",sim,"No similar projects matched.")}
-      ${sec("⚠️","Common coordination issues",coord,"No RFI history for this cohort yet.")}
-      ${sec("💬","Typical owner comments",owner,"No owner review-comment emails on file for this cohort yet.")}
+      ${sec("⚠️","Recurring coordination issues",coord,"No RFI history for this cohort yet.")}
+      ${sec("💬","Typical owner comments",
+            (oci||"") + (owner ? `${oci?`<div style="font-size:10.5px;color:var(--dim);margin:12px 0 5px;text-transform:uppercase;letter-spacing:.06em">Comment emails on file</div>`:""}${owner}` : ""),
+            "No owner review comments mined for this cohort yet.")}
       ${sec("💡","Lessons learned",lessons,"No lessons matched yet.")}
       ${sec("🤝","Team & ratings",teamInner,"No rated firms for this project yet.")}
       ${sec("🛠️","Firm engineering standards",stds,"None yet.")}
