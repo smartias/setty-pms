@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v2-embed";
+    window.__appVersion = "2026-07-09-intel-v5-jurisdiction-utility";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -323,10 +323,11 @@ function renderBrief() {
 
 function briefBodyHTML(b) {
   const p = b.project || {};
+  const stars = n => { const r = Math.round(Number(n) || 0); return "★".repeat(r) + "☆".repeat(Math.max(0, 5 - r)); };
   const sec = (icon, title, inner, note) =>
     `<div class="card"><h2>${icon} ${esc(title)}</h2>${inner || `<p style="color:var(--muted);font-size:12px">${esc(note||"Nothing yet.")}</p>`}</div>`;
   const sim = (b.similar_projects || []).map(s =>
-    `<div class="brief-row"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span> <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></div>`).join("");
+    `<div class="brief-row"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span>${s.construction_type?` <span class="pill pill-gray">${esc(s.construction_type)}</span>`:""} <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></div>`).join("");
   const maxc = Math.max(1, ...((b.common_coordination_issues||[]).map(c => c.cnt||0)));
   const coord = (b.common_coordination_issues || []).map(c => {
     const pct = Math.round((c.cnt / maxc) * 100);
@@ -335,16 +336,43 @@ function briefBodyHTML(b) {
       <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin:4px 0"><div style="height:100%;width:${pct}%;background:var(--blue)"></div></div>
       ${ex?`<div style="font-size:11px;color:var(--muted)">${ex}</div>`:""}</div>`;
   }).join("");
-  const owner = (b.typical_owner_comments || []).map(o =>
-    `<div class="brief-row" style="font-size:12px"><span class="pill pill-yellow">${esc(o.action||"comment")}</span> ${esc(o.remark||"")}</div>`).join("");
+  // Owner review comments arrive by email (incoming, non-Setty sender, "comment"
+  // in subject/attachment), filed in the project's SharePoint Emails folder.
+  const owner = (b.typical_owner_comments || []).map(o => {
+    const org = (o.from_address || "").split("@")[1] || "";
+    const link = o.sp_folder_url ? ` <a href="${esc(o.sp_folder_url)}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>` : "";
+    return `<div class="brief-row" style="font-size:12px">
+      <div style="font-weight:600">${esc(o.subject || "(no subject)")}${link}</div>
+      <div style="color:var(--dim)">${esc(o.from_name || "")}${org ? ` · ${esc(org)}` : ""}${o.date ? ` · ${esc(o.date)}` : ""}</div>
+      ${o.files ? `<div style="color:var(--muted)">📎 ${esc(o.files)}</div>` : ""}
+    </div>`;
+  }).join("");
   const lessons = (b.lessons_learned || []).map(l =>
     `<div class="brief-row"><div style="font-size:13px;font-weight:600">${esc(l.lesson_summary)}</div>${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}<div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(l.source_reference||"")}</div></div>`).join("");
   const reqs = (b.agency_requirements || []).map(r =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(r.preference_type||r.discipline||"")}:</b> ${esc(r.requirement_or_preference)}</div>`).join("");
   const stds = (b.engineering_standards || []).map(s =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(s.discipline)} ${esc(s.system||"")}:</b> ${esc(s.standard_text)}</div>`).join("");
+  // Scope of work — summary + the systems/scope tags used for scope-based matching.
+  const scopeTags = (p.scope_tags || []).map(t => `<span class="pill pill-blue">${esc(t)}</span>`).join(" ");
+  const scopeCard = (p.scope_summary || (p.scope_tags && p.scope_tags.length)) ? `
+    <div class="card">
+      <h2>📄 Scope of work</h2>
+      ${p.scope_summary ? `<div style="font-size:13px;line-height:1.6;margin-bottom:${scopeTags?"8px":"0"}">${esc(p.scope_summary)}</div>` : ""}
+      ${scopeTags}
+    </div>` : "";
+  // Team & company ratings (from the Global Directory star ratings).
+  const teamRows = (b.project_team || []).map(t => {
+    const r = (t.rating != null) ? `<span style="color:var(--yellow)">${stars(t.rating)}</span> ${esc(t.rating)}` : `<span style="color:var(--muted)">unrated</span>`;
+    const low = (t.rating != null && Number(t.rating) <= 2) ? ` <span class="pill pill-red">heads-up</span>` : "";
+    return `<div class="brief-row" style="font-size:12px"><b>${esc(t.role)}:</b> ${esc(t.firm||"")} — ${r}${low}</div>`;
+  }).join("");
+  const partnerRows = (b.rated_partners || []).slice(0,6).map(pn =>
+    `<div class="brief-row" style="font-size:12px"><span style="color:var(--yellow)">${stars(pn.rating)}</span> ${esc(pn.rating)} · ${esc(pn.firm)}${(pn.types&&pn.types.length)?` <span style="color:var(--muted)">${esc(pn.types.join(", "))}</span>`:""}</div>`).join("");
+  const teamInner = (teamRows || "") +
+    (partnerRows ? `<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin:${teamRows?"10px":"0"} 0 5px">Top-rated partners</div>${partnerRows}` : "");
   const ahjHTML = (b.ahjs_codes || []).map(a =>
-    `<div class="brief-row" style="font-size:12px"><b>${esc(a.ahj)}</b> <span style="color:var(--dim)">— ${esc(a.codes_standards||"")}</span>${a.mep_impact?`<div style="color:var(--muted)">${esc(a.mep_impact)}</div>`:""}</div>`).join("");
+    `<div class="brief-row" style="font-size:12px"><b>${esc(a.ahj||"")}</b> <span style="color:var(--dim)">— ${esc(a.codes_standards||a.jurisdiction||"")}</span>${a.mep_impact?`<div style="color:var(--muted)">${esc(a.mep_impact)}</div>`:""}</div>`).join("");
   // Governing design standards (external agency reference) — full-width highlight.
   const g = b.governing_standards;
   const govLinks = (g && g.source_urls && g.source_urls.length)
@@ -374,8 +402,8 @@ function briefBodyHTML(b) {
   const bpCard = (b.best_practices && b.best_practices.length) ? `
     <div class="card" style="border-left:3px solid var(--green)">
       <h2>✅ Best practices for this project</h2>
-      ${b.best_practices.map(pr => `<div class="brief-row">
-        <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
+      ${b.best_practices.map(pr => `<div class="brief-row" style="${pr.fits===false?"opacity:.55":""}">
+        <div style="font-size:13px;font-weight:700">${esc(pr.title)} ${pr.fits===false?'<span class="pill pill-gray">other project type</span>':'<span class="pill pill-green">applies here</span>'}</div>
         <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
         ${pr.trigger?`<div style="margin-top:5px">${Object.entries(pr.trigger).map(([k,v])=>`<span class="pill pill-gray">${esc(k)}: ${esc(v)}</span>`).join(" ")}</div>`:""}
       </div>`).join("")}
@@ -386,17 +414,24 @@ function briefBodyHTML(b) {
       <span class="pill pill-gray">${esc(p.num||"")}</span>
       ${p.agency?`<span class="pill pill-purple">${esc(p.agency)}</span>`:""}
       ${p.bldg_cat?`<span class="pill pill-blue">${esc(p.bldg_cat)}</span>`:""}
+      ${p.construction_type?`<span class="pill pill-gray">${esc(p.construction_type)}</span>`:""}
+      ${p.is_campus?`<span class="pill pill-green">🎓 campus</span>`:""}
+      ${(p.code_regime && p.code_regime!=="unknown")?`<span class="pill pill-yellow">📍 ${esc(p.code_regime)}${p.borough?" · "+esc(p.borough):""}</span>`:""}
       ${p.status?`<span style="color:var(--dim);font-size:12px">${esc(p.status)}</span>`:""}
     </div>
+    ${(p.electric_utility||p.gas_utility)?`<div style="font-size:12px;color:var(--dim);margin:-6px 0 14px">⚡ ${esc(p.electric_utility||"—")} &nbsp;·&nbsp; 🔥 ${esc(p.gas_utility||"—")}</div>`:""}
+    ${p.code_regime==="unknown"?`<div class="status info" style="display:block;margin-bottom:14px">📍 Location not set — add the project's city so codes and utility resolve correctly (NYC codes + Con Ed vs. NYS Uniform Code + regional utility).</div>`:""}
+    ${scopeCard}
     ${govCard}
     ${bpCard}
     <div class="brief-grid">
-      ${sec("🏛️","AHJs & codes",ahjHTML,"No AHJs matched.")}
+      ${sec("🏛️","AHJs, utilities & codes",ahjHTML,"Set the project city to resolve AHJs & utility.")}
       ${sec("📋","Agency preferences (mined)",reqs,"None mined yet.")}
       ${sec("🔁","Similar projects",sim,"No similar projects matched.")}
       ${sec("⚠️","Common coordination issues",coord,"No RFI history for this cohort yet.")}
-      ${sec("💬","Typical owner comments",owner,"No reviewer comments mined yet.")}
+      ${sec("💬","Typical owner comments",owner,"No owner review-comment emails on file for this cohort yet.")}
       ${sec("💡","Lessons learned",lessons,"No lessons matched yet.")}
+      ${sec("🤝","Team & ratings",teamInner,"No rated firms for this project yet.")}
       ${sec("🛠️","Firm engineering standards",stds,"None yet.")}
     </div>
     ${regsCard}`;
