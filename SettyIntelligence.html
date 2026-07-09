@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v13-discipline-scope";
+    window.__appVersion = "2026-07-09-intel-v14-inbox-signals";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -395,6 +395,43 @@ function briefBodyHTML(b) {
       <h2>🔎 Project analysis — scope, minutes &amp; comments</h2>
       ${analysisHTML}
     </div>` : "";
+  // Inbox signals — heuristic tone gauge + open items where the last word in a
+  // thread was the other party's (ball in Setty's court). All from pms_project_emails.
+  const es = b.email_sentiment;
+  const eoi = b.email_open_issues || [];
+  const toneMap = { "calm":["pill-green","🟢 calm"], "some friction":["pill-yellow","🟡 some friction"], "elevated":["pill-red","🔴 elevated"] };
+  const toneGauge = es ? (() => {
+    const tm = toneMap[es.overall] || ["pill-gray", esc(es.overall||"")];
+    const flagged = (es.overall!=="calm" && es.flagged && es.flagged.length)
+      ? `<div style="margin-top:10px">${es.flagged.slice(0,3).map(f=>`
+          <div class="brief-row" style="font-size:12px">
+            <div style="font-weight:600">${esc(f.subject||"(no subject)")}</div>
+            <div style="color:var(--dim)">${esc(f.from||"")}${f.org?` · ${esc(f.org)}`:""}${f.date?` · ${esc(f.date)}`:""}</div>
+            ${f.snippet?`<div style="color:var(--muted);margin-top:2px;font-style:italic">“${esc(f.snippet)}…”</div>`:""}
+          </div>`).join("")}</div>` : "";
+    return `<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12.5px">
+        <span class="pill ${tm[0]}">${tm[1]}</span>
+        <span style="color:var(--dim)">tone across <b style="color:var(--text)">${es.incoming}</b> incoming emails · <b style="color:var(--text)">${es.friction_pct}%</b> carry escalation language · ${es.pressure} deadline-pressure · ${es.positive} positive</span>
+      </div>${flagged}`;
+  })() : "";
+  const openIssues = eoi.length ? `
+    <div style="${es?"margin-top:14px;border-top:1px solid var(--border);padding-top:12px":""}">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:8px">Awaiting Setty — their message was last in the thread (${eoi.length})</div>
+      ${eoi.map(o=>`<div class="brief-row" style="font-size:12px">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+          <div style="font-weight:600">${(String(o.urgent)==="true")?`<span class="pill pill-red">urgent</span> `:""}${esc(o.subject||"(no subject)")}${o.link?` <a href="${esc(o.link)}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>`:""}</div>
+          <div style="white-space:nowrap;font-family:monospace;font-size:11px;color:${o.age_days>=45?"var(--red)":"var(--muted)"}">${esc(String(o.age_days))}d</div>
+        </div>
+        <div style="color:var(--dim)">${esc(o.from||"")}${o.org?` · ${esc(o.org)}`:""}${o.date?` · ${esc(o.date)}`:""}</div>
+        ${o.snippet?`<div style="color:var(--muted);margin-top:2px">${esc(o.snippet)}…</div>`:""}
+      </div>`).join("")}
+    </div>` : "";
+  const emailCard = (es || eoi.length) ? `
+    <div class="card" style="border-left:3px solid #6366f1">
+      <h2>📨 Inbox signals — tone &amp; open items</h2>
+      ${toneGauge}
+      ${openIssues}
+    </div>` : "";
   const ahjHTML = (b.ahjs_codes || []).map(a =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(a.ahj||"")}</b> <span style="color:var(--dim)">— ${esc(a.codes_standards||a.jurisdiction||"")}</span>${a.mep_impact?`<div style="color:var(--muted)">${esc(a.mep_impact)}</div>`:""}</div>`).join("");
   // Governing design standards (external agency reference) — full-width highlight.
@@ -458,6 +495,7 @@ function briefBodyHTML(b) {
     ${p.code_regime==="unknown"?`<div class="status info" style="display:block;margin-bottom:14px">📍 Location not set — add the project's city so codes and utility resolve correctly (NYC codes + Con Ed vs. NYS Uniform Code + regional utility).</div>`:""}
     ${scopeCard}
     ${analysisCard}
+    ${emailCard}
     ${govCard}
     ${bpCard}
     <div class="brief-grid">
