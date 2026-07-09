@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v9-owner-comment-items";
+    window.__appVersion = "2026-07-09-intel-v10-coord-insight-lessons-ownonly";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -361,14 +361,12 @@ function briefBodyHTML(b) {
     const org = (o.from_address || "").split("@")[1] || "";
     const link = o.sp_folder_url ? ` <a href="${esc(o.sp_folder_url)}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>` : "";
     return `<div class="brief-row" style="font-size:12px">
-      <div style="font-weight:600">${o.own?`<span class="pill pill-green">this project</span> `:""}${esc(o.subject || "(no subject)")}${link}</div>
+      <div>${o.files ? `📎 ${esc(o.files)}` : `<span style="font-weight:600">${esc(o.subject || "(no subject)")}</span>`}${link}</div>
       <div style="color:var(--dim)">${esc(o.from_name || "")}${org ? ` · ${esc(org)}` : ""}${o.date ? ` · ${esc(o.date)}` : ""}</div>
-      ${o.snippet ? `<div style="color:var(--text);margin-top:3px;font-style:italic">“${esc(o.snippet)}…”</div>` : ""}
-      ${o.files ? `<div style="color:var(--muted);margin-top:2px">📎 ${esc(o.files)}</div>` : ""}
     </div>`;
   }).join("");
   const lessons = (b.lessons_learned || []).map(l =>
-    `<div class="brief-row"><div style="font-size:13px;font-weight:600">${l.own?`<span class="pill pill-blue">this project</span> `:""}${esc(l.lesson_summary)}</div>${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}<div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(l.source_reference||"")}</div></div>`).join("");
+    `<div class="brief-row"><div style="font-size:13px;font-weight:600">${esc(l.lesson_summary)}</div>${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}<div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(l.source_reference||"")}</div></div>`).join("");
   const reqs = (b.agency_requirements || []).map(r =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(r.preference_type||r.discipline||"")}:</b> ${esc(r.requirement_or_preference)}</div>`).join("");
   const stds = (b.engineering_standards || []).map(s =>
@@ -474,9 +472,9 @@ function briefBodyHTML(b) {
       ${sec("🔁","Similar projects",sim,"No similar projects matched.")}
       ${sec("⚠️","Recurring coordination issues",coord,"No RFI history for this cohort yet.")}
       ${sec("💬","Typical owner comments",
-            (oci||"") + (owner ? `${oci?`<div style="font-size:10.5px;color:var(--dim);margin:12px 0 5px;text-transform:uppercase;letter-spacing:.06em">Comment emails on file</div>`:""}${owner}` : ""),
+            (oci||"") + (owner ? `${oci?`<div style="font-size:10.5px;color:var(--dim);margin:12px 0 5px;text-transform:uppercase;letter-spacing:.06em">Comment logs on file (SharePoint)</div>`:""}${owner}` : ""),
             "No owner review comments mined for this cohort yet.")}
-      ${sec("💡","Lessons learned",lessons,"No lessons matched yet.")}
+      ${sec("💡","Lessons learned (this project)",lessons,"No lessons captured for this project yet.")}
       ${sec("🤝","Team & ratings",teamInner,"No rated firms for this project yet.")}
       ${sec("🛠️","Firm engineering standards",stds,"None yet.")}
     </div>
