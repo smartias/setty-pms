@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v5-jurisdiction-utility";
+    window.__appVersion = "2026-07-09-intel-v6-project-analysis";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -371,6 +371,25 @@ function briefBodyHTML(b) {
     `<div class="brief-row" style="font-size:12px"><span style="color:var(--yellow)">${stars(pn.rating)}</span> ${esc(pn.rating)} · ${esc(pn.firm)}${(pn.types&&pn.types.length)?` <span style="color:var(--muted)">${esc(pn.types.join(", "))}</span>`:""}</div>`).join("");
   const teamInner = (teamRows || "") +
     (partnerRows ? `<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin:${teamRows?"10px":"0"} 0 5px">Top-rated partners</div>${partnerRows}` : "");
+  // Project analysis — scope risks, open requests from minutes, owner directives.
+  const sevPill = { high: "pill-red", medium: "pill-yellow", low: "pill-gray" };
+  const catLabelA = { scope_risk: "⚠️ Scope risks", open_request: "📋 Open requests (from minutes)", owner_directive: "💬 Owner / agency directives" };
+  const byCatA = {};
+  (b.project_analysis || []).forEach(a => { (byCatA[a.category] = byCatA[a.category] || []).push(a); });
+  const analysisHTML = Object.keys(catLabelA).filter(c => byCatA[c]).map(c => `
+    <div style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:700;color:#60a5fa;margin-bottom:6px">${catLabelA[c]}</div>
+      ${byCatA[c].map(a => `<div class="brief-row" style="font-size:12px">
+        <div style="font-weight:700">${esc(a.title)}${(a.severity && a.category!=="owner_directive")?` <span class="pill ${sevPill[a.severity]||"pill-gray"}">${esc(a.severity)}</span>`:""}</div>
+        ${a.detail?`<div style="color:var(--dim);margin-top:3px;line-height:1.5">${esc(a.detail)}</div>`:""}
+        ${a.source_ref?`<div style="color:var(--muted);margin-top:3px">↳ ${esc(a.source_ref)}</div>`:""}
+      </div>`).join("")}
+    </div>`).join("");
+  const analysisCard = (b.project_analysis && b.project_analysis.length) ? `
+    <div class="card" style="border-left:3px solid var(--red)">
+      <h2>🔎 Project analysis — scope, minutes &amp; comments</h2>
+      ${analysisHTML}
+    </div>` : "";
   const ahjHTML = (b.ahjs_codes || []).map(a =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(a.ahj||"")}</b> <span style="color:var(--dim)">— ${esc(a.codes_standards||a.jurisdiction||"")}</span>${a.mep_impact?`<div style="color:var(--muted)">${esc(a.mep_impact)}</div>`:""}</div>`).join("");
   // Governing design standards (external agency reference) — full-width highlight.
@@ -422,6 +441,7 @@ function briefBodyHTML(b) {
     ${(p.electric_utility||p.gas_utility)?`<div style="font-size:12px;color:var(--dim);margin:-6px 0 14px">⚡ ${esc(p.electric_utility||"—")} &nbsp;·&nbsp; 🔥 ${esc(p.gas_utility||"—")}</div>`:""}
     ${p.code_regime==="unknown"?`<div class="status info" style="display:block;margin-bottom:14px">📍 Location not set — add the project's city so codes and utility resolve correctly (NYC codes + Con Ed vs. NYS Uniform Code + regional utility).</div>`:""}
     ${scopeCard}
+    ${analysisCard}
     ${govCard}
     ${bpCard}
     <div class="brief-grid">
