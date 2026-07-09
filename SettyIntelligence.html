@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v10-coord-insight-lessons-ownonly";
+    window.__appVersion = "2026-07-09-intel-v13-discipline-scope";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -324,8 +324,10 @@ function renderBrief() {
 function briefBodyHTML(b) {
   const p = b.project || {};
   const stars = n => { const r = Math.round(Number(n) || 0); return "★".repeat(r) + "☆".repeat(Math.max(0, 5 - r)); };
-  const sec = (icon, title, inner, note) =>
-    `<div class="card"><h2>${icon} ${esc(title)}</h2>${inner || `<p style="color:var(--muted);font-size:12px">${esc(note||"Nothing yet.")}</p>`}</div>`;
+  // Hide sections with no project-specific content — the brief only shows what's
+  // actually relevant to this project (empty sections collapse rather than filler).
+  const sec = (icon, title, inner) =>
+    inner ? `<div class="card"><h2>${icon} ${esc(title)}</h2>${inner}</div>` : "";
   const sim = (b.similar_projects || []).map(s =>
     `<div class="brief-row"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span>${s.construction_type?` <span class="pill pill-gray">${esc(s.construction_type)}</span>`:""} <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></div>`).join("");
   const maxc = Math.max(1, ...((b.common_coordination_issues||[]).map(c => c.cnt||0)));
@@ -355,22 +357,10 @@ function briefBodyHTML(b) {
       <div style="color:var(--muted);margin-top:3px;font-size:11px">${esc(o.reviewer||"")}${o.review_date?` · ${esc(o.review_date)}`:""}${o.source_file?` · 📄 ${esc(o.source_file)}`:""}</div>
     </div>`;
   }).join("");
-  // Owner review comments also arrive by email (incoming, non-Setty sender,
-  // "comment" in subject/attachment), filed in the project's SharePoint Emails folder.
-  const owner = (b.typical_owner_comments || []).map(o => {
-    const org = (o.from_address || "").split("@")[1] || "";
-    const link = o.sp_folder_url ? ` <a href="${esc(o.sp_folder_url)}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>` : "";
-    return `<div class="brief-row" style="font-size:12px">
-      <div>${o.files ? `📎 ${esc(o.files)}` : `<span style="font-weight:600">${esc(o.subject || "(no subject)")}</span>`}${link}</div>
-      <div style="color:var(--dim)">${esc(o.from_name || "")}${org ? ` · ${esc(org)}` : ""}${o.date ? ` · ${esc(o.date)}` : ""}</div>
-    </div>`;
-  }).join("");
   const lessons = (b.lessons_learned || []).map(l =>
     `<div class="brief-row"><div style="font-size:13px;font-weight:600">${esc(l.lesson_summary)}</div>${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}<div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(l.source_reference||"")}</div></div>`).join("");
   const reqs = (b.agency_requirements || []).map(r =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(r.preference_type||r.discipline||"")}:</b> ${esc(r.requirement_or_preference)}</div>`).join("");
-  const stds = (b.engineering_standards || []).map(s =>
-    `<div class="brief-row" style="font-size:12px"><b>${esc(s.discipline)} ${esc(s.system||"")}:</b> ${esc(s.standard_text)}</div>`).join("");
   // Scope of work — summary + the systems/scope tags used for scope-based matching.
   const scopeTags = (p.scope_tags || []).map(t => `<span class="pill pill-blue">${esc(t)}</span>`).join(" ");
   const scopeCard = (p.scope_summary || (p.scope_tags && p.scope_tags.length)) ? `
@@ -443,10 +433,13 @@ function briefBodyHTML(b) {
   const bpCard = (b.best_practices && b.best_practices.length) ? `
     <div class="card" style="border-left:3px solid var(--green)">
       <h2>✅ Best practices for this project</h2>
-      ${b.best_practices.map(pr => `<div class="brief-row" style="${pr.fits===false?"opacity:.55":""}">
-        <div style="font-size:13px;font-weight:700">${esc(pr.title)} ${pr.fits===false?'<span class="pill pill-gray">other project type</span>':'<span class="pill pill-green">applies here</span>'}</div>
+      ${b.best_practices.map(pr => `<div class="brief-row">
+        <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
         <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
-        ${pr.trigger?`<div style="margin-top:5px">${Object.entries(pr.trigger).map(([k,v])=>`<span class="pill pill-gray">${esc(k)}: ${esc(v)}</span>`).join(" ")}</div>`:""}
+        <div style="margin-top:5px">
+          ${pr.coord_theme?`<span class="pill pill-yellow">🎯 ${(pr.from_own && pr.theme_weight)?`${pr.theme_weight} RFI${pr.theme_weight==1?"":"s"} on this project`:"recurs on similar projects"} · ${esc(pr.coord_theme)}</span> `:""}
+          ${(pr.trigger&&pr.trigger.phase)?`<span class="pill pill-gray">phase: ${esc(pr.trigger.phase)}</span>`:""}
+        </div>
       </div>`).join("")}
     </div>` : "";
   return `
@@ -458,6 +451,7 @@ function briefBodyHTML(b) {
       ${p.construction_type?`<span class="pill pill-gray">${esc(p.construction_type)}</span>`:""}
       ${p.is_campus?`<span class="pill pill-green">🎓 campus</span>`:""}
       ${(p.code_regime && p.code_regime!=="unknown")?`<span class="pill pill-yellow">📍 ${esc(p.code_regime)}${p.borough?" · "+esc(p.borough):""}</span>`:""}
+      ${(b.scope_disciplines && b.scope_disciplines.length)?`<span class="pill pill-purple" title="Setty's discipline scope — content is limited to these disciplines">🔧 Setty scope: ${b.scope_disciplines.map(esc).join(", ")}</span>`:""}
       ${p.status?`<span style="color:var(--dim);font-size:12px">${esc(p.status)}</span>`:""}
     </div>
     ${(p.electric_utility||p.gas_utility)?`<div style="font-size:12px;color:var(--dim);margin:-6px 0 14px">⚡ ${esc(p.electric_utility||"—")} &nbsp;·&nbsp; 🔥 ${esc(p.gas_utility||"—")}</div>`:""}
@@ -471,12 +465,9 @@ function briefBodyHTML(b) {
       ${sec("📋","Agency preferences (mined)",reqs,"None mined yet.")}
       ${sec("🔁","Similar projects",sim,"No similar projects matched.")}
       ${sec("⚠️","Recurring coordination issues",coord,"No RFI history for this cohort yet.")}
-      ${sec("💬","Typical owner comments",
-            (oci||"") + (owner ? `${oci?`<div style="font-size:10.5px;color:var(--dim);margin:12px 0 5px;text-transform:uppercase;letter-spacing:.06em">Comment logs on file (SharePoint)</div>`:""}${owner}` : ""),
-            "No owner review comments mined for this cohort yet.")}
+      ${sec("💬","Owner review comments",oci)}
       ${sec("💡","Lessons learned (this project)",lessons,"No lessons captured for this project yet.")}
       ${sec("🤝","Team & ratings",teamInner,"No rated firms for this project yet.")}
-      ${sec("🛠️","Firm engineering standards",stds,"None yet.")}
     </div>
     ${regsCard}`;
 }
