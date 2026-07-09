@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v6-project-analysis";
+    window.__appVersion = "2026-07-09-intel-v7-owner-coord-authorities";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -329,12 +329,14 @@ function briefBodyHTML(b) {
   const sim = (b.similar_projects || []).map(s =>
     `<div class="brief-row"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span>${s.construction_type?` <span class="pill pill-gray">${esc(s.construction_type)}</span>`:""} <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></div>`).join("");
   const maxc = Math.max(1, ...((b.common_coordination_issues||[]).map(c => c.cnt||0)));
+  const coordSev = d => (d==null) ? "" : (d>=20 ? `<span class="pill pill-red">~${d}d avg review</span>` : d>=12 ? `<span class="pill pill-yellow">~${d}d</span>` : `<span class="pill pill-gray">~${d}d</span>`);
   const coord = (b.common_coordination_issues || []).map(c => {
     const pct = Math.round((c.cnt / maxc) * 100);
-    const ex = (c.examples || []).filter(Boolean).slice(0,2).map(esc).join(" · ");
-    return `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:13px"><b>${esc(c.discipline)}</b><span class="pill pill-gray">${c.cnt}</span></div>
-      <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin:4px 0"><div style="height:100%;width:${pct}%;background:var(--blue)"></div></div>
-      ${ex?`<div style="font-size:11px;color:var(--muted)">${ex}</div>`:""}</div>`;
+    const ex = (c.examples || []).filter(Boolean).slice(0,3);
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px"><b>${esc(c.discipline)}</b><span style="white-space:nowrap">${coordSev(c.avg_days)} <span class="pill pill-blue">${c.cnt} RFIs</span></span></div>
+      <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin:5px 0"><div style="height:100%;width:${pct}%;background:var(--blue)"></div></div>
+      ${ex.length?`<ul style="margin:4px 0 0;padding-left:16px;font-size:11.5px;color:var(--muted);line-height:1.5">${ex.map(s=>`<li>${esc(s)}</li>`).join("")}</ul>`:""}</div>`;
   }).join("");
   // Owner review comments arrive by email (incoming, non-Setty sender, "comment"
   // in subject/attachment), filed in the project's SharePoint Emails folder.
@@ -342,13 +344,14 @@ function briefBodyHTML(b) {
     const org = (o.from_address || "").split("@")[1] || "";
     const link = o.sp_folder_url ? ` <a href="${esc(o.sp_folder_url)}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>` : "";
     return `<div class="brief-row" style="font-size:12px">
-      <div style="font-weight:600">${esc(o.subject || "(no subject)")}${link}</div>
+      <div style="font-weight:600">${o.own?`<span class="pill pill-green">this project</span> `:""}${esc(o.subject || "(no subject)")}${link}</div>
       <div style="color:var(--dim)">${esc(o.from_name || "")}${org ? ` · ${esc(org)}` : ""}${o.date ? ` · ${esc(o.date)}` : ""}</div>
-      ${o.files ? `<div style="color:var(--muted)">📎 ${esc(o.files)}</div>` : ""}
+      ${o.snippet ? `<div style="color:var(--text);margin-top:3px;font-style:italic">“${esc(o.snippet)}…”</div>` : ""}
+      ${o.files ? `<div style="color:var(--muted);margin-top:2px">📎 ${esc(o.files)}</div>` : ""}
     </div>`;
   }).join("");
   const lessons = (b.lessons_learned || []).map(l =>
-    `<div class="brief-row"><div style="font-size:13px;font-weight:600">${esc(l.lesson_summary)}</div>${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}<div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(l.source_reference||"")}</div></div>`).join("");
+    `<div class="brief-row"><div style="font-size:13px;font-weight:600">${l.own?`<span class="pill pill-blue">this project</span> `:""}${esc(l.lesson_summary)}</div>${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}<div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(l.source_reference||"")}</div></div>`).join("");
   const reqs = (b.agency_requirements || []).map(r =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(r.preference_type||r.discipline||"")}:</b> ${esc(r.requirement_or_preference)}</div>`).join("");
   const stds = (b.engineering_standards || []).map(s =>
@@ -396,15 +399,22 @@ function briefBodyHTML(b) {
   const g = b.governing_standards;
   const govLinks = (g && g.source_urls && g.source_urls.length)
     ? g.source_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noreferrer">${esc(u.replace(/^https?:\/\//,"").split("/")[0])} ↗</a>`).join(" · ") : "";
-  const govCard = g ? `
+  const addAuth = b.additional_authorities || [];
+  const addAuthHTML = addAuth.length ? `
+      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:6px">Also governed by (from scope)</div>
+        ${addAuth.map(a => `<div class="brief-row" style="font-size:12.5px"><b>${esc(a.owner_name)}</b>: ${esc(a.design_standards||"")}${(a.source_urls&&a.source_urls.length)?` <a href="${esc(a.source_urls[0])}" target="_blank" rel="noreferrer">↗</a>`:""}</div>`).join("")}
+      </div>` : "";
+  const govCard = (g || addAuth.length) ? `
     <div class="card" style="border-left:3px solid var(--purple)">
-      <h2>📐 Governing design standards — ${esc(g.owner_name)}${g.construction_fund?` <span class="pill pill-gray">${esc(g.construction_fund)}</span>`:""}</h2>
-      <div style="font-size:13px;line-height:1.65">
+      <h2>📐 Governing design standards${g?` — ${esc(g.owner_name)}${g.construction_fund?` <span class="pill pill-gray">${esc(g.construction_fund)}</span>`:""}`:""}</h2>
+      ${g?`<div style="font-size:13px;line-height:1.65">
         <div style="margin-bottom:6px"><b>Primary standards:</b> ${esc(g.design_standards||"")}</div>
         ${g.mep_considerations?`<div style="margin-bottom:6px"><b>Major MEP considerations:</b> ${esc(g.mep_considerations)}</div>`:""}
         ${g.typical_projects?`<div style="margin-bottom:6px"><b>Typical projects:</b> ${esc(g.typical_projects)}</div>`:""}
         ${govLinks?`<div style="font-size:12px;color:var(--dim);margin-top:6px">Official source: ${govLinks}</div>`:""}
-      </div>
+      </div>`:""}
+      ${addAuthHTML}
     </div>` : "";
   // Regulations & sustainability — grouped by category, full-width.
   const catLabel = { local_law: "NYC Local Laws", energy_code: "Energy Codes", sustainability: "Sustainability & Climate", resiliency: "Resiliency" };
