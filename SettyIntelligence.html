@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v14-inbox-signals";
+    window.__appVersion = "2026-07-09-intel-v15-open-issue-rollup";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -371,9 +371,10 @@ function briefBodyHTML(b) {
     </div>` : "";
   // Team & company ratings (from the Global Directory star ratings).
   const teamRows = (b.project_team || []).map(t => {
-    const r = (t.rating != null) ? `<span style="color:var(--yellow)">${stars(t.rating)}</span> ${esc(t.rating)}` : `<span style="color:var(--muted)">unrated</span>`;
-    const low = (t.rating != null && Number(t.rating) <= 2) ? ` <span class="pill pill-red">heads-up</span>` : "";
-    return `<div class="brief-row" style="font-size:12px"><b>${esc(t.role)}:</b> ${esc(t.firm||"")} — ${r}${low}</div>`;
+    const rated = (t.rating != null);
+    const r = rated ? ` — <span style="color:var(--yellow)">${stars(t.rating)}</span> ${esc(t.rating)}` : "";
+    const low = (rated && Number(t.rating) <= 2) ? ` <span class="pill pill-red">heads-up</span>` : "";
+    return `<div class="brief-row" style="font-size:12px"><b>${esc(t.role)}:</b> ${esc(t.firm||"")}${r}${low}</div>`;
   }).join("");
   const teamInner = teamRows || "";
   // Project analysis — scope risks, open requests from minutes, owner directives.
@@ -390,15 +391,25 @@ function briefBodyHTML(b) {
         ${a.source_ref?`<div style="color:var(--muted);margin-top:3px">↳ ${esc(a.source_ref)}</div>`:""}
       </div>`).join("")}
     </div>`).join("");
-  const analysisCard = (b.project_analysis && b.project_analysis.length) ? `
+  // Inbox signals data (used both for the rollup in Project analysis and the detail card below).
+  const es = b.email_sentiment;
+  const eoi = b.email_open_issues || [];
+  const eoiUrgent = eoi.filter(o => String(o.urgent) === "true").length;
+  const eoiOldest = eoi.length ? Math.max(...eoi.map(o => Number(o.age_days) || 0)) : 0;
+  const openRollup = eoi.length ? `
+    <div class="brief-row" style="font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <span class="pill pill-red">📨 awaiting Setty</span>
+      <span><b>${eoi.length}</b> open email item${eoi.length===1?"":"s"}${eoiUrgent?` · <b style="color:var(--red)">${eoiUrgent} urgent</b>`:""}${eoiOldest>=30?` · oldest <b>${eoiOldest}d</b>`:""}</span>
+      <span style="color:var(--muted);font-size:11px">— detail in Inbox signals below</span>
+    </div>` : "";
+  const analysisCard = ((b.project_analysis && b.project_analysis.length) || eoi.length) ? `
     <div class="card" style="border-left:3px solid var(--red)">
       <h2>🔎 Project analysis — scope, minutes &amp; comments</h2>
+      ${openRollup}
       ${analysisHTML}
     </div>` : "";
   // Inbox signals — heuristic tone gauge + open items where the last word in a
   // thread was the other party's (ball in Setty's court). All from pms_project_emails.
-  const es = b.email_sentiment;
-  const eoi = b.email_open_issues || [];
   const toneMap = { "calm":["pill-green","🟢 calm"], "some friction":["pill-yellow","🟡 some friction"], "elevated":["pill-red","🔴 elevated"] };
   const toneGauge = es ? (() => {
     const tm = toneMap[es.overall] || ["pill-gray", esc(es.overall||"")];
@@ -411,7 +422,7 @@ function briefBodyHTML(b) {
           </div>`).join("")}</div>` : "";
     return `<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12.5px">
         <span class="pill ${tm[0]}">${tm[1]}</span>
-        <span style="color:var(--dim)">tone across <b style="color:var(--text)">${es.incoming}</b> incoming emails · <b style="color:var(--text)">${es.friction_pct}%</b> carry escalation language · ${es.pressure} deadline-pressure · ${es.positive} positive</span>
+        <span style="color:var(--dim)">tone across <b style="color:var(--text)">${es.incoming}</b> incoming emails · <b style="color:var(--text)">${es.friction_pct}%</b> carry escalation language${es.pressure?` · <b style="color:var(--text)">${es.pressure}</b> deadline-pressure`:""}</span>
       </div>${flagged}`;
   })() : "";
   const openIssues = eoi.length ? `
@@ -469,7 +480,7 @@ function briefBodyHTML(b) {
   // Best practices — the actionable checklist, full-width highlight.
   const bpCard = (b.best_practices && b.best_practices.length) ? `
     <div class="card" style="border-left:3px solid var(--green)">
-      <h2>✅ Best practices for this project</h2>
+      <h2>✅ Recommended best practices</h2>
       ${b.best_practices.map(pr => `<div class="brief-row">
         <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
         <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
@@ -478,6 +489,25 @@ function briefBodyHTML(b) {
           ${(pr.trigger&&pr.trigger.phase)?`<span class="pill pill-gray">phase: ${esc(pr.trigger.phase)}</span>`:""}
         </div>
       </div>`).join("")}
+    </div>` : "";
+  // Schedule — real milestone dates from the project record, so deadlines arrive
+  // at a glance instead of being buried in email threads. Next-due is highlighted.
+  const _today = new Date().toISOString().slice(0,10);
+  const msRows = (b.milestones || []).filter(m => m && m.due);
+  const _nextIdx = msRows.findIndex(m => m.due >= _today);
+  const milestonesCard = msRows.length ? `
+    <div class="card">
+      <h2>🗓 Schedule</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${msRows.map((m,i) => {
+          const past = m.due < _today;
+          const isNext = i === _nextIdx;
+          const days = Math.round((new Date(m.due+"T00:00:00") - new Date(_today+"T00:00:00"))/86400000);
+          const when = past ? "✓ done" : (days===0 ? "today" : (days>0 ? days+"d" : ""));
+          const cls = isNext ? "pill pill-yellow" : (past ? "pill pill-gray" : "pill pill-blue");
+          return `<span class="${cls}"${past?' style="opacity:.6"':''} title="${esc(m.name||"")}">${esc(m.phase||m.name||"")} · ${esc(m.due)}${when?` · ${when}`:""}</span>`;
+        }).join("")}
+      </div>
     </div>` : "";
   return `
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px">
@@ -493,6 +523,7 @@ function briefBodyHTML(b) {
     </div>
     ${(p.electric_utility||p.gas_utility)?`<div style="font-size:12px;color:var(--dim);margin:-6px 0 14px">⚡ ${esc(p.electric_utility||"—")} &nbsp;·&nbsp; 🔥 ${esc(p.gas_utility||"—")}</div>`:""}
     ${p.code_regime==="unknown"?`<div class="status info" style="display:block;margin-bottom:14px">📍 Location not set — add the project's city so codes and utility resolve correctly (NYC codes + Con Ed vs. NYS Uniform Code + regional utility).</div>`:""}
+    ${milestonesCard}
     ${scopeCard}
     ${analysisCard}
     ${emailCard}
@@ -502,7 +533,7 @@ function briefBodyHTML(b) {
       ${sec("🏛️","AHJs, utilities & codes",ahjHTML,"Set the project city to resolve AHJs & utility.")}
       ${sec("📋","Agency preferences (mined)",reqs,"None mined yet.")}
       ${sec("🔁","Similar projects",sim,"No similar projects matched.")}
-      ${sec("⚠️","Recurring coordination issues",coord,"No RFI history for this cohort yet.")}
+      ${sec("⚠️","Recurring coordination issues — similar projects",coord,"No RFI history for this cohort yet.")}
       ${sec("💬","Owner review comments",oci)}
       ${sec("💡","Lessons learned (this project)",lessons,"No lessons captured for this project yet.")}
       ${sec("🤝","Team & ratings",teamInner,"No rated firms for this project yet.")}
