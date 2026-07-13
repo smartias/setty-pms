@@ -391,21 +391,14 @@ function briefBodyHTML(b) {
         ${a.source_ref?`<div style="color:var(--muted);margin-top:3px">↳ ${esc(a.source_ref)}</div>`:""}
       </div>`).join("")}
     </div>`).join("");
-  // Inbox signals data (used both for the rollup in Project analysis and the detail card below).
+  // Inbox signals data (detail card below). The "awaiting Setty" rollup that used
+  // to live here is now covered by the at-a-glance hero + "Needs attention now",
+  // so this card carries only the detailed scope/minutes/comments analysis.
   const es = b.email_sentiment;
   const eoi = b.email_open_issues || [];
-  const eoiUrgent = eoi.filter(o => String(o.urgent) === "true").length;
-  const eoiOldest = eoi.length ? Math.max(...eoi.map(o => Number(o.age_days) || 0)) : 0;
-  const openRollup = eoi.length ? `
-    <div class="brief-row" style="font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-      <span class="pill pill-red">📨 awaiting Setty</span>
-      <span><b>${eoi.length}</b> open email item${eoi.length===1?"":"s"}${eoiUrgent?` · <b style="color:var(--red)">${eoiUrgent} urgent</b>`:""}${eoiOldest>=30?` · oldest <b>${eoiOldest}d</b>`:""}</span>
-      <span style="color:var(--muted);font-size:11px">— detail in Inbox signals below</span>
-    </div>` : "";
-  const analysisCard = ((b.project_analysis && b.project_analysis.length) || eoi.length) ? `
+  const analysisCard = (b.project_analysis && b.project_analysis.length) ? `
     <div class="card" style="border-left:3px solid var(--red)">
       <h2>🔎 Project analysis — scope, minutes &amp; comments</h2>
-      ${openRollup}
       ${analysisHTML}
     </div>` : "";
   // Inbox signals — heuristic tone gauge + open items where the last word in a
