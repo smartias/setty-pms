@@ -622,21 +622,99 @@ async function loadPractices() {
   catch (e) { toast("Load failed: " + e.message, "error"); state.practices = []; }
   state.practicesLoaded = true; state.practicesLoading = false; render();
 }
+// Organized like the Lessons module — search + discipline/theme/type/status filters
+// and a review-count note.
+function practicesFiltered() {
+  const f = state.pfilter || (state.pfilter = {});
+  return (state.practices || []).filter(p => {
+    if (f.discipline && (p.discipline || "") !== f.discipline) return false;
+    if (f.theme && (p.coord_theme || "") !== f.theme) return false;
+    if (f.status && (p.status || "") !== f.status) return false;
+    if (f.type === "workflow" && p.issue_type !== "workflow") return false;
+    if (f.type === "design" && p.issue_type === "workflow") return false;
+    if (f.q) {
+      const hay = [p.title, p.practice_text, p.coord_theme, p.system, p.issue_type].join(" ").toLowerCase();
+      if (!hay.includes(f.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
 function renderPractices() {
   if (!state.practicesLoaded && !state.practicesLoading) loadPractices();
-  const rows = state.practices || [];
-  const body = state.practicesLoading ? '<div class="empty">Loading…</div>'
-    : (rows.length ? rows.map(renderPracticeCard).join("")
-      : '<div class="empty">No best practices yet. They auto-generate from repeated lesson clusters (2+ lessons on the same discipline &amp; issue).</div>');
+  state.pfilter = state.pfilter || {};
+  const all = state.practices || [];
+  const themes = [...new Set(all.map(p => p.coord_theme).filter(Boolean))].sort();
+  const disciplines = [...new Set(all.map(p => p.discipline).filter(Boolean))].sort();
+  const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
   $("view").innerHTML = `
-    <div class="status info" style="display:block;margin-bottom:16px">✅ Auto-generated when the same lesson repeats across projects. Approve the ones that should become firm guidance — approved practices arrive on every matching project brief.</div>
-    <div id="bpList">${body}</div>`;
+    <div class="toolbar">
+      <div class="grow">
+        <label>Search</label>
+        <input id="pfq" placeholder="title, text, theme, system…" value="${esc(state.pfilter.q||"")}"
+          oninput="state.pfilter.q=this.value; renderPracticeList()"/>
+      </div>
+      <div class="field">
+        <label>Discipline</label>
+        <select onchange="state.pfilter.discipline=this.value; renderPracticeList()">
+          <option value="">All</option>${opt(disciplines, state.pfilter.discipline)}
+        </select>
+      </div>
+      <div class="field">
+        <label>Theme</label>
+        <select onchange="state.pfilter.theme=this.value; renderPracticeList()">
+          <option value="">All</option>${opt(themes, state.pfilter.theme)}
+        </select>
+      </div>
+      <div class="field">
+        <label>Type</label>
+        <select onchange="state.pfilter.type=this.value; renderPracticeList()">
+          <option value="">All</option>
+          <option value="design" ${state.pfilter.type==="design"?"selected":""}>Design / coordination</option>
+          <option value="workflow" ${state.pfilter.type==="workflow"?"selected":""}>🧭 Workflow</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select onchange="state.pfilter.status=this.value; renderPracticeList()">
+          <option value="">All</option>
+          <option value="suggested" ${state.pfilter.status==="suggested"?"selected":""}>Suggested</option>
+          <option value="draft" ${state.pfilter.status==="draft"?"selected":""}>Needs review</option>
+          <option value="approved" ${state.pfilter.status==="approved"?"selected":""}>Approved</option>
+          <option value="archived" ${state.pfilter.status==="archived"?"selected":""}>Rejected</option>
+        </select>
+      </div>
+    </div>
+    <div id="pReviewNote"></div>
+    <div id="bpList"></div>`;
+  renderPracticeReviewNote();
+  renderPracticeList();
+}
+function renderPracticeReviewNote() {
+  const el = $("pReviewNote"); if (!el) return;
+  const all = state.practices || [];
+  const pending = all.filter(p => p.status === "suggested" || p.status === "draft").length;
+  const mined = all.filter(p => p.trigger && (p.trigger.source === "rfi-mining" || p.trigger.source === "email-mining")).length;
+  el.innerHTML = pending
+    ? `<div class="status info" style="display:block;margin-bottom:14px">✅ ${mined} practice${mined===1?"":"s"} mined from RFIs &amp; emails · <b>${pending} awaiting review</b>. Approved practices arrive on every matching project brief.</div>`
+    : "";
+}
+function renderPracticeList() {
+  const el = $("bpList"); if (!el) return;
+  if (state.practicesLoading) { el.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  const rows = practicesFiltered();
+  el.innerHTML = rows.length ? rows.map(renderPracticeCard).join("")
+    : ((state.practices || []).length ? '<div class="empty">No best practices match these filters.</div>'
+       : '<div class="empty">No best practices yet.</div>');
 }
 function renderPracticeCard(p) {
   const conf = { low:"pill-gray", medium:"pill-yellow", high:"pill-green" }[p.confidence] || "pill-gray";
   const statusPill = { draft:"pill-yellow", approved:"pill-green", archived:"pill-red" }[p.status] || "pill-gray";
   const statusLabel = { draft:"needs review", approved:"approved", archived:"rejected" }[p.status] || p.status;
   const n = (p.derived_from_lessons || []).length;
+  const _src = p.trigger && p.trigger.source;
+  const originBadge = _src === "rfi-mining" ? `<span class="pill pill-purple" title="Mined from project RFIs">🤖 RFI-mined</span>`
+    : _src === "email-mining" ? `<span class="pill pill-purple" title="Mined from project emails">🤖 email-mined</span>`
+    : (n ? `<span class="pill pill-gray">from ${n} lesson${n===1?"":"s"}</span>` : "");
   const actions = [
     p.status !== "approved" ? `<button class="btn btn-success btn-sm" onclick="setPracticeStatus('${p.practice_id}','approved')">✓ Approve</button>` : "",
     p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" onclick="setPracticeStatus('${p.practice_id}','archived')">✕ Reject</button>` : "",
@@ -645,11 +723,13 @@ function renderPracticeCard(p) {
     <div class="lesson-top"><div style="flex:1">
       <div class="lesson-summary">${esc(p.title)}</div>
       <div class="lesson-meta">
+        ${p.issue_type==="workflow"?`<span class="pill pill-purple">🧭 workflow</span>`:""}
+        ${p.coord_theme?`<span class="pill pill-yellow">🎯 ${esc(p.coord_theme)}</span>`:""}
         ${p.discipline?`<span class="pill pill-blue">${esc(p.discipline)}</span>`:""}
-        ${p.system?`<span class="pill pill-purple">${esc(p.system)}</span>`:""}
+        ${p.system?`<span class="pill pill-gray">${esc(p.system)}</span>`:""}
         <span class="pill ${conf}">conf: ${esc(p.confidence||"—")}</span>
         <span class="pill ${statusPill}">${esc(statusLabel)}</span>
-        <span class="pill pill-gray">from ${n} lesson${n===1?"":"s"}</span>
+        ${originBadge}
       </div></div>
       <div class="lesson-actions">${actions}</div>
     </div>
