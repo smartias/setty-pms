@@ -490,6 +490,18 @@ function briefBodyHTML(b) {
         </div>
       </div>`).join("")}
     </div>` : "";
+  // Workflow watch-outs — firm-wide process/workflow practices mined from project
+  // emails (issue_type='workflow'), phase-matched to this project. Distinct from the
+  // design-coordination best practices above.
+  const wfCard = (b.workflow_practices && b.workflow_practices.length) ? `
+    <div class="card" style="border-left:3px solid var(--purple)">
+      <h2>🧭 Workflow watch-outs</h2>
+      ${b.workflow_practices.map(pr => `<div class="brief-row">
+        <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
+        <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
+        ${pr.phase?`<div style="margin-top:5px"><span class="pill pill-gray">phase: ${esc(pr.phase)}</span></div>`:""}
+      </div>`).join("")}
+    </div>` : "";
   // Schedule — real milestone dates + completion state from the project record.
   // Completion is driven by the milestone's own status/pctComplete, NEVER inferred
   // from the due date (a past-due milestone is not automatically "done"). When the
@@ -541,6 +553,7 @@ function briefBodyHTML(b) {
     ${emailCard}
     ${govCard}
     ${bpCard}
+    ${wfCard}
     <div class="brief-grid">
       ${sec("🏛️","AHJs, utilities & codes",ahjHTML,"Set the project city to resolve AHJs & utility.")}
       ${sec("📋","Agency preferences (mined)",reqs,"None mined yet.")}
