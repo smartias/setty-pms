@@ -490,22 +490,34 @@ function briefBodyHTML(b) {
         </div>
       </div>`).join("")}
     </div>` : "";
-  // Schedule — real milestone dates from the project record, so deadlines arrive
-  // at a glance instead of being buried in email threads. Next-due is highlighted.
+  // Schedule — real milestone dates + completion state from the project record.
+  // Completion is driven by the milestone's own status/pctComplete, NEVER inferred
+  // from the due date (a past-due milestone is not automatically "done"). When the
+  // data has no completion signal (no status, 0%) we show the date only rather than
+  // assert done or overdue.
   const _today = new Date().toISOString().slice(0,10);
   const msRows = (b.milestones || []).filter(m => m && m.due);
-  const _nextIdx = msRows.findIndex(m => m.due >= _today);
+  const _isDone = m => (String(m.status||"").toLowerCase()==="completed") || (Number(m.pct)>=100);
+  const _nextIdx = msRows.findIndex(m => !_isDone(m));   // first not-done = the active phase
   const milestonesCard = msRows.length ? `
     <div class="card">
       <h2>🗓 Schedule</h2>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         ${msRows.map((m,i) => {
-          const past = m.due < _today;
+          const done = _isDone(m);
+          const pct = Number(m.pct) || 0;
+          const inProg = !done && (pct > 0 || String(m.status||"").toLowerCase()==="in progress");
+          const future = m.due >= _today;
           const isNext = i === _nextIdx;
+          const hasSignal = !!m.status || pct > 0;
           const days = Math.round((new Date(m.due+"T00:00:00") - new Date(_today+"T00:00:00"))/86400000);
-          const when = past ? "✓ done" : (days===0 ? "today" : (days>0 ? days+"d" : ""));
-          const cls = isNext ? "pill pill-yellow" : (past ? "pill pill-gray" : "pill pill-blue");
-          return `<span class="${cls}"${past?' style="opacity:.6"':''} title="${esc(m.name||"")}">${esc(m.phase||m.name||"")} · ${esc(m.due)}${when?` · ${when}`:""}</span>`;
+          let when, cls, dim = false;
+          if (done)            { when = "✓ done";                       cls = "pill pill-gray"; dim = true; }
+          else if (inProg)     { when = pct ? pct+"%" : "in progress";  cls = "pill pill-yellow"; }
+          else if (future)     { when = days===0 ? "today" : days+"d";  cls = isNext ? "pill pill-yellow" : "pill pill-blue"; }
+          else if (hasSignal)  { when = "past due";                     cls = "pill pill-red"; }
+          else                 { when = "";                             cls = "pill pill-gray"; dim = true; }  // untracked
+          return `<span class="${cls}"${dim?' style="opacity:.6"':''} title="${esc(m.name||"")}${m.status?" · "+esc(m.status):""}">${esc(m.phase||m.name||"")} · ${esc(m.due)}${when?` · ${when}`:""}</span>`;
         }).join("")}
       </div>
     </div>` : "";
