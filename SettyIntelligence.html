@@ -584,7 +584,8 @@ function briefBodyHTML(b) {
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px">
       <div style="font-size:18px;font-weight:800">${esc(p.name||p.num||"")}</div>
       <span class="pill pill-gray">${esc(p.num||"")}</span>
-      ${p.agency?`<span class="pill pill-purple">${esc(p.agency)}</span>`:""}
+      ${p.owner?`<span class="pill pill-purple" title="Owner / Agency">🏛️ ${esc(p.owner)}</span>`:""}
+      ${(p.agency && (!p.owner || !p.owner.toUpperCase().includes(p.agency.toUpperCase())))?`<span class="pill pill-purple">${esc(p.agency)}</span>`:""}
       ${p.bldg_cat?`<span class="pill pill-blue">${esc(p.bldg_cat)}</span>`:""}
       ${p.construction_type?`<span class="pill pill-gray">${esc(p.construction_type)}</span>`:""}
       ${p.is_campus?`<span class="pill pill-green">🎓 campus</span>`:""}
