@@ -533,6 +533,60 @@ function briefBodyHTML(b) {
         }).join("")}
       </div>
     </div>` : "";
+  // ── At-a-glance hero + "Needs attention now" synthesis ──────────────────────
+  // Pulls the actionable signals (schedule, open email items, tone, scope risks)
+  // into a scannable summary at the top. All computed from data already in `b`.
+  const daysTo = d => Math.round((new Date(d+"T00:00:00") - new Date(_today+"T00:00:00"))/86400000);
+  const nextMs = msRows.find(m => !_isDone(m));
+  const overdueMs = msRows.filter(m => !_isDone(m) && m.due < _today && (!!m.status || Number(m.pct) > 0));
+  const eoi2 = b.email_open_issues || [];
+  const eoiOld = eoi2.length ? Math.max(...eoi2.map(o => Number(o.age_days) || 0)) : 0;
+  const eoiUrg = eoi2.filter(o => String(o.urgent) === "true").length;
+  const es2 = b.email_sentiment;
+  const sevRank = { high:0, medium:1, low:2 };
+  const risks = (b.project_analysis || []).filter(a => a.category === "scope_risk")
+                  .sort((x,y) => (sevRank[x.severity]??3) - (sevRank[y.severity]??3));
+  const openReqs = (b.project_analysis || []).filter(a => a.category === "open_request");
+  const toneMap2 = { "calm":["🟢 calm","var(--green)"], "some friction":["🟡 some friction","var(--yellow)"], "elevated":["🔴 elevated","var(--red)"] };
+  const toneInfo = es2 ? (toneMap2[es2.overall] || [esc(es2.overall||"—"),"var(--text)"]) : null;
+  const tile = (label, value, sub, color) => `<div style="flex:1;min-width:132px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:9px 12px">
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700">${label}</div>
+      <div style="font-size:15px;font-weight:800;margin-top:2px;color:${color||"var(--text)"}">${value}</div>
+      ${sub?`<div style="font-size:11px;color:var(--dim);margin-top:1px">${sub}</div>`:""}
+    </div>`;
+  const heroTiles = [
+    nextMs
+      ? tile("Active phase", esc(nextMs.phase || nextMs.name || "—"),
+          (Number(nextMs.pct)>0 && Number(nextMs.pct)<100) ? `${Number(nextMs.pct)}% · due ${esc(nextMs.due)}`
+            : (daysTo(nextMs.due)>=0 ? `due ${esc(nextMs.due)} · ${daysTo(nextMs.due)}d` : `due ${esc(nextMs.due)}`),
+          overdueMs.length ? "var(--red)" : undefined)
+      : (msRows.length ? tile("Schedule","✓ complete","all milestones done","var(--green)") : null),
+    tile("Awaiting Setty", eoi2.length ? `${eoi2.length} open` : "0 open",
+        eoi2.length ? `${eoiUrg?eoiUrg+" urgent · ":""}oldest ${eoiOld}d` : "inbox clear",
+        eoi2.length ? ((eoiOld>=45||eoiUrg) ? "var(--red)" : undefined) : "var(--green)"),
+    toneInfo ? tile("Inbox tone", toneInfo[0], es2 ? `${es2.friction_pct}% escalation · ${es2.incoming} in` : "", toneInfo[1]) : null,
+    risks.length ? tile("Scope risks", `${risks.length}`, risks[0] ? `${esc(risks[0].severity)} severity top` : "",
+        ({high:"var(--red)",medium:"var(--yellow)"})[risks[0] && risks[0].severity] || undefined) : null,
+  ].filter(Boolean).join("");
+  const heroCard = heroTiles ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${heroTiles}</div>` : "";
+  const attn = [];
+  overdueMs.forEach(m => attn.push({ sev:"high", txt:`🗓 <b>${esc(m.phase||m.name)}</b> milestone past due · ${esc(m.due)}` }));
+  if (nextMs && !overdueMs.length) { const d = daysTo(nextMs.due); if (d>=0 && d<=21) attn.push({ sev: d<=7?"high":"med", txt:`🗓 <b>${esc(nextMs.phase||nextMs.name)}</b> due in ${d}d · ${esc(nextMs.due)}` }); }
+  risks.filter(r => r.severity==="high").forEach(r => attn.push({ sev:"high", txt:`⚠️ Scope risk: <b>${esc(r.title)}</b>` }));
+  eoi2.filter(o => String(o.urgent)==="true" || Number(o.age_days)>=45).slice(0,4).forEach(o =>
+    attn.push({ sev: Number(o.age_days)>=60?"high":"med", txt:`📨 Awaiting reply ${o.age_days}d: <b>${esc(o.subject||"(no subject)")}</b>${o.org?` · ${esc(o.org)}`:""}` }));
+  openReqs.slice(0,3).forEach(r => attn.push({ sev:"med", txt:`📋 Open request: <b>${esc(r.title)}</b>` }));
+  const _sevColor = { high:"var(--red)", med:"var(--yellow)", low:"var(--muted)" };
+  const _sevOrder = { high:0, med:1, low:2 };
+  attn.sort((a,z) => _sevOrder[a.sev]-_sevOrder[z.sev]);
+  const attnCard = attn.length ? `
+    <div class="card" style="border-left:3px solid var(--red)">
+      <h2>🔔 Needs attention now</h2>
+      ${attn.slice(0,8).map(a => `<div class="brief-row" style="font-size:12.5px;display:flex;gap:8px;align-items:baseline">
+        <span style="width:6px;height:6px;border-radius:50%;background:${_sevColor[a.sev]};flex:none;margin-top:5px"></span>
+        <span style="line-height:1.5">${a.txt}</span>
+      </div>`).join("")}
+    </div>` : "";
   return `
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px">
       <div style="font-size:18px;font-weight:800">${esc(p.name||p.num||"")}</div>
@@ -547,6 +601,8 @@ function briefBodyHTML(b) {
     </div>
     ${(p.electric_utility||p.gas_utility)?`<div style="font-size:12px;color:var(--dim);margin:-6px 0 14px">⚡ ${esc(p.electric_utility||"—")} &nbsp;·&nbsp; 🔥 ${esc(p.gas_utility||"—")}</div>`:""}
     ${p.code_regime==="unknown"?`<div class="status info" style="display:block;margin-bottom:14px">📍 Location not set — add the project's city so codes and utility resolve correctly (NYC codes + Con Ed vs. NYS Uniform Code + regional utility).</div>`:""}
+    ${heroCard}
+    ${attnCard}
     ${milestonesCard}
     ${scopeCard}
     ${analysisCard}
