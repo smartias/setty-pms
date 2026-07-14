@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-14-intel-v18-item-feedback";
+    window.__appVersion = "2026-07-14-intel-v19-feedback-placement";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -409,7 +409,7 @@ function briefBodyHTML(b) {
   const sec = (icon, title, inner, key) =>
     inner ? `<div class="card">${secTitle(icon, title, key)}${inner}</div>` : "";
   const sim = (b.similar_projects || []).map(s =>
-    `<div class="brief-row"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span>${s.construction_type?` <span class="pill pill-gray">${esc(s.construction_type)}</span>`:""} <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></div>`).join("");
+    `<div class="brief-row" style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><span style="flex:1"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span>${s.construction_type?` <span class="pill pill-gray">${esc(s.construction_type)}</span>`:""} <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></span>${fbHTML("similar", s.num, s.name||s.num)}</div>`).join("");
   const maxc = Math.max(1, ...((b.common_coordination_issues||[]).map(c => c.cnt||0)));
   const coordSev = d => (d==null) ? "" : (d>=20 ? `<span class="pill pill-red">~${d}d avg review</span>` : d>=12 ? `<span class="pill pill-yellow">~${d}d</span>` : `<span class="pill pill-gray">~${d}d</span>`);
   const coord = (b.common_coordination_issues || []).map(c => {
@@ -500,7 +500,7 @@ function briefBodyHTML(b) {
     const flagged = (es.overall!=="calm" && es.flagged && es.flagged.length)
       ? `<div style="margin-top:10px">${es.flagged.slice(0,3).map(f=>`
           <div class="brief-row" style="font-size:12px">
-            <div style="font-weight:600">${esc(f.subject||"(no subject)")}</div>
+            <div style="display:flex;gap:8px;align-items:baseline"><span style="flex:1;font-weight:600">${esc(f.subject||"(no subject)")}</span>${fbHTML("inbox_tone", (f.subject||"").slice(0,60)+"|"+(f.date||""), f.subject)}</div>
             <div style="color:var(--dim)">${esc(f.from||"")}${f.org?` · ${esc(f.org)}`:""}${f.date?` · ${esc(f.date)}`:""}</div>
             ${f.snippet?`<div style="color:var(--muted);margin-top:2px;font-style:italic">“${esc(f.snippet)}…”</div>`:""}
           </div>`).join("")}</div>` : "";
@@ -515,7 +515,7 @@ function briefBodyHTML(b) {
       ${eoi.map(o=>`<div class="brief-row" style="font-size:12px">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
           <div style="font-weight:600">${(String(o.urgent)==="true")?`<span class="pill pill-red">urgent</span> `:""}${esc(o.subject||"(no subject)")}${safeUrl(o.link)?` <a href="${esc(safeUrl(o.link))}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>`:""}</div>
-          <div style="white-space:nowrap;font-family:monospace;font-size:11px;color:${o.age_days>=45?"var(--red)":"var(--muted)"}">${esc(String(o.age_days))}d</div>
+          <div style="white-space:nowrap;display:flex;gap:8px;align-items:baseline"><span style="font-family:monospace;font-size:11px;color:${o.age_days>=45?"var(--red)":"var(--muted)"}">${esc(String(o.age_days))}d</span>${fbHTML("inbox_open", (o.subject||"").slice(0,60)+"|"+(o.date||""), o.subject)}</div>
         </div>
         <div style="color:var(--dim)">${esc(o.from||"")}${o.org?` · ${esc(o.org)}`:""}${o.date?` · ${esc(o.date)}`:""}</div>
         ${o.snippet?`<div style="color:var(--muted);margin-top:2px">${esc(o.snippet)}…</div>`:""}
@@ -523,7 +523,7 @@ function briefBodyHTML(b) {
     </div>` : "";
   const emailCard = (es || eoi.length) ? `
     <div class="card" style="border-left:3px solid #6366f1">
-      ${secTitle("📨","Inbox signals — tone & open items","inbox")}
+      ${secTitle("📨","Inbox signals — tone & open items")}
       ${toneGauge}
       ${openIssues}
     </div>` : "";
@@ -541,7 +541,7 @@ function briefBodyHTML(b) {
       </div>` : "";
   const govCard = (g || addAuth.length) ? `
     <div class="card" style="border-left:3px solid var(--purple)">
-      <h2 style="display:flex;align-items:center;gap:8px"><span>📐 Governing design standards${g?` — ${esc(g.owner_name)}${g.construction_fund?` <span class="pill pill-gray">${esc(g.construction_fund)}</span>`:""}`:""}</span><span style="margin-left:auto">${fbHTML("governing")}</span></h2>
+      <h2>📐 Governing design standards${g?` — ${esc(g.owner_name)}${g.construction_fund?` <span class="pill pill-gray">${esc(g.construction_fund)}</span>`:""}`:""}</h2>
       ${g?`<div style="font-size:13px;line-height:1.65">
         <div style="margin-bottom:6px"><b>Primary standards:</b> ${esc(g.design_standards||"")}</div>
         ${g.mep_considerations?`<div style="margin-bottom:6px"><b>Major MEP considerations:</b> ${esc(g.mep_considerations)}</div>`:""}
@@ -557,10 +557,10 @@ function briefBodyHTML(b) {
   const regsHTML = Object.keys(catLabel).filter(c => byCat[c]).map(c => `
     <div style="margin-bottom:12px">
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:5px">${esc(catLabel[c])}</div>
-      ${byCat[c].map(r => `<div class="brief-row" style="font-size:12px"><b>${esc(r.ref_code||"")}</b> ${esc(r.title||"")}${r.mep_impact?`<div style="color:var(--muted)">${esc(r.mep_impact)}</div>`:""}</div>`).join("")}
+      ${byCat[c].map(r => `<div class="brief-row" style="font-size:12px"><div style="display:flex;gap:8px;align-items:baseline"><span style="flex:1"><b>${esc(r.ref_code||"")}</b> ${esc(r.title||"")}</span>${fbHTML("regulations", (r.ref_code||"")+" "+(r.title||"").slice(0,40), (r.ref_code||"")+" "+(r.title||""))}</div>${r.mep_impact?`<div style="color:var(--muted)">${esc(r.mep_impact)}</div>`:""}</div>`).join("")}
     </div>`).join("");
   const regsCard = (b.regulations && b.regulations.length)
-    ? `<div class="card">${secTitle("📜","Regulations & sustainability","regulations")}${regsHTML}</div>` : "";
+    ? `<div class="card">${secTitle("📜","Regulations & sustainability")}${regsHTML}</div>` : "";
   // Best practices — the actionable checklist, full-width highlight.
   const bpCard = (b.best_practices && b.best_practices.length) ? `
     <div class="card" style="border-left:3px solid var(--green)">
@@ -704,13 +704,13 @@ function briefBodyHTML(b) {
     ${bpCard}
     ${wfCard}
     <div class="brief-grid">
-      ${sec("🏛️","AHJs, utilities & codes",ahjHTML,"ahjs")}
+      ${sec("🏛️","AHJs, utilities & codes",ahjHTML)}
       ${sec("📋","Agency preferences (mined)",reqs)}
-      ${sec("🔁","Similar projects",sim,"similar")}
+      ${sec("🔁","Similar projects",sim)}
       ${sec("⚠️","Recurring coordination issues — similar projects",coord)}
       ${sec("💬","Owner review comments",oci)}
       ${sec("💡","Lessons learned (this & similar projects)",lessons)}
-      ${sec("🤝","Team & ratings",teamInner,"team")}
+      ${sec("🤝","Team & ratings",teamInner)}
     </div>
     ${regsCard}`;
 }
