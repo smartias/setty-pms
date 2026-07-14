@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-14-intel-v21-graph-contractor-intel";
+    window.__appVersion = "2026-07-14-intel-v22-portfolio-heatmap";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -207,6 +207,7 @@ const CONFIDENCE    = ["low","medium","high"];
 // the rest are schema-ready (tables exist) and light up in later passes.
 const MODULES = [
   { key: "brief",     label: "📥 Project Brief",       table: null,                        idcol: null,          live: true  },
+  { key: "heatmap",   label: "🔥 Heat Map",            table: null,                        idcol: null,          live: true  },
   { key: "lessons",   label: "Lessons Learned",       table: "pms_lessons",               idcol: "lesson_id",   live: true  },
   { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
   { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: false },
@@ -235,6 +236,7 @@ const state = {
   selL: new Set(),           // bulk-selected lesson ids
   selP: new Set(),           // bulk-selected practice ids
   graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "" } },
+  heat: { rows: [], loaded: false, loading: false, f: { agency: "", quiet: false } },
 };
 
 // Embed mode: /SettyIntelligence.html?embed=1&project=SAPX...  renders ONLY the
@@ -306,6 +308,7 @@ function render() {
   const v = $("view");
   if (state.loading) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
   if (state.tab === "brief") return renderBrief();
+  if (state.tab === "heatmap") return renderHeatmap();
   if (state.tab === "lessons") return renderLessons();
   if (state.tab === "practices") return renderPractices();
   if (state.tab === "graph") return renderGraph();
@@ -793,6 +796,176 @@ async function copyBrief() {
     document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
   }
   toast("Brief copied as plain text — paste into your kickoff agenda or email.", "success");
+}
+
+// ── Portfolio Heat Map — per-project open issue load as packed bubbles ───────
+// Data comes from pms_portfolio_heatmap(): one row per active project with its
+// awaiting-Setty email threads, open/overdue RFIs & submittals, unresolved scope
+// risks / open requests, and overdue milestones. Bubble AREA encodes the weighted
+// issue score; color encodes severity tier (never color alone — the label, the
+// tooltip and the table below carry the same numbers).
+async function loadHeat() {
+  state.heat.loading = true;
+  try { state.heat.rows = (await sb("POST", "/rest/v1/rpc/pms_portfolio_heatmap", {})) || []; }
+  catch (e) { toast("Heat map load failed: " + e.message, "error"); state.heat.rows = []; }
+  state.heat.loaded = true; state.heat.loading = false;
+  state.counts.heatmap = state.heat.rows.filter(r => heatTier(r) === "hot").length;
+  render();
+}
+// Weighted issue score — overdue/urgent items count more than merely-open ones.
+function heatScore(r) {
+  return r.emails_open + r.emails_urgent * 2 + (r.emails_oldest >= 45 ? 2 : 0)
+       + r.rfis_open + r.rfis_overdue * 2
+       + r.subs_open * 0.5 + r.subs_overdue * 1.5
+       + r.risks_high * 3 + r.risks_med * 1.5 + r.risks_low * 0.5
+       + r.open_requests + r.ms_overdue * 2;
+}
+function heatTier(r) {
+  if (r.emails_urgent > 0 || r.rfis_overdue > 0 || r.subs_overdue > 0
+      || r.risks_high > 0 || r.ms_overdue > 0 || r.emails_oldest >= 45) return "hot";
+  return heatScore(r) > 0 ? "watch" : "quiet";
+}
+const HEAT_TIER = {
+  hot:   { fill: "rgba(239,68,68,.28)",  stroke: "#ef4444", label: "🔴 Hot — something urgent or overdue" },
+  watch: { fill: "rgba(245,158,11,.26)", stroke: "#f59e0b", label: "🟡 Watch — open items, none overdue" },
+  quiet: { fill: "rgba(100,116,139,.18)",stroke: "#64748b", label: "⚪ Quiet — no open issue signals" },
+};
+// Short display handle for inside a bubble: strip the SAPX prefix, keep the tail.
+const heatTag = num => String(num || "").replace(/^SAPX/i, "");
+// Greedy circle packing: biggest first at the center, then spiral outward until
+// a non-overlapping spot is found. ~90 bubbles → trivial cost, no library needed.
+function packBubbles(items) {
+  const placed = [];
+  const collides = (x, y, r) => placed.some(p => { const dx = p.x - x, dy = p.y - y; return dx*dx + dy*dy < (p.r + r + 3) * (p.r + r + 3); });
+  items.forEach((it, i) => {
+    if (!placed.length) { placed.push({ ...it, x: 0, y: 0 }); return; }
+    // Deterministic per-index start angle spreads bubbles around the center.
+    const a0 = i * 2.399963;   // golden angle
+    for (let d = 4; ; d += 4) {
+      let done = false;
+      for (let k = 0; k < 24; k++) {
+        const a = a0 + (k / 24) * Math.PI * 2;
+        const x = Math.cos(a) * d, y = Math.sin(a) * d;
+        if (!collides(x, y, it.r)) { placed.push({ ...it, x, y }); done = true; break; }
+      }
+      if (done) break;
+    }
+  });
+  return placed;
+}
+function renderHeatmap() {
+  const h = state.heat;
+  if (!h.loaded && !h.loading) loadHeat();
+  if (h.loading || !h.loaded) { $("view").innerHTML = '<div class="empty">Scanning the portfolio…</div>'; return; }
+  const agencies = [...new Set(h.rows.map(r => r.agency).filter(Boolean))].sort();
+  const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
+  let rows = h.rows.filter(r => !h.f.agency || r.agency === h.f.agency);
+  if (!h.f.quiet) rows = rows.filter(r => heatTier(r) !== "quiet");
+  const hot = rows.filter(r => heatTier(r) === "hot").length;
+  // Bubble radius from the score: area ∝ score (sqrt), floored so tiny loads stay clickable.
+  const items = rows.map(r => ({ r: Math.min(64, 15 + 7 * Math.sqrt(heatScore(r))), row: r, tier: heatTier(r) }))
+                    .sort((a, b) => b.r - a.r);
+  const packed = packBubbles(items);
+  let svg = '<div class="empty">No projects match this filter.</div>';
+  if (packed.length) {
+    const pad = 10;
+    const minX = Math.min(...packed.map(p => p.x - p.r)) - pad, maxX = Math.max(...packed.map(p => p.x + p.r)) + pad;
+    const minY = Math.min(...packed.map(p => p.y - p.r)) - pad, maxY = Math.max(...packed.map(p => p.y + p.r)) + pad;
+    const bubbles = packed.map(p => {
+      const t = HEAT_TIER[p.tier], r = p.row, s = Math.round(heatScore(r) * 10) / 10;
+      // Label only when it fits — the tooltip and table carry the rest.
+      const nameFits = p.r >= 40, tagFits = p.r >= 22;
+      const shortName = (r.name || "").length > 20 ? (r.name || "").slice(0, 19) + "…" : (r.name || "");
+      return `<g class="hm-b" data-num="${esc(r.num)}" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})" style="cursor:pointer">
+        <circle r="${p.r.toFixed(1)}" fill="${t.fill}" stroke="${t.stroke}" stroke-width="2"/>
+        ${nameFits ? `<text y="-8" text-anchor="middle" style="font-size:10.5px;font-weight:700;fill:var(--text)">${esc(shortName)}</text>` : ""}
+        ${tagFits ? `<text y="${nameFits ? 6 : -2}" text-anchor="middle" style="font-size:${nameFits ? 9 : 9.5}px;fill:var(--dim)">${esc(heatTag(r.num))}</text>` : ""}
+        ${tagFits ? `<text y="${nameFits ? 19 : 12}" text-anchor="middle" style="font-size:11px;font-weight:800;fill:${t.stroke}">${s}</text>` : ""}
+      </g>`;
+    }).join("");
+    svg = `<svg id="hmSvg" viewBox="${minX.toFixed(0)} ${minY.toFixed(0)} ${(maxX-minX).toFixed(0)} ${(maxY-minY).toFixed(0)}"
+      style="width:100%;max-height:600px;display:block" xmlns="http://www.w3.org/2000/svg">${bubbles}</svg>`;
+  }
+  const legend = Object.values(HEAT_TIER).map(t =>
+    `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)"><span style="width:12px;height:12px;border-radius:50%;background:${t.fill};border:2px solid ${t.stroke};flex:none"></span>${esc(t.label)}</span>`).join("");
+  const tableRows = [...rows].sort((a, b) => heatScore(b) - heatScore(a)).map(r => {
+    const t = HEAT_TIER[heatTier(r)];
+    const cell = (open, overdue, word) => open ? `${open}${overdue ? ` <span style="color:var(--red)">(${overdue} ${word})</span>` : ""}` : `<span style="color:var(--muted)">—</span>`;
+    const risks = r.risks_high + r.risks_med + r.risks_low;
+    return `<tr class="hm-tr" data-num="${esc(r.num)}" style="cursor:pointer;border-bottom:1px solid var(--border)">
+      <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><b>${esc(r.name || r.num)}</b> <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
+      <td style="padding:7px 10px;color:var(--dim)">${esc(r.agency || "")}</td>
+      <td style="padding:7px 10px;font-weight:800;color:${t.stroke}">${Math.round(heatScore(r) * 10) / 10}</td>
+      <td style="padding:7px 10px">${cell(r.emails_open, r.emails_urgent, "urgent")}${r.emails_open && r.emails_oldest ? ` <span style="color:var(--muted);font-size:11px">oldest ${r.emails_oldest}d</span>` : ""}</td>
+      <td style="padding:7px 10px">${cell(r.rfis_open, r.rfis_overdue, "overdue")}</td>
+      <td style="padding:7px 10px">${cell(r.subs_open, r.subs_overdue, "overdue")}</td>
+      <td style="padding:7px 10px">${risks ? `${risks}${r.risks_high ? ` <span style="color:var(--red)">(${r.risks_high} high)</span>` : ""}` : `<span style="color:var(--muted)">—</span>`}${r.open_requests ? ` <span style="color:var(--dim);font-size:11px">+${r.open_requests} req</span>` : ""}</td>
+      <td style="padding:7px 10px">${r.ms_overdue ? `<span style="color:var(--red)">${r.ms_overdue} overdue</span>` : `<span style="color:var(--muted)">—</span>`}</td>
+    </tr>`;
+  }).join("");
+  $("view").innerHTML = `
+    <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted open-issue load (emails awaiting Setty, open RFIs &amp; submittals, scope risks, overdue milestones) · <b>color</b> = severity tier. Click a bubble to open that project's brief.</div>
+    <div class="toolbar">
+      <div class="field"><label>Agency</label>
+        <select onchange="state.heat.f.agency=this.value; render()"><option value="">All</option>${opt(agencies, h.f.agency)}</select></div>
+      <div class="field" style="display:flex;align-items:center;gap:8px;padding-bottom:8px">
+        <input type="checkbox" id="hmQuiet" class="selbox" ${h.f.quiet ? "checked" : ""} onchange="state.heat.f.quiet=this.checked; render()"/>
+        <label for="hmQuiet" style="margin:0;cursor:pointer">Show quiet projects</label></div>
+      <button class="btn btn-ghost" style="margin-left:auto" onclick="state.heat.loaded=false; render()">↻ Refresh</button>
+    </div>
+    <div class="card" style="position:relative">
+      <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">${legend}</div>
+      ${svg}
+      <div id="hmTip" style="position:absolute;display:none;pointer-events:none;z-index:50;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;max-width:280px;box-shadow:0 4px 18px rgba(0,0,0,.5)"></div>
+    </div>
+    <div class="card" style="overflow-x:auto">
+      <h2 style="margin-top:0">Same data as a list</h2>
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:820px">
+        <thead><tr style="text-align:left;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border)">
+          <th style="padding:6px 10px 6px 0">Project</th><th style="padding:6px 10px">Agency</th><th style="padding:6px 10px">Score</th>
+          <th style="padding:6px 10px">Emails awaiting</th><th style="padding:6px 10px">RFIs</th><th style="padding:6px 10px">Submittals</th>
+          <th style="padding:6px 10px">Risks</th><th style="padding:6px 10px">Milestones</th>
+        </tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="8" class="empty">Nothing to show.</td></tr>`}</tbody>
+      </table>
+    </div>`;
+  wireHeatmap();
+}
+function heatTipHTML(r) {
+  const line = (icon, txt) => `<div style="margin-top:3px">${icon} ${txt}</div>`;
+  const L = [];
+  if (r.emails_open) L.push(line("📨", `<b>${r.emails_open}</b> email thread${r.emails_open===1?"":"s"} awaiting Setty${r.emails_urgent ? ` · <span style="color:var(--red)">${r.emails_urgent} urgent</span>` : ""}${r.emails_oldest ? ` · oldest ${r.emails_oldest}d` : ""}`));
+  if (r.rfis_open) L.push(line("❓", `<b>${r.rfis_open}</b> open RFI${r.rfis_open===1?"":"s"}${r.rfis_overdue ? ` · <span style="color:var(--red)">${r.rfis_overdue} overdue</span>` : ""}`));
+  if (r.subs_open) L.push(line("📦", `<b>${r.subs_open}</b> open submittal${r.subs_open===1?"":"s"}${r.subs_overdue ? ` · <span style="color:var(--red)">${r.subs_overdue} overdue</span>` : ""}`));
+  const risks = r.risks_high + r.risks_med + r.risks_low;
+  if (risks) L.push(line("⚠️", `<b>${risks}</b> scope risk${risks===1?"":"s"}${r.risks_high ? ` · <span style="color:var(--red)">${r.risks_high} high</span>` : ""}`));
+  if (r.open_requests) L.push(line("📋", `<b>${r.open_requests}</b> open request${r.open_requests===1?"":"s"} from minutes`));
+  if (r.ms_overdue) L.push(line("🗓", `<span style="color:var(--red)"><b>${r.ms_overdue}</b> milestone${r.ms_overdue===1?"":"s"} past due</span>`));
+  if (r.next_due) L.push(line("→", `next milestone ${esc(r.next_due)}`));
+  return `<div style="font-weight:700">${esc(r.name || r.num)}</div>
+    <div style="color:var(--muted);font-size:11px;margin-bottom:2px">${esc(r.num)}${r.agency ? " · " + esc(r.agency) : ""} · score ${Math.round(heatScore(r)*10)/10}</div>
+    ${L.join("") || '<div style="color:var(--muted)">No open issue signals.</div>'}
+    <div style="color:var(--muted);font-size:11px;margin-top:6px">Click to open the project brief →</div>`;
+}
+function wireHeatmap() {
+  const tip = $("hmTip"), svgEl = $("hmSvg");
+  const byNum = {}; state.heat.rows.forEach(r => byNum[r.num] = r);
+  const open = num => { setBriefNum(num); setTab("brief"); };
+  if (svgEl) {
+    const box = svgEl.parentElement;
+    svgEl.querySelectorAll(".hm-b").forEach(g => {
+      const r = byNum[g.dataset.num]; if (!r) return;
+      g.addEventListener("click", () => open(r.num));
+      g.addEventListener("mouseenter", () => { tip.innerHTML = heatTipHTML(r); tip.style.display = "block"; });
+      g.addEventListener("mousemove", e => {
+        const b = box.getBoundingClientRect();
+        const x = Math.min(e.clientX - b.left + 14, b.width - 290);
+        tip.style.left = Math.max(6, x) + "px"; tip.style.top = (e.clientY - b.top + 14) + "px";
+      });
+      g.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+    });
+  }
+  document.querySelectorAll(".hm-tr").forEach(tr => tr.addEventListener("click", () => open(tr.dataset.num)));
 }
 
 // ── Best Practices module (review queue of auto-generated practices) ─────────
