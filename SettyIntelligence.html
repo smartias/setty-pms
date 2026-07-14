@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-14-intel-v19-feedback-placement";
+    window.__appVersion = "2026-07-14-intel-v20-downvote-suppression";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -356,7 +356,9 @@ function fbHTML(key, itemKey, itemText) {
   const v = state.votes[vkey];
   const btn = (val, icon, tip) =>
     `<button class="fbbtn ${v===val?"on":""}" ${v!=null?"disabled":""} data-k="${esc(key)}" data-i="${esc(itemKey||"")}" data-t="${esc((itemText||"").slice(0,140))}" data-v="${val}" onclick="voteBriefEl(this)" title="${tip}">${icon}</button>`;
-  return `<span class="fb no-print" style="display:inline-flex;gap:4px;vertical-align:middle">${btn(1,"👍","Useful on this project")}${btn(-1,"👎","Not relevant here")}</span>`;
+  const hiddenNote = (v === -1 && itemKey)
+    ? `<span style="font-size:10px;color:var(--muted);white-space:nowrap">✂ off future briefs here</span>` : "";
+  return `<span class="fb no-print" style="display:inline-flex;gap:4px;align-items:baseline;vertical-align:middle">${btn(1,"👍","Useful on this project")}${btn(-1,"👎","Not relevant on this project — removes it from this project's future briefs")}${hiddenNote}</span>`;
 }
 function secTitle(icon, title, key) {
   return `<h2 style="display:flex;align-items:center;gap:8px;margin-top:0"><span>${icon} ${esc(title)}</span><span style="margin-left:auto">${key?fbHTML(key):""}</span></h2>`;
@@ -489,7 +491,7 @@ function briefBodyHTML(b) {
   const eoi = b.email_open_issues || [];
   const analysisCard = (b.project_analysis && b.project_analysis.length) ? `
     <div class="card" style="border-left:3px solid var(--red)">
-      ${secTitle("🔎","Project analysis — scope, minutes & comments","analysis")}
+      ${secTitle("🔎","Project analysis — scope, minutes & comments")}
       ${analysisHTML}
     </div>` : "";
   // Inbox signals — heuristic tone gauge + open items where the last word in a
