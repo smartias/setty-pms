@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-09-intel-v15-open-issue-rollup";
+    window.__appVersion = "2026-07-14-intel-v16-brief-fixes";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -225,6 +225,9 @@ if (_params.has("embed")) { state.embed = true; state.tab = "brief"; }
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+// Hrefs built from database rows: esc() keeps them inside the attribute, but a
+// javascript: value would still execute — only allow http(s).
+const safeUrl = (u) => /^https?:\/\//i.test(String(u == null ? "" : u).trim()) ? String(u).trim() : "";
 function toast(msg, kind) { const el = $("status"); el.className = "status " + (kind || "info"); el.textContent = msg; if (kind === "success") setTimeout(() => { el.className = "status"; }, 3500); }
 
 // ── Data loading ─────────────────────────────────────────────────────────────
@@ -289,11 +292,19 @@ function setTab(k) { state.tab = k; render(); }
 function setBriefNum(v) { state.briefNum = (v || "").trim(); localStorage.setItem("ii_briefNum", state.briefNum); state.brief = null; state.briefForNum = null; render(); }
 
 async function loadBrief(num) {
+  // Track which project is in flight so a slow response for a project the user
+  // has already navigated away from can't overwrite the newer brief.
+  state.briefInflight = num;
   state.briefLoading = true;
   try {
     const j = await sb("POST", "/rest/v1/rpc/pms_project_brief", { p_number: num });
+    if (state.briefInflight !== num) return;   // superseded — drop stale response
     state.brief = j || {};
-  } catch (e) { toast("Brief failed: " + e.message, "error"); state.brief = {}; }
+  } catch (e) {
+    if (state.briefInflight !== num) return;
+    toast("Brief failed: " + e.message, "error"); state.brief = {};
+  }
+  state.briefInflight = null;
   state.briefForNum = num;
   state.briefLoading = false;
   render();
@@ -318,7 +329,7 @@ function renderBrief() {
     </div>
     <div class="status info" style="display:block;margin-bottom:16px">📥 This is what <b>arrives</b> on the project — assembled from the firm's record, not searched for. In the PMS it renders on the project's Overview.</div>`;
   $("view").innerHTML = `${chrome}<div id="briefBody">${body}</div>`;
-  if (!state.briefLoading && state.briefForNum !== state.briefNum) loadBrief(state.briefNum);
+  if (state.briefForNum !== state.briefNum && state.briefInflight !== state.briefNum) loadBrief(state.briefNum);
 }
 
 function briefBodyHTML(b) {
@@ -423,7 +434,7 @@ function briefBodyHTML(b) {
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:8px">Awaiting Setty — their message was last in the thread (${eoi.length})</div>
       ${eoi.map(o=>`<div class="brief-row" style="font-size:12px">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
-          <div style="font-weight:600">${(String(o.urgent)==="true")?`<span class="pill pill-red">urgent</span> `:""}${esc(o.subject||"(no subject)")}${o.link?` <a href="${esc(o.link)}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>`:""}</div>
+          <div style="font-weight:600">${(String(o.urgent)==="true")?`<span class="pill pill-red">urgent</span> `:""}${esc(o.subject||"(no subject)")}${safeUrl(o.link)?` <a href="${esc(safeUrl(o.link))}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>`:""}</div>
           <div style="white-space:nowrap;font-family:monospace;font-size:11px;color:${o.age_days>=45?"var(--red)":"var(--muted)"}">${esc(String(o.age_days))}d</div>
         </div>
         <div style="color:var(--dim)">${esc(o.from||"")}${o.org?` · ${esc(o.org)}`:""}${o.date?` · ${esc(o.date)}`:""}</div>
@@ -441,12 +452,12 @@ function briefBodyHTML(b) {
   // Governing design standards (external agency reference) — full-width highlight.
   const g = b.governing_standards;
   const govLinks = (g && g.source_urls && g.source_urls.length)
-    ? g.source_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noreferrer">${esc(u.replace(/^https?:\/\//,"").split("/")[0])} ↗</a>`).join(" · ") : "";
+    ? g.source_urls.filter(safeUrl).map(u => `<a href="${esc(safeUrl(u))}" target="_blank" rel="noreferrer">${esc(u.replace(/^https?:\/\//,"").split("/")[0])} ↗</a>`).join(" · ") : "";
   const addAuth = b.additional_authorities || [];
   const addAuthHTML = addAuth.length ? `
       <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:6px">Also governed by (from scope)</div>
-        ${addAuth.map(a => `<div class="brief-row" style="font-size:12.5px"><b>${esc(a.owner_name)}</b>: ${esc(a.design_standards||"")}${(a.source_urls&&a.source_urls.length)?` <a href="${esc(a.source_urls[0])}" target="_blank" rel="noreferrer">↗</a>`:""}</div>`).join("")}
+        ${addAuth.map(a => `<div class="brief-row" style="font-size:12.5px"><b>${esc(a.owner_name)}</b>: ${esc(a.design_standards||"")}${(a.source_urls&&a.source_urls.length&&safeUrl(a.source_urls[0]))?` <a href="${esc(safeUrl(a.source_urls[0]))}" target="_blank" rel="noreferrer">↗</a>`:""}</div>`).join("")}
       </div>` : "";
   const govCard = (g || addAuth.length) ? `
     <div class="card" style="border-left:3px solid var(--purple)">
@@ -500,7 +511,10 @@ function briefBodyHTML(b) {
   // from the due date (a past-due milestone is not automatically "done"). When the
   // data has no completion signal (no status, 0%) we show the date only rather than
   // assert done or overdue.
-  const _today = new Date().toISOString().slice(0,10);
+  // Local date, not toISOString() (UTC) — after ~8pm ET the UTC date is already
+  // tomorrow, which flipped due-today milestones to "past due" every evening.
+  const _now = new Date();
+  const _today = _now.getFullYear() + "-" + String(_now.getMonth()+1).padStart(2,"0") + "-" + String(_now.getDate()).padStart(2,"0");
   const msRows = (b.milestones || []).filter(m => m && m.due);
   const _isDone = m => (String(m.status||"").toLowerCase()==="completed") || (Number(m.pct)>=100);
   const _nextIdx = msRows.findIndex(m => !_isDone(m));   // first not-done = the active phase
@@ -605,13 +619,13 @@ function briefBodyHTML(b) {
     ${bpCard}
     ${wfCard}
     <div class="brief-grid">
-      ${sec("🏛️","AHJs, utilities & codes",ahjHTML,"Set the project city to resolve AHJs & utility.")}
-      ${sec("📋","Agency preferences (mined)",reqs,"None mined yet.")}
-      ${sec("🔁","Similar projects",sim,"No similar projects matched.")}
-      ${sec("⚠️","Recurring coordination issues — similar projects",coord,"No RFI history for this cohort yet.")}
+      ${sec("🏛️","AHJs, utilities & codes",ahjHTML)}
+      ${sec("📋","Agency preferences (mined)",reqs)}
+      ${sec("🔁","Similar projects",sim)}
+      ${sec("⚠️","Recurring coordination issues — similar projects",coord)}
       ${sec("💬","Owner review comments",oci)}
-      ${sec("💡","Lessons learned (this project)",lessons,"No lessons captured for this project yet.")}
-      ${sec("🤝","Team & ratings",teamInner,"No rated firms for this project yet.")}
+      ${sec("💡","Lessons learned (this project)",lessons)}
+      ${sec("🤝","Team & ratings",teamInner)}
     </div>
     ${regsCard}`;
 }
@@ -717,8 +731,8 @@ function renderPracticeCard(p) {
     : _src === "email-mining" ? `<span class="pill pill-purple" title="Mined from project emails">🤖 email-mined</span>`
     : (n ? `<span class="pill pill-gray">from ${n} lesson${n===1?"":"s"}</span>` : "");
   const actions = [
-    p.status !== "approved" ? `<button class="btn btn-success btn-sm" onclick="setPracticeStatus('${p.practice_id}','approved')">✓ Approve</button>` : "",
-    p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" onclick="setPracticeStatus('${p.practice_id}','archived')">✕ Reject</button>` : "",
+    p.status !== "approved" ? `<button class="btn btn-success btn-sm" data-id="${esc(p.practice_id)}" onclick="setPracticeStatus(this.dataset.id,'approved')">✓ Approve</button>` : "",
+    p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(p.practice_id)}" onclick="setPracticeStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
   ].filter(Boolean).join(" ");
   return `<div class="lesson ${esc(p.status||"draft")}">
     <div class="lesson-top"><div style="flex:1">
@@ -856,10 +870,10 @@ function renderLessonCard(l) {
         `<span class="pill pill-gray" style="margin:2px 2px 0 0">${esc((r.type||"").toUpperCase())} ${esc(r.rfi_id||r.id||"")}</span>`).join("") + `</div>`
     : "";
   const actions = [
-    `<button class="btn btn-ghost btn-sm" onclick="openLessonForm('${l.lesson_id}')">Edit</button>`,
-    l.status !== "approved" ? `<button class="btn btn-success btn-sm" onclick="approveLesson('${l.lesson_id}')">✓ Approve</button>` : "",
-    l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" onclick="setLessonStatus('${l.lesson_id}','archived')">✕ Reject</button>` : "",
-    `<button class="btn btn-danger btn-sm" onclick="deleteLesson('${l.lesson_id}')" title="Delete permanently">🗑</button>`,
+    `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="openLessonForm(this.dataset.id)">Edit</button>`,
+    l.status !== "approved" ? `<button class="btn btn-success btn-sm" data-id="${esc(l.lesson_id)}" onclick="approveLesson(this.dataset.id)">✓ Approve</button>` : "",
+    l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="setLessonStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
+    `<button class="btn btn-danger btn-sm" data-id="${esc(l.lesson_id)}" onclick="deleteLesson(this.dataset.id)" title="Delete permanently">🗑</button>`,
   ].filter(Boolean).join(" ");
   return `
     <div class="lesson ${esc(l.status||"draft")}">
@@ -944,7 +958,7 @@ function openLessonForm(id) {
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="saveLesson('${id||""}')">${id ? "Save changes" : "Add lesson"}</button>
+          <button class="btn btn-primary" data-id="${esc(id||"")}" onclick="saveLesson(this.dataset.id)">${id ? "Save changes" : "Add lesson"}</button>
         </div>
       </div>
     </div>`;
