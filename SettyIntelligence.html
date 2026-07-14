@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-14-intel-v20-downvote-suppression";
+    window.__appVersion = "2026-07-14-intel-v21-graph-contractor-intel";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -211,7 +211,7 @@ const MODULES = [
   { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
   { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: false },
   { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: false },
-  { key: "graph",     label: "Expertise Graph",       table: "pms_expertise_edges",       idcol: null,          live: false },
+  { key: "graph",     label: "Expertise Graph",       table: "pms_person_work",           idcol: null,          live: true  },
   { key: "agents",    label: "Agents",                table: "pms_ii_agent_runs",         idcol: "run_id",      live: false },
 ];
 
@@ -234,6 +234,7 @@ const state = {
   votes: {},                 // per-project 👍/👎 on brief sections (persisted in localStorage)
   selL: new Set(),           // bulk-selected lesson ids
   selP: new Set(),           // bulk-selected practice ids
+  graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "" } },
 };
 
 // Embed mode: /SettyIntelligence.html?embed=1&project=SAPX...  renders ONLY the
@@ -307,6 +308,7 @@ function render() {
   if (state.tab === "brief") return renderBrief();
   if (state.tab === "lessons") return renderLessons();
   if (state.tab === "practices") return renderPractices();
+  if (state.tab === "graph") return renderGraph();
   renderPlaceholder(MODULES.find(m => m.key === state.tab));
 }
 
@@ -529,6 +531,21 @@ function briefBodyHTML(b) {
       ${toneGauge}
       ${openIssues}
     </div>` : "";
+  // Submitting parties on this project with firm-wide review history — churn
+  // prediction: a party with a high R&R rate deserves front-loaded rigor.
+  const si = b.submittal_intel || [];
+  const siCard = si.length ? `
+    <div class="card" style="border-left:3px solid var(--yellow)">
+      ${secTitle("📦","Submittal parties — review history")}
+      ${si.map(r => {
+        const sev = r.rr_pct >= 25 ? "pill-red" : r.rr_pct >= 12 ? "pill-yellow" : "pill-green";
+        return `<div class="brief-row" style="font-size:12px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+          <span style="flex:1"><b>${esc(r.party)}</b> <span style="color:var(--dim)">— ${r.here_n} submittal${r.here_n==1?"":"s"} on this project · firm-wide ${r.submittals} across ${r.projects} project${r.projects==1?"":"s"}${r.avg_review_days!=null?` · ~${r.avg_review_days}d avg review`:""}</span></span>
+          <span class="pill ${sev}" title="Share of this party's submittals returned Revise & Resubmit or Rejected, firm-wide">R&amp;R ${r.rr_pct}%</span>
+          ${fbHTML("submittal_intel", r.party, r.party)}
+        </div>`; }).join("")}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">A high R&amp;R history is a churn predictor — consider a pre-submittal conference and front-loaded review rigor with that party.</div>
+    </div>` : "";
   const ahjHTML = (b.ahjs_codes || []).map(a =>
     `<div class="brief-row" style="font-size:12px"><b>${esc(a.ahj||"")}</b> <span style="color:var(--dim)">— ${esc(a.codes_standards||a.jurisdiction||"")}</span>${a.mep_impact?`<div style="color:var(--muted)">${esc(a.mep_impact)}</div>`:""}</div>`).join("");
   // Governing design standards (external agency reference) — full-width highlight.
@@ -702,6 +719,7 @@ function briefBodyHTML(b) {
     ${scopeCard}
     ${analysisCard}
     ${emailCard}
+    ${siCard}
     ${govCard}
     ${bpCard}
     ${wfCard}
@@ -748,6 +766,8 @@ function briefAsText(b) {
     `${g.owner_name}: ${g.design_standards || ""}`,
     g.mep_considerations ? `MEP considerations: ${g.mep_considerations}` : null] : []);
   section("Also governed by", (b.additional_authorities || []).map(a => `${a.owner_name}: ${a.design_standards || ""}`));
+  section("Submittal parties — review history", (b.submittal_intel || []).map(r =>
+    `${r.party}: ${r.here_n} here · firm-wide ${r.submittals} across ${r.projects} project(s) · R&R ${r.rr_pct}%${r.avg_review_days != null ? ` · ~${r.avg_review_days}d avg review` : ""}`));
   section("Recommended best practices", (b.best_practices || []).map(x => `${x.title} — ${x.practice_text || ""}`));
   section("Workflow watch-outs", (b.workflow_practices || []).map(x => `${x.title} — ${x.practice_text || ""}`));
   section("AHJs, utilities & codes", (b.ahjs_codes || []).map(a => `${a.ahj || ""} — ${a.codes_standards || a.jurisdiction || ""}`));
@@ -944,6 +964,92 @@ async function setPracticeStatus(id, status) {
     state.practices = (await sb("GET", "/rest/v1/pms_best_practices?select=*&order=date_added.desc")) || [];
     render();
   } catch (e) { toast("Update failed: " + e.message, "error"); }
+}
+
+// ── Expertise Graph — who has done what, mined from authored work ────────────
+// Rows come from pms_person_work: every RFI answer, submittal review response,
+// and approved lesson that carries a Setty person's name. No forms — the graph
+// is built from what people actually answered.
+async function loadGraph() {
+  state.graph.loading = true;
+  try {
+    // PostgREST caps responses at 1000 rows — page until a short page arrives.
+    const all = [];
+    for (let off = 0; off < 20000; off += 1000) {
+      const page = (await sb("GET",
+        `/rest/v1/pms_person_work?select=person,kind,discipline,system,agency,project_number,project_name,subject,work_date&order=id&limit=1000&offset=${off}`)) || [];
+      all.push(...page);
+      if (page.length < 1000) break;
+    }
+    state.graph.rows = all;
+  } catch (e) { toast("Graph load failed: " + e.message, "error"); state.graph.rows = []; }
+  state.graph.loaded = true; state.graph.loading = false;
+  render();
+}
+function renderGraph() {
+  const g = state.graph;
+  if (!g.loaded && !g.loading) loadGraph();
+  const rows = g.rows;
+  const distinct = (k) => [...new Set(rows.map(r => r[k]).filter(Boolean))].sort();
+  const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
+  $("view").innerHTML = `
+    <div class="status info" style="display:block;margin-bottom:14px">🧠 Built from <b>${rows.length}</b> authored work items — RFI answers, submittal reviews and approved lessons. Ask it "who has done chilled water at SUNY": filter by discipline/agency or search a system.</div>
+    <div class="toolbar">
+      <div class="grow">
+        <label>Search (system, spec section, subject, person)</label>
+        <input placeholder="e.g. chilled water, 232113, geothermal…" value="${esc(g.f.q)}" oninput="state.graph.f.q=this.value; renderGraphList()"/>
+      </div>
+      <div class="field"><label>Discipline</label>
+        <select onchange="state.graph.f.discipline=this.value; renderGraphList()"><option value="">All</option>${opt(distinct("discipline"), g.f.discipline)}</select></div>
+      <div class="field"><label>Agency</label>
+        <select onchange="state.graph.f.agency=this.value; renderGraphList()"><option value="">All</option>${opt(distinct("agency"), g.f.agency)}</select></div>
+      <div class="field"><label>Source</label>
+        <select onchange="state.graph.f.kind=this.value; renderGraphList()">
+          <option value="">All</option>
+          <option value="rfi" ${g.f.kind==="rfi"?"selected":""}>RFI answers</option>
+          <option value="submittal" ${g.f.kind==="submittal"?"selected":""}>Submittal reviews</option>
+          <option value="lesson" ${g.f.kind==="lesson"?"selected":""}>Lessons</option>
+        </select></div>
+    </div>
+    <div id="graphList"></div>`;
+  renderGraphList();
+}
+function renderGraphList() {
+  const el = $("graphList"); if (!el) return;
+  if (state.graph.loading) { el.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  const f = state.graph.f, q = (f.q || "").toLowerCase();
+  const rows = state.graph.rows.filter(r =>
+    (!f.discipline || (r.discipline||"").includes(f.discipline)) &&
+    (!f.agency || r.agency === f.agency) &&
+    (!f.kind || r.kind === f.kind) &&
+    (!q || [r.system, r.subject, r.person, r.project_name, r.discipline].join(" ").toLowerCase().includes(q)));
+  const by = {};
+  rows.forEach(r => {
+    const p = by[r.person] = by[r.person] || { n:0, kinds:{}, discs:{}, systems:{}, agencies:{}, projects:new Set(), last:"", examples:[] };
+    p.n++; p.kinds[r.kind]=(p.kinds[r.kind]||0)+1;
+    if (r.discipline) p.discs[r.discipline]=(p.discs[r.discipline]||0)+1;
+    if (r.system) p.systems[r.system]=(p.systems[r.system]||0)+1;
+    if (r.agency) p.agencies[r.agency]=(p.agencies[r.agency]||0)+1;
+    if (r.project_number) p.projects.add(r.project_number);
+    if ((r.work_date||"") > p.last) p.last = r.work_date;
+    if (p.examples.length < 2 && r.subject) p.examples.push(r.subject);
+  });
+  const top = (obj, n) => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,n);
+  const people = Object.entries(by).sort((a,b)=>b[1].n-a[1].n);
+  el.innerHTML = people.length ? people.map(([name,p]) => `
+    <div class="lesson approved">
+      <div class="lesson-top"><div style="flex:1">
+        <div class="lesson-summary">👤 ${esc(name)} <span style="font-weight:400;color:var(--dim);font-size:12px">· ${p.n} work item${p.n===1?"":"s"} · ${p.projects.size} project${p.projects.size===1?"":"s"}${p.last?` · last ${esc(p.last)}`:""}</span></div>
+        <div class="lesson-meta">
+          ${top(p.kinds,3).map(([k,n])=>`<span class="pill pill-blue">${esc(k)} × ${n}</span>`).join(" ")}
+          ${top(p.discs,3).map(([k,n])=>`<span class="pill pill-purple">${esc(k)} × ${n}</span>`).join(" ")}
+          ${top(p.agencies,3).map(([k,n])=>`<span class="pill pill-gray">${esc(k)} × ${n}</span>`).join(" ")}
+        </div>
+        ${top(p.systems,6).length?`<div class="lesson-sub"><b>Systems / themes:</b> ${top(p.systems,6).map(([k,n])=>`${esc(k)} (${n})`).join(" · ")}</div>`:""}
+        ${p.examples.length?`<div class="lesson-sub" style="color:var(--muted)">e.g. ${p.examples.map(esc).join(" · ")}</div>`:""}
+      </div></div>
+    </div>`).join("")
+    : '<div class="empty">No authored work matches these filters.</div>';
 }
 
 // ── Lessons module ───────────────────────────────────────────────────────────
