@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-14-intel-v17-tags-export-feedback";
+    window.__appVersion = "2026-07-14-intel-v18-item-feedback";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -347,22 +347,31 @@ async function loadBrief(num) {
 // ── Brief section feedback (👍/👎) ───────────────────────────────────────────
 // Each brief section is a relevance hypothesis; votes land in
 // pms_ii_brief_feedback and become the tuning signal for the mining pipeline.
-function fbHTML(key) {
-  const v = state.votes[key];
-  const btn = (val, icon, tip) => `<button class="fbbtn ${v===val?"on":""}" ${v!=null?"disabled":""} onclick="voteBrief('${key}',${val})" title="${tip}">${icon}</button>`;
-  return `<span class="fb no-print" style="display:inline-flex;gap:4px">${btn(1,"👍","Useful on this project")}${btn(-1,"👎","Not relevant here")}</span>`;
+// fbHTML(section) → whole-section vote (for single-unit sections like inbox tone).
+// fbHTML(section, itemKey, itemText) → per-item vote on one row (lessons,
+// practices, owner comments, coordination themes) — the granular signal the
+// tag-matching needs ("this specific lesson doesn't belong on this project").
+function fbHTML(key, itemKey, itemText) {
+  const vkey = itemKey ? key + "::" + itemKey : key;
+  const v = state.votes[vkey];
+  const btn = (val, icon, tip) =>
+    `<button class="fbbtn ${v===val?"on":""}" ${v!=null?"disabled":""} data-k="${esc(key)}" data-i="${esc(itemKey||"")}" data-t="${esc((itemText||"").slice(0,140))}" data-v="${val}" onclick="voteBriefEl(this)" title="${tip}">${icon}</button>`;
+  return `<span class="fb no-print" style="display:inline-flex;gap:4px;vertical-align:middle">${btn(1,"👍","Useful on this project")}${btn(-1,"👎","Not relevant here")}</span>`;
 }
 function secTitle(icon, title, key) {
   return `<h2 style="display:flex;align-items:center;gap:8px;margin-top:0"><span>${icon} ${esc(title)}</span><span style="margin-left:auto">${key?fbHTML(key):""}</span></h2>`;
 }
-async function voteBrief(key, vote) {
-  if (state.votes[key] != null) return;
-  state.votes[key] = vote;
+async function voteBriefEl(el) {
+  const key = el.dataset.k, itemKey = el.dataset.i || null, itemText = el.dataset.t || null;
+  const vote = Number(el.dataset.v);
+  const vkey = itemKey ? key + "::" + itemKey : key;
+  if (state.votes[vkey] != null) return;
+  state.votes[vkey] = vote;
   localStorage.setItem("ii_votes_" + state.briefNum, JSON.stringify(state.votes));
   render();
   try {
     await sb("POST", "/rest/v1/pms_ii_brief_feedback",
-      { project_id: state.briefNum, section_key: key, vote, voter: state.user || null });
+      { project_id: state.briefNum, section_key: key, item_key: itemKey, item_text: itemText, vote, voter: state.user || null });
     toast("Feedback saved — it tunes what future briefs show.", "success");
   } catch (e) { toast("Feedback not saved: " + e.message, "error"); }
 }
@@ -408,7 +417,7 @@ function briefBodyHTML(b) {
     const ex = (c.examples || []).filter(Boolean).slice(0,3);
     const disc = (c.disciplines || []).filter(Boolean).join(" · ");
     return `<div style="margin-bottom:13px">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px"><b>${esc(c.theme)}</b><span style="white-space:nowrap">${coordSev(c.avg_days)} <span class="pill pill-blue">${c.cnt}</span></span></div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px"><b>${esc(c.theme)}</b><span style="white-space:nowrap">${coordSev(c.avg_days)} <span class="pill pill-blue">${c.cnt}</span> ${fbHTML("coordination", c.theme, c.theme)}</span></div>
       <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin:5px 0"><div style="height:100%;width:${pct}%;background:var(--blue)"></div></div>
       ${c.insight?`<div style="font-size:12px;color:var(--text);line-height:1.5;margin:3px 0 4px">${esc(c.insight)}</div>`:""}
       ${disc?`<div style="font-size:11px;color:var(--dim);margin-bottom:2px">${esc(disc)}</div>`:""}
@@ -425,7 +434,7 @@ function briefBodyHTML(b) {
     return `<div class="brief-row" style="font-size:12px">
       <div style="margin-bottom:3px">${disc}${badge}${rec}</div>
       <div style="color:var(--text);line-height:1.5">${esc(o.comment_text)}</div>
-      <div style="color:var(--muted);margin-top:3px;font-size:11px">${esc(o.reviewer||"")}${o.review_date?` · ${esc(o.review_date)}`:""}${o.source_file?` · 📄 ${esc(o.source_file)}`:""}</div>
+      <div style="color:var(--muted);margin-top:3px;font-size:11px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap"><span>${esc(o.reviewer||"")}${o.review_date?` · ${esc(o.review_date)}`:""}${o.source_file?` · 📄 ${esc(o.source_file)}`:""}</span><span style="margin-left:auto">${fbHTML("owner_comments", String(o.id||"")||(o.comment_text||"").slice(0,60), o.comment_text)}</span></div>
     </div>`;
   }).join("");
   // Own-project lessons plus approved lessons from other projects matched by
@@ -435,13 +444,14 @@ function briefBodyHTML(b) {
     const d = (l.date_added || "").slice(0,10);
     return `<div class="brief-row"><div style="font-size:13px;font-weight:600">${esc(l.lesson_summary)}</div>
       ${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">
-        ${own?"":`<span class="pill pill-blue" title="Arrived via shared tags / same agency">🔁 similar · ${esc(l.project_id||"")}</span> `}
-        ${l.status==="draft"?`<span class="pill pill-yellow">needs review</span> `:""}
-        ${esc(l.source_reference||"")}${d?` · ${esc(d)}`:""}</div></div>`;
+      <div style="font-size:11px;color:var(--muted);margin-top:4px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap">
+        ${own?"":`<span class="pill pill-blue" title="Arrived via shared tags / same agency">🔁 similar · ${esc(l.project_id||"")}</span>`}
+        ${l.status==="draft"?`<span class="pill pill-yellow">needs review</span>`:""}
+        <span>${esc(l.source_reference||"")}${d?` · ${esc(d)}`:""}</span>
+        <span style="margin-left:auto">${fbHTML("lessons", l.lesson_id || ((l.project_id||"")+":"+(l.lesson_summary||"").slice(0,40)), l.lesson_summary)}</span></div></div>`;
   }).join("");
   const reqs = (b.agency_requirements || []).map(r =>
-    `<div class="brief-row" style="font-size:12px"><b>${esc(r.preference_type||r.discipline||"")}:</b> ${esc(r.requirement_or_preference)}</div>`).join("");
+    `<div class="brief-row" style="font-size:12px;display:flex;gap:8px;align-items:baseline"><span style="flex:1"><b>${esc(r.preference_type||r.discipline||"")}:</b> ${esc(r.requirement_or_preference)}</span>${fbHTML("agency_prefs", r.pref_id || (r.requirement_or_preference||"").slice(0,60), r.requirement_or_preference)}</div>`).join("");
   // Scope of work — summary + the systems/scope tags used for scope-based matching.
   const scopeTags = (p.scope_tags || []).map(t => `<span class="pill pill-blue">${esc(t)}</span>`).join(" ");
   const scopeCard = (p.scope_summary || (p.scope_tags && p.scope_tags.length)) ? `
@@ -554,13 +564,14 @@ function briefBodyHTML(b) {
   // Best practices — the actionable checklist, full-width highlight.
   const bpCard = (b.best_practices && b.best_practices.length) ? `
     <div class="card" style="border-left:3px solid var(--green)">
-      ${secTitle("✅","Recommended best practices","best_practices")}
+      ${secTitle("✅","Recommended best practices")}
       ${b.best_practices.map(pr => `<div class="brief-row">
         <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
         <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
-        <div style="margin-top:5px">
-          ${pr.coord_theme?`<span class="pill pill-yellow">🎯 ${(pr.from_own && pr.theme_weight)?`${pr.theme_weight} RFI${pr.theme_weight==1?"":"s"} on this project`:"recurs on similar projects"} · ${esc(pr.coord_theme)}</span> `:""}
+        <div style="margin-top:5px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap">
+          ${pr.coord_theme?`<span class="pill pill-yellow">🎯 ${(pr.from_own && pr.theme_weight)?`${pr.theme_weight} RFI${pr.theme_weight==1?"":"s"} on this project`:"recurs on similar projects"} · ${esc(pr.coord_theme)}</span>`:""}
           ${(pr.trigger&&pr.trigger.phase)?`<span class="pill pill-gray">phase: ${esc(pr.trigger.phase)}</span>`:""}
+          <span style="margin-left:auto">${fbHTML("best_practices", pr.practice_id || pr.title, pr.title)}</span>
         </div>
       </div>`).join("")}
     </div>` : "";
@@ -569,11 +580,14 @@ function briefBodyHTML(b) {
   // design-coordination best practices above.
   const wfCard = (b.workflow_practices && b.workflow_practices.length) ? `
     <div class="card" style="border-left:3px solid var(--purple)">
-      ${secTitle("🧭","Workflow watch-outs","workflow")}
+      ${secTitle("🧭","Workflow watch-outs")}
       ${b.workflow_practices.map(pr => `<div class="brief-row">
         <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
         <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
-        ${pr.phase?`<div style="margin-top:5px"><span class="pill pill-gray">phase: ${esc(pr.phase)}</span></div>`:""}
+        <div style="margin-top:5px;display:flex;gap:6px;align-items:baseline">
+          ${pr.phase?`<span class="pill pill-gray">phase: ${esc(pr.phase)}</span>`:""}
+          <span style="margin-left:auto">${fbHTML("workflow", pr.practice_id || pr.title, pr.title)}</span>
+        </div>
       </div>`).join("")}
     </div>` : "";
   // Schedule — real milestone dates + completion state from the project record.
@@ -691,11 +705,11 @@ function briefBodyHTML(b) {
     ${wfCard}
     <div class="brief-grid">
       ${sec("🏛️","AHJs, utilities & codes",ahjHTML,"ahjs")}
-      ${sec("📋","Agency preferences (mined)",reqs,"agency_prefs")}
+      ${sec("📋","Agency preferences (mined)",reqs)}
       ${sec("🔁","Similar projects",sim,"similar")}
-      ${sec("⚠️","Recurring coordination issues — similar projects",coord,"coordination")}
-      ${sec("💬","Owner review comments",oci,"owner_comments")}
-      ${sec("💡","Lessons learned (this & similar projects)",lessons,"lessons")}
+      ${sec("⚠️","Recurring coordination issues — similar projects",coord)}
+      ${sec("💬","Owner review comments",oci)}
+      ${sec("💡","Lessons learned (this & similar projects)",lessons)}
       ${sec("🤝","Team & ratings",teamInner,"team")}
     </div>
     ${regsCard}`;
