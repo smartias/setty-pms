@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-15-pms-v66-related-projects-ux";
+    window.__appVersion = "2026-07-15-pms-v67-related-label";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16606,10 +16606,12 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               <div style={{ marginTop: 6 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   {groupName && (
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 6,
-                      background: P.accentDim, color: P.accentLight, border: `1px solid ${P.accent}`, fontSize: 11, fontWeight: 600 }}>
-                      <span style={{ opacity: 0.7, fontWeight: 500, textTransform: "uppercase", letterSpacing: ".04em", fontSize: 9.5 }}>Related</span>
-                      {groupName + roleSuffix(project)}
+                    // Label only — no chip for the project you're already looking
+                    // at (per Sara 7/15: redundant). Group name + own role live in
+                    // the tooltip and the ✎ editor.
+                    <span title={"Group: " + groupName + ((project.relatedRole || "").trim() ? " · this project: " + project.relatedRole.trim() : "")}
+                      style={{ fontSize: 9.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".05em" }}>
+                      Related Projects
                     </span>
                   )}
                   {siblings.map(p => (
