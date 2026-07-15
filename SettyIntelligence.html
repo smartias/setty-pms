@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-15-intel-v24-heatmap-scoring-revision";
+    window.__appVersion = "2026-07-15-intel-v25-agency-preferences-module";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -210,7 +210,7 @@ const MODULES = [
   { key: "heatmap",   label: "🔥 Heat Map",            table: null,                        idcol: null,          live: true  },
   { key: "lessons",   label: "Lessons Learned",       table: "pms_lessons",               idcol: "lesson_id",   live: true  },
   { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
-  { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: false },
+  { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: true  },
   { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: false },
   { key: "graph",     label: "Expertise Graph",       table: "pms_person_work",           idcol: null,          live: true  },
   { key: "agents",    label: "Agents",                table: "pms_ii_agent_runs",         idcol: "run_id",      live: false },
@@ -237,6 +237,7 @@ const state = {
   selP: new Set(),           // bulk-selected practice ids
   graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "", view: "people" } },
   heat: { rows: [], loaded: false, loading: false, f: { agency: "", quiet: false } },
+  prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", type: "", status: "" } },
 };
 
 // Embed mode: /SettyIntelligence.html?embed=1&project=SAPX...  renders ONLY the
@@ -291,7 +292,8 @@ async function loadAll() {
 // Row counts for the not-yet-built modules, so their tabs show live numbers and
 // prove the database wiring end to end.
 async function loadCounts() {
-  await Promise.all(MODULES.filter(m => !m.live).map(async m => {
+  // "agencies" is live but table-backed — keep its badge on the same count query.
+  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies").map(async m => {
     try {
       const res = await fetch(SUPABASE_URL + "/rest/v1/" + m.table + "?select=" + (m.idcol || "*") + "&limit=1",
         { headers: { ...SB_HEADERS, "Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0" } });
@@ -311,6 +313,7 @@ function render() {
   if (state.tab === "heatmap") return renderHeatmap();
   if (state.tab === "lessons") return renderLessons();
   if (state.tab === "practices") return renderPractices();
+  if (state.tab === "agencies") return renderAgencyPrefs();
   if (state.tab === "graph") return renderGraph();
   renderPlaceholder(MODULES.find(m => m.key === state.tab));
 }
@@ -1154,6 +1157,106 @@ async function setPracticeStatus(id, status) {
     toast("Best practice " + status + ".", "success");
     state.practices = (await sb("GET", "/rest/v1/pms_best_practices?select=*&order=date_added.desc")) || [];
     render();
+  } catch (e) { toast("Update failed: " + e.message, "error"); }
+}
+
+// ── Agency Preferences module (curated per-agency requirements & preferences) ─
+// Rows live in pms_agency_preferences. The brief's "agency_reqs" section reads
+// ONLY status='active' rows for the project's agency, so Approve here = 'active'
+// (goes live on briefs immediately) and Reject = 'archived'. Mined rows arrive
+// as status='suggested' and stay off briefs until approved.
+async function loadAgencyPrefs() {
+  state.prefs.loading = true;
+  try { state.prefs.rows = (await sb("GET", "/rest/v1/pms_agency_preferences?select=*&order=agency,preference_type,date_added.desc")) || []; }
+  catch (e) { toast("Load failed: " + e.message, "error"); state.prefs.rows = []; }
+  state.prefs.loaded = true; state.prefs.loading = false;
+  state.counts.agencies = state.prefs.rows.length;
+  render();
+}
+function prefsFiltered() {
+  const f = state.prefs.f;
+  return state.prefs.rows.filter(p => {
+    if (f.agency && (p.agency || "") !== f.agency) return false;
+    if (f.type && (p.preference_type || "") !== f.type) return false;
+    if (f.status && (p.status || "") !== f.status) return false;
+    if (f.q) {
+      const hay = [p.requirement_or_preference, p.notes, p.source, p.discipline, p.applies_to].join(" ").toLowerCase();
+      if (!hay.includes(f.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+function renderAgencyPrefs() {
+  if (!state.prefs.loaded && !state.prefs.loading) loadAgencyPrefs();
+  if (state.prefs.loading || !state.prefs.loaded) { $("view").innerHTML = '<div class="empty">Loading…</div>'; return; }
+  const all = state.prefs.rows;
+  const agencies = [...new Set(all.map(p => p.agency).filter(Boolean))].sort();
+  const types = [...new Set(all.map(p => p.preference_type).filter(Boolean))].sort();
+  const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
+  const pending = all.filter(p => p.status === "suggested").length;
+  $("view").innerHTML = `
+    ${pending ? `<div class="status info" style="display:block;margin-bottom:14px">🏛️ <b>${pending}</b> mined preference${pending===1?"":"s"} awaiting review. Approved preferences arrive on every matching project brief (max 8 per brief).</div>` : ""}
+    <div class="toolbar">
+      <div class="grow"><label>Search</label>
+        <input placeholder="requirement, quote, discipline…" value="${esc(state.prefs.f.q||"")}"
+          oninput="state.prefs.f.q=this.value; renderPrefList()"/></div>
+      <div class="field"><label>Agency</label>
+        <select onchange="state.prefs.f.agency=this.value; renderPrefList()"><option value="">All</option>${opt(agencies, state.prefs.f.agency)}</select></div>
+      <div class="field"><label>Type</label>
+        <select onchange="state.prefs.f.type=this.value; renderPrefList()"><option value="">All</option>${opt(types, state.prefs.f.type)}</select></div>
+      <div class="field"><label>Status</label>
+        <select onchange="state.prefs.f.status=this.value; renderPrefList()">
+          <option value="">All</option>
+          <option value="suggested" ${state.prefs.f.status==="suggested"?"selected":""}>Suggested</option>
+          <option value="active" ${state.prefs.f.status==="active"?"selected":""}>Active (on briefs)</option>
+          <option value="archived" ${state.prefs.f.status==="archived"?"selected":""}>Rejected</option>
+        </select></div>
+      <button class="btn btn-ghost" style="margin-left:auto" onclick="state.prefs.loaded=false; render()">↻ Refresh</button>
+    </div>
+    <div id="apList"></div>`;
+  renderPrefList();
+}
+function renderPrefList() {
+  const el = $("apList"); if (!el) return;
+  const rows = prefsFiltered();
+  if (!rows.length) { el.innerHTML = `<div class="empty">${state.prefs.rows.length ? "No preferences match these filters." : "No agency preferences yet."}</div>`; return; }
+  // Group under an agency header so the list reads like a reference sheet.
+  const byAgency = {};
+  rows.forEach(p => (byAgency[p.agency] = byAgency[p.agency] || []).push(p));
+  el.innerHTML = Object.keys(byAgency).sort().map(a =>
+    `<h2 style="margin:18px 0 8px">🏛️ ${esc(a)} <span style="color:var(--muted);font-size:12px;font-weight:400">${byAgency[a].length}</span></h2>`
+    + byAgency[a].map(renderPrefCard).join("")).join("");
+}
+function renderPrefCard(p) {
+  const statusPill = { suggested:"pill-yellow", active:"pill-green", archived:"pill-red" }[p.status] || "pill-gray";
+  const statusLabel = { suggested:"suggested", active:"active — on briefs", archived:"rejected" }[p.status] || p.status;
+  const mined = /mined/i.test(p.source || "");
+  const actions = [
+    p.status !== "active" ? `<button class="btn btn-success btn-sm" data-id="${esc(p.pref_id)}" onclick="setPrefStatus(this.dataset.id,'active')">✓ Approve</button>` : "",
+    p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(p.pref_id)}" onclick="setPrefStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
+  ].filter(Boolean).join(" ");
+  return `<div class="lesson ${p.status === "suggested" ? "draft" : esc(p.status||"")}">
+    <div class="lesson-top"><div style="flex:1">
+      <div class="lesson-summary">${esc(p.requirement_or_preference)}</div>
+      <div class="lesson-meta">
+        ${p.preference_type?`<span class="pill pill-purple">${esc(p.preference_type)}</span>`:""}
+        ${p.discipline && p.discipline!=="General"?`<span class="pill pill-blue">${esc(p.discipline)}</span>`:""}
+        ${p.applies_to?`<span class="pill pill-gray">${esc(p.applies_to)}</span>`:""}
+        <span class="pill ${statusPill}">${esc(statusLabel)}</span>
+        ${mined?`<span class="pill pill-purple" title="Mined from project emails/RFIs — evidence in the note below">🤖 mined</span>`:""}
+      </div></div>
+      <div class="lesson-actions">${actions}</div>
+    </div>
+    ${p.notes?`<div class="lesson-sub" style="white-space:pre-wrap">${esc(p.notes)}</div>`:""}
+    ${p.source?`<div class="lesson-meta" style="margin-top:6px"><span class="pill pill-gray">${esc(p.source)}</span>${p.date_verified?`<span class="pill pill-gray">verified ${esc(p.date_verified)}</span>`:""}</div>`:""}
+  </div>`;
+}
+async function setPrefStatus(id, status) {
+  try {
+    await sb("PATCH", "/rest/v1/pms_agency_preferences?pref_id=eq." + encodeURIComponent(id),
+      { status, updated_at: new Date().toISOString(), ...(status === "active" ? { date_verified: new Date().toISOString().slice(0,10) } : {}) });
+    toast("Preference " + (status === "active" ? "approved — now feeds briefs." : "rejected."), "success");
+    await loadAgencyPrefs();
   } catch (e) { toast("Update failed: " + e.message, "error"); }
 }
 
