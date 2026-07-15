@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-15-pms-v67-related-label";
+    window.__appVersion = "2026-07-15-pms-v68-family-shortcuts-hardening";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -4885,17 +4885,20 @@ async function installProjectShortcuts(project, allProjects) {
   // ── Step 2: write all shortcuts into the main project folder root ──
   const folderName = decodeURIComponent(project.projectFolderUrl.split("/").pop());
   const installed = [];
+  const failed = [];
   for (const sc of shortcuts) {
     try {
       await writeProjectShortcut(driveId, folderName, sc.name, sc.url, sc.icon);
       installed.push(sc.label);
     } catch (e) {
-      // One bad shortcut shouldn't tank the rest — log and continue.
+      // One bad shortcut shouldn't tank the rest — log, record, continue.
+      // Callers can surface `failed` instead of silently over-reporting.
       console.warn("[shortcuts] " + sc.label + " failed: " + e.message);
+      failed.push({ label: sc.label, error: e.message });
     }
   }
 
-  return { installed, resolvedChannelEmail };
+  return { installed, failed, resolvedChannelEmail };
 }
 
 async function createSharePointFolder(project) {
@@ -16723,36 +16726,53 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                       // new "🧭 Related – …" cross-links) into EVERY live group
                       // member's folder — not just the open project's — so the
                       // family cross-references itself without visiting each one.
+                      const members    = [project, ...siblings.filter(p => !p.archived)];
+                      const withFolder = members.filter(m => m.projectFolderUrl);
+                      const noFolder   = members.filter(m => !m.projectFolderUrl);
+                      const mLabel     = m => m.name || m.projectNumber || "(unnamed)";
+                      // Out-of-date detection: a member whose saved fingerprint no
+                      // longer matches (or was never stamped) hasn't seen the
+                      // current family — e.g. a project joined after the last run.
+                      const staleMembers = withFolder.filter(m =>
+                        (m.shortcutsFingerprint || "") !== projectShortcutFingerprint(m, projects));
                       async function installFamilyShortcuts() {
                         setRelScStatus("working");
                         setRelScMsg("");
-                        try {
-                          const members = [project, ...siblings.filter(p => !p.archived)];
-                          const withFolder = members.filter(m => m.projectFolderUrl);
-                          const noFolder   = members.filter(m => !m.projectFolderUrl);
-                          if (withFolder.length < 2) {
-                            throw new Error("At least two group members need a SharePoint project folder first"
-                              + (noFolder.length ? " — missing: " + noFolder.map(m => m.name || m.projectNumber).join(", ") : "") + ".");
-                          }
-                          for (const m of withFolder) {
-                            const { resolvedChannelEmail } = await installProjectShortcuts(m, projects);
-                            const patched = {
-                              ...m,
-                              shortcutsInstalledAt: new Date().toISOString(),
-                              teamsChannelEmail: resolvedChannelEmail || m.teamsChannelEmail || "",
-                            };
-                            patched.shortcutsFingerprint = projectShortcutFingerprint(patched, projects);
-                            // onUpdate (updateProject) matches by patched.id and uses a
-                            // functional setState, so saving siblings sequentially is safe.
-                            onUpdate(patched);
-                          }
-                          setRelScStatus("done");
-                          setRelScMsg("✓ Cross-shortcuts installed in " + withFolder.length + " project folders"
-                            + (noFolder.length ? " · skipped (no folder yet): " + noFolder.map(m => m.name || m.projectNumber).join(", ") : ""));
-                        } catch (e) {
+                        if (withFolder.length < 2) {
                           setRelScStatus("error");
-                          setRelScMsg("✗ " + e.message);
+                          setRelScMsg("✗ At least two group members need a SharePoint project folder first"
+                            + (noFolder.length ? " — missing: " + noFolder.map(mLabel).join(", ") : "") + ".");
+                          return;
                         }
+                        // Per-member isolation: one member's failure must not stop
+                        // the rest of the family from getting their shortcuts.
+                        const results = [];
+                        for (const m of withFolder) {
+                          try {
+                            const { installed, failed, resolvedChannelEmail } = await installProjectShortcuts(m, projects);
+                            if (failed && failed.length) {
+                              // Partial: report, and DON'T stamp the fingerprint so
+                              // the per-project Refresh button stays visible.
+                              results.push("⚠ " + mLabel(m) + ": " + installed.length + " ok, " + failed.length + " failed — " + failed[0].error);
+                            } else {
+                              const patched = {
+                                ...m,
+                                shortcutsInstalledAt: new Date().toISOString(),
+                                teamsChannelEmail: resolvedChannelEmail || m.teamsChannelEmail || "",
+                              };
+                              patched.shortcutsFingerprint = projectShortcutFingerprint(patched, projects);
+                              // onUpdate (updateProject) matches by patched.id and uses a
+                              // functional setState, so saving siblings sequentially is safe.
+                              onUpdate(patched);
+                              results.push("✓ " + mLabel(m) + ": " + installed.length + " shortcuts");
+                            }
+                          } catch (e) {
+                            results.push("✗ " + mLabel(m) + ": " + e.message);
+                          }
+                        }
+                        if (noFolder.length) results.push("○ skipped (no SharePoint folder set): " + noFolder.map(mLabel).join(", "));
+                        setRelScStatus(results.some(r => r.startsWith("✗") || r.startsWith("⚠")) ? "error" : "done");
+                        setRelScMsg(results.join("\n"));
                       }
                       return (
                         <div style={{ gridColumn: "1/-1", borderTop: `1px solid ${P.border}`, paddingTop: 10 }}>
@@ -16764,8 +16784,13 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                           <span style={{ fontSize: 11, color: P.textDim, marginLeft: 8 }}>
                             Drops "🧭 Related – …" links into every group member's project folder.
                           </span>
+                          {relScStatus !== "working" && staleMembers.length > 0 && (
+                            <div style={{ fontSize: 11, marginTop: 5, color: P.yellow }}>
+                              ⟳ Folder shortcuts don't reflect the current family for: {staleMembers.map(mLabel).join(", ")} — run again to update every folder.
+                            </div>
+                          )}
                           {relScMsg && (
-                            <div style={{ fontSize: 11, marginTop: 5, color: relScStatus === "done" ? P.green : relScStatus === "error" ? P.red : P.textDim }}>
+                            <div style={{ fontSize: 11, marginTop: 5, whiteSpace: "pre-line", color: relScStatus === "done" ? P.green : relScStatus === "error" ? P.red : P.textDim }}>
                               {relScMsg}
                             </div>
                           )}
