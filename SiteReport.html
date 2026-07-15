@@ -535,7 +535,8 @@ function pinColorFor(item) {
 // ─── STATE ───────────────────────────────────────────────────────────────────
 let msalApp = null;
 let msalAccount = null;
-let pmsProjects = [];
+let pmsProjects = [];      // active (non-archived) — feeds the new-report picker
+let pmsProjectsAll = [];   // includes archived — for opening existing reports
 let selectedProject = null;
 // items: array of { id, discipline, location, description, notes, photoDataUrl, photoPath, enteredBy }
 //   photoDataUrl = in-memory renderable src (data: URL when freshly captured, or
@@ -674,35 +675,33 @@ async function serializePlanForSave(pl) {
 }
 
 // ─── NUMBERING ───────────────────────────────────────────────────────────────
-// TODO(you): decide how per-discipline numbers behave on delete/reorder.
-//
-// Returns the *display number* for an item of the given discipline at the
-// given index within the items array. Called per item on render — so changing
-// this function changes the entire list's numbering scheme.
-//
-// Tradeoffs to choose between:
-//
-//   A. SEQUENTIAL BY INSERTION ORDER, GAPS PRESERVED
-//      - If items added M-1, M-2, M-3 and you delete M-2, the others stay
-//        M-1 and M-3 (M-2 is "gone").
-//      - Numbers never change after an item is created — feels stable, easy
-//        to reference in conversations ("look at M-3").
-//      - Requires storing the number on the item at create time.
-//
-//   B. COMPACT, RENUMBERED ON DELETE/REORDER (the default below)
-//      - Delete M-2 and the old M-3 becomes the new M-2. Always 1..N per
-//        discipline with no gaps.
-//      - Always clean to read; never confusing on a fresh print.
-//      - BUT: numbers shift, so a contractor referencing "M-2" mid-edit may
-//        be talking about the wrong item.
-//
-//   C. HYBRID: stable while editing, recompact on "Issue"
-//      - Best of both, more code.
-//
-// The default below is (B) — compact and renumbered. Rewrite this to switch.
-function numberForItem(item, indexWithinDiscipline) {
-  const prefix = DISCIPLINE_PREFIX[item.discipline] || "X";
-  return prefix + "-" + (indexWithinDiscipline + 1);
+// Option A (decided 7/15): numbers are STABLE — assigned once at creation and
+// stored on the item (item.num). Deleting an item leaves a gap (delete M-2 and
+// M-1 / M-3 keep their numbers), so a number quoted to a contractor — or baked
+// into an uploaded photo's SharePoint filename — always refers to the same
+// item. Changing an item's discipline assigns the next number in the NEW
+// discipline (an "M-3" label would mislabel an Electrical item).
+function numberForItem(item) {
+  return item.num || ((DISCIPLINE_PREFIX[item.discipline] || "X") + "-?");
+}
+// Numeric part of a stored number ("M-12" → 12).
+function numSeq(num) { const m = /-(\d+)$/.exec(num || ""); return m ? parseInt(m[1], 10) : 0; }
+// Next free number for a discipline: max stored seq + 1. Gaps from deletions
+// are intentionally never reused.
+function nextNumberFor(discipline) {
+  const prefix = DISCIPLINE_PREFIX[discipline] || "X";
+  const maxSeq = items.reduce((mx, i) => i.discipline === discipline ? Math.max(mx, numSeq(i.num)) : mx, 0);
+  return prefix + "-" + (maxSeq + 1);
+}
+// Backfill for reports saved before stable numbering existed: assign numbers
+// in the order the old compact scheme displayed them, then never touch again.
+function ensureItemNumbers() {
+  DISCIPLINE_ORDER.forEach(disc => {
+    items.filter(i => i.discipline === disc && !i.num)
+         .forEach(it => { it.num = nextNumberFor(disc); });
+  });
+  // Safety net for any discipline value not in DISCIPLINE_ORDER.
+  items.filter(i => !i.num).forEach(it => { it.num = nextNumberFor(it.discipline); });
 }
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -750,7 +749,10 @@ async function loadProjects() {
     const res = await fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=" + LEAN, { headers: SB_HEADERS });
     if (!res.ok) throw new Error("pms_projects GET HTTP " + res.status);
     const rows = await res.json();
-    pmsProjects = (rows || []).filter(p => p && p.id && !p.archived);
+    pmsProjectsAll = (rows || []).filter(p => p && p.id);
+    // Archived projects are hidden from the new-report picker but kept in
+    // pmsProjectsAll so their existing reports still open.
+    pmsProjects = pmsProjectsAll.filter(p => !p.archived);
     onProjectsLoaded();
   } catch (e) {
     setGlobalStatus("error", "Could not load projects: " + e.message);
@@ -838,7 +840,7 @@ async function loadAndRenderReportsList() {
     const res = await fetch(SUPABASE_URL + "/rest/v1/pms_site_reports?select=id,project_id,report,version,updated_at&order=updated_at.desc", { headers: SB_HEADERS });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const rows = await res.json();
-    const projectsById = Object.fromEntries(pmsProjects.map(p => [p.id, p]));
+    const projectsById = Object.fromEntries(pmsProjectsAll.map(p => [p.id, p]));
     const filtered = rows.filter(r => {
       const status = (r.report || {}).status || "in_progress";
       return showCompleted ? status === "complete" : status === "in_progress";
@@ -901,7 +903,10 @@ async function loadExistingReportById(id, silent) {
     plans = (r.plans || []).map(pl =>
       (pl.imagePath && !isDataUrl(pl.imageDataUrl))
         ? { ...pl, imageDataUrl: storagePublicUrl(pl.imagePath) } : pl);
-    const project = pmsProjects.find(p => p.id === row.project_id);
+    ensureItemNumbers();   // backfill stable numbers on pre-numbering reports
+    // Look up in the FULL project list (including archived) — a report on an
+    // archived project must still open for viewing/reopening.
+    const project = pmsProjectsAll.find(p => p.id === row.project_id);
     if (!project) { setGlobalStatus("error", "Project for this report was not found."); return; }
     selectProject(project);
     if (r.visitDate)    document.getElementById("visitDate").value = r.visitDate;
@@ -990,7 +995,7 @@ document.getElementById("addItemBtn").onclick = async () => {
   // Mark new captures as needing a SharePoint push. Picks from the project
   // gallery are already on SharePoint, so they skip the upload.
   const pendingUpload = (pickedPhotoDataUrl && pickedPhotoSource === "new");
-  const newItem = { id: uid(), discipline, location, description, notes, photoDataUrl: pickedPhotoDataUrl, enteredBy, pin, pendingUpload };
+  const newItem = { id: uid(), num: nextNumberFor(discipline), discipline, location, description, notes, photoDataUrl: pickedPhotoDataUrl, enteredBy, pin, pendingUpload };
   items.push(newItem);
   document.getElementById("newLocation").value = "";
   document.getElementById("newDescription").value = "";
@@ -1185,7 +1190,8 @@ function renderPlacementCanvas() {
   // Build a number-by-itemId map matching the on-screen numbering scheme.
   const numberByItemId = computeItemNumbers();
 
-  const itemsOnPlan = items.filter(i => i.pin?.planId === plan.id);
+  const itemsOnPlan = items.filter(i => i.pin?.planId === plan.id)
+    .sort((a, b) => numSeq(a.num) - numSeq(b.num));
   const sub = document.getElementById("placementSub");
   const activeItem = items.find(i => i.id === placementActiveItemId);
   sub.innerHTML = activeItem
@@ -1269,7 +1275,7 @@ function renderPlacementCanvas() {
       display:flex; align-items:center; justify-content:center;
       font-family:'JetBrains Mono',monospace; font-weight:700; font-size:10px;
       border:2px solid white; box-shadow:0 2px 6px rgba(0,0,0,.4);
-      cursor:move; user-select:none;`;
+      cursor:move; user-select:none; touch-action:none;`;
     pin.onclick = (ev) => { ev.stopPropagation(); placementActiveItemId = it.id; renderPlacementCanvas(); };
     pin.onpointerdown = (ev) => {
       ev.preventDefault();
@@ -1282,9 +1288,14 @@ function renderPlacementCanvas() {
         group.style.left = (x * 100).toFixed(2) + "%";
         group.style.top  = (y * 100).toFixed(2) + "%";
       };
-      const onUp = () => { pin.removeEventListener("pointermove", onMove); pin.removeEventListener("pointerup", onUp); };
+      const onUp = () => {
+        pin.removeEventListener("pointermove", onMove);
+        pin.removeEventListener("pointerup", onUp);
+        pin.removeEventListener("pointercancel", onUp);
+      };
       pin.addEventListener("pointermove", onMove);
       pin.addEventListener("pointerup", onUp);
+      pin.addEventListener("pointercancel", onUp);
     };
     group.appendChild(pin);
 
@@ -1371,15 +1382,12 @@ function renderPlacementCanvas() {
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-// Compute display number per item (matches the on-screen render). Used by the
-// placement modal AND the Word export so the same M-3 shows up everywhere.
+// Display number per item id. With stable numbering this is just the stored
+// number — kept as a map because the placement modal and Word export both
+// consume it in bulk.
 function computeItemNumbers() {
   const map = {};
-  const byDiscipline = {};
-  items.forEach(i => { (byDiscipline[i.discipline] = byDiscipline[i.discipline] || []).push(i); });
-  DISCIPLINE_ORDER.forEach(disc => {
-    (byDiscipline[disc] || []).forEach((it, idx) => { map[it.id] = numberForItem(it, idx); });
-  });
+  items.forEach(i => { map[i.id] = numberForItem(i); });
   return map;
 }
 
@@ -1582,10 +1590,22 @@ async function pickFromProjectPhoto(file) {
     // Fetch the file content as a data URL so it lives in the report record.
     // (Cheaper alternative: store the driveItem id + name and resolve lazily —
     // but base64 keeps the report self-contained for the MVP.)
-    const meta = await graphFetch("GET", `/drives/${DRIVE_ID}/items/${file.id}?$select=@microsoft.graph.downloadUrl`);
-    const url  = meta && meta["@microsoft.graph.downloadUrl"];
-    if (!url) throw new Error("No download URL");
-    const blob = await (await fetch(url)).blob();
+    let blob;
+    if (/\.(heic|heif)$/i.test(file.name || "")) {
+      // Browsers other than Safari can't decode HEIC: the item thumbnail
+      // would render blank, canvas compression on save would throw (blocking
+      // every save of this report), and the Word export can't embed it.
+      // SharePoint pre-renders JPEG thumbnails for HEIC — use the large
+      // rendition instead of the original bytes.
+      const t = await graphFetch("GET", `/drives/${DRIVE_ID}/items/${file.id}/thumbnails/0/large`);
+      if (!t?.url) throw new Error("No JPEG rendition available for this HEIC photo — try re-saving it as JPEG");
+      blob = await (await fetch(t.url)).blob();
+    } else {
+      const meta = await graphFetch("GET", `/drives/${DRIVE_ID}/items/${file.id}?$select=@microsoft.graph.downloadUrl`);
+      const url  = meta && meta["@microsoft.graph.downloadUrl"];
+      if (!url) throw new Error("No download URL");
+      blob = await (await fetch(url)).blob();
+    }
     const dataUrl = await new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(r.result);
@@ -1643,12 +1663,27 @@ function cancelEditItem() {
   renderItems();
 }
 
-function commitEditItem() {
-  if (!editingItem) return;
+// Apply the in-flight edit clone to the live items array WITHOUT saving.
+// Returns true if there was an open edit. Called by the Save Changes button
+// and defensively by header 💾 Save / Complete so an open edit form is never
+// silently dropped from a save or from the generated Word doc.
+function commitOpenEdit() {
+  if (!editingItem) return false;
+  // Stable numbering: a discipline change gets the next number in the NEW
+  // discipline — keeping the old prefix would mislabel the item.
+  const orig = items.find(i => i.id === editingItem.id);
+  if (orig && orig.discipline !== editingItem.discipline) {
+    editingItem.num = nextNumberFor(editingItem.discipline);
+  }
   items = items.map(i => i.id === editingItem.id ? editingItem : i);
   editingItem = null;
   editingItemOrigPlanId = null;
   renderItems();
+  return true;
+}
+
+function commitEditItem() {
+  if (!commitOpenEdit()) return;
   saveReport({ silent: true });
   // If the edit replaced the photo with a new capture, push it to SharePoint.
   processPendingUploads();
@@ -1726,12 +1761,15 @@ function renderItems() {
       <div id="disc-${cssEscape(disc)}"></div>`;
     root.appendChild(section);
     const inner = section.querySelector("#disc-" + cssEscape(disc));
-    list.forEach((it, idx) => inner.appendChild(renderItemRow(it, idx)));
+    // Stable numbers can drift from insertion order (discipline changes on
+    // edit) — display in number order within each discipline.
+    list.sort((a, b) => numSeq(a.num) - numSeq(b.num));
+    list.forEach(it => inner.appendChild(renderItemRow(it)));
   });
 }
 
-function renderItemRow(item, indexWithinDiscipline) {
-  const num = numberForItem(item, indexWithinDiscipline);
+function renderItemRow(item) {
+  const num = numberForItem(item);
   // Branch into edit mode if this item is the one being edited.
   if (editingItem && editingItem.id === item.id) {
     return renderItemEditForm(num);
@@ -1878,7 +1916,11 @@ document.getElementById("saveBtn").onclick = async () => {
   const btn = document.getElementById("saveBtn");
   btn.disabled = true;
   btn.textContent = "⏳ Saving…";
+  // Fold any open inline edit into the items array first — the user clicked
+  // Save expecting *everything* on screen to persist.
+  commitOpenEdit();
   const ok = await saveReport();
+  processPendingUploads();   // no-op unless a new capture still needs its SharePoint push
   btn.disabled = false;
   btn.textContent = ok ? "✓ Saved" : "✗ Failed";
   setTimeout(() => { btn.textContent = "💾 Save"; }, 1500);
@@ -1985,6 +2027,9 @@ async function completeAndGenerate() {
   if (!selectedProject) { setGlobalStatus("error", "Select a project first."); return; }
   const visitDate = document.getElementById("visitDate").value;
   if (!visitDate) { setGlobalStatus("error", "Set a visit date first."); return; }
+  // Fold any open inline edit into the report before finalizing — otherwise
+  // the saved record and the Word doc would silently miss it.
+  commitOpenEdit();
   if (!window.confirm("Mark this report complete and generate the Word document? Subsequent edits require Reopening it first.")) return;
 
   // Set status before saving so it's persisted in the same Supabase write.
@@ -1996,6 +2041,10 @@ async function completeAndGenerate() {
     renderStatus();
     return;
   }
+  // Last chance for photos whose SharePoint push failed earlier — completing
+  // usually ends the session, so retry now (fire-and-forget, doesn't block
+  // the Word generation below).
+  processPendingUploads();
 
   const report = {
     visitDate,
@@ -2169,8 +2218,9 @@ async function generateWordDoc(report) {
         ...(attendees.length ? [new TextRun({ text: "  ·  Visited by: " + attendees.join(", "), font: "Calibri", size: 18, italics: true, color: GRAY })] : []),
       ],
     }));
-    list.forEach((it, idx) => {
-      const num = numberForItem(it, idx);
+    list.sort((a, b) => numSeq(a.num) - numSeq(b.num));
+    list.forEach(it => {
+      const num = numberForItem(it);
       const photoCellChildren = [];
       const pb = photoBytesById[it.id];
       if (pb) {

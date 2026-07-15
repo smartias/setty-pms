@@ -1264,12 +1264,16 @@ async function startUpload() {
 // ---- Gallery ----
 let galleryGroups = [];   // [{folderName, projectLabel, items:[]}]
 let galleryLoaded = false;
+let galleryIndexById = {}; // photo item.id → index in galleryData (dedupe across re-renders)
 
 async function loadGallery() {
   const body = document.getElementById('galleryBody');
   body.innerHTML = '<div class="load-spinner">&#8987; Loading photos...</div>';
   galleryGroups = [];
   galleryData = [];
+  galleryIndexById = {};
+  batchSelected.clear();
+  updateBatchUI();
 
   const selProjectVal = document.getElementById('galProject').value;
   let projectsToLoad = [];
@@ -1368,8 +1372,15 @@ function renderGallery() {
       </div>
       <div class="folder-photos" id="fp-${g.folderId}"></div>`;
     body.appendChild(div);
-    // Eagerly fetch count from metadata
-    fetchFolderCount(g);
+    // Fetch the count once per gallery load. Re-renders (every search
+    // keystroke / sort / phase change) reuse the cached items instead of
+    // re-hitting Graph once per folder each time.
+    if (g.items) {
+      const countEl = document.getElementById('fc-' + g.folderId);
+      if (countEl) countEl.textContent = g.items.length + ' photo' + (g.items.length !== 1 ? 's' : '');
+    } else {
+      fetchFolderCount(g);
+    }
   });
 }
 
@@ -1440,16 +1451,24 @@ async function toggleFolder(headerEl, folderId) {
   photosEl.innerHTML = '';
 
   for (const item of g.items) {
-    // Get thumbnail URL
-    let thumbUrl = '';
-    try {
-      const thumbRes = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${item.id}/thumbnails/0/medium`);
-      if (thumbRes) thumbUrl = thumbRes.url;
-    } catch(e) {}
-
-    // Add to galleryData for lightbox
-    const gIdx = galleryData.length;
-    galleryData.push({ ...item, thumbUrl, downloadUrl: null });
+    // Filter/sort changes rebuild the folder DOM but keep galleryData — reuse
+    // the existing entry (and its already-fetched thumbnail) instead of
+    // pushing a duplicate, which used to double up lightbox navigation and
+    // "Select All" every time a folder was re-opened after a re-render.
+    let gIdx = galleryIndexById[item.id];
+    if (gIdx === undefined) {
+      // First time seeing this photo — fetch its thumbnail URL
+      let thumbUrl = '';
+      try {
+        const thumbRes = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${item.id}/thumbnails/0/medium`);
+        if (thumbRes) thumbUrl = thumbRes.url;
+      } catch(e) {}
+      gIdx = galleryData.length;
+      galleryData.push({ ...item, thumbUrl, downloadUrl: null });
+      galleryIndexById[item.id] = gIdx;
+    }
+    const entry = galleryData[gIdx];
+    const thumbUrl = entry.thumbUrl;
 
     const card = document.createElement('div');
     card.className = 'photo-card';
