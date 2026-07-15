@@ -16350,6 +16350,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   // Family-wide SharePoint cross-shortcut install state (Related Projects).
   const [relScStatus, setRelScStatus] = useState("idle"); // idle | working | done | error
   const [relScMsg, setRelScMsg] = useState("");
+  // Feedback line for link / rename / remove actions in the Related editor.
+  const [relLinkMsg, setRelLinkMsg] = useState("");
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
@@ -16589,7 +16591,6 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             const siblings = groupName
               ? (projects || []).filter(p => p.id !== project.id && norm(p.relatedGroup) === norm(groupName))
               : [];
-            const existingGroups = [...new Set((projects || []).map(p => (p.relatedGroup || "").trim()).filter(Boolean))].sort();
             const roleSuffix = p => (p.relatedRole || "").trim() ? " · " + p.relatedRole.trim() : "";
             if (!groupName && !editRelated) {
               return (
@@ -16628,24 +16629,93 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                     {editRelated ? "×" : "✎"}
                   </button>
                 </div>
-                {editRelated && (
+                {editRelated && (() => {
+                  const lblSt  = { fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 };
+                  const hintSt = { fontSize: 11, color: P.textDim, lineHeight: 1.4, marginTop: 4 };
+                  // Projects you can link to: everything live except this project
+                  // and the ones already in the family. Ones already in some
+                  // OTHER group are shown (labeled) — picking one JOINS its group.
+                  const siblingIds = new Set(siblings.map(p => p.id));
+                  const linkCandidates = (projects || [])
+                    .filter(p => p.id !== project.id && !p.archived && !siblingIds.has(p.id))
+                    .sort((a, b) => (a.name || a.projectNumber || "").localeCompare(b.name || b.projectNumber || ""));
+                  // Suggest a group name from the shared leading words of the two
+                  // project names ("MADE Bush Terminal Task 1"+"…Task 2" →
+                  // "MADE Bush Terminal"); fall back to the picked project's name.
+                  function suggestGroupName(a, b) {
+                    const wa = (a.name || "").trim().split(/\s+/), wb = (b.name || "").trim().split(/\s+/);
+                    const common = [];
+                    for (let i = 0; i < Math.min(wa.length, wb.length); i++) {
+                      if (wa[i].toLowerCase() === wb[i].toLowerCase()) common.push(wa[i]); else break;
+                    }
+                    const c = common.join(" ").replace(/[\s\-–—:·]+$/, "").trim();
+                    return c.length >= 4 ? c : (b.name || a.name || "Related Projects");
+                  }
+                  // Two-way link: joining is done HERE for both sides — the picked
+                  // project is updated too (onUpdate/updateProject matches by id),
+                  // so nobody has to open each project and retype a matching name.
+                  function linkToProject(targetId) {
+                    const target = (projects || []).find(p => p.id === targetId);
+                    if (!target) return;
+                    const mine = (project.relatedGroup || "").trim();
+                    const theirs = (target.relatedGroup || "").trim();
+                    if (mine && theirs && norm(mine) !== norm(theirs)) {
+                      setRelLinkMsg(`⚠ "${target.name || target.projectNumber}" already belongs to "${theirs}" — a project can only be in one group. To merge the two groups, rename one to match the other.`);
+                      return;
+                    }
+                    const g = mine || theirs || suggestGroupName(project, target);
+                    if (!mine)   onUpdate({ ...project, relatedGroup: g });
+                    if (!theirs) onUpdate({ ...target,  relatedGroup: g });
+                    setRelLinkMsg(`✓ Linked with "${target.name || target.projectNumber}"${(!mine && !theirs) ? ` — group named "${g}" (rename below if you like)` : ` — joined "${g}"`}. Both projects updated.`);
+                  }
+                  // Rename propagates to EVERY member (incl. archived ones, so
+                  // they don't silently fall out of the family).
+                  function renameGroup(newName) {
+                    const n = (newName || "").trim();
+                    if (!n || norm(n) === norm(project.relatedGroup)) return;
+                    for (const m of [project, ...siblings]) onUpdate({ ...m, relatedGroup: n });
+                    setRelLinkMsg(`✓ Group renamed to "${n}" on all ${siblings.length + 1} projects.`);
+                  }
+                  function removeFromGroup() {
+                    onUpdate({ ...project, relatedGroup: "", relatedRole: "" });
+                    setRelLinkMsg("✓ Removed from the group. The other members keep theirs.");
+                  }
+                  return (
                   <div style={{ marginTop: 8, padding: 12, background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, maxWidth: 620 }}>
-                    <div>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Group Name</div>
-                      <CommitInput value={project.relatedGroup || ""} onCommit={v => updateField("relatedGroup", v)}
-                        inputProps={{ list: "related-group-names", placeholder: 'e.g. "MADE Building" or "SUNY Old Westbury"', style: { width: "100%" } }} />
-                      <datalist id="related-group-names">
-                        {existingGroups.map(g => <option key={g} value={g} />)}
-                      </datalist>
+                    <div style={{ gridColumn: "1/-1" }}>
+                      <div style={lblSt}>{groupName ? "Add another project to this group" : "Link this project to…"}</div>
+                      <select value="" onChange={e => e.target.value && linkToProject(e.target.value)} style={{ width: "100%" }}>
+                        <option value="">— choose a project —</option>
+                        {linkCandidates.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {(p.projectNumber ? p.projectNumber + " — " : "") + (p.name || "(unnamed)") + ((p.relatedGroup || "").trim() ? "  ·  in group: " + p.relatedGroup.trim() : "")}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={hintSt}>Two-way: the project you pick is linked back automatically — no need to open it. Picking a project that's already in a group joins that group.</div>
+                      {relLinkMsg && (
+                        <div style={{ fontSize: 11, marginTop: 5, color: relLinkMsg.startsWith("✓") ? P.green : P.yellow }}>{relLinkMsg}</div>
+                      )}
                     </div>
-                    <div>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>This Project's Role in the Group</div>
-                      <CommitInput value={project.relatedRole || ""} onCommit={v => updateField("relatedRole", v)}
-                        inputProps={{ placeholder: 'e.g. "Fire Alarm scope" or "Phase 2 – Additions"', style: { width: "100%" } }} />
-                    </div>
-                    <div style={{ gridColumn: "1/-1", fontSize: 11, color: P.textDim, lineHeight: 1.4 }}>
-                      Projects sharing the same group name appear here automatically — open each related project once and give it this group name. Pick from the suggestion list where possible; a misspelled group name splits the family.
-                    </div>
+                    {groupName && (<>
+                      <div>
+                        <div style={lblSt}>Group name (shared by all {siblings.length + 1})</div>
+                        <CommitInput value={project.relatedGroup || ""} onCommit={renameGroup}
+                          inputProps={{ style: { width: "100%" } }} />
+                        <div style={hintSt}>Renaming here renames the group on every member.</div>
+                      </div>
+                      <div>
+                        <div style={lblSt}>This project's role in the group</div>
+                        <CommitInput value={project.relatedRole || ""} onCommit={v => updateField("relatedRole", v)}
+                          inputProps={{ placeholder: 'e.g. "Fire Alarm scope" or "Phase 2 – Additions"', style: { width: "100%" } }} />
+                      </div>
+                      <div style={{ gridColumn: "1/-1" }}>
+                        <button onClick={removeFromGroup}
+                          style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6, color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
+                          ✕ Remove this project from the group
+                        </button>
+                      </div>
+                    </>)}
                     {siblings.some(p => !p.archived) && (() => {
                       // One click installs the full shortcut launchpad (incl. the
                       // new "🧭 Related – …" cross-links) into EVERY live group
@@ -16701,7 +16771,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                       );
                     })()}
                   </div>
-                )}
+                  );
+                })()}
               </div>
             );
           })()}
