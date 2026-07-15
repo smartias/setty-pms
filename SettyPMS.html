@@ -418,6 +418,8 @@ function newProject(overrides = {}) {
     isTaskOrder: false,
     taskOrderTermContractId: "",
     taskOrderNumber: "",
+    relatedGroup: "",
+    relatedRole: "",
     scopeContent: "",
     scopeLocked: false,
     scopeAuditLog: [],
@@ -16303,7 +16305,7 @@ function archiveBlockers(project) {
   return parts.length === 1 ? parts[0] : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
 }
 
-function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff }) {
+function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff, projects, onNavigateToProject }) {
   const [tab, setTab] = useState("Overview");
   const [proposalSyncState, setProposalSyncState] = useState(project.proposalCalendarEventId ? "synced" : "idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
@@ -16311,6 +16313,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   const [contractExpSyncMsg, setContractExpSyncMsg] = useState("");
   // Inline edit toggle for the contracting-chain widget in the header.
   const [editChain, setEditChain] = useState(false);
+  // Inline edit toggle for the Related Projects widget in the header.
+  const [editRelated, setEditRelated] = useState(false);
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
@@ -16534,6 +16538,78 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                     <div style={{ gridColumn: "1/-1", fontSize: 11, color: P.textDim, lineHeight: 1.4 }}>
                       Subconsultants Setty hires appear automatically from the Team/Subs tab — manage them there.
                       {isSecondTier && <span style={{ display: "block", marginTop: 4, color: P.yellow }}>2nd-tier detected — Client is a sub to the Prime.</span>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          {(() => {
+            // Related Projects: sibling scopes/phases of the same building,
+            // campus, or program (e.g. MADE's four scope projects, SUNY Old
+            // Westbury's phased additions). Grouping is a shared group name —
+            // one field per project, so there are no pairwise links to maintain.
+            const groupName = (project.relatedGroup || "").trim();
+            const norm = s => (s || "").trim().toLowerCase();
+            const siblings = groupName
+              ? (projects || []).filter(p => p.id !== project.id && norm(p.relatedGroup) === norm(groupName))
+              : [];
+            const existingGroups = [...new Set((projects || []).map(p => (p.relatedGroup || "").trim()).filter(Boolean))].sort();
+            const roleSuffix = p => (p.relatedRole || "").trim() ? " · " + p.relatedRole.trim() : "";
+            if (!groupName && !editRelated) {
+              return (
+                <div style={{ marginTop: 6 }}>
+                  <button onClick={() => setEditRelated(true)}
+                    style={{ background: "transparent", border: `1px dashed ${P.border}`, borderRadius: 6, color: P.textDim, cursor: "pointer", fontSize: 11, padding: "3px 10px" }}>
+                    + Link related projects
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {groupName && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 6,
+                      background: P.accentDim, color: P.accentLight, border: `1px solid ${P.accent}`, fontSize: 11, fontWeight: 600 }}>
+                      <span style={{ opacity: 0.7, fontWeight: 500, textTransform: "uppercase", letterSpacing: ".04em", fontSize: 9.5 }}>Related</span>
+                      {groupName + roleSuffix(project)}
+                    </span>
+                  )}
+                  {siblings.map(p => (
+                    <button key={p.id} onClick={() => onNavigateToProject && onNavigateToProject(p.id)}
+                      title={"Open " + (p.name || p.projectNumber || "project")}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 6,
+                        background: P.bg, color: p.archived ? P.textDim : P.textMuted, border: `1px solid ${P.border}`, fontSize: 11, cursor: "pointer" }}>
+                      {(p.name || p.projectNumber || "(unnamed)") + roleSuffix(p)}{p.archived ? " (archived)" : ""}
+                    </button>
+                  ))}
+                  {groupName && siblings.length === 0 && (
+                    <span style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>no other projects in this group yet</span>
+                  )}
+                  <button onClick={() => setEditRelated(v => !v)}
+                    title={editRelated ? "Close editor" : "Edit related projects"}
+                    style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 12, padding: "2px 6px", marginLeft: 2 }}>
+                    {editRelated ? "×" : "✎"}
+                  </button>
+                </div>
+                {editRelated && (
+                  <div style={{ marginTop: 8, padding: 12, background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, maxWidth: 620 }}>
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>Group Name</div>
+                      <CommitInput value={project.relatedGroup || ""} onCommit={v => updateField("relatedGroup", v)}
+                        inputProps={{ list: "related-group-names", placeholder: 'e.g. "MADE Building" or "SUNY Old Westbury"', style: { width: "100%" } }} />
+                      <datalist id="related-group-names">
+                        {existingGroups.map(g => <option key={g} value={g} />)}
+                      </datalist>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>This Project's Role in the Group</div>
+                      <CommitInput value={project.relatedRole || ""} onCommit={v => updateField("relatedRole", v)}
+                        inputProps={{ placeholder: 'e.g. "Fire Alarm scope" or "Phase 2 – Additions"', style: { width: "100%" } }} />
+                    </div>
+                    <div style={{ gridColumn: "1/-1", fontSize: 11, color: P.textDim, lineHeight: 1.4 }}>
+                      Projects sharing the same group name appear here automatically — open each related project once and give it this group name. Pick from the suggestion list where possible; a misspelled group name splits the family.
                     </div>
                   </div>
                 )}
@@ -27284,7 +27360,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onEagerSave={updateProjectAndFlush} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} />
+        <ProjectDetail project={viewingProject} onUpdate={updateProject} onEagerSave={updateProjectAndFlush} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />
       )}
     </div>
 
