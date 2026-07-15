@@ -15,7 +15,7 @@
   // Visible version stamp — shown in the page footer + queryable from console
   // as window.__appVersion. Update this string on every deploy. Lets users
   // self-diagnose "am I on the new code?" without F12 console gymnastics.
-  window.__appVersion = "2026-05-03-fieldphotos-v3";
+  window.__appVersion = "2026-07-15-fieldphotos-v4";
 
   // ── Auto-update check ──────────────────────────────────────────────────
   // Critical for iOS "Add to Home Screen" web clips, which cache the HTML
@@ -619,8 +619,9 @@ async function onSignedIn() {
   document.getElementById('app').style.display = 'flex';
   document.getElementById('hdrUser').textContent = currentUser.name || currentUser.username;
 
-  // Default date to today
-  document.getElementById('fDate').value = new Date().toISOString().slice(0, 10);
+  // Default date to today — LOCAL date, not toISOString() (UTC), which after
+  // ~7-8 PM Eastern would stamp tomorrow's date on an evening upload.
+  document.getElementById('fDate').value = localDateStr();
   document.getElementById('fPhotographer').value = currentUser.name || '';
 
   await loadProjects();
@@ -635,9 +636,18 @@ async function loadProjects() {
     // kept in sync — same bug class as the backup-button issue.
     let projects = null;
     try {
-      const { data: pRows, error: pErr } = await sb.from('pms_projects').select('project');
+      // Lean projection: pull only the fields this tool reads (~50 KB total)
+      // instead of the full inline project blobs (multi-MB once email/RFI
+      // metadata is included). This app loads on cellular in the field, so
+      // payload size is user-visible startup time. PostgREST flattens
+      // project->id etc. into top-level keys, so rows come back already
+      // shaped like the slim project objects the rest of the code expects.
+      const { data: pRows, error: pErr } = await sb.from('pms_projects').select(
+        'project->id, project->name, project->projectNumber, project->projectAddress, ' +
+        'project->clientName, project->prime, project->projectFolderUrl, project->archived'
+      );
       if (!pErr && Array.isArray(pRows) && pRows.length > 0) {
-        projects = pRows.map(r => r.project).filter(Boolean);
+        projects = pRows.filter(p => p && p.id && p.name);
       }
     } catch (v2Err) {
       console.warn('V2 load failed, falling back to legacy:', v2Err.message);
@@ -756,7 +766,9 @@ async function extractExifFromFile(file) {
     const exif = await exifr.parse(file, { DateTimeOriginal: true, CreateDate: true, gps: true });
     if (!exif) return null;
     const dt = exif.DateTimeOriginal || exif.CreateDate;
-    const date = dt ? new Date(dt).toISOString().slice(0, 10) : null;
+    // Local date — toISOString() converts to UTC, shifting evening photos
+    // (after ~7-8 PM Eastern) onto the next calendar day.
+    const date = dt ? localDateStr(new Date(dt)) : null;
     const lat  = exif.latitude  ?? null;
     const lng  = exif.longitude ?? null;
     return { date, lat, lng };
@@ -792,7 +804,7 @@ async function populateExifFields(firstFile) {
 
   // Only fill date if user hasn't changed it from today's default
   const dateEl = document.getElementById('fDate');
-  const today  = new Date().toISOString().slice(0, 10);
+  const today  = localDateStr();
   if (exif.date && (dateEl.value === today || dateEl.value === '')) {
     dateEl.value = exif.date;
   }
@@ -1085,6 +1097,10 @@ async function startUpload() {
     console.info('Open project in PMS to add SharePoint folder:', pmsLink);
     return;
   }
+  // Re-queue previously-failed files so clicking Upload again actually
+  // retries them — the on-screen hint says "fix the issue and retry", and
+  // without this reset those files stayed 'err' forever and were skipped.
+  pendingFiles.forEach(f => { if (f.status === 'err') f.status = 'pending'; });
   if (!pendingFiles.filter(f => f.status === 'pending').length) { toast('No photos to upload.', 'error'); return; }
   const phase = document.getElementById('fPhase').value;
   const date = document.getElementById('fDate').value;
@@ -1094,9 +1110,12 @@ async function startUpload() {
   const quality = parseInt(document.getElementById('compQuality').value);
   const maxWidth = parseInt(document.getElementById('compWidth').value);
 
-  // Build subfolder path — include location if filled in so each area gets its own folder
+  // Build subfolder path — include location if filled in so each area gets its own folder.
+  // Location is free text, so strip characters SharePoint forbids in folder
+  // names (/ \ : * ? " < > |) — otherwise the whole upload 400s at folder
+  // creation after the user already waited through compression.
   const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split('/').pop());
-  const location = document.getElementById('fLocation').value.trim();
+  const location = sanitizeGraphName(document.getElementById('fLocation').value.trim());
   const subfolderName = location ? `${date} - ${phase} - ${location}` : `${date} - ${phase}`;
   const basePath = folderSegment + '/Photos';
 
@@ -1198,6 +1217,32 @@ async function startUpload() {
     const sessionFolderName = uploadFolder.split('/').pop();
     const spFolderUrl = selectedProject.projectFolderUrl + '/Photos/' + sessionFolderName;
 
+    // Mirror the session metadata into Supabase (pms_field_photo_sessions) so
+    // the PMS MCP server can search field photos — the sidecar on SharePoint
+    // isn't reachable from the DB-only MCP. Non-fatal: photos are already up.
+    try {
+      await sb.from('pms_field_photo_sessions').upsert({
+        project_id: selectedProject.id || null,
+        project_number: metadata.projectNumber,
+        project_name: metadata.projectName,
+        folder_path: uploadFolder,
+        folder_url: spFolderUrl,
+        photo_date: date || null,
+        phase, system: metadata.system || null,
+        location: metadata.location || null,
+        address: metadata.address || null,
+        photographer: metadata.photographer || null,
+        notes: metadata.notes || null,
+        tags: metadata.tags,
+        photo_count: okCount,
+        source: 'field-photo-app',
+        created_by: metadata.createdBy || null,
+        metadata
+      }, { onConflict: 'folder_path' });
+    } catch (e) {
+      console.warn('[FieldPhotos] session mirror to Supabase failed (photos are fine):', e.message);
+    }
+
     prog.classList.remove('running');     // upload finished — stop the film
     document.getElementById('progressBar').style.width = '100%';
     document.getElementById('progressBar').style.background = 'var(--green)';
@@ -1245,12 +1290,16 @@ async function startUpload() {
 // ---- Gallery ----
 let galleryGroups = [];   // [{folderName, projectLabel, items:[]}]
 let galleryLoaded = false;
+let galleryIndexById = {}; // photo item.id → index in galleryData (dedupe across re-renders)
 
 async function loadGallery() {
   const body = document.getElementById('galleryBody');
   body.innerHTML = '<div class="load-spinner">&#8987; Loading photos...</div>';
   galleryGroups = [];
   galleryData = [];
+  galleryIndexById = {};
+  batchSelected.clear();
+  updateBatchUI();
 
   const selProjectVal = document.getElementById('galProject').value;
   let projectsToLoad = [];
@@ -1349,8 +1398,15 @@ function renderGallery() {
       </div>
       <div class="folder-photos" id="fp-${g.folderId}"></div>`;
     body.appendChild(div);
-    // Eagerly fetch count from metadata
-    fetchFolderCount(g);
+    // Fetch the count once per gallery load. Re-renders (every search
+    // keystroke / sort / phase change) reuse the cached items instead of
+    // re-hitting Graph once per folder each time.
+    if (g.items) {
+      const countEl = document.getElementById('fc-' + g.folderId);
+      if (countEl) countEl.textContent = g.items.length + ' photo' + (g.items.length !== 1 ? 's' : '');
+    } else {
+      fetchFolderCount(g);
+    }
   });
 }
 
@@ -1385,6 +1441,31 @@ async function fetchFolderCount(g) {
       project: g.project,
       metadata: g.metadata
     }));
+
+    // Organic backfill of the MCP photo index: sessions uploaded before the
+    // pms_field_photo_sessions table existed (2026-07-15) get mirrored the
+    // first time anyone browses them here. ignoreDuplicates makes repeat
+    // visits a cheap no-op; fire-and-forget so the gallery never waits on it.
+    if (g.metadata && g.folderPath) {
+      const m = g.metadata;
+      sb.from('pms_field_photo_sessions').upsert({
+        project_id: g.project?.id || null,
+        project_number: m.projectNumber || g.project?.projectNumber || '',
+        project_name: m.projectName || g.project?.name || '',
+        folder_path: g.folderPath,
+        folder_url: (g.project?.projectFolderUrl || '') + '/Photos/' + g.folderName,
+        photo_date: m.date || null,
+        phase: m.phase || null, system: m.system || null,
+        location: m.location || null, address: m.address || null,
+        photographer: m.photographer || null, notes: m.notes || null,
+        tags: Array.isArray(m.tags) ? m.tags : [],
+        photo_count: photos.length,
+        source: m.source || 'field-photo-app',
+        created_by: m.createdBy || null,
+        metadata: m
+      }, { onConflict: 'folder_path', ignoreDuplicates: true })
+        .then(({ error }) => { if (error) console.warn('[FieldPhotos] backfill mirror skipped:', error.message); });
+    }
   } catch(e) {
     console.warn('Count fetch failed', e);
   }
@@ -1421,16 +1502,24 @@ async function toggleFolder(headerEl, folderId) {
   photosEl.innerHTML = '';
 
   for (const item of g.items) {
-    // Get thumbnail URL
-    let thumbUrl = '';
-    try {
-      const thumbRes = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${item.id}/thumbnails/0/medium`);
-      if (thumbRes) thumbUrl = thumbRes.url;
-    } catch(e) {}
-
-    // Add to galleryData for lightbox
-    const gIdx = galleryData.length;
-    galleryData.push({ ...item, thumbUrl, downloadUrl: null });
+    // Filter/sort changes rebuild the folder DOM but keep galleryData — reuse
+    // the existing entry (and its already-fetched thumbnail) instead of
+    // pushing a duplicate, which used to double up lightbox navigation and
+    // "Select All" every time a folder was re-opened after a re-render.
+    let gIdx = galleryIndexById[item.id];
+    if (gIdx === undefined) {
+      // First time seeing this photo — fetch its thumbnail URL
+      let thumbUrl = '';
+      try {
+        const thumbRes = await graphFetch('GET', `/drives/${DRIVE_ID}/items/${item.id}/thumbnails/0/medium`);
+        if (thumbRes) thumbUrl = thumbRes.url;
+      } catch(e) {}
+      gIdx = galleryData.length;
+      galleryData.push({ ...item, thumbUrl, downloadUrl: null });
+      galleryIndexById[item.id] = gIdx;
+    }
+    const entry = galleryData[gIdx];
+    const thumbUrl = entry.thumbUrl;
 
     const card = document.createElement('div');
     card.className = 'photo-card';
@@ -1645,6 +1734,17 @@ function switchTab(name, btnEl) {
 }
 
 // ---- Utilities ----
+// Local calendar date as YYYY-MM-DD. Deliberately NOT toISOString(): that
+// returns the UTC date, which is tomorrow's date during Eastern evenings.
+function localDateStr(d = new Date()) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Strip characters Graph rejects in SharePoint folder/file names.
+function sanitizeGraphName(s) {
+  return String(s || '').replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
+}
+
 function escHtml(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
