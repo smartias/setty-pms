@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-15-intel-v25-agency-preferences-module";
+    window.__appVersion = "2026-07-15-intel-v26-payment-flags";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -338,9 +338,15 @@ async function loadBrief(num) {
   state.briefInflight = num;
   state.briefLoading = true;
   try {
-    const j = await sb("POST", "/rest/v1/rpc/pms_project_brief", { p_number: num });
+    // Payment flags ride alongside the main brief RPC (separate lightweight fn,
+    // pms_payment_flags) so the big brief function stays untouched.
+    const [j, pay] = await Promise.all([
+      sb("POST", "/rest/v1/rpc/pms_project_brief", { p_number: num }),
+      sb("POST", "/rest/v1/rpc/pms_payment_flags", { p_number: num }).catch(() => []),
+    ]);
     if (state.briefInflight !== num) return;   // superseded — drop stale response
     state.brief = j || {};
+    if (state.brief && typeof state.brief === "object") state.brief.payment_flags = pay || [];
   } catch (e) {
     if (state.briefInflight !== num) return;
     toast("Brief failed: " + e.message, "error"); state.brief = {};
@@ -656,6 +662,7 @@ function briefBodyHTML(b) {
   const nextMs = msRows.find(m => !_isDone(m));
   const overdueMs = msRows.filter(m => !_isDone(m) && m.due < _today && (!!m.status || Number(m.pct) > 0));
   const eoi2 = b.email_open_issues || [];
+  const payFlags = b.payment_flags || [];
   const eoiOld = eoi2.length ? Math.max(...eoi2.map(o => Number(o.age_days) || 0)) : 0;
   const eoiUrg = eoi2.filter(o => String(o.urgent) === "true").length;
   const es2 = b.email_sentiment;
@@ -681,11 +688,14 @@ function briefBodyHTML(b) {
         eoi2.length ? `${eoiUrg?eoiUrg+" urgent · ":""}oldest ${eoiOld}d` : "inbox clear",
         eoi2.length ? ((eoiOld>=45||eoiUrg) ? "var(--red)" : undefined) : "var(--green)"),
     toneInfo ? tile("Inbox tone", toneInfo[0], es2 ? `${es2.friction_pct}% escalation · ${es2.incoming} in` : "", toneInfo[1]) : null,
+    payFlags.length ? tile("💰 Payment flags", `${payFlags.length} thread${payFlags.length===1?"":"s"}`,
+        `latest ${esc(payFlags[0].date||"")}`, "var(--red)") : null,
     risks.length ? tile("Scope risks", `${risks.length}`, risks[0] ? `${esc(risks[0].severity)} severity top` : "",
         ({high:"var(--red)",medium:"var(--yellow)"})[risks[0] && risks[0].severity] || undefined) : null,
   ].filter(Boolean).join("");
   const heroCard = heroTiles ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${heroTiles}</div>` : "";
   const attn = [];
+  payFlags.slice(0,3).forEach(f => attn.push({ sev:"high", txt:`💰 Payment: <b>${esc(f.subject||"(no subject)")}</b> · ${esc(f.date||"")}` }));
   overdueMs.forEach(m => attn.push({ sev:"high", txt:`🗓 <b>${esc(m.phase||m.name)}</b> milestone past due · ${esc(m.due)}` }));
   if (nextMs && !overdueMs.length) { const d = daysTo(nextMs.due); if (d>=0 && d<=21) attn.push({ sev: d<=7?"high":"med", txt:`🗓 <b>${esc(nextMs.phase||nextMs.name)}</b> due in ${d}d · ${esc(nextMs.due)}` }); }
   risks.filter(r => r.severity==="high").forEach(r => attn.push({ sev:"high", txt:`⚠️ Scope risk: <b>${esc(r.title)}</b>` }));
@@ -702,6 +712,17 @@ function briefBodyHTML(b) {
         <span style="width:6px;height:6px;border-radius:50%;background:${_sevColor[a.sev]};flex:none;margin-top:5px"></span>
         <span style="line-height:1.5">${a.txt}</span>
       </div>`).join("")}
+    </div>` : "";
+  // 💰 Payment flags — threads (last 180d) with unpaid / overdue-invoice language,
+  // from pms_payment_flags(). Latest message per thread, newest first.
+  const payCard = payFlags.length ? `
+    <div class="card" style="border-left:3px solid var(--yellow)">
+      ${secTitle("💰","Payment flags — last 180 days","payment_flags")}
+      ${payFlags.slice(0,8).map(f => `<div class="brief-row" style="font-size:12.5px">
+        <b>${esc(f.subject||"(no subject)")}</b>
+        <div style="color:var(--dim);font-size:11px">${esc(f.date||"")} · ${f.direction==="outgoing" ? "↗ Setty following up" : "↘ received"} · ${esc(f.from||"")}</div>
+      </div>`).join("")}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Email threads containing unpaid / overdue-invoice / awaiting-payment language (latest message per thread). "Received" items can be a sub or vendor awaiting payment from Setty.</div>
     </div>` : "";
   return `
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px">
@@ -721,6 +742,7 @@ function briefBodyHTML(b) {
     ${p.code_regime==="unknown"?`<div class="status info" style="display:block;margin-bottom:14px">📍 Location not set — add the project's city so codes and utility resolve correctly (NYC codes + Con Ed vs. NYS Uniform Code + regional utility).</div>`:""}
     ${heroCard}
     ${attnCard}
+    ${payCard}
     ${milestonesCard}
     ${scopeCard}
     ${analysisCard}
@@ -822,11 +844,14 @@ async function loadHeat() {
 //    the old "awaiting reply" inference was too noisy and no longer scores
 //  • RFIs, submittals, action items and milestones (overdue + due ≤30d) are the strong signals
 //  • scope risks down-weighted — static analysis, doesn't change over time
-//  • On-hold projects: score ×0.25 and never "hot"
+//  • payment flags (💰, from pay_flags: unpaid/overdue-invoice language in 90d email
+//    threads, both directions) score 2 per thread (capped) and make a project hot
+//  • On-hold projects: score ×0.25 and never "hot" (💰 badge still shows)
 const isOnHold = r => /\bon.?hold\b/i.test(r.status || "");
 function heatScore(r) {
   const base =
       Math.min(r.emails_30d || 0, 40) * 0.15
+    + Math.min(r.pay_flags || 0, 3) * 2
     + r.rfis_open + r.rfis_overdue * 2
     + r.subs_open * 0.5 + r.subs_overdue * 1.5
     + (r.actions_open || 0) + (r.actions_overdue || 0)
@@ -838,11 +863,13 @@ function heatScore(r) {
 function heatTier(r) {
   if (isOnHold(r)) return "hold";
   if (r.rfis_overdue > 0 || r.subs_overdue > 0 || r.ms_overdue > 0
-      || (r.actions_overdue || 0) > 0) return "hot";
+      || (r.actions_overdue || 0) > 0 || (r.pay_flags || 0) > 0) return "hot";
   return heatScore(r) >= 1.5 ? "watch" : "quiet";
 }
+const payBadge = r => (r.pay_flags || 0) > 0
+  ? ` <span title="Payment-risk language in ${r.pay_flags} email thread${r.pay_flags===1?"":"s"} (90d) — latest ${esc(r.pay_last||"")}">💰${r.pay_flags > 1 ? "×" + r.pay_flags : ""}</span>` : "";
 const HEAT_TIER = {
-  hot:   { fill: "rgba(239,68,68,.28)",  stroke: "#ef4444", label: "🔴 Hot — RFIs, submittals, action items or milestones overdue" },
+  hot:   { fill: "rgba(239,68,68,.28)",  stroke: "#ef4444", label: "🔴 Hot — overdue RFIs/submittals/actions/milestones or 💰 payment flags" },
   watch: { fill: "rgba(245,158,11,.26)", stroke: "#f59e0b", label: "🟡 Watch — active work, nothing overdue" },
   quiet: { fill: "rgba(100,116,139,.18)",stroke: "#64748b", label: "⚪ Quiet — little activity, no open items" },
   hold:  { fill: "rgba(100,116,139,.10)",stroke: "#475569", label: "⏸ On hold — deprioritized" },
@@ -910,7 +937,7 @@ function renderHeatmap() {
     const cell = (open, overdue, word) => open ? `${open}${overdue ? ` <span style="color:var(--red)">(${overdue} ${word})</span>` : ""}` : `<span style="color:var(--muted)">—</span>`;
     const risks = r.risks_high + r.risks_med + r.risks_low;
     return `<tr class="hm-tr" data-num="${esc(r.num)}" style="cursor:pointer;border-bottom:1px solid var(--border)">
-      <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><b>${esc(r.name || r.num)}</b> <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
+      <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><b>${esc(r.name || r.num)}</b>${payBadge(r)} <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
       <td style="padding:7px 10px;color:var(--dim)">${esc(r.agency || "")}</td>
       <td style="padding:7px 10px;font-weight:800;color:${t.stroke}">${Math.round(heatScore(r) * 10) / 10}${heatTier(r) === "hold" ? ` <span style="color:var(--muted);font-size:11px">⏸ on hold</span>` : ""}</td>
       <td style="padding:7px 10px">${r.emails_30d ? `${r.emails_30d} <span style="color:var(--muted);font-size:11px">emails</span>` : `<span style="color:var(--muted)">—</span>`}</td>
@@ -953,6 +980,7 @@ function heatTipHTML(r) {
   const line = (icon, txt) => `<div style="margin-top:3px">${icon} ${txt}</div>`;
   const L = [];
   if (isOnHold(r)) L.push(line("⏸", `<span style="color:var(--muted)">on hold — deprioritized (score ×0.25)</span>`));
+  if (r.pay_flags) L.push(line("💰", `<span style="color:var(--red)"><b>${r.pay_flags}</b> payment-risk thread${r.pay_flags===1?"":"s"} (90d)</span>${r.pay_last ? ` · latest ${esc(r.pay_last)}` : ""}${r.pay_subj ? `<div style="color:var(--muted);font-size:11px;margin-left:20px">"${esc(String(r.pay_subj).slice(0,70))}"</div>` : ""}`));
   if (r.emails_30d) L.push(line("📨", `<b>${r.emails_30d}</b> email${r.emails_30d===1?"":"s"} in the last 30 days`));
   if (r.rfis_open) L.push(line("❓", `<b>${r.rfis_open}</b> open RFI${r.rfis_open===1?"":"s"}${r.rfis_overdue ? ` · <span style="color:var(--red)">${r.rfis_overdue} overdue</span>` : ""}`));
   if (r.subs_open) L.push(line("📦", `<b>${r.subs_open}</b> open submittal${r.subs_open===1?"":"s"}${r.subs_overdue ? ` · <span style="color:var(--red)">${r.subs_overdue} overdue</span>` : ""}`));
