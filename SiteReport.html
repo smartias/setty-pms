@@ -2402,10 +2402,48 @@ async function processPendingUploads() {
         if (ok) savedAny = true;
       }
     }
-    if (savedAny) saveReport({ silent: true });
+    if (savedAny) {
+      saveReport({ silent: true });
+      mirrorPhotoSession(); // keep the MCP photo index in sync (fire-and-forget)
+    }
   } finally {
     uploadsRunning = false;
   }
+}
+
+// Mirror this visit's photo-session folder into pms_field_photo_sessions so
+// the PMS MCP server can find Site Report captures alongside Field Photos
+// sessions. One row per session folder (upsert refreshes the photo count).
+// Non-fatal by design — the photos and the report are already saved.
+function mirrorPhotoSession() {
+  try {
+    if (!selectedProject?.projectFolderUrl) return;
+    const visitDate = document.getElementById("visitDate").value;
+    if (!visitDate) return;
+    const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+    const sessionLabel = `${visitDate} Site Report Photos`;
+    const folderPath = folderSegment + "/Photos/" + sessionLabel;
+    const count = items.filter(i => i.uploadedPath && i.uploadedPath.indexOf(folderPath + "/") === 0).length;
+    if (!count) return;
+    fetch(SUPABASE_URL + "/rest/v1/pms_field_photo_sessions?on_conflict=folder_path", {
+      method: "POST",
+      headers: { ...SB_HEADERS, "Prefer": "resolution=merge-duplicates" },
+      body: JSON.stringify({
+        project_id: selectedProject.id || null,
+        project_number: selectedProject.projectNumber || "",
+        project_name: selectedProject.name || "",
+        folder_path: folderPath,
+        folder_url: selectedProject.projectFolderUrl + "/Photos/" + encodeURIComponent(sessionLabel),
+        photo_date: visitDate,
+        photographer: msalAccount?.name || null,
+        notes: "Photos captured during a Site Report walk" + (reportId ? " (report " + reportId + ")" : ""),
+        tags: [],
+        photo_count: count,
+        source: "site-report-app",
+        created_by: msalAccount?.username || null,
+      }),
+    }).catch(e => console.warn("[mirrorPhotoSession]", e.message));
+  } catch (e) { console.warn("[mirrorPhotoSession]", e.message); }
 }
 
 // ─── KEYPLAN COMPOSITING ─────────────────────────────────────────────────────

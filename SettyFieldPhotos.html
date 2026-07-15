@@ -1217,6 +1217,32 @@ async function startUpload() {
     const sessionFolderName = uploadFolder.split('/').pop();
     const spFolderUrl = selectedProject.projectFolderUrl + '/Photos/' + sessionFolderName;
 
+    // Mirror the session metadata into Supabase (pms_field_photo_sessions) so
+    // the PMS MCP server can search field photos — the sidecar on SharePoint
+    // isn't reachable from the DB-only MCP. Non-fatal: photos are already up.
+    try {
+      await sb.from('pms_field_photo_sessions').upsert({
+        project_id: selectedProject.id || null,
+        project_number: metadata.projectNumber,
+        project_name: metadata.projectName,
+        folder_path: uploadFolder,
+        folder_url: spFolderUrl,
+        photo_date: date || null,
+        phase, system: metadata.system || null,
+        location: metadata.location || null,
+        address: metadata.address || null,
+        photographer: metadata.photographer || null,
+        notes: metadata.notes || null,
+        tags: metadata.tags,
+        photo_count: okCount,
+        source: 'field-photo-app',
+        created_by: metadata.createdBy || null,
+        metadata
+      }, { onConflict: 'folder_path' });
+    } catch (e) {
+      console.warn('[FieldPhotos] session mirror to Supabase failed (photos are fine):', e.message);
+    }
+
     prog.classList.remove('running');     // upload finished — stop the film
     document.getElementById('progressBar').style.width = '100%';
     document.getElementById('progressBar').style.background = 'var(--green)';
@@ -1415,6 +1441,31 @@ async function fetchFolderCount(g) {
       project: g.project,
       metadata: g.metadata
     }));
+
+    // Organic backfill of the MCP photo index: sessions uploaded before the
+    // pms_field_photo_sessions table existed (2026-07-15) get mirrored the
+    // first time anyone browses them here. ignoreDuplicates makes repeat
+    // visits a cheap no-op; fire-and-forget so the gallery never waits on it.
+    if (g.metadata && g.folderPath) {
+      const m = g.metadata;
+      sb.from('pms_field_photo_sessions').upsert({
+        project_id: g.project?.id || null,
+        project_number: m.projectNumber || g.project?.projectNumber || '',
+        project_name: m.projectName || g.project?.name || '',
+        folder_path: g.folderPath,
+        folder_url: (g.project?.projectFolderUrl || '') + '/Photos/' + g.folderName,
+        photo_date: m.date || null,
+        phase: m.phase || null, system: m.system || null,
+        location: m.location || null, address: m.address || null,
+        photographer: m.photographer || null, notes: m.notes || null,
+        tags: Array.isArray(m.tags) ? m.tags : [],
+        photo_count: photos.length,
+        source: m.source || 'field-photo-app',
+        created_by: m.createdBy || null,
+        metadata: m
+      }, { onConflict: 'folder_path', ignoreDuplicates: true })
+        .then(({ error }) => { if (error) console.warn('[FieldPhotos] backfill mirror skipped:', error.message); });
+    }
   } catch(e) {
     console.warn('Count fetch failed', e);
   }
