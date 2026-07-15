@@ -8,7 +8,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Site Report</title>
   <script>
-    window.__appVersion = "2026-06-19-sitereport-storage";
+    window.__appVersion = "2026-07-15-sitereport-hardening";
 
     // Auto-update banner — same pattern as transmittal.html / SettyFieldPhotos.
     async function _checkForUpdate() {
@@ -563,6 +563,13 @@ let pickedPhotoDataUrl = null;
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
 
+// Local calendar date as YYYY-MM-DD. Deliberately NOT toISOString(): that
+// returns the UTC date, which is tomorrow's date during Eastern evenings —
+// exactly when site-visit write-ups happen.
+function localDateStr(d = new Date()) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
 // ─── STORAGE (Phase 7: images live in Supabase Storage, not the report JSONB) ──
 // Site-report photos and plan images used to be base64-embedded in the `report`
 // JSONB, which bloated pms_site_reports (35 MB across 4 rows) and made every
@@ -700,7 +707,7 @@ function numberForItem(item, indexWithinDiscipline) {
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
 (async function init() {
-  document.getElementById("visitDate").value = new Date().toISOString().slice(0, 10);
+  document.getElementById("visitDate").value = localDateStr();
 
   msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
   await msalApp.initialize();
@@ -732,10 +739,18 @@ function onSignedIn() {
 // ─── DATA LOAD ───────────────────────────────────────────────────────────────
 async function loadProjects() {
   try {
-    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project", { headers: SB_HEADERS });
+    // Lean projection: pull only the fields this tool reads (~50 KB total)
+    // instead of the full inline project blobs (multi-MB once email/RFI
+    // metadata is included) — this tool loads on cellular in the field.
+    // PostgREST flattens project->id etc. into top-level keys, so rows come
+    // back already shaped like the slim project objects the code expects.
+    const LEAN = "project->id,project->name,project->projectNumber,project->projectAddress," +
+      "project->projectCity,project->projectState,project->clientName,project->prime," +
+      "project->projectFolderUrl,project->archived";
+    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=" + LEAN, { headers: SB_HEADERS });
     if (!res.ok) throw new Error("pms_projects GET HTTP " + res.status);
     const rows = await res.json();
-    pmsProjects = (rows || []).map(r => r.project).filter(p => p && !p.archived);
+    pmsProjects = (rows || []).filter(p => p && p.id && !p.archived);
     onProjectsLoaded();
   } catch (e) {
     setGlobalStatus("error", "Could not load projects: " + e.message);

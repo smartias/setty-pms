@@ -15,7 +15,7 @@
   // Visible version stamp — shown in the page footer + queryable from console
   // as window.__appVersion. Update this string on every deploy. Lets users
   // self-diagnose "am I on the new code?" without F12 console gymnastics.
-  window.__appVersion = "2026-05-03-fieldphotos-v3";
+  window.__appVersion = "2026-07-15-fieldphotos-v4";
 
   // ── Auto-update check ──────────────────────────────────────────────────
   // Critical for iOS "Add to Home Screen" web clips, which cache the HTML
@@ -619,8 +619,9 @@ async function onSignedIn() {
   document.getElementById('app').style.display = 'flex';
   document.getElementById('hdrUser').textContent = currentUser.name || currentUser.username;
 
-  // Default date to today
-  document.getElementById('fDate').value = new Date().toISOString().slice(0, 10);
+  // Default date to today — LOCAL date, not toISOString() (UTC), which after
+  // ~7-8 PM Eastern would stamp tomorrow's date on an evening upload.
+  document.getElementById('fDate').value = localDateStr();
   document.getElementById('fPhotographer').value = currentUser.name || '';
 
   await loadProjects();
@@ -635,9 +636,18 @@ async function loadProjects() {
     // kept in sync — same bug class as the backup-button issue.
     let projects = null;
     try {
-      const { data: pRows, error: pErr } = await sb.from('pms_projects').select('project');
+      // Lean projection: pull only the fields this tool reads (~50 KB total)
+      // instead of the full inline project blobs (multi-MB once email/RFI
+      // metadata is included). This app loads on cellular in the field, so
+      // payload size is user-visible startup time. PostgREST flattens
+      // project->id etc. into top-level keys, so rows come back already
+      // shaped like the slim project objects the rest of the code expects.
+      const { data: pRows, error: pErr } = await sb.from('pms_projects').select(
+        'project->id, project->name, project->projectNumber, project->projectAddress, ' +
+        'project->clientName, project->prime, project->projectFolderUrl, project->archived'
+      );
       if (!pErr && Array.isArray(pRows) && pRows.length > 0) {
-        projects = pRows.map(r => r.project).filter(Boolean);
+        projects = pRows.filter(p => p && p.id && p.name);
       }
     } catch (v2Err) {
       console.warn('V2 load failed, falling back to legacy:', v2Err.message);
@@ -756,7 +766,9 @@ async function extractExifFromFile(file) {
     const exif = await exifr.parse(file, { DateTimeOriginal: true, CreateDate: true, gps: true });
     if (!exif) return null;
     const dt = exif.DateTimeOriginal || exif.CreateDate;
-    const date = dt ? new Date(dt).toISOString().slice(0, 10) : null;
+    // Local date — toISOString() converts to UTC, shifting evening photos
+    // (after ~7-8 PM Eastern) onto the next calendar day.
+    const date = dt ? localDateStr(new Date(dt)) : null;
     const lat  = exif.latitude  ?? null;
     const lng  = exif.longitude ?? null;
     return { date, lat, lng };
@@ -792,7 +804,7 @@ async function populateExifFields(firstFile) {
 
   // Only fill date if user hasn't changed it from today's default
   const dateEl = document.getElementById('fDate');
-  const today  = new Date().toISOString().slice(0, 10);
+  const today  = localDateStr();
   if (exif.date && (dateEl.value === today || dateEl.value === '')) {
     dateEl.value = exif.date;
   }
@@ -1085,6 +1097,10 @@ async function startUpload() {
     console.info('Open project in PMS to add SharePoint folder:', pmsLink);
     return;
   }
+  // Re-queue previously-failed files so clicking Upload again actually
+  // retries them — the on-screen hint says "fix the issue and retry", and
+  // without this reset those files stayed 'err' forever and were skipped.
+  pendingFiles.forEach(f => { if (f.status === 'err') f.status = 'pending'; });
   if (!pendingFiles.filter(f => f.status === 'pending').length) { toast('No photos to upload.', 'error'); return; }
   const phase = document.getElementById('fPhase').value;
   const date = document.getElementById('fDate').value;
@@ -1094,9 +1110,12 @@ async function startUpload() {
   const quality = parseInt(document.getElementById('compQuality').value);
   const maxWidth = parseInt(document.getElementById('compWidth').value);
 
-  // Build subfolder path — include location if filled in so each area gets its own folder
+  // Build subfolder path — include location if filled in so each area gets its own folder.
+  // Location is free text, so strip characters SharePoint forbids in folder
+  // names (/ \ : * ? " < > |) — otherwise the whole upload 400s at folder
+  // creation after the user already waited through compression.
   const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split('/').pop());
-  const location = document.getElementById('fLocation').value.trim();
+  const location = sanitizeGraphName(document.getElementById('fLocation').value.trim());
   const subfolderName = location ? `${date} - ${phase} - ${location}` : `${date} - ${phase}`;
   const basePath = folderSegment + '/Photos';
 
@@ -1645,6 +1664,17 @@ function switchTab(name, btnEl) {
 }
 
 // ---- Utilities ----
+// Local calendar date as YYYY-MM-DD. Deliberately NOT toISOString(): that
+// returns the UTC date, which is tomorrow's date during Eastern evenings.
+function localDateStr(d = new Date()) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// Strip characters Graph rejects in SharePoint folder/file names.
+function sanitizeGraphName(s) {
+  return String(s || '').replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
+}
+
 function escHtml(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
