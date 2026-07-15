@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-09-pms-v64-project-intelligence";
+    window.__appVersion = "2026-07-15-pms-v65-related-projects-shortcuts";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -4733,6 +4733,17 @@ function sanitizeShortcutName(s) {
   return (s || "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 70);
 }
 
+// Sibling projects in the same Related Projects group (shared relatedGroup
+// name, matched case/whitespace-insensitively — same rule as the header
+// widget). Excludes the project itself and archived siblings: closed-out
+// projects shouldn't be advertised as live folder destinations.
+function relatedSiblingProjects(project, allProjects) {
+  const norm = s => (s || "").trim().toLowerCase();
+  const g = norm(project.relatedGroup);
+  if (!g) return [];
+  return (allProjects || []).filter(p => p.id !== project.id && !p.archived && norm(p.relatedGroup) === g);
+}
+
 // Stable fingerprint of all installable shortcuts for this project. Used by
 // the SharePointFolderField to detect whether the installed set is out of
 // date (new external link, removed link, notebook URL changed, etc.) and
@@ -4743,7 +4754,7 @@ function sanitizeShortcutName(s) {
 // "Refresh Shortcuts" button reappear — otherwise their stale fingerprint
 // would still match and they'd never pick up the new entries.
 const SHORTCUT_INSTALL_VERSION = "v4";
-function projectShortcutFingerprint(project) {
+function projectShortcutFingerprint(project, allProjects) {
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
   const channelEmail = project.teamsChannelEmail || "";
@@ -4757,8 +4768,18 @@ function projectShortcutFingerprint(project) {
     .map(l => (l.id || "") + ":" + (l.label || "") + ":" + l.url)
     .sort()
     .join("|");
+  // Related Projects family: siblings with a folder contribute a cross-
+  // shortcut each. Appended ONLY when non-empty so the fingerprints of the
+  // (many) ungrouped projects don't all drift and resurface the Refresh
+  // button firm-wide the day this ships.
+  const related = relatedSiblingProjects(project, allProjects)
+    .filter(p => p.projectFolderUrl)
+    .map(p => p.id + ":" + (p.name || "") + ":" + p.projectFolderUrl)
+    .sort()
+    .join("|");
   return SHORTCUT_INSTALL_VERSION + "::" + noteUrl + "::" + teamsFolderUrl + "::" + channelEmail
-    + "::" + proposalFolder + "::" + contractFolder + "::" + ext;
+    + "::" + proposalFolder + "::" + contractFolder + "::" + ext
+    + (related ? "::rel:" + related : "");
 }
 
 // Install all project shortcuts (OneNote notebook + PMS deep link + tools +
@@ -4768,7 +4789,7 @@ function projectShortcutFingerprint(project) {
 // proposal stage users get the same launchpad as project execution users.
 // Returns a deduped list of installed shortcut labels + the resolved
 // channel email (so the caller can cache it on the project record).
-async function installProjectShortcuts(project) {
+async function installProjectShortcuts(project, allProjects) {
   if (!project.projectFolderUrl) throw new Error("Project folder isn't set up yet — create the SharePoint folder first.");
   const { driveId } = await resolveSpIds();
 
@@ -4837,6 +4858,17 @@ async function installProjectShortcuts(project) {
   }
   if (project.settyDeliverablesFolderUrl) {
     shortcuts.push({ name: "Setty Deliverables (NYSharesite).url", url: project.settyDeliverablesFolderUrl, label: "Setty Deliverables", icon: 175 });
+  }
+
+  // Related Projects family (sibling scopes/phases of the same building or
+  // program): drop a shortcut to each sibling's project folder so anyone
+  // working in this folder can hop across the family in one click. Only
+  // siblings that have a folder set are linkable; archived siblings are
+  // excluded by relatedSiblingProjects. imageres 3 = plain yellow folder.
+  for (const sib of relatedSiblingProjects(project, allProjects)) {
+    if (!sib.projectFolderUrl) continue;
+    const base = sanitizeShortcutName(sib.name || sib.projectNumber || "Related Project");
+    shortcuts.push({ name: `🧭 Related – ${base}.url`, url: sib.projectFolderUrl, label: "Related – " + base, icon: 3 });
   }
 
   // External project links (BIM 360, Procore, Matterport, Network Folder…).
@@ -16315,6 +16347,9 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   const [editChain, setEditChain] = useState(false);
   // Inline edit toggle for the Related Projects widget in the header.
   const [editRelated, setEditRelated] = useState(false);
+  // Family-wide SharePoint cross-shortcut install state (Related Projects).
+  const [relScStatus, setRelScStatus] = useState("idle"); // idle | working | done | error
+  const [relScMsg, setRelScMsg] = useState("");
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
@@ -16611,6 +16646,60 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                     <div style={{ gridColumn: "1/-1", fontSize: 11, color: P.textDim, lineHeight: 1.4 }}>
                       Projects sharing the same group name appear here automatically — open each related project once and give it this group name. Pick from the suggestion list where possible; a misspelled group name splits the family.
                     </div>
+                    {siblings.some(p => !p.archived) && (() => {
+                      // One click installs the full shortcut launchpad (incl. the
+                      // new "🧭 Related – …" cross-links) into EVERY live group
+                      // member's folder — not just the open project's — so the
+                      // family cross-references itself without visiting each one.
+                      async function installFamilyShortcuts() {
+                        setRelScStatus("working");
+                        setRelScMsg("");
+                        try {
+                          const members = [project, ...siblings.filter(p => !p.archived)];
+                          const withFolder = members.filter(m => m.projectFolderUrl);
+                          const noFolder   = members.filter(m => !m.projectFolderUrl);
+                          if (withFolder.length < 2) {
+                            throw new Error("At least two group members need a SharePoint project folder first"
+                              + (noFolder.length ? " — missing: " + noFolder.map(m => m.name || m.projectNumber).join(", ") : "") + ".");
+                          }
+                          for (const m of withFolder) {
+                            const { resolvedChannelEmail } = await installProjectShortcuts(m, projects);
+                            const patched = {
+                              ...m,
+                              shortcutsInstalledAt: new Date().toISOString(),
+                              teamsChannelEmail: resolvedChannelEmail || m.teamsChannelEmail || "",
+                            };
+                            patched.shortcutsFingerprint = projectShortcutFingerprint(patched, projects);
+                            // onUpdate (updateProject) matches by patched.id and uses a
+                            // functional setState, so saving siblings sequentially is safe.
+                            onUpdate(patched);
+                          }
+                          setRelScStatus("done");
+                          setRelScMsg("✓ Cross-shortcuts installed in " + withFolder.length + " project folders"
+                            + (noFolder.length ? " · skipped (no folder yet): " + noFolder.map(m => m.name || m.projectNumber).join(", ") : ""));
+                        } catch (e) {
+                          setRelScStatus("error");
+                          setRelScMsg("✗ " + e.message);
+                        }
+                      }
+                      return (
+                        <div style={{ gridColumn: "1/-1", borderTop: `1px solid ${P.border}`, paddingTop: 10 }}>
+                          <button onClick={installFamilyShortcuts} disabled={relScStatus === "working"}
+                            style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 6, color: P.accentLight,
+                              cursor: relScStatus === "working" ? "default" : "pointer", fontSize: 12, padding: "5px 12px" }}>
+                            {relScStatus === "working" ? "⏳ Installing…" : "📁 Create folder shortcuts in SharePoint"}
+                          </button>
+                          <span style={{ fontSize: 11, color: P.textDim, marginLeft: 8 }}>
+                            Drops "🧭 Related – …" links into every group member's project folder.
+                          </span>
+                          {relScMsg && (
+                            <div style={{ fontSize: 11, marginTop: 5, color: relScStatus === "done" ? P.green : relScStatus === "error" ? P.red : P.textDim }}>
+                              {relScMsg}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -16774,7 +16863,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </Field>
             ) : (
               <Field label="Project Folder (SharePoint)" style={{ gridColumn: "1 / -1" }}>
-                <SharePointFolderField project={project} onUpdate={updateField} onEagerSave={onEagerSave} clients={clients} />
+                <SharePointFolderField project={project} onUpdate={updateField} onEagerSave={onEagerSave} clients={clients} projects={projects} />
               </Field>
             )}
 
@@ -23457,7 +23546,7 @@ function TermContractFolderField({ termContract, onUpdate }) {
   );
 }
 
-function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
+function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projects }) {
   const [status, setStatus] = React.useState("idle"); // idle | creating | done | error
   const [msg, setMsg] = React.useState("");
   const [scStatus, setScStatus] = React.useState("idle"); // shortcut install state
@@ -23468,7 +23557,7 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
 
   const url = project.projectFolderUrl || "";
   const hasFolder = !!url;
-  const currentFingerprint = projectShortcutFingerprint(project);
+  const currentFingerprint = projectShortcutFingerprint(project, projects);
   const installedFingerprint = project.shortcutsFingerprint || "";
   // Fingerprint covers OneNote URL AND every external link's id/label/url.
   // Adding, editing, or removing any link makes the fingerprint drift from
@@ -23484,7 +23573,7 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
     setScStatus("installing");
     setScMsg("");
     try {
-      const { installed, resolvedChannelEmail } = await installProjectShortcuts(project);
+      const { installed, resolvedChannelEmail } = await installProjectShortcuts(project, projects);
       setScStatus("done");
       setScMsg("✓ Installed " + installed.length + " shortcut" + (installed.length === 1 ? "" : "s")
         + (!currentNoteUrl ? " (OneNote not linked yet — re-run after linking)" : ""));
@@ -23500,7 +23589,7 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients }) {
       // saved fingerprint reflects the channel email we just installed
       // (otherwise the next render sees email-now-set + email-not-in-fp
       // and immediately re-shows the button).
-      patchedProject.shortcutsFingerprint = projectShortcutFingerprint(patchedProject);
+      patchedProject.shortcutsFingerprint = projectShortcutFingerprint(patchedProject, projects);
       if (onEagerSave) await onEagerSave(patchedProject);
       else onUpdate("shortcutsInstalledAt", patchedProject.shortcutsInstalledAt);
     } catch (e) {
