@@ -114,8 +114,11 @@ const TABS = [
   { key: "roles",   label: "🔑 Users & Roles" },
   { key: "backups", label: "🗄️ Backups" },
   { key: "filing",  label: "📨 Filing Log" },
+  { key: "integration", label: "🔗 Integration" },
 ];
-const state = { tab: "signins", roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all" };
+const state = { tab: "signins", roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
+                integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null };
+const FEED_URL = SUPABASE_URL + "/functions/v1/pms-billing-feed/v1/pms/billable-milestones";
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 function render() {
@@ -139,7 +142,7 @@ function render() {
   $("tabs").style.display = "flex";
   $("tabs").innerHTML = TABS.map(t =>
     `<div class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</div>`).join("");
-  ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling })[state.tab]();
+  ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration })[state.tab]();
 }
 function setTab(k) { state.tab = k; render(); }
 
@@ -303,6 +306,92 @@ async function renderFiling() {
             <td style="color:var(--red);font-size:12px">${esc((x.error || "").slice(0, 80))}</td></tr>`).join("") ||
         '<tr><td colspan="7" class="empty">Nothing matches this filter.</td></tr>'}</tbody></table>
     </div>`;
+}
+
+// ── Integration (PMS ↔ SETTYfy billing loop) ─────────────────────────────────
+async function renderIntegration() {
+  const v = $("view");
+  if (!state.integ) {
+    v.innerHTML = '<div class="empty">Loading integration status…</div>';
+    try {
+      const [integ, projects, maps] = await Promise.all([
+        sb("POST", "/rest/v1/rpc/admin_integration_status", {}),
+        sb("GET", "/rest/v1/pms_projects?select=num:project->>projectNumber,name:project->>name,archived:project->>archived&order=id.asc&limit=1000"),
+        sb("GET", "/rest/v1/pms_settyfy_map?select=*"),
+      ]);
+      state.integ = integ;
+      state.integProjects = (projects || []).filter(p => p.num && p.archived !== "true");
+      state.integMaps = {}; (maps || []).forEach(m => state.integMaps[m.project_number] = m);
+    } catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
+  }
+  const i = state.integ, mapped = Object.values(state.integMaps).filter(m => m.settyfy_id).length;
+  const tok = i.feed_token || "";
+  const f = state.integFilter.toLowerCase();
+  const rows = state.integProjects.filter(p => !f || (p.num + " " + (p.name || "")).toLowerCase().includes(f));
+  v.innerHTML = `
+    <div class="card">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:6px">ENDPOINT A — PMS BILLING FEED (SETTYfy reads this; live now)</div>
+      <div style="font-family:monospace;font-size:12px;word-break:break-all;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:8px 10px">${esc(FEED_URL)}</div>
+      <div class="row" style="margin-top:10px">
+        <span style="color:var(--dim);font-size:12.5px">Bearer token:</span>
+        <code style="font-size:12px">${state.tokenShown ? esc(tok) : "•".repeat(20)}</code>
+        <button class="btn" onclick="state.tokenShown=!state.tokenShown;render()">${state.tokenShown ? "Hide" : "Show"}</button>
+        <button class="btn" onclick="navigator.clipboard.writeText('${esc(tok)}').then(()=>toast('Token copied','success'))">Copy</button>
+        <button class="btn btn-danger" onclick="rotateFeedToken()">Rotate</button>
+        <span style="color:var(--muted);font-size:12px">rotated ${rel(i.token_rotated_at)} · rotating instantly cuts off the old token</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn btn-primary" onclick="testFeed()">▶ Self-test the feed</button>
+        <span style="font-size:12.5px;color:var(--dim)">${state.feedTest ? esc(state.feedTest) : "calls the live endpoint with the current token"}</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <div class="stat"><b>${mapped}</b><span>projects mapped to SETTYfy IDs</span></div>
+        <div class="stat"><b>${state.integProjects.length}</b><span>active projects</span></div>
+        <input placeholder="Filter projects…" value="${esc(state.integFilter)}" style="flex:1;min-width:160px"
+               oninput="state.integFilter=this.value;render()">
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-top:6px">
+        SETTYfy can't consume SAPX numbers yet (their 2026-07 reply) — this map ties our numbers to their internal IDs (e.g. #56252).
+        Mapped IDs ride along in the feed automatically. Ask IT for their ID on any project you need linked.</div>
+    </div>
+    <div class="card">
+      <table><thead><tr><th>Project #</th><th>Name</th><th>SETTYfy ID</th><th></th></tr></thead>
+      <tbody>${rows.slice(0, 60).map(p => {
+        const m = state.integMaps[p.num] || {};
+        return `<tr><td>${esc(p.num)}</td><td>${esc((p.name || "").slice(0, 44))}</td>
+          <td><input id="map_${esc(p.num)}" value="${esc(m.settyfy_id || "")}" placeholder="#…" style="width:110px"></td>
+          <td><button class="btn" onclick="saveMap('${esc(p.num)}')">Save</button></td></tr>`; }).join("")}
+        ${rows.length > 60 ? `<tr><td colspan="4" class="empty">…${rows.length - 60} more — narrow with the filter above</td></tr>` : ""}
+      </tbody></table>
+    </div>`;
+}
+async function saveMap(num) {
+  const val = $("map_" + num).value.trim();
+  try {
+    await sb("POST", "/rest/v1/pms_settyfy_map", {
+      project_number: num, settyfy_id: val || null, updated_by: settyAuth.email(), updated_at: new Date().toISOString(),
+    }, "resolution=merge-duplicates");
+    state.integMaps[num] = { project_number: num, settyfy_id: val || null };
+    toast(num + (val ? " → " + val : " mapping cleared"), "success"); render();
+  } catch (e) { toast(e.message, "error"); }
+}
+async function rotateFeedToken() {
+  if (!confirm("Rotate the feed token? SETTYfy (once connected) stops working until they get the new one.")) return;
+  try {
+    await sb("POST", "/rest/v1/rpc/admin_rotate_feed_token", {});
+    state.integ = null; state.tokenShown = true; toast("Token rotated", "success"); render();
+  } catch (e) { toast(e.message, "error"); }
+}
+async function testFeed() {
+  state.feedTest = "testing…"; render();
+  try {
+    const r = await fetch(FEED_URL, { headers: { "Authorization": "Bearer " + (state.integ.feed_token || "") } });
+    const d = await r.json();
+    state.feedTest = r.ok ? `✓ ${d.projects.length} projects served, generated ${d.generatedAt}` : `✗ HTTP ${r.status}: ${JSON.stringify(d).slice(0, 120)}`;
+  } catch (e) { state.feedTest = "✗ " + e.message; }
+  render();
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
