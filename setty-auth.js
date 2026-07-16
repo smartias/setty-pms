@@ -62,6 +62,17 @@
     listeners.forEach(fn => { try { fn(session); } catch (_) {} });
   });
 
+  // Popup handoff channel. Browsers partition iframe storage (an Outlook-web
+  // taskpane can't see what a top-level popup wrote), so auth-callback.html
+  // also posts the session straight to its opener — same technique MSAL uses.
+  // Strict same-origin check: only our own pages may hand us a session.
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin) return;
+    const d = e.data;
+    if (!d || d.type !== "settyAuth:session" || !d.session || !d.session.access_token) return;
+    store(d.session);
+  });
+
   // ── auth REST helpers ──────────────────────────────────────────────────────
   async function authFetch(path, body, bearer) {
     const res = await fetch(SUPABASE_URL + "/auth/v1" + path, {
@@ -127,6 +138,26 @@
     location.href = SUPABASE_URL + "/auth/v1/authorize?provider=azure&redirect_to=" + encodeURIComponent(back);
   }
 
+  // Adopt a session straight from an OAuth callback hash string. Used by
+  // auth-callback.html and by signInPopup's URL poller. The user profile is
+  // filled in asynchronously; listeners re-fire when it lands.
+  function adoptFromHash(hashStr, opts) {
+    const h = new URLSearchParams(String(hashStr || "").replace(/^#/, ""));
+    if (!h.get("access_token")) return null;
+    const sess = {
+      access_token: h.get("access_token"),
+      refresh_token: h.get("refresh_token"),
+      expires_at: Number(h.get("expires_at")) || Math.floor(Date.now() / 1000) + (Number(h.get("expires_in")) || 3600),
+      user: null,
+    };
+    store(sess);
+    authFetch("/user", undefined, sess.access_token)
+      .then(u => { if (session && session.access_token === sess.access_token) store({ ...session, user: u }); })
+      .catch(() => {});
+    if (!opts || opts.scrub !== false) history.replaceState(null, "", location.pathname + location.search);
+    return sess;
+  }
+
   // Popup variant for embedded surfaces (Office taskpanes, iframes) where a
   // full-page redirect is impossible. The popup finishes on auth-callback.html
   // (same folder as this script), which stores the session to localStorage —
@@ -143,10 +174,21 @@
       const onSess = (sess) => { if (sess) { try { w.close(); } catch (_) {} finish(sess); } };
       listeners.push(onSess);
       const iv = setInterval(() => {
-        // Re-read storage directly too — some webviews miss storage events.
+        // Channel 1 (the MSAL technique): read the popup's URL once it lands
+        // back on our origin. Immune to storage partitioning AND to popups
+        // whose window.opener was severed. Throws while the popup is on a
+        // cross-origin page mid-flow — ignored.
+        try {
+          const ph = w.location.hash;
+          if (ph && /access_token=/.test(ph)) {
+            adoptFromHash(ph, { scrub: false });
+            try { w.close(); } catch (_) {}
+          }
+        } catch (_) {}
+        // Channel 2: re-read storage — some webviews share it but miss events.
         if (!session) { const s = loadStored(); if (s) store(s); }
         if (w.closed && !session) finish(null);
-      }, 800);
+      }, 500);
       const to = setTimeout(() => finish(session), 180000);
     });
   }
@@ -226,6 +268,7 @@
     init,
     signInWithMicrosoft,
     signInPopup,
+    adoptFromHash,
     sendEmailCode,
     verifyEmailCode,
     signOut,

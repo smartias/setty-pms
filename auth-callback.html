@@ -24,27 +24,32 @@
   </div>
   <script src="setty-auth.js"></script>
   <script>
-    (async function () {
+    (function () {
       const icon = document.getElementById("icon"), msg = document.getElementById("msg"), sub = document.getElementById("sub");
-      try {
-        const sess = await settyAuth.init();   // parses #access_token…, stores the session
-        if (sess && settyAuth.isSignedIn()) {
-          // Hand the session straight to the window that opened us — storage
-          // alone doesn't cross the partition wall in Outlook-web taskpanes.
-          try { if (window.opener) window.opener.postMessage({ type: "settyAuth:session", session: sess }, location.origin); } catch (_) {}
-          icon.textContent = "✅";
-          msg.textContent = "Signed in as " + (settyAuth.email() || "your Setty account");
-          sub.textContent = "You can close this window.";
-          setTimeout(() => { try { window.close(); } catch (_) {} }, 1200);
-        } else {
-          icon.textContent = "🔐";
-          msg.textContent = "Nothing to finish — open this from a Setty app's Sign in button.";
-        }
-      } catch (e) {
+      const hash = location.hash || "";
+      if (/error_description=/.test(hash)) {
         icon.textContent = "⚠️";
         msg.textContent = "Sign-in failed";
-        sub.textContent = String(e && e.message || e);
+        sub.textContent = new URLSearchParams(hash.slice(1)).get("error_description") || "";
+        return;
       }
+      if (!/access_token=/.test(hash)) {
+        icon.textContent = "🔐";
+        msg.textContent = "Nothing to finish — open this from a Setty app's Sign in button.";
+        return;
+      }
+      // Three handoff channels, because Office surfaces differ in which works:
+      //  1. The opener polls OUR URL for the tokens (MSAL technique) — so the
+      //     hash must stay in the address bar; do NOT scrub it here.
+      //  2. postMessage to the opener (when the opener link survived).
+      //  3. localStorage (desktop webviews share it with the pane).
+      const sess = settyAuth.adoptFromHash(hash, { scrub: false });
+      try { if (window.opener) window.opener.postMessage({ type: "settyAuth:session", session: sess }, location.origin); } catch (_) {}
+      icon.textContent = "✅";
+      msg.textContent = "Signed in";
+      sub.textContent = "This window will close itself.";
+      // The opener normally closes us within a second; this is the fallback.
+      setTimeout(() => { try { window.close(); } catch (_) {} }, 8000);
     })();
   </script>
 </body>
