@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-15-pms-v68-family-shortcuts-hardening";
+    window.__appVersion = "2026-07-16-pms-v69-milestone-reopen-guard";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1466,6 +1466,59 @@ async function deleteClientV2(clientId) {
 const _projectJsonCache = new WeakMap();
 const _clientJsonCache = new WeakMap();
 
+// ── Milestone-regression guard ────────────────────────────────────────────────
+// A save that lowers a milestone from 100% "reopens" completed work. That's
+// sometimes legitimate, but it's also exactly the signature of a stale tab
+// (left open for days on a second computer) clobbering newer closures — which
+// silently reverted 14 closed milestones across 9 projects on 2026-07-07.
+// Every save path that would do this must confirm with the user first;
+// declining keeps the completed percentages and saves everything else.
+function findMilestoneRegressions(refProject, outgoing) {
+  const refMs = new Map((refProject?.milestones || []).filter(m => m?.id).map(m => [m.id, m]));
+  const regs = [];
+  for (const m of (outgoing?.milestones || [])) {
+    if (!m?.id) continue;
+    const ref = refMs.get(m.id);
+    if (!ref) continue;
+    const before = Number(ref.pctComplete) || 0;
+    const after = Number(m.pctComplete) || 0;
+    if (before >= 100 && after < before) {
+      regs.push({ id: m.id, name: m.name || m.id, before, after });
+    }
+  }
+  return regs;
+}
+
+// groups: [{ projectName, regs }] — one confirm covers the whole save batch so
+// a multi-project import doesn't fire a prompt per project.
+function confirmMilestoneRegressions(groups) {
+  const lines = groups.map(g =>
+    g.projectName + "\n" + g.regs.map(r => "   • " + r.name + ": " + r.before + "% → " + r.after + "%").join("\n")
+  ).join("\n\n");
+  const total = groups.reduce((a, g) => a + g.regs.length, 0);
+  return window.confirm(
+    "⚠️ This save will REOPEN " + total + " completed milestone" + (total === 1 ? "" : "s") + ":\n\n" + lines +
+    "\n\nIf you didn't intend to lower these — e.g. this tab has been open a while " +
+    "and may be out of date — click Cancel to keep them at 100%.\n\n" +
+    "OK = lower them anyway        Cancel = keep completed"
+  );
+}
+
+// Returns a copy of `project` with the regressed milestones' pctComplete put
+// back to the reference value. Other edits (dates, names, notes) are kept.
+function restoreMilestoneCompletion(project, refProject, regs) {
+  const regIds = new Set(regs.map(r => r.id));
+  const refMs = new Map((refProject?.milestones || []).filter(m => m?.id).map(m => [m.id, m]));
+  return {
+    ...project,
+    milestones: (project.milestones || []).map(m =>
+      m?.id && regIds.has(m.id)
+        ? { ...m, pctComplete: refMs.get(m.id)?.pctComplete ?? m.pctComplete }
+        : m
+    ),
+  };
+}
+
 async function performSaveV2(state, lastSavedRef, versions) {
   const { projects = [], clients = [], staff = [], termContracts = [] } = state;
   const last = lastSavedRef.current || { projects: new Map(), clients: new Map(), meta: "" };
@@ -1475,6 +1528,7 @@ async function performSaveV2(state, lastSavedRef, versions) {
 
   // ── Projects ──
   const currentProjectIds = new Set();
+  const changedProjects = [];
   for (const p of projects) {
     if (!p?.id) continue;
     currentProjectIds.add(p.id);
@@ -1484,16 +1538,43 @@ async function performSaveV2(state, lastSavedRef, versions) {
       serialized = JSON.stringify(p);
       _projectJsonCache.set(p, serialized);
     }
-    if (last.projects.get(p.id) !== serialized) {
-      try {
-        const newVer = await saveProjectV2(p, versions.projects.get(p.id));
-        versions.projects.set(p.id, newVer);
-        last.projects.set(p.id, serialized);
-        projectsSaved++;
-      } catch (e) {
-        if (e instanceof ConflictError) conflicts.push(e);
-        else throw e;
-      }
+    if (last.projects.get(p.id) !== serialized) changedProjects.push({ p, serialized });
+  }
+
+  // Milestone-regression guard: scan the whole batch before writing anything,
+  // so one confirm covers every affected project. If the user declines, the
+  // completed percentages are restored (other edits still save) and the
+  // restored copies are returned so the caller can sync React state.
+  const restoredProjects = [];
+  const regressionGroups = [];
+  for (const cp of changedProjects) {
+    const baselineJson = last.projects.get(cp.p.id);
+    if (!baselineJson) continue; // first-ever save — nothing to regress from
+    const regs = findMilestoneRegressions(JSON.parse(baselineJson), cp.p);
+    if (regs.length) regressionGroups.push({ cp, regs });
+  }
+  if (regressionGroups.length && !confirmMilestoneRegressions(
+        regressionGroups.map(g => ({ projectName: g.cp.p.name || g.cp.p.id, regs: g.regs })))) {
+    for (const g of regressionGroups) {
+      const baseline = JSON.parse(last.projects.get(g.cp.p.id));
+      const restored = restoreMilestoneCompletion(g.cp.p, baseline, g.regs);
+      g.cp.p = restored;
+      g.cp.serialized = JSON.stringify(restored);
+      restoredProjects.push(restored);
+    }
+  }
+
+  for (const { p, serialized } of changedProjects) {
+    // A restored project may now match its baseline exactly — skip the write.
+    if (last.projects.get(p.id) === serialized) continue;
+    try {
+      const newVer = await saveProjectV2(p, versions.projects.get(p.id));
+      versions.projects.set(p.id, newVer);
+      last.projects.set(p.id, serialized);
+      projectsSaved++;
+    } catch (e) {
+      if (e instanceof ConflictError) conflicts.push(e);
+      else throw e;
     }
   }
   // Detect deletions: any id in last.projects but not in current → delete
@@ -1544,7 +1625,7 @@ async function performSaveV2(state, lastSavedRef, versions) {
   }
 
   lastSavedRef.current = last;
-  return { projectsSaved, clientsSaved, metaSaved, conflicts };
+  return { projectsSaved, clientsSaved, metaSaved, conflicts, restoredProjects };
 }
 
 // ── Eager save for a single project (bypass debounce, used by Phase 1.4) ─────
@@ -26726,6 +26807,16 @@ function App() {
       const now = new Date();
       setLastSaved(`${now.getHours()}:${String(now.getMinutes()).padStart(2,"0")}`);
 
+      // Milestone-regression guard declined → the saved copies kept the
+      // completed percentages; sync React state to match so the UI doesn't
+      // show the lowered values (which would re-trigger the prompt next save).
+      if (result.restoredProjects?.length) {
+        setProjects(prev => prev.map(p => {
+          const restored = result.restoredProjects.find(r => r.id === p.id);
+          return restored || p;
+        }));
+      }
+
       // Phase 5 — handle ConflictErrors via 3-way merge. The vast majority of
       // conflicts (different fields edited, items added by both users to the
       // same array) get merged silently. Only true same-field collisions
@@ -26804,14 +26895,24 @@ function App() {
     if (fieldConflicts.length === 0) {
       // SILENT MERGE — most common path. Save the merged version directly.
       try {
+        // Milestone-regression guard: a "clean" merge can still reopen
+        // completed work when this tab's baseline is stale (the other side
+        // closed a milestone we're now writing back at its old percentage).
+        // Never let that happen silently.
+        let toSave = merged;
+        const regs = findMilestoneRegressions(cloudProject, merged);
+        if (regs.length && !confirmMilestoneRegressions(
+              [{ projectName: merged.name || merged.id, regs }])) {
+          toSave = restoreMilestoneCompletion(merged, cloudProject, regs);
+        }
         const cloudVersion = conflict.cloudRow.version;
         versionsRef.current.projects.set(conflict.id, cloudVersion);
-        const newVer = await saveProjectV2(merged, cloudVersion);
+        const newVer = await saveProjectV2(toSave, cloudVersion);
         versionsRef.current.projects.set(conflict.id, newVer);
-        lastSavedRef.current.projects.set(conflict.id, JSON.stringify(merged));
+        lastSavedRef.current.projects.set(conflict.id, JSON.stringify(toSave));
         // Update React state with merged version so UI reflects merge
-        setProjects(prev => prev.map(p => p.id === merged.id ? merged : p));
-        console.log("[merge] Silent merge resolved conflict on", merged.id);
+        setProjects(prev => prev.map(p => p.id === toSave.id ? toSave : p));
+        console.log("[merge] Silent merge resolved conflict on", toSave.id);
       } catch (e) {
         console.warn("[merge] Re-save after silent merge failed:", e);
         // Surface the new conflict — could be a 3-way race with yet another save
@@ -26862,13 +26963,22 @@ function App() {
       }
     });
 
+    // Milestone-regression guard: picking "keep mine" from a stale tab is the
+    // classic way a closed milestone gets reopened. Confirm before honoring it.
+    let resolvedProject = finalProject;
+    const regs = findMilestoneRegressions(cloudProject, finalProject);
+    if (regs.length && !confirmMilestoneRegressions(
+          [{ projectName: finalProject.name || projectId, regs }])) {
+      resolvedProject = restoreMilestoneCompletion(finalProject, cloudProject, regs);
+    }
+
     try {
       const cloudVersion = cloudProject?.version
         || versionsRef.current.projects.get(projectId);
-      const newVer = await saveProjectV2(finalProject, cloudVersion);
+      const newVer = await saveProjectV2(resolvedProject, cloudVersion);
       versionsRef.current.projects.set(projectId, newVer);
-      lastSavedRef.current.projects.set(projectId, JSON.stringify(finalProject));
-      setProjects(prev => prev.map(p => p.id === projectId ? finalProject : p));
+      lastSavedRef.current.projects.set(projectId, JSON.stringify(resolvedProject));
+      setProjects(prev => prev.map(p => p.id === projectId ? resolvedProject : p));
       setPendingConflict(null);
       setAppStatus("saved");
       setTimeout(() => setAppStatus(s => s === "saved" ? "idle" : s), 3000);
