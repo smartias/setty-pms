@@ -163,8 +163,8 @@
         <a href="https://smartias.github.io/setty-pms/SettyPMS.html">← Back to PMS</a>
       </div>
     </div>
-    <div class="chip" id="userChip" title="Set who you are (used for approvals and lesson authorship)">
-      👤 <span id="userName">Set your name</span>
+    <div class="chip" id="userChip" title="Sign in (used for approvals and lesson authorship)">
+      👤 <span id="userName">Sign in</span>
     </div>
   </div>
 
@@ -175,16 +175,32 @@
   <!-- Modal mount -->
   <div id="modalMount"></div>
 
+<script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Config — shared Supabase backend (anon key, same posture as the PMS + the
-// SiteReport / FieldPhotos satellite apps). No MSAL here by design: adding a new
-// redirect URI to the Azure app registration is a permission change, so this app
-// stays anon-only and identifies the user via a locally stored name.
+// Config — shared Supabase backend. Sign-in (Phase 1 pilot) goes through
+// setty-auth.js: Supabase Auth's Azure provider (the same app registration
+// staff already use for the PMS — no MSAL here, no new redirect URIs) with an
+// email one-time-code fallback. Signed-out users still work on the anon key
+// until Phase 2 tightens RLS; signed-in users get real attribution.
 // ─────────────────────────────────────────────────────────────────────────────
 const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 const SB_HEADERS = { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPABASE_ANON, "Content-Type": "application/json" };
+
+// Every data call carries the signed-in user's JWT (or the anon key when
+// signed out). SB_HEADERS is spread at call time, so mutating it is enough.
+function syncAuthHeader() { SB_HEADERS.Authorization = "Bearer " + settyAuth.token(); }
+
+// A signed-in session supplies the identity the honor-system name box used to:
+// approvals and lesson authorship attribute to the real account.
+function adoptAuthIdentity() {
+  if (!settyAuth.isSignedIn()) return;
+  const n = settyAuth.displayName();
+  if (n) { state.user = n; try { localStorage.setItem("ii_user", n); } catch (_) {} }
+}
+
+settyAuth.onChange(() => { syncAuthHeader(); adoptAuthIdentity(); render(); });
 
 // REST helper. Returns parsed JSON (or null). Throws on non-2xx with a readable
 // message, mirroring the PMS's sbFetchV2 contract.
@@ -305,7 +321,12 @@ async function loadCounts() {
 
 // ── Render ───────────────────────────────────────────────────────────────────
 function render() {
-  $("userName").textContent = state.user || "Set your name";
+  $("userName").textContent = settyAuth.isSignedIn()
+    ? "✓ " + (state.user || settyAuth.email())
+    : (state.user || "Sign in");
+  $("userChip").title = settyAuth.isSignedIn()
+    ? "Signed in as " + settyAuth.email() + " — click to sign out"
+    : "Sign in (used for approvals and lesson authorship)";
   renderTabs();
   const v = $("view");
   if (state.loading) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
@@ -1678,6 +1699,63 @@ function openNameModal(onDone) {
   focusModal();
 }
 
+// Sign-in surface (Phase 1). Microsoft SSO is the primary path; an email
+// one-time code covers anyone the Azure flow doesn't work for; "just set my
+// name" keeps the legacy honor-system path alive until Phase 2 retires it.
+function openSignInModal() {
+  if (settyAuth.isSignedIn()) {
+    openConfirmModal("Sign out of " + settyAuth.email() + "? Approvals will need a sign-in again.", "Sign out", async () => {
+      await settyAuth.signOut();
+      toast("Signed out", "success"); render();
+    });
+    return;
+  }
+  $("modalMount").innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:440px">
+        <h3>Sign in</h3>
+        <div class="fieldset">
+          <button class="btn btn-primary" id="msSignInBtn" style="width:100%">Sign in with Microsoft</button>
+        </div>
+        <div class="fieldset">
+          <label>Or email me a one-time code</label>
+          <div style="display:flex;gap:8px">
+            <input id="otpEmail" type="email" placeholder="you@setty.com" style="flex:1"/>
+            <button class="btn btn-ghost" id="otpSendBtn">Send code</button>
+          </div>
+          <div id="otpStep2" style="display:none;margin-top:8px">
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <input id="otpCode" inputmode="numeric" placeholder="6-digit code" style="flex:1"/>
+              <button class="btn btn-primary" id="otpVerifyBtn">Verify</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions" style="justify-content:space-between">
+          <button class="btn btn-ghost" id="nameOnlyBtn" title="Legacy: attribution only, no account">Just set my name</button>
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  $("msSignInBtn").onclick = () => settyAuth.signInWithMicrosoft();
+  $("otpSendBtn").onclick = async () => {
+    const em = $("otpEmail").value.trim();
+    if (!/@setty\.com$/i.test(em)) { toast("Use your @setty.com address", "error"); return; }
+    try {
+      await settyAuth.sendEmailCode(em);
+      $("otpStep2").style.display = "block";
+      toast("Code sent — check your email", "success");
+    } catch (e) { toast("Could not send code: " + e.message, "error"); }
+  };
+  $("otpVerifyBtn").onclick = async () => {
+    try {
+      await settyAuth.verifyEmailCode($("otpEmail").value, $("otpCode").value);
+      closeModal(); toast("Signed in", "success");
+    } catch (e) { toast("Code rejected: " + e.message, "error"); }
+  };
+  $("nameOnlyBtn").onclick = () => { closeModal(); openNameModal(); };
+  focusModal();
+}
+
 // The mining pipeline surface. Extraction runs server-side (Closeout Memory
 // Edge Function calling Claude) so no keys live in the browser. This modal
 // scopes a run and reports pipeline status.
@@ -1815,11 +1893,15 @@ function renderPlaceholder(m) {
 }
 
 // ── Identity (local only) ────────────────────────────────────────────────────
-$("userChip").onclick = () => openNameModal();
+$("userChip").onclick = () => openSignInModal();
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 if (state.embed) document.body.classList.add("embed");
-loadAll();
+// Restore (or complete, when returning from the Azure redirect) the shared
+// session before the first data call, so writes carry the user's own JWT.
+settyAuth.init()
+  .catch(e => toast("Sign-in: " + e.message, "error"))
+  .then(() => { syncAuthHeader(); adoptAuthIdentity(); loadAll(); });
 </script>
 </body>
 </html>
