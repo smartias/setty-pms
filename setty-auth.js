@@ -24,6 +24,10 @@
 (function () {
   "use strict";
 
+  // Folder this script was loaded from — auth-callback.html lives beside it.
+  // Captured at parse time (currentScript is null later).
+  const SCRIPT_BASE = (document.currentScript && document.currentScript.src || "").replace(/[^\/]*$/, "");
+
   const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
   const ANON_KEY =
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
@@ -123,6 +127,30 @@
     location.href = SUPABASE_URL + "/auth/v1/authorize?provider=azure&redirect_to=" + encodeURIComponent(back);
   }
 
+  // Popup variant for embedded surfaces (Office taskpanes, iframes) where a
+  // full-page redirect is impossible. The popup finishes on auth-callback.html
+  // (same folder as this script), which stores the session to localStorage —
+  // our storage listener then adopts it here. Resolves with the session, or
+  // null if the user closes the popup / nothing arrives within 3 minutes.
+  function signInPopup() {
+    const cb = SCRIPT_BASE + "auth-callback.html";
+    const url = SUPABASE_URL + "/auth/v1/authorize?provider=azure&redirect_to=" + encodeURIComponent(cb);
+    const w = window.open(url, "settyAuthPopup", "width=480,height=640,menubar=no,toolbar=no");
+    if (!w) { signInWithMicrosoft(); return Promise.resolve(null); } // popup blocked → fall back
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (val) => { if (settled) return; settled = true; clearInterval(iv); clearTimeout(to); resolve(val); };
+      const onSess = (sess) => { if (sess) { try { w.close(); } catch (_) {} finish(sess); } };
+      listeners.push(onSess);
+      const iv = setInterval(() => {
+        // Re-read storage directly too — some webviews miss storage events.
+        if (!session) { const s = loadStored(); if (s) store(s); }
+        if (w.closed && !session) finish(null);
+      }, 800);
+      const to = setTimeout(() => finish(session), 180000);
+    });
+  }
+
   async function sendEmailCode(email) {
     await authFetch("/otp", { email: String(email || "").trim(), create_user: true });
   }
@@ -185,7 +213,7 @@
       "box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer;user-select:none";
     pill.textContent = o.label || "🔐 Sign in — one click with Microsoft";
     pill.title = o.title || "The PMS suite is moving to signed-in access. Sign in once and every Setty app is covered.";
-    pill.onclick = signInWithMicrosoft;
+    pill.onclick = o.onClick || signInWithMicrosoft;
     const sync = () => { pill.style.display = window.settyAuth.isSignedIn() ? "none" : "flex"; };
     listeners.push(sync);
     const attach = () => { document.body.appendChild(pill); sync(); };
@@ -197,6 +225,7 @@
     mountPill,
     init,
     signInWithMicrosoft,
+    signInPopup,
     sendEmailCode,
     verifyEmailCode,
     signOut,

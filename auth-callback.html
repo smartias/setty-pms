@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Setty — Sign-in complete</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font: 15px/1.6 system-ui, "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0;
+           display: flex; align-items: center; justify-content: center; min-height: 90vh; margin: 0; }
+    .card { text-align: center; padding: 32px 40px; }
+    .big { font-size: 40px; margin-bottom: 12px; }
+    .dim { color: #94a3b8; font-size: 13px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <!-- Sign-in popup landing page (used by the Office add-ins and any embedded
+       surface that can't do a full-page redirect). Supabase sends the session
+       tokens here in the URL fragment; setty-auth.js parses and stores them to
+       localStorage, which the opener page picks up via its storage listener. -->
+  <div class="card">
+    <div class="big" id="icon">⏳</div>
+    <div id="msg">Finishing sign-in…</div>
+    <div class="dim" id="sub"></div>
+  </div>
+  <script src="setty-auth.js"></script>
+  <script>
+    (async function () {
+      const icon = document.getElementById("icon"), msg = document.getElementById("msg"), sub = document.getElementById("sub");
+      try {
+        const sess = await settyAuth.init();   // parses #access_token…, stores the session
+        if (sess && settyAuth.isSignedIn()) {
+          icon.textContent = "✅";
+          msg.textContent = "Signed in as " + (settyAuth.email() || "your Setty account");
+          sub.textContent = "You can close this window.";
+          setTimeout(() => { try { window.close(); } catch (_) {} }, 1200);
+        } else {
+          icon.textContent = "🔐";
+          msg.textContent = "Nothing to finish — open this from a Setty app's Sign in button.";
+        }
+      } catch (e) {
+        icon.textContent = "⚠️";
+        msg.textContent = "Sign-in failed";
+        sub.textContent = String(e && e.message || e);
+      }
+    })();
+  </script>
+</body>
+</html>
