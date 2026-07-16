@@ -29,6 +29,9 @@
       try {
         const sess = await settyAuth.init();   // parses #access_token…, stores the session
         if (sess && settyAuth.isSignedIn()) {
+          // Hand the session straight to the window that opened us — storage
+          // alone doesn't cross the partition wall in Outlook-web taskpanes.
+          try { if (window.opener) window.opener.postMessage({ type: "settyAuth:session", session: sess }, location.origin); } catch (_) {}
           icon.textContent = "✅";
           msg.textContent = "Signed in as " + (settyAuth.email() || "your Setty account");
           sub.textContent = "You can close this window.";
