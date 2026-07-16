@@ -169,8 +169,32 @@
     return session;
   }
 
+  // ── shared sign-in pill ────────────────────────────────────────────────────
+  // A small fixed pill (bottom-right) shown while signed out, so every app in
+  // the suite gets a sign-in affordance without touching its own header. Hides
+  // itself on sign-in and reappears on sign-out — driven by onChange.
+  function mountPill(opts) {
+    const o = opts || {};
+    if (document.getElementById("settyAuthPill")) return;
+    const pill = document.createElement("div");
+    pill.id = "settyAuthPill";
+    pill.style.cssText =
+      "position:fixed;right:16px;bottom:16px;z-index:99999;display:none;" +
+      "align-items:center;gap:8px;padding:9px 14px;border-radius:999px;" +
+      "background:#1d4ed8;color:#fff;font:600 13px/1 system-ui,Segoe UI,sans-serif;" +
+      "box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer;user-select:none";
+    pill.textContent = o.label || "🔐 Sign in — one click with Microsoft";
+    pill.title = o.title || "The PMS suite is moving to signed-in access. Sign in once and every Setty app is covered.";
+    pill.onclick = signInWithMicrosoft;
+    const sync = () => { pill.style.display = window.settyAuth.isSignedIn() ? "none" : "flex"; };
+    listeners.push(sync);
+    const attach = () => { document.body.appendChild(pill); sync(); };
+    if (document.body) attach(); else document.addEventListener("DOMContentLoaded", attach);
+  }
+
   // ── public surface ─────────────────────────────────────────────────────────
   window.settyAuth = {
+    mountPill,
     init,
     signInWithMicrosoft,
     sendEmailCode,

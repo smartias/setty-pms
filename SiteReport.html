@@ -475,6 +475,7 @@
   </div>
 </div>
 
+<script src="setty-auth.js"></script>
 <script>
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 // Same tenant + client ID used by transmittal.html and SettyFieldPhotos.html —
@@ -498,6 +499,15 @@ const DRIVE_ID = "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BBnJPKsNGM-TaGmbGiL
 const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 const SB_HEADERS = { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPABASE_ANON, "Content-Type": "application/json" };
+
+// Shared suite sign-in (setty-auth.js). Signed-in users' Supabase calls carry
+// their own JWT; signed-out users keep working on the anon key until the
+// Phase 2 RLS flip. SB_HEADERS is passed by reference at every call site, so
+// mutating Authorization here covers all of them.
+const settyAuthReady = settyAuth.init().catch(() => null).then(() => syncSettyAuth());
+function syncSettyAuth() { SB_HEADERS.Authorization = "Bearer " + settyAuth.token(); }
+settyAuth.onChange(syncSettyAuth);
+settyAuth.mountPill();
 
 // Standard AEC discipline prefixes used for per-discipline item numbers.
 const DISCIPLINE_PREFIX = {
@@ -614,7 +624,7 @@ async function uploadDataUrlToStorage(dataUrl, path, { compress }) {
   const res = await fetch(SUPABASE_URL + "/storage/v1/object/" + PHOTO_BUCKET + "/" + storageObjectPath(path), {
     method: "POST",
     headers: {
-      apikey: SUPABASE_ANON, Authorization: "Bearer " + SUPABASE_ANON,
+      apikey: SUPABASE_ANON, Authorization: "Bearer " + settyAuth.token(),
       "Content-Type": body.type || "application/octet-stream", "x-upsert": "true",
     },
     body,
@@ -738,6 +748,7 @@ function onSignedIn() {
 // ─── DATA LOAD ───────────────────────────────────────────────────────────────
 async function loadProjects() {
   try {
+    await settyAuthReady;   // make sure the session header is set before the first read
     // Lean projection: pull only the fields this tool reads (~50 KB total)
     // instead of the full inline project blobs (multi-MB once email/RFI
     // metadata is included) — this tool loads on cellular in the field.

@@ -211,6 +211,7 @@
 <body>
   <div id="root"></div>
 
+  <script src="setty-auth.js"></script>
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useCallback, useRef } = React;
 
@@ -2423,10 +2424,15 @@
     const PMS_SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
     const PMS_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 
+    // Shared suite sign-in: the session (if any) rides along on the read.
+    const settyAuthReady = settyAuth.init().catch(() => null);
+    settyAuth.mountPill();
+
     async function loadPmsProjects() {
+      await settyAuthReady;
       const res = await fetch(
         PMS_SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=projects",
-        { headers: { apikey: PMS_SUPABASE_ANON_KEY, Authorization: "Bearer " + PMS_SUPABASE_ANON_KEY } }
+        { headers: { apikey: PMS_SUPABASE_ANON_KEY, Authorization: "Bearer " + settyAuth.token() } }
       );
       if (!res.ok) throw new Error("Supabase " + res.status);
       const rows = await res.json();

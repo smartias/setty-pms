@@ -519,6 +519,7 @@
 
 </div>
 
+<script src="setty-auth.js"></script>
 <script>
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const MSAL_CONFIG = {
@@ -540,6 +541,11 @@ const LOGIN_SCOPES  = ["User.Read", "openid", "profile"];
 const SP_DRIVE_ID   = "b!your-drive-id"; // resolved at runtime
 const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
+
+// Shared suite sign-in (setty-auth.js). settyAuth.token() returns the user's
+// JWT when signed in, anon key otherwise — call sites below use it directly.
+const settyAuthReady = settyAuth.init().catch(() => null);
+settyAuth.mountPill();
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
 let msalApp = null;
@@ -590,7 +596,7 @@ async function logTransmittalGenerated(distributionKind, extra = {}) {
       method: "POST",
       headers: {
         "apikey": SUPABASE_ANON,
-        "Authorization": "Bearer " + SUPABASE_ANON,
+        "Authorization": "Bearer " + settyAuth.token(),
         "Content-Type": "application/json",
         "Prefer": "return=minimal",
       },
@@ -674,9 +680,10 @@ function onSignedIn() {
 
 async function loadPmsData() {
   try {
+    await settyAuthReady;   // session header ready before the first read
     const headers = {
       "apikey": SUPABASE_ANON,
-      "Authorization": "Bearer " + SUPABASE_ANON,
+      "Authorization": "Bearer " + settyAuth.token(),
       "Content-Type": "application/json",
     };
     // V2: read from per-project / per-client rows. Falls back to legacy

@@ -262,6 +262,7 @@
 
 <div id="log"></div>
 
+<script src="setty-auth.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════════════════════════════
    CONFIG — shared with the PMS so this tool reads the same directory & login
@@ -329,10 +330,17 @@ function log(msg, cls=""){
 /* ═══════════════════════════════════════════════════════════════════════════
    SUPABASE
    ═══════════════════════════════════════════════════════════════════════════ */
+// Shared suite sign-in (setty-auth.js): every call through sb() waits for the
+// stored session to be restored, then carries the user's JWT (anon fallback
+// while signed out, until the Phase 2 RLS flip).
+const settyAuthReady = settyAuth.init().catch(() => null);
+settyAuth.mountPill();
+
 async function sb(method, path, body, prefer){
+  await settyAuthReady;
   const headers = {
     apikey: SUPABASE_ANON_KEY,
-    Authorization: "Bearer " + SUPABASE_ANON_KEY,
+    Authorization: "Bearer " + settyAuth.token(),
     "Content-Type": "application/json",
   };
   if (prefer) headers["Prefer"] = prefer;

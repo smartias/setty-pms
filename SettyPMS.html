@@ -57,6 +57,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <!-- pako: zlib in JS — used to compress email HTML bodies before storing in Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <script src="setty-auth.js"></script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     body{background:#0d0f1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -698,10 +699,18 @@ async function graphFetch(method, path, body, token, scopes = GRAPH_SCOPES) {
 const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 
+// Shared suite sign-in (setty-auth.js). Supabase calls below carry the
+// signed-in user's JWT via settyAuth.token(); signed-out users fall back to
+// the anon key until the Phase 2 RLS flip. The fetch helpers await
+// settyAuthReady so the stored session is restored before the first read.
+const settyAuthReady = settyAuth.init().catch(() => null);
+settyAuth.mountPill();
+
 async function sbFetch(method, path, body) {
+  await settyAuthReady;
   const headers = {
     "apikey": SUPABASE_ANON_KEY,
-    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + settyAuth.token(),
     "Content-Type": "application/json",
     "Prefer": method === "POST" ? "resolution=merge-duplicates,return=minimal" : "return=minimal",
   };
@@ -747,7 +756,7 @@ async function saveState(state) {
     method: "PATCH",
     headers: {
       "apikey": SUPABASE_ANON_KEY,
-      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + settyAuth.token(),
       "Content-Type": "application/json",
       "Prefer": "return=representation",
     },
@@ -905,9 +914,10 @@ class ConflictError extends Error {
 
 // Lightweight wrapper around fetch() that surfaces Supabase errors cleanly.
 async function sbFetchV2(method, path, body, extraPrefer = "") {
+  await settyAuthReady;
   const headers = {
     "apikey": SUPABASE_ANON_KEY,
-    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + settyAuth.token(),
     "Content-Type": "application/json",
     "Prefer": "return=representation" + (extraPrefer ? "," + extraPrefer : ""),
   };
@@ -2469,11 +2479,12 @@ const FILING_LOG_TABLE_PMS = "pms_filing_log";
 // end with a stable &order on a unique-ish key so offset paging stays disjoint.
 // (Replaces the old &limit=2000, which silently capped at 1000 anyway.)
 async function fetchAllAnon(tableQuery, label) {
+  await settyAuthReady;
   const out = [];
   const PAGE = 1000;
   const headers = {
     "apikey": SUPABASE_ANON_KEY,
-    "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + settyAuth.token(),
   };
   for (let offset = 0; offset < 500000; offset += PAGE) {
     const res = await fetchWithRetry(
@@ -26600,7 +26611,7 @@ function App() {
   // from pms_data (the source of truth at migration time) and downloads as JSON.
   async function downloadPreMigrationBackup() {
     const res = await fetch(SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=*", {
-      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_ANON_KEY },
+      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + settyAuth.token() },
     });
     if (!res.ok) throw new Error("Pre-migration backup fetch failed: HTTP " + res.status);
     const rows = await res.json();
@@ -26930,7 +26941,7 @@ function App() {
       // because pms_data.projects is no longer kept up to date.
       const sbHeaders = {
         "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + settyAuth.token(),
       };
       let projects = [], termContracts = [], staff = [], clients = [], cloudUpdatedAt = null, source = "v2";
       // Page projects + clients past the 1000-row cap so a backup taken after the
