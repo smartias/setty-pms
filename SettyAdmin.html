@@ -98,11 +98,12 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v2 (adds System Guide + Claude/MCP runbook tabs).
-// Sign-in required for everything. The data behind
-// each tab is served by authenticated-only SQL (admin_signin_roster,
-// admin_backup_status, pms_user_roles RLS), so the gate here is enforced
-// server-side too, not just cosmetically.
+// Setty Admin Console v3 (v2 added System Guide + Claude/MCP runbook tabs;
+// v3 makes the whole console ADMIN-ONLY — first Phase 5 slice).
+// The gate is enforced server-side, not just cosmetically: the admin_* RPCs
+// raise 'Admin role required' unless the caller's JWT email has role='admin'
+// in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
+// (is_pms_admin()). The page checks my_pms_role() after sign-in for UX.
 // ─────────────────────────────────────────────────────────────────────────────
 const SUPABASE_URL  = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
@@ -143,7 +144,8 @@ const TABS = [
   { key: "mcp",   label: "🤖 Claude / MCP" },
 ];
 const state = { tab: "signins", roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
-                integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null };
+                integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null,
+                myRole: undefined };   // undefined = not checked · "pending" · "none" · "staff" · "finance" · "admin"
 const FEED_URL = SUPABASE_URL + "/functions/v1/pms-billing-feed/v1/pms/billable-milestones";
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -155,13 +157,39 @@ function render() {
     : () => settyAuth.signInWithMicrosoft();
 
   if (!signedIn) {
+    state.myRole = undefined;
     $("tabs").style.display = "none";
     $("view").innerHTML = `
       <div class="gate card">
         <div class="big">🛠️</div>
         <h2 style="margin:0 0 6px">Admin Console</h2>
-        <p style="color:var(--dim)">This page requires a Setty sign-in — everything behind it is served only to signed-in accounts.</p>
+        <p style="color:var(--dim)">This page requires a Setty sign-in with the <b>admin</b> role.</p>
         <button class="btn btn-primary" onclick="settyAuth.signInWithMicrosoft()" style="width:100%;padding:11px">Sign in with Microsoft</button>
+      </div>`;
+    return;
+  }
+  // Admin gate. The database enforces this regardless (guarded RPCs + RLS);
+  // this check just gives non-admins a clear screen instead of error toasts.
+  if (state.myRole === undefined) {
+    state.myRole = "pending";
+    sb("POST", "/rest/v1/rpc/my_pms_role", {})
+      .then(r => { state.myRole = r || "none"; render(); })
+      .catch(e => { state.myRole = "none"; toast("Role check failed: " + e.message, "error"); render(); });
+  }
+  if (state.myRole === "pending") {
+    $("tabs").style.display = "none";
+    $("view").innerHTML = '<div class="empty">Checking access…</div>';
+    return;
+  }
+  if (state.myRole !== "admin") {
+    $("tabs").style.display = "none";
+    $("view").innerHTML = `
+      <div class="gate card">
+        <div class="big">🔒</div>
+        <h2 style="margin:0 0 6px">Admins only</h2>
+        <p style="color:var(--dim)">Signed in as <b>${esc(settyAuth.email())}</b>, but this console requires the
+           <b>admin</b> role. An existing admin can add you on the Users &amp; Roles tab.</p>
+        <button class="btn" onclick="settyAuth.signOut()" style="width:100%;padding:11px">Sign out</button>
       </div>`;
     return;
   }
@@ -229,8 +257,9 @@ async function renderRoles() {
         <button class="btn btn-primary" onclick="addRole()">Add</button>
       </div>
       <div style="color:var(--muted);font-size:12px;margin-top:8px">
-        Roles don't gate anything yet — this is the registry the Phase 5 permission policies will read.
-        For now: any signed-in account can edit this list; that tightens to admin-only when roles go live.</div>
+        First Phase 5 slice is live: this console — and this list — are <b>admin-only</b>, enforced in the
+        database (guarded RPCs + RLS), not just in the page. The finance/staff roles don't gate anything yet.
+        Careful removing admins: with no admins left, everyone is locked out (recovery = re-insert a row via the Supabase SQL editor).</div>
     </div>
     <div class="card">
       <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Updated</th><th></th></tr></thead>
@@ -263,6 +292,12 @@ async function setRole(email, role) {
   } catch (e) { toast(e.message, "error"); }
 }
 async function dropRole(email) {
+  const admins = (state.roles || []).filter(x => x.role === "admin");
+  if (admins.length === 1 && admins[0].email === email) {
+    toast("That's the last admin — removing it would lock everyone out of this console.", "error"); return;
+  }
+  if (email === settyAuth.email().toLowerCase() &&
+      !confirm("This is YOUR account — removing it locks you out of this console. Continue?")) return;
   if (!confirm("Remove " + email + " from the roles list?")) return;
   try {
     await sb("DELETE", "/rest/v1/pms_user_roles?email=eq." + encodeURIComponent(email));
@@ -478,7 +513,7 @@ function renderGuide() {
         <div class="phaserow"><span class="pill warn">IN PROGRESS</span><div><b>Phase 2 — Team adoption.</b> Everyone on the staff list signs in once. The Sign-ins tab is the readiness dashboard for this.</div></div>
         <div class="phaserow"><span class="pill warn">WRAPPING UP</span><div><b>Phase 3 — Admin console &amp; safeguards (you are here).</b> This console: sign-in roster, user/role registry, backup monitoring, filing log, integration token control — plus this guide. Security work to date lands here.</div></div>
         <div class="phaserow"><span class="pill info">NEXT</span><div><b>Phase 4 — The RLS flip.</b> Once adoption is complete, database policies flip to signed-in-only (<code>TO authenticated</code>). Signed-out access to PMS data ends; nothing else changes for signed-in staff.</div></div>
-        <div class="phaserow"><span class="pill info">PLANNED</span><div><b>Phase 5 — Role-based permissions.</b> Policies start reading the Users &amp; Roles registry (admin / finance / staff), tightening who can edit what — including making that registry itself admin-only.</div></div>
+        <div class="phaserow"><span class="pill warn">STARTED</span><div><b>Phase 5 — Role-based permissions.</b> Policies read the Users &amp; Roles registry (admin / finance / staff). First slice is <b>live</b>: this Admin Console — including the roles registry and integration secrets — is admin-only, enforced in the database. Finance/staff policies on PMS data come later.</div></div>
       </div>
     </div>
 
@@ -608,6 +643,8 @@ function renderGuide() {
         <li><b>Claude/MCP or billing feed down:</b> the Claude/MCP tab here has live health checks; function logs are in the Supabase dashboard.</li>
         <li><b>Sign-in problems:</b> Supabase Dashboard → Authentication (the Azure provider config + allowed redirect URLs) and the Entra app registrations (IT).</li>
         <li><b>Filing/add-in problems:</b> the Filing Log tab shows per-email success/errors with the user and error text.</li>
+        <li><b>Locked out of this console</b> (no admins left in the roles list): from the Supabase dashboard SQL editor run
+            <code>insert into pms_user_roles (email, role) values ('you@setty.com','admin');</code> — the service role bypasses RLS.</li>
       </ol>
       <p style="font-size:12.5px;color:var(--muted)">Deeper technical history (per-version changelogs, incident notes, data-shape details) lives in the working
          session notes and the PMS-MCP folder in the PMS OneDrive directory — but this page plus the code comments are intended to be enough to operate the system.</p>
@@ -718,7 +755,7 @@ function renderMcp() {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
-settyAuth.onChange(() => { state.roster = state.roles = state.backups = state.filing = null; render(); });
+settyAuth.onChange(() => { state.roster = state.roles = state.backups = state.filing = null; state.myRole = undefined; render(); });
 settyAuth.init().catch(e => toast("Sign-in: " + e.message, "error")).then(render);
 </script>
 </body>
