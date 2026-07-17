@@ -565,6 +565,53 @@ function renderGuide() {
       </ul>
       <p><b>How knowledge gets in:</b> the add-in files it (emails, notes, action items), the field apps capture it (photos, site reports), the sync tools parse it (RFIs/submittals), and mining passes distill it (agency preferences, lessons).<br>
          <b>How it gets out:</b> the PMS and Intelligence apps display it; the MCP connector lets anyone ask Claude about it in plain English.</p>
+    </div>
+
+    <div class="card doc" id="g-continuity">
+      <details>
+      <summary class="sechead" style="cursor:pointer;list-style:none">▸ Continuity — take-over runbook <span style="text-transform:none;letter-spacing:0;font-weight:400">(accounts, deploys, recovery — click to expand)</span></summary>
+      <p>Everything you need to run, fix, or hand off the suite. Current owners: <b>Sara Arias</b> and <b>Danny Kang</b>
+         (co-managers); IT contact for Entra/Claude admin: <b>Nikhil</b>.</p>
+
+      <p style="margin-top:10px"><b>The accounts that hold everything:</b></p>
+      <table style="margin:6px 0"><thead><tr><th>Account</th><th>What it holds</th><th>Notes</th></tr></thead><tbody>
+        <tr><td><b>GitHub — <code>smartias</code></b><br><span style="color:var(--muted);font-size:12px">⚠ personal account</span></td>
+            <td>Repo <code>setty-pms</code> (all apps + this console; GitHub Pages serves the live site) and repo <code>setty-pms-addin</code> (the Outlook/Word add-in, also Pages-served).</td>
+            <td>Public repos by design — the anon key and IDs in them are publishable; security is the sign-in layer + RLS, not secrecy.</td></tr>
+        <tr><td><b>Supabase — project <code>khxmgjilwhdguuepbhne</code></b><br><span style="color:var(--muted);font-size:12px">⚠ personal org, Pro plan ($25/mo)</span></td>
+            <td>ALL shared data (projects, emails, knowledge tables), authentication, the Edge Functions (MCP, billing feed, unsubscribe…), scheduled jobs (nightly email mirror, MCP keep-warm), and the function secrets.</td>
+            <td>Dashboard → Edge Functions → Secrets holds <code>MCP_SHARED_SECRET</code> and the <code>GRAPH_*</code> credentials. Database backups: Supabase daily + our own mirror (Backups tab).</td></tr>
+        <tr><td><b>Microsoft Entra — Setty tenant</b><br><span style="color:var(--muted);font-size:12px">✓ firm-owned</span></td>
+            <td>App registrations: <code>c4739c11…</code> (staff sign-in for the whole suite) and <code>b49e795c…</code> ("Setty PMS MCP" — Claude connector OAuth + app-only SharePoint reading; its client secret lives here).</td>
+            <td>IT (Nikhil) administers; admin consent is required for any new permission — the tenant blocks self-consent.</td></tr>
+        <tr><td><b>Microsoft 365</b></td>
+            <td>The content itself: SharePoint NYCProjects site (project folders), per-project OneNote notebooks, everyone's mail.</td>
+            <td>Firm-owned; the apps only ever touch it as the signed-in user.</td></tr>
+      </tbody></table>
+      <p style="color:var(--amber);font-size:12.5px">⚠ <b>Known governance gap:</b> GitHub and Supabase are on Sara's personal accounts.
+         The eventual fix is transferring the repos to a firm GitHub org and the Supabase project to a firm-owned org (both platforms
+         support ownership transfer without downtime). Until then, account recovery for those two logins IS the disaster-recovery plan —
+         keep their credentials somewhere a second person can reach.</p>
+
+      <p style="margin-top:10px"><b>How to deploy each piece:</b></p>
+      <ul>
+        <li><b>PMS + satellite apps + this console:</b> edit in the git clone, push a branch, merge to <code>main</code> on <code>smartias/setty-pms</code> (or "Add files via upload" for a quick fix) — GitHub Pages publishes automatically, no build step, no CI. <b>Merge, never overwrite,</b> main.</li>
+        <li><b>Outlook/Word add-in:</b> push to <code>main</code> on <code>smartias/setty-pms-addin</code>, then bump the <code>taskpane.js?v=</code> cache token in taskpane.html or Outlook keeps serving the old JS.</li>
+        <li><b>Edge Functions (MCP, billing feed…):</b> deployed from the Supabase dashboard or MCP tooling. <b>The live function is the source of truth</b> — always pull the deployed source first (dashboard → the function → source, or <code>get_edge_function</code>) before editing; on-disk copies drift stale. Health-check after every deploy.</li>
+        <li><b>Database changes:</b> SQL migrations via the Supabase dashboard SQL editor; RLS policies and scheduled jobs live there too.</li>
+      </ul>
+
+      <p style="margin-top:10px"><b>If something is broken, in order:</b></p>
+      <ol>
+        <li><b>Data looks wrong / missing:</b> check the Backups tab here (email mirror + dated snapshots), then Supabase Dashboard → Database → Backups for point-in-time restore. The PMS also has a manual JSON backup/restore in its Data Tools.</li>
+        <li><b>An app won't load:</b> check GitHub Pages status on the repo, then the browser console. The apps are static files — rolling back = reverting the file on main.</li>
+        <li><b>Claude/MCP or billing feed down:</b> the Claude/MCP tab here has live health checks; function logs are in the Supabase dashboard.</li>
+        <li><b>Sign-in problems:</b> Supabase Dashboard → Authentication (the Azure provider config + allowed redirect URLs) and the Entra app registrations (IT).</li>
+        <li><b>Filing/add-in problems:</b> the Filing Log tab shows per-email success/errors with the user and error text.</li>
+      </ol>
+      <p style="font-size:12.5px;color:var(--muted)">Deeper technical history (per-version changelogs, incident notes, data-shape details) lives in the working
+         session notes and the PMS-MCP folder in the PMS OneDrive directory — but this page plus the code comments are intended to be enough to operate the system.</p>
+      </details>
     </div>`;
 }
 
@@ -647,10 +694,26 @@ function renderMcp() {
         <tr><td>Microsoft error <b>AADSTS50011</b> (redirect URI mismatch)</td><td>Add the exact callback URI from the error to app registration <code>${ENTRA_APP}</code>.</td></tr>
         <tr><td>Microsoft error <b>AADSTS65001 / 90094</b> (needs approval)</td><td>Admin consent hasn't been granted for <code>MCP.Access</code> — step 4 above. Expected on first setup: this tenant blocks all self-consent.</td></tr>
         <tr><td>Signed in, but every tool call returns Unauthorized</td><td>The token Claude got isn't for our API — verify the connector requests scope <code>api://${ENTRA_APP}/MCP.Access</code> (audience mismatch is rejected server-side), and that the account is in the Setty tenant.</td></tr>
-        <tr><td>First question times out, second works</td><td>Cold start: the function loads the portfolio on first use, then caches for 5 minutes. One retry is normal after idle periods.</td></tr>
+        <tr><td>First question times out, second works</td><td>Cold start: the function loads the portfolio on first use, then caches for 5 minutes. A keep-warm job pings /health every 2 minutes, but the first call right after a deploy can still be slow — one retry is normal.</td></tr>
+        <tr><td>Claude Desktop shows the connector "offline" intermittently</td><td>That's the local bridge, not the server (the server logs show calls completing in 1–2.5s). If the config uses <code>npx -y mcp-remote</code>, pin a known-good version (e.g. <code>mcp-remote@0.1.37</code>) so it stops re-downloading "latest" on every launch.</td></tr>
+        <tr><td>A newly added tool doesn't show up</td><td>MCP clients cache the tool list at connect time — disconnect/reconnect the connector (or restart Desktop) after any server update.</td></tr>
         <tr><td>Everything worked, then stopped for everyone</td><td>Check whether the shared secret was rotated or the function was redeployed mid-conversation; re-try, then check Supabase function logs.</td></tr>
       </tbody></table>
       <p style="font-size:12px;color:var(--muted);margin-top:8px">Owners: Sara Arias &amp; Danny Kang. Server code lives in the PMS-MCP folder (OneDrive) — but always pull the live function before editing; the deployed version is ahead of disk.</p>
+    </div>
+
+    <div class="card doc">
+      <div class="sechead">Best practices (IT &amp; whoever maintains this)</div>
+      <ul>
+        <li><b>Rollout timing:</b> the connector is <b>independent of the security-rollout phases</b> — it never touches the anon key or user database sessions (it has its own gate + a server-side key), so the Phase 4 RLS flip changes nothing for it. Connect it whenever IT is ready; the admin-consent step is usually the long pole, so start that early.</li>
+        <li><b>Keep it read-only.</b> All writes go through the PMS apps, which handle versioning and conflict protection. Adding write tools to the connector is a deliberate architecture decision, not a tweak.</li>
+        <li><b>Finalize before broad rollout:</b> because clients cache the tool list, add/settle new tools first, then have the team connect — otherwise everyone needs a reconnect to see them.</li>
+        <li><b>Deploy discipline:</b> pull the live source before editing (disk copies drift stale — deploying one would regress features), keep <code>verify_jwt</code> off with the deno.json import map on every deploy, and hit <code>/health</code> afterward — a 200 proves it compiled and booted.</li>
+        <li><b>Rotating the shared secret:</b> set a new <code>MCP_SHARED_SECRET</code> in Supabase function secrets — old callers cut off instantly. Then update wherever the secret is embedded (Desktop bridge configs / local-server install). The OAuth path is unaffected by rotation.</li>
+        <li><b>New permissions need lead time:</b> any new Entra scope or Graph permission requires an IT admin-consent click (tenant policy) — plan it into the schedule rather than discovering it at rollout.</li>
+        <li><b>Watch, don't guess:</b> Supabase dashboard → Edge Functions → pms-mcp → Logs shows every request with timing; the server has been measured healthy at ~1–2s warm, so persistent slowness reports usually point at the client bridge or a cold start, not the server.</li>
+        <li><b>Data caveat everyone should know:</b> shared service view — any connected user can ask about <i>any</i> project (same as the PMS itself). If per-user or per-role visibility is ever needed, the Entra sign-in already identifies the user; scoping would build on the Phase 5 roles registry.</li>
+      </ul>
     </div>`;
 }
 
