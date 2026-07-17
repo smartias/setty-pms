@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-17-pms-v70-rbac-myprojects";
+    window.__appVersion = "2026-07-17-pms-v71-myprojects-digest";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -25520,6 +25520,129 @@ function TimesheetHelper({ staff, projects, onClose }) {
 
 
 // ─── MY PROJECTS ──────────────────────────────────────────────────────────────
+// Shared by Staff Directory and My Projects: staffName (lowercased) → open
+// milestones, RFIs, submittals, and note action items across active projects.
+// "Active" excludes On Hold and Lost — parked work must not surface as due.
+function buildStaffOpenItemsMap(projects) {
+  const map = {};
+  const activeProjects = (projects || []).filter(p =>
+    !p.archived && isAwarded(p) &&
+    !["Completed", "Cancelled", "Lost", "On Hold"].includes(p.status));
+  activeProjects.forEach(p => {
+    const memberById = {};
+    (p.teamMembers || []).forEach(m => { if (m.id) memberById[m.id] = m; });
+    // Regular milestones
+    (p.teamMembers || []).forEach(m => {
+      if (!m.name) return;
+      const key = m.name.trim().toLowerCase();
+      if (!map[key]) map[key] = [];
+      (p.milestones || [])
+        .filter(ms => !ms.cancelled && ms.dueDate && milestoneStatus(ms.pctComplete) !== "Completed")
+        .forEach(ms => map[key].push({ ms, project: p, role: m.role, disciplines: m.disciplines, itemType: "milestone" }));
+    });
+    // RFIs assigned to staff
+    (p.rfis || []).filter(r => !["Closed","Void","Responded"].includes(r.status) && r.dueDate)
+      .forEach(r => (r.assignedTo || []).forEach(sid => {
+        const mbr = memberById[sid];
+        if (!mbr || !mbr.name) return;
+        const key = mbr.name.trim().toLowerCase();
+        if (!map[key]) map[key] = [];
+        map[key].push({ ms: { id: r.id, name: r.number + (r.title ? " — " + r.title : ""), dueDate: r.dueDate, pctComplete: 0, status: r.status }, project: p, role: mbr.role, itemType: "rfi", _rfi: r, _project: p });
+      }));
+    // Submittals assigned to staff
+    (p.submittals || []).filter(s => !["Returned","Void"].includes(s.status) && s.dueDate)
+      .forEach(s => (s.assignedTo || []).forEach(sid => {
+        const mbr = memberById[sid];
+        if (!mbr || !mbr.name) return;
+        const key = mbr.name.trim().toLowerCase();
+        if (!map[key]) map[key] = [];
+        map[key].push({ ms: { id: s.id, name: s.number + (s.description ? " — " + s.description : ""), dueDate: s.dueDate, pctComplete: 0, status: s.status }, project: p, role: mbr.role, itemType: "submittal", _sub: s, _project: p });
+      }));
+    // Notes action items assigned by owner name
+    (p.notes || [])
+      .filter(n => n.actionItem && (n.actionStatus || "open") !== "done" && (n.actionOwner || "").trim())
+      .forEach(n => {
+        const key = (n.actionOwner || "").trim().toLowerCase();
+        if (!map[key]) map[key] = [];
+        map[key].push({
+          ms: {
+            id: n.id,
+            name: (n.body || "Action item").slice(0, 120),
+            dueDate: n.actionDueDate || "",
+            pctComplete: (n.actionStatus || "open") === "done" ? 100 : 0,
+            status: n.actionStatus || "open",
+          },
+          project: p,
+          role: "Action Item Owner",
+          itemType: "action-item",
+          _note: n,
+          _project: p
+        });
+      });
+  });
+  Object.values(map).forEach(arr => arr.sort((a, b) => (a.ms.dueDate||"").localeCompare(b.ms.dueDate||"")));
+  return map;
+}
+
+// Rows shared by the Staff expanded panel and the My Projects digest — one
+// open item (milestone / RFI / submittal / action item) per row.
+function StaffOpenItemRows({ entries, now, onOpenRfi, onOpenSub, onNavigateToProject, firstColPad = 18 }) {
+  return entries.map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
+    const isOv = !!ms.dueDate && new Date(ms.dueDate) < now;
+    const isRS = itemType === "rfi" || itemType === "submittal";
+    const isActionItem = itemType === "action-item";
+    const statusLabel = isOv
+      ? "Overdue"
+      : (isActionItem
+          ? ((ms.status || "open").replace("-", " ").replace(/\b\w/g, c => c.toUpperCase()))
+          : (isRS ? ms.status : milestoneStatus(ms.pctComplete)));
+    const scol = (RFI_STATUS_COLORS[ms.status] || SUBMITTAL_STATUS_COLORS[ms.status] || {});
+    const statusColor = isOv
+      ? P.red
+      : isActionItem
+        ? (ms.status === "blocked" ? P.yellow : P.accentLight)
+        : isRS
+          ? (scol.text || P.textDim)
+          : (ms.pctComplete > 0 ? P.yellow : P.textDim);
+    const statusBg = isRS ? (scol.bg || "transparent")
+      : isActionItem ? (ms.status === "blocked" ? P.yellowDim : P.accentDim)
+      : "transparent";
+    return (
+      <tr key={ms.id + project.id}
+        style={{ cursor: "pointer", opacity: !isRS && ms.type === "non-billable" ? 0.75 : 1 }}
+        onClick={() => {
+          if (itemType === "rfi") onOpenRfi({ item: _rfi, project: _project || project });
+          else if (itemType === "submittal") onOpenSub({ item: _sub, project: _project || project });
+          else onNavigateToProject && onNavigateToProject(project.id);
+        }}>
+        <td style={{ paddingLeft: firstColPad, fontWeight: 600, fontSize: 13 }}>
+          {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
+           : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
+           : itemType === "action-item" ? <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text="ACT" />
+           : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
+          {" "}{ms.name}
+        </td>
+        <td>
+          <div style={{ fontWeight: 500, fontSize: 13 }}>{project.name}</div>
+          {project.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{project.projectNumber}</div>}
+        </td>
+        <td style={{ color: P.textMuted, fontSize: 12 }}>{role || "—"}</td>
+        <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: isOv ? P.red : P.textMuted, fontWeight: isOv ? 700 : 400 }}>
+          {ms.dueDate ? fmtDate(ms.dueDate) : "—"}
+        </td>
+        <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor, background: statusBg, padding: isRS ? "2px 7px" : 0, borderRadius: isRS ? 8 : 0 }}>{statusLabel}</span></td>
+        <td>
+          {!isRS && !isActionItem && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
+            <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
+          </div>}
+          {isActionItem && <span style={{ fontSize: 11, color: P.textDim }}>—</span>}
+        </td>
+      </tr>
+    );
+  });
+}
+
 // Personal portfolio view — everyone gets this in the nav (Staff and Team WBS
 // are Operations-facing via the staffing.view capability). "Join" appends the
 // person to that project's Team tab (project.teamMembers), so My Projects
@@ -25530,10 +25653,21 @@ function TimesheetHelper({ staff, projects, onClose }) {
 function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNavigateToProject }) {
   const [q, setQ] = React.useState("");
   const [linkPick, setLinkPick] = React.useState("");
+  const [rfiModal, setRfiModal] = React.useState(null);
+  const [subModal, setSubModal] = React.useState(null);
+  const [showTimesheet, setShowTimesheet] = React.useState(false);
   const signedIn = settyAuth.isSignedIn();
   const email = (settyAuth.email() || "").trim().toLowerCase();
   const myStaff = email ? (staff || []).find(s => (s.email || "").trim().toLowerCase() === email) : null;
   const myName = ((myStaff && myStaff.name) || "").trim().toLowerCase();
+
+  // Same digest the Staff tab shows for this person — On Hold projects excluded.
+  const now = new Date();
+  const myItems = React.useMemo(() =>
+    (myName && buildStaffOpenItemsMap(projects)[myName]) || [], [projects, myName]);
+  const myOverdue = myItems.filter(({ ms }) => ms.dueDate && new Date(ms.dueDate) < now);
+  const myUpcoming = myItems.filter(({ ms }) => !ms.dueDate || new Date(ms.dueDate) >= now);
+  const UPCOMING_CAP = 15;
 
   const isMine = (p) => (p.teamMembers || []).some(m =>
     (m.email && m.email.trim().toLowerCase() === email) ||
@@ -25615,6 +25749,7 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
     </div>
   );
   return (
+    <>
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4 }}>
         <div style={{ fontSize: 20, fontWeight: 800 }}>My Projects</div>
@@ -25623,6 +25758,55 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
       <div style={{ color: P.textMuted, fontSize: 12.5, marginBottom: 16 }}>
         Joining a project adds you to its Team tab; leaving removes you there too.
       </div>
+
+      {/* My deadlines & open items — same digest as the Staff tab, On Hold excluded */}
+      <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, marginBottom: 22, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 18px", borderBottom: "1px solid " + P.border }}>
+          <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>My Deadlines &amp; Open Items</div>
+          {myOverdue.length > 0 && (
+            <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: P.redDim, color: P.red, border: "1px solid " + P.red }}>
+              {myOverdue.length} overdue
+            </span>
+          )}
+          {myUpcoming.length > 0 && (
+            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 10, background: P.accentDim, color: P.accentLight }}>
+              {myUpcoming.length} upcoming
+            </span>
+          )}
+          <Btn small variant="ghost" onClick={() => setShowTimesheet(true)}>📋 Timesheet Helper</Btn>
+        </div>
+        {myItems.length === 0 ? (
+          <div style={{ padding: "14px 18px", color: P.textDim, fontSize: 13 }}>
+            No open milestones, RFIs, submittals, or action items on active projects.
+          </div>
+        ) : (
+          <>
+            <table style={{ margin: 0 }}>
+              <thead>
+                <tr>
+                  <th style={{ paddingLeft: 18 }}>Item</th>
+                  <th>Project</th>
+                  <th>Role on Project</th>
+                  <th>Due</th>
+                  <th>Status</th>
+                  <th>% Done</th>
+                </tr>
+              </thead>
+              <tbody>
+                <StaffOpenItemRows entries={[...myOverdue, ...myUpcoming.slice(0, UPCOMING_CAP)]} now={now}
+                  onOpenRfi={setRfiModal} onOpenSub={setSubModal}
+                  onNavigateToProject={onNavigateToProject} />
+              </tbody>
+            </table>
+            {myUpcoming.length > UPCOMING_CAP && (
+              <div style={{ padding: "8px 18px", color: P.textDim, fontSize: 12, borderTop: "1px solid " + P.border }}>
+                + {myUpcoming.length - UPCOMING_CAP} more further out
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       <div style={{ position: "relative", maxWidth: 480, marginBottom: 22 }}>
         <input value={q} onChange={e => setQ(e.target.value)}
           placeholder="🔍 Add a project — search by name, number or client…" style={{ width: "100%" }} />
@@ -25665,6 +25849,42 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
         </div>
       )}
     </div>
+    {rfiModal && (
+      <RFIDetailModal
+        item={rfiModal.item}
+        project={rfiModal.project}
+        staff={staff}
+        clients={[]}
+        type="rfi"
+        onSave={updated => {
+          const p = rfiModal.project;
+          onUpdateProject({ ...p, rfis: (p.rfis||[]).map(r => r.id===updated.id ? updated : r) });
+        }}
+        onClose={() => setRfiModal(null)}
+      />
+    )}
+    {subModal && (
+      <RFIDetailModal
+        item={subModal.item}
+        project={subModal.project}
+        staff={staff}
+        clients={[]}
+        type="submittal"
+        onSave={updated => {
+          const p = subModal.project;
+          onUpdateProject({ ...p, submittals: (p.submittals||[]).map(s => s.id===updated.id ? updated : s) });
+        }}
+        onClose={() => setSubModal(null)}
+      />
+    )}
+    {showTimesheet && (
+      <TimesheetHelper
+        staff={myStaff}
+        projects={projects}
+        onClose={() => setShowTimesheet(false)}
+      />
+    )}
+    </>
   );
 }
 
@@ -25677,69 +25897,9 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   const [staffSubModal, setStaffSubModal] = React.useState(null);
   const [timesheetStaff, setTimesheetStaff] = React.useState(null); // staff member to generate timesheet for
 
-  // Build lookup: staffName → upcoming milestones across all active projects
-  const activeProjects = React.useMemo(() =>
-    projects.filter(p => !p.archived && isAwarded(p) && p.status !== "Completed" && p.status !== "Cancelled"),
-  [projects]);
-
+  // staffName → open items across active projects (excludes On Hold / Lost)
   const now = new Date();
-  const staffMilestones = React.useMemo(() => {
-    const map = {};
-    activeProjects.forEach(p => {
-      const memberById = {};
-      (p.teamMembers || []).forEach(m => { if (m.id) memberById[m.id] = m; });
-      // Regular milestones
-      (p.teamMembers || []).forEach(m => {
-        if (!m.name) return;
-        const key = m.name.trim().toLowerCase();
-        if (!map[key]) map[key] = [];
-        (p.milestones || [])
-          .filter(ms => !ms.cancelled && ms.dueDate && milestoneStatus(ms.pctComplete) !== "Completed")
-          .forEach(ms => map[key].push({ ms, project: p, role: m.role, disciplines: m.disciplines, itemType: "milestone" }));
-      });
-      // RFIs assigned to staff
-      (p.rfis || []).filter(r => !["Closed","Void","Responded"].includes(r.status) && r.dueDate)
-        .forEach(r => (r.assignedTo || []).forEach(sid => {
-          const mbr = memberById[sid];
-          if (!mbr || !mbr.name) return;
-          const key = mbr.name.trim().toLowerCase();
-          if (!map[key]) map[key] = [];
-          map[key].push({ ms: { id: r.id, name: r.number + (r.title ? " — " + r.title : ""), dueDate: r.dueDate, pctComplete: 0, status: r.status }, project: p, role: mbr.role, itemType: "rfi", _rfi: r, _project: p });
-        }));
-      // Submittals assigned to staff
-      (p.submittals || []).filter(s => !["Returned","Void"].includes(s.status) && s.dueDate)
-        .forEach(s => (s.assignedTo || []).forEach(sid => {
-          const mbr = memberById[sid];
-          if (!mbr || !mbr.name) return;
-          const key = mbr.name.trim().toLowerCase();
-          if (!map[key]) map[key] = [];
-          map[key].push({ ms: { id: s.id, name: s.number + (s.description ? " — " + s.description : ""), dueDate: s.dueDate, pctComplete: 0, status: s.status }, project: p, role: mbr.role, itemType: "submittal", _sub: s, _project: p });
-        }));
-      // Notes action items assigned by owner name
-      (p.notes || [])
-        .filter(n => n.actionItem && (n.actionStatus || "open") !== "done" && (n.actionOwner || "").trim())
-        .forEach(n => {
-          const key = (n.actionOwner || "").trim().toLowerCase();
-          if (!map[key]) map[key] = [];
-          map[key].push({
-            ms: {
-              id: n.id,
-              name: (n.body || "Action item").slice(0, 120),
-              dueDate: n.actionDueDate || "",
-              pctComplete: (n.actionStatus || "open") === "done" ? 100 : 0,
-              status: n.actionStatus || "open",
-            },
-            project: p,
-            role: "Action Item Owner",
-            itemType: "action-item",
-            _note: n,
-            _project: p
-          });
-        });
-    });
-    Object.values(map).forEach(arr => arr.sort((a, b) => (a.ms.dueDate||"").localeCompare(b.ms.dueDate||"")));
-    return map;
-  }, [activeProjects]);
+  const staffMilestones = React.useMemo(() => buildStaffOpenItemsMap(projects), [projects]);
 
   function startNew() {
     setForm(newStaffMember());
@@ -25933,60 +26093,10 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                           </tr>
                         </thead>
                         <tbody>
-	                          {[...overdue, ...upcoming].map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
-	                            const isOv = !!ms.dueDate && new Date(ms.dueDate) < now;
-	                            const isRS = itemType === "rfi" || itemType === "submittal";
-                              const isActionItem = itemType === "action-item";
-	                            const statusLabel = isOv
-                                ? "Overdue"
-                                : (isActionItem
-                                    ? ((ms.status || "open").replace("-", " ").replace(/\b\w/g, c => c.toUpperCase()))
-                                    : (isRS ? ms.status : milestoneStatus(ms.pctComplete)));
-	                            const scol = (RFI_STATUS_COLORS[ms.status] || SUBMITTAL_STATUS_COLORS[ms.status] || {});
-	                            const statusColor = isOv
-                                ? P.red
-                                : isActionItem
-                                  ? (ms.status === "blocked" ? P.yellow : P.accentLight)
-                                  : isRS
-                                    ? (scol.text || P.textDim)
-                                    : (ms.pctComplete > 0 ? P.yellow : P.textDim);
-	                            const statusBg = isRS ? (scol.bg || "transparent")
-                                : isActionItem ? (ms.status === "blocked" ? P.yellowDim : P.accentDim)
-                                : "transparent";
-	                            return (
-	                              <tr key={ms.id + project.id}
-	                                style={{ cursor: "pointer", opacity: !isRS && ms.type === "non-billable" ? 0.75 : 1 }}
-	                                onClick={() => {
-	                                  if (itemType === "rfi") setStaffRfiModal({ item: _rfi, project: _project || project });
-	                                  else if (itemType === "submittal") setStaffSubModal({ item: _sub, project: _project || project });
-	                                  else onNavigateToProject && onNavigateToProject(project.id);
-	                                }}>
-	                                <td style={{ paddingLeft: 18, fontWeight: 600, fontSize: 13 }}>
-	                                  {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
-	                                   : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
-                                   : itemType === "action-item" ? <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text="ACT" />
-	                                   : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
-	                                  {" "}{ms.name}
-	                                </td>
-                                <td>
-                                  <div style={{ fontWeight: 500, fontSize: 13 }}>{project.name}</div>
-                                  {project.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{project.projectNumber}</div>}
-                                </td>
-                                <td style={{ color: P.textMuted, fontSize: 12 }}>{role || "—"}</td>
-	                                <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: isOv ? P.red : P.textMuted, fontWeight: isOv ? 700 : 400 }}>
-	                                  {ms.dueDate ? fmtDate(ms.dueDate) : "—"}
-	                                </td>
-	                                <td><span style={{ fontSize: 11, fontWeight: 600, color: statusColor, background: statusBg, padding: isRS ? "2px 7px" : 0, borderRadius: isRS ? 8 : 0 }}>{statusLabel}</span></td>
-	                                <td>
-	                                  {!isRS && !isActionItem && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-	                                    <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
-	                                    <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
-	                                  </div>}
-                                    {isActionItem && <span style={{ fontSize: 11, color: P.textDim }}>—</span>}
-	                                </td>
-	                              </tr>
-	                            );
-	                          })}
+	                          <StaffOpenItemRows entries={[...overdue, ...upcoming]} now={now}
+	                            onOpenRfi={setStaffRfiModal} onOpenSub={setStaffSubModal}
+	                            onNavigateToProject={onNavigateToProject} />
+
                         </tbody>
                       </table>
                     )}
