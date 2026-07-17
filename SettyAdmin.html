@@ -54,6 +54,29 @@
               border-radius: 6px; padding: 2px 8px; font-size: 11.5px; color: var(--dim); margin: 2px; }
   .gate { max-width: 420px; margin: 12vh auto; text-align: center; }
   .gate .big { font-size: 44px; margin-bottom: 10px; }
+  /* System Guide / MCP doc styles */
+  pre { background: var(--card2); border: 1px solid var(--border); border-radius: 8px;
+        padding: 10px 12px; font-size: 12px; overflow-x: auto; margin: 8px 0; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--text); word-break: break-all; }
+  .sechead { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 8px; }
+  .doc p { margin: 6px 0; color: var(--dim); font-size: 13px; }
+  .doc b { color: var(--text); }
+  .doc ul, .doc ol { margin: 6px 0 6px 4px; padding-left: 18px; color: var(--dim); font-size: 13px; }
+  .doc li { margin: 4px 0; }
+  .appgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+  .appcard { background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .appcard h4 { margin: 0 0 4px; font-size: 13.5px; }
+  .appcard p { margin: 0; color: var(--dim); font-size: 12.5px; }
+  .appcard .src { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+  .archflow { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; }
+  .archcol { flex: 1; min-width: 210px; background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .archcol h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .architem { border: 1px solid var(--border); background: var(--card); border-radius: 7px; padding: 5px 9px; font-size: 12.5px; margin: 5px 0; }
+  .architem span { color: var(--muted); font-size: 11.5px; display: block; }
+  .phaserow { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--card2); }
+  .phaserow:last-child { border-bottom: none; }
+  .phaserow .pill { flex-shrink: 0; margin-top: 1px; }
+  .jump { display: inline-block; margin: 2px 6px 2px 0; font-size: 12.5px; }
   #status { min-height: 20px; font-size: 12.5px; margin: 4px 0 10px; }
   #status.error { color: var(--red); } #status.success { color: var(--green); }
   @media (max-width: 720px) { body { padding: 12px 12px 60px; } .stat { margin-right: 16px; } }
@@ -63,7 +86,7 @@
   <div class="header-bar">
     <div>
       <h1>🛠️ Setty Admin Console</h1>
-      <div class="header-sub">Sign-ins · users &amp; roles · backups · filing log ·
+      <div class="header-sub">Sign-ins · users &amp; roles · backups · filing log · integration · system guide · Claude/MCP ·
         <a href="https://smartias.github.io/setty-pms/SettyPMS.html">← Back to PMS</a></div>
     </div>
     <div class="chip" id="userChip">…</div>
@@ -75,7 +98,8 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v1 — sign-in required for everything. The data behind
+// Setty Admin Console v2 (adds System Guide + Claude/MCP runbook tabs).
+// Sign-in required for everything. The data behind
 // each tab is served by authenticated-only SQL (admin_signin_roster,
 // admin_backup_status, pms_user_roles RLS), so the gate here is enforced
 // server-side too, not just cosmetically.
@@ -115,6 +139,8 @@ const TABS = [
   { key: "backups", label: "🗄️ Backups" },
   { key: "filing",  label: "📨 Filing Log" },
   { key: "integration", label: "🔗 Integration" },
+  { key: "guide", label: "📖 System Guide" },
+  { key: "mcp",   label: "🤖 Claude / MCP" },
 ];
 const state = { tab: "signins", roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
                 integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null };
@@ -142,7 +168,8 @@ function render() {
   $("tabs").style.display = "flex";
   $("tabs").innerHTML = TABS.map(t =>
     `<div class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</div>`).join("");
-  ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration })[state.tab]();
+  ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration,
+     guide: renderGuide, mcp: renderMcp })[state.tab]();
 }
 function setTab(k) { state.tab = k; render(); }
 
@@ -392,6 +419,238 @@ async function testFeed() {
     state.feedTest = r.ok ? `✓ ${d.projects.length} projects served, generated ${d.generatedAt}` : `✗ HTTP ${r.status}: ${JSON.stringify(d).slice(0, 120)}`;
   } catch (e) { state.feedTest = "✗ " + e.message; }
   render();
+}
+
+// ── System Guide (static explainer — how the whole suite works) ──────────────
+function renderGuide() {
+  $("view").innerHTML = `
+    <div class="card doc">
+      <div class="sechead">Setty PMS — System Guide</div>
+      <p>One page that explains how the suite is put together: how people sign in, how it's secured,
+         what the architecture is, what each application does, and where the firm's knowledge lives.
+         Written for admins and for IT — nothing on this page is a secret (client IDs and endpoint
+         URLs are public by design; the actual keys and tokens never appear here).</p>
+      <div style="margin-top:8px">
+        <a class="jump" href="#g-signin">↓ Sign-in method</a> ·
+        <a class="jump" href="#g-security">↓ Security &amp; progress</a> ·
+        <a class="jump" href="#g-arch">↓ Architecture</a> ·
+        <a class="jump" href="#g-apps">↓ Applications</a> ·
+        <a class="jump" href="#g-knowledge">↓ Knowledge layer</a>
+      </div>
+    </div>
+
+    <div class="card doc" id="g-signin">
+      <div class="sechead">1 · Sign-in method</div>
+      <p>The suite uses <b>two complementary sign-ins</b>, both backed by the same Microsoft work account —
+         staff never create a new password anywhere.</p>
+      <table style="margin:10px 0"><thead><tr><th>Layer</th><th>What it gates</th><th>How it works</th></tr></thead><tbody>
+        <tr><td><b>Suite sign-in</b><br><span style="color:var(--muted);font-size:12px">setty-auth.js</span></td>
+            <td>App data in Supabase (projects, emails, admin tabs)</td>
+            <td>Supabase Auth's <b>Azure provider</b> — "Sign in with Microsoft" redirects to the Setty tenant,
+                comes back with a short-lived JWT that auto-refreshes. Email one-time-code fallback for edge cases.
+                One sign-in covers every app on the <code>smartias.github.io</code> origin (shared localStorage session);
+                Office taskpanes use a popup variant of the same flow.</td></tr>
+        <tr><td><b>Microsoft 365 access</b><br><span style="color:var(--muted);font-size:12px">MSAL.js in the PMS &amp; add-in</span></td>
+            <td>SharePoint files, Outlook mail, OneNote, Teams, Calendar</td>
+            <td>MSAL popup sign-in issuing <b>delegated</b> Microsoft Graph tokens — the app can only ever see
+                what the signed-in person can already see in Microsoft 365. No app-wide mailbox or drive access.</td></tr>
+      </tbody></table>
+      <ul>
+        <li><b>Tenant:</b> <code>f374c024-71c2-48b6-8420-076fff97327c</code> (Setty &amp; Associates)</li>
+        <li><b>App registration:</b> <code>c4739c11-e89b-4a04-9580-f2d886356301</code> — shared by MSAL <i>and</i> the Supabase Azure provider, so no new Azure redirect URIs or IT approvals were needed for the suite sign-in.</li>
+        <li><b>Graph scopes (all delegated, no admin consent):</b> User.Read, Calendars.ReadWrite.Shared, Mail.ReadWrite, Files.ReadWrite.All, Notes.ReadWrite.All, Channel.ReadBasic.All, Group.Read.All. Teams posting adds ChannelMessage.Send (Channel.Create is kept out of normal sign-in because it triggers an admin-approval loop).</li>
+        <li><b>No secrets in the browser:</b> users only ever hold their own short-lived tokens; nothing app-wide is exposed.</li>
+      </ul>
+    </div>
+
+    <div class="card doc" id="g-security">
+      <div class="sechead">2 · Security — model &amp; progress updates</div>
+      <p><b>The model, in layers:</b></p>
+      <ul>
+        <li><b>Identity:</b> everything sensitive requires a Setty Microsoft account. Microsoft 365 content is additionally limited to each person's own permissions (delegated tokens — the app can't out-read its user).</li>
+        <li><b>Database:</b> Supabase Postgres with Row-Level Security. The <i>anon key</i> that appears in the public code is a publishable key by design — the protection is RLS plus the sign-in layer, not key secrecy. The powerful <i>service-role key</i> exists only inside server-side Edge Functions, never in a browser.</li>
+        <li><b>External surfaces are read-only and fail-closed:</b> the Claude/MCP endpoint and the SETTYfy billing feed both reject every request without a valid credential, and neither can write PMS data. The feed token can be rotated instantly from the Integration tab.</li>
+        <li><b>Operational safety:</b> optimistic-concurrency versioning on project rows, global email de-duplication, a delete-proof email mirror with nightly dated snapshots, Supabase's own daily whole-database backups, and the filing log for auditing what the add-in wrote where.</li>
+      </ul>
+      <p style="margin-top:12px"><b>Progress updates — the security rollout.</b> We are at the <b>end of Phase&nbsp;3</b>:</p>
+      <div style="margin-top:6px">
+        <div class="phaserow"><span class="pill ok">DONE</span><div><b>Phase 1 — Shared sign-in layer.</b> setty-auth.js shipped across the suite: Microsoft sign-in via Supabase Auth, auto-refresh, cross-tab and popup support. Non-breaking — signed-out users temporarily fall back to anon access so nothing broke on day one.</div></div>
+        <div class="phaserow"><span class="pill warn">IN PROGRESS</span><div><b>Phase 2 — Team adoption.</b> Everyone on the staff list signs in once. The Sign-ins tab is the readiness dashboard for this.</div></div>
+        <div class="phaserow"><span class="pill warn">WRAPPING UP</span><div><b>Phase 3 — Admin console &amp; safeguards (you are here).</b> This console: sign-in roster, user/role registry, backup monitoring, filing log, integration token control — plus this guide. Security work to date lands here.</div></div>
+        <div class="phaserow"><span class="pill info">NEXT</span><div><b>Phase 4 — The RLS flip.</b> Once adoption is complete, database policies flip to signed-in-only (<code>TO authenticated</code>). Signed-out access to PMS data ends; nothing else changes for signed-in staff.</div></div>
+        <div class="phaserow"><span class="pill info">PLANNED</span><div><b>Phase 5 — Role-based permissions.</b> Policies start reading the Users &amp; Roles registry (admin / finance / staff), tightening who can edit what — including making that registry itself admin-only.</div></div>
+      </div>
+    </div>
+
+    <div class="card doc" id="g-arch">
+      <div class="sechead">3 · Architecture</div>
+      <p>A deliberately simple stack: <b>static single-file apps</b> (no build step, no servers of our own) talking directly to
+         <b>Microsoft 365</b> for content and <b>Supabase</b> for shared state. Hosting is GitHub Pages from the public
+         <code>smartias/setty-pms</code> repo — deploys are a file upload or PR merge, with no CI pipeline to break.</p>
+      <div class="archflow" style="margin-top:10px">
+        <div class="archcol"><h4>Interfaces</h4>
+          <div class="architem">SettyPMS.html <span>main app — React in one file</span></div>
+          <div class="architem">Outlook / Word add-in <span>taskpane.js — filing &amp; jobcard</span></div>
+          <div class="architem">Satellite apps <span>Field Photos · Site Report · Intelligence · RFI Sync · Newsletter · Transmittal</span></div>
+          <div class="architem">Admin Console <span>this page</span></div>
+          <div class="architem">Claude (enterprise) <span>via the MCP connector</span></div></div>
+        <div class="archcol"><h4>Services</h4>
+          <div class="architem">MSAL + Microsoft Graph v1.0 <span>Drive · Mail · OneNote · Teams · Calendar</span></div>
+          <div class="architem">Supabase Auth <span>Azure provider — suite sign-in</span></div>
+          <div class="architem">Supabase REST (PostgREST) <span>row-level-secured data API</span></div>
+          <div class="architem">Edge Functions <span>pms-mcp · pms-billing-feed · unsubscribe · rfi-submittal-autosync · pms-backfill</span></div></div>
+        <div class="archcol"><h4>Storage</h4>
+          <div class="architem">Supabase Postgres <span>projects · emails · knowledge tables</span></div>
+          <div class="architem">SharePoint <span>project folders · photos · templates</span></div>
+          <div class="architem">OneNote <span>per-project notebooks</span></div></div>
+      </div>
+      <ul style="margin-top:10px">
+        <li><b>State model:</b> each project is one Postgres row holding a JSON blob plus a <code>version</code> column for optimistic concurrency (two people editing can't silently overwrite each other). Email bodies live in their own table (<code>pms_project_emails</code>) so the main load stays fast.</li>
+        <li><b>Live URLs:</b> every app is <code>https://smartias.github.io/setty-pms/&lt;File&gt;.html</code>.</li>
+        <li><b>Source of truth:</b> the git repo for the PMS + satellites; the add-in has its own repo (<code>setty-pms-addin</code>); the Contract Extractor lives in OneDrive.</li>
+      </ul>
+    </div>
+
+    <div class="card doc" id="g-apps">
+      <div class="sechead">4 · Applications</div>
+      <div class="appgrid">
+        <div class="appcard"><h4>📊 Setty PMS <span class="pill info">core</span></h4>
+          <p>The main app: dashboard, project list, fees &amp; invoices, milestones with billable schedules, RFIs/submittals, cash-flow, staffing/WBS, clients, pipeline and term contracts.</p>
+          <div class="src">SettyPMS.html · React, single file</div></div>
+        <div class="appcard"><h4>📎 Outlook / Word Add-in</h4>
+          <p>Files emails to the right project (SharePoint + PMS + OneNote in one click), bulk "sweep" for historical filing, project jobcard with an "Ask Claude about this job" link, action items and site-visit notes.</p>
+          <div class="src">taskpane.js · repo setty-pms-addin</div></div>
+        <div class="appcard"><h4>🛠️ Admin Console</h4>
+          <p>This page — sign-in roster, users &amp; roles, backup monitoring, filing log, SETTYfy integration controls, system guide and the Claude/MCP runbook.</p>
+          <div class="src">SettyAdmin.html</div></div>
+        <div class="appcard"><h4>🧠 Setty Intelligence</h4>
+          <p>Institutional-knowledge hub: per-project brief, portfolio heat map with payment flags, lessons learned, agency preferences (approve → feeds the brief), expertise graph.</p>
+          <div class="src">SettyIntelligence.html</div></div>
+        <div class="appcard"><h4>📷 Field Photos</h4>
+          <p>Phone-friendly field photo capture straight into the project's SharePoint Photos folder, with session metadata mirrored to Supabase so Claude can search it.</p>
+          <div class="src">SettyFieldPhotos.html</div></div>
+        <div class="appcard"><h4>📝 Site Report</h4>
+          <p>Field observation reports with stable item numbering and photos, filed to the project folder.</p>
+          <div class="src">SiteReport.html</div></div>
+        <div class="appcard"><h4>🔄 RFI / Submittal Sync</h4>
+          <p>Parses Procore and Autodesk notification emails into the PMS's RFI and submittal logs for Construction-Administration jobs — append-only and version-guarded.</p>
+          <div class="src">RFISubmittalSync_Preview.html</div></div>
+        <div class="appcard"><h4>📄 Contract Extractor</h4>
+          <p>Standalone tool that extracts client-imposed override terms from contracts issued to Setty and writes the analysis back to the project.</p>
+          <div class="src">ContractExtractor.html · OneDrive</div></div>
+        <div class="appcard"><h4>📰 Newsletter</h4>
+          <p>Newsletter and event-invite sender reading the live PMS directory, with a compliant unsubscribe flow (Edge Function backed).</p>
+          <div class="src">Newsletter.html</div></div>
+        <div class="appcard"><h4>📨 Transmittal</h4>
+          <p>Generates transmittals for milestone deliverables and records what was sent when.</p>
+          <div class="src">transmittal.html</div></div>
+        <div class="appcard"><h4>💵 SETTYfy billing feed</h4>
+          <p>Read-only JSON feed of billable milestones and projections for the intranet team, bearer-token protected — managed from the Integration tab.</p>
+          <div class="src">Edge Function pms-billing-feed</div></div>
+        <div class="appcard"><h4>🤖 Claude / MCP server</h4>
+          <p>Read-only connector that lets the team's enterprise Claude accounts search and read PMS data — 18 tools. Full runbook on the Claude/MCP tab.</p>
+          <div class="src">Edge Function pms-mcp</div></div>
+      </div>
+    </div>
+
+    <div class="card doc" id="g-knowledge">
+      <div class="sechead">5 · Knowledge layer</div>
+      <p>The knowledge layer is everything the firm <i>knows</i>, kept queryable — by the apps, and by Claude through the MCP connector.</p>
+      <ul>
+        <li><b>Project record</b> (<code>pms_projects</code>): status, fees, milestones, RFIs/submittals, notes with action items, contacts, contract terms, related-project grouping.</li>
+        <li><b>Email archive</b> (<code>pms_project_emails</code>): every filed email, globally de-duplicated, full bodies preserved — ~15k+ messages and growing, including back-filed mailboxes of departed staff.</li>
+        <li><b>Institutional intelligence tables:</b> lessons learned, best practices, <b>agency preferences</b> (61 mined per-agency process rules; approved ones feed the project brief), engineering standards, expertise graph (<code>pms_person_work</code>).</li>
+        <li><b>Live analytics in the database:</b> project brief, portfolio heat map, payment flags and email sentiment run as SQL functions next to the data — fast and always current.</li>
+        <li><b>Microsoft 365 stores:</b> SharePoint project folders (documents, photos, metadata sidecars), per-project OneNote notebooks, and the <b>"Templates for MCP Connector"</b> folder — drop a Word/Excel file in and Claude can immediately use it as a template, no redeploy.</li>
+      </ul>
+      <p><b>How knowledge gets in:</b> the add-in files it (emails, notes, action items), the field apps capture it (photos, site reports), the sync tools parse it (RFIs/submittals), and mining passes distill it (agency preferences, lessons).<br>
+         <b>How it gets out:</b> the PMS and Intelligence apps display it; the MCP connector lets anyone ask Claude about it in plain English.</p>
+    </div>`;
+}
+
+// ── Claude / MCP tab (connector runbook for IT + Claude admins) ──────────────
+function renderMcp() {
+  const MCP_BASE = SUPABASE_URL + "/functions/v1/pms-mcp";
+  const MCP_URL = MCP_BASE + "/mcp";
+  const ENTRA_APP = "b49e795c-2af3-4ab9-aa39-52539d4a7a99";
+  $("view").innerHTML = `
+    <div class="card doc">
+      <div class="sechead">Claude / MCP integration — how it's built &amp; how to connect it</div>
+      <p>The PMS exposes its data to the team's <b>enterprise Claude accounts</b> through a
+         <b>Model Context Protocol (MCP) server</b> — the "custom connector" (plug-in) Claude understands.
+         It is <b>read-only</b>, <b>fail-closed</b> (no credential → no data), and runs as a Supabase Edge Function
+         right next to the database, so there is no extra server to maintain.</p>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${MCP_URL}').then(()=>toast('Connector URL copied','success'))">Copy connector URL</button>
+        <a class="btn" href="${MCP_BASE}/health" target="_blank" rel="noopener">▶ Live health check</a>
+        <a class="btn" href="${MCP_BASE}/.well-known/oauth-protected-resource" target="_blank" rel="noopener">▶ OAuth discovery metadata</a>
+      </div>
+      <pre>${MCP_URL}</pre>
+      <p style="font-size:12px;color:var(--muted)">Health check should return {"ok":true} with no sign-in — that alone proves the server is up.</p>
+    </div>
+
+    <div class="card doc">
+      <div class="sechead">How the server is set up</div>
+      <ul>
+        <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. Currently v28.</li>
+        <li><b>Data path:</b> the function holds the service-role key server-side and reads <code>pms_projects</code>, <code>pms_project_emails</code> and the analytics SQL functions. A 5-minute in-memory cache plus a slim field projection keeps broad questions fast.</li>
+        <li><b>Documents &amp; templates:</b> project documents and the live "Templates for MCP Connector" SharePoint folder are read through a separate app-only Microsoft Graph app (client credentials, read-only Sites permission — the one admin-consented piece).</li>
+        <li><b>Permission model:</b> shared service view — any authorized caller sees all PMS data (same as the PMS itself today). Read-only: there are no write tools.</li>
+        <li><b>Deploys:</b> from the PMS-MCP folder via <code>supabase functions deploy --no-verify-jwt pms-mcp</code> (always pass the deno.json import map). The live version is the source of truth — pull it before editing.</li>
+      </ul>
+      <div class="sechead" style="margin-top:14px">The 18 tools</div>
+      <table><thead><tr><th>Group</th><th>Tools</th></tr></thead><tbody>
+        <tr><td>Projects</td><td><code>search_projects</code> · <code>get_project</code> · <code>firm_overview</code> · <code>list_milestones</code> · <code>list_action_items</code></td></tr>
+        <tr><td>Emails</td><td><code>search_emails</code> · <code>read_email</code> · <code>summarize_project_emails</code></td></tr>
+        <tr><td>Notes &amp; CA</td><td><code>search_notes</code> · <code>read_note</code> · <code>search_rfis_submittals</code> · <code>read_rfi_submittal</code> · <code>search_field_photos</code></td></tr>
+        <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code></td></tr>
+        <tr><td>Templates</td><td><code>get_template</code> · <code>get_add_service_template</code> · <code>get_letterhead_template</code></td></tr>
+      </tbody></table>
+    </div>
+
+    <div class="card doc">
+      <div class="sechead">Authentication — two accepted credentials</div>
+      <table><thead><tr><th>Mode</th><th>Who uses it</th><th>How</th></tr></thead><tbody>
+        <tr><td><b>Microsoft sign-in (OAuth)</b></td><td>Everyone on claude.ai — the proper path</td>
+            <td>The server answers unauthenticated calls with 401 + a <code>WWW-Authenticate</code> header pointing at its discovery metadata, which names the Setty Entra tenant as the authorization server. Claude walks that flow and each user signs in with their own Setty Microsoft account. Tokens are verified server-side (signature via tenant JWKS, issuer, audience, tenant).</td></tr>
+        <tr><td><b>Shared secret (pilot)</b></td><td>Testing / Claude Code / API scripts</td>
+            <td><code>Authorization: Bearer &lt;MCP_SHARED_SECRET&gt;</code> — the secret lives in Supabase function secrets, is never in any repo, and can be rotated with one command. claude.ai's connector UI cannot send custom headers, so this mode is for tooling only.</td></tr>
+      </tbody></table>
+      <ul style="margin-top:8px">
+        <li><b>Entra app for the connector:</b> <code>${ENTRA_APP}</code>, exposing scope <code>api://${ENTRA_APP}/MCP.Access</code>.</li>
+        <li><b>Accepted audiences:</b> <code>${ENTRA_APP}</code> or <code>api://${ENTRA_APP}</code>; tokens from any other tenant are rejected.</li>
+      </ul>
+    </div>
+
+    <div class="card doc">
+      <div class="sechead">Connecting it to enterprise Claude (the admin steps)</div>
+      <ol>
+        <li><b>Add the connector once, org-wide:</b> claude.ai → <b>Admin settings → Connectors → Add custom connector</b>. Name: <code>Setty PMS</code>. URL: the connector URL above (it must end in <code>/mcp</code> — no trailing slash, nothing after it).</li>
+        <li><b>Give Claude the OAuth client:</b> Entra ID does <b>not</b> support automatic (dynamic) client registration, so if the connector won't finish its OAuth setup on its own, open the connector's <b>Advanced settings</b> and enter OAuth Client ID <code>${ENTRA_APP}</code> (public client — leave the client secret blank).</li>
+        <li><b>Authorize Claude's callback in Entra:</b> in the Azure portal, on app registration <code>${ENTRA_APP}</code>, add Claude's OAuth callback as a redirect URI — <code>https://claude.ai/api/mcp/auth_callback</code> (and <code>https://claude.com/api/mcp/auth_callback</code>). If sign-in later fails with <b>AADSTS50011</b>, copy the exact URI from that error message into the app registration.</li>
+        <li><b>Consent:</b> make sure the <code>MCP.Access</code> scope is admin-consented for the org (Azure portal → the app → API permissions → Grant admin consent) so individual users aren't blocked by an approval prompt.</li>
+        <li><b>Users enable it:</b> each person turns the connector on under Settings → Connectors in claude.ai; the first use walks them through the Microsoft sign-in. After that they can just ask — "what's open on SAPX256001?" — and Claude uses the PMS tools.</li>
+      </ol>
+      <p style="font-size:12.5px"><b>Testing outside claude.ai:</b> Claude Code can attach it with
+        <code>claude mcp add --transport http setty-pms ${MCP_URL}</code> (add
+        <code>--header "Authorization: Bearer &lt;secret&gt;"</code> to use the pilot secret), and the MCP Inspector
+        (<code>npx @modelcontextprotocol/inspector</code>) can exercise every tool directly.</p>
+    </div>
+
+    <div class="card doc">
+      <div class="sechead">Troubleshooting — work down this list</div>
+      <table><thead><tr><th>Symptom</th><th>Check / fix</th></tr></thead><tbody>
+        <tr><td>Is the server even up?</td><td>Open the <b>Live health check</b> above — {"ok":true} means yes. Anything else: check the function's logs in the Supabase dashboard.</td></tr>
+        <tr><td>Connector won't add / OAuth never starts</td><td>Open the <b>OAuth discovery metadata</b> link — it must return JSON naming the Microsoft login server. Confirm the URL you registered ends exactly in <code>/mcp</code>.</td></tr>
+        <tr><td>OAuth starts but Claude can't register itself</td><td>That's the Entra no-dynamic-registration limitation — paste the client ID into the connector's Advanced settings (step 2 above).</td></tr>
+        <tr><td>Microsoft error <b>AADSTS50011</b> (redirect URI mismatch)</td><td>Add the exact callback URI from the error to app registration <code>${ENTRA_APP}</code>.</td></tr>
+        <tr><td>Microsoft error <b>AADSTS65001 / 90094</b> (needs approval)</td><td>Admin consent hasn't been granted for <code>MCP.Access</code> — step 4 above.</td></tr>
+        <tr><td>Signed in, but every tool call returns Unauthorized</td><td>The token Claude got isn't for our API — verify the connector requests scope <code>api://${ENTRA_APP}/MCP.Access</code> (audience mismatch is rejected server-side), and that the account is in the Setty tenant.</td></tr>
+        <tr><td>First question times out, second works</td><td>Cold start: the function loads the portfolio on first use, then caches for 5 minutes. One retry is normal after idle periods.</td></tr>
+        <tr><td>Everything worked, then stopped for everyone</td><td>Check whether the shared secret was rotated or the function was redeployed mid-conversation; re-try, then check Supabase function logs.</td></tr>
+      </tbody></table>
+      <p style="font-size:12px;color:var(--muted);margin-top:8px">Owners: Sara Arias &amp; Danny Kang. Server code lives in the PMS-MCP folder (OneDrive) — but always pull the live function before editing; the deployed version is ahead of disk.</p>
+    </div>`;
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
