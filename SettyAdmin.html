@@ -98,8 +98,11 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v3 (v2 added System Guide + Claude/MCP runbook tabs;
-// v3 makes the whole console ADMIN-ONLY — first Phase 5 slice).
+// Setty Admin Console v4 (v2 added System Guide + Claude/MCP runbook tabs;
+// v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
+// v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
+// permission matrix (pms_role_permissions) and per-project overrides
+// (pms_project_permissions), resolved in the DB by pms_has_cap()).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -145,7 +148,15 @@ const TABS = [
 ];
 const state = { tab: "signins", roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
                 integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null,
-                myRole: undefined };   // undefined = not checked · "pending" · "none" · "staff" · "finance" · "admin"
+                permCatalog: null, permMatrix: null, permOverrides: null,
+                myRole: undefined };   // undefined = not checked · "pending" · "none" · or a ROLES value
+
+// Phase 5 role taxonomy. 'staff' is the baseline for signed-in people without
+// a registry row — keep it last in lists but never remove it.
+const ROLES = ["admin", "project_manager", "engineer", "operations", "accounting", "contracts", "marketing", "staff"];
+const ROLE_COLOR = { admin: "bad", project_manager: "warn", engineer: "ok", operations: "info",
+                     accounting: "warn", contracts: "info", marketing: "info", staff: "info" };
+const roleOpts = (sel) => ROLES.map(o => `<option value="${o}" ${o === sel ? "selected" : ""}>${o.replace("_", " ")}</option>`).join("");
 const FEED_URL = SUPABASE_URL + "/functions/v1/pms-billing-feed/v1/pms/billable-milestones";
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -239,39 +250,131 @@ async function renderSignins() {
     </div>`;
 }
 
-// ── Users & Roles ────────────────────────────────────────────────────────────
+// ── Users & Roles + Phase 5 permissions ──────────────────────────────────────
 async function renderRoles() {
   const v = $("view");
-  if (!state.roles) {
-    v.innerHTML = '<div class="empty">Loading roles…</div>';
-    try { state.roles = await sb("GET", "/rest/v1/pms_user_roles?select=*&order=email.asc") || []; }
-    catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
+  if (!state.roles || !state.permCatalog || !state.permMatrix || !state.permOverrides) {
+    v.innerHTML = '<div class="empty">Loading roles &amp; permissions…</div>';
+    try {
+      const [roles, cat, matrix, overrides] = await Promise.all([
+        sb("GET", "/rest/v1/pms_user_roles?select=*&order=email.asc"),
+        sb("GET", "/rest/v1/pms_capability_catalog?select=*&order=sort.asc"),
+        sb("GET", "/rest/v1/pms_role_permissions?select=role,capability,allowed"),
+        sb("GET", "/rest/v1/pms_project_permissions?select=*&order=project_number.asc.nullsfirst,id.asc"),
+      ]);
+      state.roles = roles || []; state.permCatalog = cat || [];
+      state.permMatrix = matrix || []; state.permOverrides = overrides || [];
+    } catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
   }
-  const roleColor = { admin: "bad", finance: "warn", staff: "info" };
+  const cellAllowed = (role, cap) => {
+    const c = state.permMatrix.find(x => x.role === role && x.capability === cap);
+    return !!(c && c.allowed);
+  };
   v.innerHTML = `
     <div class="card">
       <div class="row">
         <input id="newEmail" type="email" placeholder="name@setty.com" style="flex:1;min-width:200px">
         <input id="newName" placeholder="Display name (optional)" style="flex:1;min-width:160px">
-        <select id="newRole"><option value="staff">staff</option><option value="finance">finance</option><option value="admin">admin</option></select>
+        <select id="newRole">${roleOpts("staff")}</select>
         <button class="btn btn-primary" onclick="addRole()">Add</button>
       </div>
       <div style="color:var(--muted);font-size:12px;margin-top:8px">
-        First Phase 5 slice is live: this console — and this list — are <b>admin-only</b>, enforced in the
-        database (guarded RPCs + RLS), not just in the page. The finance/staff roles don't gate anything yet.
+        This console — and this list — are <b>admin-only</b>, enforced in the database (guarded RPCs + RLS).
+        Roles feed the <b>permission matrix</b> below; signed-in people without a row here get the <b>staff</b> baseline.
+        Matrix enforcement on PMS data attaches at the Phase 4 RLS flip — until then it drives app UI only.
         Careful removing admins: with no admins left, everyone is locked out (recovery = re-insert a row via the Supabase SQL editor).</div>
     </div>
     <div class="card">
       <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Updated</th><th></th></tr></thead>
       <tbody>${state.roles.map(x => `
         <tr><td>${esc(x.email)}</td><td>${esc(x.display_name || "")}</td>
-            <td><select onchange="setRole('${esc(x.email)}', this.value)">
-              ${["staff","finance","admin"].map(o => `<option ${o === x.role ? "selected" : ""}>${o}</option>`).join("")}
-            </select> <span class="pill ${roleColor[x.role] || "info"}">${esc(x.role)}</span></td>
+            <td><select onchange="setRole('${esc(x.email)}', this.value)">${roleOpts(x.role)}</select>
+              <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(x.role.replace("_", " "))}</span></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
             <td><button class="btn btn-danger" onclick="dropRole('${esc(x.email)}')">Remove</button></td></tr>`).join("") ||
         '<tr><td colspan="5" class="empty">No users yet.</td></tr>'}</tbody></table>
+    </div>
+    <div class="card">
+      <div class="sechead">Permission matrix — what each role can do</div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th style="min-width:170px">Capability</th>
+          ${ROLES.map(r => `<th title="${r}">${esc(r.replace("_", " "))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
+        <tbody>${state.permCatalog.map(c => `
+          <tr><td title="${esc(c.description || "")}"><b>${esc(c.label)}</b><br>
+                <span style="color:var(--muted);font-size:11px">${esc(c.capability)}</span></td>
+            ${ROLES.map(r => r === "admin"
+              ? `<td style="color:var(--green)">✓</td>`
+              : `<td><input type="checkbox" ${cellAllowed(r, c.capability) ? "checked" : ""}
+                    onchange="toggleCap('${r}','${esc(c.capability)}',this.checked)"></td>`).join("")}
+          </tr>`).join("")}</tbody>
+      </table></div>
+      <div style="color:var(--muted);font-size:12px;margin-top:8px">
+        Changes save immediately to <code>pms_role_permissions</code>. Admin is always allowed (locked).
+        Apps read this through <code>settyAuth.can()</code> / <code>my_pms_permissions()</code>;
+        Phase 4 policies will call <code>pms_has_cap()</code> so the same matrix becomes database-enforced.</div>
+    </div>
+    <div class="card">
+      <div class="sechead">Per-project overrides — customize specific projects</div>
+      <div class="row">
+        <input id="ovProj" placeholder="Project # (blank = global, person only)" style="min-width:230px">
+        <select id="ovKind" onchange="$('ovSubject').placeholder = this.value === 'user' ? 'name@setty.com' : this.value === 'role' ? 'role (e.g. engineer)' : '(applies to everyone)'; $('ovSubject').disabled = this.value === 'everyone';">
+          <option value="user">person</option><option value="role">role</option><option value="everyone">everyone</option>
+        </select>
+        <input id="ovSubject" placeholder="name@setty.com" style="min-width:180px">
+        <select id="ovCap"><option value="*">★ all capabilities</option>
+          ${state.permCatalog.map(c => `<option value="${esc(c.capability)}">${esc(c.label)}</option>`).join("")}</select>
+        <select id="ovAllowed"><option value="true">allow</option><option value="false">deny</option></select>
+        <input id="ovNote" placeholder="Why (optional)" style="flex:1;min-width:140px">
+        <button class="btn btn-primary" onclick="addOverride()">Add</button>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin:8px 0 4px">
+        Most specific rule wins: person-on-project → role-on-project → everyone-on-project → global person exception → the matrix.
+        Example: lock a confidential job down with <i>everyone · ★ all · deny</i>, then allow its team back in person by person.
+        Admins bypass overrides.</div>
+      <table><thead><tr><th>Project</th><th>Applies to</th><th>Capability</th><th>Rule</th><th>Note</th><th>Updated</th><th></th></tr></thead>
+      <tbody>${state.permOverrides.map(o => `
+        <tr><td>${o.project_number ? esc(o.project_number) : '<span class="pill info">🌐 global</span>'}</td>
+            <td>${o.subject_kind === "everyone" ? "<i>everyone</i>" : esc(o.subject || "")}
+                <span style="color:var(--muted);font-size:11px">(${esc(o.subject_kind)})</span></td>
+            <td>${o.capability === "*" ? "<b>★ all</b>" : esc(o.capability)}</td>
+            <td><span class="pill ${o.allowed ? "ok" : "bad"}">${o.allowed ? "allow" : "deny"}</span></td>
+            <td style="color:var(--dim)">${esc(o.note || "")}</td>
+            <td title="${esc(o.updated_at || "")}">${rel(o.updated_at)}</td>
+            <td><button class="btn btn-danger" onclick="dropOverride(${o.id})">Remove</button></td></tr>`).join("") ||
+        '<tr><td colspan="7" class="empty">No overrides — every project follows the matrix above.</td></tr>'}</tbody></table>
     </div>`;
+}
+async function toggleCap(role, cap, allowed) {
+  try {
+    await sb("PATCH", "/rest/v1/pms_role_permissions?role=eq." + encodeURIComponent(role) +
+      "&capability=eq." + encodeURIComponent(cap),
+      { allowed, updated_at: new Date().toISOString(), updated_by: settyAuth.email() });
+    const cell = state.permMatrix.find(x => x.role === role && x.capability === cap);
+    if (cell) cell.allowed = allowed;
+    toast(role.replace("_", " ") + " · " + cap + " → " + (allowed ? "allowed" : "denied"), "success");
+  } catch (e) { toast(e.message, "error"); state.permMatrix = null; render(); }
+}
+async function addOverride() {
+  const proj = $("ovProj").value.trim().toUpperCase() || null;
+  const kind = $("ovKind").value;
+  const subject = kind === "everyone" ? null : $("ovSubject").value.trim().toLowerCase();
+  if (kind === "user" && !/@setty\.com$/.test(subject || "")) { toast("Person must be a @setty.com email", "error"); return; }
+  if (kind === "role" && !ROLES.includes(subject || "")) { toast("Role must be one of: " + ROLES.join(", "), "error"); return; }
+  if (!proj && kind !== "user") { toast("Global rules (blank project) are person-only — pick a project for role/everyone rules.", "error"); return; }
+  try {
+    await sb("POST", "/rest/v1/pms_project_permissions", {
+      project_number: proj, subject_kind: kind, subject,
+      capability: $("ovCap").value, allowed: $("ovAllowed").value === "true",
+      note: $("ovNote").value.trim() || null, added_by: settyAuth.email(),
+    });
+    state.permOverrides = null; toast("Override added", "success"); render();
+  } catch (e) { toast(e.message, "error"); }
+}
+async function dropOverride(id) {
+  try {
+    await sb("DELETE", "/rest/v1/pms_project_permissions?id=eq." + id);
+    state.permOverrides = null; toast("Override removed", "success"); render();
+  } catch (e) { toast(e.message, "error"); }
 }
 async function addRole() {
   const email = $("newEmail").value.trim().toLowerCase();
@@ -513,7 +616,7 @@ function renderGuide() {
         <div class="phaserow"><span class="pill warn">IN PROGRESS</span><div><b>Phase 2 — Team adoption.</b> Everyone on the staff list signs in once. The Sign-ins tab is the readiness dashboard for this.</div></div>
         <div class="phaserow"><span class="pill warn">WRAPPING UP</span><div><b>Phase 3 — Admin console &amp; safeguards (you are here).</b> This console: sign-in roster, user/role registry, backup monitoring, filing log, integration token control — plus this guide. Security work to date lands here.</div></div>
         <div class="phaserow"><span class="pill info">NEXT</span><div><b>Phase 4 — The RLS flip.</b> Once adoption is complete, database policies flip to signed-in-only (<code>TO authenticated</code>). Signed-out access to PMS data ends; nothing else changes for signed-in staff.</div></div>
-        <div class="phaserow"><span class="pill warn">STARTED</span><div><b>Phase 5 — Role-based permissions.</b> Policies read the Users &amp; Roles registry (admin / finance / staff). First slice is <b>live</b>: this Admin Console — including the roles registry and integration secrets — is admin-only, enforced in the database. Finance/staff policies on PMS data come later.</div></div>
+        <div class="phaserow"><span class="pill warn">BACKBONE LIVE</span><div><b>Phase 5 — Role-based permissions.</b> The backbone is in place: a 7-role taxonomy (admin, project manager, engineer, operations, accounting, contracts, marketing — plus the <i>staff</i> baseline for anyone unassigned), an editable role×capability <b>permission matrix</b>, and <b>per-project overrides</b> (e.g. lock a confidential job to its team) — all managed on the Users &amp; Roles tab and resolved in the database by <code>pms_has_cap()</code>. Already enforced: this console is admin-only. When Phase 4 flips, data policies call the same function and the matrix becomes enforcement, not just UI.</div></div>
       </div>
     </div>
 
@@ -755,7 +858,8 @@ function renderMcp() {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
-settyAuth.onChange(() => { state.roster = state.roles = state.backups = state.filing = null; state.myRole = undefined; render(); });
+settyAuth.onChange(() => { state.roster = state.roles = state.backups = state.filing = null;
+  state.permCatalog = state.permMatrix = state.permOverrides = null; state.myRole = undefined; render(); });
 settyAuth.init().catch(e => toast("Sign-in: " + e.message, "error")).then(render);
 </script>
 </body>

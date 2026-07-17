@@ -20,6 +20,14 @@
      headers.Authorization = "Bearer " + settyAuth.token();
      settyAuth.onChange(sess => { ...update UI, refresh headers... });
      settyAuth.signInWithMicrosoft();              // redirects and returns here
+
+   Phase 5 permissions (role×capability matrix + per-project overrides,
+   managed in the Admin Console, resolved by the DB):
+     settyAuth.can("fees.edit")                    // sync, global matrix
+     await settyAuth.canFor("SAPX266123", "projects.edit")  // + project overrides
+     settyAuth.role();  await settyAuth.refreshPermissions();
+   Pre-flip these are permissive for signed-out users so nothing breaks;
+   after the Phase 4 RLS flip the database enforces the same answers.
    ───────────────────────────────────────────────────────────────────────────── */
 (function () {
   "use strict";
@@ -208,6 +216,49 @@
     if (t) { try { await authFetch("/logout", {}, t); } catch (_) {} }
   }
 
+  // ── Phase 5: role & capability checks ─────────────────────────────────────
+  // The DB resolves everything (pms_has_cap: overrides → matrix → deny, admin
+  // always allowed); this layer just caches my_pms_permissions per session.
+  // Pre-flip semantics on purpose: signed-out users — and signed-in users whose
+  // permissions haven't loaded yet — get `true`, so nothing breaks before apps
+  // adopt gating. After the Phase 4 RLS flip the database is the backstop.
+  let perms = null;             // { email, role, caps } for the current token
+  let permsToken = null;        // access_token the cache was fetched under
+  let permsFetching = null;     // single-flight promise
+  const projPerms = new Map();  // project_number → caps (per-project overrides applied)
+
+  async function rpc(name, body) {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/rpc/" + name, {
+      method: "POST",
+      headers: { "apikey": ANON_KEY, "Authorization": "Bearer " + window.settyAuth.token(),
+                 "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    if (!res.ok) throw new Error("rpc " + name + " HTTP " + res.status);
+    const t = await res.text();
+    return t ? JSON.parse(t) : null;
+  }
+
+  function permsStale() {
+    return !perms || permsToken !== (session && session.access_token);
+  }
+
+  async function refreshPermissions() {
+    if (!window.settyAuth.isSignedIn()) { perms = null; permsToken = null; projPerms.clear(); return null; }
+    if (permsFetching) return permsFetching;
+    const tok = session.access_token;
+    permsFetching = (async () => {
+      try {
+        const p = await rpc("my_pms_permissions");
+        perms = p; permsToken = tok; projPerms.clear();
+        listeners.forEach(fn => { try { fn(session); } catch (_) {} });  // let UIs re-render with gates
+        return perms;
+      } catch (_) { return perms; }                                      // keep last known on transient errors
+      finally { permsFetching = null; }
+    })();
+    return permsFetching;
+  }
+
   // ── boot ───────────────────────────────────────────────────────────────────
   async function init() {
     // 1) Returning from the Azure redirect? Tokens arrive in the hash.
@@ -285,6 +336,30 @@
     user() { return (session && session.user) || null; },
     email() { const u = this.user(); return (u && u.email) || ""; },
     isSignedIn() { return !!(session && session.access_token && session.expires_at * 1000 > Date.now()); },
+    // ── Phase 5 permission surface ──
+    refreshPermissions,
+    permissions() { if (permsStale()) refreshPermissions(); return perms; },
+    role() { const p = this.permissions(); return (p && p.role) || (this.isSignedIn() ? "staff" : null); },
+    // Sync check against the global matrix. Signed-out (or not yet loaded) →
+    // true, by design, until the Phase 4 flip makes the DB the backstop.
+    can(cap) {
+      if (!this.isSignedIn()) return true;
+      const p = this.permissions();
+      if (!p || !p.caps) return true;
+      return p.caps[cap] !== false;
+    },
+    // Async check honoring per-project overrides (small per-session cache).
+    async canFor(projectNumber, cap) {
+      if (!this.isSignedIn()) return true;
+      if (!projectNumber) return this.can(cap);
+      if (!projPerms.has(projectNumber)) {
+        try { const p = await rpc("my_pms_permissions", { p_project: String(projectNumber) });
+              projPerms.set(projectNumber, (p && p.caps) || null); }
+        catch (_) { return this.can(cap); }
+      }
+      const caps = projPerms.get(projectNumber);
+      return caps ? caps[cap] !== false : this.can(cap);
+    },
     displayName() {
       const u = this.user();
       if (!u) return "";
