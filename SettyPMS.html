@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-17-pms-v71-myprojects-digest";
+    window.__appVersion = "2026-07-17-pms-v71.1-myprojects-pill";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -27862,10 +27862,21 @@ function renameCompanyAcrossProjects(oldName, newName) {
           { label: "Pending COs", key: "pendingcos" },
           ...(pmsCan("staffing.view") ? [{ label: "Staff", key: "staff" }] : []),
           { label: "Global Directory", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+          // My Projects is everyone's home base — render it as a filled pill so
+          // it reads as the primary tab; the rest keep the quiet underline style.
+          key === "myprojects" ? (
+            <button key={key} onClick={() => setView(key)}
+              style={{ background: view === key ? P.accent : P.accentDim, border: "1px solid " + (view === key ? P.accentLight : P.accent),
+                cursor: "pointer", color: view === key ? "#fff" : P.accentLight, fontWeight: 700, fontSize: 13,
+                padding: "5px 14px", borderRadius: 999, boxShadow: view === key ? "0 0 10px rgba(59,130,246,.35)" : "none" }}>
+              ★ {label}
+            </button>
+          ) : (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
           </button>
+          )
         ))}
         {/* Site Reports + Field Photos live in their own pages — open in a
             new tab. Visually distinguished from the SPA tabs with the ↗ glyph. */}
