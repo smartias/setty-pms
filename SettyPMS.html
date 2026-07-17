@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-16-pms-v69-milestone-reopen-guard";
+    window.__appVersion = "2026-07-17-pms-v70-rbac-myprojects";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -705,6 +705,22 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // settyAuthReady so the stored session is restored before the first read.
 const settyAuthReady = settyAuth.init().catch(() => null);
 settyAuth.mountPill();
+
+// ── Phase 5 capability check ─────────────────────────────────────────────────
+// Wraps settyAuth.can() (role×capability matrix + per-project overrides,
+// managed in the Admin Console). Permissive when signed out (pre-flip) and
+// when an older cached setty-auth.js without can() is still loaded, so the
+// app never hard-breaks on a stale script. Capabilities used here:
+//   staffing.view   → Staff directory, Team WBS, per-project WBS
+//   financials.view → dashboard Backlog / Current Year / Current Month $$$
+//   fees.view       → per-project Fee + Financials tab groups & fee KPIs
+function pmsCan(cap) {
+  try { return settyAuth.can ? settyAuth.can(cap) : true; }
+  catch (_) { return true; }
+}
+// Fetch my permissions as soon as the stored session is restored; settyAuth
+// fires onChange when they land, and App re-renders off that.
+settyAuthReady.then(() => { if (settyAuth.refreshPermissions) settyAuth.refreshPermissions(); });
 
 async function sbFetch(method, path, body) {
   await settyAuthReady;
@@ -12628,7 +12644,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
       {/* ── WBS Section ── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <SectionTitle>Weekly Work Breakdown Structure</SectionTitle>
-        <Btn small variant="ghost" onClick={() => setShowWBS(v => !v)}>{showWBS ? "▲ Hide" : "▼ Show"} WBS</Btn>
+        {pmsCan("staffing.view") && <Btn small variant="ghost" onClick={() => setShowWBS(v => !v)}>{showWBS ? "▲ Hide" : "▼ Show"} WBS</Btn>}
       </div>
 
       {showWBS && (
@@ -16942,7 +16958,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: pmsCan("fees.view") ? "1fr 1fr 1fr" : "1fr", gap: 14, marginBottom: 20 }}>
         <Card>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 600 }}>Overall Progress</div>
@@ -16950,18 +16966,33 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           </div>
           <ProgressBar pct={pct} />
         </Card>
-        <KpiBox label="Total Fee" val={fmt(totalFee)} color={P.green} />
-        <KpiBox label="Total Invoiced" val={fmt(totalInvoiced)} color={P.purple}
-          sub={`Open: ${fmt(totalFee - totalInvoiced)}`} />
+        {pmsCan("fees.view") && <KpiBox label="Total Fee" val={fmt(totalFee)} color={P.green} />}
+        {pmsCan("fees.view") && <KpiBox label="Total Invoiced" val={fmt(totalInvoiced)} color={P.purple}
+          sub={`Open: ${fmt(totalFee - totalInvoiced)}`} />}
       </div>
 
 	      {(() => {
 	        // Build the visible groups for this project: pipeline projects hide certain
 	        // sub-tabs entirely, and any group whose tabs are all hidden gets dropped.
 	        const projIsPipeline = isPipeline(project);
+	        // Conditional sections (Sara's spec):
+	        //  · Construction Administration — only once the project is actually in
+	        //    CA (or already has RFI/submittal data, so history stays reachable)
+	        //  · Subconsultants — hidden until enabled via the "+ Subconsultants"
+	        //    chip (or subs already exist on the project)
+	        //  · Fee / Financials — behind the fees.view capability
+	        const projInCA = project.status === "In Construction Administration" ||
+	                         (project.rfis || []).length > 0 || (project.submittals || []).length > 0;
+	        const subsOn = (project.subconsultants || []).length > 0 || !!project.subsEnabled;
 	        const visibleGroups = TAB_GROUPS
 	          .map(g => ({ ...g, visibleTabs: g.tabs.filter(t => !projIsPipeline || !PIPELINE_HIDDEN_TABS.includes(t)) }))
-	          .filter(g => g.visibleTabs.length > 0);
+	          .filter(g => g.visibleTabs.length > 0)
+	          .filter(g => {
+	            if (g.name === "Construction Administration") return projInCA;
+	            if (g.name === "Subconsultants") return subsOn;
+	            if (g.name === "Fee" || g.name === "Financials") return pmsCan("fees.view");
+	            return true;
+	          });
 	        // Highlighted section follows the active tab — single source of truth is `tab`,
 	        // so the section never falls out of sync.
 	        const currentGroup = visibleGroups.find(g => g.visibleTabs.includes(tab))
@@ -16981,6 +17012,15 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 	                  </button>
 	                );
 	              })}
+	              {/* Subconsultants stays out of the way until the project has some —
+	                  this chip is the "yes, this project has subs" switch. */}
+	              {!subsOn && !projIsPipeline && (
+	                <button onClick={() => { onUpdate({ ...project, subsEnabled: true }); setTab("Subconsultants"); }}
+	                  title="This project has subconsultants — turn the tab on"
+	                  style={{ padding: "8px 12px", background: "none", border: "none", color: P.textDim, borderBottom: "2px solid transparent", fontSize: 12.5, cursor: "pointer", marginBottom: -1, whiteSpace: "nowrap", opacity: 0.8 }}>
+	                  + Subconsultants
+	                </button>
+	              )}
 	            </div>
 	            {/* Sub-tab row — only when the active section has more than one tab */}
 	            {hasSubTabs && (
@@ -19853,14 +19893,15 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
           color={inConstructionProjects.length > 0 ? P.green : P.textMuted}
           sub={inConstructionProjects.length > 0 ? "click to view projects" : "none active"}
           onClick={() => setShowInConstruction(true)} />
-        <KpiBox label="Backlog" val={fmt(backlog)} color={P.accent}
-          sub="total uninvoiced" />
-        <KpiBox label={"Current Year (" + curYear + ")"}
+        {/* Firm-wide revenue rollups — financials.view (Operations + Accounting) */}
+        {pmsCan("financials.view") && <KpiBox label="Backlog" val={fmt(backlog)} color={P.accent}
+          sub="total uninvoiced" />}
+        {pmsCan("financials.view") && <KpiBox label={"Current Year (" + curYear + ")"}
           val={fmt(currentYearTotal)} color={P.purple}
-          sub="projected + invoiced" />
-        <KpiBox label={"Current Month (" + curMonthStr + ")"}
+          sub="projected + invoiced" />}
+        {pmsCan("financials.view") && <KpiBox label={"Current Month (" + curMonthStr + ")"}
           val={fmt(currentMonthTotal)} color={P.yellow}
-          sub="projected + invoiced" />
+          sub="projected + invoiced" />}
       </div>
 
       {/* In Construction modal */}
@@ -19871,7 +19912,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div style={{ fontWeight: 700, fontSize: 16 }}>In Construction Administration{dashPMFilter !== "All" ? " — " + dashPMFilter : ""}</div>
               <div style={{ display: "flex", gap: 8 }}>
-                <Btn small variant={showCAInvoice ? "primary" : "ghost"} onClick={() => {
+                {pmsCan("financials.view") && <Btn small variant={showCAInvoice ? "primary" : "ghost"} onClick={() => {
                   setShowCAInvoice(v => !v);
                   if (!showCAInvoice) {
                     // Pre-populate state for each CA project
@@ -19922,7 +19963,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   }
                 }}>
                   {showCAInvoice ? "✕ Cancel Batch Invoice" : "✉ Invoice CA Projects"}
-                </Btn>
+                </Btn>}
                 <button onClick={() => { setShowInConstruction(false); setShowCAInvoice(false); }}
                   style={{ background: "none", border: "none", color: P.textMuted, cursor: "pointer", fontSize: 20 }}>✕</button>
               </div>
@@ -19933,7 +19974,8 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 ? <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>No projects currently in construction.</div>
                 : (
                   <table>
-                    <thead><tr><th>#</th><th>Project</th><th>Client</th><th>PM</th><th>Total Fee</th><th>Invoiced</th><th>Remaining</th></tr></thead>
+                    <thead><tr><th>#</th><th>Project</th><th>Client</th><th>PM</th>
+                      {pmsCan("financials.view") && <><th>Total Fee</th><th>Invoiced</th><th>Remaining</th></>}</tr></thead>
                     <tbody>
                       {inConstructionProjects.map(p => {
                         const { totalFee, totalInvoiced } = buildProjectCashFlow(p);
@@ -19944,9 +19986,11 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                             <td style={{ fontWeight: 600, color: P.accentLight }}>{p.name}</td>
                             <td style={{ color: P.textMuted, fontSize: 12 }}>{p.client || "—"}</td>
                             <td style={{ color: P.textMuted, fontSize: 12 }}>{p.projectManager || "—"}</td>
-                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.green }}>{fmt(totalFee)}</td>
-                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.purple }}>{fmt(totalInvoiced)}</td>
-                            <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: remaining > 0 ? P.accent : P.textDim }}>{fmt(remaining)}</td>
+                            {pmsCan("financials.view") && <>
+                              <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.green }}>{fmt(totalFee)}</td>
+                              <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.purple }}>{fmt(totalInvoiced)}</td>
+                              <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: remaining > 0 ? P.accent : P.textDim }}>{fmt(remaining)}</td>
+                            </>}
                           </tr>
                         );
                       })}
@@ -25475,6 +25519,155 @@ function TimesheetHelper({ staff, projects, onClose }) {
 
 
 
+// ─── MY PROJECTS ──────────────────────────────────────────────────────────────
+// Personal portfolio view — everyone gets this in the nav (Staff and Team WBS
+// are Operations-facing via the staffing.view capability). "Join" appends the
+// person to that project's Team tab (project.teamMembers), so My Projects
+// membership and the Team tab are the same fact, never a parallel list.
+// Identity = signed-in email matched against the Staff directory; people whose
+// staff entry has no email yet link themselves once via the name picker below
+// (which just stores their email on the staff entry).
+function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNavigateToProject }) {
+  const [q, setQ] = React.useState("");
+  const [linkPick, setLinkPick] = React.useState("");
+  const signedIn = settyAuth.isSignedIn();
+  const email = (settyAuth.email() || "").trim().toLowerCase();
+  const myStaff = email ? (staff || []).find(s => (s.email || "").trim().toLowerCase() === email) : null;
+  const myName = ((myStaff && myStaff.name) || "").trim().toLowerCase();
+
+  const isMine = (p) => (p.teamMembers || []).some(m =>
+    (m.email && m.email.trim().toLowerCase() === email) ||
+    (myName && m.name && m.name.trim().toLowerCase() === myName));
+
+  const active = (projects || []).filter(p => !p.archived);
+  const mine = active.filter(isMine);
+  const joinable = q.trim()
+    ? active.filter(p => !isMine(p) &&
+        ((p.name || "") + " " + (p.projectNumber || "") + " " + (p.clientName || ""))
+          .toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8)
+    : [];
+
+  function joinProject(p) {
+    // Same shape TeamView's directory pick writes; PM/DPM slots are positional
+    // on the Team tab, so a self-join never claims them.
+    const protectedRoles = ["Project Manager", "Deputy Project Manager"];
+    onUpdateProject({
+      ...p,
+      teamMembers: [...(p.teamMembers || []), {
+        id: uid(),
+        name: myStaff.name,
+        role: protectedRoles.includes(myStaff.role) ? "Engineer" : (myStaff.role || "Engineer"),
+        rate: myStaff.rate || 0,
+        disciplines: myStaff.disciplines || [],
+        email: myStaff.email || email,
+      }],
+    });
+    setQ("");
+  }
+  function leaveProject(p) {
+    if (!window.confirm("Remove yourself from the " + (p.name || p.projectNumber || "project") + " team?")) return;
+    onUpdateProject({
+      ...p,
+      teamMembers: (p.teamMembers || []).filter(m =>
+        !((m.email && m.email.trim().toLowerCase() === email) ||
+          (myName && m.name && m.name.trim().toLowerCase() === myName))),
+    });
+  }
+  function linkMe() {
+    const s = (staff || []).find(x => x.id === linkPick);
+    if (!s) return;
+    onUpdateStaff(staff.map(x => x.id === s.id ? { ...x, email: settyAuth.email() } : x));
+  }
+
+  if (!signedIn) return (
+    <div style={{ padding: "24px 32px", maxWidth: 620 }}>
+      <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 14 }}>My Projects</div>
+      <Card>
+        <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 14 }}>
+          Sign in to build your personal project list. Joining a project here also puts you on its Team tab.
+        </div>
+        <Btn variant="primary" onClick={() => settyAuth.signInWithMicrosoft()}>Sign in with Microsoft</Btn>
+      </Card>
+    </div>
+  );
+  if (!myStaff) return (
+    <div style={{ padding: "24px 32px", maxWidth: 620 }}>
+      <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 14 }}>My Projects</div>
+      <Card>
+        <div style={{ fontSize: 13, marginBottom: 10 }}>
+          You're signed in as <b>{settyAuth.email()}</b>, but no one on the Staff list has that email yet.
+        </div>
+        <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 12 }}>
+          Pick your name once and I'll link it — from then on your sign-in and your staff entry are the same person.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={linkPick} onChange={e => setLinkPick(e.target.value)}>
+            <option value="">— Select your name —</option>
+            {(staff || []).filter(s => s.name).sort((a, b) => a.name.localeCompare(b.name))
+              .map(s => <option key={s.id} value={s.id}>{s.name}{s.email ? " (has email)" : ""}</option>)}
+          </select>
+          <Btn variant="primary" disabled={!linkPick} onClick={linkMe}>This is me</Btn>
+        </div>
+        <div style={{ color: P.textDim, fontSize: 12, marginTop: 10 }}>
+          Not on the list at all? Ask Operations to add you to the Staff directory.
+        </div>
+      </Card>
+    </div>
+  );
+  return (
+    <div style={{ padding: "24px 32px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4 }}>
+        <div style={{ fontSize: 20, fontWeight: 800 }}>My Projects</div>
+        <div style={{ color: P.textDim, fontSize: 13 }}>{mine.length} project{mine.length !== 1 ? "s" : ""} · {myStaff.name}</div>
+      </div>
+      <div style={{ color: P.textMuted, fontSize: 12.5, marginBottom: 16 }}>
+        Joining a project adds you to its Team tab; leaving removes you there too.
+      </div>
+      <div style={{ position: "relative", maxWidth: 480, marginBottom: 22 }}>
+        <input value={q} onChange={e => setQ(e.target.value)}
+          placeholder="🔍 Add a project — search by name, number or client…" style={{ width: "100%" }} />
+        {joinable.length > 0 && (
+          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, marginTop: 4, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,.4)" }}>
+            {joinable.map(p => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${P.border}` }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name || "(unnamed)"}</div>
+                  <div style={{ fontSize: 11.5, color: P.textDim }}>{p.projectNumber || ""}{p.clientName ? " · " + p.clientName : ""}</div>
+                </div>
+                <Btn small variant="primary" onClick={() => joinProject(p)}>+ Join</Btn>
+              </div>
+            ))}
+          </div>
+        )}
+        {q.trim() && joinable.length === 0 && (
+          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: P.card, border: `1px solid ${P.border}`, borderRadius: 8, marginTop: 4, padding: "10px 12px", color: P.textDim, fontSize: 12.5 }}>
+            No matching projects you're not already on.
+          </div>
+        )}
+      </div>
+      {mine.length === 0 ? (
+        <div style={{ color: P.textDim, textAlign: "center", padding: 60 }}>
+          No projects yet — search above to add your first one.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(320px,1fr))", gap: 16 }}>
+          {mine.map(p => (
+            <div key={p.id}>
+              <ProjectCard project={p} onClick={() => onNavigateToProject(p.id)} />
+              <div style={{ textAlign: "right", marginTop: 4 }}>
+                <button onClick={() => leaveProject(p)}
+                  style={{ background: "none", border: "none", color: P.textDim, fontSize: 11.5, cursor: "pointer" }}>
+                  ✕ Leave team
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToProject, onUpdateProject }) {
   const [editingId, setEditingId] = React.useState(null); // null=list, "__new__"=new, id=editing
   const [form, setForm] = React.useState(null);
@@ -26501,11 +26694,17 @@ function App() {
   const [view, setView] = useState(() => {
     // Deep link: read hash on load e.g. #project:SAPX246008.00
     const hash = window.location.hash.slice(1);
-    if (hash.startsWith("project:") || ["dashboard","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
+    if (hash.startsWith("project:") || ["dashboard","myprojects","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
       return hash;
     }
     return "dashboard";
   });
+  // Phase 5: re-render when the signed-in user's permissions load or the
+  // session changes, so pmsCan()-gated nav/tabs snap to the right shape.
+  const [, setPermsTick] = React.useState(0);
+  React.useEffect(() => {
+    if (settyAuth.onChange) settyAuth.onChange(() => setPermsTick(t => t + 1));
+  }, []);
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
   const [filterQAQC, setFilterQAQC] = useState("All");
@@ -27546,7 +27745,13 @@ function renameCompanyAcrossProjects(oldName, newName) {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </div>
-        {[{ label: "Dashboard", key: "dashboard" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" }, { label: "Team WBS", key: "teamwbs" }, { label: "Pending COs", key: "pendingcos" }, { label: "Staff", key: "staff" }, { label: "Global Directory", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
+        {/* Staff + Team WBS are Operations-facing (staffing.view capability,
+            managed in the Admin Console); everyone gets My Projects instead. */}
+        {[{ label: "Dashboard", key: "dashboard" }, { label: "My Projects", key: "myprojects" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" },
+          ...(pmsCan("staffing.view") ? [{ label: "Team WBS", key: "teamwbs" }] : []),
+          { label: "Pending COs", key: "pendingcos" },
+          ...(pmsCan("staffing.view") ? [{ label: "Staff", key: "staff" }] : []),
+          { label: "Global Directory", key: "clients" }, { label: "Archive", key: "archive" }].map(({ label, key }) => (
           <button key={key} onClick={() => setView(key)}
             style={{ background: "none", border: "none", cursor: "pointer", color: (view === key || (view.startsWith("project:") && key === "list")) ? P.accentLight : P.textMuted, fontWeight: view === key ? 600 : 400, fontSize: 13, padding: "4px 0", borderBottom: view === key ? `2px solid ${P.accentLight}` : "2px solid transparent" }}>
             {label}
@@ -27614,6 +27819,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
 
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} staff={staff} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
+      {view === "myprojects" && <MyProjectsView projects={projects} staff={staff} onUpdateStaff={setStaff} onUpdateProject={updateProject} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onRenameCompany={renameCompanyAcrossProjects} />}
       {view === "teamwbs" && <TeamWBSView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "cashflow" && <CashFlowView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />}
