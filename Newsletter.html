@@ -27,6 +27,10 @@
   button.ghost:hover{background:var(--panel)}
   button.danger{background:var(--bad)}
   button.sm{padding:5px 10px;font-size:12px}
+  button.seg{background:transparent;border:1px solid var(--line);color:var(--muted)}
+  button.seg:hover{background:var(--panel2);color:var(--ink)}
+  button.seg.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.seg.active:hover{background:var(--accent)}
   .tabs{display:flex;gap:6px;padding:12px 20px 0}
   .tab{padding:8px 14px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted);border:1px solid transparent;border-bottom:0;font-weight:600;cursor:pointer}
   .tab.active{background:var(--panel);color:var(--ink);border-color:var(--line)}
@@ -103,7 +107,11 @@
   <!-- ════════════════ COMPOSE & SEND ════════════════ -->
   <section id="tab-send">
     <div class="card">
-      <h2>1 · Audience <span class="muted" style="font-weight:400">— everyone's selected by default; uncheck by type, firm, or person</span></h2>
+      <h2>1 · Audience <span class="muted" id="audienceHint" style="font-weight:400">— everyone's selected by default; uncheck by type, firm, or person</span></h2>
+      <div class="row" style="gap:8px;margin-bottom:12px">
+        <button type="button" class="seg active" id="modeNewsletter" onclick="setAudienceMode('newsletter')">📰 Newsletter — everyone by default</button>
+        <button type="button" class="seg" id="modeCampaign" onclick="setAudienceMode('campaign')">🎯 Campaign — hand-pick recipients</button>
+      </div>
       <div class="row" style="align-items:center;margin-bottom:14px">
         <button onclick="refreshAll()">↻ Load / refresh directory</button>
         <span class="hint" id="loadedAt"></span>
@@ -131,7 +139,7 @@
         </label>
       </div>
       <div class="row" style="margin-top:10px;gap:8px;align-items:center">
-        <button class="ghost sm" onclick="selectAllVisible(true)">Select all shown</button>
+        <button class="ghost sm" id="selAllBtn" onclick="selectAllVisible(true)">Select all shown</button>
         <button class="ghost sm" onclick="selectAllVisible(false)">Deselect all shown</button>
         <button class="ghost sm" onclick="expandAllFirms(true)">Expand firms</button>
         <button class="ghost sm" onclick="expandAllFirms(false)">Collapse firms</button>
@@ -151,6 +159,7 @@
           <select id="campType">
             <option value="newsletter">Newsletter</option>
             <option value="event">Event invite</option>
+            <option value="campaign">Targeted campaign</option>
           </select>
         </div>
         <div class="col">
@@ -311,6 +320,7 @@ let DIRECTORY = [];          // [{email,name,company,source,companyTypes}]
 let SUBS = {};               // email -> subscriber row
 let CAMPAIGNS = [];          // history rows
 let SELECTED = new Set();    // checked emails — the source of truth for who gets the send
+let AUDIENCE_MODE = "newsletter"; // 'newsletter' (everyone by default) | 'campaign' (hand-picked)
 let COLLAPSED_TYPES = new Set(); // type groups: expanded by default
 let EXPANDED_FIRMS = new Set();  // firm groups: collapsed by default
 let VISIBLE = [];            // people passing the current view filters (search/type/staff)
@@ -485,9 +495,11 @@ async function refreshAll(){
 /* ═══════════════════════════════════════════════════════════════════════════
    DEFAULT SELECTION POLICY
    ─────────────────────────────────────────────────────────────────────────
-   selectRecipients() decides who is PRE-CHECKED when the directory loads.
-   Default = everyone. Whoever is sending then unchecks anyone they want in the
-   grouped picker (by type, by firm, or by person) before drafting.
+   selectRecipients() decides who is PRE-CHECKED when the directory loads in
+   NEWSLETTER mode. Default = everyone. Whoever is sending then unchecks anyone
+   they want in the grouped picker (by type, by firm, or by person) before
+   drafting. CAMPAIGN mode ignores this policy entirely — it always starts
+   empty and recipients are hand-picked one by one.
 
    If you ever want a different starting point (e.g. never pre-check one-off
    permit consultants), encode it here and it becomes the new default.
@@ -510,11 +522,47 @@ function typeKey(p){ return p.source === "staff" ? "Staff" : ((p.companyTypes &&
 function firmKey(p){ return p.company || "(no firm)"; }
 
 // Seed the checkboxes from the default policy (skips unsubscribed).
+// Campaign mode is hand-picked: a directory refresh KEEPS what's already checked
+// (minus anyone now blocked or gone); only the explicit Reset button clears it.
 function seedDefaults(announce){
+  if (AUDIENCE_MODE === "campaign"){
+    if (announce) SELECTED = new Set();
+    else {
+      const valid = new Set(DIRECTORY.filter(p => !isBlocked(p.email)).map(p => p.email));
+      SELECTED = new Set([...SELECTED].filter(e => valid.has(e)));
+    }
+    renderGroups();
+    if (announce) log("Reset — campaign audiences start empty; check each recipient to add them.", "ok");
+    return;
+  }
   SELECTED = new Set();
   DIRECTORY.forEach(p => { if (!isBlocked(p.email) && selectRecipients(p, SUBS[p.email])) SELECTED.add(p.email); });
   renderGroups();
   if (announce) log("Reset to default — " + SELECTED.size + " selected.", "ok");
+}
+
+// Newsletter ⇄ Campaign. Campaign = targeted send: selection starts empty, the
+// type/firm mass-select checkboxes disappear, and people are checked one by one.
+function setAudienceMode(mode){
+  if (mode === AUDIENCE_MODE) return;
+  AUDIENCE_MODE = mode;
+  const camp = mode === "campaign";
+  document.getElementById("modeNewsletter").classList.toggle("active", !camp);
+  document.getElementById("modeCampaign").classList.toggle("active", camp);
+  document.getElementById("audienceHint").textContent = camp
+    ? "— campaign: no one is selected until you check them, person by person"
+    : "— everyone's selected by default; uncheck by type, firm, or person";
+  document.getElementById("selAllBtn").disabled = camp;
+  // Keep the compose type in step, but only flip the value the mode implies —
+  // an "Event invite" choice survives switching audience modes.
+  const ct = document.getElementById("campType");
+  if (camp && ct.value === "newsletter") ct.value = "campaign";
+  if (!camp && ct.value === "campaign") ct.value = "newsletter";
+  SELECTED = new Set();          // fresh start in either direction
+  seedDefaults(false);           // newsletter: re-seed from policy; campaign: stays empty
+  if (camp && DIRECTORY.length) expandAllFirms(true); // show people so they can be picked
+  log(camp ? "Campaign mode — selection cleared; check each recipient to add them."
+           : "Newsletter mode — default selection restored (" + SELECTED.size + " selected).", "ok");
 }
 
 // View filter (search / type / staff) — changes what's SHOWN, not what's selected.
@@ -536,6 +584,7 @@ function expandAllFirms(on){
   renderGroups();
 }
 function selectAllVisible(on){
+  if (on && AUDIENCE_MODE === "campaign"){ log("Campaign mode — recipients are hand-picked; no select-all.", "err"); return; }
   computeVisible();
   VISIBLE.filter(p => !isBlocked(p.email)).forEach(p => { on ? SELECTED.add(p.email) : SELECTED.delete(p.email); });
   renderGroups();
@@ -555,6 +604,8 @@ function renderGroups(){
   });
 
   const prev = list.scrollTop;
+  // Campaign mode: no group-level mass-select — people are checked one by one.
+  const groupSel = AUDIENCE_MODE !== "campaign";
   let html = "";
   for (const t of Object.keys(tree).sort((a,b)=>a.localeCompare(b))){
     const firms = tree[t];
@@ -563,8 +614,9 @@ function renderGroups(){
     const selT = eligT.filter(p => SELECTED.has(p.email)).length;
     const unsubT = ppl.length - eligT.length;
     const tCollapsed = COLLAPSED_TYPES.has(t);
+    const tCb = groupSel ? `<input type="checkbox" class="cb" data-type="${esc(t)}" ${eligT.length && selT===eligT.length ? 'checked':''}>` : '';
     html += `<div class="type-grp"><div class="type-head">
-      <input type="checkbox" class="cb" data-type="${esc(t)}" ${eligT.length && selT===eligT.length ? 'checked':''}>
+      ${tCb}
       <span class="grp-name" data-tg="type|${esc(t)}">${tCollapsed?'▸':'▾'} ${esc(t)}</span>
       <span class="cnt">${selT}/${eligT.length}${unsubT?(' · '+unsubT+' unsub'):''}</span>
     </div>`;
@@ -576,8 +628,9 @@ function renderGroups(){
         const unsubF = members.length - eligF.length;
         const fkey = t + "|" + f;
         const fExpanded = EXPANDED_FIRMS.has(fkey);
+        const fCb = groupSel ? `<input type="checkbox" class="cb" data-firm="${esc(fkey)}" ${eligF.length && selF===eligF.length ? 'checked':''}>` : '';
         html += `<div class="firm-head">
-          <input type="checkbox" class="cb" data-firm="${esc(fkey)}" ${eligF.length && selF===eligF.length ? 'checked':''}>
+          ${fCb}
           <span class="firm-name" data-tg="firm|${esc(fkey)}">${fExpanded?'▾':'▸'} ${esc(f)}</span>
           <span class="cnt">${selF}/${eligF.length}${unsubF?(' · '+unsubF+' unsub'):''}</span>
         </div>`;
@@ -992,7 +1045,7 @@ function renderHistory(){
   document.getElementById("histBody").innerHTML = CAMPAIGNS.map(c => `
     <tr>
       <td class="muted">${new Date(c.sent_at).toLocaleString()}</td>
-      <td><span class="pill ${c.type==='event'?'client':'staff'}">${c.type}</span></td>
+      <td><span class="pill ${({newsletter:'staff',event:'client',campaign:'bounced'})[c.type]||'staff'}">${c.type}</span></td>
       <td>${esc(c.subject)}</td>
       <td>${c.recipient_count}</td>
       <td class="muted">${esc(c.sent_by)||"—"}</td>
