@@ -226,6 +226,20 @@ async function grantSpAccess(email, interactiveOk) {
   }
   return { granted, failed };
 }
+async function sendWelcomeForRow(email, role, display_name) {
+  toast("Sending welcome email to " + email + "…");
+  try {
+    const res = await fetch(SUPABASE_URL + "/functions/v1/pms-user-emails/welcome", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON,
+                 "Authorization": "Bearer " + settyAuth.token() },
+      body: JSON.stringify({ email, role, display_name: display_name || null, added_by: settyAuth.email() }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (res.ok) toast("📬 Welcome email sent to " + email, "success");
+    else toast("Welcome email failed: " + (j.error || res.status), "error");
+  } catch (e) { toast("Welcome email failed: " + e.message, "error"); }
+}
 async function grantSpForRow(email) {
   toast("Granting SharePoint access for " + email + "…");
   try {
@@ -353,6 +367,9 @@ async function renderRoles() {
         <input id="newEmail" type="email" placeholder="name@setty.com" style="flex:1;min-width:200px">
         <input id="newName" placeholder="Display name (optional)" style="flex:1;min-width:160px">
         <select id="newRole">${roleOpts("staff")}</select>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--dim);white-space:nowrap;cursor:pointer"
+          title="Pre-enrolls them in the Monday 'week ahead' email for their projects. They can change it any time in My Projects → ⚙ My Settings.">
+          <input type="checkbox" id="newDigest" checked> 📬 weekly digest</label>
         <button class="btn btn-primary" onclick="addRole()">Add</button>
       </div>
       <div style="color:var(--muted);font-size:12px;margin-top:8px">
@@ -375,6 +392,7 @@ async function renderRoles() {
               <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
             <td style="white-space:nowrap">
+              <button class="btn" title="Send (or re-send) the welcome email — useful after a failed send or for re-onboarding" onclick="sendWelcomeForRow('${esc(x.email)}', '${esc(x.role)}', '${esc(x.display_name || "")}')">✉ Welcome</button>
               <button class="btn" title="Grant access to the NYCProjects SharePoint libraries (Projects, Proposals, Contracts) via a Graph sharing invitation" onclick="grantSpForRow('${esc(x.email)}')">📁 SP access</button>
               <button class="btn btn-danger" onclick="dropRole('${esc(x.email)}')">Remove</button></td></tr>`).join("") ||
         '<tr><td colspan="5" class="empty">No users yet.</td></tr>'}</tbody></table>
@@ -465,10 +483,21 @@ async function addRole() {
   const email = $("newEmail").value.trim().toLowerCase();
   if (!/@setty\.com$/.test(email)) { toast("Email must be @setty.com", "error"); return; }
   const role = $("newRole").value, display_name = $("newName").value.trim() || null;
+  const optInDigest = $("newDigest") && $("newDigest").checked;
   try {
     await sb("POST", "/rest/v1/pms_user_roles", {
       email, role, display_name, added_by: settyAuth.email(),
     }, "resolution=merge-duplicates");
+    // Pre-enroll in the Monday digest (admin RLS allows writing others' prefs;
+    // self-service in My Projects → ⚙ My Settings overrides later). Only on
+    // opt-in, and never downgrades an existing row.
+    if (optInDigest) {
+      try {
+        await sb("POST", "/rest/v1/pms_user_prefs",
+          { email, weekly_digest: true, digest_scope: "mine", updated_at: new Date().toISOString() },
+          "resolution=merge-duplicates");
+      } catch (_) { /* non-fatal — they can opt in themselves */ }
+    }
     state.roles = null; render();
     // Welcome email (pms-user-emails fn, Resend). Non-fatal: the row is saved
     // either way — surface the outcome in the toast.
