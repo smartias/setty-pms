@@ -282,6 +282,8 @@ async function renderRoles() {
         This console — and this list — are <b>admin-only</b>, enforced in the database (guarded RPCs + RLS).
         Roles feed the <b>permission matrix</b> below; signed-in people without a row here get the <b>staff</b> baseline.
         Matrix enforcement on PMS data attaches at the Phase 4 RLS flip — until then it drives app UI only.
+        Adding someone sends a <b>welcome email</b> (via the <code>pms-user-emails</code> function — needs the
+        <code>RESEND_API_KEY</code> secret; until it's set the add still works and the toast reports the email as failed).
         Careful removing admins: with no admins left, everyone is locked out (recovery = re-insert a row via the Supabase SQL editor).</div>
     </div>
     <div class="card">
@@ -379,12 +381,25 @@ async function dropOverride(id) {
 async function addRole() {
   const email = $("newEmail").value.trim().toLowerCase();
   if (!/@setty\.com$/.test(email)) { toast("Email must be @setty.com", "error"); return; }
+  const role = $("newRole").value, display_name = $("newName").value.trim() || null;
   try {
     await sb("POST", "/rest/v1/pms_user_roles", {
-      email, role: $("newRole").value, display_name: $("newName").value.trim() || null,
-      added_by: settyAuth.email(),
+      email, role, display_name, added_by: settyAuth.email(),
     }, "resolution=merge-duplicates");
-    state.roles = null; toast("Added " + email, "success"); render();
+    state.roles = null; render();
+    // Welcome email (pms-user-emails fn, Resend). Non-fatal: the row is saved
+    // either way — surface the outcome in the toast.
+    try {
+      const res = await fetch(SUPABASE_URL + "/functions/v1/pms-user-emails/welcome", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON,
+                   "Authorization": "Bearer " + settyAuth.token() },
+        body: JSON.stringify({ email, role, display_name, added_by: settyAuth.email() }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok) toast("Added " + email + " · welcome email sent 📬", "success");
+      else toast("Added " + email + " — welcome email failed: " + (j.error || res.status), "error");
+    } catch (e2) { toast("Added " + email + " — welcome email failed: " + e2.message, "error"); }
   } catch (e) { toast(e.message, "error"); }
 }
 async function setRole(email, role) {
