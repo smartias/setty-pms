@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setty Marketing Suite</title>
+<!-- MSAL — exact same library + app registration the PMS uses, so sign-in/consent is shared -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
+<style>
+  :root{
+    --bg:#0F172A; --panel:#1E293B; --panel2:#172033; --line:#334155;
+    --ink:#E2E8F0; --muted:#94A3B8; --faint:#64748B;
+    --accent:#7C3AED; --accent2:#6D28D9; --good:#16A34A; --bad:#DC2626; --warn:#D97706; --blue:#2563EB;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  a{color:#C4B5FD}
+  header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel2);position:sticky;top:0;z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:700}
+  header .sub{font-size:12px;color:var(--muted)}
+  .spacer{flex:1}
+  .who{font-size:12px;color:var(--muted);margin-right:6px}
+  button{font:inherit;font-weight:600;cursor:pointer;border:0;border-radius:8px;padding:9px 16px;background:var(--accent);color:#fff}
+  button:hover{background:var(--accent2)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--ink)}
+  button.ghost:hover{background:var(--panel)}
+  button.danger{background:var(--bad)}
+  button.sm{padding:5px 10px;font-size:12px}
+  .tabs{display:flex;gap:6px;padding:12px 20px 0}
+  .tab{padding:8px 14px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted);border:1px solid transparent;border-bottom:0;font-weight:600;cursor:pointer}
+  .tab.active{background:var(--panel);color:var(--ink);border-color:var(--line)}
+  main{padding:20px;max-width:1180px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
+  .card h2{font-size:14px;margin:0 0 12px;font-weight:700}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px}
+  input[type=text],input[type=email],select,textarea{
+    width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--ink);font:inherit}
+  textarea{min-height:70px;resize:vertical}
+  .stats{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 16px;min-width:120px}
+  .stat .n{font-size:22px;font-weight:700}
+  .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .stat.money .n{color:#A78BFA}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:var(--panel);cursor:default}
+  .scroll{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600;white-space:nowrap}
+  .pill.due{background:rgba(217,119,6,.18);color:#FBBF24}
+  .pill.submitted{background:rgba(37,99,235,.18);color:#93C5FD}
+  .pill.lost{background:rgba(220,38,38,.18);color:#F87171}
+  .pill.cancelled{background:rgba(100,116,139,.25);color:#94A3B8}
+  .pill.type{background:rgba(124,58,237,.18);color:#C4B5FD}
+  .pill.cert{background:rgba(22,163,74,.18);color:#4ADE80}
+  .muted{color:var(--muted)}
+  .hint{font-size:12px;color:var(--faint);margin-top:6px}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .soon{color:#FBBF24;font-weight:600}
+  .late{color:#F87171;font-weight:600}
+  #log{position:fixed;bottom:0;left:0;right:0;max-height:140px;overflow:auto;background:#0B1220;border-top:1px solid var(--line);
+       font-family:"Consolas",monospace;font-size:11px;padding:8px 16px;color:#9CA3AF;display:none}
+  #log.show{display:block}
+  .logline.err{color:#F87171}
+  .logline.ok{color:#4ADE80}
+  .firm-head{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid rgba(51,65,85,.5);cursor:pointer}
+  .firm-head:hover{background:var(--panel2)}
+  .firm-name{font-weight:600}
+  .cnt{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
+  .firm-body{padding:4px 12px 14px 26px;background:rgba(23,32,51,.5)}
+  .hidden{display:none}
+  /* sign-in gate */
+  #gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px}
+  #gate p{color:var(--muted);max-width:420px;text-align:center;line-height:1.5}
+  /* modal */
+  #modalWrap{position:fixed;inset:0;background:rgba(2,6,23,.7);z-index:40;display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 16px}
+  #modalWrap.show{display:flex}
+  #modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;width:100%;max-width:560px}
+  #modal h3{margin:0 0 14px;font-size:15px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+  .chip{display:flex;align-items:center;gap:5px;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:3px 10px;cursor:pointer;user-select:none;color:var(--muted)}
+  .chip.on{border-color:var(--accent);color:#C4B5FD;background:rgba(124,58,237,.12)}
+  .fld{margin-bottom:12px}
+  .quickfind{position:relative}
+  .qf-list{position:absolute;top:100%;left:0;right:0;z-index:20;background:var(--panel2);border:1px solid var(--line);border-radius:0 0 10px 10px;max-height:280px;overflow:auto}
+  .qf-item{padding:8px 12px;cursor:pointer;display:flex;gap:8px;align-items:baseline}
+  .qf-item:hover{background:var(--panel)}
+  .qf-item .em{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <h1 style="font-size:20px;margin:0">📣 Setty Marketing Suite</h1>
+  <p>Pipeline, the global directory, and the newsletter — one place, powered by live PMS data.
+     Sign in with your Setty Microsoft account to continue.</p>
+  <button onclick="signIn()">Sign in with Microsoft</button>
+</div>
+
+<header>
+  <div>
+    <h1>📣 Setty Marketing Suite</h1>
+    <div class="sub">Pipeline · Global Directory · Newsletter — live PMS data</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="who" id="whoami"></span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="pipeline" onclick="showTab('pipeline')">🎯 Pipeline</div>
+  <div class="tab" data-tab="directory" onclick="showTab('directory')">🗂 Global Directory</div>
+  <div class="tab" data-tab="newsletter" onclick="showTab('newsletter')">📰 Newsletter</div>
+</div>
+
+<main>
+  <!-- ════════════════ PIPELINE ════════════════ -->
+  <section id="tab-pipeline">
+    <div class="card">
+      <h2>Pursuit pipeline <span class="muted" style="font-weight:400">— open any pursuit in the PMS for overview, emails, scope &amp; fee details</span></h2>
+      <div class="stats">
+        <div class="stat"><div class="n" id="stActive">—</div><div class="l">Active pursuits</div></div>
+        <div class="stat money"><div class="n" id="stTotal">—</div><div class="l">Pipeline value</div></div>
+        <div class="stat money"><div class="n" id="stWeighted">—</div><div class="l">Weighted (× prob.)</div></div>
+        <div class="stat"><div class="n" id="stSoon">—</div><div class="l">Due in 14 days</div></div>
+      </div>
+      <div class="row" style="align-items:flex-end;margin-bottom:12px">
+        <div style="max-width:220px">
+          <label>Show</label>
+          <select id="plStatus" onchange="renderPipeline()">
+            <option value="active">Active (Due + Submitted)</option>
+            <option value="Proposal Due">Proposal Due only</option>
+            <option value="Proposal Submitted">Proposal Submitted only</option>
+            <option value="past">Past (Lost / Cancelled)</option>
+            <option value="all">Everything</option>
+          </select>
+        </div>
+        <div style="max-width:220px">
+          <label>Sort by</label>
+          <select id="plSort" onchange="renderPipeline()">
+            <option value="due">Proposal due date</option>
+            <option value="fee">Fee (high → low)</option>
+            <option value="client">Client</option>
+            <option value="name">Pursuit name</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label>Search pursuits</label>
+          <input type="text" id="plSearch" placeholder="name / client / PM / city…" oninput="renderPipeline()">
+        </div>
+        <span class="hint" id="plLoaded" style="margin:0 0 9px"></span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>Pursuit</th><th>Client / Prime</th><th>Status</th><th>Proposal due</th>
+            <th class="num">Prob.</th><th class="num">Fee</th><th>PM</th><th>Location</th>
+          </tr></thead>
+          <tbody id="plBody"><tr><td colspan="8" class="muted" style="padding:18px">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="hint">Fee = the proposed Setty fee on each pursuit (locked fee where finalized, otherwise the manual figure). Blank = not yet priced.</div>
+    </div>
+
+    <div class="card">
+      <h2>Find any project <span class="muted" style="font-weight:400">— jump straight to a job's page in the PMS</span></h2>
+      <div class="quickfind" style="max-width:480px">
+        <input type="text" id="qf" placeholder="project name / number / client…" oninput="renderQuickFind()" autocomplete="off">
+        <div class="qf-list hidden" id="qfList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════ DIRECTORY ════════════════ -->
+  <section id="tab-directory" class="hidden">
+    <div class="card">
+      <h2>Global directory <span class="muted" style="font-weight:400">— every firm &amp; contact in the PMS; edits save straight back</span></h2>
+      <div class="stats">
+        <div class="stat"><div class="n" id="stFirms">—</div><div class="l">Firms</div></div>
+        <div class="stat"><div class="n" id="stContacts">—</div><div class="l">Contacts</div></div>
+        <div class="stat"><div class="n" id="stCerted">—</div><div class="l">Certified (MWBE etc.)</div></div>
+      </div>
+      <div class="row" style="align-items:flex-end;margin-bottom:12px">
+        <div style="max-width:220px">
+          <label>Company type</label>
+          <select id="dirType" onchange="renderDirectory()"><option value="all">All types</option></select>
+        </div>
+        <div style="max-width:220px">
+          <label>Certification</label>
+          <select id="dirCert" onchange="renderDirectory()"><option value="all">Any / none</option></select>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label>Search</label>
+          <input type="text" id="dirSearch" placeholder="firm / contact / email…" oninput="renderDirectory()">
+        </div>
+        <button class="sm" style="margin:0 0 1px" onclick="openFirmModal(null)">＋ Add firm</button>
+      </div>
+      <div class="scroll" id="dirList"><div class="muted" style="padding:18px">Loading…</div></div>
+      <div class="hint">Saves are version-guarded — if someone edits the same firm in the PMS at the same moment, you'll be asked to reload rather than overwrite them.</div>
+    </div>
+  </section>
+
+  <!-- ════════════════ NEWSLETTER ════════════════ -->
+  <section id="tab-newsletter" class="hidden">
+    <div class="card">
+      <h2>Newsletter &amp; event invites</h2>
+      <p class="muted" style="line-height:1.6;max-width:640px">
+        The newsletter tool reads this same live directory. <strong>Newsletter mode</strong> pre-selects
+        everyone (uncheck whole company types, firms, or individuals), and <strong>Campaign mode</strong>
+        starts empty for targeted, hand-picked sends. It creates Outlook drafts for review —
+        nothing sends without a person clicking Send.
+      </p>
+      <div class="row" style="margin-top:14px">
+        <button onclick="window.open('Newsletter.html','_blank')">📰 Open the Newsletter tool</button>
+      </div>
+      <div class="hint">Unsubscribes and bounces are honored automatically on every send, in both modes.</div>
+    </div>
+  </section>
+</main>
+
+<!-- Shared modal (firm / contact editor) -->
+<div id="modalWrap"><div id="modal"></div></div>
+
+<div id="log"></div>
+
+<script src="setty-auth.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   CONFIG — shared with the PMS so this tool reads the same data & login
+   ═══════════════════════════════════════════════════════════════════════════ */
+const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
+
+const MSAL_CLIENT_ID = "c4739c11-e89b-4a04-9580-f2d886356301"; // same Azure app as SettyPMS
+const TENANT_ID      = "f374c024-71c2-48b6-8420-076fff97327c"; // Setty & Associates tenant
+const MSAL_REDIRECT_URI = "https://smartias.github.io/setty-pms/SettyPMS.html"; // reuse the PMS's registered URI
+const SIGNIN_SCOPES = ["User.Read"];
+
+// Where project rows deep-link to. The PMS reads #project:<id> on load.
+const PMS_URL = "https://smartias.github.io/setty-pms/SettyPMS.html";
+
+const PIPELINE_ACTIVE = ["Proposal Due", "Proposal Submitted"];
+const PIPELINE_PAST   = ["Lost", "Cancelled"];
+
+// Local dev (python http.server) can't complete MSAL sign-in — the redirect URI
+// belongs to the hosted origin — so the gate is skipped there.
+const IS_DEV = ["localhost","127.0.0.1"].includes(location.hostname);
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════════════════════════ */
+let PIPELINE = [];   // slim pursuit rows
+let ALLPROJ = [];    // slim rows for quick-find (every project)
+let FIRMS = [];      // [{rowId, version, client}]
+let EXPANDED = new Set(); // expanded firm rowIds
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOGGING
+   ═══════════════════════════════════════════════════════════════════════════ */
+function log(msg, cls=""){
+  const el = document.getElementById("log");
+  el.classList.add("show");
+  const line = document.createElement("div");
+  line.className = "logline " + cls;
+  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  el.appendChild(line); el.scrollTop = el.scrollHeight;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SUPABASE (same pattern as Newsletter.html: settyAuth JWT, anon fallback)
+   ═══════════════════════════════════════════════════════════════════════════ */
+const settyAuthReady = settyAuth.init().catch(() => null);
+settyAuth.mountPill();
+
+async function sb(method, path, body, prefer){
+  await settyAuthReady;
+  const headers = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: "Bearer " + settyAuth.token(),
+    "Content-Type": "application/json",
+  };
+  if (prefer) headers["Prefer"] = prefer;
+  const res = await fetch(SUPABASE_URL + path, {
+    method, headers, body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error("Supabase " + res.status + ": " + (await res.text()));
+  if (res.status === 204) return null;
+  const txt = await res.text();
+  return txt ? JSON.parse(txt) : null;
+}
+
+// PostgREST caps a single GET at 1000 rows — page through everything.
+async function sbAll(pathWithSelect){
+  const PAGE = 1000;
+  let out = [], offset = 0;
+  for (;;){
+    const sep = pathWithSelect.includes("?") ? "&" : "?";
+    const rows = await sb("GET", pathWithSelect + sep + "limit=" + PAGE + "&offset=" + offset);
+    if (!rows || !rows.length) break;
+    out = out.concat(rows);
+    if (rows.length < PAGE) break;
+    offset += PAGE;
+  }
+  return out;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MICROSOFT SIGN-IN (identity only — no mail scopes in this app)
+   ═══════════════════════════════════════════════════════════════════════════ */
+let _msal = null;
+async function getMsalApp(){
+  if (_msal) return _msal;
+  _msal = new msal.PublicClientApplication({
+    auth: { clientId: MSAL_CLIENT_ID, authority: "https://login.microsoftonline.com/" + TENANT_ID, redirectUri: MSAL_REDIRECT_URI },
+    cache: { cacheLocation: "localStorage" },
+  });
+  await _msal.initialize();
+  const accts = _msal.getAllAccounts();
+  if (!_msal.getActiveAccount() && accts.length) _msal.setActiveAccount(accts[0]);
+  return _msal;
+}
+function currentUser(){
+  try { const a = _msal && (_msal.getActiveAccount() || _msal.getAllAccounts()[0]); return a ? (a.username || a.name) : null; }
+  catch { return null; }
+}
+async function signIn(){
+  try {
+    const app = await getMsalApp();
+    const r = await app.loginPopup({ scopes: SIGNIN_SCOPES });
+    app.setActiveAccount(r.account);
+    afterSignIn();
+  } catch(e){ log("Sign-in failed: " + e.message, "err"); }
+}
+function afterSignIn(){
+  const u = currentUser();
+  if (!u && !IS_DEV) return;
+  document.getElementById("gate").style.display = "none";
+  document.getElementById("whoami").textContent = u ? ("Signed in: " + u) : "(local dev — sign-in skipped)";
+  loadEverything();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOADS
+   ═══════════════════════════════════════════════════════════════════════════ */
+// Slim JSON-path selects keep the payload tiny — never pull whole project blobs here.
+const PL_SELECT = "id," +
+  "name:project->>name,status:project->>status,prob:project->>probability," +
+  "due:project->>proposalDueDate,lockedFee:project->>lockedSettyFee," +
+  "manualFee:project->>manualSettyFee,feeType:project->>feeType," +
+  "client:project->>clientName,prime:project->>prime,pm:project->>projectManager," +
+  "city:project->>projectCity,state:project->>projectState,pnum:project->>projectNumber," +
+  "archived:project->>archived";
+
+async function loadPipeline(){
+  const statuses = PIPELINE_ACTIVE.concat(PIPELINE_PAST).map(s => '"' + s + '"').join(",");
+  PIPELINE = await sbAll("/rest/v1/pms_projects?select=" + PL_SELECT +
+    "&project->>status=in.(" + encodeURIComponent(statuses) + ")");
+  PIPELINE = PIPELINE.filter(p => p.archived !== "true");
+  document.getElementById("plLoaded").textContent = PIPELINE.length + " pursuits · " + new Date().toLocaleTimeString();
+}
+
+async function loadAllProjects(){
+  ALLPROJ = await sbAll("/rest/v1/pms_projects?select=id,name:project->>name," +
+    "pnum:project->>projectNumber,status:project->>status,client:project->>clientName");
+}
+
+async function loadFirms(){
+  const rows = await sbAll("/rest/v1/pms_clients?select=id,client,version&order=id");
+  FIRMS = rows.map(r => ({ rowId: r.id, version: r.version ?? 1, client: r.client || {} }));
+}
+
+async function loadEverything(){
+  try {
+    log("Loading live PMS data…");
+    await Promise.all([loadPipeline(), loadAllProjects(), loadFirms()]);
+    buildDirFilters();
+    renderPipeline(); renderDirectory();
+    log("Loaded " + PIPELINE.length + " pursuits, " + ALLPROJ.length + " projects, " + FIRMS.length + " firms.", "ok");
+  } catch(e){ log("Load failed: " + e.message, "err"); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PIPELINE
+   ═══════════════════════════════════════════════════════════════════════════ */
+function feeOf(p){
+  const v = parseFloat(p.lockedFee ?? p.manualFee);
+  return isFinite(v) && v > 0 ? v : null;
+}
+function probOf(p){
+  const v = parseFloat(p.prob);
+  return isFinite(v) ? v : 50;
+}
+const fmtMoney = new Intl.NumberFormat("en-US", { style:"currency", currency:"USD", maximumFractionDigits:0 });
+function fmtM(v){ return v == null ? "—" : (v >= 1e6 ? "$" + (v/1e6).toFixed(1) + "M" : fmtMoney.format(v)); }
+
+function statusPill(s){
+  const cls = s === "Proposal Due" ? "due" : s === "Proposal Submitted" ? "submitted"
+            : s === "Lost" ? "lost" : "cancelled";
+  return '<span class="pill ' + cls + '">' + esc(s) + '</span>';
+}
+function dueCell(p){
+  if (!p.due) return '<span class="muted">—</span>';
+  const d = new Date(p.due + "T00:00:00");
+  const days = Math.round((d - new Date(new Date().toDateString())) / 86400000);
+  const label = d.toLocaleDateString(undefined, { month:"short", day:"numeric", year:"numeric" });
+  const active = PIPELINE_ACTIVE.includes(p.status);
+  if (active && days < 0)   return '<span class="late">' + label + ' · ' + (-days) + 'd ago</span>';
+  if (active && days <= 14) return '<span class="soon">' + label + ' · in ' + days + 'd</span>';
+  return label;
+}
+
+function renderPipeline(){
+  const mode = document.getElementById("plStatus").value;
+  const q = document.getElementById("plSearch").value.trim().toLowerCase();
+  const sort = document.getElementById("plSort").value;
+
+  let rows = PIPELINE.filter(p =>
+    mode === "all" ? true
+    : mode === "active" ? PIPELINE_ACTIVE.includes(p.status)
+    : mode === "past" ? PIPELINE_PAST.includes(p.status)
+    : p.status === mode);
+  if (q) rows = rows.filter(p =>
+    ((p.name||"")+" "+(p.client||"")+" "+(p.prime||"")+" "+(p.pm||"")+" "+(p.city||"")+" "+(p.pnum||"")).toLowerCase().includes(q));
+
+  rows.sort((a,b) => {
+    if (sort === "fee")    return (feeOf(b)||0) - (feeOf(a)||0);
+    if (sort === "client") return (a.client||a.prime||"").localeCompare(b.client||b.prime||"");
+    if (sort === "name")   return (a.name||"").localeCompare(b.name||"");
+    return (a.due || "9999") < (b.due || "9999") ? -1 : 1; // due date, undated last
+  });
+
+  document.getElementById("plBody").innerHTML = rows.map(p => `
+    <tr>
+      <td><a href="${PMS_URL}#project:${encodeURIComponent(p.id)}" target="_blank" title="Open in the PMS — overview, emails, scope, fee table">${esc(p.name)||"(unnamed)"}</a>
+        ${p.pnum ? '<div class="hint" style="margin:0">'+esc(p.pnum)+'</div>' : ''}</td>
+      <td>${esc(p.client || p.prime) || '<span class="muted">—</span>'}</td>
+      <td>${statusPill(p.status)}</td>
+      <td>${dueCell(p)}</td>
+      <td class="num">${probOf(p)}%</td>
+      <td class="num">${feeOf(p) ? fmtMoney.format(feeOf(p)) : '<span class="muted">—</span>'}</td>
+      <td>${esc(p.pm) || '<span class="muted">—</span>'}</td>
+      <td>${esc([p.city, p.state].filter(Boolean).join(", ")) || '<span class="muted">—</span>'}</td>
+    </tr>`).join("") ||
+    '<tr><td colspan="8" class="muted" style="padding:18px">No pursuits match.</td></tr>';
+
+  // Stats always reflect the ACTIVE pipeline, regardless of the view filter.
+  const act = PIPELINE.filter(p => PIPELINE_ACTIVE.includes(p.status));
+  const total = act.reduce((s,p) => s + (feeOf(p)||0), 0);
+  const weighted = act.reduce((s,p) => s + (feeOf(p)||0) * probOf(p)/100, 0);
+  const soon = act.filter(p => {
+    if (!p.due) return false;
+    const days = Math.round((new Date(p.due+"T00:00:00") - new Date(new Date().toDateString())) / 86400000);
+    return days >= 0 && days <= 14;
+  }).length;
+  document.getElementById("stActive").textContent = act.length;
+  document.getElementById("stTotal").textContent = fmtM(total);
+  document.getElementById("stWeighted").textContent = fmtM(weighted);
+  document.getElementById("stSoon").textContent = soon;
+}
+
+/* ── Quick-find any project ─────────────────────────────────────────────── */
+function renderQuickFind(){
+  const q = document.getElementById("qf").value.trim().toLowerCase();
+  const list = document.getElementById("qfList");
+  if (q.length < 2){ list.classList.add("hidden"); return; }
+  const hits = ALLPROJ.filter(p =>
+    ((p.name||"")+" "+(p.pnum||"")+" "+(p.client||"")).toLowerCase().includes(q)).slice(0, 12);
+  list.innerHTML = hits.map(p => `
+    <div class="qf-item" onclick="window.open('${PMS_URL}#project:${encodeURIComponent(p.id)}','_blank')">
+      <span>${esc(p.name)||"(unnamed)"}</span>
+      <span class="em">${esc(p.pnum)||""} · ${esc(p.status)||""}${p.client?(" · "+esc(p.client)):""}</span>
+    </div>`).join("") ||
+    '<div class="qf-item muted">No matches.</div>';
+  list.classList.remove("hidden");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GLOBAL DIRECTORY
+   ═══════════════════════════════════════════════════════════════════════════ */
+function firmTypes(c){ return (c.types && c.types.length ? c.types : (c.type ? [c.type] : [])); }
+function firmCerts(c){ return c.certs || []; }
+
+function buildDirFilters(){
+  const types = new Set(), certs = new Set();
+  FIRMS.forEach(f => { firmTypes(f.client).forEach(t => t && types.add(t)); firmCerts(f.client).forEach(t => t && certs.add(t)); });
+  document.getElementById("dirType").innerHTML = '<option value="all">All types</option>' +
+    [...types].sort().map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  document.getElementById("dirCert").innerHTML = '<option value="all">Any / none</option>' +
+    [...certs].sort().map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+}
+
+function renderDirectory(){
+  const type = document.getElementById("dirType").value;
+  const cert = document.getElementById("dirCert").value;
+  const q = document.getElementById("dirSearch").value.trim().toLowerCase();
+
+  let rows = FIRMS.filter(f => {
+    const c = f.client;
+    if (type !== "all" && !firmTypes(c).includes(type)) return false;
+    if (cert !== "all" && !firmCerts(c).includes(cert)) return false;
+    if (q){
+      const hay = (c.name||"") + " " + firmTypes(c).join(" ") + " " + firmCerts(c).join(" ") + " " +
+        (c.contacts||[]).map(ct => (ct.name||"")+" "+(ct.email||"")).join(" ");
+      if (!hay.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  }).sort((a,b) => (a.client.name||"").localeCompare(b.client.name||""));
+
+  // Searching a contact name should reveal the contact, not just the firm row.
+  const autoExpand = q.length >= 2;
+
+  document.getElementById("dirList").innerHTML = rows.map(f => {
+    const c = f.client;
+    const contacts = c.contacts || [];
+    const open = EXPANDED.has(f.rowId) ||
+      (autoExpand && contacts.some(ct => ((ct.name||"")+" "+(ct.email||"")).toLowerCase().includes(q)));
+    return `
+    <div>
+      <div class="firm-head" onclick="toggleFirm('${esc(f.rowId)}')">
+        <span class="firm-name">${open?'▾':'▸'} ${esc(c.name)||"(unnamed firm)"}</span>
+        ${firmTypes(c).map(t => '<span class="pill type">'+esc(t)+'</span>').join("")}
+        ${firmCerts(c).map(t => '<span class="pill cert">'+esc(t)+'</span>').join("")}
+        <span class="cnt">${contacts.length} contact${contacts.length===1?"":"s"}</span>
+      </div>
+      ${open ? `<div class="firm-body">
+        ${c.address ? '<div class="hint" style="margin:2px 0 8px">'+esc(c.address)+'</div>' : ''}
+        <table><tbody>
+          ${contacts.map(ct => `
+            <tr>
+              <td style="width:22%">${esc(ct.name)||'<span class="muted">—</span>'}</td>
+              <td style="width:20%" class="muted">${esc(ct.title)||""}</td>
+              <td style="width:24%"><a href="mailto:${esc(ct.email)}">${esc(ct.email)||""}</a></td>
+              <td style="width:16%" class="muted">${esc(ct.phone)||""}</td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="ghost sm" onclick="event.stopPropagation();openContactModal('${esc(f.rowId)}','${esc(ct.id)}')">Edit</button>
+                <button class="danger sm" onclick="event.stopPropagation();deleteContact('${esc(f.rowId)}','${esc(ct.id)}')">Delete</button>
+              </td>
+            </tr>`).join("") || '<tr><td class="muted">No contacts yet.</td></tr>'}
+        </tbody></table>
+        <div class="row" style="margin-top:10px;gap:8px">
+          <button class="ghost sm" onclick="openContactModal('${esc(f.rowId)}',null)">＋ Add contact</button>
+          <button class="ghost sm" onclick="openFirmModal('${esc(f.rowId)}')">✎ Edit firm</button>
+        </div>
+      </div>` : ""}
+    </div>`;
+  }).join("") || '<div class="muted" style="padding:18px">No firms match.</div>';
+
+  const contactCount = FIRMS.reduce((s,f) => s + (f.client.contacts||[]).length, 0);
+  document.getElementById("stFirms").textContent = FIRMS.length;
+  document.getElementById("stContacts").textContent = contactCount;
+  document.getElementById("stCerted").textContent = FIRMS.filter(f => firmCerts(f.client).length).length;
+}
+function toggleFirm(rowId){
+  EXPANDED.has(rowId) ? EXPANDED.delete(rowId) : EXPANDED.add(rowId);
+  renderDirectory();
+}
+
+/* ── Version-guarded save (mirrors SettyPMS saveClientV2) ───────────────── */
+async function saveFirmRow(f){
+  const result = await sb("PATCH",
+    "/rest/v1/pms_clients?id=eq." + encodeURIComponent(f.rowId) + "&version=eq." + f.version,
+    { client: f.client, version: f.version + 1, updated_at: new Date().toISOString() },
+    "return=representation");
+  if (!result || !result.length){
+    alert("That firm was just changed by someone else (probably in the PMS). Reloading the directory — please redo your edit.");
+    await loadFirms(); buildDirFilters(); renderDirectory();
+    return false;
+  }
+  f.version += 1;
+  return true;
+}
+const newId = () => "mkt-" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+
+/* ── Modal plumbing ─────────────────────────────────────────────────────── */
+function openModal(html){ document.getElementById("modal").innerHTML = html; document.getElementById("modalWrap").classList.add("show"); }
+function closeModal(){ document.getElementById("modalWrap").classList.remove("show"); }
+document.getElementById("modalWrap").addEventListener("click", e => { if (e.target.id === "modalWrap") closeModal(); });
+
+function chipRow(all, selected){
+  return all.map(t => `<span class="chip ${selected.includes(t)?'on':''}" data-val="${esc(t)}"
+    onclick="this.classList.toggle('on')">${esc(t)}</span>`).join("");
+}
+
+/* ── Firm editor ────────────────────────────────────────────────────────── */
+let EDIT_FIRM = null; // rowId | null (new)
+function openFirmModal(rowId){
+  EDIT_FIRM = rowId;
+  const f = rowId ? FIRMS.find(x => x.rowId === rowId) : null;
+  const c = f ? f.client : { name:"", address:"", types:[], certs:[] };
+  const allTypes = [...new Set(FIRMS.flatMap(x => firmTypes(x.client)))].sort();
+  const allCerts = [...new Set(FIRMS.flatMap(x => firmCerts(x.client)))].sort();
+  openModal(`
+    <h3>${f ? "Edit firm" : "Add firm"}</h3>
+    <div class="fld"><label>Firm name</label><input type="text" id="fmName" value="${esc(c.name)}"></div>
+    <div class="fld"><label>Address</label><textarea id="fmAddr">${esc(c.address)}</textarea></div>
+    <div class="fld"><label>Company types</label>
+      <div class="chips" id="fmTypes">${chipRow(allTypes, firmTypes(c))}</div>
+      <div class="row" style="margin-top:6px"><input type="text" id="fmNewType" placeholder="add a type…" style="max-width:200px">
+      <button class="ghost sm" onclick="addChip('fmTypes','fmNewType')">Add</button></div></div>
+    <div class="fld"><label>Certifications (MWBE, SDVOSB, …)</label>
+      <div class="chips" id="fmCerts">${chipRow(allCerts, firmCerts(c))}</div>
+      <div class="row" style="margin-top:6px"><input type="text" id="fmNewCert" placeholder="add a cert…" style="max-width:200px">
+      <button class="ghost sm" onclick="addChip('fmCerts','fmNewCert')">Add</button></div></div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px">
+      <button class="ghost" onclick="closeModal()">Cancel</button>
+      <button onclick="saveFirm()">Save firm</button>
+    </div>`);
+}
+function addChip(chipsId, inputId){
+  const inp = document.getElementById(inputId);
+  const v = inp.value.trim(); if (!v) return;
+  const box = document.getElementById(chipsId);
+  if ([...box.querySelectorAll(".chip")].some(ch => ch.dataset.val.toLowerCase() === v.toLowerCase())) { inp.value=""; return; }
+  const span = document.createElement("span");
+  span.className = "chip on"; span.dataset.val = v; span.textContent = v;
+  span.onclick = () => span.classList.toggle("on");
+  box.appendChild(span); inp.value = "";
+}
+function chipVals(chipsId){
+  return [...document.querySelectorAll("#" + chipsId + " .chip.on")].map(ch => ch.dataset.val);
+}
+async function saveFirm(){
+  const name = document.getElementById("fmName").value.trim();
+  if (!name){ alert("Firm name is required."); return; }
+  const types = chipVals("fmTypes"), certs = chipVals("fmCerts");
+  const address = document.getElementById("fmAddr").value.trim();
+  try {
+    if (EDIT_FIRM){
+      const f = FIRMS.find(x => x.rowId === EDIT_FIRM);
+      f.client = { ...f.client, name, address, types, certs, type: types[0] || f.client.type || "" };
+      if (!(await saveFirmRow(f))) { closeModal(); return; }
+      log("Saved firm: " + name, "ok");
+    } else {
+      const id = newId();
+      const client = { id, name, address, type: types[0] || "", types, certs, contacts: [] };
+      await sb("POST", "/rest/v1/pms_clients", { id, client, version: 1 }, "return=minimal");
+      FIRMS.push({ rowId: id, version: 1, client });
+      log("Added firm: " + name, "ok");
+    }
+    closeModal(); buildDirFilters(); renderDirectory();
+  } catch(e){ log("Save failed: " + e.message, "err"); }
+}
+
+/* ── Contact editor ─────────────────────────────────────────────────────── */
+let EDIT_CT = null; // {rowId, contactId|null}
+function openContactModal(rowId, contactId){
+  EDIT_CT = { rowId, contactId };
+  const f = FIRMS.find(x => x.rowId === rowId);
+  const ct = contactId ? (f.client.contacts||[]).find(c => String(c.id) === String(contactId)) || {} : {};
+  openModal(`
+    <h3>${contactId ? "Edit contact" : "Add contact"} <span class="muted" style="font-weight:400">— ${esc(f.client.name)}</span></h3>
+    <div class="fld"><label>Name</label><input type="text" id="ctName" value="${esc(ct.name)}"></div>
+    <div class="row">
+      <div class="fld" style="flex:1"><label>Title</label><input type="text" id="ctTitle" value="${esc(ct.title)}"></div>
+      <div class="fld" style="flex:1"><label>Phone</label><input type="text" id="ctPhone" value="${esc(ct.phone)}"></div>
+    </div>
+    <div class="fld"><label>Email</label><input type="email" id="ctEmail" value="${esc(ct.email)}"></div>
+    <div class="fld"><label>Notes</label><textarea id="ctNotes">${esc(ct.notes)}</textarea></div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px">
+      <button class="ghost" onclick="closeModal()">Cancel</button>
+      <button onclick="saveContact()">Save contact</button>
+    </div>`);
+}
+async function saveContact(){
+  const { rowId, contactId } = EDIT_CT;
+  const f = FIRMS.find(x => x.rowId === rowId);
+  const name = document.getElementById("ctName").value.trim();
+  const email = document.getElementById("ctEmail").value.trim();
+  if (!name && !email){ alert("A contact needs at least a name or an email."); return; }
+  const patch = {
+    name, email,
+    title: document.getElementById("ctTitle").value.trim(),
+    phone: document.getElementById("ctPhone").value.trim(),
+    notes: document.getElementById("ctNotes").value.trim(),
+  };
+  try {
+    const contacts = [...(f.client.contacts || [])];
+    if (contactId){
+      const i = contacts.findIndex(c => String(c.id) === String(contactId));
+      if (i < 0){ alert("Contact not found — reload and try again."); return; }
+      contacts[i] = { ...contacts[i], ...patch };
+    } else {
+      contacts.push({ id: newId(), ...patch });
+    }
+    f.client = { ...f.client, contacts };
+    if (!(await saveFirmRow(f))) { closeModal(); return; }
+    log((contactId ? "Saved" : "Added") + " contact: " + (name || email), "ok");
+    closeModal(); renderDirectory();
+  } catch(e){ log("Save failed: " + e.message, "err"); }
+}
+async function deleteContact(rowId, contactId){
+  const f = FIRMS.find(x => x.rowId === rowId);
+  const ct = (f.client.contacts||[]).find(c => String(c.id) === String(contactId));
+  if (!ct) return;
+  if (!confirm("Remove " + (ct.name || ct.email || "this contact") + " from " + (f.client.name || "this firm") +
+    "?\n\nThis edits the firm's record used across the whole PMS (and the newsletter directory), not just this page.")) return;
+  try {
+    f.client = { ...f.client, contacts: (f.client.contacts||[]).filter(c => String(c.id) !== String(contactId)) };
+    if (!(await saveFirmRow(f))) return;
+    log("Removed contact: " + (ct.name || ct.email), "ok");
+    renderDirectory();
+  } catch(e){ log("Delete failed: " + e.message, "err"); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI PLUMBING
+   ═══════════════════════════════════════════════════════════════════════════ */
+function showTab(name){
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab===name));
+  ["pipeline","directory","newsletter"].forEach(n =>
+    document.getElementById("tab-" + n).classList.toggle("hidden", n !== name));
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+document.addEventListener("click", e => {
+  if (!e.target.closest(".quickfind")) document.getElementById("qfList").classList.add("hidden");
+});
+
+/* boot */
+(async function(){
+  try { await getMsalApp(); } catch(e){ /* fine — gate stays up */ }
+  if (currentUser() || IS_DEV) afterSignIn();
+})();
+</script>
+</body>
+</html>
