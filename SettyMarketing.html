@@ -70,6 +70,8 @@
   .firm-name{font-weight:600}
   .cnt{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
   .firm-body{padding:4px 12px 14px 26px;background:rgba(23,32,51,.5)}
+  tr.ct-inactive td{opacity:.45}
+  tr.ct-inactive td:last-child{opacity:1} /* keep the action buttons fully visible */
   .hidden{display:none}
   /* sign-in gate */
   #gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px}
@@ -527,13 +529,16 @@ function renderDirectory(){
         ${c.address ? '<div class="hint" style="margin:2px 0 8px">'+esc(c.address)+'</div>' : ''}
         <table><tbody>
           ${contacts.map(ct => `
-            <tr>
-              <td style="width:22%">${esc(ct.name)||'<span class="muted">—</span>'}</td>
+            <tr class="${ct.inactive ? 'ct-inactive' : ''}">
+              <td style="width:22%">${esc(ct.name)||'<span class="muted">—</span>'}
+                ${ct.inactive ? '<span class="pill cancelled">inactive</span><div class="hint" style="margin:2px 0 0">since ' +
+                  (ct.inactiveAt ? new Date(ct.inactiveAt).toLocaleDateString() : "?") + ' · ' + esc(ct.inactiveBy || "unknown") + '</div>' : ''}</td>
               <td style="width:20%" class="muted">${esc(ct.title)||""}</td>
               <td style="width:24%"><a href="mailto:${esc(ct.email)}">${esc(ct.email)||""}</a></td>
               <td style="width:16%" class="muted">${esc(ct.phone)||""}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button class="ghost sm" onclick="event.stopPropagation();openContactModal('${esc(f.rowId)}','${esc(ct.id)}')">Edit</button>
+                <button class="ghost sm" onclick="event.stopPropagation();toggleContactInactive('${esc(f.rowId)}','${esc(ct.id)}')">${ct.inactive ? "Reactivate" : "Deactivate"}</button>
                 <button class="danger sm" onclick="event.stopPropagation();deleteContact('${esc(f.rowId)}','${esc(ct.id)}')">Delete</button>
               </td>
             </tr>`).join("") || '<tr><td class="muted">No contacts yet.</td></tr>'}
@@ -689,6 +694,31 @@ async function saveContact(){
     closeModal(); renderDirectory();
   } catch(e){ log("Save failed: " + e.message, "err"); }
 }
+// Inactive = kept in the directory (greyed out) but excluded from newsletter and
+// campaign sends. Stamps who flipped it and when, so the row explains itself.
+async function toggleContactInactive(rowId, contactId){
+  const f = FIRMS.find(x => x.rowId === rowId);
+  const contacts = [...(f.client.contacts || [])];
+  const i = contacts.findIndex(c => String(c.id) === String(contactId));
+  if (i < 0) return;
+  const ct = contacts[i];
+  const who = ct.name || ct.email || "this contact";
+  if (!ct.inactive){
+    if (!confirm("Mark " + who + " inactive?\n\nThey'll stay in the directory (greyed out) but will no longer appear in newsletter or campaign audiences. You can reactivate them any time.")) return;
+    contacts[i] = { ...ct, inactive: true, inactiveAt: new Date().toISOString(), inactiveBy: currentUser() || "unknown" };
+  } else {
+    const upd = { ...ct };
+    delete upd.inactive; delete upd.inactiveAt; delete upd.inactiveBy;
+    contacts[i] = upd;
+  }
+  try {
+    f.client = { ...f.client, contacts };
+    if (!(await saveFirmRow(f))) return;
+    log((contacts[i].inactive ? "Marked inactive: " : "Reactivated: ") + who, "ok");
+    renderDirectory();
+  } catch(e){ log("Update failed: " + e.message, "err"); }
+}
+
 async function deleteContact(rowId, contactId){
   const f = FIRMS.find(x => x.rowId === rowId);
   const ct = (f.client.contacts||[]).find(c => String(c.id) === String(contactId));

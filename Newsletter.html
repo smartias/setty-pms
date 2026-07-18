@@ -442,6 +442,9 @@ async function loadDirectory(){
   for (const row of clients){
     const c = row.client || {};
     for (const ct of (c.contacts || [])){
+      // Contacts marked inactive in the directory (Marketing Suite) are excluded
+      // entirely — they never appear in the picker, in either audience mode.
+      if (ct.inactive) continue;
       // carry the row id + contact id so a bounce can be removed from the exact PMS record
       push({ email: ct.email, name: ct.name || "", company: c.name || "", companyTypes: c.types || [],
              source: "client_contact", clientRowId: row.id, contactId: ct.id });
