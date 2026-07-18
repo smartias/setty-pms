@@ -7319,7 +7319,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
         const url = lk.targetUrl || (lk.targetSystem === "pms"
           ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId) : "");
         const label = String((lk.targetSystem === "pms"
-          ? resolvePmsLabel(project, lk.targetType, lk.targetId)
+          ? resolvePmsLabel(project, lk.targetType, lk.targetId, lk.targetLabel)
           : (lk.targetLabel || lk.targetUrl)) || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
         const kind = `<span style="color:#94A3B8;">${linkTargetKindLabel(lk)}:</span> `;
         bits.push(kind + (url
@@ -9314,12 +9314,14 @@ function linkTargetKindLabel(lk) {
   }[lk.targetSystem] || "Link";
 }
 
-function resolvePmsLabel(project, targetType, targetId) {
+// fallbackLabel: emails are no longer in the inline project data (slim V2
+// load), so email links resolve from their stored snapshot label instead.
+function resolvePmsLabel(project, targetType, targetId, fallbackLabel) {
   const def = PMS_TARGET_TYPES.find(t => t.value === targetType);
-  if (!def) return targetId;
+  if (!def) return fallbackLabel || targetId;
   const idKey = def.idKey || "id";
   const entity = (project[def.listKey] || []).find(e => e[idKey] === targetId);
-  return entity ? def.labelFn(entity) : targetId;
+  return entity ? def.labelFn(entity) : (fallbackLabel || targetId);
 }
 
 function resolvePmsTargetUrl(project, targetType, targetId) {
@@ -9378,7 +9380,7 @@ function LinkManager({ links = [], onAdd, onRemove, project, selfType, selfId })
           ? resolvePmsTargetUrl(project, lk.targetType, lk.targetId)
           : "");
         const label = lk.targetSystem === "pms"
-          ? resolvePmsLabel(project, lk.targetType, lk.targetId)
+          ? resolvePmsLabel(project, lk.targetType, lk.targetId, lk.targetLabel)
           : (lk.targetLabel || lk.targetUrl);
         return (
           <div key={lk.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, padding: "4px 8px", borderRadius: 5, background: P.card }}>
@@ -9592,6 +9594,60 @@ function OneNotePagePicker({ project, onPick }) {
   );
 }
 
+// Searchable picker over the project's filed-email log (pms_project_emails).
+// The inline project.emails[] array is no longer shipped with the slim V2
+// load, so linking to an email fetches the log on demand instead.
+function EmailLogPicker({ project, onPick }) {
+  const [q,    setQ]    = React.useState("");
+  const [rows, setRows] = React.useState(null); // null = loading
+  const [err,  setErr]  = React.useState("");
+  const seq = React.useRef(0);
+
+  React.useEffect(() => {
+    const mySeq = ++seq.current;
+    const t = setTimeout(async () => {
+      try {
+        const page = await loadProjectEmails(project.id, { limit: 30, search: q });
+        if (seq.current === mySeq) { setRows(page); setErr(""); }
+      } catch (e) {
+        if (seq.current === mySeq) { setRows([]); setErr(e.message || "Could not load the email log."); }
+      }
+    }, q ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [q, project.id]);
+
+  return (
+    <div style={{ border: "1px solid " + P.border, borderRadius: 6, padding: 8, marginTop: 6, background: P.bg }}>
+      <input value={q} onChange={e => { setRows(null); setQ(e.target.value); }}
+        placeholder="Search filed emails (subject, sender)…"
+        style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.card, color: P.text, fontSize: 12 }} />
+      {err && <div style={{ fontSize: 11, color: "#f87171", marginTop: 6 }}>{err}</div>}
+      {rows === null && !err && <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>Loading…</div>}
+      {Array.isArray(rows) && rows.length === 0 && !err && (
+        <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginTop: 6 }}>
+          {q ? "No filed emails match." : "No emails filed to this project yet."}
+        </div>
+      )}
+      {Array.isArray(rows) && rows.length > 0 && (
+        <div style={{ maxHeight: 200, overflowY: "auto", marginTop: 6 }}>
+          {rows.map(em => (
+            <div key={em.id} onClick={() => onPick(em)} title="Link to this email"
+              style={{ fontSize: 12, color: P.text, cursor: "pointer", padding: "3px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              📧 {em.subject || "(no subject)"}
+              <span style={{ color: P.textDim, fontSize: 11 }}> · {em.from || em.fromAddress || "?"} · {(em.date || "").slice(0, 10)}</span>
+            </div>
+          ))}
+          {rows.length >= 30 && (
+            <div style={{ fontSize: 10, color: P.textDim, fontStyle: "italic", padding: "2px 4px" }}>
+              Showing the newest 30 — type to search the full log.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AddLinkModal({ project, onAdd, onClose }) {
   const [linkType,     setLinkType]     = React.useState("references");
   const [targetSystem, setTargetSystem] = React.useState("pms");
@@ -9603,19 +9659,23 @@ function AddLinkModal({ project, onAdd, onClose }) {
   const pmsTypeDef  = PMS_TARGET_TYPES.find(t => t.value === targetType);
   const pmsEntities = pmsTypeDef ? (project[pmsTypeDef.listKey] || []) : [];
   const idKey       = pmsTypeDef?.idKey || "id";
+  // Emails live in pms_project_emails, not the inline project data — picked
+  // via EmailLogPicker, and the link keeps a label + folder-URL snapshot so
+  // it renders without ever needing the email list loaded.
+  const isPmsEmail  = targetSystem === "pms" && targetType === "email";
   const canAdd      = targetSystem === "pms" ? !!targetId : !!targetUrl;
 
   function handleAdd() {
     if (!canAdd) return;
     const label = targetSystem === "pms"
-      ? resolvePmsLabel(project, targetType, targetId)
+      ? resolvePmsLabel(project, targetType, targetId, targetLabel)
       : (targetLabel || targetUrl);
     onAdd({
       id: uid(), linkType,
       targetSystem,
       targetType:  targetSystem === "pms" ? targetType : (targetType || "file"),
       targetId:    targetSystem === "pms" ? targetId   : "",
-      targetUrl:   targetSystem === "pms" ? ""         : targetUrl,
+      targetUrl:   targetSystem === "pms" ? (isPmsEmail ? targetUrl : "") : targetUrl,
       targetLabel: label,
       createdAt:   new Date().toISOString(),
       createdBy:   getCurrentUser(),
@@ -9663,14 +9723,25 @@ function AddLinkModal({ project, onAdd, onClose }) {
 
         {targetSystem === "pms" && (<>
           <label style={lbl}>Entity Type</label>
-          <select value={targetType} onChange={e => { setTargetType(e.target.value); setTargetId(""); }} style={sel}>
+          <select value={targetType} onChange={e => { setTargetType(e.target.value); setTargetId(""); setTargetUrl(""); setTargetLabel(""); }} style={sel}>
             {PMS_TARGET_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
-          <label style={lbl}>Select {pmsTypeDef?.label}</label>
-          <select value={targetId} onChange={e => setTargetId(e.target.value)} style={sel}>
-            <option value="">— choose —</option>
-            {pmsEntities.map(e => <option key={e[idKey]} value={e[idKey]}>{pmsTypeDef.labelFn(e)}</option>)}
-          </select>
+          {!isPmsEmail && (<>
+            <label style={lbl}>Select {pmsTypeDef?.label}</label>
+            <select value={targetId} onChange={e => setTargetId(e.target.value)} style={sel}>
+              <option value="">— choose —</option>
+              {pmsEntities.map(e => <option key={e[idKey]} value={e[idKey]}>{pmsTypeDef.labelFn(e)}</option>)}
+            </select>
+          </>)}
+          {isPmsEmail && (targetId
+            ? <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, padding: "5px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.bg }}>
+                <span style={{ fontSize: 12, color: P.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📧 {targetLabel}</span>
+                <span onClick={() => { setTargetId(""); setTargetUrl(""); setTargetLabel(""); }} title="Choose a different email"
+                  style={{ cursor: "pointer", color: P.textDim, fontSize: 13, lineHeight: 1 }}>×</span>
+              </div>
+            : <EmailLogPicker project={project}
+                onPick={em => { setTargetId(em.msgId); setTargetLabel(em.subject || "(no subject)"); setTargetUrl(em.spFolderUrl || ""); }} />
+          )}
         </>)}
 
         {targetSystem === "sharepoint" && (
@@ -9681,12 +9752,13 @@ function AddLinkModal({ project, onAdd, onClose }) {
           <OneNotePagePicker project={project}
             onPick={(url, label) => { setTargetUrl(url); setTargetLabel(label); }} />
         )}
-        {targetSystem === "outlook" && (
+        {targetSystem === "outlook" && (<>
+          <EmailLogPicker project={project}
+            onPick={em => { setTargetUrl(em.spFolderUrl || ""); setTargetLabel(em.subject || "(no subject)"); }} />
           <div style={{ fontSize: 11, color: P.textDim, marginTop: 6, lineHeight: 1.5 }}>
-            Tip: emails filed to this project via the Outlook add-in can be picked from a list — choose
-            “PMS Entity” above, then Entity Type → Email.
+            Picking a filed email fills in its SharePoint folder URL below — or paste any email/thread URL manually.
           </div>
-        )}
+        </>)}
 
         {targetSystem !== "pms" && (<>
           <label style={lbl}>URL</label>
