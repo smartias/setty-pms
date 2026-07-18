@@ -95,6 +95,7 @@
   <div id="status"></div>
   <div id="view"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,10 +154,83 @@ const state = { tab: "signins", roster: null, staffCount: null, roles: null, bac
 
 // Phase 5 role taxonomy. 'staff' is the baseline for signed-in people without
 // a registry row — keep it last in lists but never remove it.
-const ROLES = ["admin", "project_manager", "engineer", "operations", "accounting", "contracts", "marketing", "staff"];
+const ROLES = ["admin", "project_manager", "engineer", "operations", "accounting", "contracts", "marketing", "qaqc", "staff"];
 const ROLE_COLOR = { admin: "bad", project_manager: "warn", engineer: "ok", operations: "info",
-                     accounting: "warn", contracts: "info", marketing: "info", staff: "info" };
-const roleOpts = (sel) => ROLES.map(o => `<option value="${o}" ${o === sel ? "selected" : ""}>${o.replace("_", " ")}</option>`).join("");
+                     accounting: "warn", contracts: "info", marketing: "info", qaqc: "ok", staff: "info" };
+const roleLabel = (r) => r === "qaqc" ? "QA/QC" : r.replace("_", " ");
+const roleOpts = (sel) => ROLES.map(o => `<option value="${o}" ${o === sel ? "selected" : ""}>${roleLabel(o)}</option>`).join("");
+
+// ── SharePoint onboarding (Graph sharing invitations) ────────────────────────
+// Grants a new person access to the NYCProjects document libraries by inviting
+// them on each library ROOT (Files.ReadWrite.All — already consented; no new
+// IT approvals). Uses the same c4739c11 registration as the PMS, so its MSAL
+// token cache is shared — if the admin has used the PMS in this browser the
+// token is acquired silently. Teams team membership (project channels/OneNote
+// notebooks) still needs a Teams owner: that Graph write scope isn't granted.
+const SP_DRIVES = [
+  { label: "Project Document Library", id: "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BBnJPKsNGM-TaGmbGiL3ZaU" },
+  { label: "Proposals",                id: "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BD05MwIg6LcTbBQFEDE4JKC" },
+  { label: "Contracts",                id: "b!ZARYqukTtE6K1Mpv9bngAehneskb-yNKopp1Ol1X1BDwTLUC_kC6TYDhC8BfQTMb" },
+];
+let _msalApp = null;
+async function graphToken(interactiveOk) {
+  if (!window.msal) throw new Error("MSAL script not loaded");
+  if (!_msalApp) {
+    _msalApp = new msal.PublicClientApplication({
+      auth: {
+        clientId: "c4739c11-e89b-4a04-9580-f2d886356301",
+        authority: "https://login.microsoftonline.com/f374c024-71c2-48b6-8420-076fff97327c",
+        // Must be a registered redirect URI — the PMS page is; this console isn't.
+        // MSAL's popup flow only reads the hash off that URL, so it works fine.
+        redirectUri: "https://smartias.github.io/setty-pms/SettyPMS.html",
+      },
+      cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
+      system: { allowNativeBroker: false },
+    });
+    await _msalApp.initialize();
+  }
+  const scopes = ["User.Read", "Files.ReadWrite.All"];
+  const account = _msalApp.getAllAccounts()[0];
+  if (account) {
+    try { return (await _msalApp.acquireTokenSilent({ scopes, account })).accessToken; }
+    catch (e) { if (!interactiveOk) throw e; }
+  } else if (!interactiveOk) {
+    throw new Error("no cached Microsoft session");
+  }
+  const res = await _msalApp.loginPopup({ scopes });
+  return res.accessToken;
+}
+// Returns { granted: [lib…], failed: [{lib, error}…] }
+async function grantSpAccess(email, interactiveOk) {
+  const token = await graphToken(interactiveOk);
+  const granted = [], failed = [];
+  for (const d of SP_DRIVES) {
+    const invite = async (sendInvitation) => fetch(
+      "https://graph.microsoft.com/v1.0/drives/" + d.id + "/root/invite", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipients: [{ email }], requireSignIn: true, sendInvitation,
+          roles: ["write"], message: "You've been onboarded to the Setty PMS — this grants access to the NYCProjects libraries.",
+        }),
+      });
+    try {
+      let res = await invite(false);                      // silent direct grant first
+      if (!res.ok) res = await invite(true);              // fall back to a sharing-mail invite
+      if (res.ok) granted.push(d.label);
+      else failed.push({ lib: d.label, error: res.status + " " + (await res.text()).slice(0, 120) });
+    } catch (e) { failed.push({ lib: d.label, error: e.message }); }
+  }
+  return { granted, failed };
+}
+async function grantSpForRow(email) {
+  toast("Granting SharePoint access for " + email + "…");
+  try {
+    const r = await grantSpAccess(email, true);
+    if (r.failed.length === 0) toast("📁 " + email + " granted: " + r.granted.join(", "), "success");
+    else toast("📁 Granted " + r.granted.length + "/" + SP_DRIVES.length + " — failed: " + r.failed.map(f => f.lib + " (" + f.error + ")").join("; "), "error");
+  } catch (e) { toast("SharePoint grant failed: " + e.message, "error"); }
+}
 const FEED_URL = SUPABASE_URL + "/functions/v1/pms-billing-feed/v1/pms/billable-milestones";
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -282,25 +356,31 @@ async function renderRoles() {
         This console — and this list — are <b>admin-only</b>, enforced in the database (guarded RPCs + RLS).
         Roles feed the <b>permission matrix</b> below; signed-in people without a row here get the <b>staff</b> baseline.
         Matrix enforcement on PMS data attaches at the Phase 4 RLS flip — until then it drives app UI only.
-        Adding someone sends a <b>welcome email</b> (via the <code>pms-user-emails</code> function — needs the
-        <code>RESEND_API_KEY</code> secret; until it's set the add still works and the toast reports the email as failed).
-        Careful removing admins: with no admins left, everyone is locked out (recovery = re-insert a row via the Supabase SQL editor).</div>
+        <b>Adding someone onboards them:</b> a <b>welcome email</b> goes out (via <code>pms-user-emails</code> + Resend)
+        and <b>SharePoint access</b> to the NYCProjects libraries (Projects / Proposals / Contracts) is granted via a
+        Graph sharing invitation — silently if this browser has a Microsoft session from the PMS, otherwise click
+        <b>📁 SP access</b> on their row (one popup sign-in, uses your own account, no new IT approvals).
+        Teams team membership (project channels + OneNote) is the one manual step left — a Teams owner adds them, since
+        that Graph write scope isn't consented. Careful removing admins: with no admins left, everyone is locked out
+        (recovery = re-insert a row via the Supabase SQL editor).</div>
     </div>
     <div class="card">
       <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Updated</th><th></th></tr></thead>
       <tbody>${state.roles.map(x => `
         <tr><td>${esc(x.email)}</td><td>${esc(x.display_name || "")}</td>
             <td><select onchange="setRole('${esc(x.email)}', this.value)">${roleOpts(x.role)}</select>
-              <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(x.role.replace("_", " "))}</span></td>
+              <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
-            <td><button class="btn btn-danger" onclick="dropRole('${esc(x.email)}')">Remove</button></td></tr>`).join("") ||
+            <td style="white-space:nowrap">
+              <button class="btn" title="Grant access to the NYCProjects SharePoint libraries (Projects, Proposals, Contracts) via a Graph sharing invitation" onclick="grantSpForRow('${esc(x.email)}')">📁 SP access</button>
+              <button class="btn btn-danger" onclick="dropRole('${esc(x.email)}')">Remove</button></td></tr>`).join("") ||
         '<tr><td colspan="5" class="empty">No users yet.</td></tr>'}</tbody></table>
     </div>
     <div class="card">
       <div class="sechead">Permission matrix — what each role can do</div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th style="min-width:170px">Capability</th>
-          ${ROLES.map(r => `<th title="${r}">${esc(r.replace("_", " "))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
+          ${ROLES.map(r => `<th title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
         <tbody>${state.permCatalog.map(c => `
           <tr><td title="${esc(c.description || "")}"><b>${esc(c.label)}</b><br>
                 <span style="color:var(--muted);font-size:11px">${esc(c.capability)}</span></td>
@@ -389,6 +469,7 @@ async function addRole() {
     state.roles = null; render();
     // Welcome email (pms-user-emails fn, Resend). Non-fatal: the row is saved
     // either way — surface the outcome in the toast.
+    let mailNote = "";
     try {
       const res = await fetch(SUPABASE_URL + "/functions/v1/pms-user-emails/welcome", {
         method: "POST",
@@ -397,9 +478,19 @@ async function addRole() {
         body: JSON.stringify({ email, role, display_name, added_by: settyAuth.email() }),
       });
       const j = await res.json().catch(() => ({}));
-      if (res.ok) toast("Added " + email + " · welcome email sent 📬", "success");
-      else toast("Added " + email + " — welcome email failed: " + (j.error || res.status), "error");
-    } catch (e2) { toast("Added " + email + " — welcome email failed: " + e2.message, "error"); }
+      mailNote = res.ok ? " · welcome email sent 📬" : " — welcome email failed: " + (j.error || res.status);
+    } catch (e2) { mailNote = " — welcome email failed: " + e2.message; }
+    // SharePoint grant — silent attempt only (uses the cached PMS Microsoft
+    // session if one exists; never pops a login mid-add). The per-row
+    // "📁 SP access" button is the interactive path / retry.
+    let spNote = "";
+    try {
+      const r = await grantSpAccess(email, false);
+      spNote = r.failed.length === 0
+        ? " · 📁 SharePoint access granted"
+        : " · 📁 SP partial (" + r.granted.length + "/" + SP_DRIVES.length + ") — use the row button to retry";
+    } catch (_) { spNote = " · 📁 click “SP access” on their row to grant SharePoint"; }
+    toast("Added " + email + mailNote + spNote, mailNote.includes("failed") ? "error" : "success");
   } catch (e) { toast(e.message, "error"); }
 }
 async function setRole(email, role) {
