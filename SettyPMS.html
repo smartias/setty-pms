@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-18-pms-v73-slim-nav";
+    window.__appVersion = "2026-07-18-pms-v74-onhold-nudge";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -16804,6 +16804,12 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
             📄 Ad-hoc Transmittal
           </a>
+          {project.status === "On Hold" && (
+            <span title="On Hold projects are excluded from dashboards, the Team WBS and weekly digests until the hold is lifted."
+              style={{ background: P.amberDim || "#33270a", color: "#fbbf24", border: "1px solid #fbbf24", borderRadius: 6, fontSize: 11.5, fontWeight: 700, padding: "4px 9px", whiteSpace: "nowrap" }}>
+              ⏸ On Hold — hidden from dashboards &amp; digests
+            </span>
+          )}
           <select value={project.status} onChange={e => handleStatusChange(e.target.value)} style={{ fontSize: 13 }}>
             {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
           </select>
@@ -26696,6 +26702,31 @@ function consumePmsDailyGreeting() {
 
 // Generic celebration trigger — toast + confetti. Used for milestone-complete
 // and the cornerstone (5-click logo) easter egg.
+// Neutral warning toast — deliberately NOT gated by the celebrations pref
+// (it's a functional heads-up, not confetti). Deduped per session by key so
+// e.g. the On Hold reminder fires once per project, not per keystroke.
+const _pmsNudgeShown = new Set();
+function pmsNudge(message, dedupeKey) {
+  if (dedupeKey) {
+    if (_pmsNudgeShown.has(dedupeKey)) return;
+    _pmsNudgeShown.add(dedupeKey);
+  }
+  let el = document.getElementById("pmsNudgeToast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "pmsNudgeToast";
+    el.style.cssText = "position:fixed;top:70px;left:50%;transform:translateX(-50%);" +
+      "background:#33270a;color:#fbbf24;border:1px solid #fbbf24;font-weight:600;" +
+      "font-size:13px;padding:10px 20px;border-radius:10px;box-shadow:0 8px 22px rgba(0,0,0,.45);" +
+      "z-index:9998;opacity:0;transition:opacity .3s;max-width:calc(100% - 28px);pointer-events:none";
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  requestAnimationFrame(() => { el.style.opacity = "1"; });
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(() => { el.style.opacity = "0"; }, 8000);
+}
+
 function pmsCelebrate(message, options = {}) {
   // Single choke point for greeting/celebration toasts — per-user pref
   // (My Projects → My Settings). Default on.
@@ -27374,6 +27405,15 @@ function updateProject(updated, options = {}) {
     debounceTeams = true,   // default ON — prevents per-keystroke cards
     teamsDelay = 2000
   } = options;
+
+  // On Hold guard-rail: edits to an On Hold project surface nowhere —
+  // dashboards, the Team WBS and the weekly digest all exclude On Hold —
+  // so remind the editor (once per project per session) to lift the hold
+  // when the work is real again. Status changes themselves don't nudge.
+  const oldForNudge = projects.find(p => p.id === updated.id);
+  if (oldForNudge && oldForNudge.status === "On Hold" && updated.status === "On Hold") {
+    pmsNudge("⏸ " + (updated.name || "This project") + " is On Hold — this change won't appear on dashboards or weekly digests until you take it off hold (status dropdown, top right).", "onhold:" + updated.id);
+  }
 
   setProjects(prev => {
     const old = prev.find(p => p.id === updated.id);
