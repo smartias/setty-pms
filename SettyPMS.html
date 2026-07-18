@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-17-pms-v71.2-email-link-picker";
+    window.__appVersion = "2026-07-17-pms-v72-settings-emails";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -721,6 +721,55 @@ function pmsCan(cap) {
 // Fetch my permissions as soon as the stored session is restored; settyAuth
 // fires onChange when they land, and App re-renders off that.
 settyAuthReady.then(() => { if (settyAuth.refreshPermissions) settyAuth.refreshPermissions(); });
+
+// ── Per-user preferences (pms_user_prefs) ────────────────────────────────────
+// One row per signed-in email. Typed columns (weekly_digest, digest_scope) are
+// read server-side by the weekly digest; the `prefs` jsonb bag holds client
+// knobs (celebrations, dailyTip, landingView, …). Signed-out users get the
+// defaults and nothing is persisted.
+window.__pmsPrefs = { loaded: false, row: null };
+async function pmsLoadUserPrefs() {
+  try {
+    if (!settyAuth.isSignedIn()) { window.__pmsPrefs = { loaded: true, row: null }; return null; }
+    const email = (settyAuth.email() || "").trim().toLowerCase();
+    const res = await fetch(SUPABASE_URL + "/rest/v1/pms_user_prefs?email=eq." + encodeURIComponent(email) + "&select=*", {
+      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + settyAuth.token() },
+    });
+    const rows = res.ok ? await res.json() : [];
+    window.__pmsPrefs = { loaded: true, row: rows[0] || null };
+    return window.__pmsPrefs.row;
+  } catch (_) { window.__pmsPrefs = { loaded: true, row: null }; return null; }
+}
+// Read a client pref with a default. All toast/tip gates default ON, so the
+// app behaves exactly as before until someone flips a switch.
+function pmsPref(key, dflt) {
+  const r = window.__pmsPrefs && window.__pmsPrefs.row;
+  return r && r.prefs && Object.prototype.hasOwnProperty.call(r.prefs, key) ? r.prefs[key] : dflt;
+}
+// Upsert a patch — top-level columns (weekly_digest, digest_scope) and/or
+// prefs keys (merged shallowly into the existing bag).
+async function pmsSaveUserPrefs(patch) {
+  const email = (settyAuth.email() || "").trim().toLowerCase();
+  if (!email) return null;
+  const cur = (window.__pmsPrefs && window.__pmsPrefs.row) || {};
+  const body = {
+    email,
+    weekly_digest: "weekly_digest" in patch ? patch.weekly_digest : (cur.weekly_digest || false),
+    digest_scope: "digest_scope" in patch ? patch.digest_scope : (cur.digest_scope || "mine"),
+    prefs: { ...(cur.prefs || {}), ...(patch.prefs || {}) },
+    updated_at: new Date().toISOString(),
+  };
+  const res = await fetch(SUPABASE_URL + "/rest/v1/pms_user_prefs", {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + settyAuth.token(),
+               "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=representation" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error("Prefs save failed: " + res.status);
+  const rows = await res.json();
+  window.__pmsPrefs = { loaded: true, row: rows[0] || body };
+  return window.__pmsPrefs.row;
+}
 
 async function sbFetch(method, path, body) {
   await settyAuthReady;
@@ -19773,7 +19822,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     <div style={{ padding: "24px 32px" }}>
       {/* Daily tip card — feature-discovery nudge. One per day, dismissible.
           Sits above the dashboard heading so it gets seen but doesn't dominate. */}
-      {tipState.visible && tipState.tip && (
+      {tipState.visible && tipState.tip && pmsPref("dailyTip", true) && (
         <div style={{
           display: "flex",
           alignItems: "flex-start",
@@ -25725,6 +25774,15 @@ function StaffOpenItemRows({ entries, now, onOpenRfi, onOpenSub, onNavigateToPro
 function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNavigateToProject }) {
   const [q, setQ] = React.useState("");
   const [linkPick, setLinkPick] = React.useState("");
+  const [showSettings, setShowSettings] = React.useState(false);
+  const [, setPrefsTick] = React.useState(0);
+  const [prefsMsg, setPrefsMsg] = React.useState("");
+  const prefRow = (window.__pmsPrefs && window.__pmsPrefs.row) || {};
+  function savePref(patch) {
+    pmsSaveUserPrefs(patch)
+      .then(() => { setPrefsMsg("✓ Saved"); setPrefsTick(t => t + 1); setTimeout(() => setPrefsMsg(""), 2000); })
+      .catch(e => { setPrefsMsg("Save failed: " + e.message); setPrefsTick(t => t + 1); });
+  }
   const [rfiModal, setRfiModal] = React.useState(null);
   const [subModal, setSubModal] = React.useState(null);
   const [showTimesheet, setShowTimesheet] = React.useState(false);
@@ -25826,10 +25884,60 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
       <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4 }}>
         <div style={{ fontSize: 20, fontWeight: 800 }}>My Projects</div>
         <div style={{ color: P.textDim, fontSize: 13 }}>{mine.length} project{mine.length !== 1 ? "s" : ""} · {myStaff.name}</div>
+        <button onClick={() => setShowSettings(v => !v)}
+          style={{ marginLeft: "auto", background: "none", border: `1px solid ${P.border}`, borderRadius: 6, color: showSettings ? P.accentLight : P.textDim, cursor: "pointer", fontSize: 12.5, padding: "5px 12px" }}>
+          ⚙ My Settings
+        </button>
       </div>
       <div style={{ color: P.textMuted, fontSize: 12.5, marginBottom: 16 }}>
         Joining a project adds you to its Team tab; leaving removes you there too.
       </div>
+      {showSettings && (
+        <Card style={{ maxWidth: 620, marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>My Settings</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+              <input type="checkbox" checked={!!prefRow.weekly_digest}
+                onChange={e => savePref({ weekly_digest: e.target.checked })} style={{ marginTop: 2 }} />
+              <span style={{ fontSize: 13 }}>📬 <b>Weekly email digest</b>
+                <span style={{ color: P.textMuted, display: "block", fontSize: 12 }}>
+                  Monday mornings: open milestones, RFIs, submittals and action items due in the next 3 weeks.</span>
+              </span>
+            </label>
+            {!!prefRow.weekly_digest && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", paddingLeft: 26 }}>
+                <span style={{ fontSize: 12, color: P.textMuted }}>Covering</span>
+                <select value={prefRow.digest_scope || "mine"} onChange={e => savePref({ digest_scope: e.target.value })} style={{ fontSize: 12 }}>
+                  <option value="mine">my projects</option>
+                  <option value="all">all active projects</option>
+                </select>
+              </div>
+            )}
+            <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+              <input type="checkbox" checked={pmsPref("celebrations", true)}
+                onChange={e => savePref({ prefs: { celebrations: e.target.checked } })} style={{ marginTop: 2 }} />
+              <span style={{ fontSize: 13 }}>🎉 <b>Greetings &amp; celebration toasts</b>
+                <span style={{ color: P.textMuted, display: "block", fontSize: 12 }}>The daily hello and milestone celebration pop-ups.</span>
+              </span>
+            </label>
+            <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+              <input type="checkbox" checked={pmsPref("dailyTip", true)}
+                onChange={e => savePref({ prefs: { dailyTip: e.target.checked } })} style={{ marginTop: 2 }} />
+              <span style={{ fontSize: 13 }}>💡 <b>Daily tip card</b>
+                <span style={{ color: P.textMuted, display: "block", fontSize: 12 }}>The feature-discovery tip on the Dashboard.</span>
+              </span>
+            </label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 13 }}>🏠 <b>Start on</b></span>
+              <select value={pmsPref("landingView", "dashboard")} onChange={e => savePref({ prefs: { landingView: e.target.value } })} style={{ fontSize: 12 }}>
+                <option value="dashboard">Dashboard</option>
+                <option value="myprojects">My Projects</option>
+              </select>
+            </div>
+            {prefsMsg && <div style={{ fontSize: 12, color: prefsMsg.startsWith("✓") ? P.green : P.red }}>{prefsMsg}</div>}
+          </div>
+        </Card>
+      )}
 
       {/* My deadlines & open items — same digest as the Staff tab, On Hold excluded */}
       <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, marginBottom: 22, overflow: "hidden" }}>
@@ -26847,6 +26955,9 @@ function consumePmsDailyGreeting() {
 // Generic celebration trigger — toast + confetti. Used for milestone-complete
 // and the cornerstone (5-click logo) easter egg.
 function pmsCelebrate(message, options = {}) {
+  // Single choke point for greeting/celebration toasts — per-user pref
+  // (My Projects → My Settings). Default on.
+  if (!pmsPref("celebrations", true)) return;
   const { big = false } = options;
   const toastEl = document.getElementById("pmsCelebrationToast");
   if (toastEl) {
@@ -26886,6 +26997,14 @@ function App() {
   const [, setPermsTick] = React.useState(0);
   React.useEffect(() => {
     if (settyAuth.onChange) settyAuth.onChange(() => setPermsTick(t => t + 1));
+    // Load per-user prefs, then honor the landing-view choice — but only if
+    // there was no deep link and the user hasn't already navigated away.
+    pmsLoadUserPrefs().then(() => {
+      setPermsTick(t => t + 1);
+      if (!window.location.hash && pmsPref("landingView", "dashboard") === "myprojects") {
+        setView(v => v === "dashboard" ? "myprojects" : v);
+      }
+    });
   }, []);
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
