@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-18-pms-v74-onhold-nudge";
+    window.__appVersion = "2026-07-18-pms-v75-personal-greetings";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -26592,27 +26592,45 @@ function getPmsSeasonalConfettiOpts() {
 // add-in's weekly milestones: random pull from a pool, so daily users see
 // something different. Picked at fire time, paired with confetti.
 const MILESTONE_DONE_QUIPS = [
-  "🎉 Milestone complete — strong work!",
+  "🎉 Milestone complete — strong work{name}!",
   "✅ Done. Future-You is grateful.",
   "🏁 Milestone closed. Ship it!",
   "🎯 Hit. On to the next.",
-  "✨ Another one in the books.",
+  "✨ Another one in the books{name}.",
   "🚀 Milestone done — momentum building.",
   "📐 Measured, marked, completed.",
-  "🏆 That's the kind of follow-through this firm runs on.",
+  "🏆 That's the kind of follow-through this firm runs on{name}.",
 ];
 
+// First name from the suite sign-in — Azure profile name first, staff-dir-ish
+// email fallback ("sara.arias@…" → "Sara"). Empty when signed out, and the
+// {name} token collapses cleanly so quips still read right without one.
+function pmsFirstName() {
+  try {
+    if (!settyAuth.isSignedIn()) return "";
+    const dn = (settyAuth.displayName() || "").trim();
+    if (dn) return dn.split(/[\s]+/)[0];
+    const local = (settyAuth.email() || "").split("@")[0].split(".")[0];
+    return local ? local[0].toUpperCase() + local.slice(1) : "";
+  } catch (_) { return ""; }
+}
+// Quips embed "{name}" where ", First" reads naturally; signed-out → "".
+function pmsPersonalize(s) {
+  const n = pmsFirstName();
+  return String(s).replace(/\{name\}/g, n ? ", " + n : "");
+}
+
 const PMS_TIME_GREETINGS = {
-  morning: ["☕ Morning! Strong start.", "☕ Bright and early today.", "🌅 Good morning."],
-  late_morning: ["🥐 Mid-morning groove.", "🥐 Building momentum.", "🍵 Productive late morning."],
-  lunch: ["🥪 Lunchtime PM-ing — eat something too, ok?", "🍴 Take a break with that sandwich.", "🥗 Don't forget lunch."],
-  afternoon: ["📊 Mid-afternoon focus. Respect.", "🧘 Stand up, stretch, water?", "👀 Eyes off the screen for a sec? Then back to it."],
-  evening: ["🌅 Evening wrap-up.", "🌇 Closing the loop on today.", "🌅 End-of-day cleanup."],
-  late_evening: ["🌙 9-to-9 day? Thanks for the dedication.", "🌙 Past 7pm? Make sure dinner happened.", "🌃 Evening shift respect."],
-  late_night: ["🦉 Filing past 10pm — admirable. Sleep is also good.", "🌙 Late shift respect. Set a hard stop?", "🦉 The owl hours."],
-  friday_pm: ["🍻 Friday afternoon. Consider going home soon.", "🌴 It's Friday. The CO can wait until Monday.", "🎉 Friday afternoon. Wrap it up; weekend awaits."],
+  morning: ["☕ Morning{name}! Strong start.", "☕ Bright and early today{name}.", "🌅 Good morning{name}."],
+  late_morning: ["🥐 Mid-morning groove{name}.", "🥐 Building momentum.", "🍵 Productive late morning{name}."],
+  lunch: ["🥪 Lunchtime PM-ing{name} — eat something too, ok?", "🍴 Take a break with that sandwich{name}.", "🥗 Don't forget lunch{name}."],
+  afternoon: ["📊 Mid-afternoon focus. Respect{name}.", "🧘 Stand up, stretch, water{name}?", "👀 Eyes off the screen for a sec{name}? Then back to it."],
+  evening: ["🌅 Evening wrap-up{name}.", "🌇 Closing the loop on today{name}.", "🌅 End-of-day cleanup."],
+  late_evening: ["🌙 9-to-9 day{name}? Thanks for the dedication.", "🌙 Past 7pm{name}? Make sure dinner happened.", "🌃 Evening shift respect{name}."],
+  late_night: ["🦉 Filing past 10pm{name} — admirable. Sleep is also good.", "🌙 Late shift respect{name}. Set a hard stop?", "🦉 The owl hours{name}."],
+  friday_pm: ["🍻 Friday afternoon{name}. Consider going home soon.", "🌴 It's Friday{name}. The CO can wait until Monday.", "🎉 Friday afternoon{name}. Wrap it up; weekend awaits."],
 };
-function _pmsPickQuip(pool) { return pool[Math.floor(Math.random() * pool.length)]; }
+function _pmsPickQuip(pool) { return pmsPersonalize(pool[Math.floor(Math.random() * pool.length)]); }
 function pmsTimeOfDayGreeting() {
   const d = new Date();
   const h = d.getHours();
@@ -26625,7 +26643,7 @@ function pmsTimeOfDayGreeting() {
   if (h >= 17 && h < 19) return _pmsPickQuip(PMS_TIME_GREETINGS.evening);
   if (h >= 19 && h < 22) return _pmsPickQuip(PMS_TIME_GREETINGS.late_evening);
   if (h >= 22)            return _pmsPickQuip(PMS_TIME_GREETINGS.late_night);
-  return "🌌 Filing at " + h + ":00? You're a different kind of person. Respect.";
+  return pmsPersonalize("🌌 Filing at " + h + ":00{name}? You're a different kind of person. Respect.");
 }
 
 // "Did you know?" tip pool — one shown per day on the Dashboard. Solves the
@@ -26634,25 +26652,29 @@ function pmsTimeOfDayGreeting() {
 // add-in features, PMS workflows, and AEC-specific helpers so daily users
 // keep discovering things across the whole app.
 const PMS_TIPS = [
-  "Click 'Send for Review' on the Scope tab to email the team for informal sign-off before sending a proposal to the client.",
-  "Send Proposal generates a single bound PDF (SOW + Fee + Terms + Rates) plus an Outlook draft — one click, all the documents.",
-  "Pipeline projects auto-bump their start date to today when you transition them to an awarded status.",
-  "Locking the Scope of Services also locks the Terms & Conditions and Hourly Rate Schedule — they're a unit.",
-  "The hourly rate schedule snapshots into the Contract tab when a project moves to awarded — read-only after that, regardless of later rate changes.",
+  // ── The new wave (My Projects era) ──
+  "★ My Projects is your personal portfolio — join a project there and you're on its Team tab instantly. Leave the same way.",
+  "⚙ My Settings (under My Projects) controls your weekly email digest, the daily hello, this tip card, and which view the app opens on.",
+  "📬 Opt into the Monday digest in My Projects → ⚙ My Settings — a planner-style email of everything due on your projects in the next 3 weeks.",
+  "📋 The Timesheet Helper on My Projects builds a summary of your week from your own project activity.",
+  "⏸ On Hold projects are hidden from dashboards and weekly digests — take a project off hold when work resumes so it shows up again.",
+  "The Construction Administration tabs appear automatically once a project's status is In Construction Administration.",
+  "Has subs? Click '+ Subconsultants' in a project's section row to turn on the Subconsultants tab.",
+  "🔗 Related projects (task orders, siblings, phases) can be grouped — the header widget jumps between them.",
+  "The Project Intelligence brief on the Overview tab pulls milestones, emails and agency requirements into one live summary.",
+  // ── Evergreen keepers ──
   "Each project has a shareable deep link — click '🔗 Copy Link' at the top of any project to share with a teammate.",
   "The Outlook add-in suggests the right project based on subject + sender — usually one click to file an email.",
   "Date detection in the add-in catches 'May 18', '5/18', 'next Friday', 'by Tuesday' — much smarter than just looking for the word 'deadline'.",
-  "Click any × on a date chip in the add-in to dismiss it — it won't reappear on that email next time.",
-  "Term contracts can have their own SharePoint folder. Click 'Create Contract Folder' on the Term Contracts tab.",
+  "Keep the Outlook task pane pinned (📌 in top-right) so it stays open as you switch between emails.",
   "The Pending COs tab shows every unapproved change order across all projects in one place — useful for chasing approvals on Friday.",
   "The dashboard filters by PM let you focus on just your own projects when the firm-wide list gets noisy.",
-  "Override the project start date from the Schedule tab if it ever needs to shift mid-project — confirms before rebuilding milestones.",
-  "Reset Terms & Conditions to firm-default per project if you've made edits you no longer want.",
-  "Keep the Outlook task pane pinned (📌 in top-right) so it stays open as you switch between emails.",
   "Cash Flow tab projects revenue based on milestone due dates and % complete — a quick look at the next 90 days.",
   "Photos tab supports per-project image uploads — drag from File Explorer or paste from clipboard.",
   "The Outlook add-in's 📤 Share button creates a forwardable Outlook draft from any saved email — no new permissions required.",
-  "If a project has no SharePoint folder, the add-in shows a banner with a one-click link to open the project in PMS to create one.",
+  "📸 Field Photos and 📋 Site Reports have their own pages (links in the nav) — built for phones on site.",
+  "Send Proposal generates a single bound PDF (SOW + Fee + Terms + Rates) plus an Outlook draft — one click, all the documents.",
+  "Locking the Scope of Services also locks the Terms & Conditions and Hourly Rate Schedule — they're a unit.",
 ];
 
 const PMS_LAST_TIP_KEY = "setty_pms_last_tip_v1";  // { date, index }
