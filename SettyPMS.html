@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-18-pms-v75-personal-greetings";
+    window.__appVersion = "2026-07-18-pms-v76-contact-inactive";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22597,6 +22597,16 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
   function removeContact(cid) {
     setForm({ ...form, contacts: (form.contacts||[]).filter(c => c.id !== cid) });
   }
+  // Inactive = kept in the directory but excluded from newsletter/campaign sends
+  // (Newsletter.html and the Marketing Suite honor the same flag). Undefined
+  // values drop out at JSON serialization, so reactivating clears the keys.
+  function toggleContactInactive(ct) {
+    if (ct.inactive) {
+      updateContact(ct.id, { inactive: undefined, inactiveAt: undefined, inactiveBy: undefined });
+    } else {
+      updateContact(ct.id, { inactive: true, inactiveAt: new Date().toISOString(), inactiveBy: getCurrentUser() });
+    }
+  }
 
   if (editingId !== null) {
     const contacts = form.contacts || [];
@@ -22710,7 +22720,15 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
               <div style={{ color: P.textDim, fontSize: 13, textAlign: "center", padding: "20px 0" }}>No contacts yet.</div>
             )}
             {contacts.map((ct, i) => (
-              <div key={ct.id} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 12 }}>
+              <div key={ct.id} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 12, opacity: ct.inactive ? 0.55 : 1 }}>
+                {ct.inactive && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                    <span style={{ background: "rgba(217,119,6,.15)", color: "#FBBF24", fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 999 }}>Inactive</span>
+                    <span style={{ fontSize: 11, color: P.textDim }}>
+                      since {String(ct.inactiveAt || "").slice(0, 10) || "?"} · {ct.inactiveBy || "unknown"} — excluded from newsletters &amp; campaigns
+                    </span>
+                  </div>
+                )}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <Field label="Name" style={{ marginBottom: 8 }}>
                     <input value={ct.name} onChange={e => updateContact(ct.id, { name: e.target.value })} placeholder="Full name" style={{ width: "100%" }} />
@@ -22759,7 +22777,10 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                       return "Last contact: — (fills from filed project emails or add-in capture)";
                     })()}
                   </div>
-                  <Btn small variant="danger" onClick={() => removeContact(ct.id)}>Remove</Btn>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Btn small variant="ghost" onClick={() => toggleContactInactive(ct)}>{ct.inactive ? "Reactivate" : "Mark inactive"}</Btn>
+                    <Btn small variant="danger" onClick={() => removeContact(ct.id)}>Remove</Btn>
+                  </div>
                 </div>
               </div>
             ))}
@@ -22807,7 +22828,8 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
               const types = getCompanyTypes(c);
               const certs = getCompanyCerts(c);
               const contacts = c.contacts || [];
-              const primary = contacts[0];
+              const activeContacts = contacts.filter(ct => !ct.inactive);
+              const primary = activeContacts[0] || contacts[0];
               return (
                 <tr key={c.id} style={{ cursor: "pointer" }} onClick={() => startEdit(c)}>
                   <td style={{ fontWeight: 600 }}>{c.name}</td>
@@ -22831,8 +22853,13 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                           {certs.map(t => <Badge key={t} color={CERT_CHIP_ACTIVE} text={t} />)}
                         </div>}
                   </td>
-                  <td style={{ color: P.textMuted }}>{contacts.length || "—"}</td>
-                  <td style={{ color: P.textMuted, fontSize: 12 }}>{primary ? primary.name + (primary.title ? " · " + primary.title : "") : "—"}</td>
+                  <td style={{ color: P.textMuted }}>
+                    {activeContacts.length || "—"}
+                    {activeContacts.length < contacts.length && (
+                      <span style={{ color: P.textDim, fontSize: 11 }}> +{contacts.length - activeContacts.length} inactive</span>
+                    )}
+                  </td>
+                  <td style={{ color: P.textMuted, fontSize: 12, opacity: primary && primary.inactive ? 0.55 : 1 }}>{primary ? primary.name + (primary.title ? " · " + primary.title : "") : "—"}</td>
                   <td style={{ fontSize: 12 }} onClick={e => e.stopPropagation()}>
                     {(() => {
                       const linked = (projects||[]).filter(p => !p.archived && (p.client === c.name || p.prime === c.name));
