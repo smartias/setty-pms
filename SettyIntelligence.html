@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-15-intel-v26-payment-flags";
+    window.__appVersion = "2026-07-19-intel-v27-friction-ar";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -867,12 +867,39 @@ async function loadHeat() {
 //  • scope risks down-weighted — static analysis, doesn't change over time
 //  • payment flags (💰, from pay_flags: unpaid/overdue-invoice language in 90d email
 //    threads, both directions) score 2 per thread (capped) and make a project hot
-//  • On-hold projects: score ×0.25 and never "hot" (💰 badge still shows)
+//  • contractor friction (🚧, 7/19 per Sara): construction-phase projects being
+//    carpet-bombed with RFIs. rfis_60d = pace, rfis_friv = RFIs whose answer just
+//    points back at the contract documents ("refer to sheet E-001"). Deliberately
+//    a BIG adder — a bad contractor is a bigger drain than any other signal.
+//  • AR flags (💳, 7/19 per Sara): real receivables from Accounting's weekly AR
+//    Directors Report (pms_ar_invoices, loaded from Yashwanth's Friday export).
+//    ar_due/ar_days = THIS project's open invoices; ar_client_due/ar_client_days
+//    = the CLIENT's total across every project, because payment problems are a
+//    client behavior, not a project behavior — sibling projects get flagged too.
+//  • On-hold projects: score ×0.25 and never "hot" (💰/🚧/💳 badges still show)
 const isOnHold = r => /\bon.?hold\b/i.test(r.status || "");
+const inConstruction = r => /construction/i.test(r.status || "");
+// Contractor friction — only scores during construction. 19 RFIs/60d ≈ +15;
+// each documents-already-answer-it RFI adds 1.5 (capped). Tune here.
+function frictionScore(r) {
+  if (!inConstruction(r)) return 0;
+  return Math.min(r.rfis_60d || 0, 30) * 0.8
+       + Math.min(r.rfis_friv || 0, 10) * 1.5;
+}
+// AR pressure — overdue receivables, scaled in $k and capped so one giant
+// invoice can't drown the map. Project AR counts when >30d old; the client-level
+// rollup (softer, /25k) nudges every project whose CLIENT is sitting on >60d paper.
+function arScore(r) {
+  const proj = (r.ar_days || 0) > 30 ? Math.min((r.ar_due || 0) / 5000, 8) : 0;
+  const cli  = (r.ar_client_days || 0) > 60 ? Math.min((r.ar_client_due || 0) / 25000, 5) : 0;
+  return proj + cli;
+}
 function heatScore(r) {
   const base =
       Math.min(r.emails_30d || 0, 40) * 0.15
     + Math.min(r.pay_flags || 0, 3) * 2
+    + frictionScore(r)
+    + arScore(r)
     + r.rfis_open + r.rfis_overdue * 2
     + r.subs_open * 0.5 + r.subs_overdue * 1.5
     + (r.actions_open || 0) + (r.actions_overdue || 0)
@@ -881,14 +908,24 @@ function heatScore(r) {
     + r.open_requests * 0.5;
   return isOnHold(r) ? base * 0.25 : base;
 }
+// Badge/hot thresholds (separate from the score so a project can score high
+// without tripping the red tier until the signal is unambiguous).
+const frictionHot = r => inConstruction(r) && ((r.rfis_60d || 0) >= 10 || (r.rfis_friv || 0) >= 4);
+const arHot = r => (r.ar_days || 0) >= 60 && (r.ar_due || 0) >= 5000;
 function heatTier(r) {
   if (isOnHold(r)) return "hold";
   if (r.rfis_overdue > 0 || r.subs_overdue > 0 || r.ms_overdue > 0
-      || (r.actions_overdue || 0) > 0 || (r.pay_flags || 0) > 0) return "hot";
+      || (r.actions_overdue || 0) > 0 || (r.pay_flags || 0) > 0
+      || frictionHot(r) || arHot(r)) return "hot";
   return heatScore(r) >= 1.5 ? "watch" : "quiet";
 }
+const fmtK = n => n >= 1000 ? "$" + (n / 1000).toFixed(n >= 100000 ? 0 : 1) + "k" : "$" + Math.round(n);
 const payBadge = r => (r.pay_flags || 0) > 0
   ? ` <span title="Payment-risk language in ${r.pay_flags} email thread${r.pay_flags===1?"":"s"} (90d) — latest ${esc(r.pay_last||"")}">💰${r.pay_flags > 1 ? "×" + r.pay_flags : ""}</span>` : "";
+const frictionBadge = r => frictionHot(r)
+  ? ` <span title="Contractor friction — ${r.rfis_60d} RFIs in 60 days (${r.rfis_12mo} in 12mo)${r.rfis_friv ? `, ${r.rfis_friv} answered from the existing contract documents` : ""}">🚧</span>` : "";
+const arBadge = r => (r.ar_due || 0) > 0 && (r.ar_days || 0) > 30
+  ? ` <span title="${fmtK(r.ar_due)} unpaid on this project (oldest invoice ${r.ar_days}d past due)${r.ar_client && (r.ar_client_days||0) > 60 ? ` — ${esc(r.ar_client)} owes ${fmtK(r.ar_client_due)} firm-wide, oldest ${r.ar_client_days}d` : ""}">💳</span>` : "";
 const HEAT_TIER = {
   hot:   { fill: "rgba(239,68,68,.28)",  stroke: "#ef4444", label: "🔴 Hot — overdue RFIs/submittals/actions/milestones or 💰 payment flags" },
   watch: { fill: "rgba(245,158,11,.26)", stroke: "#f59e0b", label: "🟡 Watch — active work, nothing overdue" },
@@ -958,7 +995,7 @@ function renderHeatmap() {
     const cell = (open, overdue, word) => open ? `${open}${overdue ? ` <span style="color:var(--red)">(${overdue} ${word})</span>` : ""}` : `<span style="color:var(--muted)">—</span>`;
     const risks = r.risks_high + r.risks_med + r.risks_low;
     return `<tr class="hm-tr" data-num="${esc(r.num)}" style="cursor:pointer;border-bottom:1px solid var(--border)">
-      <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><b>${esc(r.name || r.num)}</b>${payBadge(r)} <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
+      <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><b>${esc(r.name || r.num)}</b>${payBadge(r)}${frictionBadge(r)}${arBadge(r)} <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
       <td style="padding:7px 10px;color:var(--dim)">${esc(r.agency || "")}</td>
       <td style="padding:7px 10px;font-weight:800;color:${t.stroke}">${Math.round(heatScore(r) * 10) / 10}${heatTier(r) === "hold" ? ` <span style="color:var(--muted);font-size:11px">⏸ on hold</span>` : ""}</td>
       <td style="padding:7px 10px">${r.emails_30d ? `${r.emails_30d} <span style="color:var(--muted);font-size:11px">emails</span>` : `<span style="color:var(--muted)">—</span>`}</td>
@@ -970,7 +1007,7 @@ function renderHeatmap() {
     </tr>`;
   }).join("");
   $("view").innerHTML = `
-    <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted attention load (30-day email activity, open RFIs &amp; submittals, action items, overdue &amp; upcoming milestones, scope risks) · <b>color</b> = tier. On-hold projects are deprioritized. Click a bubble to open that project's brief.</div>
+    <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted attention load (30-day email activity, open RFIs &amp; submittals, action items, overdue &amp; upcoming milestones, scope risks, 🚧 contractor RFI friction, 💰/💳 payment &amp; AR flags) · <b>color</b> = tier. AR comes from Accounting's weekly Directors Report; client-level balances flag every project of a slow-paying client. On-hold projects are deprioritized. Click a bubble to open that project's brief.</div>
     <div class="toolbar">
       <div class="field"><label>Agency</label>
         <select onchange="state.heat.f.agency=this.value; render()"><option value="">All</option>${opt(agencies, h.f.agency)}</select></div>
@@ -1002,6 +1039,11 @@ function heatTipHTML(r) {
   const L = [];
   if (isOnHold(r)) L.push(line("⏸", `<span style="color:var(--muted)">on hold — deprioritized (score ×0.25)</span>`));
   if (r.pay_flags) L.push(line("💰", `<span style="color:var(--red)"><b>${r.pay_flags}</b> payment-risk thread${r.pay_flags===1?"":"s"} (90d)</span>${r.pay_last ? ` · latest ${esc(r.pay_last)}` : ""}${r.pay_subj ? `<div style="color:var(--muted);font-size:11px;margin-left:20px">"${esc(String(r.pay_subj).slice(0,70))}"</div>` : ""}`));
+  if (frictionHot(r)) L.push(line("🚧", `<span style="color:var(--red)">contractor friction — <b>${r.rfis_60d}</b> RFIs in 60d</span> (${r.rfis_12mo} in 12mo)${r.rfis_friv ? ` · <b>${r.rfis_friv}</b> answered from existing documents` : ""}`));
+  else if (inConstruction(r) && (r.rfis_60d || 0) > 0) L.push(line("🚧", `<b>${r.rfis_60d}</b> RFI${r.rfis_60d===1?"":"s"} in the last 60 days${r.rfis_friv ? ` · ${r.rfis_friv} answered from existing documents` : ""}`));
+  if ((r.ar_due || 0) > 0) L.push(line("💳", `${(r.ar_days||0) > 30 ? `<span style="color:var(--red)"><b>${fmtK(r.ar_due)}</b> unpaid on this project</span> · oldest ${r.ar_days}d past due` : `<b>${fmtK(r.ar_due)}</b> open AR on this project (current)`}`));
+  if (r.ar_client && (r.ar_client_days || 0) > 60 && (r.ar_client_due || 0) > (r.ar_due || 0))
+    L.push(line("🏦", `client <b>${esc(r.ar_client)}</b> owes <span style="color:var(--red)"><b>${fmtK(r.ar_client_due)}</b></span> firm-wide · oldest ${r.ar_client_days}d`));
   if (r.emails_30d) L.push(line("📨", `<b>${r.emails_30d}</b> email${r.emails_30d===1?"":"s"} in the last 30 days`));
   if (r.rfis_open) L.push(line("❓", `<b>${r.rfis_open}</b> open RFI${r.rfis_open===1?"":"s"}${r.rfis_overdue ? ` · <span style="color:var(--red)">${r.rfis_overdue} overdue</span>` : ""}`));
   if (r.subs_open) L.push(line("📦", `<b>${r.subs_open}</b> open submittal${r.subs_open===1?"":"s"}${r.subs_overdue ? ` · <span style="color:var(--red)">${r.subs_overdue} overdue</span>` : ""}`));
