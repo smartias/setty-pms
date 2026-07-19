@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-18-pms-v75-personal-greetings";
+    window.__appVersion = "2026-07-18-pms-v76-heatmap-link";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -27662,6 +27662,15 @@ function renameCompanyAcrossProjects(oldName, newName) {
           style={{ color: P.textMuted, fontSize: 13, textDecoration: "none", padding: "4px 0" }}>
           📑 RFI / Submittal Tracker <span style={{ fontSize: 10, opacity: 0.7 }}>↗</span>
         </a>
+        {/* Ops-facing portfolio view — heatmap.view capability (Operations + admin) */}
+        {pmsCan("heatmap.view") && (
+          <a href="https://smartias.github.io/setty-pms/SettyIntelligence.html?tab=heatmap"
+            target="_blank" rel="noreferrer"
+            title="Open the Setty Intelligence portfolio Heat Map (separate page)"
+            style={{ color: P.textMuted, fontSize: 13, textDecoration: "none", padding: "4px 0" }}>
+            🔥 Heat Map <span style={{ fontSize: 10, opacity: 0.7 }}>↗</span>
+          </a>
+        )}
         <div style={{ flex: 1 }} />
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
         <Btn small variant="ghost" onClick={exportCSV}>⬇ CSV</Btn>
