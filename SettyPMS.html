@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-18-pms-v76-contact-inactive";
+    window.__appVersion = "2026-07-23-pms-v77-phase-milestone-lockstep";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -281,7 +281,20 @@ function buildSchedule(startDate, phases) {
 // milestones are preserved. Used by both the silent Pipeline→Awarded bump and
 // the explicit Schedule-tab override.
 function projectWithRebuiltSchedule(project, newStartDate) {
-  const newPhases = buildSchedule(newStartDate, project.phases || []);
+  const rebuilt = buildSchedule(newStartDate, project.phases || []);
+  // A manually-scheduled (📌) phase end survives the rebuild. Legacy data may carry
+  // the pin on the milestone but not the phase — adopt the milestone's date so the
+  // pair comes out of the rebuild matched.
+  const manualEndByCode = {};
+  (project.milestones || []).forEach(m => {
+    if (m.type === "billable" && m.phase && m.dueDateManual && m.dueDate) manualEndByCode[m.phase] = m.dueDate;
+  });
+  (project.phases || []).forEach(p => {
+    if (p.endDateManual && p.endDate) manualEndByCode[p.code] = p.endDate;
+  });
+  const newPhases = rebuilt.map(p =>
+    manualEndByCode[p.code] ? { ...p, endDate: manualEndByCode[p.code], endDateManual: true } : p
+  );
   const phaseDatesByCode = Object.fromEntries(
     newPhases.filter(p => p.billable && p.startDate).map(p => [p.code, { startDate: p.startDate, dueDate: p.endDate }])
   );
@@ -293,6 +306,88 @@ function projectWithRebuiltSchedule(project, newStartDate) {
     return { ...m, startDate: dates.startDate, dueDate: dates.dueDate };
   });
   return { ...project, startDate: newStartDate, phases: newPhases, milestones: newMilestones };
+}
+
+// ─── PHASE END ↔ MILESTONE DUE LOCKSTEP (2026-07-23, Sara) ───────────────────
+// A billable milestone's due date and its phase's end date are the SAME date:
+// editing either side moves both, from every editor (Schedule tab, Dashboard,
+// CA-invoice table, Outlook calendar pull). The 📌 pin means "manually scheduled"
+// — it shows on BOTH sides of the pair and protects them from the automatic
+// paths only (start-date rebuild, Pipeline→Awarded bump), never from a person
+// deliberately editing the other side.
+// NOTE: object-SPREAD + delete only in these helpers — object-rest breaks the
+// app via Babel's _excluded collision across the two script blocks.
+
+function projectWithSyncedDueDate(project, milestoneId, newDueDate) {
+  const milestones = project.milestones || [];
+  const target = milestones.find(x => x.id === milestoneId);
+  if (!target) return project;
+  // CO milestones (phase "__CO__") and orphans have no matching phase — they get
+  // the pin but nothing else moves.
+  const pairedPhase = target.type === "billable"
+    ? (project.phases || []).find(p => p.code === target.phase) : null;
+  const newMilestones = milestones.map(m => {
+    if (m.id === milestoneId)
+      return { ...m, dueDate: newDueDate, ...(m.type === "billable" ? { dueDateManual: true } : {}) };
+    // Sibling billables in the same phase sit on the phase end date too — none may lag.
+    if (pairedPhase && m.type === "billable" && m.phase === target.phase)
+      return { ...m, dueDate: newDueDate, dueDateManual: true };
+    return m;
+  });
+  const newPhases = pairedPhase
+    ? (project.phases || []).map(p => p.code === target.phase ? { ...p, endDate: newDueDate, endDateManual: true } : p)
+    : (project.phases || []);
+  return { ...project, milestones: newMilestones, phases: newPhases };
+}
+
+function projectWithSyncedPhaseEnd(project, phaseId, newEndDate) {
+  const target = (project.phases || []).find(p => p.id === phaseId);
+  if (!target) return project;
+  const newPhases = (project.phases || []).map(p =>
+    p.id === phaseId ? { ...p, endDate: newEndDate, endDateManual: true } : p
+  );
+  const newMilestones = (project.milestones || []).map(m =>
+    m.type === "billable" && m.phase === target.code
+      ? { ...m, dueDate: newEndDate, dueDateManual: true } : m
+  );
+  return { ...project, phases: newPhases, milestones: newMilestones };
+}
+
+// Un-pin a phase pair: the phase end + every billable milestone in it drop their
+// pins and rejoin the auto schedule on the next rebuild. Dates stay put (they are
+// already in lockstep); a legacy mismatched milestone snaps onto the phase end.
+function projectWithClearedPhasePin(project, phaseId) {
+  const target = (project.phases || []).find(p => p.id === phaseId);
+  if (!target) return project;
+  const newPhases = (project.phases || []).map(p => {
+    if (p.id !== phaseId) return p;
+    const rest = { ...p };
+    delete rest.endDateManual;
+    return rest;
+  });
+  const newMilestones = (project.milestones || []).map(m => {
+    if (!(m.type === "billable" && m.phase === target.code)) return m;
+    const rest = { ...m };
+    delete rest.dueDateManual;
+    return target.endDate ? { ...rest, dueDate: target.endDate } : rest;
+  });
+  return { ...project, phases: newPhases, milestones: newMilestones };
+}
+
+// Un-pin from the milestone side: paired milestones un-pin the whole pair;
+// pairless ones (CO / orphaned) just drop their own flag.
+function projectWithClearedDatePin(project, milestoneId) {
+  const ms = (project.milestones || []).find(x => x.id === milestoneId);
+  if (!ms) return project;
+  const ph = (project.phases || []).find(p => p.code === ms.phase);
+  if (ms.type === "billable" && ph) return projectWithClearedPhasePin(project, ph.id);
+  const newMilestones = (project.milestones || []).map(m => {
+    if (m.id !== milestoneId) return m;
+    const rest = { ...m };
+    delete rest.dueDateManual;
+    return rest;
+  });
+  return { ...project, milestones: newMilestones };
 }
 
 // Milestone status auto-derived from pctComplete
@@ -6957,34 +7052,31 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     }
   }
 
-  const newMilestones = milestones.map(ms => {
-    if (ms.id !== id) return ms;
-    const updated = { ...ms, [field]: val };
-    if (field === "pctComplete") updated.status = milestoneStatus(+val);
-    // A hand-edited due date is "pinned" so a later schedule rebuild or phase
-    // change won't silently move it. Only meaningful for billable milestones —
-    // the overwrite paths never touch non-billable ones.
-    if (field === "dueDate" && ms.type === "billable") updated.dueDateManual = true;
-    return updated;
-  });
-
-  // Milestone dates are INDEPENDENT: editing a milestone's due date changes only
-  // that milestone — it no longer drags its phase's end date. This makes billable
-  // and non-billable milestones behave identically, and matches the Dashboard
-  // editor (updateMilestoneField), so the two date-editors can't drift out of
-  // sync (that drift was the source of "the date didn't stick / had to reopen").
-  // The "forwards" direction is unchanged: the start-date schedule build and
-  // explicit phase-row edits still flow phase dates DOWN into billable milestones.
-  let newPhases = phases;
-  if (field === "dueDate" && calMap[id]) {
-    // Date moved out from under a synced Outlook event — flag it for re-sync.
-    setCalState(s => ({ ...s, [id]: "stale" }));
+  // Due-date edits route through the shared lockstep helper: the milestone, its
+  // phase's end date, and sibling billables in the phase all move together and
+  // get the 📌 pin. Every due-date editor (here, Dashboard, CA-invoice table,
+  // Outlook pull via acceptOutlookDate) uses the SAME helper so they can't drift
+  // — per-editor cascade logic is what caused the v55 "date didn't stick" bug.
+  let updatedProject;
+  if (field === "dueDate") {
+    updatedProject = projectWithSyncedDueDate(project, id, val);
+    if (m && m.type === "billable" && phases.some(p => p.code === m.phase)) {
+      flagStaleCalendarSyncs(m.phase, val);
+    } else if (calMap[id]) {
+      // Pairless milestone — flag just its own synced Outlook event for re-sync.
+      setCalState(s => ({ ...s, [id]: "stale" }));
+    }
+  } else {
+    const newMilestones = milestones.map(ms => {
+      if (ms.id !== id) return ms;
+      const updated = { ...ms, [field]: val };
+      if (field === "pctComplete") updated.status = milestoneStatus(+val);
+      return updated;
+    });
+    updatedProject = { ...project, milestones: newMilestones };
   }
 
-  onChange(
-    { ...project, milestones: newMilestones, phases: newPhases },
-    { notifyTeams, debounceTeams, teamsDelay }
-  );
+  onChange(updatedProject, { notifyTeams, debounceTeams, teamsDelay });
 
   // Celebrate the actual transition to 100% — fires once at completion, not
   // on every re-save of an already-complete milestone. Variable-reward quip
@@ -7009,19 +7101,21 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   }
 }
 
-  // Clear the "manual" pin on a milestone's due date and snap it back onto the
-  // phase schedule (the phase's current end date), so it follows rebuilds again.
+  // Any billable in the phase that's synced to Outlook needs a re-sync flag once
+  // its date moves (compares against the pre-edit dates in the closure).
+  function flagStaleCalendarSyncs(phaseCode, newDate) {
+    const staleIds = milestones.filter(m => m.type === "billable" && m.phase === phaseCode && calMap[m.id] && m.dueDate !== newDate).map(m => m.id);
+    if (staleIds.length) setCalState(s => { const n = {...s}; staleIds.forEach(id => n[id] = "stale"); return n; });
+  }
+
+  // Un-pin: the phase end + its billable milestones drop their 📌 together and
+  // rejoin the auto schedule on the next rebuild. Dates stay where they are.
   function clearMilestoneDatePin(id) {
-    const ms = milestones.find(x => x.id === id);
-    if (!ms) return;
-    const ph = phases.find(p => p.code === ms.phase);
-    const newMilestones = milestones.map(m => {
-      if (m.id !== id) return m;
-      const rest = { ...m };
-      delete rest.dueDateManual;   // object-spread + delete, NOT object-rest — avoids Babel's _excluded helper colliding across the two <script type=text/babel> blocks
-      return ph && ph.endDate ? { ...rest, dueDate: ph.endDate } : rest;
-    });
-    onChange({ ...project, milestones: newMilestones }, { notifyTeams: false });
+    onChange(projectWithClearedDatePin(project, id), { notifyTeams: false });
+  }
+
+  function clearPhaseEndPin(phId) {
+    onChange(projectWithClearedPhasePin(project, phId), { notifyTeams: false });
   }
 
   function updatePhaseDuration(phId, newDays) {
@@ -7029,29 +7123,21 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
     if (!ph || !ph.startDate) return;
     const newEnd = addWorkDays(new Date(ph.startDate + "T00:00:00"), Math.max(1, newDays));
     const newEndStr = newEnd.getFullYear() + "-" + String(newEnd.getMonth()+1).padStart(2,"0") + "-" + String(newEnd.getDate()).padStart(2,"0");
-    const newPhases = phases.map(p => p.id === phId ? { ...p, endDate: newEndStr } : p);
-    let newMilestones = milestones;
-    newMilestones = milestones.map(m =>
-      m.type === "billable" && m.phase === ph.code && !m.dueDateManual ? { ...m, dueDate: newEndStr } : m
-    );
-    onChange({ ...project, phases: newPhases, milestones: newMilestones });
+    flagStaleCalendarSyncs(ph.code, newEndStr);
+    onChange(projectWithSyncedPhaseEnd(project, phId, newEndStr));
   }
 
   function updatePhaseDate(phId, field, val) {
-    const newPhases = phases.map(p => p.id === phId ? { ...p, [field]: val } : p);
-    let newMilestones = milestones;
     if (field === "endDate") {
+      // Lockstep: the phase end and ALL its billable milestones (pinned ones too —
+      // a person editing the schedule outranks an earlier pin) move together.
       const ph = phases.find(p => p.id === phId);
-      if (ph) {
-        newMilestones = milestones.map(m =>
-          m.type === "billable" && m.phase === ph.code && !m.dueDateManual ? { ...m, dueDate: val } : m
-        );
-        // Mark affected synced milestones as stale (skip pinned — their date didn't move)
-        const staleIds = milestones.filter(m => m.type === "billable" && m.phase === ph.code && !m.dueDateManual && calMap[m.id]).map(m => m.id);
-        if (staleIds.length) setCalState(s => { const n = {...s}; staleIds.forEach(id => n[id] = "stale"); return n; });
-      }
+      if (ph) flagStaleCalendarSyncs(ph.code, val);
+      onChange(projectWithSyncedPhaseEnd(project, phId, val));
+      return;
     }
-    onChange({ ...project, phases: newPhases, milestones: newMilestones });
+    const newPhases = phases.map(p => p.id === phId ? { ...p, [field]: val } : p);
+    onChange({ ...project, phases: newPhases });
   }
 
   function addNonBillable() {
@@ -7370,10 +7456,18 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                         onChange={val => updatePhaseDate(ph.id, "startDate", val)} />}
                 </td>
                 <td>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                   {phaseComplete
                     ? <span style={{ color: P.textMuted, fontSize: 13 }}>{ph.endDate ? fmtDate(ph.endDate) : "—"}</span>
                     : <DatePicker value={ph.endDate || ""}
                         onChange={val => updatePhaseDate(ph.id, "endDate", val)} />}
+                  {ph.endDateManual && (phaseComplete
+                    ? <span title="End date was set manually (differs from the auto-generated schedule)."
+                        style={{ fontSize: 12, lineHeight: 1, cursor: "help" }}>📌</span>
+                    : <button onClick={() => clearPhaseEndPin(ph.id)}
+                        title="Manually scheduled — this end date (and its milestone due date, which moves with it) won't be touched by an automatic rebuild. Click to un-pin the pair so it rejoins the auto schedule."
+                        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>📌</button>)}
+                  </div>
                 </td>
                 <td>
                   {phaseComplete
@@ -7570,7 +7664,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                     onChange={e => updateMilestone(m.id, "dueDate", e.target.value, false, { debounceTeams: true, teamsDelay: 1000 })} />
                     {m.type === "billable" && m.dueDateManual && (
                       <button onClick={() => clearMilestoneDatePin(m.id)}
-                        title="Date set manually — it won't move when the schedule is rebuilt from the start date or a phase change. Click to put it back on the phase schedule."
+                        title="Manually scheduled — this due date (and its phase end date, which moves with it) won't be touched by an automatic rebuild. Click to un-pin the pair so it rejoins the auto schedule."
                         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>📌</button>
                     )}
                   </div>
@@ -19929,10 +20023,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                             <td>
                               {milestone ? (
                                 <input type="date" value={milestone.dueDate || ""}
-                                  onChange={e => {
-                                    const newMilestones = (p.milestones || []).map(m => m.id === milestone.id ? { ...m, dueDate: e.target.value, ...(m.type === "billable" ? { dueDateManual: true } : {}) } : m);
-                                    onUpdateProject({ ...p, milestones: newMilestones });
-                                  }}
+                                  onChange={e => onUpdateProject(projectWithSyncedDueDate(p, milestone.id, e.target.value))}
                                   style={{ fontSize: 11, width: 120 }} />
                               ) : "—"}
                             </td>
@@ -20202,12 +20293,12 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 if (!onUpdateProject) return;
                 const proj = projects.find(p => p.id === m.projectId);
                 if (!proj) return;
-                const newMilestones = (proj.milestones || []).map(x =>
-                  x.id === m.id
-                    ? { ...x, [field]: val, ...(field === "dueDate" && x.type === "billable" ? { dueDateManual: true } : {}) }
-                    : x
-                );
-                onUpdateProject({ ...proj, milestones: newMilestones });
+                // Due dates go through the shared lockstep helper (block 1): the phase
+                // end date + sibling billables move with it and the pair gets pinned 📌.
+                const updatedProj = field === "dueDate"
+                  ? projectWithSyncedDueDate(proj, m.id, val)
+                  : { ...proj, milestones: (proj.milestones || []).map(x => x.id === m.id ? { ...x, [field]: val } : x) };
+                onUpdateProject(updatedProj);
                 if (field === "pctComplete" && +val >= 100 && (m.pctComplete || 0) < 100) {
                   markJustCompleted(m.id);
                 }
@@ -20216,19 +20307,13 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   if (amount > 0) setDashInvoicePrompt({ milestone: m, project: proj, newPct: +val, invoiceAmount: amount });
                 }
               }
-              // Release the pin and snap the date back onto the phase schedule.
+              // Un-pin the phase pair (shared helper in block 1): the phase end + its
+              // billables drop their 📌 and rejoin the auto schedule on the next rebuild.
               function clearDatePin() {
                 if (!onUpdateProject) return;
                 const proj = projects.find(p => p.id === m.projectId);
                 if (!proj) return;
-                const ph = (proj.phases || []).find(p => p.code === m.phase);
-                const newMilestones = (proj.milestones || []).map(x => {
-                  if (x.id !== m.id) return x;
-                  const rest = { ...x };
-                  delete rest.dueDateManual;   // object-spread + delete, NOT object-rest — avoids Babel's _excluded helper colliding across script blocks
-                  return ph && ph.endDate ? { ...rest, dueDate: ph.endDate } : rest;
-                });
-                onUpdateProject({ ...proj, milestones: newMilestones });
+                onUpdateProject(projectWithClearedDatePin(proj, m.id));
               }
               const isJustCompleted = justCompleted.has(m.id);
               const isRecentlyEdited = recentlyEditedId === m.id;
@@ -20310,7 +20395,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                         background: ["rfi","submittal"].includes(m.type) ? "transparent" : undefined }} />
                     {m.type === "billable" && m.dueDateManual && (
                       <button onClick={() => clearDatePin()}
-                        title="Date set manually — it won't move when the schedule is rebuilt from the start date or a phase change. Click to put it back on the phase schedule."
+                        title="Manually scheduled — this due date (and its phase end date, which moves with it) won't be touched by an automatic rebuild. Click to un-pin the pair so it rejoins the auto schedule."
                         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>📌</button>
                     )}
                     </div>
