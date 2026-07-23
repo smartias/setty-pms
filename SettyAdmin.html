@@ -152,6 +152,7 @@ const TABS = [
 ];
 const state = { tab: "signins", roster: null, staffCount: null, roles: null, backups: null, filing: null, filingFilter: "all",
                 integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null,
+                sovOpen: null, sovMaps: null, sovMilestones: {},
                 permCatalog: null, permMatrix: null, permOverrides: null,
                 myRole: undefined };   // undefined = not checked · "pending" · "none" · or a ROLES value
 
@@ -617,17 +618,20 @@ async function renderIntegration() {
   if (!state.integ) {
     v.innerHTML = '<div class="empty">Loading integration status…</div>';
     try {
-      const [integ, projects, maps] = await Promise.all([
+      const [integ, projects, maps, sovMaps] = await Promise.all([
         sb("POST", "/rest/v1/rpc/admin_integration_status", {}),
         sb("GET", "/rest/v1/pms_projects?select=num:project->>projectNumber,name:project->>name,archived:project->>archived&order=id.asc&limit=1000"),
         sb("GET", "/rest/v1/pms_settyfy_map?select=*"),
+        sb("GET", "/rest/v1/pms_settyfy_sov_map?select=*"),
       ]);
       state.integ = integ;
       state.integProjects = (projects || []).filter(p => p.num && p.archived !== "true");
       state.integMaps = {}; (maps || []).forEach(m => state.integMaps[m.project_number] = m);
+      state.sovMaps = {}; (sovMaps || []).forEach(m => state.sovMaps[m.project_number + "|" + m.milestone_id] = m);
     } catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
   }
   const i = state.integ, mapped = Object.values(state.integMaps).filter(m => m.settyfy_id).length;
+  const sovMapped = Object.values(state.sovMaps || {}).filter(m => m.settyfy_line_id).length;
   const tok = i.feed_token || "";
   const f = state.integFilter.toLowerCase();
   const rows = state.integProjects.filter(p => !f || (p.num + " " + (p.name || "")).toLowerCase().includes(f));
@@ -651,21 +655,27 @@ async function renderIntegration() {
     <div class="card">
       <div class="row">
         <div class="stat"><b>${mapped}</b><span>projects mapped to SETTYfy IDs</span></div>
+        <div class="stat"><b>${sovMapped}</b><span>fee lines mapped</span></div>
         <div class="stat"><b>${state.integProjects.length}</b><span>active projects</span></div>
         <input placeholder="Filter projects…" value="${esc(state.integFilter)}" style="flex:1;min-width:160px"
                oninput="state.integFilter=this.value;render()">
       </div>
       <div style="color:var(--muted);font-size:12px;margin-top:6px">
         SETTYfy can't consume SAPX numbers yet (their 2026-07 reply) — this map ties our numbers to their internal IDs (e.g. #56252).
-        Mapped IDs ride along in the feed automatically. Ask IT for their ID on any project you need linked.</div>
+        Mapped IDs ride along in the feed automatically. Ask IT for their ID on any project you need linked.
+        <b>Fee SOV</b> expands a project to map each PMS billable milestone to its SETTYfy fee-schedule line —
+        line links ride the feed the same way (<code>settyfyLineId</code> per milestone).</div>
     </div>
     <div class="card">
       <table><thead><tr><th>Project #</th><th>Name</th><th>SETTYfy ID</th><th></th></tr></thead>
       <tbody>${rows.slice(0, 60).map(p => {
         const m = state.integMaps[p.num] || {};
+        const open = state.sovOpen === p.num;
         return `<tr><td>${esc(p.num)}</td><td>${esc((p.name || "").slice(0, 44))}</td>
           <td><input id="map_${esc(p.num)}" value="${esc(m.settyfy_id || "")}" placeholder="#…" style="width:110px"></td>
-          <td><button class="btn" onclick="saveMap('${esc(p.num)}')">Save</button></td></tr>`; }).join("")}
+          <td><button class="btn" onclick="saveMap('${esc(p.num)}')">Save</button>
+              <button class="btn" onclick="toggleSov('${esc(p.num)}')">${open ? "▾" : "▸"} Fee SOV</button></td></tr>
+          ${open ? `<tr><td colspan="4" style="background:var(--card2);padding:10px 14px">${sovPanel(p, m)}</td></tr>` : ""}`; }).join("")}
         ${rows.length > 60 ? `<tr><td colspan="4" class="empty">…${rows.length - 60} more — narrow with the filter above</td></tr>` : ""}
       </tbody></table>
     </div>`;
@@ -680,6 +690,67 @@ async function saveMap(num) {
     toast(num + (val ? " → " + val : " mapping cleared"), "success"); render();
   } catch (e) { toast(e.message, "error"); }
 }
+
+// ── Fee Schedule of Values mapping (billable milestone → SETTYfy fee line) ───
+// Keys on the milestone's stable id, never its name — same pin-to-stable-ID
+// rule as the project-level map. fee_at_map snapshots the PMS fee at link
+// time so a later fee edit flags the row instead of silently drifting.
+const money = (n) => "$" + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const feeNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+function sovPanel(p, m) {
+  const ms = state.sovMilestones[p.num];
+  if (ms === undefined) return '<div class="empty">Loading billable milestones…</div>';
+  if (!ms.length) return '<div class="empty">No billable milestones on this project — the fee SOV lives on billable milestones in the PMS. Add them there first.</div>';
+  const total = ms.reduce((s, x) => s + feeNum(x.fee), 0);
+  const lineMapped = ms.filter(x => (state.sovMaps[p.num + "|" + x.id] || {}).settyfy_line_id).length;
+  return `
+    <div style="color:var(--muted);font-size:12px;margin-bottom:6px">
+      FEE SCHEDULE OF VALUES — map each PMS billable milestone to its SETTYfy fee-schedule line.
+      ${m.settyfy_id ? "" : "⚠ Map the project to a SETTYfy ID above first — line links ride the feed but SETTYfy can't anchor them until the project itself is linked."}
+    </div>
+    <div class="row" style="margin-bottom:6px">
+      <div class="stat"><b>${money(total)}</b><span>Σ PMS billable fees</span></div>
+      <div class="stat"><b>${lineMapped}/${ms.length}</b><span>lines mapped</span></div>
+    </div>
+    <table><thead><tr><th>Milestone</th><th>Phase</th><th>Fee (PMS)</th><th>Due</th><th>SETTYfy line #</th><th></th></tr></thead>
+    <tbody>${ms.map(x => {
+      const sm = state.sovMaps[p.num + "|" + x.id] || {};
+      const drift = sm.settyfy_line_id && sm.fee_at_map != null && Math.abs(feeNum(x.fee) - feeNum(sm.fee_at_map)) > 0.005;
+      return `<tr><td>${esc(x.name)}</td><td>${esc(x.phase || "")}</td>
+        <td>${money(x.fee)}${drift ? ` <span class="pill warn" title="PMS fee changed since this line was mapped — was ${money(sm.fee_at_map)}. Re-save to acknowledge.">⚠ was ${money(sm.fee_at_map)}</span>` : ""}</td>
+        <td>${esc(x.dueDate || "")}</td>
+        <td><input id="sov_${esc(p.num)}_${esc(x.id)}" value="${esc(sm.settyfy_line_id || "")}" placeholder="line #…" style="width:110px"></td>
+        <td><button class="btn" onclick="saveSovLine('${esc(p.num)}','${esc(x.id)}',${feeNum(x.fee)})">Save</button></td></tr>`; }).join("")}
+    </tbody></table>`;
+}
+
+async function toggleSov(num) {
+  if (state.sovOpen === num) { state.sovOpen = null; render(); return; }
+  state.sovOpen = num; render();
+  if (state.sovMilestones[num] === undefined) {
+    try {
+      const rows = await sb("GET", "/rest/v1/pms_projects?select=ms:project->milestones&project->>projectNumber=eq." + encodeURIComponent(num));
+      const all = (rows && rows[0] && rows[0].ms) || [];
+      state.sovMilestones[num] = all.filter(x => x && x.type === "billable" && x.cancelled !== true && x.id);
+    } catch (e) { state.sovMilestones[num] = []; toast("Could not load milestones: " + e.message, "error"); }
+    render();
+  }
+}
+
+async function saveSovLine(num, mid, fee) {
+  const val = $("sov_" + num + "_" + mid).value.trim();
+  try {
+    await sb("POST", "/rest/v1/pms_settyfy_sov_map", {
+      project_number: num, milestone_id: mid, settyfy_line_id: val || null,
+      fee_at_map: val ? fee : null,
+      updated_by: settyAuth.email(), updated_at: new Date().toISOString(),
+    }, "resolution=merge-duplicates");
+    state.sovMaps[num + "|" + mid] = { project_number: num, milestone_id: mid, settyfy_line_id: val || null, fee_at_map: val ? fee : null };
+    toast(mid + (val ? " → line " + val : " line mapping cleared"), "success"); render();
+  } catch (e) { toast(e.message, "error"); }
+}
+
 async function rotateFeedToken() {
   if (!confirm("Rotate the feed token? SETTYfy (once connected) stops working until they get the new one.")) return;
   try {
