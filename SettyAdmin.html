@@ -709,6 +709,15 @@ function sovPanel(p, m) {
       FEE SCHEDULE OF VALUES — map each PMS billable milestone to its SETTYfy fee-schedule line.
       ${m.settyfy_id ? "" : "⚠ Map the project to a SETTYfy ID above first — line links ride the feed but SETTYfy can't anchor them until the project itself is linked."}
     </div>
+    <details style="color:var(--muted);font-size:12px;margin-bottom:8px">
+      <summary style="cursor:pointer">ℹ How this works — will SETTYfy's values show up here?</summary>
+      <ul style="margin:6px 0 2px 18px;line-height:1.5">
+        <li><b>The line # is typed in by hand.</b> SETTYfy doesn't expose its fee schedules to PMS yet (no read API on their side), so there's nothing to pick from or match against — copy each line ID straight off SETTYfy's fee-schedule screen for this project, or ask IT/accounting for the list.</li>
+        <li><b>PMS never checks amounts against SETTYfy.</b> A mapped line ID simply rides the billing feed (<code>settyfyLineId</code> on each milestone) so SETTYfy can anchor our milestone to their line — the dollar matching and reconciliation happen on their side, against the PMS fee we send.</li>
+        <li><b>The ⚠ pill isn't a SETTYfy mismatch.</b> It means the PMS fee changed <i>after</i> you mapped the line — re-save to acknowledge the new amount.</li>
+        <li>Once SETTYfy exposes a read API for fee schedules, this hand entry becomes a side-by-side pick-list with their line names and amounts.</li>
+      </ul>
+    </details>
     <div class="row" style="margin-bottom:6px">
       <div class="stat"><b>${money(total)}</b><span>Σ PMS billable fees</span></div>
       <div class="stat"><b>${lineMapped}/${ms.length}</b><span>lines mapped</span></div>
