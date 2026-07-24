@@ -120,11 +120,22 @@
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="setty-auth.js"></script>
 <script>
 /* ---- Supabase config (same anon path SettyPMS.html uses, ~line 695) ---- */
 const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 const H = { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_ANON_KEY };
+// Suite sign-in (setty-auth.js): H is mutated in place so every fetch — direct
+// or {...H} spread at call time — carries the signed-in JWT, falling back to
+// anon while signed out (pre-Phase-4 behavior unchanged). Required for the
+// Phase 4 RLS flip, when anon loses data access.
+const settyAuthReady = (window.settyAuth ? settyAuth.init() : Promise.resolve(null)).catch(() => null)
+  .then(() => { if (window.settyAuth) H.Authorization = "Bearer " + settyAuth.token(); });
+if (window.settyAuth) {
+  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); });
+  settyAuth.mountPill();
+}
 
 const CA_STATUS = "In Construction Administration";
 const VENDORS = [
@@ -478,7 +489,7 @@ async function writeArray(arrKey, mutate, returnAdded, projId){
   return returnAdded?added:true;
 }
 
-init();
+settyAuthReady.then(init);
 </script>
 </body>
 </html>
