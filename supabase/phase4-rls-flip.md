@@ -12,15 +12,18 @@ the *live* policy state at run time, so the flip always covers everything.
 
 ## Go / no-go checklist (all must be true)
 
-- [ ] **Sign-in adoption**: Admin Console → Sign-ins roster ≈ the staff list.
-      (As of 7/24: 7 signed-in vs ~50 staff — NOT ready.) The welcome-email wave
-      after DNS verification is the driver; give it a week or two after that.
-- [ ] **Add-in users have signed in inside the add-in** (its 🔐 pill). Filing
-      breaks for signed-out add-in users after the flip.
-- [ ] **Field crews** using Site Report / Field Photos have signed in on their
-      phones (both apps have the pill).
+- [x] **Adoption strategy decided** — Sara (7/24): flip first, let it FORCE
+      sign-in (one click, no password). The v77 signed-out gate makes the
+      forcing function self-explanatory instead of looking like data loss.
+- [ ] **SettyPMS v77 sign-in gate is DEPLOYED** (this branch merged + live).
+      Do not flip while the live PMS predates v77 — signed-out users would see
+      an empty app with no explanation.
+- [ ] **Heads-up sent to the team** (a one-liner in Teams the day before:
+      "PMS will ask you to sign in with your Setty account starting <day> —
+      one click, no password").
 - [ ] A **low-activity window** (evening / weekend) and someone watching for
-      "app is empty" reports for a day after.
+      sign-in trouble reports the next workday. Expect a wave of add-in users
+      hitting the 🔐 pill on their first post-flip filing.
 
 Flip-immune (verified 7/24, all use the service-role key internally): every Edge
 Function — pms-mcp, pms-user-emails (digests/welcomes), rfi-submittal-autosync,
