@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-24-pms-v78-directory-merge";
+    window.__appVersion = "2026-07-24-pms-v78b-directory-merge-hardening";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1822,7 +1822,23 @@ async function eagerSaveProjectV2(project, versions, lastSavedRef) {
       const base = baseline ? baseline[key] : undefined;
       const cloudVal = cloudProject[key];
       const userIntent = baseline ? !jsonEq(ours, base) : !jsonEq(ours, cloudVal);
-      if (userIntent) merged[key] = ours;
+      if (!userIntent) continue;
+      // Id-keyed arrays merge per-item instead of whole-key — a whole-key
+      // overwrite here silently discarded anything the other writer (add-in
+      // contact filing, second tab) appended between our baseline and now.
+      if (ARRAY_FIELDS_BY_ID_V2.includes(key)
+          && Array.isArray(ours) && Array.isArray(cloudVal)) {
+        const r = mergeArrayByIdThreeWay(ours, Array.isArray(base) ? base : [], cloudVal);
+        // No conflict modal on this path — resolve keep-local, matching the
+        // old whole-key behavior but scoped to the single contested item.
+        // delete-vs-modify omits the item from merged, so re-add our copy.
+        for (const cf of r.conflicts) {
+          if (cf.local && !r.merged.some(x => x?.id === cf.id)) r.merged.push(cf.local);
+        }
+        merged[key] = r.merged;
+      } else {
+        merged[key] = ours;
+      }
     }
     versions.projects.set(project.id, cloudVersion);
     const newVer = await saveProjectV2(merged, cloudVersion);
@@ -11537,10 +11553,26 @@ function buildMergedDirectory(project) {
   // Provenance from the derived source is preserved on the override so the user
   // can still see "originally from PM POC" even after editing.
   (project.directory || []).forEach(c => {
+    // An override promoted from a derived card carries overridesDerivedId.
+    // Suppress that derived card by id, not just by email — otherwise
+    // correcting a typo'd email on promotion resurrects the old card
+    // (regenerated each render under the old address) next to the new one.
+    let suppressedSources = null;
+    if (c.overridesDerivedId) {
+      for (const [dk, dv] of map) {
+        if (dv._derived && dv.id === c.overridesDerivedId) {
+          suppressedSources = dv._sources;
+          map.delete(dk);
+          break;
+        }
+      }
+    }
     const k = keyFor(c);
     const existing = map.get(k);
     if (existing && existing._derived) {
       map.set(k, { ...c, _derived: false, _sources: existing._sources, _wasDerived: true });
+    } else if (suppressedSources) {
+      map.set(k, { ...c, _derived: false, _sources: suppressedSources, _wasDerived: true });
     } else {
       map.set(k, c);
     }
@@ -11692,7 +11724,9 @@ function ProjectDirectoryView({ project, onChange, clients }) {
   function startEdit(c) {
     // Editing a derived entry creates a new manual override (won't touch the
     // upstream POC/Sub data). Editing a manual entry updates in place.
-    setForm({ ...c, id: c._derived ? uid() : c.id });
+    // overridesDerivedId ties the override to its source card so the merge can
+    // suppress the regenerated derived entry even if the email gets corrected.
+    setForm({ ...c, id: c._derived ? uid() : c.id, ...(c._derived ? { overridesDerivedId: c.id } : {}) });
     setEditId(c._derived ? null : c.id);
     setPickerQ("");
     setPickerJustPicked(null);
