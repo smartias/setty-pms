@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-24-pms-v78b-directory-merge-hardening";
+    window.__appVersion = "2026-07-24-pms-v79-signin-gate";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -27757,6 +27757,36 @@ function renameCompanyAcrossProjects(oldName, newName) {
     <div style={{ minHeight: "100vh", background: P.bg }}>
       <style>{CSS}</style>
 
+      {/* ── Signed-out data gate (Phase 4) ─────────────────────────────────
+          After the RLS flip, a signed-out browser gets an EMPTY load — which
+          without this overlay reads as "all our projects are gone". Condition
+          is load-complete + signed out + zero projects: before the flip that
+          state can't occur (anon still reads data), so this ships dormant and
+          self-activates the moment the flip happens. Sign-in redirects and
+          reboots the app with the session in place. */}
+      {appStatus === "idle" && !settyAuth.isSignedIn() && projects.length === 0 && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 5000, background: P.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 16, padding: "40px 44px", maxWidth: 460, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,.5)" }}>
+            <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em", marginBottom: 6 }}>
+              <span style={{ color: P.accent }}>SETTY</span>
+              <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>🔐 The PMS now requires sign-in</div>
+            <div style={{ color: P.textMuted, fontSize: 13, lineHeight: 1.6, marginBottom: 20 }}>
+              Your projects are safe — they're just behind sign-in now. Use your Setty
+              Microsoft account: one click, no separate password, and you won't be asked again on this device.
+            </div>
+            <button onClick={() => settyAuth.signInWithMicrosoft()}
+              style={{ background: P.accent, border: "none", borderRadius: 10, color: "#fff", cursor: "pointer", fontWeight: 700, fontSize: 14, padding: "12px 28px", width: "100%" }}>
+              Sign in with Microsoft
+            </button>
+            <div style={{ color: P.textDim, fontSize: 11.5, marginTop: 14 }}>
+              Trouble signing in? Ask Sara Arias or Danny Kang.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Nav bar ── */}
       <div style={{ background: P.card, borderBottom: `1px solid ${P.border}`, padding: "0 32px", display: "flex", alignItems: "center", gap: 24, height: 54, position: "sticky", top: 0, zIndex: 100 }}>
         <div
@@ -27809,6 +27839,15 @@ function renameCompanyAcrossProjects(oldName, newName) {
           style={{ color: P.textMuted, fontSize: 13, textDecoration: "none", padding: "4px 0" }}>
           📑 RFI / Submittal Tracker <span style={{ fontSize: 10, opacity: 0.7 }}>↗</span>
         </a>
+        {/* Ops-facing portfolio view — heatmap.view capability (Operations + admin) */}
+        {pmsCan("heatmap.view") && (
+          <a href="https://smartias.github.io/setty-pms/SettyIntelligence.html?tab=heatmap"
+            target="_blank" rel="noreferrer"
+            title="Open the Setty Intelligence portfolio Heat Map (separate page)"
+            style={{ color: P.textMuted, fontSize: 13, textDecoration: "none", padding: "4px 0" }}>
+            🔥 Heat Map <span style={{ fontSize: 10, opacity: 0.7 }}>↗</span>
+          </a>
+        )}
         <div style={{ flex: 1 }} />
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
         <Btn small variant="ghost" onClick={exportCSV}>⬇ CSV</Btn>
