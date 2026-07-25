@@ -102,11 +102,13 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v4 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v5 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
-// (pms_project_permissions), resolved in the DB by pms_has_cap()).
+// (pms_project_permissions), resolved in the DB by pms_has_cap();
+// v5 adds last-admin/self-demote guards on role changes, a confirm on
+// override removal, and the pre-Phase-4 warning banner on the matrix).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -400,6 +402,8 @@ async function renderRoles() {
     </div>
     <div class="card">
       <div class="sechead">Permission matrix — what each role can do</div>
+      <div style="background:var(--amberDim);border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;font-weight:600">
+        ⚠ Pre-Phase-4: this matrix controls what the app shows — it does not yet restrict database access.</div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th style="min-width:170px">Capability</th>
           ${ROLES.map(r => `<th title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
@@ -475,6 +479,14 @@ async function addOverride() {
   } catch (e) { toast(e.message, "error"); }
 }
 async function dropOverride(id) {
+  const o = (state.permOverrides || []).find(x => x.id === id);
+  if (o) {
+    const rule = (o.allowed ? "allow" : "deny") + " · " +
+      (o.subject_kind === "everyone" ? "everyone" : (o.subject || o.subject_kind)) + " · " +
+      (o.capability === "*" ? "★ all capabilities" : o.capability);
+    const scope = o.project_number || "ALL projects (global)";
+    if (!confirm('Remove override "' + rule + '" on ' + scope + "? This takes effect immediately.")) return;
+  } else if (!confirm("Remove this override? This takes effect immediately.")) return;
   try {
     await sb("DELETE", "/rest/v1/pms_project_permissions?id=eq." + id);
     state.permOverrides = null; toast("Override removed", "success"); render();
@@ -527,6 +539,21 @@ async function addRole() {
   } catch (e) { toast(e.message, "error"); }
 }
 async function setRole(email, role) {
+  const cur = (state.roles || []).find(x => x.email === email);
+  const oldRole = cur ? cur.role : null;
+  if (oldRole === role) return;
+  const admins = (state.roles || []).filter(x => x.role === "admin");
+  if (oldRole === "admin" && role !== "admin" && admins.length === 1) {
+    toast("That's the last admin — demoting it would lock everyone out of this console.", "error");
+    render(); return;
+  }
+  const isSelf = email === settyAuth.email().toLowerCase();
+  if ((oldRole === "admin" && role !== "admin") || isSelf) {
+    const who = isSelf ? "YOUR OWN account (" + email + ")" : email;
+    if (!confirm("Change " + who + " from " + (oldRole ? roleLabel(oldRole) : "?") + " to " + roleLabel(role) + "?")) {
+      render(); return;
+    }
+  }
   try {
     await sb("PATCH", "/rest/v1/pms_user_roles?email=eq." + encodeURIComponent(email),
       { role, updated_at: new Date().toISOString(), added_by: settyAuth.email() });

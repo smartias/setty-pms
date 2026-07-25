@@ -99,6 +99,7 @@
   <p>Pipeline, the global directory, and the newsletter — one place, powered by live PMS data.
      Sign in with your Setty Microsoft account to continue.</p>
   <button onclick="signIn()">Sign in with Microsoft</button>
+  <p id="gateErr" class="hidden" style="color:#F87171">Sign-in didn't complete — pop-ups may be blocked. Try again.</p>
 </div>
 
 <header>
@@ -108,6 +109,7 @@
   </div>
   <div class="spacer"></div>
   <span class="who" id="whoami"></span>
+  <button class="ghost sm" onclick="loadEverything()" title="Reload live PMS data">↻ Refresh</button>
 </header>
 
 <div class="tabs">
@@ -327,12 +329,17 @@ function currentUser(){
   catch { return null; }
 }
 async function signIn(){
+  document.getElementById("gateErr").classList.add("hidden"); // clear any previous failure on retry
   try {
     const app = await getMsalApp();
     const r = await app.loginPopup({ scopes: SIGNIN_SCOPES });
     app.setActiveAccount(r.account);
     afterSignIn();
-  } catch(e){ log("Sign-in failed: " + e.message, "err"); }
+  } catch(e){
+    log("Sign-in failed: " + e.message, "err");
+    // The log strip sits behind the full-screen gate — surface it at the gate itself.
+    document.getElementById("gateErr").classList.remove("hidden");
+  }
 }
 function afterSignIn(){
   const u = currentUser();
@@ -373,13 +380,32 @@ async function loadFirms(){
 }
 
 async function loadEverything(){
+  document.getElementById("plBody").innerHTML =
+    '<tr><td colspan="8" class="muted" style="padding:18px">Loading…</td></tr>';
+  document.getElementById("dirList").innerHTML =
+    '<div class="muted" style="padding:18px">Loading…</div>';
   try {
     log("Loading live PMS data…");
     await Promise.all([loadPipeline(), loadAllProjects(), loadFirms()]);
     buildDirFilters();
     renderPipeline(); renderDirectory();
     log("Loaded " + PIPELINE.length + " pursuits, " + ALLPROJ.length + " projects, " + FIRMS.length + " firms.", "ok");
-  } catch(e){ log("Load failed: " + e.message, "err"); }
+  } catch(e){
+    log("Load failed: " + e.message, "err");
+    showLoadError(e.message);
+  }
+}
+
+// A failed load shouldn't leave "Loading…" forever — put the reason and a
+// Retry right where the data would have been (both tabs), on top of the log line.
+function showLoadError(msg){
+  const block =
+    '<div style="padding:18px">' +
+      '<div class="late" style="margin-bottom:10px">Couldn\'t load data — ' + esc(msg) + '.</div>' +
+      '<button class="sm" onclick="loadEverything()">↻ Retry</button>' +
+    '</div>';
+  document.getElementById("plBody").innerHTML = '<tr><td colspan="8">' + block + '</td></tr>';
+  document.getElementById("dirList").innerHTML = block;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

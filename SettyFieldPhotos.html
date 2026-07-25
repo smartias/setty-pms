@@ -15,7 +15,7 @@
   // Visible version stamp — shown in the page footer + queryable from console
   // as window.__appVersion. Update this string on every deploy. Lets users
   // self-diagnose "am I on the new code?" without F12 console gymnastics.
-  window.__appVersion = "2026-07-15-fieldphotos-v4";
+  window.__appVersion = "2026-07-25-fieldphotos-v5";
 
   // ── Auto-update check ──────────────────────────────────────────────────
   // Critical for iOS "Add to Home Screen" web clips, which cache the HTML
@@ -61,6 +61,8 @@
       'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Reload now</button>';
     document.body.appendChild(banner);
     document.getElementById("__updateBtn").onclick = () => {
+      // App-initiated reload — don't trip the photo-queue leave guard.
+      window.__suppressUnloadGuard = true;
       // location.reload(true) is technically deprecated but most browsers still
       // honor it as a hard refresh. Combine with a cache-busting query string
       // for iOS Web Clip safety.
@@ -552,6 +554,21 @@ let pendingFiles = [];      // { file, previewUrl, status }
 let galleryData = [];       // all loaded photo items for lightbox/batch
 let lbIndex = 0;
 let batchSelected = new Set();
+
+// ---- Queue-loss guard ----
+// pendingFiles is memory-only: pull-to-refresh or closing the tab silently
+// discards a queued batch. Trip the browser's leave-confirmation while
+// anything in the queue still needs uploading ('ok' files are already safe
+// on SharePoint, so a fully-successful batch never warns). The update
+// banner's programmatic reload sets __suppressUnloadGuard first so
+// app-initiated navigation doesn't prompt.
+window.addEventListener('beforeunload', (e) => {
+  if (window.__suppressUnloadGuard) return;
+  if (pendingFiles.some(f => f.status !== 'ok')) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 // ---- Supabase ----
 // Shared suite sign-in: the SDK asks settyAuth for a token on every request,
@@ -1098,11 +1115,11 @@ async function putWithRetry(driveId, token, path, body, contentType) {
 async function startUpload() {
   if (!selectedProject) { toast('Please select a project first.', 'error'); return; }
   if (!selectedProject.projectFolderUrl) {
-    // Toast supports plain text only — also log a clickable link to the console
-    // so the user can copy the URL if they want.
+    // Same PMS deep link the selected-project card shows for this case —
+    // rendered as a tappable link in the toast (there's no F12 on a phone).
     const pmsLink = `https://smartias.github.io/setty-pms/SettyPMS.html#project:${encodeURIComponent(selectedProject.id)}`;
-    toast('This project has no SharePoint folder. Open it in PMS Overview tab to create one. (Link in console — F12)', 'error');
-    console.info('Open project in PMS to add SharePoint folder:', pmsLink);
+    toast('This project has no SharePoint folder yet.', 'error',
+      { link: { href: pmsLink, label: 'Open in PMS → Overview tab to create one' } });
     return;
   }
   // Re-queue previously-failed files so clicking Upload again actually
@@ -1763,13 +1780,32 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function toast(msg, type) {
+function toast(msg, type, opts) {
   const area = document.getElementById('toastArea');
   const el = document.createElement('div');
   el.className = 'toast ' + (type || '');
   el.textContent = msg;
+  // Optional tappable link — phones have no F12 console, so anything the
+  // user needs to follow up on must be tappable in the toast itself.
+  if (opts && opts.link) {
+    const a = document.createElement('a');
+    a.href = opts.link.href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = opts.link.label;
+    a.style.cssText = 'display:block;margin-top:6px;color:var(--blue);text-decoration:underline;font-weight:600;';
+    el.appendChild(a);
+  }
+  // Errors linger (10s) and dismiss on tap — 4s is too short to read, let
+  // alone tap a link, one-handed on a jobsite.
+  const ms = type === 'error' ? 10000 : 4000;
+  const timer = setTimeout(() => el.remove(), ms);
+  el.addEventListener('click', ev => {
+    if (ev.target.closest('a')) return;   // let the link navigate
+    clearTimeout(timer);
+    el.remove();
+  });
   area.appendChild(el);
-  setTimeout(() => el.remove(), 4000);
 }
 
 // ---- Init ----

@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-19-intel-v27-friction-ar";
+    window.__appVersion = "2026-07-25-intel-v28-bulk-prefs";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -91,6 +91,7 @@
     /* Lesson card */
     .lesson { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
     .lesson.draft { border-left: 3px solid var(--yellow); }
+    .lesson.suggested { border-left: 3px solid var(--yellow); }
     .lesson.approved { border-left: 3px solid var(--green); }
     .lesson.archived { border-left: 3px solid var(--muted); opacity: .65; }
     .lesson-top { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
@@ -239,7 +240,7 @@ const state = {
   projects: [],
   staff: [],
   counts: {},
-  filter: { agency: "", discipline: "", status: "draft", origin: "", q: "" },
+  filter: { agency: "", discipline: "", status: "pending", origin: "", q: "" },  // "pending" = suggested + draft
   briefNum: localStorage.getItem("ii_briefNum") || "SAPX196006.00",
   brief: null,
   briefLoading: false,
@@ -251,6 +252,7 @@ const state = {
   votes: {},                 // per-project 👍/👎 on brief sections (persisted in localStorage)
   selL: new Set(),           // bulk-selected lesson ids
   selP: new Set(),           // bulk-selected practice ids
+  selA: new Set(),           // bulk-selected agency-preference ids
   graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "", view: "people" } },
   heat: { rows: [], loaded: false, loading: false, f: { agency: "", quiet: false } },
   prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", type: "", status: "" } },
@@ -1202,43 +1204,48 @@ function renderPracticeCard(p) {
     ${p.trigger?`<div class="lesson-meta" style="margin-top:6px">${Object.entries(p.trigger).map(([k,v])=>`<span class="pill pill-gray">${esc(k)}: ${esc(v)}</span>`).join(" ")}</div>`:""}
   </div>`;
 }
-// ── Bulk review actions (lessons + practices share the same machinery) ───────
+// ── Bulk review actions (lessons + practices + agency prefs share the same
+//    machinery — kinds "L" / "P" / "A"; prefs use 'active'/'archived' statuses) ─
+function bulkSelSet(kind) { return kind === "L" ? state.selL : kind === "A" ? state.selA : state.selP; }
 function toggleSel(kind, id, checked) {
-  const set = kind === "L" ? state.selL : state.selP;
+  const set = bulkSelSet(kind);
   checked ? set.add(id) : set.delete(id);
   // Update only the bulk bar — re-rendering the list on every click would
   // rebuild the DOM under the user (scroll jump, lost checkbox focus).
-  const bar = $(kind === "L" ? "bulkBarL" : "bulkBarP");
+  const bar = $(kind === "L" ? "bulkBarL" : kind === "A" ? "bulkBarA" : "bulkBarP");
   if (bar) bar.innerHTML = bulkBar(kind);
 }
 function clearSel(kind) {
-  (kind === "L" ? state.selL : state.selP).clear();
-  kind === "L" ? renderLessonList() : renderPracticeList();
+  bulkSelSet(kind).clear();
+  kind === "L" ? renderLessonList() : kind === "A" ? renderPrefList() : renderPracticeList();
 }
 function bulkBar(kind) {
-  const set = kind === "L" ? state.selL : state.selP;
+  const set = bulkSelSet(kind);
   if (!set.size) return "";
+  const approveStatus = kind === "A" ? "active" : "approved";
   return `<div class="status info" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
     <b>${set.size} selected</b>
-    <button class="btn btn-success btn-sm" onclick="bulkStatus('${kind}','approved')">✓ Approve selected</button>
+    <button class="btn btn-success btn-sm" onclick="bulkStatus('${kind}','${approveStatus}')">✓ Approve selected</button>
     <button class="btn btn-ghost btn-sm" onclick="bulkStatus('${kind}','archived')">✕ Reject selected</button>
     <button class="btn btn-ghost btn-sm" onclick="clearSel('${kind}')">Clear</button>
   </div>`;
 }
 async function bulkStatus(kind, status) {
-  const isL = kind === "L";
-  const set = isL ? state.selL : state.selP;
+  const isL = kind === "L", isA = kind === "A";
+  const set = bulkSelSet(kind);
   if (!set.size) return;
   if (status === "approved" && !state.user) { openNameModal(() => bulkStatus(kind, status)); return; }
-  const table = isL ? "pms_lessons" : "pms_best_practices";
-  const idcol = isL ? "lesson_id" : "practice_id";
+  const table = isL ? "pms_lessons" : isA ? "pms_agency_preferences" : "pms_best_practices";
+  const idcol = isL ? "lesson_id" : isA ? "pref_id" : "practice_id";
   const payload = { status, updated_at: new Date().toISOString() };
   if (status === "approved" && isL) payload.approved_by = state.user;
+  if (status === "active" && isA) payload.date_verified = new Date().toISOString().slice(0,10);
   try {
     await sb("PATCH", `/rest/v1/${table}?${idcol}=in.(${[...set].join(",")})`, payload);
-    toast(`${set.size} ${isL ? "lesson" : "practice"}${set.size === 1 ? "" : "s"} ${status === "approved" ? "approved" : "rejected"}.`, "success");
+    const noun = isL ? "lesson" : isA ? "preference" : "practice";
+    toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" ? "rejected" : status === "active" ? "approved — now feed briefs" : "approved"}.`, "success");
     set.clear();
-    if (isL) await reloadLessons(); else await loadPractices();
+    if (isL) await reloadLessons(); else if (isA) await loadAgencyPrefs(); else await loadPractices();
   } catch (e) { toast("Bulk update failed: " + e.message, "error"); }
 }
 
@@ -1310,13 +1317,27 @@ function renderAgencyPrefs() {
 function renderPrefList() {
   const el = $("apList"); if (!el) return;
   const rows = prefsFiltered();
-  if (!rows.length) { el.innerHTML = `<div class="empty">${state.prefs.rows.length ? "No preferences match these filters." : "No agency preferences yet."}</div>`; return; }
+  if (!rows.length) { el.innerHTML = `<div id="bulkBarA">${bulkBar("A")}</div><div class="empty">${state.prefs.rows.length ? "No preferences match these filters." : "No agency preferences yet."}</div>`; return; }
   // Group under an agency header so the list reads like a reference sheet.
   const byAgency = {};
   rows.forEach(p => (byAgency[p.agency] = byAgency[p.agency] || []).push(p));
-  el.innerHTML = Object.keys(byAgency).sort().map(a =>
-    `<h2 style="margin:18px 0 8px">🏛️ ${esc(a)} <span style="color:var(--muted);font-size:12px;font-weight:400">${byAgency[a].length}</span></h2>`
-    + byAgency[a].map(renderPrefCard).join("")).join("");
+  el.innerHTML = `<div id="bulkBarA">${bulkBar("A")}</div>` + Object.keys(byAgency).sort().map(a => {
+    const suggested = byAgency[a].filter(p => p.status === "suggested");
+    const allSel = suggested.length && suggested.every(p => state.selA.has(p.pref_id));
+    const selBtn = suggested.length
+      ? ` <button class="btn btn-ghost btn-sm" style="margin-left:8px;font-weight:400;text-transform:none;letter-spacing:normal" data-agency="${esc(a)}" onclick="toggleAgencySel(this.dataset.agency)" title="Select/deselect every suggested preference under ${esc(a)} for bulk approve/reject">${allSel ? "☑" : "☐"} all suggested (${suggested.length})</button>`
+      : "";
+    return `<h2 style="margin:18px 0 8px">🏛️ ${esc(a)} <span style="color:var(--muted);font-size:12px;font-weight:400">${byAgency[a].length}</span>${selBtn}</h2>`
+      + byAgency[a].map(renderPrefCard).join("");
+  }).join("");
+}
+// "Select all suggested" on an agency group header: selects that agency's
+// currently-visible suggested cards (or clears them if all already selected).
+function toggleAgencySel(agency) {
+  const suggested = prefsFiltered().filter(p => (p.agency || "") === agency && p.status === "suggested");
+  const allSel = suggested.length && suggested.every(p => state.selA.has(p.pref_id));
+  suggested.forEach(p => allSel ? state.selA.delete(p.pref_id) : state.selA.add(p.pref_id));
+  renderPrefList();
 }
 function renderPrefCard(p) {
   const statusPill = { suggested:"pill-yellow", active:"pill-green", archived:"pill-red" }[p.status] || "pill-gray";
@@ -1326,8 +1347,11 @@ function renderPrefCard(p) {
     p.status !== "active" ? `<button class="btn btn-success btn-sm" data-id="${esc(p.pref_id)}" onclick="setPrefStatus(this.dataset.id,'active')">✓ Approve</button>` : "",
     p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(p.pref_id)}" onclick="setPrefStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
   ].filter(Boolean).join(" ");
+  const selbox = p.status === "suggested"
+    ? `<input type="checkbox" class="selbox" ${state.selA.has(p.pref_id)?"checked":""} data-id="${esc(p.pref_id)}" onchange="toggleSel('A',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/>`
+    : "";
   return `<div class="lesson ${p.status === "suggested" ? "draft" : esc(p.status||"")}">
-    <div class="lesson-top"><div style="flex:1">
+    <div class="lesson-top">${selbox}<div style="flex:1">
       <div class="lesson-summary">${esc(p.requirement_or_preference)}</div>
       <div class="lesson-meta">
         ${p.preference_type?`<span class="pill pill-purple">${esc(p.preference_type)}</span>`:""}
@@ -1492,7 +1516,10 @@ function lessonsFiltered() {
   return state.lessons.filter(l => {
     if (f.agency && (l.agency || "") !== f.agency) return false;
     if (f.discipline && (l.discipline || "") !== f.discipline) return false;
-    if (f.status && (l.status || "") !== f.status) return false;
+    // "pending" is a combined view: mined lessons arrive as 'suggested', manual
+    // ones as 'draft' — both are awaiting review.
+    if (f.status === "pending") { if ((l.status || "") !== "draft" && (l.status || "") !== "suggested") return false; }
+    else if (f.status && (l.status || "") !== f.status) return false;
     if (f.origin && (l.origin || "manual") !== f.origin) return false;
     if (f.q) {
       const hay = [l.lesson_summary, l.system, l.issue_type, l.project_id, l.so_person, l.source_reference, (l.tags||[]).join(" ")].join(" ").toLowerCase();
@@ -1529,7 +1556,9 @@ function renderLessons() {
         <label>Status</label>
         <select onchange="state.filter.status=this.value; renderLessonList()">
           <option value="">All</option>
-          <option value="draft" ${state.filter.status==="draft"?"selected":""}>Needs review</option>
+          <option value="pending" ${state.filter.status==="pending"?"selected":""}>Needs review (suggested + draft)</option>
+          <option value="suggested" ${state.filter.status==="suggested"?"selected":""}>Suggested</option>
+          <option value="draft" ${state.filter.status==="draft"?"selected":""}>Draft</option>
           <option value="approved" ${state.filter.status==="approved"?"selected":""}>Approved</option>
           <option value="archived" ${state.filter.status==="archived"?"selected":""}>Rejected</option>
         </select>
@@ -1565,7 +1594,7 @@ function renderLessonList() {
 
 function renderReviewNote() {
   const el = $("reviewNote"); if (!el) return;
-  const pending = state.lessons.filter(l => l.status === "draft").length;
+  const pending = state.lessons.filter(l => l.status === "draft" || l.status === "suggested").length;
   const mined = state.lessons.filter(l => l.origin === "mined").length;
   el.innerHTML = pending
     ? `<div class="status info" style="display:block;margin-bottom:14px">🤖 ${mined} lesson${mined===1?"":"s"} mined from your project record · <b>${pending} awaiting your review</b>. Approve the ones that hold, edit to sharpen, reject the rest.</div>`
@@ -1574,8 +1603,8 @@ function renderReviewNote() {
 
 function renderLessonCard(l) {
   const confPill = { low: "pill-gray", medium: "pill-yellow", high: "pill-green" }[l.confidence] || "pill-gray";
-  const statusPill = { draft: "pill-yellow", approved: "pill-green", archived: "pill-red" }[l.status] || "pill-gray";
-  const statusLabel = { draft: "needs review", approved: "approved", archived: "rejected" }[l.status] || l.status;
+  const statusPill = { suggested: "pill-yellow", draft: "pill-yellow", approved: "pill-green", archived: "pill-red" }[l.status] || "pill-gray";
+  const statusLabel = { suggested: "suggested", draft: "needs review", approved: "approved", archived: "rejected" }[l.status] || l.status;
   const proj = state.projects.find(p => p.id === l.project_id);
   const projLabel = l.project_id ? esc(l.project_id) + (proj ? " · " + esc(proj.name) : "") : "";
   const originBadge = l.origin === "mined"
