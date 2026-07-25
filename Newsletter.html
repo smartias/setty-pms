@@ -492,7 +492,14 @@ async function refreshAll(){
     seedDefaults(false);
     renderSubs(); renderBounces(); renderHistory();
     log("Directory ready: " + DIRECTORY.length + " people, " + Object.keys(SUBS).length + " overlay rows.", "ok");
-  } catch(e){ log("Load failed: " + e.message, "err"); }
+  } catch(e){
+    log("Load failed: " + e.message, "err");
+    // If nothing loaded yet (e.g. the auto-load on open failed), don't leave a
+    // stale "Loading…" placeholder — say what happened and how to retry.
+    if (!DIRECTORY.length) document.getElementById("groupList").innerHTML =
+      '<div class="muted" style="padding:18px">Couldn\'t load the directory — ' + esc(e.message) +
+      '. Use ↻ Load / refresh directory above to retry.</div>';
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1081,6 +1088,13 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp
   list.addEventListener("click", onGroupClick);   // caret/name collapse-expand
   try { await getMsalApp(); paintUser(); } catch(e){ /* not signed in yet */ }
   renderPreview();
+  // Auto-load the directory on open. The directory + overlay reads go through
+  // sb()/settyAuth (anon fallback while signed out), so they don't need the
+  // Microsoft sign-in — that's only for drafting/bounce scans later. The
+  // ↻ button above stays as the manual refresh; refreshAll() reports its own
+  // failures, the outer catch just keeps boot alive.
+  list.innerHTML = '<div class="muted" style="padding:18px">Loading the directory…</div>';
+  try { await refreshAll(); } catch(e){ log("Auto-load failed: " + e.message, "err"); }
 })();
 </script>
 </body>

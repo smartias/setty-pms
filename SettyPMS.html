@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-24-pms-v78b-directory-merge-hardening";
+    window.__appVersion = "2026-07-25-pms-v79-ux1-back-errors-status-commit";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -7489,11 +7489,18 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                 <td>
                   {phaseComplete
                     ? <span style={{ color: P.textMuted, fontSize: 13, fontFamily: "JetBrains Mono" }}>{durWD || "—"} WD</span>
-                    : <input type="number" min={1} step={1}
+                    : <CommitInput
                         value={durWD || ""}
-                        onChange={e => updatePhaseDuration(ph.id, +e.target.value)}
-                        style={{ width: 64, fontFamily: "JetBrains Mono" }}
-                        title="Business days — changing this recalculates the end date" />}
+                        onCommit={v => {
+                          // Blank/NaN commit = revert; don't coerce "" → 1 and
+                          // rewrite the end date mid-edit.
+                          const n = parseInt(v, 10);
+                          if (String(v).trim() === "" || isNaN(n)) return;
+                          updatePhaseDuration(ph.id, n);
+                        }}
+                        inputProps={{ type: "number", min: 1, step: 1,
+                          style: { width: 64, fontFamily: "JetBrains Mono" },
+                          title: "Business days — changing this recalculates the end date" }} />}
                 </td>
                 <td><span style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: pct >= 100 ? P.green : pct > 0 ? P.accentLight : P.textDim }}>{pct}%</span></td>
                 <td><span style={{ fontFamily: "JetBrains Mono", color: P.textDim, fontSize: 12 }}>{expectedPct > 0 || (sd && today >= sd) ? expectedPct + "%" : "—"}</span></td>
@@ -7704,10 +7711,16 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                     </div>
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input type="number" min={0} max={100} value={m.pctComplete || 0}
-                       onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value, true, { notifyTeams: false })}
-			onBlur={e => updateMilestone(m.id, "pctComplete", +e.target.value, false, { debounceTeams: true, teamsDelay: 1000 })}
-                        style={{ width: 72, MozAppearance: "textfield" }} />
+                      <CommitInput value={m.pctComplete || 0}
+                        onCommit={v => {
+                          // Blank/NaN commit = revert (no reduce-to-0 confirm
+                          // mid-edit). The reduce-% confirm inside
+                          // updateMilestone now runs only on commit.
+                          const n = +v;
+                          if (String(v).trim() === "" || isNaN(n)) return;
+                          updateMilestone(m.id, "pctComplete", n, false, { debounceTeams: true, teamsDelay: 1000 });
+                        }}
+                        inputProps={{ type: "number", min: 0, max: 100, style: { width: 72, MozAppearance: "textfield" } }} />
                       <span style={{ color: P.textDim, fontSize: 12 }}>%</span>
                       <input type="checkbox" checked={false}
                         onChange={e => updateMilestone(m.id, "pctComplete", e.target.checked ? 100 : 0)}
@@ -16940,7 +16953,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             </span>
           )}
           <select value={project.status} onChange={e => handleStatusChange(e.target.value)} style={{ fontSize: 13 }}>
-            {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
+            <optgroup label="Pipeline">{PIPELINE_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
+            <optgroup label="Awarded">{PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
           </select>
           <Btn small variant={project.archived ? "success" : "ghost"} onClick={() => {
               if (project.archived) {
@@ -17156,7 +17170,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             <Field label="City"><input value={project.projectCity || ""} onChange={e => updateField("projectCity", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="State"><input value={project.projectState || ""} onChange={e => updateField("projectState", e.target.value)} style={{ width: "100%" }} placeholder="e.g. VA" /></Field>
             <Field label="Project Status">
-              <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ width: "100%" }}>
+              <select value={project.status} onChange={e => handleStatusChange(e.target.value)} style={{ width: "100%" }}>
                 <optgroup label="Pipeline">{PIPELINE_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
                 <optgroup label="Awarded">{PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
               </select>
@@ -17333,6 +17347,10 @@ function EmailsView({ project, onChange }) {
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Load failure is NOT an empty log — render a distinct error + Retry instead
+  // of the "No emails saved yet" empty state (same idea as EmailLogPicker).
+  const [emailLoadError, setEmailLoadError] = useState(false);
+  const [loadRetryTick, setLoadRetryTick] = useState(0);
   const PAGE_SIZE = 50;
 
   // Filter UI state.
@@ -17365,17 +17383,19 @@ function EmailsView({ project, onChange }) {
         if (cancelled) return;
         setEmails(page);
         setHasMore(page.length === PAGE_SIZE);
+        setEmailLoadError(false);
       } catch (e) {
         if (cancelled) return;
         console.warn("loadProjectEmails failed:", e);
         setEmails([]);
         setHasMore(false);
+        setEmailLoadError(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [project.id, searchTerm, filterSender]);
+  }, [project.id, searchTerm, filterSender, loadRetryTick]);
 
   // Load sender options + saved-msgId set when project changes (independent of filters).
   React.useEffect(() => {
@@ -18072,7 +18092,13 @@ function EmailsView({ project, onChange }) {
           ⏳ Loading emails…
         </div>
       )}
-      {!loading && emails.length === 0 && (
+      {!loading && emailLoadError && (
+        <div style={{ color: "#f87171", fontSize: 13, padding: "20px 0", display: "flex", alignItems: "center", gap: 10 }}>
+          <span>⚠ Couldn't load the email log — check your connection.</span>
+          <Btn small variant="ghost" onClick={() => setLoadRetryTick(t => t + 1)}>Retry</Btn>
+        </div>
+      )}
+      {!loading && !emailLoadError && emails.length === 0 && (
         <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
           {searchTerm || filterSender !== "All"
             ? "No emails match the current filter. Adjust the search or sender, or clear filters."
@@ -27702,6 +27728,27 @@ function renameCompanyAcrossProjects(oldName, newName) {
   // Keep URL hash in sync with current view
   React.useEffect(() => {
     window.location.hash = view;
+  }, [view]);
+
+  // Browser Back/Forward: mirror hash changes back into view state (same parse
+  // as the mount-time deep link). The sync effect above rewrites the hash for
+  // the current view, so the equality guard below makes app-initiated hash
+  // writes a no-op here — no loops.
+  React.useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash.slice(1);
+      if (hash.startsWith("project:") || ["dashboard","myprojects","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
+        setView(v => v === hash ? v : hash);
+      }
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  // Start each view at the top — otherwise a view switch inherits the previous
+  // view's scroll position.
+  React.useEffect(() => {
+    window.scrollTo(0, 0);
   }, [view]);
 
 
