@@ -15,7 +15,7 @@
   // Visible version stamp — shown in the page footer + queryable from console
   // as window.__appVersion. Update this string on every deploy. Lets users
   // self-diagnose "am I on the new code?" without F12 console gymnastics.
-  window.__appVersion = "2026-07-25-fieldphotos-v5";
+  window.__appVersion = "2026-07-25-fieldphotos-v6-queue-resume";
 
   // ── Auto-update check ──────────────────────────────────────────────────
   // Critical for iOS "Add to Home Screen" web clips, which cache the HTML
@@ -570,6 +570,193 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 
+// ---- Queue persistence (IndexedDB) ----
+// The beforeunload guard above can't stop iOS from evicting a backgrounded
+// tab, and a Web Clip relaunch always starts from scratch — either way a
+// queued batch of jobsite photos silently vanished. Mirror the queue into
+// IndexedDB (Files/Blobs are structured-cloneable) so an evicted tab or
+// accidental refresh can offer to resume instead of losing the batch.
+//
+// Schema: one DB "pms_field_photos", one store "queue" keyed on `id`:
+//   - file rows:  { id: "q<ts>-<n>", kind:'file', file:<File/Blob>, name, isVideo, addedAt }
+//   - form row:   { id: "__form",    kind:'form', projectId, projectName,
+//                   fields:{fDate,fPhase,...,compQuality,compWidth}, savedAt }
+// Every call degrades silently (private-mode Safari, quota, blocked) — the
+// persistence layer must never surface an error the app itself wouldn't hit.
+const QDB_NAME  = 'pms_field_photos';
+const QDB_STORE = 'queue';
+const QFORM_KEY = '__form';
+const QFORM_FIELD_IDS = ['fDate', 'fPhase', 'fSystem', 'fAddress', 'fLocation',
+                         'fPhotographer', 'fTags', 'fNotes', 'compQuality', 'compWidth'];
+let _qdbPromise = null;   // cached open — a failed open stays rejected, so later calls fail fast
+let _qidCounter = 0;      // per-session uniquifier for file row ids
+let _qFormTimer = null;   // debounce handle for form saves
+
+function qdbOpen() {
+  if (_qdbPromise) return _qdbPromise;
+  _qdbPromise = new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open(QDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(QDB_STORE)) db.createObjectStore(QDB_STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror   = () => reject(req.error || new Error('IndexedDB open failed'));
+      req.onblocked = () => reject(new Error('IndexedDB open blocked'));
+    } catch (e) { reject(e); }
+  });
+  return _qdbPromise;
+}
+
+// Run `fn(store)` inside a transaction. Returns the request's result (for
+// reads) or undefined; swallows every failure with a console.warn so callers
+// never need their own try/catch.
+async function qdbCall(mode, fn) {
+  try {
+    const db = await qdbOpen();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(QDB_STORE, mode);
+      let req;
+      try { req = fn(tx.objectStore(QDB_STORE)); } catch (e) { reject(e); return; }
+      tx.oncomplete = () => resolve(req ? req.result : undefined);
+      tx.onerror    = () => reject(tx.error);
+      tx.onabort    = () => reject(tx.error || new Error('IndexedDB tx aborted'));
+    });
+  } catch (e) {
+    console.warn('[FieldPhotos] queue persistence unavailable:', e && e.message);
+    return undefined;
+  }
+}
+
+function qdbPutFile(pf) {
+  if (!pf || !pf.qid || !pf.file) return;
+  qdbCall('readwrite', s => s.put({
+    id: pf.qid, kind: 'file', file: pf.file,
+    name: pf.file.name, isVideo: !!pf.isVideo, addedAt: Date.now()
+  }));
+}
+
+function qdbDeleteFile(qid) {
+  if (!qid) return;
+  qdbCall('readwrite', s => s.delete(qid));
+}
+
+function qdbClearAll() {
+  qdbCall('readwrite', s => s.clear());
+}
+
+// Snapshot the shared form fields + selected project alongside the queue.
+// Only meaningful while files are queued — an empty queue never writes a
+// form row (checkResumeQueue keys off file rows anyway).
+function qdbSaveForm() {
+  if (!pendingFiles.length) return;
+  const fields = {};
+  QFORM_FIELD_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) fields[id] = el.value;
+  });
+  qdbCall('readwrite', s => s.put({
+    id: QFORM_KEY, kind: 'form',
+    projectId: selectedProject ? selectedProject.id : null,
+    projectName: selectedProject ? selectedProject.name : null,
+    fields, savedAt: Date.now()
+  }));
+}
+
+function qdbSaveFormDebounced() {
+  clearTimeout(_qFormTimer);
+  _qFormTimer = setTimeout(qdbSaveForm, 1000);
+}
+
+// Write-through for shared metadata fields: any edit while files are queued
+// refreshes the stored form snapshot (debounced — jobsite typing on cellular
+// shouldn't hammer IndexedDB per keystroke).
+QFORM_FIELD_IDS.forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('input',  qdbSaveFormDebounced);
+  el.addEventListener('change', qdbSaveFormDebounced);
+});
+
+// ---- Resume banner ----
+// Called after sign-in + project load. If file rows survived a refresh /
+// tab eviction, offer to restore them instead of silently starting fresh.
+async function checkResumeQueue() {
+  const rows = await qdbCall('readonly', s => s.getAll());
+  if (!rows || !rows.length) return;
+  const fileRows = rows.filter(r => r && r.kind === 'file' && r.file);
+  if (!fileRows.length) { qdbClearAll(); return; }   // orphaned form row — tidy up
+  const formRow = rows.find(r => r && r.id === QFORM_KEY);
+  showResumeBanner(fileRows, formRow);
+}
+
+function showResumeBanner(fileRows, formRow) {
+  if (document.getElementById('__resumeBanner')) return;
+  const n = fileRows.length;
+  const banner = document.createElement('div');
+  banner.id = '__resumeBanner';
+  // Same fixed-top treatment as the update banner, green accent = recovery.
+  banner.style.cssText =
+    'position:fixed;top:0;left:0;right:0;z-index:9998;' +
+    'background:linear-gradient(90deg,#1F3864,#10B981);color:white;' +
+    "padding:10px 16px;font-family:'Segoe UI',Arial,sans-serif;" +
+    'font-size:13px;font-weight:600;display:flex;justify-content:space-between;' +
+    'align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 12px rgba(0,0,0,0.4);';
+  banner.innerHTML =
+    '<span>&#128248; You have ' + n + ' photo' + (n !== 1 ? 's' : '') + ' from an unfinished upload.</span>' +
+    '<span style="display:flex;gap:8px;">' +
+    '<button id="__resumeBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;' +
+    'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Resume</button>' +
+    '<button id="__discardBtn" style="background:transparent;color:white;border:1px solid rgba(255,255,255,.5);' +
+    'border-radius:6px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Discard</button>' +
+    '</span>';
+  document.body.appendChild(banner);
+  document.getElementById('__resumeBtn').onclick  = () => { banner.remove(); resumeQueue(fileRows, formRow); };
+  document.getElementById('__discardBtn').onclick = () => { banner.remove(); qdbClearAll(); };
+}
+
+function resumeQueue(fileRows, formRow) {
+  // Restore files straight from the IDB rows into the queue — object URLs for
+  // image previews (no second copy of the buffer in memory, unlike the
+  // FileReader/dataURL path used for freshly-picked files) and the existing
+  // thumbnail generator for videos. Rows keep their original qids and stay
+  // in the store until upload success or explicit removal, so a second
+  // refresh mid-resume is still recoverable.
+  fileRows.forEach(row => {
+    const pf = { file: row.file, previewUrl: null, status: 'pending', isVideo: !!row.isVideo, qid: row.id };
+    if (pf.isVideo) {
+      generateVideoThumbnail(row.file).then(thumb => { pf.previewUrl = thumb; renderPreviews(); });
+    } else {
+      try { pf.previewUrl = URL.createObjectURL(row.file); } catch (e) { /* preview only — upload still works */ }
+    }
+    pendingFiles.push(pf);
+  });
+  renderPreviews();
+
+  if (formRow && formRow.fields) {
+    Object.keys(formRow.fields).forEach(id => {
+      const el = document.getElementById(id);
+      if (el && formRow.fields[id] != null) el.value = formRow.fields[id];
+    });
+    // Keep the slider readouts in sync with the restored values
+    document.getElementById('qualVal').textContent  = document.getElementById('compQuality').value + '%';
+    document.getElementById('widthVal').textContent = document.getElementById('compWidth').value + 'px';
+  }
+
+  const savedProjectId = formRow ? formRow.projectId : null;
+  const p = savedProjectId ? allProjects.find(x => x.id === savedProjectId) : null;
+  if (p) {
+    selectProject(p);
+    toast(fileRows.length + ' photo' + (fileRows.length !== 1 ? 's' : '') + ' restored to the upload queue.', 'success');
+  } else {
+    // Project archived/removed (or was never picked) — keep the queue, just
+    // ask for a project before upload. startUpload() already blocks without one.
+    toast(fileRows.length + ' photo' + (fileRows.length !== 1 ? 's' : '') +
+      ' restored — please pick a project before uploading.', 'error');
+  }
+}
+
 // ---- Supabase ----
 // Shared suite sign-in: the SDK asks settyAuth for a token on every request,
 // so it always carries the signed-in user's JWT (anon fallback until the
@@ -650,6 +837,10 @@ async function onSignedIn() {
   document.getElementById('fPhotographer').value = currentUser.name || '';
 
   await loadProjects();
+
+  // Projects are loaded (so a stored project id can be re-matched) — now
+  // offer to restore any queue that survived a refresh or iOS tab eviction.
+  checkResumeQueue();
 }
 
 // ---- Projects ----
@@ -738,6 +929,7 @@ document.addEventListener('click', e => {
 
 function selectProject(p) {
   selectedProject = p;
+  qdbSaveFormDebounced();   // keep the persisted snapshot's project current
   hideDropdown();
   document.getElementById('projSearch').value = p.name;
   const card = document.getElementById('selectedProjectCard');
@@ -770,6 +962,7 @@ function selectProject(p) {
 
 function clearProject() {
   selectedProject = null;
+  qdbSaveFormDebounced();   // keep the persisted snapshot's project current
   document.getElementById('projSearch').value = '';
   document.getElementById('selectedProjectCard').classList.add('hidden');
 }
@@ -883,15 +1076,24 @@ function handleFiles(files) {
     const isVideo = isVideoFile(f);
     if (!isImg && !isVideo) return;
 
+    // Stable per-file id — the IndexedDB row key, so completed uploads can
+    // delete just their own row.
+    const qid = 'q' + Date.now() + '-' + (_qidCounter++);
     if (isVideo) {
       generateVideoThumbnail(f).then(thumb => {
-        pendingFiles.push({ file: f, previewUrl: thumb, status: 'pending', isVideo: true });
+        const pf = { file: f, previewUrl: thumb, status: 'pending', isVideo: true, qid };
+        pendingFiles.push(pf);
+        qdbPutFile(pf);           // write-through: survive refresh/eviction
+        qdbSaveFormDebounced();   // snapshot project + form alongside the file
         renderPreviews();
       });
     } else {
       const reader = new FileReader();
       reader.onload = ev => {
-        pendingFiles.push({ file: f, previewUrl: ev.target.result, status: 'pending', isVideo: false });
+        const pf = { file: f, previewUrl: ev.target.result, status: 'pending', isVideo: false, qid };
+        pendingFiles.push(pf);
+        qdbPutFile(pf);           // write-through: survive refresh/eviction
+        qdbSaveFormDebounced();   // snapshot project + form alongside the file
         renderPreviews();
       };
       reader.readAsDataURL(f);
@@ -924,7 +1126,12 @@ function renderPreviews() {
 }
 
 function removeFile(i) {
+  const pf = pendingFiles[i];
   pendingFiles.splice(i, 1);
+  if (pf && pf.qid) qdbDeleteFile(pf.qid);
+  // User cleared the last queued file = explicit "never mind" — drop the
+  // stored form snapshot too so no stale resume banner appears later.
+  if (!pendingFiles.length) qdbClearAll();
   renderPreviews();
 }
 
@@ -1204,6 +1411,8 @@ async function startUpload() {
           }
         }
         pf.status = 'ok';
+        // Safe on SharePoint — no need to keep the blob for resume anymore.
+        if (pf.qid) qdbDeleteFile(pf.qid);
       } catch(e) {
         pf.status = 'err';
         console.error('Upload failed for', pf.file.name, e);
@@ -1290,6 +1499,9 @@ async function startUpload() {
     // Remove successful uploads from the queue; leave failed ones so user can see/clear them
     setTimeout(() => {
       pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
+      // Whole batch done — clear the persisted queue (incl. the form row).
+      // Failed files stay: their rows are still in the store for resume.
+      if (!pendingFiles.length) qdbClearAll();
       renderPreviews();
       // Keep the progress bar visible if there are still failed files; otherwise hide it
       if (!pendingFiles.some(f => f.status === 'err')) {
@@ -1303,6 +1515,7 @@ async function startUpload() {
     // Clean up any files that succeeded before the error (e.g. metadata write failed)
     // so they don't get stranded in the queue with no remove button.
     pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
+    if (!pendingFiles.length) qdbClearAll();   // per-file 'ok' rows already deleted
     renderPreviews();
     toast('Upload failed: ' + e.message, 'error');
     prog.classList.remove('running');     // upload errored out — stop the film
