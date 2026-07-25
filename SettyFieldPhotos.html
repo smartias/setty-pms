@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Home-screen bookmark icon (iOS ignores SVG manifest icons). A real installable
+     PWA needs a per-app manifest + PNG icon set + a network-first service worker —
+     the old root manifest.webmanifest/sw.js were unwired (and sw.js cache-first on
+     the shell = stale-code trap), so they were removed rather than half-shipped. -->
+<link rel="apple-touch-icon" href="setty-logo.png"/>
 <!-- Cache-bust: tell the browser to always revalidate this HTML on each visit
      so a freshly-deployed file shows up immediately, not after the next cache
      expiry. Without this, users would run stale code for hours/days after
@@ -15,7 +20,7 @@
   // Visible version stamp — shown in the page footer + queryable from console
   // as window.__appVersion. Update this string on every deploy. Lets users
   // self-diagnose "am I on the new code?" without F12 console gymnastics.
-  window.__appVersion = "2026-07-25-fieldphotos-v6-queue-resume";
+  window.__appVersion = "2026-07-25-fieldphotos-v7-auth-popup-icon";
 
   // ── Auto-update check ──────────────────────────────────────────────────
   // Critical for iOS "Add to Home Screen" web clips, which cache the HTML
@@ -761,8 +766,14 @@ function resumeQueue(fileRows, formRow) {
 // Shared suite sign-in: the SDK asks settyAuth for a token on every request,
 // so it always carries the signed-in user's JWT (anon fallback until the
 // Phase 2 RLS flip). accessToken is awaited per call — no boot race.
-const settyAuthReady = settyAuth.init().catch(() => null);
-settyAuth.mountPill();
+const settyAuthReady = settyAuth.init().catch(e => {
+  try { toast("Suite sign-in failed: " + e.message + " — tap the sign-in pill to retry.", "error"); } catch (_) {}
+  return null;
+});
+// popup: a full-page redirect would destroy the in-memory photo queue.
+// bottom: 74 lifts the pill clear of the toast stack (bottom-right, z-index
+// below the pill) so error toasts aren't hidden behind it while signed out.
+settyAuth.mountPill({ popup: true, bottom: 74 });
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   accessToken: async () => { await settyAuthReady; return settyAuth.token(); },
 });

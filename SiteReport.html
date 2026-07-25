@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="apple-touch-icon" href="setty-logo.png"/>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Site Report</title>
   <script>
-    window.__appVersion = "2026-07-25-sitereport-meta-autosave";
+    window.__appVersion = "2026-07-25-sitereport-v2-auth-popup-icon";
 
     // Auto-update banner — same pattern as transmittal.html / SettyFieldPhotos.
     async function _checkForUpdate() {
@@ -504,10 +505,14 @@ const SB_HEADERS = { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPAB
 // their own JWT; signed-out users keep working on the anon key until the
 // Phase 2 RLS flip. SB_HEADERS is passed by reference at every call site, so
 // mutating Authorization here covers all of them.
-const settyAuthReady = settyAuth.init().catch(() => null).then(() => syncSettyAuth());
+const settyAuthReady = settyAuth.init().catch(e => {
+  try { setGlobalStatus("error", "Suite sign-in failed: " + e.message + " — tap the sign-in pill to retry."); } catch (_) {}
+  return null;
+}).then(() => syncSettyAuth());
 function syncSettyAuth() { SB_HEADERS.Authorization = "Bearer " + settyAuth.token(); }
 settyAuth.onChange(syncSettyAuth);
-settyAuth.mountPill();
+// popup: a full-page redirect would destroy an unsaved add-item form mid-visit.
+settyAuth.mountPill({ popup: true });
 
 // Standard AEC discipline prefixes used for per-discipline item numbers.
 const DISCIPLINE_PREFIX = {

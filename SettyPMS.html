@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-25-pms-v80-ux2-unload-guard-snapshot-recovery";
+    window.__appVersion = "2026-07-25-pms-v82-ux4-modal-a11y-focus";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2064,6 +2064,8 @@ const CSS = `
   input:focus,select:focus,textarea:focus{border-color:${P.accent};}
   input::placeholder,textarea::placeholder{color:${P.textDim};}
   button{font-family:'DM Sans',sans-serif;cursor:pointer;border:none;outline:none;transition:all .15s;}
+  /* Keyboard-only focus ring (mouse clicks stay outline-free via :focus-visible). */
+  button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid ${P.accent};outline-offset:2px;}
   table{border-collapse:collapse;width:100%;}
   th,td{text-align:left;padding:8px 12px;border-bottom:1px solid ${P.border};font-size:13px;}
   th{font-size:11px;font-weight:600;color:${P.textDim};text-transform:uppercase;letter-spacing:.05em;background:${P.card};}
@@ -2436,12 +2438,31 @@ function KpiBox({ label, val, color, sub, onClick }) {
 }
 
 function Modal({ title, onClose, children, wide }) {
+  const boxRef = React.useRef(null);
+  React.useEffect(() => {
+    // Escape closes (same path as the ✕, so guarded modals keep their guards).
+    const onKey = e => { if (e.key === "Escape" && onClose) onClose(); };
+    window.addEventListener("keydown", onKey);
+    // Move focus into the dialog so Tab starts inside it, and restore it to
+    // the opener on close — keyboard users otherwise tab the page underneath.
+    const prev = document.activeElement;
+    const t = setTimeout(() => {
+      const first = boxRef.current && boxRef.current.querySelector("input, select, textarea, button:not([data-modal-close])");
+      if (first) first.focus();
+    }, 0);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      clearTimeout(t);
+      if (prev && prev.focus) try { prev.focus(); } catch (e) {}
+    };
+  }, []);
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
-      <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, width: wide ? 860 : 560, maxHeight: "92vh", overflow: "auto", padding: 28 }}>
+    <div role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div ref={boxRef} style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, width: wide ? 860 : 560, maxHeight: "92vh", overflow: "auto", padding: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 17, fontWeight: 700 }}>{title}</div>
-          <button onClick={onClose} style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
+          <button data-modal-close onClick={onClose} style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
         </div>
         {children}
       </div>
@@ -9627,7 +9648,13 @@ function AddLinkModal({ project, onAdd, onClose }) {
   const sel      = { width: "100%", padding: "6px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.bg, color: P.text, fontSize: 13 };
 
   return (
-    <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>
+    <div style={overlay} onClick={e => {
+      if (e.target !== e.currentTarget) return;
+      // Backdrop-close only while the form is untouched — a stray click on the
+      // dark area must not discard a filled-in link (the ✕/Cancel remain).
+      if (targetId || targetUrl || targetLabel) return;
+      onClose();
+    }}>
       <div style={box}>
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: P.text }}>Add Link</div>
         <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>Connect this item to another document, entity, or file.</div>
