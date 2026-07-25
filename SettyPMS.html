@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-25-pms-v79-ux1-back-errors-status-commit";
+    window.__appVersion = "2026-07-25-pms-v80-ux2-unload-guard-snapshot-recovery";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -934,12 +934,21 @@ async function saveState(state) {
 }
 
 const LOCAL_SNAPSHOT_KEY = "setty_pms_local_snapshot_v1";
+// Marker written when the user dismisses the snapshot-recovery banner: holds
+// the _savedAt of the dismissed snapshot so the same orphan never nags twice.
+const SNAPSHOT_RECOVERY_DISMISSED_KEY = "setty_pms_snapshot_recovery_dismissed_v1";
 
 // Snapshot is stored pako-compressed (same library as email bodies — JSON
 // deflates ~8-12x) because the raw JSON outgrew the ~5MB localStorage quota.
 // "PZ1|" prefixes the compressed format; loadLocalSnapshot still reads old
 // plain-JSON snapshots for backward compatibility.
-function saveLocalSnapshot(state) {
+//
+// opts.pending (default true): whether this snapshot may contain edits that
+// have NOT yet reached a successful cloud save. The post-load hydration write
+// passes { pending: false } — that snapshot mirrors the cloud, so the
+// recovery banner must never fire on it. Every edit-time write (and the
+// beforeunload belt-and-braces write) defaults to pending: true.
+function saveLocalSnapshot(state, opts) {
   try {
     const payload = {
       projects: state.projects || [],
@@ -947,6 +956,7 @@ function saveLocalSnapshot(state) {
       staff: state.staff || [],
       clients: state.clients || [],
       _savedAt: new Date().toISOString(),
+      _pendingSave: !opts || opts.pending !== false,
     };
     const json = JSON.stringify(payload);
     const compressed = compressHtml(json); // generic string deflate, despite the name
@@ -1283,12 +1293,25 @@ async function loadStateV2() {
   const projectVersions = new Map((projectRows || []).map(r => [r.id, r.version]));
   const clientVersions  = new Map((clientRows  || []).map(r => [r.id, r.version]));
 
+  // Last cloud save time (epoch ms, 0 = unknown) — max updated_at across all
+  // rows. updated_at stamps are client-generated (new Date().toISOString() at
+  // save time), so comparing against the local snapshot's _savedAt uses the
+  // same clock for the common single-user case. Used by the snapshot-recovery
+  // check on load; parsed numerically (not lexicographically) because
+  // PostgREST may echo timestamps in +00:00 form while clients write "Z".
+  let lastCloudSaveAt = 0;
+  for (const r of [...(projectRows || []), ...(clientRows || []), ...(metaRows || [])]) {
+    const t = r && r.updated_at ? Date.parse(r.updated_at) : 0;
+    if (t && t > lastCloudSaveAt) lastCloudSaveAt = t;
+  }
+
   return {
     projects,
     clients,
     staff: meta.staff || [],
     termContracts: meta.termContracts || [],
     _versions: { projects: projectVersions, clients: clientVersions },
+    _lastCloudSaveAt: lastCloudSaveAt,
   };
 }
 
@@ -27024,6 +27047,24 @@ function App() {
   // are silently retrying so the user knows the system isn't dead.
   const [networkRetry, setNetworkRetry] = useState({ active: false, attempt: 0, error: "" });
 
+  // ── UX wave 2: "last 2 seconds" data-loss window ──
+  // changeSeq bumps every time an edit schedules the debounced save; savedSeq
+  // catches up when a save completes cleanly (no conflicts). While
+  // changeSeq > savedSeq a save is pending (debounce not fired / in flight /
+  // retry outstanding) and the beforeunload guard warns. Refs, not state —
+  // the beforeunload listener is registered once and must read live values.
+  const changeSeqRef = React.useRef(0);
+  const savedSeqRef = React.useRef(0);
+  // First auto-save-effect run after load is hydration, not a user edit:
+  // it must not arm the unload guard and its snapshot is written pending:false.
+  const hydratedRef = React.useRef(false);
+  // Snapshot recovery: set on load when the local snapshot is meaningfully
+  // newer than the cloud's last save. { savedAt } | null. The parsed snapshot
+  // itself is captured in a ref BEFORE the hydration effect overwrites the
+  // localStorage copy with cloud data.
+  const [snapshotRecovery, setSnapshotRecovery] = useState(null);
+  const orphanSnapshotRef = React.useRef(null);
+
   // Refs that always hold the LATEST values, used by setTimeout callbacks
   // that would otherwise capture stale React state in closures. The retry
   // path is the most dangerous of these: without `currentStateRef`, edits
@@ -27101,6 +27142,26 @@ function App() {
         const localSnap = loadLocalSnapshot();
         const shouldUseLocal = !hasRemoteData && localSnap && (localSnap.projects?.length || localSnap.termContracts?.length || localSnap.staff?.length || localSnap.clients?.length);
         const source = shouldUseLocal ? localSnap : s;
+
+        // UX wave 2 — snapshot recovery: if the local snapshot (a) was written
+        // with edits that hadn't reached a successful save (_pendingSave) and
+        // (b) is at least 60s newer than the cloud's last save (skew guard),
+        // those edits likely died in the debounce/retry window of a previous
+        // session. Capture the snapshot NOW — the hydration effect below will
+        // overwrite the localStorage copy with cloud data — and show a
+        // non-blocking banner offering a JSON download. Never auto-merged.
+        try {
+          if (hasRemoteData && !shouldUseLocal && localSnap && localSnap._pendingSave && localSnap._savedAt) {
+            const snapMs = Date.parse(localSnap._savedAt);
+            const cloudMs = s._lastCloudSaveAt || 0;
+            let dismissedAt = null;
+            try { dismissedAt = localStorage.getItem(SNAPSHOT_RECOVERY_DISMISSED_KEY); } catch (lsErr) {}
+            if (snapMs && cloudMs && snapMs > cloudMs + 60000 && dismissedAt !== localSnap._savedAt) {
+              orphanSnapshotRef.current = localSnap;
+              setSnapshotRecovery({ savedAt: localSnap._savedAt });
+            }
+          }
+        } catch (recErr) { console.warn("[snapshot-recovery] check failed:", recErr); }
 
         if (source.projects) setProjects(source.projects);
         if (source.termContracts) setTermContracts(source.termContracts);
@@ -27204,7 +27265,13 @@ function App() {
 
     if (!isLoaded.current) return; // bug 1 fix: don't save until initial load is done
     if (v2LoadFailedRef.current) return; // safety: don't save when V2 load failed
-    saveLocalSnapshot({ projects, termContracts, staff, clients });
+    // UX wave 2: first run after load = hydration of cloud data, not an edit.
+    // It must not arm the beforeunload guard, and its snapshot is flagged
+    // pending:false so the recovery banner can't fire on a mirror of the cloud.
+    const isHydration = !hydratedRef.current;
+    hydratedRef.current = true;
+    if (!isHydration) changeSeqRef.current += 1;
+    saveLocalSnapshot({ projects, termContracts, staff, clients }, { pending: !isHydration });
     if (pendingSave.current) clearTimeout(pendingSave.current); // bug 3 fix: use ref
     pendingSave.current = setTimeout(() => {
       performSave({ projects, termContracts, staff, clients });
@@ -27212,7 +27279,69 @@ function App() {
     return () => clearTimeout(pendingSave.current);
   }, [projects, termContracts, staff, clients]);
 
+  // ── UX wave 2 — beforeunload guard: warn before the tab closes while a
+  // save is pending (debounce not yet fired, save in flight, or a retry
+  // outstanding). Clean/idle closes stay silent — PMs open and close this app
+  // constantly. LOCAL work ONLY in this handler: never add a network write
+  // here — a raw last-write on unload would bypass the versioned 3-way-merge
+  // pipeline and could clobber concurrent edits (the v78 bug class).
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!isLoaded.current || v2LoadFailedRef.current) return;
+      if (changeSeqRef.current <= savedSeqRef.current) return; // clean — no nag
+      // Belt-and-braces: synchronously snapshot the freshest state so the
+      // recovery banner can offer these edits on next load if the user
+      // closes anyway. saveLocalSnapshot is synchronous localStorage work.
+      try { saveLocalSnapshot(currentStateRef.current); } catch (snapErr) {}
+      e.preventDefault();
+      e.returnValue = ""; // required by Chromium to show the native prompt
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  // UX wave 2 — snapshot-recovery banner actions. Download reads the snapshot
+  // captured at load time (orphanSnapshotRef) because the localStorage copy is
+  // overwritten with cloud data by the hydration effect moments after load.
+  function downloadSnapshotBackup() {
+    try {
+      const snap = orphanSnapshotRef.current;
+      if (!snap) return;
+      const data = JSON.stringify({
+        _exportedAt: new Date().toISOString(),
+        _purpose: "local-snapshot-recovery-backup",
+        _snapshotSavedAt: snap._savedAt || "",
+        projects: snap.projects || [],
+        termContracts: snap.termContracts || [],
+        staff: snap.staff || [],
+        clients: snap.clients || [],
+      });
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `SettyPMS-LOCAL-SNAPSHOT-${(snap._savedAt || new Date().toISOString()).slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    } catch (e) {
+      console.warn("[snapshot-recovery] backup download failed:", e);
+    }
+  }
+  function dismissSnapshotRecovery() {
+    // Persist the dismissed snapshot's timestamp so this exact orphan never
+    // nags again (e.g. if the hydration snapshot write failed on quota and
+    // the old pending snapshot survived in localStorage).
+    try { localStorage.setItem(SNAPSHOT_RECOVERY_DISMISSED_KEY, snapshotRecovery?.savedAt || ""); } catch (e) {}
+    orphanSnapshotRef.current = null;
+    setSnapshotRecovery(null);
+  }
+
   async function performSave(state) {
+    // UX wave 2: seq at call time — edits landing while this save is in
+    // flight bump changeSeq past this value, keeping the unload guard armed
+    // until the follow-up save for those edits completes.
+    const seqAtStart = changeSeqRef.current;
     setAppStatus("saving");
     setSaveErrorDetail("");
     try {
@@ -27238,6 +27367,14 @@ function App() {
         for (const conflict of result.conflicts) {
           await handleSaveConflict(conflict, state);
         }
+      }
+
+      // UX wave 2: mark state clean for the beforeunload guard — but only if
+      // nothing conflicted (conflict paths trigger re-saves of their own).
+      // Math.max guards against an older in-flight save finishing after a
+      // newer one already advanced savedSeq.
+      if (result.conflicts.length === 0) {
+        savedSeqRef.current = Math.max(savedSeqRef.current, seqAtStart);
       }
 
       // Network retry banner clears on any successful save
@@ -27954,6 +28091,28 @@ function renameCompanyAcrossProjects(oldName, newName) {
             {networkRetry.error.slice(0, 100)}
           </div>
         )}
+      </div>
+    )}
+
+    {/* UX wave 2 — snapshot recovery banner: local snapshot from a previous
+        session is newer than the cloud's last save (edits likely lost in the
+        debounce/retry window). Non-blocking; offers a JSON download, never
+        auto-merges into live state. */}
+    {snapshotRecovery && (
+      <div style={{ position: "fixed", bottom: 16, left: 16, zIndex: 4500,
+        background: P.card, border: `2px solid ${P.yellow}`, borderRadius: 8,
+        padding: "12px 16px", maxWidth: 380, fontSize: 12, boxShadow: "0 4px 24px rgba(0,0,0,0.5)" }}>
+        <div style={{ fontWeight: 700, color: P.yellow, marginBottom: 4 }}>
+          💾 Unsaved local edits found
+        </div>
+        <div style={{ color: P.textMuted, lineHeight: 1.4, marginBottom: 10 }}>
+          Local edits from {new Date(snapshotRecovery.savedAt).toLocaleString()} may not have reached the cloud.
+          Download a backup copy if anything looks missing.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn small onClick={downloadSnapshotBackup}>⬇ Download backup</Btn>
+          <Btn small onClick={dismissSnapshotRecovery}>Dismiss</Btn>
+        </div>
       </div>
     )}
 
