@@ -67,6 +67,10 @@
   .mfoot .spacer { flex:1; } .mfoot .by { font-size:11px; color:var(--muted); }
   .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#0b1220; border:1px solid var(--line); border-radius:10px; padding:10px 16px; font-size:13px; font-weight:600; display:none; z-index:60; }
   .toast.show { display:block; } .toast.ok { color:var(--ok); border-color:#14532d; } .toast.bad { color:#fca5a5; border-color:#7f1d1d; }
+  .undobar { position:fixed; bottom:64px; left:50%; transform:translateX(-50%); background:#0b1220; border:1px solid #14532d; border-radius:10px; padding:8px 14px; font-size:13px; display:none; align-items:center; gap:10px; z-index:60; }
+  .undobar.show { display:flex; }
+  .inbox select.discSel { background:var(--card2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:3px 6px; font-size:12px; }
+  tbody tr.justnew td { background:rgba(16,185,129,.07); }
 </style>
 </head>
 <body>
@@ -119,12 +123,24 @@
   <div class="modal" id="modal"></div>
 </div>
 <div class="toast" id="toast"></div>
+<div class="undobar" id="undobar"></div>
 
+<script src="setty-auth.js"></script>
 <script>
 /* ---- Supabase config (same anon path SettyPMS.html uses, ~line 695) ---- */
 const SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
 const H = { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_ANON_KEY };
+// Suite sign-in (setty-auth.js): H is mutated in place so every fetch — direct
+// or {...H} spread at call time — carries the signed-in JWT, falling back to
+// anon while signed out (pre-Phase-4 behavior unchanged). Required for the
+// Phase 4 RLS flip, when anon loses data access.
+const settyAuthReady = (window.settyAuth ? settyAuth.init() : Promise.resolve(null)).catch(() => null)
+  .then(() => { if (window.settyAuth) H.Authorization = "Bearer " + settyAuth.token(); });
+if (window.settyAuth) {
+  settyAuth.onChange(() => { H.Authorization = "Bearer " + settyAuth.token(); });
+  settyAuth.mountPill();
+}
 
 const CA_STATUS = "In Construction Administration";
 const VENDORS = [
@@ -193,12 +209,31 @@ const itemSeg = s => { const m=String(s||"").match(/-(\d+)-\d+$/); return m?Stri
 const revSeg  = s => { const m=String(s||"").match(/-(\d+)$/); return m?+m[1]:0; };
 function matchRFI(extNum,title,logged){ const t=(title||"").toLowerCase().trim(); return logged.find(r=>digits(r.number)===extNum)||logged.find(r=>t&&(r.title||"").toLowerCase().includes(t))||null; }
 function matchSub(extNum,logged){ const h=logged.filter(s=>itemSeg(s.number)===extNum); return h.length?{row:h[0],maxRev:Math.max(...h.map(s=>revSeg(s.number)))}:null; }
+/* ---- discipline inference: spec division first, title/question keywords second, "" (unclassified) when unsure ---- */
+const DISC_BY_DIV = { "03":"Structural","04":"Structural","05":"Structural","08":"Architectural","09":"Architectural",
+  "21":"Fire Protection","22":"Plumbing","23":"Mechanical","26":"Electrical","27":"Technology","28":"Technology",
+  "31":"Civil","32":"Civil","33":"Civil" };
+const DISC_KEYWORDS = [
+  [/fire\s*(protection|alarm|pump|suppression)|sprinkler|standpipe/i,"Fire Protection"],
+  [/plumbing|domestic\s*water|sanitary|storm\s*(drain|piping)|floor\s*drain|water\s*heater|fixture\s*carrier/i,"Plumbing"],
+  [/mechanical|hvac|duct|diffuser|\bahu\b|\brtu\b|\bvav\b|chiller|boiler|cooling\s*tower|heat\s*pump|exhaust\s*fan|refrigerant|hydronic/i,"Mechanical"],
+  [/electrical|switchgear|switchboard|panelboard|transformer|conduit|breaker|lighting|receptacle|generator|busway|feeder/i,"Electrical"],
+  [/low[\s-]*voltage|telecom|data\s*(cabling|outlet)|security\s*(system|camera)|cctv|access\s*control|audio[\s/-]*visual|paging|nurse\s*call/i,"Technology"],
+];
+function inferDiscipline(it, kind){
+  const vocab = kind==="rfi"?RFI_DISC:SUB_DISC;
+  const div = (String(it.specSection||"").trim().match(/^(\d{2})/)||[])[1];
+  if(div && DISC_BY_DIV[div] && vocab.includes(DISC_BY_DIV[div])) return DISC_BY_DIV[div];
+  const hay = (it.title||"")+" "+(it.question||"");
+  for(const [re,d] of DISC_KEYWORDS) if(re.test(hay) && vocab.includes(d)) return d;
+  return "";
+}
 function toRfiRecord(it,pid,vendor){ return { id:`sync-procore-${pid}-${it.extNum}`, number:`RFI-${String(it.extNum).padStart(3,"0")}`, title:it.title||"",
-  description:(it.question||"").replace(/\s+/g," ").trim().slice(0,200), from:it.from||"", discipline:"Mechanical", assignedTo:[], subAssigned:"",
+  description:(it.question||"").replace(/\s+/g," ").trim().slice(0,200), from:it.from||"", discipline:inferDiscipline(it,"rfi"), assignedTo:[], subAssigned:"",
   dateReceived:it.dateReceived||"", dueDate:it.dueDate||"", dateResponded:(it.status==="Responded"||it.status==="Closed")?it.lastDate:"", response:"",
   status:it.status, notes:`Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl:it.spFolder||"", links:[], source:"procore", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
 function toSubRecord(it,pid,vendor){ return { id:`sync-forma-${pid}-${it.extNum}`, number:`SUB-${String(it.extNum).padStart(3,"0")}`, specSection:it.specSection||"",
-  description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:"Mechanical", assignedTo:[], subAssigned:"", dateReceived:"", dueDate:it.dueDate||"",
+  description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:inferDiscipline(it,"submittal"), assignedTo:[], subAssigned:"", dateReceived:"", dueDate:it.dueDate||"",
   dateReturned:it.status==="Returned"?it.lastDate:"", comments:"", status:it.status, stamp:"—", resubNumber:it.rev||0,
   notes:`Imported from ${vendor} · Submittal #${it.extNum}${it.rev?` (Rev ${it.rev})`:""}`, spFolderUrl:it.spFolder||"", links:[], registerItemId:"", source:"forma", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
 
@@ -209,7 +244,7 @@ let PROJECTS=[], CURRENT=null, FILTER={type:"all",disc:"all",status:"__open__",t
 async function init(){
   try{ document.getElementById("who").value = localStorage.getItem("rfiTrackUser")||"";
        if(localStorage.getItem("rfiTrackGuide")==="0") toggleGuide(); }catch(e){}
-  document.getElementById("fDisc").innerHTML = `<option value="all">All disciplines</option>`+ALL_DISC.map(d=>`<option>${esc(d)}</option>`).join("");
+  document.getElementById("fDisc").innerHTML = `<option value="all">All disciplines</option><option value="__unset__">(unset)</option>`+ALL_DISC.map(d=>`<option>${esc(d)}</option>`).join("");
   document.getElementById("fStatus").innerHTML = `<option value="all">All statuses</option><option value="__open__">Open (active)</option>`+ALL_STATUS.map(s=>`<option>${esc(s)}</option>`).join("");
   document.getElementById("fStatus").value = FILTER.status;
   try{
@@ -276,7 +311,8 @@ function setF(k,v){ FILTER[k]= k==="text"?v.toLowerCase():v; renderProject(); if
 function clearFilters(){ FILTER={type:"all",disc:"all",status:"all",text:""};
   document.getElementById("fType").value="all"; document.getElementById("fDisc").value="all"; document.getElementById("fStatus").value="all"; document.getElementById("fText").value=""; renderProject(); }
 function passFilter(r){
-  if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
+  if(FILTER.disc==="__unset__"){ if((r.discipline||"")!=="") return false; }
+  else if(FILTER.disc!=="all" && (r.discipline||"")!==FILTER.disc) return false;
   if(FILTER.status==="__open__"){ if(!OPEN_STATUSES.includes(r.status||"")) return false; }
   else if(FILTER.status!=="all" && (r.status||"")!==FILTER.status) return false;
   if(FILTER.text){ const hay=((r.number||"")+" "+(r.title||"")+" "+(r.description||"")+" "+(r.specSection||"")+" "+(r.from||"")+" "+(r.__projNum||"")+" "+(r.__projName||"")).toLowerCase(); if(!hay.includes(FILTER.text)) return false; }
@@ -318,12 +354,17 @@ function renderSection(kind, title, logged, inbox){
     `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
     (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:`<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button>`)+`</div>`;
   if(news.length){
-    const head = kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Status</th><th>Due</th><th>Asked by</th><th class='right'>Import</th>"
-                              : "<th>Item</th><th>Title</th><th>Spec</th><th>Status</th><th>Due</th><th class='right'>Import</th>";
+    const head = kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Status</th><th>Due</th><th>Asked by</th><th>Discipline</th><th class='right'>Import</th>"
+                              : "<th>Item</th><th>Title</th><th>Spec</th><th>Status</th><th>Due</th><th>Discipline</th><th class='right'>Import</th>";
+    const vocab = kind==="rfi"?RFI_DISC:SUB_DISC;
     const rows=inbox.map(it=>{ const cb=it.verdict==="new"?`<input type="checkbox" class="pick" data-k="${kind}" data-ext="${esc(it.extNum)}" checked>`:"";
+      const dv=(it.record&&it.record.discipline)||"";
+      const dcell = it.verdict==="new"
+        ? `<td><select class="discSel" data-k="${kind}" data-ext="${esc(it.extNum)}" title="Discipline — inferred from spec section / title; adjust before import"><option value="" ${dv?"":"selected"}>—</option>${vocab.map(d=>`<option ${d===dv?"selected":""}>${esc(d)}</option>`).join("")}</select></td>`
+        : `<td class="muted">${esc(dv||"—")}</td>`;
       const c = kind==="rfi" ? `<td class="num">#${esc(it.extNum)}</td><td class="title">${esc(it.title)}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td><td>${esc(it.from||"")}</td>`
         : `<td class="num">#${esc(it.extNum)}${it.rev?` <span class=muted>r${it.rev}</span>`:""}</td><td class="title">${esc(it.title)}</td><td>${esc(it.specSection||"")}</td><td>${statusPill(it.status)}</td><td>${esc(it.dueDate||"—")}</td>`;
-      return `<tr>${c}<td class="right">${verdictBadge(it)} ${cb}</td></tr>`; }).join("");
+      return `<tr>${c}${dcell}<td class="right">${verdictBadge(it)} ${cb}</td></tr>`; }).join("");
     html+=`<div class="inbox"><div class="ihead">📥 To import from Procore/Forma — ${news.length} new</div>`+
       `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`+
       `<div class="actions"><button class="go" onclick="importSelected('${kind}')">Import selected → log</button><span class="muted" style="font-size:12px">Tick the new ones, then import. Already-logged items are skipped.</span></div></div>`;
@@ -339,7 +380,8 @@ function renderSection(kind, title, logged, inbox){
       const c = kind==="rfi"
         ? `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.title||r.description||"—")}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`
         : `<td class="num">${esc(r.number||"—")}</td><td class="title">${esc(r.description||r.title||"—")}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`;
-      return `<tr class="click" onclick='openEditor("${kind}",${esc(JSON.stringify(r.id))})'>${pc}${c}</tr>`; }).join("");
+      const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
+      return `<tr class="click${nw}" onclick='openEditor("${kind}",${esc(JSON.stringify(r.id))})'>${pc}${c}</tr>`; }).join("");
     html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=${am?9:8} class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
   }
   sec.innerHTML=html; return {el:sec, total:logged.length, shown:shown.length};
@@ -432,6 +474,7 @@ async function saveEditor(){
   if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
   const edits=collectEdits(kind); const who=getWho(); const now=new Date().toISOString();
   edits.syncEditedBy=who||"(unknown)"; edits.syncEditedAt=now;
+  clearUndoBar(); // any other edit makes a blind import-undo unsafe
   try{
     await writeArray(arrKey, arr=>{
       if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
@@ -444,20 +487,58 @@ async function deleteRecord(){
   if(!EDIT||EDIT.isNew)return; const {kind,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
   const rec=(kind==="rfi"?CURRENT.rfis:CURRENT.submittals).find(r=>r.id===id);
   if(!confirm(`Delete ${rec?.number||""} — "${rec?.title||rec?.description||""}"?\n\nThis removes it from the log and cannot be undone.`)) return;
+  clearUndoBar();
   try{ await writeArray(arrKey, arr=>arr.filter(r=>r.id!==id), false, EDIT.projId); closeEditor(); toast("Deleted ✓", true); selectProject(CURRENT.proj.id); }
   catch(err){ toast(err.message, false); }
 }
 
 /* =========================== IMPORT (sync) =========================== */
+let JUST_IMPORTED=new Set(); // ids added by the most recent import (row highlight; ids embed the project id, so no cross-project bleed)
+let UNDO=null;               // {arrKey, ids, projId, timer} — one-shot revert window for the last import
+
 async function importSelected(kind){
   const arrKey=kind==="rfi"?"rfis":"submittals"; const inbox=CURRENT.inbox[kind];
+  // Apply the preview's per-row Discipline choices onto the records before import.
+  document.querySelectorAll(`.discSel[data-k="${kind}"]`).forEach(sel=>{
+    const it=inbox.find(i=>String(i.extNum)===sel.dataset.ext);
+    if(it&&it.record) it.record.discipline=sel.value;
+  });
   const picked=new Set([...document.querySelectorAll(`.pick[data-k="${kind}"]:checked`)].map(c=>c.dataset.ext));
   const records=inbox.filter(i=>i.verdict==="new"&&picked.has(i.extNum)).map(i=>i.record);
   if(!records.length){ toast("Nothing selected.", false); return; }
   if(!confirm(`Import ${records.length} ${kind}(s) into the log?\n\nExisting records are not modified.`)) return;
   try{
-    const added = await writeArray(arrKey, arr=>{ const have=new Set(arr.map(r=>r.id)); const add=records.filter(r=>!have.has(r.id)); arr._added=add.length; return [...arr,...add]; }, true);
+    let addedIds=[];
+    const added = await writeArray(arrKey, arr=>{ const have=new Set(arr.map(r=>r.id)); const add=records.filter(r=>!have.has(r.id)); arr._added=add.length; addedIds=add.map(r=>r.id); return [...arr,...add]; }, true);
+    JUST_IMPORTED=new Set(addedIds);
+    showUndoBar(arrKey, addedIds, CURRENT.proj.id);
     toast(`Imported ${added} ${kind}(s) ✓`, true); selectProject(CURRENT.proj.id);
+  }catch(err){ toast(err.message, false); }
+}
+
+function showUndoBar(arrKey, ids, projId){
+  clearUndoBar();
+  if(!ids.length) return;
+  UNDO={arrKey, ids, projId, timer:setTimeout(clearUndoBar, 60000)};
+  const bar=document.getElementById("undobar");
+  bar.innerHTML=`<span>Imported ${ids.length} — highlighted in the log below.</span>`+
+    `<button class="ghost" style="font-size:12px" onclick="undoImport()">↩ Undo this import</button>`;
+  bar.classList.add("show");
+}
+function clearUndoBar(){
+  if(UNDO&&UNDO.timer) clearTimeout(UNDO.timer);
+  UNDO=null;
+  const bar=document.getElementById("undobar");
+  bar.classList.remove("show"); bar.innerHTML="";
+}
+async function undoImport(){
+  if(!UNDO) return; const {arrKey,ids,projId}=UNDO; const idSet=new Set(ids);
+  try{
+    // Same version-guarded path as the import — a concurrent save aborts with
+    // the standard conflict message and nothing is removed.
+    await writeArray(arrKey, arr=>arr.filter(r=>!idSet.has(r.id)), false, projId);
+    JUST_IMPORTED.clear(); clearUndoBar();
+    toast(`Import undone — ${ids.length} removed ✓`, true); selectProject(CURRENT.proj.id);
   }catch(err){ toast(err.message, false); }
 }
 
@@ -478,7 +559,7 @@ async function writeArray(arrKey, mutate, returnAdded, projId){
   return returnAdded?added:true;
 }
 
-init();
+settyAuthReady.then(init);
 </script>
 </body>
 </html>
