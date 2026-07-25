@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-24-pms-v79-signin-gate";
+    window.__appVersion = "2026-07-24-pms-v80-signin-gate-fix";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -27764,7 +27764,11 @@ function renameCompanyAcrossProjects(oldName, newName) {
           state can't occur (anon still reads data), so this ships dormant and
           self-activates the moment the flip happens. Sign-in redirects and
           reboots the app with the session in place. */}
-      {appStatus === "idle" && !settyAuth.isSignedIn() && projects.length === 0 && (
+      {/* Fires on BOTH signed-out outcomes post-flip: a clean empty load
+          (idle + zero projects) AND the V2 loader's error path — the loader
+          also upserts pms_meta during load, which RLS now rejects for anon,
+          so signed-out loads land in appStatus "error", not "idle". */}
+      {!settyAuth.isSignedIn() && (appStatus === "error" || (appStatus === "idle" && projects.length === 0)) && (
         <div style={{ position: "fixed", inset: 0, zIndex: 5000, background: P.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 16, padding: "40px 44px", maxWidth: 460, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,.5)" }}>
             <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em", marginBottom: 6 }}>
