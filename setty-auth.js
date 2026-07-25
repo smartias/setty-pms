@@ -142,6 +142,9 @@
   // Azure via Supabase (implicit flow → tokens come back in the URL fragment).
   // redirect_to must be allow-listed in Supabase Auth → URL Configuration.
   function signInWithMicrosoft() {
+    // The app's #hash (deep links like #project:<id>) can't ride along on
+    // redirect_to — stash it and restore after the round-trip (init step 1).
+    try { if (location.hash) sessionStorage.setItem("settyAuthReturnHash", location.hash); } catch (_) {}
     const back = location.origin + location.pathname + location.search;
     location.href = SUPABASE_URL + "/auth/v1/authorize?provider=azure&redirect_to=" + encodeURIComponent(back);
   }
@@ -171,11 +174,18 @@
   // (same folder as this script), which stores the session to localStorage —
   // our storage listener then adopts it here. Resolves with the session, or
   // null if the user closes the popup / nothing arrives within 3 minutes.
-  function signInPopup() {
+  function signInPopup(popupOpts) {
+    const po = popupOpts || {};
     const cb = SCRIPT_BASE + "auth-callback.html";
     const url = SUPABASE_URL + "/auth/v1/authorize?provider=azure&redirect_to=" + encodeURIComponent(cb);
     const w = window.open(url, "settyAuthPopup", "width=480,height=640,menubar=no,toolbar=no");
-    if (!w) { signInWithMicrosoft(); return Promise.resolve(null); } // popup blocked → fall back
+    // Popup blocked → full-page redirect fallback, UNLESS the caller holds
+    // in-memory work a navigation would destroy (photo queues, unsaved forms).
+    if (!w) {
+      if (po.noRedirectFallback) return Promise.resolve(null);
+      signInWithMicrosoft();
+      return Promise.resolve(null);
+    }
     return new Promise((resolve) => {
       let settled = false;
       const finish = (val) => { if (settled) return; settled = true; clearInterval(iv); clearTimeout(to); resolve(val); };
@@ -270,7 +280,12 @@
         expires_at: Number(h.get("expires_at")) || Math.floor(Date.now() / 1000) + (Number(h.get("expires_in")) || 3600),
         user: null,
       };
-      history.replaceState(null, "", location.pathname + location.search); // scrub tokens from the URL
+      // Scrub tokens from the URL; restore the pre-sign-in #hash (deep link)
+      // stashed by signInWithMicrosoft, so a shared #project: link survives
+      // the sign-in round-trip.
+      let returnHash = "";
+      try { returnHash = sessionStorage.getItem("settyAuthReturnHash") || ""; sessionStorage.removeItem("settyAuthReturnHash"); } catch (_) {}
+      history.replaceState(null, "", location.pathname + location.search + returnHash);
       try { sess.user = await authFetch("/user", undefined, sess.access_token); } catch (_) {}
       store(sess);
       return session;
@@ -306,7 +321,10 @@
       "box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer;user-select:none";
     pill.textContent = o.label || "🔐 Sign in — one click with Microsoft";
     pill.title = o.title || "The PMS suite is moving to signed-in access. Sign in once and every Setty app is covered.";
-    pill.onclick = o.onClick || signInWithMicrosoft;
+    if (o.bottom) pill.style.bottom = o.bottom + "px"; // lift above app toast areas
+    // o.popup: sign in via popup (no page navigation) — for apps holding
+    // in-memory work that a full-page redirect would destroy.
+    pill.onclick = o.onClick || (o.popup ? function () { signInPopup({ noRedirectFallback: true }); } : signInWithMicrosoft);
     const sync = () => { pill.style.display = window.settyAuth.isSignedIn() ? "none" : "flex"; };
     listeners.push(sync);
     const attach = () => { document.body.appendChild(pill); sync(); };
