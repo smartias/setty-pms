@@ -256,6 +256,13 @@ const FEED_URL = SUPABASE_URL + "/functions/v1/pms-billing-feed/v1/pms/billable-
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 function render() {
+  // Rebuilding #view via innerHTML destroys the focused element (e.g. the
+  // project filter input re-renders on every keystroke). Capture the focused
+  // element's id and caret here; restore after the rebuild at the bottom.
+  const _active = document.activeElement;
+  const _focusId = _active && _active.id ? _active.id : null;
+  let _selStart = null, _selEnd = null;
+  if (_focusId) { try { _selStart = _active.selectionStart; _selEnd = _active.selectionEnd; } catch (_) {} }
   const signedIn = settyAuth.isSignedIn();
   $("userChip").textContent = signedIn ? "✓ " + settyAuth.email() : "Sign in";
   $("userChip").onclick = signedIn
@@ -304,6 +311,15 @@ function render() {
     `<button type="button" class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</button>`).join("");
   ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration,
      guide: renderGuide, mcp: renderMcp })[state.tab]();
+  // Restore focus/caret if the focused element was rebuilt (cached renderers
+  // set #view synchronously, so the replacement element exists by now).
+  if (_focusId) {
+    const el = $(_focusId);
+    if (el && el !== document.activeElement) {
+      el.focus();
+      try { if (_selStart != null && el.setSelectionRange) el.setSelectionRange(_selStart, _selEnd); } catch (_) {}
+    }
+  }
 }
 function setTab(k) { state.tab = k; render(); }
 
@@ -368,8 +384,11 @@ async function renderRoles() {
   v.innerHTML = `
     <div class="card">
       <div class="row">
+        <label class="sr-only" for="newEmail">Email address</label>
         <input id="newEmail" type="email" placeholder="name@setty.com" style="flex:1;min-width:200px">
+        <label class="sr-only" for="newName">Display name (optional)</label>
         <input id="newName" placeholder="Display name (optional)" style="flex:1;min-width:160px">
+        <label class="sr-only" for="newRole">Role</label>
         <select id="newRole">${roleOpts("staff")}</select>
         <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--dim);white-space:nowrap;cursor:pointer"
           title="Pre-enrolls them in the Monday 'week ahead' email for their projects. They can change it any time in My Projects → ⚙ My Settings.">
@@ -392,7 +411,7 @@ async function renderRoles() {
       <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Updated</th><th></th></tr></thead>
       <tbody>${state.roles.map(x => `
         <tr><td>${esc(x.email)}</td><td>${esc(x.display_name || "")}</td>
-            <td><select onchange="setRole('${esc(x.email)}', this.value)">${roleOpts(x.role)}</select>
+            <td><select aria-label="Role for ${esc(x.email)}" onchange="setRole('${esc(x.email)}', this.value)">${roleOpts(x.role)}</select>
               <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
             <td style="white-space:nowrap">
@@ -404,14 +423,14 @@ async function renderRoles() {
     <div class="card">
       <div class="sechead">Permission matrix — what each role can do</div>
       <div style="overflow-x:auto"><table>
-        <thead><tr><th style="min-width:170px">Capability</th>
-          ${ROLES.map(r => `<th title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
+        <thead><tr><th scope="col" style="min-width:170px">Capability</th>
+          ${ROLES.map(r => `<th scope="col" title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
         <tbody>${state.permCatalog.map(c => `
           <tr><td title="${esc(c.description || "")}"><b>${esc(c.label)}</b><br>
                 <span style="color:var(--muted);font-size:11px">${esc(c.capability)}</span></td>
             ${ROLES.map(r => r === "admin"
               ? `<td style="color:var(--green)">✓</td>`
-              : `<td><input type="checkbox" ${cellAllowed(r, c.capability) ? "checked" : ""}
+              : `<td><input type="checkbox" aria-label="${esc(c.label)} — ${esc(roleLabel(r))}" ${cellAllowed(r, c.capability) ? "checked" : ""}
                     onchange="toggleCap('${r}','${esc(c.capability)}',this.checked)"></td>`).join("")}
           </tr>`).join("")}</tbody>
       </table></div>
@@ -423,14 +442,20 @@ async function renderRoles() {
     <div class="card">
       <div class="sechead">Per-project overrides — customize specific projects</div>
       <div class="row">
+        <label class="sr-only" for="ovProj">Project number (blank = global, person only)</label>
         <input id="ovProj" placeholder="Project # (blank = global, person only)" style="min-width:230px">
+        <label class="sr-only" for="ovKind">Applies to</label>
         <select id="ovKind" onchange="$('ovSubject').placeholder = this.value === 'user' ? 'name@setty.com' : this.value === 'role' ? 'role (e.g. engineer)' : '(applies to everyone)'; $('ovSubject').disabled = this.value === 'everyone';">
           <option value="user">person</option><option value="role">role</option><option value="everyone">everyone</option>
         </select>
+        <label class="sr-only" for="ovSubject">Person or role</label>
         <input id="ovSubject" placeholder="name@setty.com" style="min-width:180px">
+        <label class="sr-only" for="ovCap">Capability</label>
         <select id="ovCap"><option value="*">★ all capabilities</option>
           ${state.permCatalog.map(c => `<option value="${esc(c.capability)}">${esc(c.label)}</option>`).join("")}</select>
+        <label class="sr-only" for="ovAllowed">Allow or deny</label>
         <select id="ovAllowed"><option value="true">allow</option><option value="false">deny</option></select>
+        <label class="sr-only" for="ovNote">Note (optional)</label>
         <input id="ovNote" placeholder="Why (optional)" style="flex:1;min-width:140px">
         <button class="btn btn-primary" onclick="addOverride()">Add</button>
       </div>
@@ -594,7 +619,8 @@ async function renderFiling() {
     <div class="card row">
       <div class="stat"><b>${state.filing.length}</b><span>recent entries</span></div>
       <div class="stat"><b class="${errCount ? "" : ""}" style="color:${errCount ? "var(--red)" : "var(--green)"}">${errCount}</b><span>not successful</span></div>
-      <select onchange="state.filingFilter=this.value;render()">
+      <label class="sr-only" for="filingFilter">Filter filing log by status</label>
+      <select id="filingFilter" onchange="state.filingFilter=this.value;render()">
         <option value="all" ${state.filingFilter === "all" ? "selected" : ""}>All</option>
         <option value="error" ${state.filingFilter === "error" ? "selected" : ""}>Problems only</option>
         <option value="success" ${state.filingFilter === "success" ? "selected" : ""}>Successes only</option>
@@ -660,7 +686,8 @@ async function renderIntegration() {
         <div class="stat"><b>${mapped}</b><span>projects mapped to SETTYfy IDs</span></div>
         <div class="stat"><b>${sovMapped}</b><span>fee lines mapped</span></div>
         <div class="stat"><b>${state.integProjects.length}</b><span>active projects</span></div>
-        <input placeholder="Filter projects…" value="${esc(state.integFilter)}" style="flex:1;min-width:160px"
+        <label class="sr-only" for="integFilter">Filter projects</label>
+        <input id="integFilter" placeholder="Filter projects…" value="${esc(state.integFilter)}" style="flex:1;min-width:160px"
                oninput="state.integFilter=this.value;render()">
       </div>
       <div style="color:var(--muted);font-size:12px;margin-top:6px">
@@ -675,7 +702,7 @@ async function renderIntegration() {
         const m = state.integMaps[p.num] || {};
         const open = state.sovOpen === p.num;
         return `<tr><td>${esc(p.num)}</td><td>${esc((p.name || "").slice(0, 44))}</td>
-          <td><input id="map_${esc(p.num)}" value="${esc(m.settyfy_id || "")}" placeholder="#…" style="width:110px"></td>
+          <td><input id="map_${esc(p.num)}" aria-label="SETTYfy project ID for ${esc(p.num)}" value="${esc(m.settyfy_id || "")}" placeholder="#…" style="width:110px"></td>
           <td><button class="btn" onclick="saveMap('${esc(p.num)}')">Save</button>
               <button class="btn" onclick="toggleSov('${esc(p.num)}')">${open ? "▾" : "▸"} Fee SOV</button></td></tr>
           ${open ? `<tr><td colspan="4" style="background:var(--card2);padding:10px 14px">${sovPanel(p, m)}</td></tr>` : ""}`; }).join("")}
@@ -732,7 +759,7 @@ function sovPanel(p, m) {
       return `<tr><td>${esc(x.name)}</td><td>${esc(x.phase || "")}</td>
         <td>${money(x.fee)}${drift ? ` <span class="pill warn" title="PMS fee changed since this line was mapped — was ${money(sm.fee_at_map)}. Re-save to acknowledge.">⚠ was ${money(sm.fee_at_map)}</span>` : ""}</td>
         <td>${esc(x.dueDate || "")}</td>
-        <td><input id="sov_${esc(p.num)}_${esc(x.id)}" value="${esc(sm.settyfy_line_id || "")}" placeholder="line #…" style="width:110px"></td>
+        <td><input id="sov_${esc(p.num)}_${esc(x.id)}" aria-label="SETTYfy fee line ID for ${esc(x.name)}" value="${esc(sm.settyfy_line_id || "")}" placeholder="line #…" style="width:110px"></td>
         <td><button class="btn" onclick="saveSovLine('${esc(p.num)}','${esc(x.id)}',${feeNum(x.fee)})">Save</button></td></tr>`; }).join("")}
     </tbody></table>`;
 }
