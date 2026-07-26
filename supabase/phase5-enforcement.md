@@ -28,30 +28,40 @@ Zero behavior change by design: the matrix allows field.report for **all 9 roles
 including the staff baseline**. Verified: all roles + unregistered user = true;
 no-email JWT = false.
 
-## Gates before the remaining slices
+## Gates — RESOLVED 2026-07-25
 
-- **Gate A — registry coverage.** `pms_user_roles` has 25 rows vs ~50 staff.
-  Unregistered signed-in people resolve to the **staff** baseline, which the
-  matrix DENIES for `emails.file` and `projects.edit` — enforcing those now
-  would break daily saves for half the firm. Populate the registry first
-  (console Users & Roles; adding someone also sends the welcome email + SP grant).
-- **Gate B — Sara reviews the matrix defaults** in the console grid. The seeds
-  were Claude's proposal. Cells that become load-bearing at enforcement time:
-  staff/qaqc denied `emails.file` + `projects.edit`; engineer denied
-  `fees.view/edit`; marketing denied `projects.edit`? (currently ALLOWED —
-  confirm that's intended before slice 4 makes it a real write grant).
+- **Gate A (registry coverage) — dissolved by design decision.** Sara flipped
+  the **staff** row to ALLOW `emails.file` + `projects.edit`: unregistered
+  signed-in people (staff baseline) keep today's behavior, and registration
+  becomes gradual refinement instead of a rollout blocker. Tightening staff
+  later is a checkbox, not a migration.
+- **Gate B (matrix review) — done.** Sara reviewed the grid 7/25. The
+  deliberate restriction that enforcement now makes real: **qaqc is read-only**
+  (denied filing + project edits).
 
-## Slice 2 — emails.file (after Gates A+B)
+## Slice 2 — emails.file ✅ LIVE 2026-07-25
 
-- `pms_project_emails` INSERT → `pms_has_cap('emails.file', null)` (rows carry
-  `project_id` not number). Leave UPDATE/DELETE on projects.edit in slice 4? No —
-  gate them with emails.file too (removal of a filed email is a filing action).
+Migration `phase5_enforce_emails_file`; rollback row
+`phase5-slice2-rollback-2026-07-25` (md5 b7e0cea3…).
+
+- `pms_project_emails` INSERT/UPDATE/DELETE → `pms_has_cap('emails.file', null)`
+  (rows carry `project_id` not number → matrix + global overrides only; DELETE
+  gated too — removing a filed email is a filing action).
 - `pms_email_thread_tags` INSERT/UPDATE → emails.file (tagging IS filing).
-- Leave OPEN (deliberately): `pms_filing_log` (audit trail — every writer must
+- Left OPEN (deliberately): `pms_filing_log` (audit trail — every writer must
   always be able to log), `pms_email_watchlist` (personal triage, not filing),
   `pms_sweep_progress` (mechanism state).
 
-## Slice 3 — pipeline.edit (after Gate B)
+Verified: all roles + staff baseline = allowed; qaqc = denied (intended);
+no-email JWT = denied.
+
+## Slice 3 — pipeline.edit (next up)
+
+Note post-gate-resolution: staff is DENIED pipeline.edit, so this slice is a
+real behavior change for unregistered users touching the Newsletter/Marketing
+tools. Today's newsletter/BD users are registered (marketing/ops/PM), so the
+practical impact is nil — but confirm no unregistered person runs campaigns
+before applying.
 
 - `newsletter_campaigns` INSERT → pipeline.edit.
 - `newsletter_subscribers` writes: the public unsubscribe path goes through the
