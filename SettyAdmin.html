@@ -102,13 +102,15 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v5 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v6 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
 // (pms_project_permissions), resolved in the DB by pms_has_cap();
 // v5 adds last-admin/self-demote guards on role changes, a confirm on
-// override removal, and the pre-Phase-4 warning banner on the matrix).
+// override removal, and the pre-Phase-4 warning banner on the matrix;
+// v6 updates the System Guide Security section + matrix notes for the
+// executed Phase 4 flip and the Phase 5 enforcement rollout).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -378,7 +380,9 @@ async function renderRoles() {
       <div style="color:var(--muted);font-size:12px;margin-top:8px">
         This console — and this list — are <b>admin-only</b>, enforced in the database (guarded RPCs + RLS).
         Roles feed the <b>permission matrix</b> below; signed-in people without a row here get the <b>staff</b> baseline.
-        Matrix enforcement on PMS data attaches at the Phase 4 RLS flip — until then it drives app UI only.
+        The Phase 4 RLS flip is live (7/24) — all PMS data is signed-in-only. Matrix enforcement on data <i>writes</i>
+        is the Phase 5 final step, attaching per-table <code>pms_has_cap()</code> policy terms; until a table is
+        enforced, the matrix drives app UI only.
         <b>Adding someone onboards them:</b> a <b>welcome email</b> goes out (via <code>pms-user-emails</code> + Resend)
         and <b>SharePoint access</b> to the NYCProjects libraries (Projects / Proposals / Contracts) is granted via a
         Graph sharing invitation — silently if this browser has a Microsoft session from the PMS, otherwise click
@@ -403,7 +407,8 @@ async function renderRoles() {
     <div class="card">
       <div class="sechead">Permission matrix — what each role can do</div>
       <div style="background:var(--amberDim);border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;font-weight:600">
-        ⚠ Pre-Phase-4: this matrix controls what the app shows — it does not yet restrict database access.</div>
+        ⚠ Phase 5 rollout: this matrix controls what the app shows. Since the 7/24 flip all data is signed-in-only;
+        database <b>write</b> enforcement from this matrix is being attached table-by-table (pms_has_cap policy terms).</div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th style="min-width:170px">Capability</th>
           ${ROLES.map(r => `<th title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
@@ -419,7 +424,8 @@ async function renderRoles() {
       <div style="color:var(--muted);font-size:12px;margin-top:8px">
         Changes save immediately to <code>pms_role_permissions</code>. Admin is always allowed (locked).
         Apps read this through <code>settyAuth.can()</code> / <code>my_pms_permissions()</code>;
-        Phase 4 policies will call <code>pms_has_cap()</code> so the same matrix becomes database-enforced.</div>
+        Phase 5 write policies call <code>pms_has_cap()</code> table-by-table so the same matrix becomes
+        database-enforced (rollout underway — see the System Guide's Security section for status).</div>
     </div>
     <div class="card">
       <div class="sechead">Per-project overrides — customize specific projects</div>
@@ -855,13 +861,13 @@ function renderGuide() {
         <li><b>External surfaces are read-only and fail-closed:</b> the Claude/MCP endpoint and the SETTYfy billing feed both reject every request without a valid credential, and neither can write PMS data. The feed token can be rotated instantly from the Integration tab.</li>
         <li><b>Operational safety:</b> optimistic-concurrency versioning on project rows, global email de-duplication, a delete-proof email mirror with nightly dated snapshots, Supabase's own daily whole-database backups, and the filing log for auditing what the add-in wrote where.</li>
       </ul>
-      <p style="margin-top:12px"><b>Progress updates — the security rollout.</b> We are at the <b>end of Phase&nbsp;3</b>:</p>
+      <p style="margin-top:12px"><b>Progress updates — the security rollout.</b> <b>The Phase&nbsp;4 flip is LIVE</b> (2026-07-24). Signed-out browsers now get an empty app with a sign-in card; signed-in staff notice nothing. One deliberate step remains — Phase&nbsp;5 enforcement:</p>
       <div style="margin-top:6px">
-        <div class="phaserow"><span class="pill ok">DONE</span><div><b>Phase 1 — Shared sign-in layer.</b> setty-auth.js shipped across the suite: Microsoft sign-in via Supabase Auth, auto-refresh, cross-tab and popup support. Non-breaking — signed-out users temporarily fall back to anon access so nothing broke on day one.</div></div>
-        <div class="phaserow"><span class="pill warn">IN PROGRESS</span><div><b>Phase 2 — Team adoption.</b> Everyone on the staff list signs in once. The Sign-ins tab is the readiness dashboard for this.</div></div>
-        <div class="phaserow"><span class="pill warn">WRAPPING UP</span><div><b>Phase 3 — Admin console &amp; safeguards (you are here).</b> This console: sign-in roster, user/role registry, backup monitoring, filing log, integration token control — plus this guide. Security work to date lands here.</div></div>
-        <div class="phaserow"><span class="pill info">NEXT</span><div><b>Phase 4 — The RLS flip.</b> Once adoption is complete, database policies flip to signed-in-only (<code>TO authenticated</code>). Signed-out access to PMS data ends; nothing else changes for signed-in staff.</div></div>
-        <div class="phaserow"><span class="pill warn">BACKBONE LIVE</span><div><b>Phase 5 — Role-based permissions.</b> The backbone is in place: a 7-role taxonomy (admin, project manager, engineer, operations, accounting, contracts, marketing — plus the <i>staff</i> baseline for anyone unassigned), an editable role×capability <b>permission matrix</b>, and <b>per-project overrides</b> (e.g. lock a confidential job to its team) — all managed on the Users &amp; Roles tab and resolved in the database by <code>pms_has_cap()</code>. Already enforced: this console is admin-only. When Phase 4 flips, data policies call the same function and the matrix becomes enforcement, not just UI.</div></div>
+        <div class="phaserow"><span class="pill ok">DONE</span><div><b>Phase 1 — Shared sign-in layer.</b> setty-auth.js shipped across the suite: Microsoft sign-in via Supabase Auth, auto-refresh, cross-tab and popup support. The old anon fallback still exists in code but returns no data since the flip.</div></div>
+        <div class="phaserow"><span class="pill ok">FORCED BY FLIP</span><div><b>Phase 2 — Team adoption.</b> Strategy call (Sara, 7/24): flip first and let it drive sign-ins — one click, no password, the signed-out gate explains itself. The Sign-ins tab tracks the wave; expect stragglers to hit the 🔐 pill on their first post-flip filing.</div></div>
+        <div class="phaserow"><span class="pill ok">DONE</span><div><b>Phase 3 — Admin console &amp; safeguards.</b> This console: sign-in roster, user/role registry, backup monitoring, filing log, integration token control — plus this guide.</div></div>
+        <div class="phaserow"><span class="pill ok">LIVE 7/24</span><div><b>Phase 4 — The RLS flip.</b> Executed 2026-07-24: 68 policies across ~35 tables flipped to signed-in-only (<code>TO authenticated</code>), plus anon revoked on the analytics materialized views. Verified: anon reads return empty, anon writes are rejected, Edge Functions / MCP / billing feed unaffected (they use the server-side key). <b>Rollback</b> is captured in <code>pms_ops_snapshots</code> (row <code>phase4-rollback-2026-07-24</code>) — run its content in the SQL editor to revert everything. Post-flip fixes already shipped: the PMS signed-out gate now also covers the loader's error path (v80), and ContractExtractor — the one tool the flip inventory missed, since it lives in OneDrive — was wired to setty-auth (v41).</div></div>
+        <div class="phaserow"><span class="pill warn">FINAL STEP</span><div><b>Phase 5 — Role-based permissions.</b> The backbone is live: a 7-role taxonomy (admin, project manager, engineer, operations, accounting, contracts, marketing — plus the <i>staff</i> baseline for anyone unassigned), the editable role×capability <b>permission matrix</b>, and <b>per-project overrides</b> (e.g. lock a confidential job to its team) — all managed on the Users &amp; Roles tab and resolved in the database by <code>pms_has_cap()</code>. Already enforced: this console is admin-only. <b>Remaining:</b> add <code>pms_has_cap()</code> terms to the data <i>write</i> policies, table-by-table now that the flip has settled, so the matrix becomes database enforcement instead of app-UI gating.</div></div>
       </div>
     </div>
 
