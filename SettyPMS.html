@@ -2047,6 +2047,7 @@ const CSS = `
   tr:hover td{background:${P.cardHover};}
   h1,h2,h3{font-size:inherit;font-weight:inherit;}
   :focus-visible{outline:2px solid ${P.accentLight};outline-offset:2px;}
+  label:has(> input:focus-visible){outline:2px solid ${P.accentLight};outline-offset:2px;}
   .pms-skip-link{position:absolute;left:-9999px;top:0;z-index:10000;background:${P.card};color:${P.accentLight};padding:10px 16px;border-radius:0 0 8px 0;font-size:13px;font-weight:600;}
   .pms-skip-link:focus{left:0;}
 `;
@@ -2379,10 +2380,19 @@ function Card({ children, style: s = {} }) {
 }
 
 function Field({ label, children, style: s = {} }) {
+  // Give the wrapped control a programmatic name: when the direct child is a
+  // native input/select/textarea without its own aria-label, clone it with
+  // aria-label={label}. Non-string labels and composite children pass through.
+  const nameable = ["input", "select", "textarea"];
+  const kids = React.Children.map(children, child =>
+    typeof label === "string" && React.isValidElement(child) && nameable.includes(child.type) && !child.props["aria-label"]
+      ? React.cloneElement(child, { "aria-label": label })
+      : child
+  );
   return (
     <div style={{ marginBottom: 14, ...s }}>
       <div style={{ fontSize: 11, color: P.textDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 5 }}>{label}</div>
-      {children}
+      {kids}
     </div>
   );
 }
@@ -2550,31 +2560,31 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
       </datalist>
 
       <div style={fieldStyle}>
-        <label style={labelStyle}>Project Name *</label>
-        <input autoFocus value={name} onChange={e => setName(e.target.value)} style={inputStyle}
+        <label style={labelStyle} htmlFor="np-name">Project Name *</label>
+        <input id="np-name" autoFocus value={name} onChange={e => setName(e.target.value)} style={inputStyle}
           placeholder="e.g. Bronx Library HVAC Upgrade" />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
         <div>
-          <label style={labelStyle}>Status *</label>
-          <select value={status} onChange={e => setStatus(e.target.value)} style={inputStyle}>
+          <label style={labelStyle} htmlFor="np-status">Status *</label>
+          <select id="np-status" value={status} onChange={e => setStatus(e.target.value)} style={inputStyle}>
             {allStatuses.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
         <div>
-          <label style={labelStyle}>
+          <label style={labelStyle} htmlFor="np-number">
             Project Number {isProposal ? <span style={{ color: P.textMuted, textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>(assigned after award)</span> : "*"}
           </label>
-          <input value={projectNumber} onChange={e => setProjectNumber(e.target.value)} style={inputStyle}
+          <input id="np-number" value={projectNumber} onChange={e => setProjectNumber(e.target.value)} style={inputStyle}
             placeholder="e.g. 25-042" />
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
         <div>
-          <label style={labelStyle}>Prime (top of contracting chain) *</label>
-          <input value={prime} onChange={e => setPrime(e.target.value)} style={inputStyle}
+          <label style={labelStyle} htmlFor="np-prime">Prime (top of contracting chain) *</label>
+          <input id="np-prime" value={prime} onChange={e => setPrime(e.target.value)} style={inputStyle}
             list="newProjectFirmOptions"
             placeholder="Setty (if we're prime) or top-level firm on contract" />
           <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, lineHeight: 1.4 }}>
@@ -2583,9 +2593,9 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
           </div>
         </div>
         <div>
-          <label style={labelStyle}>Client (who hires Setty) *</label>
+          <label style={labelStyle} htmlFor="np-client">Client (who hires Setty) *</label>
           <div style={{ display: "flex", gap: 6 }}>
-            <input value={clientName} onChange={e => setClientName(e.target.value)} style={inputStyle}
+            <input id="np-client" value={clientName} onChange={e => setClientName(e.target.value)} style={inputStyle}
               list="newProjectFirmOptions"
               placeholder={isSettyFirm(prime) ? "Project owner" : "Prime firm, or the sub that hires us"} />
             {!clientName.trim() && prime.trim() && !isSettyFirm(prime) && (
@@ -2606,8 +2616,8 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
 
       {isProposal && (
         <div style={fieldStyle}>
-          <label style={labelStyle}>Proposal Due Date</label>
-          <input type="date" value={proposalDueDate} onChange={e => setProposalDueDate(e.target.value)} style={{ ...inputStyle, width: 200 }} />
+          <label style={labelStyle} htmlFor="np-due">Proposal Due Date</label>
+          <input id="np-due" type="date" value={proposalDueDate} onChange={e => setProposalDueDate(e.target.value)} style={{ ...inputStyle, width: 200 }} />
         </div>
       )}
 
@@ -9600,8 +9610,8 @@ function AddLinkModal({ project, onAdd, onClose }) {
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: P.text }}>Add Link</div>
         <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>Connect this item to another document, entity, or file.</div>
 
-        <label style={lbl}>Relationship</label>
-        <select value={linkType} onChange={e => setLinkType(e.target.value)} style={sel}>
+        <label style={lbl} htmlFor="al-type">Relationship</label>
+        <select id="al-type" value={linkType} onChange={e => setLinkType(e.target.value)} style={sel}>
           {["Context", "Action / Decision", "Impact / Origin"].map(group => (
             <optgroup key={group} label={group}>
               {LINK_TYPES.filter(t => t.group === group).map(t =>
@@ -9619,8 +9629,8 @@ function AddLinkModal({ project, onAdd, onClose }) {
           ) : null;
         })()}
 
-        <label style={lbl}>Link To</label>
-        <select value={targetSystem} onChange={e => { setTargetSystem(e.target.value); setTargetId(""); setTargetUrl(""); setTargetLabel(""); }} style={sel}>
+        <label style={lbl} htmlFor="al-system">Link To</label>
+        <select id="al-system" value={targetSystem} onChange={e => { setTargetSystem(e.target.value); setTargetId(""); setTargetUrl(""); setTargetLabel(""); }} style={sel}>
           <option value="pms">PMS Entity (RFI, CO, Milestone…)</option>
           <option value="sharepoint">SharePoint File / Folder</option>
           <option value="onenote">OneNote Page</option>
@@ -9629,13 +9639,13 @@ function AddLinkModal({ project, onAdd, onClose }) {
         </select>
 
         {targetSystem === "pms" && (<>
-          <label style={lbl}>Entity Type</label>
-          <select value={targetType} onChange={e => { setTargetType(e.target.value); setTargetId(""); setTargetUrl(""); setTargetLabel(""); }} style={sel}>
+          <label style={lbl} htmlFor="al-entity-type">Entity Type</label>
+          <select id="al-entity-type" value={targetType} onChange={e => { setTargetType(e.target.value); setTargetId(""); setTargetUrl(""); setTargetLabel(""); }} style={sel}>
             {PMS_TARGET_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
           {!isPmsEmail && (<>
-            <label style={lbl}>Select {pmsTypeDef?.label}</label>
-            <select value={targetId} onChange={e => setTargetId(e.target.value)} style={sel}>
+            <label style={lbl} htmlFor="al-entity">Select {pmsTypeDef?.label}</label>
+            <select id="al-entity" value={targetId} onChange={e => setTargetId(e.target.value)} style={sel}>
               <option value="">— choose —</option>
               {pmsEntities.map(e => <option key={e[idKey]} value={e[idKey]}>{pmsTypeDef.labelFn(e)}</option>)}
             </select>
@@ -9668,12 +9678,12 @@ function AddLinkModal({ project, onAdd, onClose }) {
         </>)}
 
         {targetSystem !== "pms" && (<>
-          <label style={lbl}>URL</label>
-          <input value={targetUrl} onChange={e => setTargetUrl(e.target.value)}
+          <label style={lbl} htmlFor="al-url">URL</label>
+          <input id="al-url" value={targetUrl} onChange={e => setTargetUrl(e.target.value)}
             placeholder="Paste SharePoint / OneNote / email URL"
             style={{ ...sel, fontFamily: "monospace", fontSize: 11 }} />
-          <label style={lbl}>Label</label>
-          <input value={targetLabel} onChange={e => setTargetLabel(e.target.value)}
+          <label style={lbl} htmlFor="al-label">Label</label>
+          <input id="al-label" value={targetLabel} onChange={e => setTargetLabel(e.target.value)}
             placeholder="e.g., Drawing A-101 Rev 2 · Sheet Facade Detail"
             style={sel} />
         </>)}
@@ -10010,7 +10020,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                     <input type="checkbox" checked={checked} onChange={e => {
                       const curr = form.assignedTo || [];
                       setF("assignedTo", e.target.checked ? [...curr, s.id] : curr.filter(id => id !== s.id));
-                    }} style={{ display: "none" }} />
+                    }} style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }} />
                     {s.name || s.role}
                   </label>
                 );
@@ -10167,12 +10177,12 @@ function RFIsView({ project, onChange, staff, clients }) {
 
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search RFIs…" style={{ width: 200, fontSize: 13 }} />
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ fontSize: 13 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search RFIs…" aria-label="Search RFIs" style={{ width: 200, fontSize: 13 }} />
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} aria-label="Filter by status" style={{ fontSize: 13 }}>
           <option value="All">All Statuses</option>
           {RFI_STATUSES.map(s => <option key={s}>{s}</option>)}
         </select>
-        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} style={{ fontSize: 13 }}>
+        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} aria-label="Filter by discipline" style={{ fontSize: 13 }}>
           <option value="All">All Disciplines</option>
           {RFI_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
         </select>
@@ -10322,12 +10332,12 @@ function SubmittalsView({ project, onChange, staff, clients }) {
 
       {/* Controls */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search submittals…" style={{ width: 200, fontSize: 13 }} />
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ fontSize: 13 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search submittals…" aria-label="Search submittals" style={{ width: 200, fontSize: 13 }} />
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} aria-label="Filter by status" style={{ fontSize: 13 }}>
           <option value="All">All Statuses</option>
           {SUBMITTAL_STATUSES.map(s => <option key={s}>{s}</option>)}
         </select>
-        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} style={{ fontSize: 13 }}>
+        <select value={filterDisc} onChange={e => setFilterDisc(e.target.value)} aria-label="Filter by discipline" style={{ fontSize: 13 }}>
           <option value="All">All Disciplines</option>
           {SUBMITTAL_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
         </select>
@@ -11825,9 +11835,9 @@ function ProjectDirectoryView({ project, onChange, clients }) {
 
       {/* Search + Filter */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, company, email, or title…"
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, company, email, or title…" aria-label="Search contacts"
           style={{ flex: 1, minWidth: 220, fontSize: 13 }} />
-        <select value={filterType} onChange={e => setFilterType(e.target.value)} style={{ fontSize: 13 }}>
+        <select value={filterType} onChange={e => setFilterType(e.target.value)} aria-label="Filter by company type" style={{ fontSize: 13 }}>
           <option>All</option>
           {DIRECTORY_TYPES.map(t => <option key={t}>{t}</option>)}
         </select>
@@ -18006,7 +18016,10 @@ function EmailsView({ project, onChange }) {
                     onMouseOver={e => { if (!alreadySaved) e.currentTarget.style.background = isChecked ? P.accentDim : P.bg; }}
                     onMouseOut={e => { e.currentTarget.style.background = isChecked ? P.accentDim : alreadySaved ? P.greenDim : "transparent"; }}
                   >
-                    <input type="checkbox" checked={isChecked} readOnly disabled={alreadySaved}
+                    <input type="checkbox" checked={isChecked} disabled={alreadySaved}
+                      onChange={() => !alreadySaved && toggleSelect(m.id)}
+                      onClick={e => e.stopPropagation()}
+                      aria-label={"Select email: " + (m.subject || "(no subject)")}
                       style={{ marginTop: 3, flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
@@ -18567,7 +18580,7 @@ function CalendarImportPanel({ project, onImport }) {
                   style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px",
                     borderBottom: i < events.length - 1 ? `1px solid ${P.border}` : "none",
                     background: isChecked ? P.accentDim : "transparent", cursor: "pointer" }}>
-                  <input type="checkbox" checked={isChecked} readOnly style={{ marginTop: 3, flexShrink: 0 }} />
+                  <input type="checkbox" checked={isChecked} onChange={() => toggleSelect(ev.id)} onClick={e => e.stopPropagation()} aria-label={"Select event: " + (ev.subject || "(No title)")} style={{ marginTop: 3, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                       <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -22211,7 +22224,6 @@ function ScopeView({ project, onChange }) {
             overflowY: "auto",
             padding: "20px 24px",
             background: "#ffffff",
-            outline: "none",
             lineHeight: 1.6,
             color: "#1a1a1a",
             cursor: scopeLocked ? "default" : "text",
@@ -22307,7 +22319,6 @@ function ScopeView({ project, onChange }) {
                 overflowY: "auto",
                 background: "#fff",
                 color: "#1a1a1a",
-                outline: "none",
                 marginTop: 10,
                 cursor: scopeLocked ? "default" : "text",
                 opacity: scopeLocked ? 0.85 : 1,
@@ -27886,20 +27897,20 @@ function renameCompanyAcrossProjects(oldName, newName) {
             <Btn small onClick={addProject}>+ New Project</Btn>
           </div>
           <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-            <input placeholder="Search by name or number…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 260 }} />
-            <select value={filterPM} onChange={e => setFilterPM(e.target.value)}>
+            <input placeholder="Search by name or number…" aria-label="Search projects" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 260 }} />
+            <select value={filterPM} onChange={e => setFilterPM(e.target.value)} aria-label="Filter by project manager">
               {allPMs.map(pm => <option key={pm}>{pm}</option>)}
             </select>
             {allQAQC.length > 1 && (
-              <select value={filterQAQC} onChange={e => setFilterQAQC(e.target.value)}>
+              <select value={filterQAQC} onChange={e => setFilterQAQC(e.target.value)} aria-label="Filter by QA/QC reviewer">
                 {allQAQC.map(q => <option key={q}>{q === "All" ? "All QA/QC" : q}</option>)}
               </select>
             )}
-            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} aria-label="Filter by project status">
               {["All", ...PIPELINE_STATUSES, ...PROJECT_STATUSES].map(s => <option key={s}>{s}</option>)}
             </select>
             {view === "list" && (
-              <select value={filterContract} onChange={e => setFilterContract(e.target.value)}>
+              <select value={filterContract} onChange={e => setFilterContract(e.target.value)} aria-label="Filter by contract status">
                 <option value="All">All Contract Statuses</option>
                 {CONTRACT_STATUSES.map(s => <option key={s}>{s}</option>)}
               </select>
