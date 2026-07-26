@@ -34,6 +34,9 @@
   .tabs{display:flex;gap:6px;padding:12px 20px 0}
   .tab{padding:8px 14px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted);border:1px solid transparent;border-bottom:0;font-weight:600;cursor:pointer}
   .tab.active{background:var(--panel);color:var(--ink);border-color:var(--line)}
+  button.tab{font:inherit;font-weight:600}
+  button.tab:hover{background:transparent}
+  button.tab.active:hover{background:var(--panel)}
   main{padding:20px;max-width:1100px;margin:0 auto}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
   .card h2{font-size:14px;margin:0 0 12px;font-weight:700}
@@ -76,6 +79,9 @@
   .cnt{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
   .grp-name{font-weight:600;cursor:pointer;user-select:none}
   .firm-name{cursor:pointer;user-select:none}
+  button.grp-name,button.firm-name{font:inherit;background:transparent;border:0;padding:0;color:inherit;text-align:left;cursor:pointer;user-select:none}
+  button.grp-name{font-weight:600}
+  button.grp-name:hover,button.firm-name:hover{background:transparent}
   .person{display:flex;align-items:center;gap:10px;padding:5px 12px 5px 52px;border-top:1px solid rgba(51,65,85,.4);cursor:pointer;margin:0}
   .person:hover{background:var(--panel2)}
   .person.dis{opacity:.5;cursor:default}
@@ -83,6 +89,7 @@
   .person .co-spacer{flex:1}
   input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:none}
   .hidden{display:none}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 </style>
 </head>
 <body>
@@ -97,10 +104,10 @@
 </header>
 
 <div class="tabs">
-  <div class="tab active" data-tab="send" onclick="showTab('send')">Compose &amp; Send</div>
-  <div class="tab" data-tab="subs" onclick="showTab('subs')">Subscribers</div>
-  <div class="tab" data-tab="bounce" onclick="showTab('bounce')">Bounced</div>
-  <div class="tab" data-tab="hist" onclick="showTab('hist')">History</div>
+  <button type="button" class="tab active" data-tab="send" onclick="showTab('send')">Compose &amp; Send</button>
+  <button type="button" class="tab" data-tab="subs" onclick="showTab('subs')">Subscribers</button>
+  <button type="button" class="tab" data-tab="bounce" onclick="showTab('bounce')">Bounced</button>
+  <button type="button" class="tab" data-tab="hist" onclick="showTab('hist')">History</button>
 </div>
 
 <main>
@@ -125,13 +132,13 @@
 
       <div class="row" style="margin-top:14px;align-items:flex-end">
         <div>
-          <label>Company type</label>
+          <label for="fltType">Company type</label>
           <select id="fltType" onchange="renderGroups()" style="max-width:220px">
             <option value="all">All company types</option>
           </select>
         </div>
         <div>
-          <label>Search</label>
+          <label for="fltSearch">Search</label>
           <input type="text" id="fltSearch" placeholder="name / email / firm…" oninput="renderGroups()" style="max-width:240px">
         </div>
         <label style="display:flex;align-items:center;gap:6px;color:var(--ink);margin:0 0 9px">
@@ -155,7 +162,7 @@
       <h2>2 · Compose</h2>
       <div class="row">
         <div style="max-width:220px">
-          <label>Campaign type</label>
+          <label for="campType">Campaign type</label>
           <select id="campType">
             <option value="newsletter">Newsletter</option>
             <option value="event">Event invite</option>
@@ -163,13 +170,13 @@
           </select>
         </div>
         <div class="col">
-          <label>Subject</label>
+          <label for="subject">Subject</label>
           <input type="text" id="subject" placeholder="Q3 Setty Newsletter">
         </div>
       </div>
       <div style="margin-top:12px">
         <div class="row" style="justify-content:space-between;align-items:flex-end">
-          <label style="margin:0">Body</label>
+          <label style="margin:0" id="bodyLabel" for="bodyHtml">Body</label>
           <div class="tabs" style="padding:0;gap:4px">
             <button type="button" class="tab active" id="tabVisual" onclick="setEditorMode('visual')">✏️ Visual</button>
             <button type="button" class="tab" id="tabSource" onclick="setEditorMode('source')">&lt;/&gt; HTML source</button>
@@ -189,7 +196,7 @@
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="insertImage()" title="Insert an image file">📷 Image</button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('removeFormat')" title="Clear formatting">✕ Clear</button>
           </div>
-          <div id="bodyVisual" contenteditable="true" oninput="syncFromVisual()"
+          <div id="bodyVisual" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="bodyLabel" oninput="syncFromVisual()"
                style="min-height:220px;border:1px solid var(--line);border-radius:8px;padding:14px;background:#fff;overflow:auto;line-height:1.5"></div>
           <div class="hint">Type here, or simply <strong>paste</strong> (Ctrl+V) a designed email straight from Publisher, Word, Outlook, or a web page — the formatting comes with it. An unsubscribe footer is added automatically.</div>
         </div>
@@ -202,7 +209,7 @@
       </div>
       <div style="margin-top:14px">
         <label>Live preview (with auto-added footer)</label>
-        <iframe id="preview" class="preview-frame"></iframe>
+        <iframe id="preview" class="preview-frame" title="Email preview"></iframe>
       </div>
     </div>
 
@@ -224,6 +231,7 @@
       <h2>Subscription overlay</h2>
       <p class="muted">People stay in the PMS directory regardless; this only controls who receives mailings. Unsubscribes here (and from the email link) are permanent until you re-subscribe.</p>
       <div class="row" style="margin-bottom:12px">
+        <label for="subSearch" class="sr-only">Search subscribers</label>
         <input type="text" id="subSearch" placeholder="search…" oninput="renderSubs()" style="max-width:260px">
         <button class="ghost sm" onclick="renderSubs('unsubscribed')">Show unsubscribed only</button>
         <button class="ghost sm" onclick="renderSubs()">Show all</button>
@@ -617,10 +625,10 @@ function renderGroups(){
     const selT = eligT.filter(p => SELECTED.has(p.email)).length;
     const unsubT = ppl.length - eligT.length;
     const tCollapsed = COLLAPSED_TYPES.has(t);
-    const tCb = groupSel ? `<input type="checkbox" class="cb" data-type="${esc(t)}" ${eligT.length && selT===eligT.length ? 'checked':''}>` : '';
+    const tCb = groupSel ? `<input type="checkbox" class="cb" data-type="${esc(t)}" aria-label="Select all in ${esc(t)}" ${eligT.length && selT===eligT.length ? 'checked':''}>` : '';
     html += `<div class="type-grp"><div class="type-head">
       ${tCb}
-      <span class="grp-name" data-tg="type|${esc(t)}">${tCollapsed?'▸':'▾'} ${esc(t)}</span>
+      <button type="button" class="grp-name" data-tg="type|${esc(t)}" aria-expanded="${!tCollapsed}">${tCollapsed?'▸':'▾'} ${esc(t)}</button>
       <span class="cnt">${selT}/${eligT.length}${unsubT?(' · '+unsubT+' unsub'):''}</span>
     </div>`;
     if (!tCollapsed){
@@ -631,10 +639,10 @@ function renderGroups(){
         const unsubF = members.length - eligF.length;
         const fkey = t + "|" + f;
         const fExpanded = EXPANDED_FIRMS.has(fkey);
-        const fCb = groupSel ? `<input type="checkbox" class="cb" data-firm="${esc(fkey)}" ${eligF.length && selF===eligF.length ? 'checked':''}>` : '';
+        const fCb = groupSel ? `<input type="checkbox" class="cb" data-firm="${esc(fkey)}" aria-label="Select all at ${esc(f)}" ${eligF.length && selF===eligF.length ? 'checked':''}>` : '';
         html += `<div class="firm-head">
           ${fCb}
-          <span class="firm-name" data-tg="firm|${esc(fkey)}">${fExpanded?'▾':'▸'} ${esc(f)}</span>
+          <button type="button" class="firm-name" data-tg="firm|${esc(fkey)}" aria-expanded="${fExpanded}">${fExpanded?'▾':'▸'} ${esc(f)}</button>
           <span class="cnt">${selF}/${eligF.length}${unsubF?(' · '+unsubF+' unsub'):''}</span>
         </div>`;
         if (fExpanded){
@@ -694,7 +702,10 @@ function onGroupClick(e){
   const v = el.dataset.tg; const i = v.indexOf("|"); const kind = v.slice(0,i), key = v.slice(i+1);
   if (kind === "type") COLLAPSED_TYPES.has(key) ? COLLAPSED_TYPES.delete(key) : COLLAPSED_TYPES.add(key);
   else EXPANDED_FIRMS.has(key) ? EXPANDED_FIRMS.delete(key) : EXPANDED_FIRMS.add(key);
-  renderGroups();
+  renderGroups(); // re-render regenerates each trigger's aria-expanded from state
+  // Keep keyboard focus on the toggled trigger — the re-render replaced the old node.
+  const again = [...document.getElementById("groupList").querySelectorAll("[data-tg]")].find(b => b.dataset.tg === v);
+  if (again) again.focus();
 }
 
 function updateCounts(){
