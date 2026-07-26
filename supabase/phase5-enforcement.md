@@ -55,20 +55,21 @@ Migration `phase5_enforce_emails_file`; rollback row
 Verified: all roles + staff baseline = allowed; qaqc = denied (intended);
 no-email JWT = denied.
 
-## Slice 3 — pipeline.edit (next up)
+## Slice 3 — pipeline.edit ✅ LIVE 2026-07-25
 
-Note post-gate-resolution: staff is DENIED pipeline.edit, so this slice is a
-real behavior change for unregistered users touching the Newsletter/Marketing
-tools. Today's newsletter/BD users are registered (marketing/ops/PM), so the
-practical impact is nil — but confirm no unregistered person runs campaigns
-before applying.
+Migration `phase5_enforce_pipeline_edit`; rollback row
+`phase5-slice3-rollback-2026-07-25` (md5 6ce6b856…).
 
 - `newsletter_campaigns` INSERT → pipeline.edit.
-- `newsletter_subscribers` writes: the public unsubscribe path goes through the
-  Edge Function (service role, flip-immune) — verify that before gating, then
-  gate browser writes with pipeline.edit.
+- `newsletter_subscribers` INSERT/UPDATE → pipeline.edit. Safe because public
+  unsubscribes ride the service-role Edge Function (verified flip-immune in
+  phase4-rls-flip.md) — browser writes here are only signed-in BD users.
 - Marketing directory edits live in `pms_clients`, which projects also use —
   handled in slice 5, not here.
+
+Verified: admin/contracts/marketing/operations/project_manager = allowed;
+engineer/qaqc/staff = denied (matches matrix; unregistered users don't run
+campaigns — Sara confirmed).
 
 ## Slice 4 — contracts.edit
 
