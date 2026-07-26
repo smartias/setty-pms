@@ -548,6 +548,14 @@
       box-shadow: 0 4px 8px rgba(0,0,0,0.08);
     }
     .proj-option {
+      /* Rendered as a real <button> for keyboard access — reset button chrome
+         so it still looks like the old plain option row. */
+      display: block;
+      width: 100%;
+      text-align: left;
+      font-family: inherit;
+      background: none;
+      border: none;
       padding: 8px 10px;
       cursor: pointer;
       border-bottom: 1px solid var(--border);
@@ -744,8 +752,15 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    /* The person's name always wins the space fight with the pills. */
-    .participant-row .participant-id { flex: 1; min-width: 90px; }
+    /* The person's name always wins the space fight with the pills.
+       It's a real <button> (keyboard access for the row's main action) —
+       reset the button chrome so it renders like the old plain block. */
+    .participant-row .participant-id {
+      flex: 1; min-width: 90px;
+      background: none; border: none; padding: 0; margin: 0;
+      font-family: inherit; text-align: left; color: inherit;
+      cursor: pointer; overflow: hidden;
+    }
     .date-card {
       padding: 10px 12px;
       background: var(--surface);
@@ -890,7 +905,7 @@
   </div>
 
   <div class="project-search-wrapper" id="projectSearchWrapper">
-    <label>Project</label>
+    <label for="projectSearch">Project</label>
     <input type="text" id="projectSearch" placeholder="Search by name or number…" autocomplete="off"/>
     <div id="projectDropdown"></div>
   </div>
@@ -942,7 +957,7 @@
        Populated by refreshLinkToTargetDropdown(). Hidden when no open
        RFIs/Subs exist on the selected project. -->
   <div id="linkToRow" style="display:none;margin-bottom:8px;">
-    <label style="font-size:11px;color:#616161;font-weight:600;display:block;margin-bottom:3px;">
+    <label for="linkToTarget" style="font-size:11px;color:#616161;font-weight:600;display:block;margin-bottom:3px;">
       📎 Also link this email to:
       <span style="font-weight:400;font-size:10px;">(files a copy into the RFI/Sub's /IN folder)</span>
     </label>
@@ -1041,7 +1056,7 @@
 <div id="noteView">
   <button class="back-btn" id="noteBack">← Back</button>
   <h2 class="section-title">Log as Note</h2>
-  <label>Category</label>
+  <label for="noteCategory">Category</label>
   <select id="noteCategory">
     <option value="Client Meeting">Client Meeting</option>
     <option value="Internal Meeting">Internal Meeting</option>
@@ -1052,7 +1067,7 @@
     <option value="Internal">Internal</option>
     <option value="General">General</option>
   </select>
-  <label>Note Body</label>
+  <label for="noteBody">Note Body</label>
   <textarea id="noteBody" rows="4" placeholder="Summary, decisions, action items…"></textarea>
   <div id="noteStatus" class="status-msg"></div>
   <div id="noteOneNoteLink" style="margin-top:6px"></div>
@@ -1063,13 +1078,13 @@
 <div id="actionItemView">
   <button class="back-btn" id="actionItemBack">← Back</button>
   <h2 class="section-title">New Action Item</h2>
-  <label>Action Item</label>
+  <label for="actionItemBody">Action Item</label>
   <textarea id="actionItemBody" rows="4" placeholder="What needs to be done?"></textarea>
-  <label>Owner</label>
+  <label for="actionItemOwner">Owner</label>
   <select id="actionItemOwner">
     <option value="">— Select team member —</option>
   </select>
-  <label>Due Date</label>
+  <label for="actionItemDueDate">Due Date</label>
   <input type="date" id="actionItemDueDate"/>
   <div id="actionItemStatus" class="status-msg"></div>
   <button class="btn btn-blue" id="saveActionItemBtn">💾 Save Action Item</button>
@@ -1085,11 +1100,11 @@
 
   <div id="rfiNewForm">
     <h2 class="section-title">New RFI</h2>
-    <label>RFI Number <span style="color:#616161;font-weight:400;font-size:10px;">(auto-suggested — overwrite if assigned by contractor)</span></label>
+    <label for="rfiNumber">RFI Number <span style="color:#616161;font-weight:400;font-size:10px;">(auto-suggested — overwrite if assigned by contractor)</span></label>
     <input type="text" id="rfiNumber" placeholder="e.g. RFI-001 or external number"/>
-    <label>Title</label>
+    <label for="rfiTitle">Title</label>
     <input type="text" id="rfiTitle" placeholder="RFI subject / description"/>
-    <label>Discipline</label>
+    <label for="rfiDiscipline">Discipline</label>
     <select id="rfiDiscipline">
       <option value="">— Select —</option>
       <option>Mechanical</option>
@@ -1100,22 +1115,22 @@
       <option>Architectural</option>
       <option>Structural</option>
     </select>
-    <label>From (GC / Prime)</label>
+    <label for="rfiFrom">From (GC / Prime)</label>
     <input type="text" id="rfiFrom" placeholder="Contractor name"/>
-    <label>Received Via</label>
+    <label for="rfiReceivedVia">Received Via</label>
     <select id="rfiReceivedVia">
       <option value="Email">Email</option>
       <option value="Procore">Procore</option>
       <option value="ACC">ACC</option>
       <option value="Other">Other</option>
     </select>
-    <label>Assigned To <span style="color:#616161;font-weight:400;font-size:10px;" id="rfiAssignHint"></span></label>
+    <label for="rfiAssignedTo">Assigned To <span style="color:#616161;font-weight:400;font-size:10px;" id="rfiAssignHint"></span></label>
     <select id="rfiAssignedTo">
       <option value="">— Unassigned —</option>
     </select>
-    <label>Full Question / Description</label>
+    <label for="rfiDescription">Full Question / Description</label>
     <textarea id="rfiDescription" rows="4" placeholder="Full RFI question text — what's being asked, what's the issue, what response is needed…"></textarea>
-    <label>Internal Notes <span style="color:#616161;font-weight:400;font-size:10px;">(optional)</span></label>
+    <label for="rfiNotes">Internal Notes <span style="color:#616161;font-weight:400;font-size:10px;">(optional)</span></label>
     <textarea id="rfiNotes" rows="2" placeholder="Internal notes — context for your team, not the contractor"></textarea>
     <div id="rfiStatus" class="status-msg"></div>
     <button class="btn btn-blue" id="saveRfiBtn">💾 Log New RFI</button>
@@ -1126,7 +1141,7 @@
     <p style="font-size:11px;color:#616161;margin-bottom:10px;line-height:1.5;">
       Select an RFI to file this email and any attachments into its SharePoint folder.
     </p>
-    <label>RFI</label>
+    <label for="rfiExistingSelect">RFI</label>
     <select id="rfiExistingSelect" style="margin-bottom:10px;"></select>
     <div id="rfiExistingStatus" class="status-msg"></div>
     <button class="btn btn-blue" id="fileRfiBtn">📁 File Email to RFI</button>
@@ -1143,13 +1158,13 @@
 
   <div id="subNewForm">
     <h2 class="section-title">New Submittal</h2>
-    <label>Submittal Number <span style="color:#616161;font-weight:400;font-size:10px;">(auto-suggested — overwrite if assigned by contractor)</span></label>
+    <label for="subNumber">Submittal Number <span style="color:#616161;font-weight:400;font-size:10px;">(auto-suggested — overwrite if assigned by contractor)</span></label>
     <input type="text" id="subNumber" placeholder="e.g. SUB-001 or external number"/>
-    <label>Spec Section</label>
+    <label for="subSpec">Spec Section</label>
     <input type="text" id="subSpec" placeholder="e.g. 23 05 00"/>
-    <label>Description</label>
+    <label for="subDesc">Description</label>
     <input type="text" id="subDesc" placeholder="Submittal description"/>
-    <label>Discipline</label>
+    <label for="subDiscipline">Discipline</label>
     <select id="subDiscipline">
       <option value="">— Select —</option>
       <option>Mechanical</option>
@@ -1160,22 +1175,22 @@
       <option>Architectural</option>
       <option>Structural</option>
     </select>
-    <label>From (GC / Prime)</label>
+    <label for="subFrom">From (GC / Prime)</label>
     <input type="text" id="subFrom" placeholder="Contractor name"/>
-    <label>Received Via</label>
+    <label for="subReceivedVia">Received Via</label>
     <select id="subReceivedVia">
       <option value="Email">Email</option>
       <option value="Procore">Procore</option>
       <option value="ACC">ACC</option>
       <option value="Other">Other</option>
     </select>
-    <label>Assigned To <span style="color:#616161;font-weight:400;font-size:10px;" id="subAssignHint"></span></label>
+    <label for="subAssignedTo">Assigned To <span style="color:#616161;font-weight:400;font-size:10px;" id="subAssignHint"></span></label>
     <select id="subAssignedTo">
       <option value="">— Unassigned —</option>
     </select>
-    <label>Full Description / Scope</label>
+    <label for="subFullDescription">Full Description / Scope</label>
     <textarea id="subFullDescription" rows="4" placeholder="What's being submitted, what needs to be reviewed, special requirements…"></textarea>
-    <label>Internal Notes <span style="color:#616161;font-weight:400;font-size:10px;">(optional)</span></label>
+    <label for="subNotes">Internal Notes <span style="color:#616161;font-weight:400;font-size:10px;">(optional)</span></label>
     <textarea id="subNotes" rows="2" placeholder="Internal notes — context for your team"></textarea>
     <div id="subStatus" class="status-msg"></div>
     <button class="btn btn-purple" id="saveSubBtn">💾 Log New Submittal</button>
@@ -1186,7 +1201,7 @@
     <p style="font-size:11px;color:#616161;margin-bottom:10px;line-height:1.5;">
       Select a submittal to file this email and any attachments into its SharePoint folder.
     </p>
-    <label>Submittal</label>
+    <label for="subExistingSelect">Submittal</label>
     <select id="subExistingSelect" style="margin-bottom:10px;"></select>
     <div id="subExistingStatus" class="status-msg"></div>
     <button class="btn btn-purple" id="fileSubBtn">📁 File Email to Submittal</button>
@@ -1201,11 +1216,11 @@
   <button class="back-btn" id="rfiResponseBack">← Back</button>
   <h2 class="section-title">Log RFI Response</h2>
   <div id="rfiResponseHeader" style="font-size:13px;color:#1e293b;background:#dbeafe;border:1px solid #93c5fd;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-weight:600;"></div>
-  <label>Response / Resolution</label>
+  <label for="rfiResponseText">Response / Resolution</label>
   <textarea id="rfiResponseText" rows="6" placeholder="The formal response that will go to the contractor…"></textarea>
-  <label>Date Responded</label>
+  <label for="rfiResponseDate">Date Responded</label>
   <input type="date" id="rfiResponseDate"/>
-  <label>New Status</label>
+  <label for="rfiResponseStatus">New Status</label>
   <select id="rfiResponseStatus">
     <option value="Responded">Responded</option>
     <option value="Closed">Closed</option>
@@ -1222,18 +1237,18 @@
   <button class="back-btn" id="subReviewBack">← Back</button>
   <h2 class="section-title">Log Submittal Review</h2>
   <div id="subReviewHeader" style="font-size:13px;color:#1e293b;background:#ede9fe;border:1px solid #c4b5fd;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-weight:600;"></div>
-  <label>Stamp</label>
+  <label for="subReviewStamp">Stamp</label>
   <select id="subReviewStamp">
     <option value="Approved">Approved</option>
     <option value="Approved as Noted">Approved as Noted</option>
     <option value="Revise and Resubmit">Revise and Resubmit</option>
     <option value="Rejected">Rejected</option>
   </select>
-  <label>Review Comments</label>
+  <label for="subReviewComments">Review Comments</label>
   <textarea id="subReviewComments" rows="6" placeholder="Comments returning with the submittal…"></textarea>
-  <label>Date Returned</label>
+  <label for="subReviewDate">Date Returned</label>
   <input type="date" id="subReviewDate"/>
-  <label>New Status</label>
+  <label for="subReviewStatus">New Status</label>
   <select id="subReviewStatus">
     <option value="Returned">Returned</option>
     <option value="Closed">Closed</option>
@@ -1251,9 +1266,9 @@
   <!-- Milestone form — revealed when a date card is clicked -->
   <div id="milestoneForm" style="display:none;margin-top:16px;padding:14px;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;">
     <h2 class="section-title" style="margin-bottom:10px;">New Non-Billable Milestone</h2>
-    <label>Name</label>
+    <label for="milestoneName">Name</label>
     <input type="text" id="milestoneName" placeholder="e.g. Submit comments to GC"/>
-    <label>Due Date</label>
+    <label for="milestoneDate">Due Date</label>
     <input type="date" id="milestoneDate"/>
     <div id="milestoneStatus" class="status-msg"></div>
     <button class="btn btn-blue" id="saveMilestoneBtn">💾 Save Milestone to Project</button>
@@ -1278,18 +1293,18 @@
   <p style="font-size:11px;color:#616161;margin-bottom:12px;line-height:1.5;">
     Parsed from email signature when available. Review and edit before saving.
   </p>
-  <label>Name</label>
+  <label for="contactName">Name</label>
   <input type="text" id="contactName"/>
-  <label>Title</label>
+  <label for="contactTitle">Title</label>
   <input type="text" id="contactTitle"/>
-  <label>Company</label>
+  <label for="contactCompany">Company</label>
   <input type="text" id="contactCompany" list="companyList" placeholder="Select existing or type new…"/>
   <datalist id="companyList"></datalist>
-  <label>Email</label>
+  <label for="contactEmail">Email</label>
   <input type="text" id="contactEmail"/>
-  <label>Phone</label>
+  <label for="contactPhone">Phone</label>
   <input type="text" id="contactPhone"/>
-  <label>Save to</label>
+  <label for="contactSaveTo">Save to</label>
   <select id="contactSaveTo">
     <option value="client">Client / Company Directory</option>
     <option value="poc">Project POC (selected project)</option>

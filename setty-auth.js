@@ -297,11 +297,12 @@
   function mountPill(opts) {
     const o = opts || {};
     if (document.getElementById("settyAuthPill")) return;
-    const pill = document.createElement("div");
+    const pill = document.createElement("button");
+    pill.type = "button";
     pill.id = "settyAuthPill";
     pill.style.cssText =
       "position:fixed;right:16px;bottom:16px;z-index:99999;display:none;" +
-      "align-items:center;gap:8px;padding:9px 14px;border-radius:999px;" +
+      "align-items:center;gap:8px;padding:9px 14px;border-radius:999px;border:none;" +
       "background:#1d4ed8;color:#fff;font:600 13px/1 system-ui,Segoe UI,sans-serif;" +
       "box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer;user-select:none";
     pill.textContent = o.label || "🔐 Sign in — one click with Microsoft";

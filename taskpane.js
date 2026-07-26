@@ -325,10 +325,10 @@ function setupEventListeners() {
       ).slice(0, 10);
       if (!matches.length) { dropdown.style.display = "none"; return; }
       dropdown.innerHTML = matches.map(p => `
-        <div class="proj-option" data-id="${p.id}">
+        <button type="button" class="proj-option" data-id="${p.id}">
           <div class="proj-num">${p.projectNumber || ""}</div>
           <div class="proj-name">${p.name || ""}</div>
-        </div>
+        </button>
       `).join("");
       dropdown.style.display = "block";
     }, 150);
@@ -1312,6 +1312,7 @@ function applyEmailFlowEmphasis() {
       input.value = _customSpFolderName || _getDefaultSpFolderSubject();
       input.maxLength = 70;
       input.title = "Folder name (the date prefix is added automatically)";
+      input.setAttribute("aria-label", "SharePoint folder name");
       input.style.cssText = "display:block;width:100%;box-sizing:border-box;font-size:12px;padding:5px 8px;margin:2px 0 6px;border:1px solid var(--primary);border-radius:4px;";
       capSp.appendChild(input);
 
@@ -8617,14 +8618,14 @@ function showPeopleView() {
       }
       return `
       <div class="participant-row${fullyFiled ? ' added' : ''}" data-idx="${i}"${fullyFiled ? ' style="opacity:0.8;"' : ''}>
-        <div class="participant-id">
-          <div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        <button type="button" class="participant-id">
+          <span style="display:block;font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${escHtml(p.displayName || p.emailAddress)}
-          </div>
-          ${p.displayName && p.displayName !== p.emailAddress ? `<div style="font-size:11px;color:var(--text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+          </span>
+          ${p.displayName && p.displayName !== p.emailAddress ? `<span style="display:block;font-size:11px;color:var(--text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${escHtml(p.emailAddress || "")}
-          </div>` : ""}
-        </div>
+          </span>` : ""}
+        </button>
         ${statusHtml}
         <span class="pill" style="background:${labelBg[p.label]||'var(--surface-2)'};color:${labelColor[p.label]||'var(--text-soft)'};">
           ${escHtml(p.label || "")}
