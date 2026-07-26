@@ -2034,18 +2034,19 @@ const CSS = `
   ::-webkit-scrollbar{width:6px;height:6px;}
   ::-webkit-scrollbar-track{background:${P.bg};}
   ::-webkit-scrollbar-thumb{background:${P.border};border-radius:3px;}
-  input,select,textarea{font-family:'DM Sans',sans-serif;background:${P.bg};border:1px solid ${P.border};color:${P.text};border-radius:6px;padding:6px 10px;font-size:13px;outline:none;transition:border-color .15s;}
+  input,select,textarea{font-family:'DM Sans',sans-serif;background:${P.bg};border:1px solid ${P.border};color:${P.text};border-radius:6px;padding:6px 10px;font-size:13px;transition:border-color .15s;}
   input[type=date]{color-scheme:dark;}
   input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(2) hue-rotate(190deg);cursor:pointer;opacity:0.8;}
   input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1;}
   input:focus,select:focus,textarea:focus{border-color:${P.accent};}
   input::placeholder,textarea::placeholder{color:${P.textDim};}
-  button{font-family:'DM Sans',sans-serif;cursor:pointer;border:none;outline:none;transition:all .15s;}
+  button{font-family:'DM Sans',sans-serif;cursor:pointer;border:none;transition:all .15s;}
   table{border-collapse:collapse;width:100%;}
   th,td{text-align:left;padding:8px 12px;border-bottom:1px solid ${P.border};font-size:13px;}
   th{font-size:11px;font-weight:600;color:${P.textDim};text-transform:uppercase;letter-spacing:.05em;background:${P.card};}
   tr:hover td{background:${P.cardHover};}
   h1,h2,h3{font-size:inherit;font-weight:inherit;}
+  :focus-visible{outline:2px solid ${P.accentLight};outline-offset:2px;}
   .pms-skip-link{position:absolute;left:-9999px;top:0;z-index:10000;background:${P.card};color:${P.accentLight};padding:10px 16px;border-radius:0 0 8px 0;font-size:13px;font-weight:600;}
   .pms-skip-link:focus{left:0;}
 `;
@@ -9161,7 +9162,7 @@ function MiniRichEditor({ value, onChange, placeholder }) {
         onInput={save}
         onBlur={save}
         data-placeholder={placeholder || "Enter scope of change…"}
-        style={{ minHeight: 120, maxHeight: 320, overflowY: "auto", padding: "10px 14px", outline: "none", fontSize: 13, lineHeight: 1.65, color: P.text }}
+        style={{ minHeight: 120, maxHeight: 320, overflowY: "auto", padding: "10px 14px", fontSize: 13, lineHeight: 1.65, color: P.text }}
       />
       <style>{`
         [contenteditable]:empty:before { content: attr(data-placeholder); color: ${P.textDim}; pointer-events: none; }
