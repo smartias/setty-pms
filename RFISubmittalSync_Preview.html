@@ -22,13 +22,13 @@
   .filterbar select, .filterbar input { background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:7px; padding:6px 9px; font-size:13px; }
   .filterbar .spacer { flex:1; }
   .guide { margin:14px 24px 0; border:1px solid #1e3a5f; background:#0e1b2e; border-radius:10px; }
-  .guide h3 { margin:0; font-size:13px; }
-  .guide h3 button { all:unset; box-sizing:border-box; display:flex; align-items:center; gap:8px; width:100%; padding:10px 14px; cursor:pointer; font:inherit; }
-  .guide h3 button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .guide h2 { margin:0; font-size:13px; font-weight:600; }
+  .guide h2 button { all:unset; box-sizing:border-box; display:flex; align-items:center; gap:8px; width:100%; padding:10px 14px; cursor:pointer; font:inherit; }
+  .guide h2 button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
   .guide .body { padding:0 16px 14px; font-size:13px; color:#cbd5e1; }
   .wf { border-collapse:collapse; margin:4px 0; } .wf td { border:none; padding:5px 10px 5px 0; vertical-align:top; } .wf td:first-child { font-size:15px; white-space:nowrap; } .wf td:nth-child(2){ white-space:nowrap; color:#fff; font-weight:600; }
   .legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; font-size:12px; color:var(--muted); align-items:center; }
-  main { padding:8px 24px 90px; }
+  #out { padding:8px 24px 90px; }
   .sec { margin-top:18px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
   .sec > .head { display:flex; align-items:center; gap:10px; padding:11px 16px; background:var(--card); border-bottom:1px solid var(--line); flex-wrap:wrap; }
   .sec > .head h2 { font-size:15px; margin:0; } .sec > .head .count { color:var(--muted); font-weight:400; font-size:13px; }
@@ -83,6 +83,7 @@
   <div class="sub">The project-wide log for Construction-Administration RFIs &amp; submittals. Saves to the same place as the main PMS.</div>
 </header>
 
+<main>
 <div class="pickbar">
   <label class="muted" for="filter">Filter projects</label>
   <input id="filter" placeholder="filter projects…" oninput="rebuildPicker()" style="width:140px" />
@@ -102,18 +103,18 @@
   <select id="fStatus" aria-label="Filter by status" onchange="setF('status',this.value)"></select>
   <input id="fText" aria-label="Search by number, title, spec, or sender" placeholder="search # · title · spec · from…" oninput="setF('text',this.value)" style="width:220px" />
   <button class="ghost" onclick="clearFilters()">Clear</button>
-  <span class="spacer"></span><span id="filterCount" class="muted" style="font-size:12px"></span>
+  <span class="spacer"></span><span id="filterCount" role="status" class="muted" style="font-size:12px"></span>
 </div>
 
 <div class="guide" id="guide">
-  <h3><button type="button" id="gtoggle" aria-expanded="true" aria-controls="gbody" onclick="toggleGuide()"><span id="gchev">▾</span> ℹ️ How RFIs &amp; Submittals work here — what to log, where, and when</button></h3>
+  <h2><button type="button" id="gtoggle" aria-expanded="true" aria-controls="gbody" onclick="toggleGuide()"><span id="gchev" aria-hidden="true">▾</span> <span aria-hidden="true">ℹ️</span> How RFIs &amp; Submittals work here — what to log, where, and when</button></h2>
   <div class="body" id="gbody">
     <table class="wf">
-      <tr><td>1️⃣</td><td>An RFI/submittal email lands</td><td>Log or respond right from the <b>Outlook add-in</b> on that email — that's the day-to-day home for entering them, since you're already in the message.</td></tr>
-      <tr><td>2️⃣</td><td>It came through Procore / Forma</td><td>Those arrive as notification emails. Come here, pick the job, and <b>📥 Import</b> the new ones in bulk — no re-typing. <span class="muted">(Coming soon: these sync in on their own.)</span></td></tr>
-      <tr><td>3️⃣</td><td>You need the whole picture</td><td>This Tracker is the <b>project-wide view</b> — every RFI/submittal on a job, filter &amp; search by type/discipline/status, and <b>+ Add / edit</b> by hand when you're not in Outlook (a phoned-in RFI, cleanup, a one-off).</td></tr>
+      <tr><td><span aria-hidden="true">1️⃣</span></td><td>An RFI/submittal email lands</td><td>Log or respond right from the <b>Outlook add-in</b> on that email — that's the day-to-day home for entering them, since you're already in the message.</td></tr>
+      <tr><td><span aria-hidden="true">2️⃣</span></td><td>It came through Procore / Forma</td><td>Those arrive as notification emails. Come here, pick the job, and <b><span aria-hidden="true">📥</span> Import</b> the new ones in bulk — no re-typing. <span class="muted">(Coming soon: these sync in on their own.)</span></td></tr>
+      <tr><td><span aria-hidden="true">3️⃣</span></td><td>You need the whole picture</td><td>This Tracker is the <b>project-wide view</b> — every RFI/submittal on a job, filter &amp; search by type/discipline/status, and <b>+ Add / edit</b> by hand when you're not in Outlook (a phoned-in RFI, cleanup, a one-off).</td></tr>
     </table>
-    <div class="muted" style="font-size:12px;margin-top:8px">Only jobs marked <b>"In Construction Administration"</b> appear (⚡ = has Procore/Forma email filed). Put your <b>name</b> in the "You" box (top-right) so the log shows who added or changed each item. Safe by design: it never overwrites someone else's edit — it asks you to refresh instead.</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Only jobs marked <b>"In Construction Administration"</b> appear (<span aria-hidden="true">⚡</span> = has Procore/Forma email filed). Put your <b>name</b> in the "You" box (top-right) so the log shows who added or changed each item. Safe by design: it never overwrites someone else's edit — it asks you to refresh instead.</div>
     <div class="legend">
       <span><span class="badge new">NEW</span> in Procore/Forma, not yet logged</span>
       <span><span class="badge matched">matched</span> already logged here</span>
@@ -122,12 +123,13 @@
   </div>
 </div>
 
-<main id="out"><p class="empty">Loading projects…</p></main>
+<div id="out"><p class="empty">Loading projects…</p></div>
+</main>
 
-<div class="overlay" id="overlay" onclick="if(event.target===this)closeEditor()">
+<div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle" onclick="if(event.target===this)closeEditor()">
   <div class="modal" id="modal"></div>
 </div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status"></div>
 <div class="undobar" id="undobar"></div>
 
 <script src="setty-auth.js"></script>
@@ -167,7 +169,7 @@ const ALL_STATUS = [...new Set([...RFI_STATUSES, ...SUB_STATUSES])];
 const OPEN_STATUSES = ["Open","Pending Sub Response","Received","Under Review","Pending Sub Review"];
 const STATUS_COLOR = {
   "Open":{bg:"#1e3a5f",t:"#60a5fa"}, "Pending Sub Response":{bg:"#3b2a1a",t:"#f59e0b"}, "Responded":{bg:"#1a3a2a",t:"#34d399"},
-  "Closed":{bg:"#1a1a2e",t:"#94a3b8"}, "Void":{bg:"#1a1a1a",t:"#6b7280"},
+  "Closed":{bg:"#1a1a2e",t:"#94a3b8"}, "Void":{bg:"#1a1a1a",t:"#9ca3af"},
   "Received":{bg:"#1e3a5f",t:"#60a5fa"}, "Under Review":{bg:"#2a1a3b",t:"#a78bfa"}, "Pending Sub Review":{bg:"#3b2a1a",t:"#f59e0b"},
   "Returned":{bg:"#1a3a2a",t:"#34d399"}, "Resubmittal Required":{bg:"#3b1a1a",t:"#f87171"},
 };
@@ -182,7 +184,7 @@ const today = () => new Date().toISOString().slice(0,10);
 function addWD(dateStr, days){ const d=new Date((dateStr||today())+"T00:00:00"); let c=0; while(c<days){ d.setDate(d.getDate()+1); const w=d.getDay(); if(w!==0&&w!==6)c++; } return d.toISOString().slice(0,10); }
 function getWho(){ return (document.getElementById("who").value||"").trim(); }
 function saveWho(){ try{ localStorage.setItem("rfiTrackUser", getWho()); }catch(e){} }
-function toast(msg, ok){ const t=document.getElementById("toast"); t.textContent=msg; t.className="toast show "+(ok?"ok":"bad"); setTimeout(()=>t.className="toast",3500); }
+function toast(msg, ok){ const t=document.getElementById("toast"); t.setAttribute("role", ok?"status":"alert"); t.textContent=ok?msg:"Error: "+msg; t.className="toast show "+(ok?"ok":"bad"); setTimeout(()=>t.className="toast", ok?3500:8000); }
 function toggleGuide(){ const b=document.getElementById("gbody"), c=document.getElementById("gchev"); const open=b.style.display!=="none"; b.style.display=open?"none":"block"; c.textContent=open?"▸":"▾"; const g=document.getElementById("gtoggle"); if(g)g.setAttribute("aria-expanded",String(!open)); try{localStorage.setItem("rfiTrackGuide",open?"0":"1");}catch(e){} }
 
 /* ---- sync parse helpers ---- */
@@ -265,11 +267,11 @@ async function init(){
     rebuildPicker();
     if(PROJECTS.length){ document.getElementById("picker").value="__ALL__"; selectAll(); }
     else document.getElementById("out").innerHTML=`<p class="empty">No projects are marked "In Construction Administration".</p>`;
-  }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
 function rebuildPicker(){ const f=(document.getElementById("filter").value||"").toLowerCase(); const sel=document.getElementById("picker"); const keep=sel.value;
   const list=PROJECTS.filter(p=>!f||(p.number+" "+p.name).toLowerCase().includes(f));
-  sel.innerHTML=`<option value="__ALL__">★ All projects (${PROJECTS.length})</option>`+list.map(p=>`<option value="${p.id}">${p.activity?"⚡ ":""}${esc(p.number?p.number+" — ":"")}${esc(p.name)}</option>`).join("");
+  sel.innerHTML=`<option value="__ALL__">★ All projects (${PROJECTS.length})</option>`+list.map(p=>`<option value="${p.id}">${p.activity?"⚡ ":""}${esc(p.number?p.number+" — ":"")}${esc(p.name)}${p.activity?" (has Procore email)":""}</option>`).join("");
   if(keep==="__ALL__"||list.some(p=>p.id===keep)) sel.value=keep; }
 
 async function selectAll(){
@@ -284,7 +286,7 @@ async function selectAll(){
     rfis.sort(byP); subs.sort(byP);
     CURRENT={ proj:{id:"__ALL__",name:"All Construction-Admin projects"}, allMode:true, rfis, submittals:subs, inbox:{rfi:[],submittal:[]}, teams };
     renderProject();
-  }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
 async function selectProject(pid){
   if(pid==="__ALL__") return selectAll();
@@ -308,7 +310,7 @@ async function selectProject(pid){
     }
     CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox, teams:{[pid]:(logged.team||[])} };
     renderProject();
-  }catch(e){ document.getElementById("out").innerHTML=`<p class="err">Load failed: ${esc(e.message)}</p>`; }
+  }catch(e){ document.getElementById("out").innerHTML=`<p class="err" role="alert">Load failed: ${esc(e.message)}</p>`; }
 }
 
 /* =========================== FILTERS =========================== */
@@ -359,8 +361,8 @@ function renderSection(kind, title, logged, inbox){
     `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
     (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:`<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button>`)+`</div>`;
   if(news.length){
-    const head = kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Status</th><th>Due</th><th>Asked by</th><th>Discipline</th><th class='right'>Import</th>"
-                              : "<th>Item</th><th>Title</th><th>Spec</th><th>Status</th><th>Due</th><th>Discipline</th><th class='right'>Import</th>";
+    const head = kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Asked by</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>"
+                              : "<th scope='col'>Item</th><th scope='col'>Title</th><th scope='col'>Spec</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>";
     const vocab = kind==="rfi"?RFI_DISC:SUB_DISC;
     const rows=inbox.map(it=>{ const cb=it.verdict==="new"?`<input type="checkbox" class="pick" aria-label="Import ${kind==="rfi"?"RFI":"submittal"} #${esc(it.extNum)}" data-k="${kind}" data-ext="${esc(it.extNum)}" checked>`:"";
       const dv=(it.record&&it.record.discipline)||"";
@@ -376,9 +378,9 @@ function renderSection(kind, title, logged, inbox){
   }
   if(!logged.length){ html+=`<div class="empty">No ${kind}s logged yet. Click “+ Add ${kind==='rfi'?'RFI':'Submittal'}” to log one, or import from Procore/Forma above.</div>`; }
   else {
-    const pcol=am?"<th>Project</th>":"";
-    const head = pcol + (kind==="rfi" ? "<th>RFI</th><th>Title</th><th>Discipline</th><th>From</th><th>Assigned</th><th>Received</th><th>Due</th><th>Status</th>"
-                              : "<th>Item</th><th>Title / Spec</th><th>Discipline</th><th>Assigned</th><th>Stamp</th><th>Received</th><th>Due</th><th>Status</th>");
+    const pcol=am?"<th scope='col'>Project</th>":"";
+    const head = pcol + (kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Discipline</th><th scope='col'>From</th><th scope='col'>Assigned</th><th scope='col'>Received</th><th scope='col'>Due</th><th scope='col'>Status</th>"
+                              : "<th scope='col'>Item</th><th scope='col'>Title / Spec</th><th scope='col'>Discipline</th><th scope='col'>Assigned</th><th scope='col'>Stamp</th><th scope='col'>Received</th><th scope='col'>Due</th><th scope='col'>Status</th>");
     const rows=shown.map(r=>{
       const pc=am?`<td class="muted" title="${esc(r.__projNum||"")}">${esc(r.__projName||r.__projNum||"")}</td>`:"";
       const asg=esc(assigneeNames(r));
@@ -408,8 +410,18 @@ const SUB_FIELDS=[ {k:"number",l:"Submittal #"},{k:"specSection",l:"Spec Section
 function blankRFI(){ const t=today(); return {id:"",number:"",title:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,5),dateResponded:"",response:"",status:"Open",notes:"",spFolderUrl:"",links:[]}; }
 function blankSub(){ const t=today(); return {id:"",number:"",specSection:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,10),dateReturned:"",comments:"",status:"Received",stamp:"—",resubNumber:0,notes:"",spFolderUrl:"",links:[],registerItemId:""}; }
 
-let EDIT=null, EDIT_TEAM=[], EDIT_SUBS=[];
+let EDIT=null, EDIT_TEAM=[], EDIT_SUBS=[], LAST_FOCUS=null;
+document.getElementById("overlay").addEventListener("keydown", e=>{
+  if(e.key==="Escape"){ e.preventDefault(); closeEditor(); return; }
+  if(e.key!=="Tab") return;
+  const f=[...document.getElementById("modal").querySelectorAll("button,input,select,textarea,a[href]")].filter(el=>!el.disabled&&el.offsetParent!==null);
+  if(!f.length) return;
+  const first=f[0], last=f[f.length-1];
+  if(e.shiftKey && document.activeElement===first){ e.preventDefault(); last.focus(); }
+  else if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); }
+});
 async function openEditor(kind, id){
+  LAST_FOCUS=document.activeElement;
   const fields = kind==="rfi"?RFI_FIELDS:SUB_FIELDS;
   const list = kind==="rfi"?CURRENT.rfis:CURRENT.submittals;
   const isNew = !id;
@@ -437,14 +449,14 @@ async function openEditor(kind, id){
     ? `<select id="f_subAssigned"><option value="">— none —</option>${subs.map(s=>{const n=subName(s);return `<option ${n===subVal?"selected":""}>${esc(n)}</option>`;}).join("")}</select>`
     : `<input id="f_subAssigned" value="${esc(subVal)}" placeholder="subconsultant (optional)">`;
   const spHtml = `<div style="display:flex;gap:6px"><input id="f_spFolderUrl" value="${esc(rec.spFolderUrl||"")}" placeholder="paste SharePoint folder URL" style="flex:1">`+
-    (rec.spFolderUrl?`<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer" style="background:#0078d4;color:#fff;border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center">📁 Open</a>`:"")+`</div>`+
+    (rec.spFolderUrl?`<a href="${esc(rec.spFolderUrl)}" target="_blank" rel="noreferrer" style="background:#0078d4;color:#fff;border-radius:6px;padding:6px 11px;text-decoration:none;font-size:12px;white-space:nowrap;align-self:center"><span aria-hidden="true">📁</span> Open<span class="sr-only"> (opens in a new tab)</span></a>`:"")+`</div>`+
     `<div class="muted" style="font-size:11px;margin-top:3px">Creating a new folder needs Microsoft sign-in — do that in the main PMS, then paste the link here.</div>`;
   const extra = `<div class="fld full"><label>Assigned to</label><div style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
     `<div class="fld full"><label for="f_subAssigned">Subconsultant (optional)</label>${subHtml}</div>`+
     `<div class="fld full"><label for="f_spFolderUrl">SharePoint folder</label>${spHtml}</div>`;
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
   document.getElementById("modal").innerHTML =
-    `<div class="mhead"><h3>${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
+    `<div class="mhead"><h3 id="modalTitle">${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
     `<button class="ghost" style="font-size:12px" title="Open a pre-filled draft in Outlook" onclick="emailAction('${kind}','assign')">✉ Assign</button>`+
@@ -453,8 +465,11 @@ async function openEditor(kind, id){
     `<span class="by">${by}</span><span class="spacer"></span>`+
     `<button onclick="closeEditor()">Cancel</button><button class="go" onclick="saveEditor()">${isNew?"Add to log":"Save"}</button></div>`;
   document.getElementById("overlay").classList.add("show");
+  const ff=document.getElementById("modal").querySelector("input,select,textarea");
+  if(ff) ff.focus();
 }
-function closeEditor(){ document.getElementById("overlay").classList.remove("show"); EDIT=null; }
+function closeEditor(){ document.getElementById("overlay").classList.remove("show"); EDIT=null;
+  if(LAST_FOCUS && LAST_FOCUS.isConnected){ try{ LAST_FOCUS.focus(); }catch(e){} } LAST_FOCUS=null; }
 function collectEdits(kind){
   const fields=kind==="rfi"?RFI_FIELDS:SUB_FIELDS; const e={};
   for(const f of fields){ const el=document.getElementById("f_"+f.k); if(!el)continue; let v=el.value; if(f.t==="number")v=Number(v)||0; e[f.k]=v; }

@@ -42,6 +42,7 @@
 
   <style>
     * { box-sizing: border-box; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
     body {
       margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #0F172A; color: #E2E8F0;
       min-height: 100vh;
@@ -3347,10 +3348,12 @@
                   ? (() => { try { window.close(); } catch (_) {} })
                   : send;
                 return (
+                  <>
                   <button
                     onClick={onClick}
                     disabled={buttonDisabled}
                     title={titleText}
+                    aria-describedby="applySaveHint"
                     style={{
                       background: bg,
                       color: fg,
@@ -3372,6 +3375,10 @@
                   >
                     {label}
                   </button>
+                  {/* title on a disabled button isn't announced — mirror the
+                      reason in a visually-hidden description. */}
+                  <span id="applySaveHint" className="sr-only">{titleText}</span>
+                  </>
                 );
               })()}
             </div>
@@ -3385,7 +3392,7 @@
                      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
                      onDragLeave={() => setDragging(false)}
                      onDrop={onDrop}>
-                <div className="icon">📄</div>
+                <div className="icon" aria-hidden="true">📄</div>
                 <p><strong>Drop a contract PDF</strong></p>
                 <p>or click to browse</p>
                 <input type="file" accept="application/pdf" onChange={(e) => handleFile(e.target.files[0])} />
@@ -3397,10 +3404,11 @@
                   {dragSourceUrl && (
                     <div style={{ marginTop: 6, fontSize: 10, color: "#60A5FA", wordBreak: "break-all" }}
                          title="Captured from the drag-and-drop source. Will be included in the OneNote analysis page.">
-                      📎 source:<br/>
+                      <span aria-hidden="true">📎 </span>source:<br/>
                       <a href={dragSourceUrl} target="_blank" rel="noreferrer"
                          style={{ color: "#60A5FA", textDecoration: "none" }}>
                         {dragSourceUrl.length > 80 ? dragSourceUrl.slice(0, 77) + "…" : dragSourceUrl}
+                        <span className="sr-only"> (opens in a new tab)</span>
                       </a>
                     </div>
                   )}
@@ -3447,16 +3455,34 @@
                   <div style={{ position: "relative" }}>
                     <input
                       type="text"
+                      id="projSearchInput"
+                      role="combobox"
+                      aria-expanded={showDropdown}
+                      aria-controls="projListbox"
+                      aria-autocomplete="list"
                       aria-label="Search projects"
                       value={projectQuery}
                       onChange={(e) => setProjectQuery(e.target.value)}
                       onFocus={() => setProjectFocused(true)}
-                      onBlur={() => setTimeout(() => setProjectFocused(false), 150)}
+                      onBlur={() => setTimeout(() => {
+                        // Don't collapse while focus is inside the option list
+                        // (keyboard users arrow into it).
+                        const lb = document.getElementById("projListbox");
+                        if (!(lb && lb.contains(document.activeElement))) setProjectFocused(false);
+                      }, 150)}
+                      onKeyDown={(e) => {
+                        if (e.key === "ArrowDown") {
+                          const first = document.querySelector("#projListbox [role=option]");
+                          if (first) { e.preventDefault(); first.focus(); }
+                        } else if (e.key === "Escape") {
+                          setProjectFocused(false);
+                        }
+                      }}
                       placeholder={`Search ${pmsProjects.filter((p) => !p.archived).length} projects by name, number, or client…`}
                       style={{ width: "100%", background: "#1E293B", color: "#E2E8F0", border: "1px solid #334155", borderRadius: 4, padding: "6px 8px", fontSize: 12 }}
                     />
                     {showDropdown && (
-                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#0F172A", border: "1px solid #334155", borderRadius: 4, marginTop: 2, maxHeight: 320, overflowY: "auto", zIndex: 10, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" }}>
+                      <div id="projListbox" role="listbox" aria-label="Matching projects" style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#0F172A", border: "1px solid #334155", borderRadius: 4, marginTop: 2, maxHeight: 320, overflowY: "auto", zIndex: 10, boxShadow: "0 4px 12px rgba(0,0,0,0.4)" }}>
                         {projectMatches.length === 0 && (
                           <div style={{ padding: "8px 10px", fontSize: 11, color: "#94A3B8", fontStyle: "italic" }}>
                             No matches. Try a fragment of the project name, project number, or client name.
@@ -3466,6 +3492,8 @@
                           <button
                             type="button"
                             key={p.id}
+                            role="option"
+                            aria-selected={p.id === selectedProjectId}
                             // onMouseDown fires before the input's onBlur — this
                             // is critical, otherwise the blur collapses the
                             // dropdown before the click registers.
@@ -3474,6 +3502,24 @@
                             // detail 0; mouse picks are handled by onMouseDown,
                             // so guard against double-firing.
                             onClick={(e) => { if (e.detail === 0) selectProject(p.id, false); }}
+                            // Roving focus between options; Escape returns to
+                            // the search input.
+                            onKeyDown={(e) => {
+                              if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                const n = e.currentTarget.nextElementSibling;
+                                if (n && n.getAttribute("role") === "option") n.focus();
+                              } else if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                const p2 = e.currentTarget.previousElementSibling;
+                                if (p2 && p2.getAttribute("role") === "option") p2.focus();
+                                else { const inp = document.getElementById("projSearchInput"); if (inp) inp.focus(); }
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                const inp = document.getElementById("projSearchInput");
+                                if (inp) inp.focus();
+                              }
+                            }}
                             style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", font: "inherit", padding: "6px 10px", fontSize: 12, color: "#E2E8F0", cursor: "pointer", borderBottom: "1px solid #1E293B" }}
                             onMouseEnter={(e) => e.currentTarget.style.background = "#1E293B"}
                             onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
@@ -3519,7 +3565,7 @@
             <div className="panel">
               <h2>2. Override Clauses & Extraction Log</h2>
               {partialScan && (
-                <div style={{ background: "#78350F", border: "1px solid #F59E0B", borderRadius: 8, padding: "12px 14px", marginBottom: 12, color: "#FEF3C7" }}>
+                <div role="status" aria-live="polite" style={{ background: "#78350F", border: "1px solid #F59E0B", borderRadius: 8, padding: "12px 14px", marginBottom: 12, color: "#FEF3C7" }}>
                   {partialScan.ocring ? (
                     <>
                       <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
@@ -3568,7 +3614,7 @@
                 </div>
               )}
               {parsing && investigation && (
-                <div className="investigating">
+                <div className="investigating" role="status" aria-live="polite">
                   <span className="investigating-emoji" key={investigation.emoji}>{investigation.emoji}</span>
                   <span className="investigating-text" key={investigation.line}>
                     {investigation.line}
@@ -3576,7 +3622,7 @@
                 </div>
               )}
               {sendState === "writing" && writingQuote && (
-                <div className="investigating" style={{ background: "linear-gradient(135deg, #78350FCC 0%, #B45309CC 60%, #D97706CC 100%)", borderColor: "#F59E0B" }}>
+                <div className="investigating" role="status" aria-live="polite" style={{ background: "linear-gradient(135deg, #78350FCC 0%, #B45309CC 60%, #D97706CC 100%)", borderColor: "#F59E0B" }}>
                   <span className="investigating-emoji" key={writingQuote.emoji}>{writingQuote.emoji}</span>
                   <span className="investigating-text" key={writingQuote.line}>
                     <strong style={{ display: "block", fontSize: 13, fontStyle: "normal", marginBottom: 2 }}>Writing OneNote analysis page…</strong>
@@ -3585,7 +3631,7 @@
                 </div>
               )}
               {sendState === "done" && (
-                <div className="investigating" style={{ background: "linear-gradient(135deg, #064E3BCC 0%, #047857CC 60%, #10B981CC 100%)", borderColor: "#34D399" }}>
+                <div className="investigating" role="status" aria-live="polite" style={{ background: "linear-gradient(135deg, #064E3BCC 0%, #047857CC 60%, #10B981CC 100%)", borderColor: "#34D399" }}>
                   <span className="investigating-emoji">✅</span>
                   <span className="investigating-text" style={{ fontStyle: "normal" }}>
                     <strong style={{ display: "block", fontSize: 13, marginBottom: 2 }}>Saved to OneNote.</strong>
@@ -3594,7 +3640,7 @@
                 </div>
               )}
               {sendState === "failed" && (
-                <div className="investigating" style={{ background: "linear-gradient(135deg, #7F1D1DCC 0%, #B91C1CCC 60%, #DC2626CC 100%)", borderColor: "#F87171" }}>
+                <div className="investigating" role="alert" style={{ background: "linear-gradient(135deg, #7F1D1DCC 0%, #B91C1CCC 60%, #DC2626CC 100%)", borderColor: "#F87171" }}>
                   <span className="investigating-emoji">⚠</span>
                   <span className="investigating-text" style={{ fontStyle: "normal" }}>
                     <strong style={{ display: "block", fontSize: 13, marginBottom: 2 }}>OneNote write failed.</strong>
@@ -3603,7 +3649,7 @@
                 </div>
               )}
               {sendState === "timeout" && (
-                <div className="investigating" style={{ background: "linear-gradient(135deg, #78350FCC 0%, #B45309CC 60%, #F59E0BCC 100%)", borderColor: "#FBBF24" }}>
+                <div className="investigating" role="status" aria-live="polite" style={{ background: "linear-gradient(135deg, #78350FCC 0%, #B45309CC 60%, #F59E0BCC 100%)", borderColor: "#FBBF24" }}>
                   <span className="investigating-emoji">⏳</span>
                   <span className="investigating-text" style={{ fontStyle: "normal" }}>
                     <strong style={{ display: "block", fontSize: 13, marginBottom: 2 }}>No response from PMS yet.</strong>
@@ -3616,7 +3662,7 @@
               {docTypeLabel && (
                 <div className={`doc-type ${result.docType.isAIA ? "" : "non-aia"}`}>{docTypeLabel}</div>
               )}
-              <div className="log">
+              <div className="log" role="log" aria-label="Extraction log">
                 {log.map((row, i) => (
                   row.type === "section" ? (
                     <div className="row section-row" key={i}>

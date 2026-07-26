@@ -119,6 +119,7 @@
     }
     .skip-link { position: absolute; left: -9999px; top: 0; z-index: 10000; background: var(--card, #161b22); color: #7db4f0; padding: 10px 16px; font-size: 13px; font-weight: 600; }
     .skip-link:focus { left: 0; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
     .card-title {
       font-size: 13px;
       font-weight: 700;
@@ -326,17 +327,17 @@
 <a href="#main" class="skip-link">Skip to main content</a>
 
 <!-- Sign-in overlay -->
-<div id="signInOverlay">
+<div id="signInOverlay" role="dialog" aria-modal="true" aria-labelledby="signInTitle">
   <div class="sign-in-card">
-    <div class="sign-in-logo">SETTY</div>
-    <div class="sign-in-sub">Sheet List &amp; Transmittal Generator<br/>Sign in with your Setty Microsoft 365 account</div>
+    <div class="sign-in-logo" aria-hidden="true">SETTY</div>
+    <div class="sign-in-sub" id="signInTitle">Sheet List &amp; Transmittal Generator<br/>Sign in with your Setty Microsoft 365 account</div>
     <button class="sign-in-btn" id="signInBtn">🔐 Sign in with Microsoft</button>
     <div id="signInError"></div>
   </div>
 </div>
 
 <!-- App header -->
-<header class="app-header">
+<header class="app-header" inert>
   <div class="app-header-left">
     <div>
       <h1 class="app-title">SETTY — Sheet List &amp; Transmittal Generator</h1>
@@ -346,7 +347,7 @@
   <button class="sign-btn" id="signOutBtn" style="display:none">Sign out</button>
 </header>
 
-<main class="main" id="main">
+<main class="main" id="main" inert>
 
   <!-- Folder & Project Info -->
   <div class="card">
@@ -379,7 +380,7 @@
       <div>
         <label for="transmittalNoTop">Transmittal No.</label>
         <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="onTxNoInput(this.value)"/>
-        <div class="status" id="txNoWarning" style="margin-top:6px"></div>
+        <div class="status" id="txNoWarning" role="status" style="margin-top:6px"></div>
       </div>
     </div>
     <div class="form-row">
@@ -464,7 +465,7 @@
     </div>
     <input type="hidden" id="transmittalNo" value="T-001"/>
     <button class="btn btn-primary" id="loadFolderBtn">🔍 Load Files from SharePoint</button>
-    <div class="status" id="loadStatus"></div>
+    <div class="status" id="loadStatus" role="status"></div>
   </div>
 
   <!-- Sheet List -->
@@ -484,20 +485,20 @@
       <table class="sheet-table" id="sheetTable">
         <thead>
           <tr>
-            <th style="width:32px">✓</th>
-            <th style="width:90px">Discipline</th>
-            <th style="width:110px">Sheet No.</th>
-            <th>Sheet Name / Title</th>
-            <th style="width:80px">Revision</th>
-            <th style="width:110px">Date</th>
-            <th style="width:32px"></th>
+            <th scope="col" style="width:32px"><span aria-hidden="true">✓</span><span class="sr-only">Include</span></th>
+            <th scope="col" style="width:90px">Discipline</th>
+            <th scope="col" style="width:110px">Sheet No.</th>
+            <th scope="col">Sheet Name / Title</th>
+            <th scope="col" style="width:80px">Revision</th>
+            <th scope="col" style="width:110px">Date</th>
+            <th scope="col" style="width:32px"><span class="sr-only">Remove</span></th>
           </tr>
         </thead>
         <tbody id="sheetTableBody"></tbody>
       </table>
     </div>
 
-    <div class="status" id="parseStatus"></div>
+    <div class="status" id="parseStatus" role="status"></div>
 
     <div style="margin-top:20px;display:flex;flex-direction:column;gap:14px">
       <div>
@@ -507,18 +508,19 @@
       <div>
         <div class="step-label">Step 2 — Choose one delivery option</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-primary" id="saveToSpBtn" disabled title="Generate the transmittal first">2a. 💾 Save .docx to SharePoint</button>
-          <button class="btn btn-primary" id="zipBtn" disabled title="Generate the transmittal first">2b. 📦 Download ZIP only</button>
-          <button class="btn btn-send" id="sendToClientBtn" disabled title="Generate the transmittal first">2c. ✉️ Package &amp; Draft Email</button>
+          <button class="btn btn-primary" id="saveToSpBtn" disabled title="Generate the transmittal first" aria-describedby="step2LockNote">2a. 💾 Save .docx to SharePoint</button>
+          <button class="btn btn-primary" id="zipBtn" disabled title="Generate the transmittal first" aria-describedby="step2LockNote">2b. 📦 Download ZIP only</button>
+          <button class="btn btn-send" id="sendToClientBtn" disabled title="Generate the transmittal first" aria-describedby="step2LockNote">2c. ✉️ Package &amp; Draft Email</button>
         </div>
+        <div id="step2LockNote" class="sr-only">Disabled until the transmittal is generated in Step 1.</div>
         <div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5">
           <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow. Projects with a Client Portal: the checked files + cover are published to a dated folder under <strong>Setty Deliverables</strong> and the email links there (no expiry — clients use their portal access). Projects without a portal: files are zipped and shared via a 30-day anonymous link. Either way an Outlook draft opens for review — nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
         </div>
       </div>
     </div>
-    <div class="status" id="generateStatus"></div>
-    <div class="status" id="zipStatus"></div>
-    <div class="status" id="sendStatus"></div>
+    <div class="status" id="generateStatus" role="status"></div>
+    <div class="status" id="zipStatus" role="status"></div>
+    <div class="status" id="sendStatus" role="status"></div>
   </div>
 
   <!-- Transmittal History — record-keeping view of past sends for this
@@ -527,7 +529,7 @@
     <h2 class="card-title">🗂️ Transmittal History
       <span class="count-badge" id="historyCount"></span>
     </h2>
-    <div class="status" id="historyStatus"></div>
+    <div class="status" id="historyStatus" role="status"></div>
     <div id="historyTableWrap" style="overflow-x:auto"></div>
   </div>
 
@@ -691,6 +693,8 @@ async function logTransmittalGenerated(distributionKind, extra = {}) {
 
 function onSignedIn() {
   document.getElementById("signInOverlay").style.display = "none";
+  document.querySelector("header.app-header").removeAttribute("inert");
+  document.getElementById("main").removeAttribute("inert");
   document.getElementById("signOutBtn").style.display = "block";
   document.getElementById("headerUser").textContent = msalAccount.name || msalAccount.username;
   loadPmsData();
@@ -962,9 +966,13 @@ function onCcCompanyChange() {
 // they're harder to disambiguate.
 function addCcRecipient() {
   const company = document.getElementById("ccCompany").value || "";
-  const contactRaw = document.getElementById("ccContact").value || "";
+  const contactSel = document.getElementById("ccContact");
+  contactSel.removeAttribute("aria-invalid");
+  const contactRaw = contactSel.value || "";
   if (!contactRaw) {
     setStatus("loadStatus", "warn", "Pick a CC contact first.");
+    contactSel.setAttribute("aria-invalid", "true");
+    contactSel.focus();
     return;
   }
   let c;
@@ -1007,9 +1015,11 @@ function renderCcChips() {
       (r.company ? ` · ${r.company}` : "") +
       (r.email && r.name ? ` <${r.email}>` : "");
     const safeLabel = label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const safeName = (r.name || r.email || "this recipient")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     return `<span style="display:inline-flex;align-items:center;gap:6px;background:#1a2030;border:1px solid #334155;color:#cbd5e1;font-size:12px;padding:4px 8px;border-radius:14px;">
       <span>${safeLabel}</span>
-      <button type="button" onclick="removeCcRecipient(${i})" title="Remove"
+      <button type="button" onclick="removeCcRecipient(${i})" title="Remove" aria-label="Remove ${safeName} from CC"
         style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:14px;line-height:1;padding:0;">✕</button>
     </span>`;
   }).join("");
@@ -1343,6 +1353,17 @@ function uid() { return Math.random().toString(36).slice(2, 9); }
 // ─── TABLE RENDER ─────────────────────────────────────────────────────────────
 function renderTable() {
   const tbody = document.getElementById("sheetTableBody");
+
+  // Rebuilding wipes the DOM — capture the focused control (per-row inputs
+  // carry stable ids derived from the sheet's uid) and its text selection so
+  // focus survives the re-render (e.g. after a discipline change).
+  const active = document.activeElement;
+  let restoreId = null, selStart = null, selEnd = null;
+  if (active && tbody.contains(active) && active.id) {
+    restoreId = active.id;
+    if (typeof active.selectionStart === "number") { selStart = active.selectionStart; selEnd = active.selectionEnd; }
+  }
+
   tbody.innerHTML = "";
 
   sheets.forEach((s, i) => {
@@ -1350,9 +1371,9 @@ function renderTable() {
     const rowRef = s.sheetNo ? `sheet ${esc(s.sheetNo)}` : `row ${i + 1}`;
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><input type="checkbox" ${s.include ? "checked" : ""} aria-label="Include ${rowRef}" onchange="sheets[${i}].include=this.checked;updateCount()"/></td>
+      <td><input type="checkbox" id="sheet-${s.id}-include" ${s.include ? "checked" : ""} aria-label="Include ${rowRef}" onchange="sheets[${i}].include=this.checked;this.removeAttribute('aria-invalid');updateCount()"/></td>
       <td>
-        <select class="disc-badge disc-${dc}" aria-label="Discipline for ${rowRef}" title="Change discipline"
+        <select class="disc-badge disc-${dc}" id="sheet-${s.id}-disc" aria-label="Discipline for ${rowRef}" title="Change discipline"
           style="appearance:none;-webkit-appearance:none;border:none;font:inherit;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;cursor:pointer"
           onchange="sheets[${i}].discipline=this.value;renderTable()">
           ${["Mechanical","Electrical","Plumbing","Fire Protection","General","Architectural","Structural","Civil"].map(d =>
@@ -1360,14 +1381,24 @@ function renderTable() {
           ).join("")}
         </select>
       </td>
-      <td><input type="text" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value"/></td>
-      <td><input type="text" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value"/></td>
-      <td><input type="text" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value"/></td>
-      <td><input type="text" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Date for ${rowRef}" onchange="sheets[${i}].date=this.value"/></td>
-      <td><button onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
+      <td><input type="text" id="sheet-${s.id}-sheetNo" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value"/></td>
+      <td><input type="text" id="sheet-${s.id}-title" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value"/></td>
+      <td><input type="text" id="sheet-${s.id}-revision" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value"/></td>
+      <td><input type="text" id="sheet-${s.id}-date" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Date for ${rowRef}" onchange="sheets[${i}].date=this.value"/></td>
+      <td><button id="sheet-${s.id}-remove" onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
     `;
     tbody.appendChild(tr);
   });
+
+  if (restoreId) {
+    const el = document.getElementById(restoreId);
+    if (el) {
+      el.focus();
+      if (selStart !== null && typeof el.setSelectionRange === "function") {
+        try { el.setSelectionRange(selStart, selEnd); } catch (e) {}
+      }
+    }
+  }
 
   updateCount();
 }
@@ -1490,7 +1521,15 @@ function buildArchiveFileName() {
 
 async function generateDocx() {
   const included = sheets.filter(s => s.include);
-  if (included.length === 0) { setStatus("generateStatus", "error", "No sheets selected."); return; }
+  if (included.length === 0) {
+    setStatus("generateStatus", "error", "No sheets selected.");
+    // Send focus to the relevant control: the first include checkbox, or the
+    // Select All button when the table is empty.
+    const firstCb = document.querySelector("#sheetTableBody input[type=checkbox]");
+    if (firstCb) { firstCb.setAttribute("aria-invalid", "true"); firstCb.focus(); }
+    else document.getElementById("selectAllBtn").focus();
+    return;
+  }
 
   const btn = document.getElementById("generateBtn");
   btn.disabled = true;
@@ -1759,7 +1798,7 @@ async function generateDocx() {
     // Unlock Step 2 actions now that the cover docx exists in memory
     ["saveToSpBtn", "zipBtn", "sendToClientBtn"].forEach(id => {
       const el = document.getElementById(id);
-      if (el) { el.disabled = false; el.removeAttribute("title"); }
+      if (el) { el.disabled = false; el.removeAttribute("title"); el.removeAttribute("aria-describedby"); }
     });
     setStatus("generateStatus", "success", `✓ "${generatedFileName}" downloaded. Step 2 actions are now unlocked below.`);
 
@@ -1825,9 +1864,13 @@ async function sendToClient() {
     setStatus("sendStatus", "error", "✗ Click 'Generate Transmittal (.docx)' first — the cover sheet must be in memory.");
     return;
   }
-  const recipientEmail = (document.getElementById("recipientEmail").value || "").trim();
+  const recipientEmailEl = document.getElementById("recipientEmail");
+  recipientEmailEl.removeAttribute("aria-invalid");
+  const recipientEmail = (recipientEmailEl.value || "").trim();
   if (!recipientEmail || !recipientEmail.includes("@")) {
     setStatus("sendStatus", "error", "✗ Enter a valid recipient email.");
+    recipientEmailEl.setAttribute("aria-invalid", "true");
+    recipientEmailEl.focus();
     return;
   }
 
@@ -2209,8 +2252,8 @@ function renderHistoryTable(items) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const head =
     '<table class="sheet-table"><thead><tr>' +
-    '<th>Date</th><th>Milestone</th><th>Recipients</th><th>Files</th>' +
-    '<th>Download</th><th>Sent By</th><th>Status</th>' +
+    '<th scope="col">Date</th><th scope="col">Milestone</th><th scope="col">Recipients</th><th scope="col">Files</th>' +
+    '<th scope="col">Download</th><th scope="col">Sent By</th><th scope="col">Status</th>' +
     '</tr></thead><tbody>';
   const body = items.map(it => {
     const f = it.fields || {};
@@ -2379,6 +2422,7 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
 function setStatus(id, type, msg) {
   const el = document.getElementById(id);
   if (!el) return;
+  el.setAttribute("role", type === "error" ? "alert" : "status");
   el.className = "status" + (msg ? " show " + type : "");
   el.textContent = msg;
 }

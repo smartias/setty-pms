@@ -10,6 +10,7 @@
     .card { text-align: center; padding: 32px 40px; }
     .big { font-size: 40px; margin-bottom: 12px; }
     .dim { color: #94a3b8; font-size: 13px; margin-top: 8px; }
+    #msg { font: inherit; margin: 0; }
   </style>
 </head>
 <body>
@@ -18,9 +19,9 @@
        tokens here in the URL fragment; setty-auth.js parses and stores them to
        localStorage, which the opener page picks up via its storage listener. -->
   <div class="card">
-    <div class="big" id="icon">⏳</div>
-    <div id="msg">Finishing sign-in…</div>
-    <div class="dim" id="sub"></div>
+    <div class="big" id="icon" aria-hidden="true">⏳</div>
+    <h1 id="msg" role="status">Finishing sign-in…</h1>
+    <div class="dim" id="sub" role="status"></div>
   </div>
   <script src="setty-auth.js"></script>
   <script>
@@ -29,12 +30,15 @@
       const hash = location.hash || "";
       if (/error_description=/.test(hash)) {
         icon.textContent = "⚠️";
+        msg.setAttribute("role", "alert");
+        sub.setAttribute("role", "alert");
         msg.textContent = "Sign-in failed";
         sub.textContent = new URLSearchParams(hash.slice(1)).get("error_description") || "";
         return;
       }
       if (!/access_token=/.test(hash)) {
         icon.textContent = "🔐";
+        msg.setAttribute("role", "alert");
         msg.textContent = "Nothing to finish — open this from a Setty app's Sign in button.";
         return;
       }
@@ -49,7 +53,7 @@
       msg.textContent = "Signed in";
       sub.textContent = "This window will close itself.";
       // The opener normally closes us within a second; this is the fallback.
-      setTimeout(() => { try { window.close(); } catch (_) {} }, 8000);
+      setTimeout(() => { try { window.close(); } catch (_) {} }, 20000);
     })();
   </script>
 </body>
