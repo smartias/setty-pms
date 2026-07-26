@@ -84,7 +84,7 @@
   button.grp-name:hover,button.firm-name:hover{background:transparent}
   .person{display:flex;align-items:center;gap:10px;padding:5px 12px 5px 52px;border-top:1px solid rgba(51,65,85,.4);cursor:pointer;margin:0}
   .person:hover{background:var(--panel2)}
-  .person.dis{opacity:.5;cursor:default}
+  .person.dis{opacity:.75;cursor:default}
   .person .em{color:var(--muted);font-size:12px}
   .person .co-spacer{flex:1}
   input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex:none}
@@ -95,7 +95,7 @@
 <body>
 <header>
   <div>
-    <h1>📰 Setty Newsletter &amp; Invites</h1>
+    <h1><span aria-hidden="true">📰</span> Setty Newsletter &amp; Invites</h1>
     <div class="sub">Sends to the live PMS directory · honors unsubscribes</div>
   </div>
   <div class="spacer"></div>
@@ -116,12 +116,12 @@
     <div class="card">
       <h2>1 · Audience <span class="muted" id="audienceHint" style="font-weight:400">— everyone's selected by default; uncheck by type, firm, or person</span></h2>
       <div class="row" style="gap:8px;margin-bottom:12px">
-        <button type="button" class="seg active" id="modeNewsletter" onclick="setAudienceMode('newsletter')">📰 Newsletter — everyone by default</button>
-        <button type="button" class="seg" id="modeCampaign" onclick="setAudienceMode('campaign')">🎯 Campaign — hand-pick recipients</button>
+        <button type="button" class="seg active" id="modeNewsletter" onclick="setAudienceMode('newsletter')"><span aria-hidden="true">📰</span> Newsletter — everyone by default</button>
+        <button type="button" class="seg" id="modeCampaign" onclick="setAudienceMode('campaign')"><span aria-hidden="true">🎯</span> Campaign — hand-pick recipients</button>
       </div>
       <div class="row" style="align-items:center;margin-bottom:14px">
-        <button onclick="refreshAll()">↻ Load / refresh directory</button>
-        <span class="hint" id="loadedAt"></span>
+        <button onclick="refreshAll()"><span aria-hidden="true">↻</span> Load / refresh directory</button>
+        <span class="hint" id="loadedAt" role="status"></span>
       </div>
       <div class="stats" id="stats">
         <div class="stat"><div class="n" id="stPeople">—</div><div class="l">People in directory</div></div>
@@ -188,7 +188,7 @@
           <div class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:6px">
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('formatBlock','<h1>')" title="Heading">H1</button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('formatBlock','<h2>')" title="Subheading">H2</button>
-            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('formatBlock','<p>')" title="Normal text">¶</button>
+            <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('formatBlock','<p>')" title="Normal text" aria-label="Normal text">¶</button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('bold')" title="Bold"><b>B</b></button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('italic')" title="Italic"><i>I</i></button>
             <button type="button" class="ghost sm" onmousedown="event.preventDefault()" onclick="fmt('insertUnorderedList')" title="Bulleted list">• List</button>
@@ -219,9 +219,9 @@
         This creates <strong>draft(s) in Outlook</strong> with everyone on <strong>BCC</strong> (recipients can't see each other).
         Large lists are split into multiple drafts. Nothing sends automatically — you open each draft, review it, and click Send.
       </div>
-      <button id="draftBtn" onclick="createDraft()" disabled>✉️ Create Outlook draft(s) for <span id="draftCount">0</span> recipients</button>
-      <div class="hint" id="batchHint" style="margin-top:8px"></div>
-      <div class="hint" id="draftStatus" style="margin-top:8px"></div>
+      <button id="draftBtn" onclick="createDraft()" disabled><span aria-hidden="true">✉️</span> Create Outlook draft(s) for <span id="draftCount">0</span> recipients</button>
+      <div class="hint" id="batchHint" role="status" style="margin-top:8px"></div>
+      <div class="hint" id="draftStatus" role="status" style="margin-top:8px"></div>
     </div>
   </section>
 
@@ -238,7 +238,7 @@
       </div>
       <div class="scroll">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Last sent</th><th></th></tr></thead>
+          <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Status</th><th scope="col">Last sent</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody id="subsBody"></tbody>
         </table>
       </div>
@@ -251,12 +251,12 @@
       <h2>Bounced addresses — review</h2>
       <p class="muted">After a send, undeliverable notices land in the sending mailbox. "Check for bounces" scans for them and flags bad addresses so they're skipped on future sends — <strong>nothing is removed from the PMS directory automatically.</strong> You decide that here, per person.</p>
       <div class="row" style="margin-bottom:12px;align-items:center">
-        <button onclick="checkBounces()">⤓ Check for bounces</button>
-        <span class="hint" id="bounceStatus"></span>
+        <button onclick="checkBounces()"><span aria-hidden="true">⤓</span> Check for bounces</button>
+        <span class="hint" id="bounceStatus" role="status"></span>
       </div>
       <div class="scroll">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Reason</th><th>Flagged</th><th>Actions</th></tr></thead>
+          <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Reason</th><th scope="col">Flagged</th><th scope="col">Actions</th></tr></thead>
           <tbody id="bounceBody"></tbody>
         </table>
       </div>
@@ -269,7 +269,7 @@
       <h2>Send history</h2>
       <div class="scroll">
         <table>
-          <thead><tr><th>Sent</th><th>Type</th><th>Subject</th><th>Recipients</th><th>By</th></tr></thead>
+          <thead><tr><th scope="col">Sent</th><th scope="col">Type</th><th scope="col">Subject</th><th scope="col">Recipients</th><th scope="col">By</th></tr></thead>
           <tbody id="histBody"></tbody>
         </table>
       </div>
@@ -277,7 +277,7 @@
   </section>
 </main>
 
-<div id="log"></div>
+<div id="log" role="log" aria-live="polite"></div>
 
 <script src="setty-auth.js"></script>
 <script>
@@ -341,7 +341,7 @@ function log(msg, cls=""){
   el.classList.add("show");
   const line = document.createElement("div");
   line.className = "logline " + cls;
-  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  line.textContent = new Date().toLocaleTimeString() + "  " + (cls === "err" ? "Error: " : "") + msg;
   el.appendChild(line); el.scrollTop = el.scrollHeight;
 }
 
@@ -734,20 +734,21 @@ function updateCounts(){
 /* ═══════════════════════════════════════════════════════════════════════════
    COMPOSE / PREVIEW
    ═══════════════════════════════════════════════════════════════════════════ */
-function buildEmailHtml(innerHtml){
+function buildEmailHtml(innerHtml, subject){
+  const title = esc((subject || "").trim() || FROM_NAME);
   const footer = `
-    <div style="margin-top:32px;padding-top:16px;border-top:1px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#888">
+    <div style="margin-top:32px;padding-top:16px;border-top:1px solid #ddd;font-family:Arial,sans-serif;font-size:12px;color:#595959">
       You're receiving this because you're a contact of ${FROM_NAME}.<br>
       ${FOOTER_ADDRESS}<br>
-      <a href="${UNSUB_URL}" style="color:#888">Unsubscribe from these mailings</a>
+      <a href="${UNSUB_URL}" style="color:#595959">Unsubscribe from these mailings</a>
     </div>`;
-  return `<!doctype html><html><head><meta charset="utf-8"></head>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head>
     <body style="margin:0;padding:0;background:#f4f4f4">
       <div style="max-width:640px;margin:0 auto;padding:24px;background:#fff">${innerHtml || ""}${footer}</div>
     </body></html>`;
 }
 function renderPreview(){
-  const html = buildEmailHtml(document.getElementById("bodyHtml").value);
+  const html = buildEmailHtml(document.getElementById("bodyHtml").value, document.getElementById("subject").value);
   document.getElementById("preview").srcdoc = html;
 }
 
@@ -795,9 +796,10 @@ function insertImage(){
     if (mb > 2 && !confirm("That image is " + (Math.round(mb*10)/10) + " MB. Large images can make the email slow or get blocked — under ~1 MB is best. Insert anyway?")) return;
     const reader = new FileReader();
     reader.onload = () => {
+      const alt = window.prompt("Describe the image for people using screen readers (alt text). Leave blank if it's decorative.", "") || "";
       document.getElementById("bodyVisual").focus();
       document.execCommand("insertHTML", false,
-        '<img src="' + reader.result + '" alt="" style="max-width:100%;height:auto">');
+        '<img src="' + reader.result + '" alt="' + esc(alt) + '" style="max-width:100%;height:auto">');
       syncFromVisual();
     };
     reader.readAsDataURL(file);
@@ -874,7 +876,7 @@ function loadStoredRun(){
   } catch(e){ return null; }
 }
 function runLinksHtml(r){
-  return r.links.map(l => '<a href="' + esc(l.url) + '" target="_blank">Draft ' + (l.i + 1) + '</a>').join(" · ");
+  return r.links.map(l => '<a href="' + esc(l.url) + '" target="_blank">Draft ' + (l.i + 1) + '<span class="sr-only"> (opens in a new tab)</span></a>').join(" · ");
 }
 // Persistent recovery panel — replaces the old wipe-the-status-line behavior.
 function renderRunPanel(headline){
@@ -965,7 +967,7 @@ async function runDraftBatches(){
       if (!cur) throw new Error("the email body couldn't be restored (too large to save across the reload). Re-paste the SAME content into the body editor, then click Resume again");
       r.bodyInner = cur;
     }
-    const bodyHtml = buildEmailHtml(r.bodyInner);
+    const bodyHtml = buildEmailHtml(r.bodyInner, r.subject);
     // Convert embedded images (inserted or pasted) into inline attachments so they
     // render in recipients' inboxes. sendHtml references them as cid:; bodyHtml keeps
     // the self-contained data: version for the saved campaign history.
@@ -1013,12 +1015,14 @@ async function runDraftBatches(){
     clearRunState(); // only after the record is safely written
     await Promise.all([loadCampaigns(), loadSubscribers()]).then(()=>{ renderHistory(); renderSubs(); });
 
-    const links = r.links.map(l => l.url);
-    const linkHtml = r.links.map(l => '<a href="' + esc(l.url) + '" target="_blank">Draft ' + (l.i + 1) + '</a>').join(" · ");
+    // Drafts are listed as links (each notes it opens in a new tab) instead of
+    // being auto-opened — unexpected new windows disorient screen-reader users.
+    const linkHtml = '<ul style="margin:6px 0 0;padding-left:20px">' + r.links.map(l =>
+      '<li><a href="' + esc(l.url) + '" target="_blank">Draft ' + (l.i + 1) +
+      '<span class="sr-only"> (opens in a new tab)</span></a></li>').join("") + '</ul>';
     status.innerHTML = "✅ Created " + total + " draft" + (total > 1 ? "s" : "") +
-      " for " + emails.length + " recipients — open and send each: " + linkHtml;
-    links.slice(0, 6).forEach(u => window.open(u, "_blank")); // auto-open up to 6 to avoid tab spam
-    log("Created " + total + " draft(s) for " + emails.length + " recipients.", "ok");
+      " for " + emails.length + " recipients — open and send each:" + linkHtml;
+    log(total + " draft" + (total > 1 ? "s" : "") + " ready for " + emails.length + " recipients.", "ok");
   } catch(e){
     if (r.doneIdx.length === 0 && phase !== "record"){
       // Nothing external was created — same clean failure as before, no panel needed.

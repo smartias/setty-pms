@@ -74,10 +74,12 @@
   .firm-name{font-weight:600}
   .cnt{margin-left:auto;font-size:11px;color:var(--muted);white-space:nowrap}
   .firm-body{padding:4px 12px 14px 26px;background:rgba(23,32,51,.5)}
-  tr.ct-inactive td{opacity:.45}
+  tr.ct-inactive td{opacity:.75}
   tr.ct-inactive td:last-child{opacity:1} /* keep the action buttons fully visible */
   .hidden{display:none}
   .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+  .skip-link{position:absolute;left:-9999px;top:0;z-index:60;background:var(--accent);color:#fff;padding:8px 14px;border-radius:0 0 8px 8px}
+  .skip-link:focus{left:0}
   /* sign-in gate */
   #gate{position:fixed;inset:0;background:var(--bg);z-index:50;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px}
   #gate p{color:var(--muted);max-width:420px;text-align:center;line-height:1.5}
@@ -102,18 +104,19 @@
 </style>
 </head>
 <body>
+<a href="#main" class="skip-link">Skip to main content</a>
 
-<div id="gate">
-  <h1 style="font-size:20px;margin:0">📣 Setty Marketing Suite</h1>
+<div id="gate" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+  <h2 id="gateTitle" style="font-size:20px;margin:0"><span aria-hidden="true">📣</span> Setty Marketing Suite</h2>
   <p>Pipeline, the global directory, and the newsletter — one place, powered by live PMS data.
      Sign in with your Setty Microsoft account to continue.</p>
   <button onclick="signIn()">Sign in with Microsoft</button>
   <p id="gateErr" class="hidden" style="color:#F87171">Sign-in didn't complete — pop-ups may be blocked. Try again.</p>
 </div>
 
-<header>
+<header inert>
   <div>
-    <h1>📣 Setty Marketing Suite</h1>
+    <h1><span aria-hidden="true">📣</span> Setty Marketing Suite</h1>
     <div class="sub">Pipeline · Global Directory · Newsletter — live PMS data</div>
   </div>
   <div class="spacer"></div>
@@ -121,13 +124,13 @@
   <button class="ghost sm" onclick="loadEverything()" title="Reload live PMS data">↻ Refresh</button>
 </header>
 
-<div class="tabs">
-  <button type="button" class="tab active" data-tab="pipeline" onclick="showTab('pipeline')">🎯 Pipeline</button>
-  <button type="button" class="tab" data-tab="directory" onclick="showTab('directory')">🗂 Global Directory</button>
-  <button type="button" class="tab" data-tab="newsletter" onclick="showTab('newsletter')">📰 Newsletter</button>
-</div>
+<nav class="tabs" aria-label="Sections" inert>
+  <button type="button" class="tab active" data-tab="pipeline" onclick="showTab('pipeline')"><span aria-hidden="true">🎯</span> Pipeline</button>
+  <button type="button" class="tab" data-tab="directory" onclick="showTab('directory')"><span aria-hidden="true">🗂</span> Global Directory</button>
+  <button type="button" class="tab" data-tab="newsletter" onclick="showTab('newsletter')"><span aria-hidden="true">📰</span> Newsletter</button>
+</nav>
 
-<main>
+<main id="main" inert>
   <!-- ════════════════ PIPELINE ════════════════ -->
   <section id="tab-pipeline">
     <div class="card">
@@ -167,8 +170,8 @@
       <div class="scroll">
         <table>
           <thead><tr>
-            <th>Pursuit</th><th>Client / Prime</th><th>Status</th><th>Proposal due</th>
-            <th class="num">Prob.</th><th class="num">Fee</th><th>PM</th><th>Location</th>
+            <th scope="col">Pursuit</th><th scope="col">Client / Prime</th><th scope="col">Status</th><th scope="col">Proposal due</th>
+            <th scope="col" class="num">Prob.</th><th scope="col" class="num">Fee</th><th scope="col">PM</th><th scope="col">Location</th>
           </tr></thead>
           <tbody id="plBody"><tr><td colspan="8" class="muted" style="padding:18px">Loading…</td></tr></tbody>
         </table>
@@ -208,7 +211,7 @@
           <label for="dirSearch">Search</label>
           <input type="text" id="dirSearch" placeholder="firm / contact / email…" oninput="renderDirectory()">
         </div>
-        <button class="sm" style="margin:0 0 1px" onclick="openFirmModal(null)">＋ Add firm</button>
+        <button class="sm" style="margin:0 0 1px" onclick="openFirmModal(null)"><span aria-hidden="true">＋</span> Add firm</button>
       </div>
       <div class="scroll" id="dirList"><div class="muted" style="padding:18px">Loading…</div></div>
       <div class="hint">Saves are version-guarded — if someone edits the same firm in the PMS at the same moment, you'll be asked to reload rather than overwrite them.</div>
@@ -226,7 +229,7 @@
         nothing sends without a person clicking Send.
       </p>
       <div class="row" style="margin-top:14px">
-        <button onclick="window.open('Newsletter.html','_blank')">📰 Open the Newsletter tool</button>
+        <button onclick="window.open('Newsletter.html','_blank')"><span aria-hidden="true">📰</span> Open the Newsletter tool</button>
       </div>
       <div class="hint">Unsubscribes and bounces are honored automatically on every send, in both modes.</div>
     </div>
@@ -234,9 +237,9 @@
 </main>
 
 <!-- Shared modal (firm / contact editor) -->
-<div id="modalWrap"><div id="modal"></div></div>
+<div id="modalWrap"><div id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"></div></div>
 
-<div id="log"></div>
+<div id="log" role="log" aria-live="polite"></div>
 
 <script src="setty-auth.js"></script>
 <script>
@@ -277,7 +280,7 @@ function log(msg, cls=""){
   el.classList.add("show");
   const line = document.createElement("div");
   line.className = "logline " + cls;
-  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  line.textContent = new Date().toLocaleTimeString() + "  " + (cls === "err" ? "Error: " : "") + msg;
   el.appendChild(line); el.scrollTop = el.scrollHeight;
 }
 
@@ -355,6 +358,8 @@ function afterSignIn(){
   const u = currentUser();
   if (!u && !IS_DEV) return;
   document.getElementById("gate").style.display = "none";
+  // Gate is gone — lift inert so the app content is reachable again.
+  document.querySelectorAll("header,nav.tabs,main").forEach(el => el.removeAttribute("inert"));
   document.getElementById("whoami").textContent = u ? ("Signed in: " + u) : "(local dev — sign-in skipped)";
   loadEverything();
 }
@@ -563,7 +568,10 @@ function renderDirectory(){
       </button>
       ${open ? `<div class="firm-body">
         ${c.address ? '<div class="hint" style="margin:2px 0 8px">'+esc(c.address)+'</div>' : ''}
-        <table><tbody>
+        <table><thead><tr>
+          <th scope="col">Name</th><th scope="col">Title</th><th scope="col">Email</th>
+          <th scope="col">Phone</th><th scope="col"><span class="sr-only">Actions</span></th>
+        </tr></thead><tbody>
           ${contacts.map(ct => `
             <tr class="${ct.inactive ? 'ct-inactive' : ''}">
               <td style="width:22%">${esc(ct.name)||'<span class="muted">—</span>'}
@@ -573,15 +581,15 @@ function renderDirectory(){
               <td style="width:24%">${ct.email ? '<a href="mailto:'+esc(ct.email)+'">'+esc(ct.email)+'</a>' : ''}</td>
               <td style="width:16%" class="muted">${esc(ct.phone)||""}</td>
               <td style="text-align:right;white-space:nowrap">
-                <button class="ghost sm" onclick="event.stopPropagation();openContactModal('${esc(f.rowId)}','${esc(ct.id)}')">Edit</button>
+                <button class="ghost sm" aria-label="Edit ${esc(ct.name || ct.email || 'contact')}" onclick="event.stopPropagation();openContactModal('${esc(f.rowId)}','${esc(ct.id)}')">Edit</button>
                 <button class="ghost sm" onclick="event.stopPropagation();toggleContactInactive('${esc(f.rowId)}','${esc(ct.id)}')">${ct.inactive ? "Reactivate" : "Deactivate"}</button>
                 <button class="danger sm" onclick="event.stopPropagation();deleteContact('${esc(f.rowId)}','${esc(ct.id)}')">Delete</button>
               </td>
             </tr>`).join("") || '<tr><td class="muted">No contacts yet.</td></tr>'}
         </tbody></table>
         <div class="row" style="margin-top:10px;gap:8px">
-          <button class="ghost sm" onclick="openContactModal('${esc(f.rowId)}',null)">＋ Add contact</button>
-          <button class="ghost sm" onclick="openFirmModal('${esc(f.rowId)}')">✎ Edit firm</button>
+          <button class="ghost sm" onclick="openContactModal('${esc(f.rowId)}',null)"><span aria-hidden="true">＋</span> Add contact</button>
+          <button class="ghost sm" aria-label="Edit firm ${esc(c.name)}" onclick="openFirmModal('${esc(f.rowId)}')"><span aria-hidden="true">✎</span> Edit firm</button>
         </div>
       </div>` : ""}
     </div>`;
@@ -617,9 +625,31 @@ async function saveFirmRow(f){
 const newId = () => "mkt-" + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 
 /* ── Modal plumbing ─────────────────────────────────────────────────────── */
-function openModal(html){ document.getElementById("modal").innerHTML = html; document.getElementById("modalWrap").classList.add("show"); }
-function closeModal(){ document.getElementById("modalWrap").classList.remove("show"); }
+let _modalReturnFocus = null; // element to give focus back to when the modal closes
+function openModal(html){
+  _modalReturnFocus = document.activeElement;
+  document.getElementById("modal").innerHTML = html;
+  document.getElementById("modalWrap").classList.add("show");
+  const first = document.getElementById("modal").querySelector("input,select,textarea,button,a[href]");
+  if (first) first.focus();
+}
+function closeModal(){
+  document.getElementById("modalWrap").classList.remove("show");
+  if (_modalReturnFocus && document.contains(_modalReturnFocus)) _modalReturnFocus.focus();
+  _modalReturnFocus = null;
+}
 document.getElementById("modalWrap").addEventListener("click", e => { if (e.target.id === "modalWrap") closeModal(); });
+// Escape closes the editor modal (never the sign-in gate); Tab is trapped inside it.
+document.getElementById("modalWrap").addEventListener("keydown", e => {
+  if (e.key === "Escape"){ e.preventDefault(); closeModal(); return; }
+  if (e.key !== "Tab") return;
+  const els = [...document.getElementById("modal").querySelectorAll("input,select,textarea,button,a[href]")]
+    .filter(el => !el.disabled && el.offsetParent !== null);
+  if (!els.length) return;
+  const first = els[0], last = els[els.length - 1];
+  if (e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+});
 
 function chipRow(all, selected){
   return all.map(t => `<button type="button" class="chip ${selected.includes(t)?'on':''}" data-val="${esc(t)}" aria-pressed="${selected.includes(t)}"
@@ -635,7 +665,7 @@ function openFirmModal(rowId){
   const allTypes = [...new Set(FIRMS.flatMap(x => firmTypes(x.client)))].sort();
   const allCerts = [...new Set(FIRMS.flatMap(x => firmCerts(x.client)))].sort();
   openModal(`
-    <h3>${f ? "Edit firm" : "Add firm"}</h3>
+    <h3 id="modalTitle">${f ? "Edit firm" : "Add firm"}</h3>
     <div class="fld"><label for="fmName">Firm name</label><input type="text" id="fmName" value="${esc(c.name)}"></div>
     <div class="fld"><label for="fmAddr">Address</label><textarea id="fmAddr">${esc(c.address)}</textarea></div>
     <div class="fld"><label>Company types</label>
@@ -695,7 +725,7 @@ function openContactModal(rowId, contactId){
   const f = FIRMS.find(x => x.rowId === rowId);
   const ct = contactId ? (f.client.contacts||[]).find(c => String(c.id) === String(contactId)) || {} : {};
   openModal(`
-    <h3>${contactId ? "Edit contact" : "Add contact"} <span class="muted" style="font-weight:400">— ${esc(f.client.name)}</span></h3>
+    <h3 id="modalTitle">${contactId ? "Edit contact" : "Add contact"} <span class="muted" style="font-weight:400">— ${esc(f.client.name)}</span></h3>
     <div class="fld"><label for="ctName">Name</label><input type="text" id="ctName" value="${esc(ct.name)}"></div>
     <div class="row">
       <div class="fld" style="flex:1"><label for="ctTitle">Title</label><input type="text" id="ctTitle" value="${esc(ct.title)}"></div>
