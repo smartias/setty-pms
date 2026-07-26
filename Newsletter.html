@@ -500,7 +500,14 @@ async function refreshAll(){
     seedDefaults(false);
     renderSubs(); renderBounces(); renderHistory();
     log("Directory ready: " + DIRECTORY.length + " people, " + Object.keys(SUBS).length + " overlay rows.", "ok");
-  } catch(e){ log("Load failed: " + e.message, "err"); }
+  } catch(e){
+    log("Load failed: " + e.message, "err");
+    // If nothing loaded yet (e.g. the auto-load on open failed), don't leave a
+    // stale "Loading…" placeholder — say what happened and how to retry.
+    if (!DIRECTORY.length) document.getElementById("groupList").innerHTML =
+      '<div class="muted" style="padding:18px">Couldn\'t load the directory — ' + esc(e.message) +
+      '. Use ↻ Load / refresh directory above to retry.</div>';
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -819,8 +826,83 @@ function extractInlineImages(html){
 
 /* ═══════════════════════════════════════════════════════════════════════════
    CREATE OUTLOOK DRAFT (BCC) — mirrors SettyPMS createOutlookDraft()
+
+   Partial-failure containment: a throw mid-loop (Graph throttle, token expiry)
+   used to abort the run, leaving already-created drafts in Outlook with no
+   record — and clicking Create again re-drafted EVERYONE, double-mailing the
+   earlier batches. Now the batch plan is snapshotted into RUN at start (and
+   mirrored to localStorage so a reload survives), each batch's outcome is
+   tracked, and a failure offers Resume (finish the SAME run) or Abandon.
    ═══════════════════════════════════════════════════════════════════════════ */
+const RUN_STORE_KEY  = "newsletter_draft_run_v1";
+const RUN_MAX_AGE_MS = 48 * 60 * 60 * 1000; // stored runs older than this are stale
+// Active run-state. Shape: { v:1, subject, type, bodyInner, batches:[[email,…],…],
+// doneIdx:[batchIndex,…], links:[{i,url},…], campaignSaved, sentBy, startedAt }.
+// batches is the ORIGINAL audience snapshot — a resume uses it even if the
+// selection checkboxes changed meanwhile. Non-null RUN = unfinished run.
+let RUN = null;
+
+function saveRunState(){
+  if (!RUN) return;
+  try {
+    const slim = { v: 1, savedAt: Date.now(), subject: RUN.subject, type: RUN.type,
+      batches: RUN.batches, doneIdx: RUN.doneIdx, links: RUN.links,
+      campaignSaved: RUN.campaignSaved, sentBy: RUN.sentBy };
+    // Include the body when it fits (embedded images can blow the ~5 MB quota);
+    // without it a post-reload resume asks for the content to be re-pasted first.
+    try { localStorage.setItem(RUN_STORE_KEY, JSON.stringify({ ...slim, bodyInner: RUN.bodyInner })); }
+    catch { localStorage.setItem(RUN_STORE_KEY, JSON.stringify(slim)); }
+  } catch(e){ /* storage unavailable — in-memory RUN still protects this session */ }
+}
+function clearRunState(){
+  RUN = null;
+  try { localStorage.removeItem(RUN_STORE_KEY); } catch(e){}
+}
+function loadStoredRun(){
+  try {
+    const raw = localStorage.getItem(RUN_STORE_KEY);
+    if (!raw) return null;
+    const r = JSON.parse(raw);
+    if (!r || r.v !== 1 || !Array.isArray(r.batches) || !r.batches.length) return null;
+    if (!r.savedAt || (Date.now() - r.savedAt) > RUN_MAX_AGE_MS){
+      try { localStorage.removeItem(RUN_STORE_KEY); } catch(e){}
+      return null;
+    }
+    if (!Array.isArray(r.doneIdx)) r.doneIdx = [];
+    if (!Array.isArray(r.links)) r.links = [];
+    return r;
+  } catch(e){ return null; }
+}
+function runLinksHtml(r){
+  return r.links.map(l => '<a href="' + esc(l.url) + '" target="_blank">Draft ' + (l.i + 1) + '</a>').join(" · ");
+}
+// Persistent recovery panel — replaces the old wipe-the-status-line behavior.
+function renderRunPanel(headline){
+  const r = RUN; if (!r) return;
+  const done = r.doneIdx.length, total = r.batches.length;
+  document.getElementById("draftStatus").innerHTML =
+    '<div class="banner warn" style="margin-top:4px">' +
+      '<strong>' + esc(headline) + '</strong><br>' +
+      (done
+        ? 'Drafts for ' + (done === 1 ? 'batch 1' : 'batches 1–' + done) + ' of ' + total +
+          ' were already created in your Outlook Drafts (' + (runLinksHtml(r) || 'links unavailable') + '). ' +
+          '<strong>Do NOT start over</strong> — that would draft duplicates for those recipients.'
+        : 'No drafts have been created yet.') +
+      '<div class="row" style="margin-top:8px;gap:8px">' +
+        '<button onclick="resumeDraftRun()">▶ Resume remaining batches</button>' +
+        '<button class="danger sm" onclick="abandonDraftRun()">Abandon run</button>' +
+      '</div>' +
+    '</div>';
+}
+
 async function createDraft(){
+  // An unfinished run means drafts may already exist in Outlook — never start a
+  // fresh plan on top of it (that's exactly the double-mail path).
+  if (RUN){
+    renderRunPanel("An earlier draft run is unfinished — resume or abandon it before starting a new one.");
+    log("Unfinished draft run pending — use Resume or Abandon in step 3.", "err");
+    return;
+  }
   const subject = document.getElementById("subject").value.trim();
   const innerHtml = document.getElementById("bodyHtml").value.trim();
   const type = document.getElementById("campType").value;
@@ -829,34 +911,77 @@ async function createDraft(){
   const recips = DIRECTORY.filter(p => SELECTED.has(p.email) && !isBlocked(p.email));
   if (!recips.length){ log("No recipients selected.", "err"); return; }
 
-  // Split into batches that stay under the per-message recipient cap.
+  // Snapshot the batch plan (emails only — slim enough for localStorage). Batches
+  // stay under the per-message recipient cap and are disjoint, so no one is
+  // double-mailed within a run.
   const batches = [];
-  for (let i = 0; i < recips.length; i += BATCH_SIZE) batches.push(recips.slice(i, i + BATCH_SIZE));
+  for (let i = 0; i < recips.length; i += BATCH_SIZE) batches.push(recips.slice(i, i + BATCH_SIZE).map(p => p.email));
 
+  RUN = { v: 1, subject, type, bodyInner: innerHtml, batches,
+          doneIdx: [], links: [], campaignSaved: false, sentBy: null, startedAt: Date.now() };
+  saveRunState();
+  await runDraftBatches();
+}
+
+async function resumeDraftRun(){
+  if (!RUN){ log("Nothing to resume.", "err"); return; }
+  log("Resuming draft run: " + RUN.doneIdx.length + " of " + RUN.batches.length + " batch(es) already drafted.");
+  await runDraftBatches();
+}
+
+function abandonDraftRun(){
+  const r = RUN; if (!r) return;
+  const linkHtml = runLinksHtml(r);
+  const done = r.doneIdx.length;
+  clearRunState();
+  document.getElementById("draftStatus").innerHTML = done
+    ? 'Run abandoned. <strong>' + done + ' draft(s) were already created</strong> — delete them in your Outlook Drafts folder so nobody is mailed: ' + (linkHtml || "(open Outlook ▸ Drafts)")
+    : "Run abandoned — no drafts had been created.";
+  log("Draft run abandoned" + (done ? " — remember to delete the " + done + " created draft(s) in Outlook." : "."), done ? "err" : "");
+  updateCounts();
+}
+
+// The core loop. Works off RUN only (the start-of-run snapshot), skips batches
+// already drafted, and persists progress after every step — so it's safe to call
+// again after any failure and it will only do the remaining work.
+async function runDraftBatches(){
+  const r = RUN; if (!r) return;
   const btn = document.getElementById("draftBtn"); btn.disabled = true;
   const status = document.getElementById("draftStatus");
+  const total = r.batches.length;
+  let phase = null; // null = pre-flight, batch index = drafting, "record" = campaign record
   try {
     status.textContent = "Authenticating…";
     const token = await getToken(MAIL_SCOPES); paintUser();
 
     const me = currentUser();
+    r.sentBy = r.sentBy || me;
     const toAddr = SEND_MAILBOX || me;                 // To: shared mailbox (or yourself); list on BCC
     const mailboxPath = SEND_MAILBOX ? "/users/" + encodeURIComponent(SEND_MAILBOX) : "/me";
-    const bodyHtml = buildEmailHtml(innerHtml);
+    // Post-reload resume where the body was too large to store: fall back to the
+    // editor's current content so the remaining batches match the earlier ones.
+    if (r.bodyInner == null){
+      const cur = document.getElementById("bodyHtml").value.trim();
+      if (!cur) throw new Error("the email body couldn't be restored (too large to save across the reload). Re-paste the SAME content into the body editor, then click Resume again");
+      r.bodyInner = cur;
+    }
+    const bodyHtml = buildEmailHtml(r.bodyInner);
     // Convert embedded images (inserted or pasted) into inline attachments so they
     // render in recipients' inboxes. sendHtml references them as cid:; bodyHtml keeps
     // the self-contained data: version for the saved campaign history.
     const { html: sendHtml, attachments } = extractInlineImages(bodyHtml);
-    const links = [];
 
-    // Each batch is its own BCC draft. Recipients are disjoint, so no one is double-mailed.
-    for (let b = 0; b < batches.length; b++){
-      status.textContent = "Creating draft " + (b+1) + " of " + batches.length + " (" + batches[b].length + " recipients)…";
+    // Each batch is its own BCC draft. Already-drafted batches are skipped.
+    for (let b = 0; b < total; b++){
+      if (r.doneIdx.includes(b)) continue;
+      phase = b;
+      status.innerHTML = "Creating draft " + (b+1) + " of " + total + " (" + r.batches[b].length + " recipients)…" +
+        (r.links.length ? "<br>Created so far: " + runLinksHtml(r) : "");
       const draft = {
-        subject,
+        subject: r.subject,
         body: { contentType: "HTML", content: sendHtml },
         toRecipients: toAddr ? [{ emailAddress: { address: toAddr } }] : [],
-        bccRecipients: batches[b].map(p => ({ emailAddress: { address: p.email } })),
+        bccRecipients: r.batches[b].map(e => ({ emailAddress: { address: e } })),
       };
       if (attachments.length) draft.attachments = attachments;
       if (SEND_MAILBOX) draft.from = { emailAddress: { address: SEND_MAILBOX } };
@@ -867,27 +992,60 @@ async function createDraft(){
       });
       if (!res.ok){ const e = await res.json().catch(()=>({})); throw new Error("Draft " + (b+1) + ": " + (e?.error?.message || ("Graph " + res.status))); }
       const msg = await res.json();
-      if (msg.webLink) links.push(msg.webLink);
+      r.doneIdx.push(b);
+      if (msg.webLink) r.links.push({ i: b, url: msg.webLink });
+      saveRunState(); // outcome persisted before the next batch starts
     }
 
-    // One campaign record for the whole send; stamp every recipient.
-    const emails = recips.map(p => p.email);
-    await sb("POST", "/rest/v1/newsletter_campaigns", {
-      type, subject, body_html: bodyHtml,
-      recipients: emails, recipient_count: emails.length, sent_by: me,
-    }, "return=minimal");
-    await stampLastSent(emails, type);
+    // One campaign record for the whole send; stamp every recipient. Guarded so a
+    // resume after a failed stamp never inserts a duplicate history row.
+    phase = "record";
+    status.textContent = "Recording campaign…";
+    const emails = [].concat(...r.batches);
+    if (!r.campaignSaved){
+      await sb("POST", "/rest/v1/newsletter_campaigns", {
+        type: r.type, subject: r.subject, body_html: bodyHtml,
+        recipients: emails, recipient_count: emails.length, sent_by: r.sentBy,
+      }, "return=minimal");
+      r.campaignSaved = true; saveRunState();
+    }
+    await stampLastSent(emails, r.type);
+    clearRunState(); // only after the record is safely written
     await Promise.all([loadCampaigns(), loadSubscribers()]).then(()=>{ renderHistory(); renderSubs(); });
 
-    const linkHtml = links.map((u,i) => '<a href="'+u+'" target="_blank">Draft '+(i+1)+'</a>').join(" · ");
-    status.innerHTML = "✅ Created " + batches.length + " draft" + (batches.length>1?"s":"") +
+    const links = r.links.map(l => l.url);
+    const linkHtml = r.links.map(l => '<a href="' + esc(l.url) + '" target="_blank">Draft ' + (l.i + 1) + '</a>').join(" · ");
+    status.innerHTML = "✅ Created " + total + " draft" + (total > 1 ? "s" : "") +
       " for " + emails.length + " recipients — open and send each: " + linkHtml;
     links.slice(0, 6).forEach(u => window.open(u, "_blank")); // auto-open up to 6 to avoid tab spam
-    log("Created " + batches.length + " draft(s) for " + emails.length + " recipients.", "ok");
+    log("Created " + total + " draft(s) for " + emails.length + " recipients.", "ok");
   } catch(e){
-    status.textContent = "";
-    log("Draft failed: " + e.message, "err");
-  } finally { btn.disabled = false; }
+    if (r.doneIdx.length === 0 && phase !== "record"){
+      // Nothing external was created — same clean failure as before, no panel needed.
+      clearRunState();
+      status.textContent = "";
+      log("Draft failed: " + e.message, "err");
+    } else {
+      // Drafts exist in Outlook — keep the run-state and show the recovery panel.
+      const headline = (typeof phase === "number")
+        ? "Batch " + (phase + 1) + " of " + total + " failed — " + e.message + "."
+        : (phase === "record")
+          ? "All " + total + " draft(s) were created, but recording the campaign failed — " + e.message + ". Resume finishes the record (no new drafts will be made)."
+          : "Couldn't resume — " + e.message + ".";
+      saveRunState();
+      renderRunPanel(headline);
+      log("Draft run interrupted: " + e.message, "err");
+    }
+  } finally { btn.disabled = false; updateCounts(); }
+}
+
+// On open: offer to finish a run that a reload/crash interrupted (< 48 h old).
+function checkStoredRun(){
+  const stored = loadStoredRun();
+  if (!stored) return;
+  RUN = stored;
+  renderRunPanel('An interrupted draft run ("' + stored.subject + '", ' + new Date(stored.savedAt).toLocaleString() + ') was found.');
+  log("Found an unfinished draft run (" + stored.doneIdx.length + " of " + stored.batches.length + " batch(es) drafted) — Resume or Abandon it in step 3.", "err");
 }
 
 // Stamp last_sent on recipients. Chunked so the PostgREST in.() filter never
@@ -1092,6 +1250,16 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c => ({"&":"&amp
   list.addEventListener("click", onGroupClick);   // caret/name collapse-expand
   try { await getMsalApp(); paintUser(); } catch(e){ /* not signed in yet */ }
   renderPreview();
+  // If a reload/crash interrupted a draft run, offer Resume/Abandon in step 3.
+  // Renders into #draftStatus, so it coexists with the directory auto-load below.
+  checkStoredRun();
+  // Auto-load the directory on open. The directory + overlay reads go through
+  // sb()/settyAuth (anon fallback while signed out), so they don't need the
+  // Microsoft sign-in — that's only for drafting/bounce scans later. The
+  // ↻ button above stays as the manual refresh; refreshAll() reports its own
+  // failures, the outer catch just keeps boot alive.
+  list.innerHTML = '<div class="muted" style="padding:18px">Loading the directory…</div>';
+  try { await refreshAll(); } catch(e){ log("Auto-load failed: " + e.message, "err"); }
 })();
 </script>
 </body>

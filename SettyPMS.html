@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-24-pms-v79-signin-gate";
+    window.__appVersion = "2026-07-25-pms-v82-ux4-modal-a11y-focus";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -934,12 +934,21 @@ async function saveState(state) {
 }
 
 const LOCAL_SNAPSHOT_KEY = "setty_pms_local_snapshot_v1";
+// Marker written when the user dismisses the snapshot-recovery banner: holds
+// the _savedAt of the dismissed snapshot so the same orphan never nags twice.
+const SNAPSHOT_RECOVERY_DISMISSED_KEY = "setty_pms_snapshot_recovery_dismissed_v1";
 
 // Snapshot is stored pako-compressed (same library as email bodies — JSON
 // deflates ~8-12x) because the raw JSON outgrew the ~5MB localStorage quota.
 // "PZ1|" prefixes the compressed format; loadLocalSnapshot still reads old
 // plain-JSON snapshots for backward compatibility.
-function saveLocalSnapshot(state) {
+//
+// opts.pending (default true): whether this snapshot may contain edits that
+// have NOT yet reached a successful cloud save. The post-load hydration write
+// passes { pending: false } — that snapshot mirrors the cloud, so the
+// recovery banner must never fire on it. Every edit-time write (and the
+// beforeunload belt-and-braces write) defaults to pending: true.
+function saveLocalSnapshot(state, opts) {
   try {
     const payload = {
       projects: state.projects || [],
@@ -947,6 +956,7 @@ function saveLocalSnapshot(state) {
       staff: state.staff || [],
       clients: state.clients || [],
       _savedAt: new Date().toISOString(),
+      _pendingSave: !opts || opts.pending !== false,
     };
     const json = JSON.stringify(payload);
     const compressed = compressHtml(json); // generic string deflate, despite the name
@@ -1283,12 +1293,25 @@ async function loadStateV2() {
   const projectVersions = new Map((projectRows || []).map(r => [r.id, r.version]));
   const clientVersions  = new Map((clientRows  || []).map(r => [r.id, r.version]));
 
+  // Last cloud save time (epoch ms, 0 = unknown) — max updated_at across all
+  // rows. updated_at stamps are client-generated (new Date().toISOString() at
+  // save time), so comparing against the local snapshot's _savedAt uses the
+  // same clock for the common single-user case. Used by the snapshot-recovery
+  // check on load; parsed numerically (not lexicographically) because
+  // PostgREST may echo timestamps in +00:00 form while clients write "Z".
+  let lastCloudSaveAt = 0;
+  for (const r of [...(projectRows || []), ...(clientRows || []), ...(metaRows || [])]) {
+    const t = r && r.updated_at ? Date.parse(r.updated_at) : 0;
+    if (t && t > lastCloudSaveAt) lastCloudSaveAt = t;
+  }
+
   return {
     projects,
     clients,
     staff: meta.staff || [],
     termContracts: meta.termContracts || [],
     _versions: { projects: projectVersions, clients: clientVersions },
+    _lastCloudSaveAt: lastCloudSaveAt,
   };
 }
 
@@ -2041,6 +2064,8 @@ const CSS = `
   input:focus,select:focus,textarea:focus{border-color:${P.accent};}
   input::placeholder,textarea::placeholder{color:${P.textDim};}
   button{font-family:'DM Sans',sans-serif;cursor:pointer;border:none;transition:all .15s;}
+  /* Keyboard-only focus ring (mouse clicks stay outline-free via :focus-visible). */
+  button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid ${P.accent};outline-offset:2px;}
   table{border-collapse:collapse;width:100%;}
   th,td{text-align:left;padding:8px 12px;border-bottom:1px solid ${P.border};font-size:13px;}
   th{font-size:11px;font-weight:600;color:${P.textDim};text-transform:uppercase;letter-spacing:.05em;background:${P.card};}
@@ -2427,12 +2452,31 @@ function KpiBox({ label, val, color, sub, onClick }) {
 }
 
 function Modal({ title, onClose, children, wide }) {
+  const boxRef = React.useRef(null);
+  React.useEffect(() => {
+    // Escape closes (same path as the ✕, so guarded modals keep their guards).
+    const onKey = e => { if (e.key === "Escape" && onClose) onClose(); };
+    window.addEventListener("keydown", onKey);
+    // Move focus into the dialog so Tab starts inside it, and restore it to
+    // the opener on close — keyboard users otherwise tab the page underneath.
+    const prev = document.activeElement;
+    const t = setTimeout(() => {
+      const first = boxRef.current && boxRef.current.querySelector("input, select, textarea, button:not([data-modal-close])");
+      if (first) first.focus();
+    }, 0);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      clearTimeout(t);
+      if (prev && prev.focus) try { prev.focus(); } catch (e) {}
+    };
+  }, []);
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
-      <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, width: wide ? 860 : 560, maxHeight: "92vh", overflow: "auto", padding: 28 }}>
+    <div role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div ref={boxRef} style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, width: wide ? 860 : 560, maxHeight: "92vh", overflow: "auto", padding: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <h2 style={{ fontSize: 17, fontWeight: 700 }}>{title}</h2>
-          <button onClick={onClose} style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
+          <button data-modal-close onClick={onClose} style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
         </div>
         {children}
       </div>
@@ -7503,11 +7547,18 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                 <td>
                   {phaseComplete
                     ? <span style={{ color: P.textMuted, fontSize: 13, fontFamily: "JetBrains Mono" }}>{durWD || "—"} WD</span>
-                    : <input type="number" min={1} step={1}
+                    : <CommitInput
                         value={durWD || ""}
-                        onChange={e => updatePhaseDuration(ph.id, +e.target.value)}
-                        style={{ width: 64, fontFamily: "JetBrains Mono" }}
-                        title="Business days — changing this recalculates the end date" />}
+                        onCommit={v => {
+                          // Blank/NaN commit = revert; don't coerce "" → 1 and
+                          // rewrite the end date mid-edit.
+                          const n = parseInt(v, 10);
+                          if (String(v).trim() === "" || isNaN(n)) return;
+                          updatePhaseDuration(ph.id, n);
+                        }}
+                        inputProps={{ type: "number", min: 1, step: 1,
+                          style: { width: 64, fontFamily: "JetBrains Mono" },
+                          title: "Business days — changing this recalculates the end date" }} />}
                 </td>
                 <td><span style={{ fontFamily: "JetBrains Mono", fontWeight: 600, color: pct >= 100 ? P.green : pct > 0 ? P.accentLight : P.textDim }}>{pct}%</span></td>
                 <td><span style={{ fontFamily: "JetBrains Mono", color: P.textDim, fontSize: 12 }}>{expectedPct > 0 || (sd && today >= sd) ? expectedPct + "%" : "—"}</span></td>
@@ -7718,10 +7769,16 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                     </div>
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input type="number" min={0} max={100} value={m.pctComplete || 0}
-                       onChange={e => updateMilestone(m.id, "pctComplete", +e.target.value, true, { notifyTeams: false })}
-			onBlur={e => updateMilestone(m.id, "pctComplete", +e.target.value, false, { debounceTeams: true, teamsDelay: 1000 })}
-                        style={{ width: 72, MozAppearance: "textfield" }} />
+                      <CommitInput value={m.pctComplete || 0}
+                        onCommit={v => {
+                          // Blank/NaN commit = revert (no reduce-to-0 confirm
+                          // mid-edit). The reduce-% confirm inside
+                          // updateMilestone now runs only on commit.
+                          const n = +v;
+                          if (String(v).trim() === "" || isNaN(n)) return;
+                          updateMilestone(m.id, "pctComplete", n, false, { debounceTeams: true, teamsDelay: 1000 });
+                        }}
+                        inputProps={{ type: "number", min: 0, max: 100, style: { width: 72, MozAppearance: "textfield" } }} />
                       <span style={{ color: P.textDim, fontSize: 12 }}>%</span>
                       <input type="checkbox" checked={false}
                         onChange={e => updateMilestone(m.id, "pctComplete", e.target.checked ? 100 : 0)}
@@ -9605,7 +9662,13 @@ function AddLinkModal({ project, onAdd, onClose }) {
   const sel      = { width: "100%", padding: "6px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.bg, color: P.text, fontSize: 13 };
 
   return (
-    <div style={overlay} onClick={e => e.target === e.currentTarget && onClose()}>
+    <div style={overlay} onClick={e => {
+      if (e.target !== e.currentTarget) return;
+      // Backdrop-close only while the form is untouched — a stray click on the
+      // dark area must not discard a filled-in link (the ✕/Cancel remain).
+      if (targetId || targetUrl || targetLabel) return;
+      onClose();
+    }}>
       <div style={box}>
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: P.text }}>Add Link</div>
         <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>Connect this item to another document, entity, or file.</div>
@@ -16954,7 +17017,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             </span>
           )}
           <select value={project.status} onChange={e => handleStatusChange(e.target.value)} style={{ fontSize: 13 }}>
-            {PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}
+            <optgroup label="Pipeline">{PIPELINE_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
+            <optgroup label="Awarded">{PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
           </select>
           <Btn small variant={project.archived ? "success" : "ghost"} onClick={() => {
               if (project.archived) {
@@ -17170,7 +17234,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             <Field label="City"><input value={project.projectCity || ""} onChange={e => updateField("projectCity", e.target.value)} style={{ width: "100%" }} /></Field>
             <Field label="State"><input value={project.projectState || ""} onChange={e => updateField("projectState", e.target.value)} style={{ width: "100%" }} placeholder="e.g. VA" /></Field>
             <Field label="Project Status">
-              <select value={project.status} onChange={e => updateField("status", e.target.value)} style={{ width: "100%" }}>
+              <select value={project.status} onChange={e => handleStatusChange(e.target.value)} style={{ width: "100%" }}>
                 <optgroup label="Pipeline">{PIPELINE_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
                 <optgroup label="Awarded">{PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
               </select>
@@ -17347,6 +17411,10 @@ function EmailsView({ project, onChange }) {
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Load failure is NOT an empty log — render a distinct error + Retry instead
+  // of the "No emails saved yet" empty state (same idea as EmailLogPicker).
+  const [emailLoadError, setEmailLoadError] = useState(false);
+  const [loadRetryTick, setLoadRetryTick] = useState(0);
   const PAGE_SIZE = 50;
 
   // Filter UI state.
@@ -17379,17 +17447,19 @@ function EmailsView({ project, onChange }) {
         if (cancelled) return;
         setEmails(page);
         setHasMore(page.length === PAGE_SIZE);
+        setEmailLoadError(false);
       } catch (e) {
         if (cancelled) return;
         console.warn("loadProjectEmails failed:", e);
         setEmails([]);
         setHasMore(false);
+        setEmailLoadError(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [project.id, searchTerm, filterSender]);
+  }, [project.id, searchTerm, filterSender, loadRetryTick]);
 
   // Load sender options + saved-msgId set when project changes (independent of filters).
   React.useEffect(() => {
@@ -18089,7 +18159,13 @@ function EmailsView({ project, onChange }) {
           ⏳ Loading emails…
         </div>
       )}
-      {!loading && emails.length === 0 && (
+      {!loading && emailLoadError && (
+        <div style={{ color: "#f87171", fontSize: 13, padding: "20px 0", display: "flex", alignItems: "center", gap: 10 }}>
+          <span>⚠ Couldn't load the email log — check your connection.</span>
+          <Btn small variant="ghost" onClick={() => setLoadRetryTick(t => t + 1)}>Retry</Btn>
+        </div>
+      )}
+      {!loading && !emailLoadError && emails.length === 0 && (
         <div style={{ color: P.textDim, fontSize: 13, padding: "20px 0" }}>
           {searchTerm || filterSender !== "All"
             ? "No emails match the current filter. Adjust the search or sender, or clear filters."
@@ -27013,6 +27089,24 @@ function App() {
   // are silently retrying so the user knows the system isn't dead.
   const [networkRetry, setNetworkRetry] = useState({ active: false, attempt: 0, error: "" });
 
+  // ── UX wave 2: "last 2 seconds" data-loss window ──
+  // changeSeq bumps every time an edit schedules the debounced save; savedSeq
+  // catches up when a save completes cleanly (no conflicts). While
+  // changeSeq > savedSeq a save is pending (debounce not fired / in flight /
+  // retry outstanding) and the beforeunload guard warns. Refs, not state —
+  // the beforeunload listener is registered once and must read live values.
+  const changeSeqRef = React.useRef(0);
+  const savedSeqRef = React.useRef(0);
+  // First auto-save-effect run after load is hydration, not a user edit:
+  // it must not arm the unload guard and its snapshot is written pending:false.
+  const hydratedRef = React.useRef(false);
+  // Snapshot recovery: set on load when the local snapshot is meaningfully
+  // newer than the cloud's last save. { savedAt } | null. The parsed snapshot
+  // itself is captured in a ref BEFORE the hydration effect overwrites the
+  // localStorage copy with cloud data.
+  const [snapshotRecovery, setSnapshotRecovery] = useState(null);
+  const orphanSnapshotRef = React.useRef(null);
+
   // Refs that always hold the LATEST values, used by setTimeout callbacks
   // that would otherwise capture stale React state in closures. The retry
   // path is the most dangerous of these: without `currentStateRef`, edits
@@ -27090,6 +27184,26 @@ function App() {
         const localSnap = loadLocalSnapshot();
         const shouldUseLocal = !hasRemoteData && localSnap && (localSnap.projects?.length || localSnap.termContracts?.length || localSnap.staff?.length || localSnap.clients?.length);
         const source = shouldUseLocal ? localSnap : s;
+
+        // UX wave 2 — snapshot recovery: if the local snapshot (a) was written
+        // with edits that hadn't reached a successful save (_pendingSave) and
+        // (b) is at least 60s newer than the cloud's last save (skew guard),
+        // those edits likely died in the debounce/retry window of a previous
+        // session. Capture the snapshot NOW — the hydration effect below will
+        // overwrite the localStorage copy with cloud data — and show a
+        // non-blocking banner offering a JSON download. Never auto-merged.
+        try {
+          if (hasRemoteData && !shouldUseLocal && localSnap && localSnap._pendingSave && localSnap._savedAt) {
+            const snapMs = Date.parse(localSnap._savedAt);
+            const cloudMs = s._lastCloudSaveAt || 0;
+            let dismissedAt = null;
+            try { dismissedAt = localStorage.getItem(SNAPSHOT_RECOVERY_DISMISSED_KEY); } catch (lsErr) {}
+            if (snapMs && cloudMs && snapMs > cloudMs + 60000 && dismissedAt !== localSnap._savedAt) {
+              orphanSnapshotRef.current = localSnap;
+              setSnapshotRecovery({ savedAt: localSnap._savedAt });
+            }
+          }
+        } catch (recErr) { console.warn("[snapshot-recovery] check failed:", recErr); }
 
         if (source.projects) setProjects(source.projects);
         if (source.termContracts) setTermContracts(source.termContracts);
@@ -27193,7 +27307,13 @@ function App() {
 
     if (!isLoaded.current) return; // bug 1 fix: don't save until initial load is done
     if (v2LoadFailedRef.current) return; // safety: don't save when V2 load failed
-    saveLocalSnapshot({ projects, termContracts, staff, clients });
+    // UX wave 2: first run after load = hydration of cloud data, not an edit.
+    // It must not arm the beforeunload guard, and its snapshot is flagged
+    // pending:false so the recovery banner can't fire on a mirror of the cloud.
+    const isHydration = !hydratedRef.current;
+    hydratedRef.current = true;
+    if (!isHydration) changeSeqRef.current += 1;
+    saveLocalSnapshot({ projects, termContracts, staff, clients }, { pending: !isHydration });
     if (pendingSave.current) clearTimeout(pendingSave.current); // bug 3 fix: use ref
     pendingSave.current = setTimeout(() => {
       performSave({ projects, termContracts, staff, clients });
@@ -27201,7 +27321,69 @@ function App() {
     return () => clearTimeout(pendingSave.current);
   }, [projects, termContracts, staff, clients]);
 
+  // ── UX wave 2 — beforeunload guard: warn before the tab closes while a
+  // save is pending (debounce not yet fired, save in flight, or a retry
+  // outstanding). Clean/idle closes stay silent — PMs open and close this app
+  // constantly. LOCAL work ONLY in this handler: never add a network write
+  // here — a raw last-write on unload would bypass the versioned 3-way-merge
+  // pipeline and could clobber concurrent edits (the v78 bug class).
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!isLoaded.current || v2LoadFailedRef.current) return;
+      if (changeSeqRef.current <= savedSeqRef.current) return; // clean — no nag
+      // Belt-and-braces: synchronously snapshot the freshest state so the
+      // recovery banner can offer these edits on next load if the user
+      // closes anyway. saveLocalSnapshot is synchronous localStorage work.
+      try { saveLocalSnapshot(currentStateRef.current); } catch (snapErr) {}
+      e.preventDefault();
+      e.returnValue = ""; // required by Chromium to show the native prompt
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  // UX wave 2 — snapshot-recovery banner actions. Download reads the snapshot
+  // captured at load time (orphanSnapshotRef) because the localStorage copy is
+  // overwritten with cloud data by the hydration effect moments after load.
+  function downloadSnapshotBackup() {
+    try {
+      const snap = orphanSnapshotRef.current;
+      if (!snap) return;
+      const data = JSON.stringify({
+        _exportedAt: new Date().toISOString(),
+        _purpose: "local-snapshot-recovery-backup",
+        _snapshotSavedAt: snap._savedAt || "",
+        projects: snap.projects || [],
+        termContracts: snap.termContracts || [],
+        staff: snap.staff || [],
+        clients: snap.clients || [],
+      });
+      const blob = new Blob([data], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `SettyPMS-LOCAL-SNAPSHOT-${(snap._savedAt || new Date().toISOString()).slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    } catch (e) {
+      console.warn("[snapshot-recovery] backup download failed:", e);
+    }
+  }
+  function dismissSnapshotRecovery() {
+    // Persist the dismissed snapshot's timestamp so this exact orphan never
+    // nags again (e.g. if the hydration snapshot write failed on quota and
+    // the old pending snapshot survived in localStorage).
+    try { localStorage.setItem(SNAPSHOT_RECOVERY_DISMISSED_KEY, snapshotRecovery?.savedAt || ""); } catch (e) {}
+    orphanSnapshotRef.current = null;
+    setSnapshotRecovery(null);
+  }
+
   async function performSave(state) {
+    // UX wave 2: seq at call time — edits landing while this save is in
+    // flight bump changeSeq past this value, keeping the unload guard armed
+    // until the follow-up save for those edits completes.
+    const seqAtStart = changeSeqRef.current;
     setAppStatus("saving");
     setSaveErrorDetail("");
     try {
@@ -27227,6 +27409,14 @@ function App() {
         for (const conflict of result.conflicts) {
           await handleSaveConflict(conflict, state);
         }
+      }
+
+      // UX wave 2: mark state clean for the beforeunload guard — but only if
+      // nothing conflicted (conflict paths trigger re-saves of their own).
+      // Math.max guards against an older in-flight save finishing after a
+      // newer one already advanced savedSeq.
+      if (result.conflicts.length === 0) {
+        savedSeqRef.current = Math.max(savedSeqRef.current, seqAtStart);
       }
 
       // Network retry banner clears on any successful save
@@ -27719,6 +27909,27 @@ function renameCompanyAcrossProjects(oldName, newName) {
     window.location.hash = view;
   }, [view]);
 
+  // Browser Back/Forward: mirror hash changes back into view state (same parse
+  // as the mount-time deep link). The sync effect above rewrites the hash for
+  // the current view, so the equality guard below makes app-initiated hash
+  // writes a no-op here — no loops.
+  React.useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash.slice(1);
+      if (hash.startsWith("project:") || ["dashboard","myprojects","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
+        setView(v => v === hash ? v : hash);
+      }
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  // Start each view at the top — otherwise a view switch inherits the previous
+  // view's scroll position.
+  React.useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [view]);
+
 
 
   // ── Loading screen ──
@@ -27780,7 +27991,11 @@ function renameCompanyAcrossProjects(oldName, newName) {
           state can't occur (anon still reads data), so this ships dormant and
           self-activates the moment the flip happens. Sign-in redirects and
           reboots the app with the session in place. */}
-      {appStatus === "idle" && !settyAuth.isSignedIn() && projects.length === 0 && (
+      {/* Fires on BOTH signed-out outcomes post-flip: a clean empty load
+          (idle + zero projects) AND the V2 loader's error path — the loader
+          also upserts pms_meta during load, which RLS now rejects for anon,
+          so signed-out loads land in appStatus "error", not "idle". */}
+      {!settyAuth.isSignedIn() && (appStatus === "error" || (appStatus === "idle" && projects.length === 0)) && (
         <div style={{ position: "fixed", inset: 0, zIndex: 5000, background: P.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 16, padding: "40px 44px", maxWidth: 460, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,.5)" }}>
             <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-.02em", marginBottom: 6 }}>
@@ -27964,6 +28179,28 @@ function renameCompanyAcrossProjects(oldName, newName) {
             {networkRetry.error.slice(0, 100)}
           </div>
         )}
+      </div>
+    )}
+
+    {/* UX wave 2 — snapshot recovery banner: local snapshot from a previous
+        session is newer than the cloud's last save (edits likely lost in the
+        debounce/retry window). Non-blocking; offers a JSON download, never
+        auto-merges into live state. */}
+    {snapshotRecovery && (
+      <div style={{ position: "fixed", bottom: 16, left: 16, zIndex: 4500,
+        background: P.card, border: `2px solid ${P.yellow}`, borderRadius: 8,
+        padding: "12px 16px", maxWidth: 380, fontSize: 12, boxShadow: "0 4px 24px rgba(0,0,0,0.5)" }}>
+        <div style={{ fontWeight: 700, color: P.yellow, marginBottom: 4 }}>
+          💾 Unsaved local edits found
+        </div>
+        <div style={{ color: P.textMuted, lineHeight: 1.4, marginBottom: 10 }}>
+          Local edits from {new Date(snapshotRecovery.savedAt).toLocaleString()} may not have reached the cloud.
+          Download a backup copy if anything looks missing.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn small onClick={downloadSnapshotBackup}>⬇ Download backup</Btn>
+          <Btn small onClick={dismissSnapshotRecovery}>Dismiss</Btn>
+        </div>
       </div>
     )}
 

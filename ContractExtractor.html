@@ -11,7 +11,7 @@
   <title>Setty Contract Extractor</title>
 
   <script>
-    window.__appVersion = "2026-06-05-extractor-v37-writing-state";
+    window.__appVersion = "2026-07-25-extractor-v41-settyauth-phase4";
   </script>
 
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -33,6 +33,12 @@
        ready when needed, but only invoked when a dropped PDF has no
        extractable text. First OCR run downloads ~10MB English language data. -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
+  <!-- Suite sign-in (Phase 4: RLS requires authenticated reads). Absolute URL —
+       this file's source of truth lives in OneDrive, not beside setty-auth.js.
+       Opened from PMS (the Pages copy) the shared session Just Works; opened
+       from disk (file://) sign-in can't cross origins, so PMS context stays
+       unavailable there — extraction itself never needed it. -->
+  <script src="https://smartias.github.io/setty-pms/setty-auth.js"></script>
 
   <style>
     * { box-sizing: border-box; }
@@ -216,7 +222,6 @@
 <body>
   <div id="root"></div>
 
-  <script src="setty-auth.js"></script>
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useCallback, useRef } = React;
 
@@ -992,6 +997,95 @@
         explanation: "Contract requires backup documentation (timesheets, receipts, itemized breakdowns, or certified payroll) with each invoice. Accounting needs to set up the workflow before the first invoice cycle. Capture exactly what's required — some clients want signed timesheets per person; others just need a summary by phase. NOTIFY ACCOUNTING.",
       },
 
+      // ----- Kent Holland (Contract Guide for Design Professionals, 3rd ed.) -----
+      // Added 2026-06-05 from review of Kent Holland's contract guide. Each is a
+      // pattern that creates real, uninsurable liability and is recognizable by
+      // specific keyword signatures.
+      {
+        id: "cost-guarantee-redesign",
+        label: "Construction-cost guarantee / free redesign if over budget",
+        severity: "high",
+        patterns: [
+          // "redesign...at no additional cost" (the headline pattern)
+          /(?:re[\s\-]?design|modify\s+the\s+(?:Construction\s+)?Documents)[^.]{0,200}?(?:at\s+no\s+(?:additional\s+)?(?:cost|charge|expense|fee)|without\s+additional\s+compensation|without\s+(?:additional\s+)?cost\s+to\s+(?:the\s+)?Owner)/i,
+          // "exceeds the Fixed Limit of Construction Cost / Project Budget"
+          /(?:exceed(?:s|ing|ed)?|over)\s+(?:the\s+)?(?:Fixed\s+Limit\s+of\s+Construction\s+Cost|Construction\s+Cost\s+(?:Limit|cap)|Project\s+[Bb]udget|construction\s+budget|cost\s+limit)/i,
+          // "responsible for...costs incurred by Owner attributable to redesign / re-bid"
+          /(?:responsible\s+for|bear|pay)[^.]{0,150}?(?:costs?\s+(?:incurred\s+by|of)\s+(?:the\s+)?Owner)[^.]{0,150}?(?:re[\s\-]?design|re[\s\-]?bid)/i,
+          // "shall redesign...to meet the Owner's Project budget"
+          /re[\s\-]?design[^.]{0,200}?(?:meet|comply\s+with|stay\s+within)\s+(?:the\s+)?(?:Owner['']?s\s+)?(?:Project\s+)?[Bb]udget/i,
+        ],
+        explanation: "Contract forces Setty to redesign at no charge if construction bids exceed the budget. This is an uninsurable cost-guarantee — Setty has no control over labor/materials prices, contractor methods, or competitive bidding. Push for the AIA C401 §6.7 / EJCDC E-500 §5.01 framing: cost opinions are professional judgment, not guarantees, and budget-driven redesign is an Additional Service.",
+      },
+      {
+        id: "leed-warranty",
+        label: "LEED / sustainable-design certification warranty",
+        severity: "high",
+        patterns: [
+          // "warrant/guarantee LEED certification" — but NOT preceded by
+          // "does not" / "do not" / "no" so we don't trip on disclaimers
+          // like "Architect does not warrant or guarantee that the Project
+          // will be granted LEED Certification" (AIA D503-2011 §12.2 — the
+          // safe-harbor language Setty actually wants).
+          /(?<!\b(?:no|not|never|nor)\s)(?<!does\s+not\s)(?<!do\s+not\s)(?<!shall\s+not\s)(?:warrant|guarantee)s?[^.]{0,150}?(?:LEED|Green\s+Globes?|WELL\s+(?:Building)?|BREEAM|Net[\s\-]?Zero|Living\s+Building|Energy\s+Star\s+certif)/i,
+          // "in the event LEED is not granted, liquidated damages..."
+          /(?:in\s+the\s+event|if)[^.]{0,80}?(?:LEED|Green\s+Globes?|certification)[^.]{0,80}?(?:not\s+(?:granted|achieved|awarded|attained))[^.]{0,200}?(?:liquidated\s+damages|penalty|forfeit|assess)/i,
+          // Sustainable objective warranty / guarantee — same negation guard
+          /(?<!\b(?:no|not)\s)(?<!does\s+not\s)(?:Sustainable\s+Objective|Sustainability\s+Goal|net[\s\-]?zero)[^.]{0,150}?(?:warrant|guarantee)/i,
+        ],
+        explanation: "Contract warrants achievement of LEED (or Green Globes / WELL / Net Zero / etc.) certification. The result depends on factors entirely outside Setty's control — Owner operation, Contractor execution, GBCI / Green Building Certification Institute interpretation. Uninsurable warranty. Push for AIA D503-2011 §12.2 language: 'Architect does not warrant or guarantee that the Project will be granted LEED Certification.'",
+      },
+      {
+        id: "changed-conditions-waiver",
+        label: "Changed-conditions / existing-site-knowledge warranty",
+        severity: "high",
+        patterns: [
+          // "assumes the risk of all conditions"
+          /(?:assume(?:s|d)?|accept(?:s|ed)?)\s+(?:the\s+)?risk\s+of\s+(?:all\s+)?(?:site|existing|geological|environmental|differing|subsurface)\s+conditions/i,
+          // "certify...has visited the Site, has made a thorough...inspection"
+          /(?:certif(?:y|ies|ied|ication)|represent(?:s|ed)?\s+and\s+warrant(?:s|ed)?)[^.]{0,200}?(?:has\s+(?:visited|inspected|examined|investigated)\s+the\s+Site|familiar\s+with[^.]{0,80}?(?:site|existing|geological|environmental|subsurface)\s+conditions)/i,
+          // "no entitlement to equitable adjustment" / "waives...equitable adjustment"
+          /(?:no\s+entitlement\s+to|waive(?:s|d)?[^.]{0,40}?)\s+equitable\s+adjustment/i,
+          // "thorough...inspection...Site"
+          /thorough\s+(?:visual\s+)?(?:inspection|investigation|review)[^.]{0,200}?(?:Site|existing\s+conditions|building\s+systems)/i,
+          // "Owner does not guarantee accuracy of site information" (puts burden on DP)
+          /(?:Owner|Client)[^.]{0,80}?(?:does\s+not\s+guarantee|makes\s+no\s+(?:representation|warranty))[^.]{0,150}?(?:site|existing|subsurface|environmental)\s+(?:information|data|conditions)/i,
+        ],
+        explanation: "Contract requires Setty to certify full knowledge of site conditions and waives any equitable adjustment for differing conditions. On renovation/existing-building work (Setty's bread and butter) this is uninsurable — latent and concealed conditions cannot be discovered by a visual inspection. Strike or limit to 'reasonable visual inspection only' and preserve the right to an equitable adjustment when conditions materially differ.",
+      },
+      {
+        id: "short-fuse-response-deadline",
+        label: "Short-fuse RFI / submittal / notice response deadline",
+        severity: "medium",
+        patterns: [
+          // "respond/reply within 48 hours" with RFI/submittal/shop-drawing context
+          /(?:respond|reply|return|review)[^.\n]{0,120}?within\s+(?:twenty[\s\-]?four\s*\(24\)|forty[\s\-]?eight\s*\(48\)|seventy[\s\-]?two\s*\(72\)|[1-3]\s|24|48|72)\s+hours[^.\n]{0,150}?(?:RFI|Request\s+for\s+Information|submittal|shop\s+drawing|change\s+order|response)/i,
+          // "notify within 24/48/72 hours of [event]"
+          /(?:notify|notice)[^.\n]{0,120}?within\s+(?:twenty[\s\-]?four\s*\(24\)|forty[\s\-]?eight\s*\(48\)|seventy[\s\-]?two\s*\(72\)|24|48|72)\s+hours/i,
+          // Same-day or business-day response with submittal/RFI context
+          /(?:same[\s\-]?day|next[\s\-]?day)\s+(?:response|turnaround|reply)[^.\n]{0,80}?(?:RFI|Request\s+for\s+Information|submittal|shop\s+drawing)/i,
+          // "Architect shall respond...within X business days" where X is small (1-3)
+          /(?:Architect|Engineer|Consultant|Design\s+Professional)\s+shall\s+(?:respond|reply|return)[^.\n]{0,80}?within\s+(?:one\s*\(1\)|two\s*\(2\)|three\s*\(3\)|[1-3])\s+business\s+days/i,
+        ],
+        explanation: "Contract imposes an unrealistically short deadline for RFI / submittal / shop-drawing review or notice of project events. Despite diligent effort, the standard of care may require more time to analyze a complex situation. Missing a hard deadline becomes a breach claim — uninsurable. Push for 'reasonable time consistent with the exercise of due care' or 7-10 business days minimum, with an exception for matters requiring additional analysis.",
+      },
+      {
+        id: "no-compensation-code-changes",
+        label: "No extra compensation for post-signing code/law changes",
+        severity: "medium",
+        patterns: [
+          // "shall not be compensated for changes...codes, laws, or regulations"
+          /(?:shall\s+not\s+be\s+(?:compensated|entitled\s+to\s+(?:additional\s+)?compensation|paid))[^.]{0,200}?(?:changes?[^.]{0,80}?(?:design|services|work))[^.]{0,150}?(?:codes?|laws?|regulations?|ordinances?)/i,
+          // "enactment or revision of codes/laws/regulations" — the headline phrase
+          /enactment\s+or\s+revision\s+of\s+(?:codes?|laws?|regulations?|ordinances?)/i,
+          // "codes/laws...subsequent to the execution...no additional cost"
+          /(?:codes?|laws?|regulations?|ordinances?)[^.]{0,120}?subsequent\s+to[^.]{0,80}?(?:execution|effective\s+date)[^.]{0,200}?(?:no\s+(?:additional\s+)?(?:cost|compensation|fee|charge)|without\s+(?:additional\s+)?compensation)/i,
+          // "comply with...codes...at no additional cost"
+          /comply\s+with[^.]{0,80}?(?:codes?|laws?|regulations?)[^.]{0,150}?at\s+no\s+(?:additional\s+)?(?:cost|charge|expense)/i,
+        ],
+        explanation: "Contract makes Setty absorb the cost of design changes triggered by codes, laws, or regulations that are enacted or revised AFTER the contract is signed. Industry standard: Setty exercises due care to apply current codes; code changes after the effective date are an Additional Service. Push for AIA / EJCDC framing: 'Changes in laws and regulations after execution that were not known or reasonably foreseeable may be the subject of a change order.'",
+      },
+
       {
         id: "claims-accrual-discovery",
         label: "Claims accrue at 'discovery' (extends limitations period)",
@@ -1569,6 +1663,49 @@
       for (let i = 0; i < pages.length; i++) {
         const t = pages[i] || "";
         for (const re of headerPatterns) if (re.test(t)) return i + 1;
+      }
+      return null;
+    }
+
+    // Fallback prime-agreement detector — catches the case where the Prime is
+    // attached as an exhibit/appendix/schedule but its first page doesn't
+    // match any of the headerPatterns above. State-agency primes (CUNY/CUCF,
+    // DASNY, NYC SCA) attach the Prime's full Standard Terms and Conditions
+    // as "Exhibit A" with no AIA-style branding, so the page-header scan
+    // misses them.
+    //
+    // Strategy: scan the contract body for explicit cross-reference language
+    // ("Prime Agreement ... attached hereto as Exhibit A"), then cross-check
+    // against the parsed outline to confirm that exhibit actually exists.
+    // Returns the matching outline section {kind,ident,label,page} or null.
+    //
+    // TODO Sara: add phrasings you see in other primes' contracts (DASNY, NYC
+    // SCA, Grimshaw, etc.) to the `referencePatterns` list below. Each
+    // pattern's group 1 = section kind (EXHIBIT/APPENDIX/SCHEDULE/ATTACHMENT),
+    // group 2 = identifier (A, 1, etc.) — so it can cross-reference against
+    // outline.sections. Re-run a real contract after each addition.
+    function findPrimeAgreementAttachedByReference(text, sections) {
+      if (!sections || sections.length === 0) return null;
+      const referencePatterns = [
+        // CUNY/CUCF (2026-06-05 sample): "Standard Terms and Conditions of the
+        // Prime Agreement ... which is attached hereto as 'Exhibit A'"
+        /Standard\s+Terms\s+and\s+Conditions\s+of\s+the\s+Prime\s+Agreement[^.]{0,300}?attached\s+(?:hereto\s+)?as\s+["']?(EXHIBIT|APPENDIX|SCHEDULE|ATTACHMENT)\s+([A-Z0-9][A-Z0-9\-]{0,4})/i,
+        // Generic: "Prime Agreement ... attached hereto as Exhibit X"
+        /Prime\s+Agreement[^.]{0,200}?attached\s+(?:hereto\s+)?as\s+["']?(EXHIBIT|APPENDIX|SCHEDULE|ATTACHMENT)\s+([A-Z0-9][A-Z0-9\-]{0,4})/i,
+        // Reverse phrasing: "Exhibit A — Prime Agreement" / "Exhibit A: Prime Agreement"
+        /(EXHIBIT|APPENDIX|SCHEDULE|ATTACHMENT)\s+([A-Z0-9][A-Z0-9\-]{0,4})\s*[—\-:–]\s*(?:Standard\s+Terms\s+and\s+Conditions\s+of\s+the\s+)?Prime\s+Agreement\b/i,
+        // TODO Sara: add more here as you encounter them. Examples to consider:
+        //   - DASNY phrasing
+        //   - NYC SCA phrasing
+        //   - Grimshaw / private-developer phrasings
+      ];
+      for (const re of referencePatterns) {
+        const m = text.match(re);
+        if (!m) continue;
+        const kind  = m[1].toUpperCase();
+        const ident = m[2].toUpperCase();
+        const sec = sections.find((s) => s.kind === kind && (s.ident || "").toUpperCase() === ident);
+        if (sec) return sec;
       }
       return null;
     }
@@ -2214,6 +2351,18 @@
       // Augment outline with the boundary detections we did up top.
       outline.settyProposalPage  = settyProposalPage;
       outline.primeAgreementPage = findPrimeAgreementStart(pages);
+      // Fallback: header-scan missed it, but the contract body may explicitly
+      // say "Prime Agreement attached as Exhibit X". Catches state-agency
+      // primes (CUNY/CUCF, DASNY, NYC SCA) that attach the Prime's T&Cs as an
+      // exhibit without using any of the standard AIA / "Standard Form of
+      // Agreement..." headings.
+      if (!outline.primeAgreementPage) {
+        const primeSec = findPrimeAgreementAttachedByReference(text, outline.sections);
+        if (primeSec) {
+          outline.primeAgreementPage = primeSec.page;
+          outline.primeAgreementAttachedAs = primeSec.label;   // e.g., "EXHIBIT A"
+        }
+      }
       // Substantive Prime Agreement references = the contract talks about a
       // specific Prime Agreement (named, dated, with parties) versus the
       // template "if applicable" mentions. Count phrases that imply a real one.
@@ -2426,19 +2575,54 @@
     };
 
     // Same public anon key + URL SettyPMS uses (SettyPMS.html SUPABASE_*).
-    // anon + RLS: this can read the shared pms_data singleton, nothing more.
+    // Phase 4 (RLS flipped 7/25): anon reads return EMPTY — data calls must
+    // carry the signed-in user's JWT via setty-auth.js (loaded in <head>).
+    // The anon key stays as the apikey and as a signed-out fallback, which
+    // post-flip yields an empty (not erroring) project list.
     const PMS_SUPABASE_URL = "https://khxmgjilwhdguuepbhne.supabase.co";
     const PMS_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtoeG1namlsd2hkZ3V1ZXBiaG5lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwNjg2MDYsImV4cCI6MjA4ODY0NDYwNn0.vtHt2eydU2iQ426iYOzLrqpH2WLXdRnicq-3sNfoNq8";
-
-    // Shared suite sign-in: the session (if any) rides along on the read.
-    const settyAuthReady = settyAuth.init().catch(() => null);
-    settyAuth.mountPill();
+    // popup sign-in: a full-page redirect would destroy an in-progress
+    // contract review (parsed PDF + hand-corrected fields live in memory).
+    const settyAuthReady = (window.settyAuth ? settyAuth.init() : Promise.resolve(null)).catch(() => null);
+    if (window.settyAuth) settyAuth.mountPill({ popup: true });
+    function pmsHeaders() {
+      const tok = (window.settyAuth && settyAuth.token()) || PMS_SUPABASE_ANON_KEY;
+      return { apikey: PMS_SUPABASE_ANON_KEY, Authorization: "Bearer " + tok };
+    }
 
     async function loadPmsProjects() {
-      await settyAuthReady;
+      await settyAuthReady; // session restored before the first read
+      const headers = pmsHeaders();
+      // V2-first (ported from transmittal.html loadPmsData): read per-project
+      // rows from the pms_projects table — each row's `project` column holds
+      // the full project JSON. The legacy pms_data singleton is NOT kept
+      // current since the V2 migration, so reading it alone silently breaks
+      // auto-match/party context for new or renamed projects. PostgREST caps
+      // every response at 1000 rows, so page with a stable order until a
+      // short page comes back (firm count is in the hundreds today).
+      try {
+        const projects = [];
+        const PAGE = 1000;
+        for (let offset = 0; ; offset += PAGE) {
+          const res = await fetch(
+            PMS_SUPABASE_URL + "/rest/v1/pms_projects?select=project&order=id.asc&limit=" + PAGE + "&offset=" + offset,
+            { headers }
+          );
+          if (!res.ok) throw new Error("pms_projects " + res.status);
+          const rows = await res.json();
+          for (const r of rows) if (r && r.project) projects.push(r.project);
+          if (!rows || rows.length < PAGE) break;
+        }
+        if (projects.length > 0) return projects;
+        console.warn("[ContractExtractor] V2 pms_projects returned no rows — falling back to legacy pms_data singleton");
+      } catch (e) {
+        console.warn("[ContractExtractor] V2 pms_projects load failed — falling back to legacy pms_data singleton:", e);
+      }
+      // Legacy fallback (pre-migration singleton) — stale post-migration, but
+      // better than nothing if the V2 table is unreachable.
       const res = await fetch(
         PMS_SUPABASE_URL + "/rest/v1/pms_data?id=eq.singleton&select=projects",
-        { headers: { apikey: PMS_SUPABASE_ANON_KEY, Authorization: "Bearer " + settyAuth.token() } }
+        { headers }
       );
       if (!res.ok) throw new Error("Supabase " + res.status);
       const rows = await res.json();
@@ -2743,7 +2927,7 @@
         setPmsConnected(!!window.opener);
         // Pull the PMS project list directly from Supabase (no SettyPMS edit
         // needed). Failure is non-fatal — extraction still works without context.
-        (async () => {
+        const load = async () => {
           setPmsLoadState("loading");
           try {
             const projects = await loadPmsProjects();
@@ -2754,7 +2938,11 @@
             console.warn("[ContractExtractor] PMS project load failed:", e);
             setPmsLoadState("error");
           }
-        })();
+        };
+        load();
+        // Post-flip: a signed-out boot loads 0 projects; when the user signs
+        // in via the pill mid-session, reload so auto-match comes alive.
+        if (window.settyAuth) settyAuth.onChange(sess => { if (sess) load(); });
       }, []);
 
       // Pick a project (auto-match or manual): derive context + backfill fields.

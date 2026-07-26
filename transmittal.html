@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-06-12-transmittal-v4-portal-publish";
+    window.__appVersion = "2026-07-25-transmittal-v5-ux-wave3";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -351,7 +351,16 @@
   <!-- Folder & Project Info -->
   <div class="card">
     <h2 class="card-title">📁 Folder &amp; Project Info</h2>
-    <div class="folder-url-display" id="folderUrlDisplay">No folder URL provided</div>
+    <div class="folder-url-display" id="folderUrlDisplay">No folder linked — paste the project's SharePoint folder URL below, or open this tool from a project's PMS page.</div>
+    <!-- Manual folder entry — feeds the exact same code path as the ?folder=
+         deep link, so the tool is usable when opened without one. -->
+    <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:14px;">
+      <div style="flex:1">
+        <label for="folderUrlInput">SharePoint Folder URL</label>
+        <input type="text" id="folderUrlInput" placeholder="Paste the folder's SharePoint URL (…/Project Document Library/…)"/>
+      </div>
+      <button type="button" class="btn btn-ghost" id="useFolderUrlBtn" onclick="applyFolderUrlInput()" style="white-space:nowrap">Use this folder</button>
+    </div>
     <div class="form-row">
       <div>
         <label for="projectName">Project Name</label>
@@ -369,7 +378,8 @@
       </div>
       <div>
         <label for="transmittalNoTop">Transmittal No.</label>
-        <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="document.getElementById('transmittalNo').value=this.value"/>
+        <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="onTxNoInput(this.value)"/>
+        <div class="status" id="txNoWarning" style="margin-top:6px"></div>
       </div>
     </div>
     <div class="form-row">
@@ -561,6 +571,8 @@ let folderFiles = []; // raw Graph driveItems for the drawings in this folder (u
 let sheets = [];
 let generatedBlob = null;
 let generatedFileName = "";
+let historyTxNumbers = []; // [{num, date}] parsed from the Transmittals Sent history (for auto-increment + dupe warning)
+let txNoUserEdited = false; // user typed a custom transmittal number this session — never clobber it
 let pmsClients = []; // loaded from Supabase
 let pmsProjects = []; // loaded from Supabase
 
@@ -624,9 +636,11 @@ async function logTransmittalGenerated(distributionKind, extra = {}) {
   // created — that would leave the sign-in button unable to authenticate.
   try {
     if (folderUrl) {
-      document.getElementById("folderUrlDisplay").textContent = decodeURIComponent(folderUrl);
+      const decodedFolder = safeDecodeFolderUrl(folderUrl);
+      document.getElementById("folderUrlDisplay").textContent = decodedFolder;
+      document.getElementById("folderUrlInput").value = decodedFolder;
       // Try to pre-fill project info from folder name
-      const parts = decodeURIComponent(folderUrl).split("/");
+      const parts = decodedFolder.split("/");
       const folderName = parts[parts.length - 1];
       const match = folderName.match(/^([A-Z]+\d+[\w.]+)\s*[-–]\s*(.+)$/);
       if (match) {
@@ -1066,6 +1080,83 @@ function onContactSelected() {
   } catch(e) {}
 }
 
+// decodeURIComponent that tolerates already-decoded URLs (a pasted URL with a
+// literal "%" would otherwise throw URIError and break the load path).
+function safeDecodeFolderUrl(u) {
+  try { return decodeURIComponent(u || ""); } catch (e) { return u || ""; }
+}
+
+// Manual folder entry (no ?folder= deep link). Sets the same `folderUrl`
+// global the URL param populates, so loadFolder() parses and validates the
+// pasted URL exactly like a deep-linked one.
+function applyFolderUrlInput() {
+  const v = (document.getElementById("folderUrlInput").value || "").trim();
+  if (!v) {
+    setStatus("loadStatus", "error", "✗ Paste a SharePoint folder URL first.");
+    return;
+  }
+  folderUrl = v;
+  const decoded = safeDecodeFolderUrl(v);
+  document.getElementById("folderUrlDisplay").textContent = decoded;
+  // Same project-info prefill the ?folder= deep link performs on init —
+  // but never overwrite values the user already has in the form.
+  try {
+    const parts = decoded.split("/");
+    const folderName = parts[parts.length - 1];
+    const match = folderName.match(/^([A-Z]+\d+[\w.]+)\s*[-–]\s*(.+)$/);
+    if (match) {
+      if (!document.getElementById("projectNumber").value) document.getElementById("projectNumber").value = match[1];
+      if (!document.getElementById("projectName").value) document.getElementById("projectName").value = match[2];
+    }
+  } catch (e) {}
+  if (decoded.indexOf("Project Document Library/") === -1) {
+    setStatus("loadStatus", "warn", "⚠ That URL doesn't look like a Project Document Library folder — Load Files may fail.");
+  } else {
+    setStatus("loadStatus", "info", "Folder set — click \"Load Files from SharePoint\".");
+  }
+}
+
+// Transmittal-number handling. The audit list doesn't store a per-row number,
+// so the count of logged sends is the best available signal: prefill T-(count+1)
+// and warn (never block — legit re-issues happen) when an entered number falls
+// inside the already-used range.
+function onTxNoInput(v) {
+  document.getElementById("transmittalNo").value = v;
+  txNoUserEdited = true;
+  checkTxNoAgainstHistory(v);
+}
+
+function checkTxNoAgainstHistory(v) {
+  const el = document.getElementById("txNoWarning");
+  if (!el) return;
+  const m = String(v || "").match(/(\d+)\s*$/);
+  const n = m ? parseInt(m[1], 10) : NaN;
+  if (historyTxNumbers.length && !isNaN(n) && n <= historyTxNumbers.length) {
+    const latest = historyTxNumbers[0] && historyTxNumbers[0].date ? " (latest " + historyTxNumbers[0].date + ")" : "";
+    el.className = "status warn";
+    el.textContent = "⚠ " + String(v).trim() + " may already be used — this project has " +
+      historyTxNumbers.length + " logged transmittal" + (historyTxNumbers.length === 1 ? "" : "s") +
+      latest + ". Saving can overwrite that cover sheet.";
+  } else {
+    el.className = "status";
+    el.textContent = "";
+  }
+}
+
+function maybePrefillTxNo() {
+  if (txNoUserEdited) return;
+  const top = document.getElementById("transmittalNoTop");
+  const hidden = document.getElementById("transmittalNo");
+  const cur = (top.value || "").trim();
+  // Only prefill over the pristine default or our own previous auto-fill.
+  if (cur && cur !== "T-001" && cur !== top.dataset.autofill) return;
+  const next = "T-" + String(historyTxNumbers.length + 1).padStart(3, "0");
+  top.value = next;
+  hidden.value = next;
+  top.dataset.autofill = next;
+  checkTxNoAgainstHistory(next);
+}
+
 document.getElementById("loadFolderBtn").onclick = loadFolder;
 
 async function loadFolder() {
@@ -1430,6 +1521,7 @@ async function generateDocx() {
     const txDate = document.getElementById("transmittalDate").value || new Date().toISOString().slice(0,10);
     const issuedFor = document.getElementById("issuedFor").value;
     const txNo = document.getElementById("transmittalNo").value.trim() || "T-001";
+    checkTxNoAgainstHistory(txNo); // re-surface the overwrite warning at the moment it matters
 
     // Format date for display
     const dateDisplay = new Date(txDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
@@ -2097,6 +2189,8 @@ async function loadTransmittalHistory() {
       .sort((a, b) => (b.createdDateTime || "").localeCompare(a.createdDateTime || ""));
 
     countEl.textContent = items.length ? items.length + " logged" : "";
+    historyTxNumbers = items.map(it => ({ date: (it.createdDateTime || "").slice(0, 10) }));
+    maybePrefillTxNo();
     if (!items.length) {
       setStatus("historyStatus", "info", "No transmittals logged for this project yet.");
       wrap.innerHTML = "";

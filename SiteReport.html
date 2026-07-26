@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="apple-touch-icon" href="setty-logo.png"/>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Site Report</title>
   <script>
-    window.__appVersion = "2026-07-15-sitereport-hardening";
+    window.__appVersion = "2026-07-25-sitereport-v2-auth-popup-icon";
 
     // Auto-update banner — same pattern as transmittal.html / SettyFieldPhotos.
     async function _checkForUpdate() {
@@ -505,10 +506,14 @@ const SB_HEADERS = { "apikey": SUPABASE_ANON, "Authorization": "Bearer " + SUPAB
 // their own JWT; signed-out users keep working on the anon key until the
 // Phase 2 RLS flip. SB_HEADERS is passed by reference at every call site, so
 // mutating Authorization here covers all of them.
-const settyAuthReady = settyAuth.init().catch(() => null).then(() => syncSettyAuth());
+const settyAuthReady = settyAuth.init().catch(e => {
+  try { setGlobalStatus("error", "Suite sign-in failed: " + e.message + " — tap the sign-in pill to retry."); } catch (_) {}
+  return null;
+}).then(() => syncSettyAuth());
 function syncSettyAuth() { SB_HEADERS.Authorization = "Bearer " + settyAuth.token(); }
 settyAuth.onChange(syncSettyAuth);
-settyAuth.mountPill();
+// popup: a full-page redirect would destroy an unsaved add-item form mid-visit.
+settyAuth.mountPill({ popup: true });
 
 // Standard AEC discipline prefixes used for per-discipline item numbers.
 const DISCIPLINE_PREFIX = {
@@ -2033,6 +2038,46 @@ async function doSaveReport(opts) {
     return false;
   }
 }
+
+// ─── AUTO-SAVE: VISIT METADATA ───────────────────────────────────────────────
+// Visit Date / Weather / General Notes previously persisted only when some
+// OTHER action (add item, add plan, place pin) triggered a save — weather and
+// notes typed on their own were lost if the tab died first. Debounce a silent
+// save through the same serialized save chain the other auto-save paths use.
+let metaDirty = false;
+let metaSaveTimer = null;
+let metaEditSeq = 0;   // bumped on every edit; guards the dirty-flag clear
+function scheduleMetaSave() {
+  if (!selectedProject) return;   // no report open — nothing to persist yet
+  metaDirty = true;
+  metaEditSeq++;
+  if (metaSaveTimer) clearTimeout(metaSaveTimer);
+  metaSaveTimer = setTimeout(() => {
+    metaSaveTimer = null;
+    if (!selectedProject) return;
+    const seqAtSave = metaEditSeq;
+    saveReport({ silent: true }).then(ok => {
+      // Only clear the flag if no newer edit arrived while the save ran —
+      // doSaveReport reads live field values, but an edit made after that
+      // read must stay dirty until its own debounced save lands.
+      if (ok && metaEditSeq === seqAtSave) metaDirty = false;
+    });
+  }, 1500);
+}
+["visitDate", "weather", "generalNotes"].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener("input", scheduleMetaSave);
+  el.addEventListener("change", scheduleMetaSave);
+});
+
+// Warn before leaving while metadata edits are unsaved (dirty, or a debounced
+// save still pending) — the browser shows its generic leave-confirmation.
+window.addEventListener("beforeunload", (e) => {
+  if (metaDirty || metaSaveTimer) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
 
 // ─── COMPLETE & GENERATE (finalization flow) ─────────────────────────────────
 // The terminal action: mark complete, persist, generate the Word doc, upload
