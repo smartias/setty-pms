@@ -134,7 +134,7 @@
       border-radius: 4px; padding: 5px 7px; font-size: 12px; font-family: inherit;
     }
     .field textarea { resize: vertical; min-height: 40px; }
-    .field .source { font-size: 10px; color: #64748B; margin-top: 3px; font-style: italic; }
+    .field .source { font-size: 10px; color: #8FA0B5; margin-top: 3px; font-style: italic; }
     .field .badge {
       display: inline-block; font-size: 9px; padding: 2px 6px; border-radius: 8px;
       margin-left: 6px; font-weight: 700; text-transform: uppercase;
@@ -142,7 +142,7 @@
     .badge.high { background: #14532D; color: #BBF7D0; }
     .badge.medium { background: #713F12; color: #FDE68A; }
     .badge.low { background: #7F1D1D; color: #FECACA; }
-    .badge.empty { background: #334155; color: #94A3B8; }
+    .badge.empty { background: #334155; color: #CBD5E1; }
 
     .actions { display: flex; gap: 8px; margin-top: 16px; }
     .btn {
@@ -2671,7 +2671,7 @@
               </>
             );
           })()}
-          <div style={{ fontSize: 10, color: "#64748B", marginTop: 6, fontStyle: "italic" }}>
+          <div style={{ fontSize: 10, color: "#8FA0B5", marginTop: 6, fontStyle: "italic" }}>
             Used to disambiguate parties and compare client terms to Setty's standards. The PDF remains the source of truth for its own terms.
           </div>
         </div>
@@ -3214,7 +3214,7 @@
                 </div>
               )}
 
-              <h2 style={{marginTop: 20}}>PMS Project <span style={{textTransform:"none",fontWeight:400,color:"#64748B"}}>(for context)</span></h2>
+              <h2 style={{marginTop: 20}}>PMS Project <span style={{textTransform:"none",fontWeight:400,color:"#8FA0B5"}}>(for context)</span></h2>
               {pmsLoadState === "loading" && (
                 <p style={{fontSize: 11, color: "#94A3B8"}}><span className="spinner"></span>Loading PMS projects…</p>
               )}
@@ -3287,7 +3287,7 @@
                           </div>
                         ))}
                         {projectMatches.length === 12 && (
-                          <div style={{ padding: "6px 10px", fontSize: 10, color: "#64748B", fontStyle: "italic", borderTop: "1px solid #1E293B" }}>
+                          <div style={{ padding: "6px 10px", fontSize: 10, color: "#8FA0B5", fontStyle: "italic", borderTop: "1px solid #1E293B" }}>
                             Showing top 12 — refine query for more.
                           </div>
                         )}

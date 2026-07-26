@@ -92,7 +92,7 @@
       border-bottom: 3px solid var(--red);
     }
     .app-header-left { display: flex; align-items: center; gap: 16px; }
-    .app-title { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: 0.5px; }
+    .app-title { margin: 0; font-size: 15px; font-weight: 700; color: #fff; letter-spacing: 0.5px; }
     .app-subtitle { font-size: 11px; color: rgba(255,255,255,0.6); }
     .sign-btn {
       background: rgba(255,255,255,0.15);
@@ -117,11 +117,13 @@
       padding: 20px 24px;
       margin-bottom: 20px;
     }
+    .skip-link { position: absolute; left: -9999px; top: 0; z-index: 10000; background: var(--card, #161b22); color: #7db4f0; padding: 10px 16px; font-size: 13px; font-weight: 600; }
+    .skip-link:focus { left: 0; }
     .card-title {
       font-size: 13px;
       font-weight: 700;
       color: var(--text);
-      margin-bottom: 14px;
+      margin: 0 0 14px;
       padding-bottom: 10px;
       border-bottom: 1px solid var(--border);
       display: flex;
@@ -321,6 +323,8 @@
 </head>
 <body>
 
+<a href="#main" class="skip-link">Skip to main content</a>
+
 <!-- Sign-in overlay -->
 <div id="signInOverlay">
   <div class="sign-in-card">
@@ -332,21 +336,21 @@
 </div>
 
 <!-- App header -->
-<div class="app-header">
+<header class="app-header">
   <div class="app-header-left">
     <div>
-      <div class="app-title">SETTY — Sheet List &amp; Transmittal Generator</div>
+      <h1 class="app-title">SETTY — Sheet List &amp; Transmittal Generator</h1>
       <div class="app-subtitle" id="headerUser">Not signed in</div>
     </div>
   </div>
   <button class="sign-btn" id="signOutBtn" style="display:none">Sign out</button>
-</div>
+</header>
 
-<div class="main">
+<main class="main" id="main">
 
   <!-- Folder & Project Info -->
   <div class="card">
-    <div class="card-title">📁 Folder &amp; Project Info</div>
+    <h2 class="card-title">📁 Folder &amp; Project Info</h2>
     <div class="folder-url-display" id="folderUrlDisplay">No folder URL provided</div>
     <div class="form-row">
       <div>
@@ -455,9 +459,9 @@
 
   <!-- Sheet List -->
   <div class="card" id="sheetListCard" style="display:none">
-    <div class="card-title">📋 Sheet List
+    <h2 class="card-title">📋 Sheet List
       <span class="count-badge" id="sheetCount"></span>
-    </div>
+    </h2>
 
     <div class="toolbar">
       <button class="btn btn-ghost" id="selectAllBtn">☑ Select All</button>
@@ -510,14 +514,14 @@
   <!-- Transmittal History — record-keeping view of past sends for this
        project, read from the "Transmittals Sent" SharePoint list. -->
   <div class="card" id="historyCard">
-    <div class="card-title">🗂️ Transmittal History
+    <h2 class="card-title">🗂️ Transmittal History
       <span class="count-badge" id="historyCount"></span>
-    </div>
+    </h2>
     <div class="status" id="historyStatus"></div>
     <div id="historyTableWrap" style="overflow-x:auto"></div>
   </div>
 
-</div>
+</main>
 
 <script src="setty-auth.js"></script>
 <script>

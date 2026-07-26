@@ -3066,7 +3066,7 @@ async function sweepRecentMail() {
         " · already filed " + r.alreadyFiled + "  — preview only, nothing saved.";
     }
     const grp = (t) => '<div style="font-weight:600;margin:8px 0 4px;">' + t + "</div>";
-    const meta = (t) => '<span style="color:#888;">' + t + "</span>";
+    const meta = (t) => '<span style="color:#616161;">' + t + "</span>";
     const rowCss = 'style="padding:4px 0;border-top:1px solid #eee;font-size:12px;"';
     const lines = [];
     if (r.file.length) {
@@ -3107,7 +3107,7 @@ function renderSweepResults(scanned, b) {
   const esc = (s) => String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const grp = (t) => '<div style="font-weight:600;margin:8px 0 4px;">' + t + "</div>";
-  const meta = (t) => '<span style="color:#888;">' + t + "</span>";
+  const meta = (t) => '<span style="color:#616161;">' + t + "</span>";
   const rowCss = 'style="padding:4px 0;border-top:1px solid #eee;font-size:12px;"';
   const out = [];
   if (b.file.length) {
@@ -3264,7 +3264,7 @@ function renderSweepReviewQueue() {
   const resultsEl = document.getElementById("sweepResults");
   if (!resultsEl) return;
   const pending = _sweepReview.filter((e) => !e._done);
-  if (!pending.length) { resultsEl.innerHTML = '<span style="color:#888;">Review queue clear.</span>'; return; }
+  if (!pending.length) { resultsEl.innerHTML = '<span style="color:#616161;">Review queue clear.</span>'; return; }
   const bcss = 'style="margin:2px 4px 2px 0;padding:2px 8px;font-size:12px;cursor:pointer;"';
   const rows = ['<div style="font-weight:600;margin:8px 0 4px;">🟡 Review (' + pending.length + ' left)</div>'];
   _sweepReview.forEach((e, i) => {
@@ -3273,7 +3273,7 @@ function renderSweepReviewQueue() {
       '<button type="button" data-sw="file" data-i="' + i + '" data-ci="' + ci + '" ' + bcss + ">" +
       sweepEsc(c.project.projectNumber || c.project.name) + "</button>").join("");
     rows.push('<div style="padding:6px 0;border-top:1px solid #eee;font-size:12px;">' +
-      sweepEsc(e.subject) + '<br><span style="color:#888;">' + sweepEsc(e.from) + " · " +
+      sweepEsc(e.subject) + '<br><span style="color:#616161;">' + sweepEsc(e.from) + " · " +
       sweepEsc((e.date || "").slice(0, 10)) + "</span><br>File to: " + cands +
       '<button type="button" data-sw="skip" data-i="' + i + '" ' + bcss + ">Skip</button></div>");
   });
@@ -5912,8 +5912,8 @@ async function sendToTeamsChannel() {
       `<h3 style="margin:0 0 8px">${safeSubject}</h3>` +
       (safeFrom ? `<p style="color:#666;font-size:12px;margin:0 0 8px">From: <strong>${safeFrom}</strong></p>` : "") +
       `<blockquote style="border-left:3px solid #ddd;margin:8px 0;padding:0 0 0 12px">${origBody || "<p><em>(no body)</em></p>"}</blockquote>` +
-      (attCount > 0 ? `<p style="color:#888;font-size:11px;font-style:italic">📎 Original email has ${attCount} attachment${attCount === 1 ? "" : "s"} — share separately if needed.</p>` : "") +
-      `<p style="color:#888;font-size:11px;font-style:italic">Shared from Outlook via PMS Add-in</p>`;
+      (attCount > 0 ? `<p style="color:#595959;font-size:11px;font-style:italic">📎 Original email has ${attCount} attachment${attCount === 1 ? "" : "s"} — share separately if needed.</p>` : "") +
+      `<p style="color:#595959;font-size:11px;font-style:italic">Shared from Outlook via PMS Add-in</p>`;
 
     // Use the on-demand ChannelMessage.Send token (not the default getToken)
     // so the consent prompt only fires the first time the user posts to a
@@ -8433,7 +8433,7 @@ async function showDatesView() {
   showView("datesView");
   document.getElementById("milestoneForm").style.display = "none";
   const list = document.getElementById("datesList");
-  list.innerHTML = '<p style="color:#64748b;font-size:12px;text-align:center;padding:16px 0;">⏳ Scanning email…</p>';
+  list.innerHTML = '<p style="color:#616161;font-size:12px;text-align:center;padding:16px 0;">⏳ Scanning email…</p>';
   try {
     const token = await getToken();
     const html  = await getEmailBodyHtml(token);
@@ -8442,16 +8442,16 @@ async function showDatesView() {
     const text = (tmp.innerText || tmp.textContent || "").replace(/\s+/g, " ");
     const dates = extractDueDates(text, emailItem?.dateTimeCreated);
     if (!dates.length) {
-      list.innerHTML = '<p style="color:#64748b;font-size:12px;text-align:center;padding:20px 0;">No due dates found in this email.</p>';
+      list.innerHTML = '<p style="color:var(--text-soft);font-size:12px;text-align:center;padding:20px 0;">No due dates found in this email.</p>';
       return;
     }
     list.innerHTML = dates.map((d, i) => `
       <div class="date-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
-          <span style="font-size:13px;font-weight:700;color:${d.hasKeyword ? "#60b4ff" : "#e2e8f0"};">${escHtml(d.display)}</span>
+          <span style="font-size:13px;font-weight:700;color:${d.hasKeyword ? "var(--primary)" : "var(--text)"};">${escHtml(d.display)}</span>
           ${d.hasKeyword ? '<span style="font-size:10px;background:#1e3a5f;color:#60b4ff;padding:1px 7px;border-radius:4px;flex-shrink:0;">deadline</span>' : ""}
         </div>
-        <div style="font-size:11px;color:#64748b;line-height:1.5;margin-bottom:8px;font-style:italic;">${escHtml(d.ctx)}</div>
+        <div style="font-size:11px;color:var(--text-soft);line-height:1.5;margin-bottom:8px;font-style:italic;">${escHtml(d.ctx)}</div>
         <button class="btn btn-blue" style="padding:5px 12px;font-size:11px;margin-bottom:0;"
           onclick="prefillMilestone('${d.iso}')">➕ Use this date</button>
       </div>
@@ -8472,7 +8472,7 @@ function prefillMilestone(iso) {
 function showManualMilestoneForm() {
   showView("datesView");
   const list = document.getElementById("datesList");
-  if (list) list.innerHTML = '<p style="color:#64748b;font-size:12px;text-align:center;padding:16px 0;">Manual mode: enter milestone details below.</p>';
+  if (list) list.innerHTML = '<p style="color:#616161;font-size:12px;text-align:center;padding:16px 0;">Manual mode: enter milestone details below.</p>';
   const defaultDate = new Date();
   const iso = defaultDate.getFullYear() + "-" + String(defaultDate.getMonth() + 1).padStart(2, "0") + "-" + String(defaultDate.getDate()).padStart(2, "0");
   prefillMilestone(iso);
@@ -9175,7 +9175,7 @@ function showView(id) {
 setTimeout(() => {
   const loading = document.getElementById("loadingView");
   if (loading && loading.style.display !== "none") {
-    loading.innerHTML = '<p style="color:#94a3b8;font-size:12px;text-align:center;padding:0 16px;">Open this add-in from Outlook.<br/>To sideload, use the manifest.xml file.</p>';
+    loading.innerHTML = '<p style="color:#616161;font-size:12px;text-align:center;padding:0 16px;">Open this add-in from Outlook.<br/>To sideload, use the manifest.xml file.</p>';
   }
 }, 5000);
 // While a "⏳ …" busy message is showing, this holds its element id so the

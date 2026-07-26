@@ -4,6 +4,8 @@
 **Scope:** All user-facing surfaces in this repository — `SettyPMS.html` (28k lines), the Outlook add-in (`taskpane.html` / `taskpane.js`), `SiteReport.html`, `SettyFieldPhotos.html`, `transmittal.html`, `ContractExtractor.html`, `SettyIntelligence.html`, `SettyAdmin.html`, `Newsletter.html`, `SettyMarketing.html`, `RFISubmittalSync_Preview.html`, `auth-callback.html`, `setty-auth.js`, `manifest.webmanifest`, `sw.js`.
 **Method:** Static code review against WCAG 2.1 AA (semantics, keyboard access, focus management, labeling, live regions, contrast, motion). No runtime/AT testing was performed; line numbers reference the current state of `main` at the time of review.
 
+> **Remediation status (this branch):** systemic failures #6 (document structure — headings, landmarks, skip links in SettyPMS, the taskpane, and transmittal) and #7 (contrast — the `#64748B` muted token suite-wide, SettyPMS badges and primary button, taskpane `--text-faint` and Dates-view dark-theme leftovers) have been addressed. The remaining items are still open.
+
 ---
 
 ## Executive summary

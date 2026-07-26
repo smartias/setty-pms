@@ -1997,7 +1997,7 @@ const P = {
   accent: "#3b82f6", accentLight: "#60a5fa", accentDim: "#1e3a5f",
   green: "#10b981", greenDim: "#064e3b", yellow: "#f59e0b", yellowDim: "#451a03",
   red: "#ef4444", redDim: "#450a0a", purple: "#8b5cf6", purpleDim: "#2e1065",
-  text: "#e2e8f0", textMuted: "#94a3b8", textDim: "#64748b",
+  text: "#e2e8f0", textMuted: "#94a3b8", textDim: "#8b98ab",
 };
 
 const STATUS_COLORS = {
@@ -2006,16 +2006,16 @@ const STATUS_COLORS = {
   "In for Review": { bg: "#1e3a5f", text: "#7dd3fc" },
   "On Hold": { bg: P.yellowDim, text: P.yellow },
   "Top Priority": { bg: "#500724", text: "#fda4af" },
-  "In Construction Administration": { bg: P.greenDim, text: P.green },
+  "In Construction Administration": { bg: P.greenDim, text: "#34d399" },
   "Completed": { bg: "#052e16", text: "#86efac" },
   "Cancelled": { bg: "#27272a", text: "#a1a1aa" },
-  "Lost": { bg: "#1c1917", text: "#78716c" },
+  "Lost": { bg: "#1c1917", text: "#a8a29e" },
 };
 
 const MILESTONE_STATUS_COLORS = {
   "Not Started": { bg: P.border, text: P.textMuted },
   "In Progress": { bg: P.accentDim, text: P.accentLight },
-  "Completed": { bg: P.greenDim, text: P.green },
+  "Completed": { bg: P.greenDim, text: "#34d399" },
 };
 
 const CONTRACT_COLORS = {
@@ -2024,7 +2024,7 @@ const CONTRACT_COLORS = {
   "Comments sent to Client": { bg: P.yellowDim, text: P.yellow },
   "Signed Contract out to Client": { bg: P.purpleDim, text: "#c4b5fd" },
   "CARF": { bg: "#451a03", text: "#fcd34d" },
-  "Fully Executed": { bg: P.greenDim, text: P.green },
+  "Fully Executed": { bg: P.greenDim, text: "#34d399" },
 };
 
 const CSS = `
@@ -2045,6 +2045,9 @@ const CSS = `
   th,td{text-align:left;padding:8px 12px;border-bottom:1px solid ${P.border};font-size:13px;}
   th{font-size:11px;font-weight:600;color:${P.textDim};text-transform:uppercase;letter-spacing:.05em;background:${P.card};}
   tr:hover td{background:${P.cardHover};}
+  h1,h2,h3{font-size:inherit;font-weight:inherit;}
+  .pms-skip-link{position:absolute;left:-9999px;top:0;z-index:10000;background:${P.card};color:${P.accentLight};padding:10px 16px;border-radius:0 0 8px 0;font-size:13px;font-weight:600;}
+  .pms-skip-link:focus{left:0;}
 `;
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
@@ -2355,10 +2358,10 @@ function Badge({ color, text }) {
 
 function Btn({ onClick, children, variant = "primary", small, disabled, title, style: s = {} }) {
   const styles = {
-    primary: { background: P.accent, color: "#fff" },
+    primary: { background: "#2563eb", color: "#fff" },
     ghost: { background: "transparent", color: P.textMuted, border: `1px solid ${P.border}` },
-    danger: { background: P.redDim, color: P.red, border: `1px solid ${P.red}` },
-    success: { background: P.greenDim, color: P.green, border: `1px solid ${P.green}` },
+    danger: { background: P.redDim, color: "#f87171", border: `1px solid ${P.red}` },
+    success: { background: P.greenDim, color: "#34d399", border: `1px solid ${P.green}` },
     warning: { background: P.yellowDim, color: P.yellow },
     purple: { background: P.purpleDim, color: P.purple },
   };
@@ -2394,7 +2397,7 @@ function ProgressBar({ pct, color = P.accent }) {
 function SectionTitle({ children, action }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-      <div style={{ fontWeight: 700, fontSize: 15 }}>{children}</div>
+      <h2 style={{ fontWeight: 700, fontSize: 15 }}>{children}</h2>
       {action}
     </div>
   );
@@ -2417,7 +2420,7 @@ function Modal({ title, onClose, children, wide }) {
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
       <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, width: wide ? 860 : 560, maxHeight: "92vh", overflow: "auto", padding: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>{title}</div>
+          <h2 style={{ fontSize: 17, fontWeight: 700 }}>{title}</h2>
           <button onClick={onClose} style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
         </div>
         {children}
@@ -12921,7 +12924,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ fontSize: 22, fontWeight: 800 }}>Team WBS — All Projects</div>
+          <h2 style={{ fontSize: 22, fontWeight: 800 }}>Team WBS — All Projects</h2>
           <Btn small variant="ghost" onClick={() => {
             // Build CSV: one row per staff member per project
             const headers = ["Staff Member", "Project Number", "Project Name", "Role", "Disciplines", "Total Budget Hours", "PM Hours", "Disc Hours", ...WBS_DISCIPLINES.map(d => d + " Hrs")];
@@ -13262,7 +13265,7 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
-          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Term Contracts</div>
+          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Term Contracts</h2>
           <div style={{ color: P.textMuted, fontSize: 13 }}>Master agreements with associated task orders</div>
         </div>
         <Btn small onClick={startNew}>+ New Term Contract</Btn>
@@ -13530,7 +13533,7 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
 
   if (pendingItems.length === 0) return (
     <div style={{ padding: "24px 32px" }}>
-      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Pending Change Orders</div>
+      <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Pending Change Orders</h2>
       <div style={{ color: P.green, fontSize: 14, marginTop: 40, textAlign: "center", padding: "40px 0" }}>
         ✓ No pending change orders — all COs are approved!
       </div>
@@ -13539,7 +13542,7 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
 
   return (
     <div style={{ padding: "24px 32px" }}>
-      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Pending Change Orders</div>
+      <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Pending Change Orders</h2>
       <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>
         Unapproved change orders requiring follow-up across all active projects.
       </div>
@@ -13765,7 +13768,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
   return (
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <div style={{ fontSize: 22, fontWeight: 800 }}>Cash Flow — All Projects</div>
+        <h2 style={{ fontSize: 22, fontWeight: 800 }}>Cash Flow — All Projects</h2>
         <Btn small variant="ghost" onClick={() => {
           const headers = ["Month", "Expected Fee", "Invoiced", "Paid", "Projects"];
           const rows = months.map(m => [
@@ -16375,7 +16378,7 @@ function TimelineView({ project }) {
 
   return (
     <div style={{ maxWidth: 840 }}>
-      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Timeline</div>
+      <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Timeline</h2>
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 16 }}>
         Upcoming deadlines above the line, recent activity below — the whole job in one scroll.
       </div>
@@ -19782,7 +19785,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
       )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <div style={{ fontSize: 22, fontWeight: 800 }}>Team Dashboard</div>
+        <h2 style={{ fontSize: 22, fontWeight: 800 }}>Team Dashboard</h2>
         <button onClick={() => { setShowAddMilestone(true); setAddMilMsg(""); }}
           style={{ background: P.accentDim, border: `1px solid ${P.accent}`, borderRadius: 8, color: P.accentLight, cursor: "pointer", fontSize: 13, fontWeight: 600, padding: "8px 16px" }}>
           + Non-Billable Milestone
@@ -22734,7 +22737,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
       <div style={{ padding: "24px 32px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
           <button onClick={cancelEdit} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 18 }}>←</button>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{editingId === "__new__" ? "Add Company" : "Edit Company"}</div>
+          <h2 style={{ fontSize: 20, fontWeight: 800 }}>{editingId === "__new__" ? "Add Company" : "Edit Company"}</h2>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, maxWidth: 900 }}>
           {/* Company info */}
@@ -22914,7 +22917,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
-          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Global Directory</div>
+          <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Global Directory</h2>
           <div style={{ fontSize: 13, color: P.textMuted }}>{clients.length} compan{clients.length !== 1 ? "ies" : "y"} · sorted A→Z · auto-suggests on project Overview & Subs tabs</div>
         </div>
         <Btn onClick={startNew}>+ Add Company</Btn>
@@ -25741,7 +25744,7 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
 
   if (!signedIn) return (
     <div style={{ padding: "24px 32px", maxWidth: 620 }}>
-      <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 14 }}>My Projects</div>
+      <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 14 }}>My Projects</h2>
       <Card>
         <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 14 }}>
           Sign in to build your personal project list. Joining a project here also puts you on its Team tab.
@@ -25752,7 +25755,7 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
   );
   if (!myStaff) return (
     <div style={{ padding: "24px 32px", maxWidth: 620 }}>
-      <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 14 }}>My Projects</div>
+      <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 14 }}>My Projects</h2>
       <Card>
         <div style={{ fontSize: 13, marginBottom: 10 }}>
           You're signed in as <b>{settyAuth.email()}</b>, but no one on the Staff list has that email yet.
@@ -25778,7 +25781,7 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
     <>
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 4 }}>
-        <div style={{ fontSize: 20, fontWeight: 800 }}>My Projects</div>
+        <h2 style={{ fontSize: 20, fontWeight: 800 }}>My Projects</h2>
         <div style={{ color: P.textDim, fontSize: 13 }}>{mine.length} project{mine.length !== 1 ? "s" : ""} · {myStaff.name}</div>
         <button onClick={() => setShowSettings(v => !v)}
           style={{ marginLeft: "auto", background: "none", border: `1px solid ${P.border}`, borderRadius: 6, color: showSettings ? P.accentLight : P.textDim, cursor: "pointer", fontSize: 12.5, padding: "5px 12px" }}>
@@ -26021,7 +26024,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
       <div style={{ padding: "24px 32px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
           <button onClick={cancelEdit} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 18 }}>←</button>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{editingId === "__new__" ? "Add Staff Member" : "Edit Staff Member"}</div>
+          <h2 style={{ fontSize: 20, fontWeight: 800 }}>{editingId === "__new__" ? "Add Staff Member" : "Edit Staff Member"}</h2>
         </div>
         <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 28, maxWidth: 540 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -26073,7 +26076,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
-          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Staff Directory</div>
+          <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Staff Directory</h2>
           <div style={{ fontSize: 13, color: P.textMuted }}>{staff.length} staff member{staff.length !== 1 ? "s" : ""} · names auto-suggest when assigning to project teams</div>
         </div>
         <Btn onClick={startNew}>+ Add Staff Member</Btn>
@@ -26282,7 +26285,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     <div style={{ padding: "24px 32px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
-          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Pipeline</div>
+          <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Pipeline</h2>
           <div style={{ color: P.textMuted, fontSize: 13 }}>Proposals & projects pending award</div>
         </div>
         <Btn small onClick={onAddProject}>+ New Pipeline Project</Btn>
@@ -27756,6 +27759,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
     <TransmittalStatusContext.Provider value={transmittalMap}>
     <div style={{ minHeight: "100vh", background: P.bg }}>
       <style>{CSS}</style>
+      <a href="#pms-main" className="pms-skip-link">Skip to main content</a>
 
       {/* ── Signed-out data gate (Phase 4) ─────────────────────────────────
           After the RLS flip, a signed-out browser gets an EMPTY load — which
@@ -27777,7 +27781,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
               Microsoft account: one click, no separate password, and you won't be asked again on this device.
             </div>
             <button onClick={() => settyAuth.signInWithMicrosoft()}
-              style={{ background: P.accent, border: "none", borderRadius: 10, color: "#fff", cursor: "pointer", fontWeight: 700, fontSize: 14, padding: "12px 28px", width: "100%" }}>
+              style={{ background: "#2563eb", border: "none", borderRadius: 10, color: "#fff", cursor: "pointer", fontWeight: 700, fontSize: 14, padding: "12px 28px", width: "100%" }}>
               Sign in with Microsoft
             </button>
             <div style={{ color: P.textDim, fontSize: 11.5, marginTop: 14 }}>
@@ -27788,14 +27792,14 @@ function renameCompanyAcrossProjects(oldName, newName) {
       )}
 
       {/* ── Nav bar ── */}
-      <div style={{ background: P.card, borderBottom: `1px solid ${P.border}`, padding: "0 32px", display: "flex", alignItems: "center", gap: 24, height: 54, position: "sticky", top: 0, zIndex: 100 }}>
-        <div
+      <nav aria-label="Primary" style={{ background: P.card, borderBottom: `1px solid ${P.border}`, padding: "0 32px", display: "flex", alignItems: "center", gap: 24, height: 54, position: "sticky", top: 0, zIndex: 100 }}>
+        <h1
           onClick={handlePmsLogoClick}
           title={"v" + (window.__appVersion || "")}
           style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-.02em", cursor: "pointer", userSelect: "none" }}>
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
-        </div>
+        </h1>
         {/* Staff + Team WBS are Operations-facing (staffing.view capability,
             managed in the Admin Console); everyone gets My Projects instead. */}
         {[{ label: "Dashboard", key: "dashboard" }, { label: "My Projects", key: "myprojects" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" },
@@ -27807,7 +27811,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
           // it reads as the primary tab; the rest keep the quiet underline style.
           key === "myprojects" ? (
             <button key={key} onClick={() => setView(key)}
-              style={{ background: view === key ? P.accent : P.accentDim, border: "1px solid " + (view === key ? P.accentLight : P.accent),
+              style={{ background: view === key ? "#2563eb" : P.accentDim, border: "1px solid " + (view === key ? P.accentLight : P.accent),
                 cursor: "pointer", color: view === key ? "#fff" : P.accentLight, fontWeight: 700, fontSize: 13,
                 padding: "5px 14px", borderRadius: 999, boxShadow: view === key ? "0 0 10px rgba(59,130,246,.35)" : "none" }}>
               ★ {label}
@@ -27852,8 +27856,9 @@ function renameCompanyAcrossProjects(oldName, newName) {
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
         <Btn small variant="ghost" onClick={exportCSV}>⬇ CSV</Btn>
         <Btn small onClick={addProject}>+ New Project</Btn>
-      </div>
+      </nav>
 
+      <main id="pms-main">
       {loadErrorBanner}
 
       {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} staff={staff} />}
@@ -27876,7 +27881,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
       {(view === "list" || view === "archive") && (
         <div style={{ padding: "24px 32px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>{view === "archive" ? "Archived Projects" : "Awarded Projects"}</div>
+            <h2 style={{ fontSize: 20, fontWeight: 800 }}>{view === "archive" ? "Archived Projects" : "Awarded Projects"}</h2>
             <Btn small onClick={addProject}>+ New Project</Btn>
           </div>
           <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
@@ -27915,6 +27920,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
       {viewingProject && (
         <ProjectDetail project={viewingProject} onUpdate={updateProject} onEagerSave={updateProjectAndFlush} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />
       )}
+      </main>
     </div>
 
     {/* Phase 5 — Conflict resolution modal (renders only when a true same-field conflict needs human judgment) */}
