@@ -220,6 +220,7 @@ function setupEventListeners() {
   // mainView header-logo no longer exists). Counter is shared across both.
   let _logoClickCount = 0;
   let _logoClickTimer = null;
+  let _creditsPrevFocus = null;
   document.querySelectorAll(".header-logo, #versionFooter").forEach(logoEl => {
     logoEl.title = "v" + (window.__appVersion || "");
     logoEl.onclick = () => {
@@ -228,7 +229,14 @@ function setupEventListeners() {
       if (_logoClickCount >= 5) {
         _logoClickCount = 0;
         const overlay = document.getElementById("creditsOverlay");
-        if (overlay) overlay.classList.add("show");
+        if (overlay) {
+          overlay.classList.add("show");
+          // Dialog focus management — remember where the user was, move
+          // focus into the card so Escape/screen readers work, restore later.
+          _creditsPrevFocus = document.activeElement;
+          const card = overlay.querySelector(".credits-card");
+          if (card) card.focus();
+        }
         loadConfetti().then(ok => {
           if (!ok || typeof confetti !== "function") return;
           confetti({ particleCount: 40, spread: 60, origin: { y: 0.5 }, scalar: 0.7, ...(getSeasonalConfettiOpts() || {}) });
@@ -239,7 +247,19 @@ function setupEventListeners() {
     };
   });
   const credits = document.getElementById("creditsOverlay");
-  if (credits) credits.onclick = () => credits.classList.remove("show");
+  if (credits) {
+    const closeCredits = () => {
+      credits.classList.remove("show");
+      if (_creditsPrevFocus && typeof _creditsPrevFocus.focus === "function") {
+        try { _creditsPrevFocus.focus(); } catch (_) { /* element may be gone */ }
+      }
+      _creditsPrevFocus = null;
+    };
+    credits.onclick = closeCredits; // click anywhere still closes
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && credits.classList.contains("show")) closeCredits();
+    });
+  }
   // Hint banner link — single entry point for "open project in PMS" so the
   // URL/permissions logic stays in one place (openSelectedProjectInPms).
   const spHintLink = document.getElementById("spFolderHintLink");
@@ -2186,6 +2206,7 @@ function showPendingFilingBanner() {
     if (!mainView) return;
     const el = document.createElement("div");
     el.id = "filingPendingBanner";
+    el.setAttribute("role", "alert"); // interrupted saves warrant an assertive announcement
     el.style.cssText = "display:none;background:#fef3c7;border:1px solid #f59e0b;color:#78350f;padding:8px 12px;margin:8px 12px;border-radius:6px;font-size:12px;";
     mainView.insertBefore(el, mainView.firstChild);
   }
@@ -3731,7 +3752,7 @@ async function renderResponseWatchlist() {
             <div class="wl-meta">${escHtml(r.client_name || r.client_email || "")}${proj ? " · " + escHtml(proj.name) : ""} · flagged ${escHtml(_relativeTime(r.added_at))}</div>
             <div class="wl-reasons">${escHtml(reasons)} ${due}</div>
           </div>
-          <button type="button" class="wl-dismiss" data-cid="${escHtml(r.conversation_id)}" title="Not awaiting a reply — dismiss">×</button>
+          <button type="button" class="wl-dismiss" data-cid="${escHtml(r.conversation_id)}" title="Not awaiting a reply — dismiss" aria-label="Dismiss watchlist item">×</button>
         </div>`;
     }).join("");
     list.querySelectorAll(".wl-open").forEach(el => {
@@ -4288,6 +4309,9 @@ function pickQuip(pool) {
 // are instant. Returns a Promise<boolean> — true when ready, false on load error.
 let _confettiLoadPromise = null;
 function loadConfetti() {
+  // Respect reduced-motion: resolve(false) so every celebration call site
+  // skips the confetti burst (they all check the boolean before firing).
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return Promise.resolve(false);
   if (typeof confetti === "function") return Promise.resolve(true);
   if (_confettiLoadPromise) return _confettiLoadPromise;
   _confettiLoadPromise = new Promise(resolve => {
@@ -6293,12 +6317,16 @@ function setRfiMode(mode) {
   document.getElementById("rfiExistingForm").style.display = mode === "existing" ? "" : "none";
   document.getElementById("rfiModeNew").className      = "btn mode-tab " + (mode === "new"      ? "btn-blue"  : "btn-ghost");
   document.getElementById("rfiModeExisting").className = "btn mode-tab " + (mode === "existing" ? "btn-blue"  : "btn-ghost");
+  document.getElementById("rfiModeNew").setAttribute("aria-pressed",      mode === "new"      ? "true" : "false");
+  document.getElementById("rfiModeExisting").setAttribute("aria-pressed", mode === "existing" ? "true" : "false");
 }
 function setSubMode(mode) {
   document.getElementById("subNewForm").style.display      = mode === "new"      ? "" : "none";
   document.getElementById("subExistingForm").style.display = mode === "existing" ? "" : "none";
   document.getElementById("subModeNew").className      = "btn mode-tab " + (mode === "new"      ? "btn-purple" : "btn-ghost");
   document.getElementById("subModeExisting").className = "btn mode-tab " + (mode === "existing" ? "btn-purple" : "btn-ghost");
+  document.getElementById("subModeNew").setAttribute("aria-pressed",      mode === "new"      ? "true" : "false");
+  document.getElementById("subModeExisting").setAttribute("aria-pressed", mode === "existing" ? "true" : "false");
 }
 function renderRfiPicker() {
   const sel  = document.getElementById("rfiExistingSelect");
@@ -9170,6 +9198,18 @@ function showView(id) {
     const el = document.getElementById(v);
     if (el) el.classList.toggle("active", v === id);
   });
+  // Move focus to the new view's first heading so screen-reader users hear
+  // the view change. Skipped on the very first call (initial render) so the
+  // add-in doesn't yank focus away from Outlook while loading.
+  if (showView._hasShownView) {
+    const view = document.getElementById(id);
+    const heading = view && view.querySelector("h1, h2");
+    if (heading) {
+      heading.setAttribute("tabindex", "-1");
+      heading.focus();
+    }
+  }
+  showView._hasShownView = true;
 }
 // Fallback: if Office.onReady never fires (browser preview / load failure),
 // replace spinner with a plain message after 5 seconds
@@ -9187,6 +9227,9 @@ function setStatus(elId, type, msg) {
   const el = document.getElementById(elId);
   if (!el) return;
   el.className = "status-msg" + (msg ? " show " + type : "");
+  // Errors should interrupt the screen reader (role=alert); everything else
+  // announces politely via the static role="status" the markup starts with.
+  el.setAttribute("role", type === "error" ? "alert" : "status");
   // "⏳" prefix = busy message. Swap the static emoji for the animated
   // spinner so users can tell a working save from a stuck one — every
   // existing call site opts in just by keeping the emoji convention.
@@ -9194,6 +9237,7 @@ function setStatus(elId, type, msg) {
     el.textContent = msg.slice(1).trim();
     const spin = document.createElement("span");
     spin.className = "spinner";
+    spin.setAttribute("aria-hidden", "true");
     spin.style.cssText = "vertical-align:-2px;margin-right:6px;";
     el.prepend(spin);
     _busyStatusElId = elId;

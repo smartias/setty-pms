@@ -93,7 +93,7 @@
     }
     #pinHintBanner .pin-emoji {
       font-size: 16px;
-      animation: pinWiggle 2.6s ease-in-out infinite;
+      animation: pinWiggle 2.6s ease-in-out 6;
     }
     @keyframes pinWiggle {
       0%, 72%, 100% { transform: rotate(0deg); }
@@ -291,8 +291,8 @@
     .save-row-caption span { text-align: center; }
     /* Emphasis dimming — used by applyEmailFlowEmphasis to soften the off-flow button
        without disabling it. User can still click; it just visually steps back. */
-    .btn.btn-deemph { opacity: 0.7; }
-    .btn.btn-deemph:hover:not(:disabled) { opacity: 1; }
+    .btn.btn-deemph { filter: saturate(0.4); }
+    .btn.btn-deemph:hover:not(:disabled) { filter: none; }
     /* Post-save confirmation card — replaces the save row once the email is filed.
        Big circular checkmark + summary text. Subtle pop-in animation on appearance. */
     #saveConfirmation {
@@ -821,14 +821,22 @@
     details.more-expander[open] > summary::before { transform: rotate(90deg); }
     details.more-expander > summary:hover { color: var(--primary); }
     details.more-expander > .more-body { padding-top: 4px; }
+    /* Respect the OS-level reduced-motion preference — kill all animation
+       and transitions (wiggles, pop-ins, spinners keep meaning via text). */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
   </style>
 </head>
 <body>
 <div id="celebrationToast" aria-live="polite"></div>
 <!-- Hidden credits overlay — revealed by clicking the SETTY PMS logo 5x.
      Pure easter egg, no app function. Click anywhere to dismiss. -->
-<div id="creditsOverlay">
-  <div class="credits-card">
+<div id="creditsOverlay" role="dialog" aria-modal="true" aria-label="Credits">
+  <div class="credits-card" tabindex="-1">
     <div class="credits-title">SETTY PMS</div>
     <div class="credits-tagline">Built with hard hats and clipboards.</div>
     <div class="credits-meta">2026 · Setty &amp; Associates</div>
@@ -838,8 +846,8 @@
 
 <main>
 <!-- Loading state — visible immediately, hidden once Office.onReady fires -->
-<div id="loadingView" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:12px;">
-  <div class="spinner" style="width:24px;height:24px;border-width:3px;"></div>
+<div id="loadingView" role="status" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:12px;">
+  <div class="spinner" aria-hidden="true" style="width:24px;height:24px;border-width:3px;"></div>
   <div style="font-size:12px;color:#616161;">Loading…</div>
 </div>
 
@@ -861,7 +869,7 @@
     <li>Auto-suggest the project from the subject line</li>
   </ul>
   <button class="btn btn-primary" id="signInBtn">Sign in with Microsoft</button>
-  <div id="signInStatus" class="status-msg" style="margin-top:10px;"></div>
+  <div id="signInStatus" class="status-msg" role="status" style="margin-top:10px;"></div>
   <p style="color:var(--text-faint);font-size:11px;margin-top:14px;line-height:1.5;">
     Tip: after signing in, click the 📌 pin in the top-right of this pane so it stays open as you move between emails.
   </p>
@@ -875,7 +883,7 @@
   <div id="pinHintBanner" style="display:none;">
     <span class="pin-emoji">📌</span>
     <span style="flex:1">Pin this pane so it stays open as you move between emails — click the pin in the top-right corner.</span>
-    <button id="pinHintDismiss" type="button" title="Got it — don't show again">✕</button>
+    <button id="pinHintDismiss" type="button" title="Got it — don't show again" aria-label="Dismiss pin reminder">✕</button>
   </div>
 
   <div class="email-preview">
@@ -888,10 +896,10 @@
   <!-- Response watchlist — client emails that look like they need a reply and
        haven't been answered yet. Populated by renderResponseWatchlist(); each
        row's open/answered state is verified live against Graph at render time. -->
-  <div id="responseWatchlistBlock" class="watchlist-block" style="display:none;">
+  <div id="responseWatchlistBlock" class="watchlist-block" aria-live="polite" style="display:none;">
     <div class="watchlist-head">
       <div class="watchlist-label">📨 Awaiting your reply (<span id="responseWatchlistCount">0</span>)</div>
-      <button type="button" id="responseWatchlistRefresh" class="watchlist-refresh" title="Re-check the watchlist">↻</button>
+      <button type="button" id="responseWatchlistRefresh" class="watchlist-refresh" title="Re-check the watchlist" aria-label="Refresh">↻</button>
     </div>
     <div id="responseWatchlistList"></div>
   </div>
@@ -899,7 +907,7 @@
   <!-- (Email sweep moved into "More actions" at the bottom — used less often.) -->
 
   <!-- Project suggestion chips — shown when no project tag exists for this thread -->
-  <div id="suggestionBlock" class="suggestion-block" style="display:none;">
+  <div id="suggestionBlock" class="suggestion-block" aria-live="polite" style="display:none;">
     <div class="suggestion-label">💡 <span id="suggestionLabelText">Possible projects</span></div>
     <div id="suggestionChips"></div>
   </div>
@@ -911,7 +919,7 @@
   </div>
   <div id="selectedProjectBadge" style="display:none;margin-bottom:8px;padding:6px 10px;background:var(--success-bg);border:1px solid #b6e3b6;border-radius:4px;font-size:13px;color:var(--success);font-weight:600;align-items:center;justify-content:space-between;gap:6px;">
     <span id="selectedProjectBadgeText"></span>
-    <button id="clearProjectTagBtn" type="button" style="display:none;background:transparent;border:none;color:var(--text-soft);font-size:16px;line-height:1;cursor:pointer;padding:0 2px;" title="Clear tagged project for this email">×</button>
+    <button id="clearProjectTagBtn" type="button" style="display:none;background:transparent;border:none;color:var(--text-soft);font-size:16px;line-height:1;cursor:pointer;padding:0 2px;" title="Clear tagged project for this email" aria-label="Clear tagged project">×</button>
   </div>
   <div id="projectPipelineHint" style="display:none;margin:-4px 0 10px;padding:6px 10px;background:var(--warn-bg);border:1px solid #f1d875;border-radius:4px;font-size:12px;color:var(--warn);font-weight:600;"></div>
 
@@ -929,11 +937,11 @@
     <button class="btn btn-ghost" id="openSpFolderBtn" disabled>📂 SharePoint Folder</button>
   </div>
 
-  <div id="actionStatus" class="status-msg"></div>
+  <div id="actionStatus" class="status-msg" role="status"></div>
 
   <!-- Date suggestion chips — shown when the email body contains date candidates and a project is selected.
        Mirrors the project-suggestion pattern: surfaced automatically, never modal. -->
-  <div id="dateSuggestionBlock" class="suggestion-block" style="display:none;">
+  <div id="dateSuggestionBlock" class="suggestion-block" aria-live="polite" style="display:none;">
     <div class="suggestion-label">📅 <span id="dateSuggestionLabelText">Possible date</span></div>
     <div id="dateSuggestionChips"></div>
   </div>
@@ -947,7 +955,7 @@
   <!-- "Already logged as RFI / Submittal" chip row. Populated by
        refreshLoggedArtifactChips() based on RFI/Submittal records whose
        sourceItemId matches the current email. Empty by default. -->
-  <div id="loggedAsArtifactChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
+  <div id="loggedAsArtifactChips" aria-live="polite" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
 
   <!-- Optional link target: when the selected project has open RFIs or
        Submittals, this dropdown lets the user link the current email to one.
@@ -1019,7 +1027,7 @@
             <button type="button" id="sweepFileBtn" class="watchlist-refresh" title="File confident matches and queue the rest for review">Run &amp; file</button>
           </span>
         </div>
-        <div id="sweepStatus" style="font-size:12px;color:#666;margin:4px 0;"></div>
+        <div id="sweepStatus" role="status" style="font-size:12px;color:#666;margin:4px 0;"></div>
         <div id="sweepResults" style="max-height:280px;overflow:auto;"></div>
       </div>
     </div>
@@ -1044,7 +1052,7 @@
       <button class="btn-quick" data-tpl="onhold">✉ Project On Hold</button>
       <button class="btn-quick" data-tpl="sitesurvey">✉ Site Survey Request</button>
     </div>
-    <div id="quickTextStatus" class="status" style="display:none"></div>
+    <div id="quickTextStatus" class="status" role="status" style="display:none"></div>
   </div>
 
   <!-- Version footer — inherits the logo's old jobs: hover shows the version
@@ -1069,7 +1077,7 @@
   </select>
   <label for="noteBody">Note Body</label>
   <textarea id="noteBody" rows="4" placeholder="Summary, decisions, action items…"></textarea>
-  <div id="noteStatus" class="status-msg"></div>
+  <div id="noteStatus" class="status-msg" role="status"></div>
   <div id="noteOneNoteLink" style="margin-top:6px"></div>
   <button class="btn btn-blue" id="saveNoteBtn">💾 Save Note</button>
 </div>
@@ -1086,7 +1094,7 @@
   </select>
   <label for="actionItemDueDate">Due Date</label>
   <input type="date" id="actionItemDueDate"/>
-  <div id="actionItemStatus" class="status-msg"></div>
+  <div id="actionItemStatus" class="status-msg" role="status"></div>
   <button class="btn btn-blue" id="saveActionItemBtn">💾 Save Action Item</button>
 </div>
 
@@ -1094,8 +1102,8 @@
 <div id="rfiView">
   <button class="back-btn" id="rfiBack">← Back</button>
   <div style="display:flex;gap:6px;margin-bottom:12px;">
-    <button class="btn btn-blue mode-tab" id="rfiModeNew">➕ New RFI</button>
-    <button class="btn btn-ghost mode-tab" id="rfiModeExisting">📂 File to Existing</button>
+    <button class="btn btn-blue mode-tab" id="rfiModeNew" aria-pressed="true">➕ New RFI</button>
+    <button class="btn btn-ghost mode-tab" id="rfiModeExisting" aria-pressed="false">📂 File to Existing</button>
   </div>
 
   <div id="rfiNewForm">
@@ -1132,7 +1140,7 @@
     <textarea id="rfiDescription" rows="4" placeholder="Full RFI question text — what's being asked, what's the issue, what response is needed…"></textarea>
     <label for="rfiNotes">Internal Notes <span style="color:#616161;font-weight:400;font-size:10px;">(optional)</span></label>
     <textarea id="rfiNotes" rows="2" placeholder="Internal notes — context for your team, not the contractor"></textarea>
-    <div id="rfiStatus" class="status-msg"></div>
+    <div id="rfiStatus" class="status-msg" role="status"></div>
     <button class="btn btn-blue" id="saveRfiBtn">💾 Log New RFI</button>
   </div>
 
@@ -1143,7 +1151,7 @@
     </p>
     <label for="rfiExistingSelect">RFI</label>
     <select id="rfiExistingSelect" style="margin-bottom:10px;"></select>
-    <div id="rfiExistingStatus" class="status-msg"></div>
+    <div id="rfiExistingStatus" class="status-msg" role="status"></div>
     <button class="btn btn-blue" id="fileRfiBtn">📁 File Email to RFI</button>
   </div>
 </div>
@@ -1152,8 +1160,8 @@
 <div id="subView">
   <button class="back-btn" id="subBack">← Back</button>
   <div style="display:flex;gap:6px;margin-bottom:12px;">
-    <button class="btn btn-purple mode-tab" id="subModeNew">➕ New Submittal</button>
-    <button class="btn btn-ghost mode-tab" id="subModeExisting">📂 File to Existing</button>
+    <button class="btn btn-purple mode-tab" id="subModeNew" aria-pressed="true">➕ New Submittal</button>
+    <button class="btn btn-ghost mode-tab" id="subModeExisting" aria-pressed="false">📂 File to Existing</button>
   </div>
 
   <div id="subNewForm">
@@ -1192,7 +1200,7 @@
     <textarea id="subFullDescription" rows="4" placeholder="What's being submitted, what needs to be reviewed, special requirements…"></textarea>
     <label for="subNotes">Internal Notes <span style="color:#616161;font-weight:400;font-size:10px;">(optional)</span></label>
     <textarea id="subNotes" rows="2" placeholder="Internal notes — context for your team"></textarea>
-    <div id="subStatus" class="status-msg"></div>
+    <div id="subStatus" class="status-msg" role="status"></div>
     <button class="btn btn-purple" id="saveSubBtn">💾 Log New Submittal</button>
   </div>
 
@@ -1203,7 +1211,7 @@
     </p>
     <label for="subExistingSelect">Submittal</label>
     <select id="subExistingSelect" style="margin-bottom:10px;"></select>
-    <div id="subExistingStatus" class="status-msg"></div>
+    <div id="subExistingStatus" class="status-msg" role="status"></div>
     <button class="btn btn-purple" id="fileSubBtn">📁 File Email to Submittal</button>
   </div>
 </div>
@@ -1226,7 +1234,7 @@
     <option value="Closed">Closed</option>
     <option value="Pending Sub Response">Pending Sub Response</option>
   </select>
-  <div id="rfiResponseStatusMsg" class="status-msg"></div>
+  <div id="rfiResponseStatusMsg" class="status-msg" role="status"></div>
   <button class="btn btn-blue" id="submitRfiResponseBtn">📤 Log Response · Generate DOCX · Draft Email</button>
 </div>
 
@@ -1253,7 +1261,7 @@
     <option value="Returned">Returned</option>
     <option value="Closed">Closed</option>
   </select>
-  <div id="subReviewStatusMsg" class="status-msg"></div>
+  <div id="subReviewStatusMsg" class="status-msg" role="status"></div>
   <button class="btn btn-purple" id="submitSubReviewBtn">📤 Log Review · Generate DOCX · Draft Email</button>
 </div>
 
@@ -1270,7 +1278,7 @@
     <input type="text" id="milestoneName" placeholder="e.g. Submit comments to GC"/>
     <label for="milestoneDate">Due Date</label>
     <input type="date" id="milestoneDate"/>
-    <div id="milestoneStatus" class="status-msg"></div>
+    <div id="milestoneStatus" class="status-msg" role="status"></div>
     <button class="btn btn-blue" id="saveMilestoneBtn">💾 Save Milestone to Project</button>
   </div>
 </div>
@@ -1282,7 +1290,7 @@
   <p style="font-size:11px;color:#616161;margin-bottom:12px;line-height:1.5;">
     Select a participant to add them to Clients or a Project POC. Duplicate contacts are skipped automatically.
   </p>
-  <div id="peopleStatus" class="status-msg"></div>
+  <div id="peopleStatus" class="status-msg" role="status"></div>
   <div id="participantList"></div>
 </div>
 
@@ -1309,7 +1317,7 @@
     <option value="client">Client / Company Directory</option>
     <option value="poc">Project POC (selected project)</option>
   </select>
-  <div id="contactStatus" class="status-msg"></div>
+  <div id="contactStatus" class="status-msg" role="status"></div>
   <button class="btn btn-teal" id="saveContactBtn">💾 Save Contact</button>
 </div>
 
