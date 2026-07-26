@@ -106,6 +106,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--blue); }
 select option { background: var(--card); }
 label { font-size: 13px; color: var(--dim); display: block; margin-bottom: 4px; }
 .hidden { display: none !important; }
+/* Visually hidden but still read by screen readers. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* Auth screen */
 #authScreen { display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column; gap: 24px; }
@@ -164,7 +166,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 .file-thumb { position: relative; aspect-ratio: 1; border-radius: 6px; overflow: hidden; background: var(--card); border: 1px solid var(--border); }
 .file-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .file-thumb .remove-btn { position: absolute; top: 3px; right: 3px; background: rgba(0,0,0,.7); color: white; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-.file-thumb .fname { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.65); font-size: 9px; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: white; }
+.file-thumb .fname { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.65); font-size: 11px; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: white; }
 .file-thumb .status-icon { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; display: flex; align-items: center; justify-content: center; }
 .status-icon.ok  { background: var(--green); }
 .status-icon.err { background: var(--red); }
@@ -313,6 +315,18 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
   .gallery-toolbar select, .gallery-toolbar input { max-width: 100%; }
   .tabs .tab-btn { padding: 10px 14px; font-size: 13px; }
 }
+/* ─── Reduced motion ───
+   Kill decorative animation/transitions for users whose OS asks for it.
+   (The film-strip sprocket scroll has its own guard above; this catches
+   everything else — toast slide-in, upload spinner, hover transitions.) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 </style>
 </head>
 <body>
@@ -339,9 +353,9 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
       <span>SETTY</span>
     </div>
     <div class="hdr-divider"></div>
-    <div class="hdr-title">Field Photos</div>
+    <h1 class="hdr-title">Field Photos</h1>
     <span class="hdr-user" id="hdrUser"></span>
-    <span id="appVersion" style="font-size:10px;color:rgba(255,255,255,0.4);margin-right:8px;font-family:monospace" title="App version — useful for diagnostics. Mismatched between team members = someone has stale code."></span>
+    <span id="appVersion" style="font-size:10px;color:rgba(255,255,255,0.75);margin-right:8px;font-family:monospace" title="App version — useful for diagnostics. Mismatched between team members = someone has stale code."></span>
     <!-- Cross-link to the Site Reports tool. Same Microsoft auth via shared
          MSAL client ID, so signing in once works for both pages. -->
     <a href="https://smartias.github.io/setty-pms/SiteReport.html" target="_blank" rel="noreferrer"
@@ -359,23 +373,23 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
     });
   </script>
 
-  <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('upload',this)">&#8593; Upload</button>
-    <button class="tab-btn" onclick="switchTab('gallery',this)">&#9783; Gallery</button>
-    <button class="tab-btn" onclick="switchTab('batch',this)">&#8615; Batch Download</button>
+  <div class="tabs" role="tablist" aria-label="Field Photos sections">
+    <button class="tab-btn active" id="uploadTabBtn" role="tab" aria-selected="true" aria-controls="uploadTab" onclick="switchTab('upload',this)">&#8593; Upload</button>
+    <button class="tab-btn" id="galleryTabBtn" role="tab" aria-selected="false" aria-controls="galleryTab" onclick="switchTab('gallery',this)">&#9783; Gallery</button>
+    <button class="tab-btn" id="batchTabBtn" role="tab" aria-selected="false" aria-controls="batchTab" onclick="switchTab('batch',this)">&#8615; Batch Download</button>
   </div>
 
   <!-- Upload Tab -->
-  <div id="uploadTab" class="tab-content active">
+  <div id="uploadTab" class="tab-content active" role="tabpanel" aria-labelledby="uploadTabBtn">
     <div style="padding:20px;max-width:860px;margin:0 auto;">
-      <div class="section-title">Select Project</div>
+      <h2 class="section-title">Select Project</h2>
       <div class="project-picker">
         <input type="text" id="projSearch" aria-label="Search projects by name or number" placeholder="Search by project name or number..." autocomplete="off" oninput="filterProjects()" onfocus="showDropdown()" />
         <div class="picker-dropdown hidden" id="projDropdown"></div>
       </div>
       <div id="selectedProjectCard" class="hidden"></div>
 
-      <div class="section-title">Photos</div>
+      <h2 class="section-title">Photos</h2>
       <div class="dropzone" id="dropzone" onclick="if(event.target.id!=='fileInput')document.getElementById('fileInput').click()">
         <div class="dz-icon">&#128247;</div>
         <p><strong>Tap to select</strong> or drag &amp; drop photos here</p>
@@ -384,7 +398,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
       </div>
       <div class="file-previews" id="filePreviews"></div>
 
-      <div class="section-title">Metadata</div>
+      <h2 class="section-title">Metadata</h2>
       <div class="form-grid">
         <div class="form-group">
           <label for="fDate">Date Taken *</label>
@@ -457,7 +471,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
           <strong id="progressTitle">Uploading...</strong>
           <span id="progressCount" style="font-size:13px;color:var(--dim);"></span>
         </div>
-        <div class="progress-bar-wrap"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
+        <div class="progress-bar-wrap" role="progressbar" aria-labelledby="progressTitle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
         <div class="progress-label" id="progressLabel"></div>
       </div>
 
@@ -468,7 +482,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
   </div>
 
   <!-- Gallery Tab -->
-  <div id="galleryTab" class="tab-content" style="display:none;flex-direction:column;height:calc(100vh - 96px);">
+  <div id="galleryTab" class="tab-content" role="tabpanel" aria-labelledby="galleryTabBtn" style="display:none;flex-direction:column;height:calc(100vh - 96px);">
     <div class="gallery-toolbar">
       <select id="galProject" aria-label="Filter by project" onchange="loadGallery()">
         <option value="">All Projects</option>
@@ -502,9 +516,9 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
   </div>
 
   <!-- Batch Tab -->
-  <div id="batchTab" class="tab-content" style="display:none;">
+  <div id="batchTab" class="tab-content" role="tabpanel" aria-labelledby="batchTabBtn" style="display:none;">
     <div style="padding:20px;max-width:860px;margin:0 auto;">
-      <div class="section-title">Batch Download</div>
+      <h2 class="section-title">Batch Download</h2>
       <div class="batch-toolbar">
         <button class="btn-ghost" onclick="toggleSelectAll()">Select All</button>
         <button class="btn-ghost" onclick="clearSelection()">Clear</button>
@@ -522,16 +536,16 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 </div>
 
 <!-- Lightbox -->
-<div id="lightbox" onclick="closeLightboxOnBg(event)">
-  <button class="lb-close" onclick="closeLightbox()">&#215;</button>
-  <button class="lb-nav" id="lbPrev" onclick="navLightbox(-1)">&#8249;</button>
-  <button class="lb-nav" id="lbNext" onclick="navLightbox(1)">&#8250;</button>
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Photo viewer" onclick="closeLightboxOnBg(event)">
+  <button class="lb-close" aria-label="Close photo viewer" onclick="closeLightbox()">&#215;</button>
+  <button class="lb-nav" id="lbPrev" aria-label="Previous photo" onclick="navLightbox(-1)">&#8249;</button>
+  <button class="lb-nav" id="lbNext" aria-label="Next photo" onclick="navLightbox(1)">&#8250;</button>
   <div class="lb-img-wrap"><img id="lbImg" src="" alt="" /></div>
   <div class="lb-meta" id="lbMeta"></div>
 </div>
 
 <!-- Toast Area -->
-<div id="toastArea"></div>
+<div id="toastArea" role="status" aria-live="polite"></div>
 
 <script>
 // ---- Config ----
@@ -1125,9 +1139,9 @@ function renderPreviews() {
   pendingFiles.forEach((pf, i) => {
     const div = document.createElement('div');
     div.className = 'file-thumb';
-    const statusIcon = pf.status === 'ok'       ? '<div class="status-icon ok" title="Uploaded">&#10003;</div>' :
-                       pf.status === 'err'      ? '<div class="status-icon err" title="Upload failed — click × to remove">&#33;</div>' :
-                       pf.status === 'uploading' ? '<div class="status-icon uploading" title="Uploading…">&#8635;</div>' : '';
+    const statusIcon = pf.status === 'ok'       ? '<div class="status-icon ok" title="Uploaded">&#10003;<span class="sr-only">Uploaded</span></div>' :
+                       pf.status === 'err'      ? '<div class="status-icon err" title="Upload failed — click × to remove">&#33;<span class="sr-only">Upload failed</span></div>' :
+                       pf.status === 'uploading' ? '<div class="status-icon uploading" title="Uploading…">&#8635;<span class="sr-only">Uploading</span></div>' : '';
     div.innerHTML = `
       ${statusIcon}
       ${pf.previewUrl
@@ -1135,7 +1149,7 @@ function renderPreviews() {
         : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:28px;">&#127910;</div>`}
       ${pf.isVideo ? `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.55);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;pointer-events:none;">&#9654;</div>` : ''}
       <div class="fname">${pf.file.name}</div>
-      ${pf.status !== 'ok' && pf.status !== 'uploading' ? `<button class="remove-btn" onclick="removeFile(${i})" title="Remove">&#215;</button>` : ''}`;
+      ${pf.status !== 'ok' && pf.status !== 'uploading' ? `<button class="remove-btn" onclick="removeFile(${i})" title="Remove" aria-label="Remove ${escHtml(pf.file.name)} from upload queue">&#215;</button>` : ''}`;
     wrap.appendChild(div);
   });
 }
@@ -1376,7 +1390,9 @@ async function startUpload() {
   const total = toUpload.length;
 
   function setProgress(n, label) {
-    document.getElementById('progressBar').style.width = Math.round((n / (total + 2)) * 100) + '%';
+    const pct = Math.round((n / (total + 2)) * 100);
+    document.getElementById('progressBar').style.width = pct + '%';
+    document.querySelector('#uploadProgress .progress-bar-wrap').setAttribute('aria-valuenow', pct);
     document.getElementById('progressCount').textContent = `${n}/${total}`;
     document.getElementById('progressLabel').textContent = label;
     document.getElementById('progressTitle').textContent = n <= total ? 'Uploading...' : 'Finishing up...';
@@ -1398,8 +1414,9 @@ async function startUpload() {
           const fname = pf.file.name.replace(/[^a-zA-Z0-9._\- ]/g, '_');
           setProgress(i + 1, `Uploading video ${fname}...`);
           await uploadWithSession(uploadFolder, fname, pf.file, pct => {
-            document.getElementById('progressBar').style.width =
-              Math.round(((i + pct) / (total + 2)) * 100) + '%';
+            const overall = Math.round(((i + pct) / (total + 2)) * 100);
+            document.getElementById('progressBar').style.width = overall + '%';
+            document.querySelector('#uploadProgress .progress-bar-wrap').setAttribute('aria-valuenow', overall);
           });
         } else {
           // Images: compress then upload.
@@ -1494,6 +1511,7 @@ async function startUpload() {
 
     prog.classList.remove('running');     // upload finished — stop the film
     document.getElementById('progressBar').style.width = '100%';
+    document.querySelector('#uploadProgress .progress-bar-wrap').setAttribute('aria-valuenow', 100);
     document.getElementById('progressBar').style.background = 'var(--green)';
     document.getElementById('progressTitle').innerHTML =
       `&#10003; ${okCount} photo${okCount !== 1 ? 's' : ''} uploaded` +
@@ -1806,16 +1824,21 @@ async function toggleFolder(headerEl, folderId) {
 }
 
 // ---- Lightbox ----
+let lbReturnFocusEl = null;   // element to restore focus to when the lightbox closes
+
 function openLightbox(idx) {
   lbIndex = idx;
+  lbReturnFocusEl = document.activeElement;
   renderLightbox();
   document.getElementById('lightbox').classList.add('open');
+  document.querySelector('#lightbox .lb-close').focus();
 }
 
 async function renderLightbox() {
   const item = galleryData[lbIndex];
   if (!item) return;
 
+  document.getElementById('lightbox').setAttribute('aria-label', item.name || 'Photo viewer');
   document.getElementById('lbImg').src = item.thumbUrl || '';
 
   // Try to get full-res URL
@@ -1847,6 +1870,9 @@ async function renderLightbox() {
 function closeLightbox() {
   document.getElementById('lightbox').classList.remove('open');
   document.getElementById('lbImg').src = '';
+  // Hand focus back to the gallery card that opened the viewer.
+  if (lbReturnFocusEl && document.contains(lbReturnFocusEl)) lbReturnFocusEl.focus();
+  lbReturnFocusEl = null;
 }
 
 function closeLightboxOnBg(e) {
@@ -1859,10 +1885,20 @@ function navLightbox(dir) {
 }
 
 document.addEventListener('keydown', e => {
-  if (!document.getElementById('lightbox').classList.contains('open')) return;
+  const lb = document.getElementById('lightbox');
+  if (!lb.classList.contains('open')) return;
   if (e.key === 'Escape') closeLightbox();
   if (e.key === 'ArrowRight') navLightbox(1);
   if (e.key === 'ArrowLeft') navLightbox(-1);
+  if (e.key === 'Tab') {
+    // Trap focus inside the dialog while it's open.
+    const focusables = [...lb.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter(el => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (document.activeElement === last || !lb.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+  }
 });
 
 // ---- Batch Download ----
@@ -1924,7 +1960,7 @@ function renderBatchList() {
         <div class="bmeta">${escHtml(item.projectLabel || '')} &bull; ${escHtml(item.folderName || '')}</div>
       </div>
       <div class="batch-size">${item.size ? formatSize(item.size) : ''}</div>
-      <button class="btn-ghost" style="padding:4px 10px;font-size:12px;" onclick="toggleBatch(${idx}, false);syncBatchCheckboxes();updateBatchUI();">&#215;</button>`;
+      <button class="btn-ghost" style="padding:4px 10px;font-size:12px;" aria-label="Remove ${escHtml(item.name)} from selection" onclick="toggleBatch(${idx}, false);syncBatchCheckboxes();updateBatchUI();">&#215;</button>`;
     list.appendChild(div);
   });
 }
@@ -1977,12 +2013,16 @@ function switchTab(name, btnEl) {
     el.classList.remove('active');
     el.style.display = 'none';
   });
-  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => {
+    el.classList.remove('active');
+    el.setAttribute('aria-selected', 'false');
+  });
 
   const tabEl = document.getElementById(name + 'Tab');
   tabEl.style.display = name === 'gallery' ? 'flex' : 'block';
   tabEl.classList.add('active');
-  if (btnEl) btnEl.classList.add('active');
+  const btn = btnEl || document.getElementById(name + 'TabBtn');
+  if (btn) { btn.classList.add('active'); btn.setAttribute('aria-selected', 'true'); }
 
   if (name === 'batch') renderBatchList();
 }
@@ -2013,6 +2053,9 @@ function toast(msg, type, opts) {
   const area = document.getElementById('toastArea');
   const el = document.createElement('div');
   el.className = 'toast ' + (type || '');
+  // Errors interrupt (assertive alert); everything else rides the polite
+  // #toastArea live region. Errors already linger 10s before auto-dismiss.
+  if (type === 'error') el.setAttribute('role', 'alert');
   el.textContent = msg;
   // Optional tappable link — phones have no F12 console, so anything the
   // user needs to follow up on must be tappable in the toast itself.
