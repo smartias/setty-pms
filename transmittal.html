@@ -218,9 +218,9 @@
       border-radius: 4px;
       white-space: nowrap;
       /* Discipline is auto-detected from the filename pattern but can be
-         changed — clicking the badge swaps it for a select dropdown. The
-         cursor + hover state advertise that, since the affordance otherwise
-         looks like a static label. */
+         changed — the badge is a real <select>, so it's keyboard-focusable
+         and operable. The cursor + hover state advertise that, since the
+         affordance otherwise looks like a static label. */
       cursor: pointer;
       transition: filter 0.1s;
     }
@@ -354,27 +354,27 @@
     <div class="folder-url-display" id="folderUrlDisplay">No folder URL provided</div>
     <div class="form-row">
       <div>
-        <label>Project Name</label>
+        <label for="projectName">Project Name</label>
         <input type="text" id="projectName" placeholder="e.g. SPARC Hunter College"/>
       </div>
       <div>
-        <label>Project Number</label>
+        <label for="projectNumber">Project Number</label>
         <input type="text" id="projectNumber" placeholder="e.g. SAPX246006.00" onblur="updateRecipientFromProject()"/>
       </div>
     </div>
     <div class="form-row">
       <div>
-        <label>Transmittal Date</label>
+        <label for="transmittalDate">Transmittal Date</label>
         <input type="date" id="transmittalDate"/>
       </div>
       <div>
-        <label>Transmittal No.</label>
+        <label for="transmittalNoTop">Transmittal No.</label>
         <input type="text" id="transmittalNoTop" placeholder="e.g. T-001" oninput="document.getElementById('transmittalNo').value=this.value"/>
       </div>
     </div>
     <div class="form-row">
       <div>
-        <label>Issuing To</label>
+        <label for="recipientType">Issuing To</label>
         <select id="recipientType" onchange="onRecipientTypeChange()">
           <!-- Populated by populateRecipientCompanies() — lists every company
                on the selected project (client + prime + subconsultants),
@@ -382,26 +382,26 @@
         </select>
       </div>
       <div>
-        <label>Company / Agency</label>
+        <label for="recipientCompany">Company / Agency</label>
         <input type="text" id="recipientCompany" placeholder="Auto-filled from project" readonly
           style="background:#1a2030;color:#94a3b8;cursor:default"/>
       </div>
     </div>
     <div class="form-row">
       <div>
-        <label>Contact</label>
+        <label for="recipientContact">Contact</label>
         <select id="recipientContact" onchange="onContactSelected()">
           <option value="">— Select contact —</option>
         </select>
       </div>
       <div>
-        <label>Attn: Email</label>
+        <label for="recipientEmail">Attn: Email</label>
         <input type="text" id="recipientEmail" placeholder="Auto-filled from contact"/>
       </div>
     </div>
     <div class="form-row">
       <div>
-        <label>Attn: Name</label>
+        <label for="recipientName">Attn: Name</label>
         <input type="text" id="recipientName" placeholder="Auto-filled from contact"/>
       </div>
       <div></div>
@@ -414,13 +414,13 @@
          CC line is added to the DOCX or the Outlook draft. -->
     <div class="form-row">
       <div>
-        <label>CC Company</label>
+        <label for="ccCompany">CC Company</label>
         <select id="ccCompany" onchange="onCcCompanyChange()">
           <option value="">— Pick a company —</option>
         </select>
       </div>
       <div>
-        <label>CC Contact</label>
+        <label for="ccContact">CC Contact</label>
         <select id="ccContact">
           <option value="">— Pick a contact —</option>
         </select>
@@ -437,7 +437,7 @@
 
     <div class="form-row">
       <div>
-        <label>Issued For</label>
+        <label for="issuedFor">Issued For</label>
         <select id="issuedFor">
           <option>Issued for Review</option>
           <option>Issued for Bid</option>
@@ -1256,31 +1256,25 @@ function renderTable() {
 
   sheets.forEach((s, i) => {
     const dc = discCode(s.discipline);
+    const rowRef = s.sheetNo ? `sheet ${esc(s.sheetNo)}` : `row ${i + 1}`;
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><input type="checkbox" ${s.include ? "checked" : ""} onchange="sheets[${i}].include=this.checked;updateCount()"/></td>
+      <td><input type="checkbox" ${s.include ? "checked" : ""} aria-label="Include ${rowRef}" onchange="sheets[${i}].include=this.checked;updateCount()"/></td>
       <td>
-        <span class="disc-badge disc-${dc}" title="Click to change discipline">${dc}</span>
-        <select style="display:none" onchange="sheets[${i}].discipline=this.value;renderTable()">
+        <select class="disc-badge disc-${dc}" aria-label="Discipline for ${rowRef}" title="Change discipline"
+          style="appearance:none;-webkit-appearance:none;border:none;font:inherit;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;cursor:pointer"
+          onchange="sheets[${i}].discipline=this.value;renderTable()">
           ${["Mechanical","Electrical","Plumbing","Fire Protection","General","Architectural","Structural","Civil"].map(d =>
             `<option ${d === s.discipline ? "selected" : ""}>${d}</option>`
           ).join("")}
         </select>
       </td>
-      <td><input type="text" value="${esc(s.sheetNo)}" placeholder="M-501" onchange="sheets[${i}].sheetNo=this.value"/></td>
-      <td><input type="text" value="${esc(s.title)}" placeholder="Sheet title…" onchange="sheets[${i}].title=this.value"/></td>
-      <td><input type="text" value="${esc(s.revision)}" placeholder="0" style="width:60px" onchange="sheets[${i}].revision=this.value"/></td>
-      <td><input type="text" value="${esc(s.date)}" placeholder="YYYY-MM-DD" onchange="sheets[${i}].date=this.value"/></td>
-      <td><button onclick="removeRow(${i})" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
+      <td><input type="text" value="${esc(s.sheetNo)}" placeholder="M-501" aria-label="Sheet number for ${rowRef}" onchange="sheets[${i}].sheetNo=this.value"/></td>
+      <td><input type="text" value="${esc(s.title)}" placeholder="Sheet title…" aria-label="Title for ${rowRef}" onchange="sheets[${i}].title=this.value"/></td>
+      <td><input type="text" value="${esc(s.revision)}" placeholder="0" style="width:60px" aria-label="Revision for ${rowRef}" onchange="sheets[${i}].revision=this.value"/></td>
+      <td><input type="text" value="${esc(s.date)}" placeholder="YYYY-MM-DD" aria-label="Date for ${rowRef}" onchange="sheets[${i}].date=this.value"/></td>
+      <td><button onclick="removeRow(${i})" aria-label="Remove ${rowRef}" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:13px">✕</button></td>
     `;
-    // Click badge to open select
-    tr.querySelector(".disc-badge").onclick = function() {
-      this.style.display = "none";
-      const sel = tr.querySelector("select");
-      sel.style.display = "inline-block";
-      sel.focus();
-      sel.onblur = () => { sel.style.display = "none"; this.style.display = "inline-block"; };
-    };
     tbody.appendChild(tr);
   });
 

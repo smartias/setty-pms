@@ -79,7 +79,12 @@
     .dropzone:hover, .dropzone.dragging { border-color: #3B82F6; background: #1E3A8A33; }
     .dropzone .icon { font-size: 30px; margin-bottom: 6px; }
     .dropzone p { margin: 4px 0; font-size: 12px; color: #94A3B8; }
-    .dropzone input { display: none; }
+    .dropzone input {
+      /* Visually hidden but focusable — keeps the file input in the tab order,
+         so Enter/Space opens the picker natively (display:none removed it). */
+      position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden;
+    }
+    .dropzone:has(input:focus-visible) { outline: 2px solid #60a5fa; outline-offset: 2px; }
 
     .file-info { margin-top: 12px; font-size: 11px; color: #94A3B8; }
     .file-info strong { color: #E2E8F0; }
@@ -2332,11 +2337,12 @@
       const Tag = multiline ? "textarea" : "input";
       return (
         <div className={`field conf-${field.confidence}`}>
-          <label>
+          <label htmlFor={`fe_${keyName}`}>
             {label}
             <span className={`badge ${field.confidence}`}>{field.confidence}</span>
           </label>
           <Tag
+            id={`fe_${keyName}`}
             value={field.value}
             onChange={(e) => onChange(keyName, { ...field, value: e.target.value })}
             rows={multiline ? 3 : undefined}
@@ -3253,6 +3259,7 @@
                   <div style={{ position: "relative" }}>
                     <input
                       type="text"
+                      aria-label="Search projects"
                       value={projectQuery}
                       onChange={(e) => setProjectQuery(e.target.value)}
                       onFocus={() => setProjectFocused(true)}
@@ -3268,13 +3275,18 @@
                           </div>
                         )}
                         {projectMatches.map((p) => (
-                          <div
+                          <button
+                            type="button"
                             key={p.id}
                             // onMouseDown fires before the input's onBlur — this
                             // is critical, otherwise the blur collapses the
                             // dropdown before the click registers.
                             onMouseDown={(e) => { e.preventDefault(); selectProject(p.id, false); }}
-                            style={{ padding: "6px 10px", fontSize: 12, color: "#E2E8F0", cursor: "pointer", borderBottom: "1px solid #1E293B" }}
+                            // Keyboard activation: Enter/Space fire click with
+                            // detail 0; mouse picks are handled by onMouseDown,
+                            // so guard against double-firing.
+                            onClick={(e) => { if (e.detail === 0) selectProject(p.id, false); }}
+                            style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", font: "inherit", padding: "6px 10px", fontSize: 12, color: "#E2E8F0", cursor: "pointer", borderBottom: "1px solid #1E293B" }}
                             onMouseEnter={(e) => e.currentTarget.style.background = "#1E293B"}
                             onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
                           >
@@ -3284,7 +3296,7 @@
                               {p.clientName && <span>{p.projectNumber ? " · " : ""}{p.clientName}</span>}
                               {p.prime && <span> · prime: {p.prime}</span>}
                             </div>
-                          </div>
+                          </button>
                         ))}
                         {projectMatches.length === 12 && (
                           <div style={{ padding: "6px 10px", fontSize: 10, color: "#8FA0B5", fontStyle: "italic", borderTop: "1px solid #1E293B" }}>
