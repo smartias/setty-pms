@@ -2075,6 +2075,7 @@ const CSS = `
   label:has(> input:focus-visible){outline:2px solid ${P.accentLight};outline-offset:2px;}
   .pms-skip-link{position:absolute;left:-9999px;top:0;z-index:10000;background:${P.card};color:${P.accentLight};padding:10px 16px;border-radius:0 0 8px 0;font-size:13px;font-weight:600;}
   .pms-skip-link:focus{left:0;}
+  @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;}}
 `;
 
 // ─── REUSABLE COMPONENTS ──────────────────────────────────────────────────────
@@ -2383,7 +2384,7 @@ function Badge({ color, text }) {
   );
 }
 
-function Btn({ onClick, children, variant = "primary", small, disabled, title, style: s = {} }) {
+function Btn({ onClick, children, variant = "primary", small, disabled, title, style: s = {}, "aria-label": ariaLabel }) {
   const styles = {
     primary: { background: "#2563eb", color: "#fff" },
     ghost: { background: "transparent", color: P.textMuted, border: `1px solid ${P.border}` },
@@ -2393,7 +2394,7 @@ function Btn({ onClick, children, variant = "primary", small, disabled, title, s
     purple: { background: P.purpleDim, color: P.purple },
   };
   return (
-    <button onClick={onClick} disabled={disabled} title={title}
+    <button onClick={onClick} disabled={disabled} title={title} aria-label={ariaLabel}
       style={{ ...styles[variant], padding: small ? "4px 10px" : "7px 16px", borderRadius: 6, fontSize: small ? 11 : 13, fontWeight: 500, opacity: disabled ? 0.4 : 1, ...s }}>
       {children}
     </button>
@@ -2455,7 +2456,22 @@ function Modal({ title, onClose, children, wide }) {
   const boxRef = React.useRef(null);
   React.useEffect(() => {
     // Escape closes (same path as the ✕, so guarded modals keep their guards).
-    const onKey = e => { if (e.key === "Escape" && onClose) onClose(); };
+    // Tab is trapped inside the dialog: cycle first ↔ last focusable.
+    const onKey = e => {
+      if (e.key === "Escape" && onClose) { onClose(); return; }
+      if (e.key === "Tab" && boxRef.current) {
+        const focusables = Array.from(boxRef.current.querySelectorAll(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )).filter(el => el.offsetParent !== null || el === document.activeElement);
+        if (!focusables.length) return;
+        const first = focusables[0], last = focusables[focusables.length - 1];
+        if (e.shiftKey && (document.activeElement === first || !boxRef.current.contains(document.activeElement))) {
+          e.preventDefault(); last.focus();
+        } else if (!e.shiftKey && (document.activeElement === last || !boxRef.current.contains(document.activeElement))) {
+          e.preventDefault(); first.focus();
+        }
+      }
+    };
     window.addEventListener("keydown", onKey);
     // Move focus into the dialog so Tab starts inside it, and restore it to
     // the opener on close — keyboard users otherwise tab the page underneath.
@@ -2476,7 +2492,7 @@ function Modal({ title, onClose, children, wide }) {
       <div ref={boxRef} style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 12, width: wide ? 860 : 560, maxHeight: "92vh", overflow: "auto", padding: 28 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <h2 style={{ fontSize: 17, fontWeight: 700 }}>{title}</h2>
-          <button data-modal-close onClick={onClose} style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
+          <button data-modal-close onClick={onClose} aria-label="Close dialog" style={{ background: "none", color: P.textMuted, fontSize: 20, cursor: "pointer", border: "none" }}>✕</button>
         </div>
         {children}
       </div>
@@ -2688,7 +2704,7 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
       )}
 
       {error && (
-        <div style={{ background: P.redDim, color: P.red, border: `1px solid ${P.red}`, padding: "8px 12px", borderRadius: 6, fontSize: 13, marginBottom: 14 }}>
+        <div role="alert" style={{ background: P.redDim, color: P.red, border: `1px solid ${P.red}`, padding: "8px 12px", borderRadius: 6, fontSize: 13, marginBottom: 14 }}>
           {error}
         </div>
       )}
@@ -4385,10 +4401,10 @@ ${h2("Action Items")}
 <table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-family:Calibri,sans-serif;font-size:11pt">
   <colgroup><col width="280"/><col width="160"/><col width="100"/><col width="120"/></colgroup>
   <tr style="background:#003865;color:#fff">
-    <th style="padding:6px 10px;font-weight:bold">Action Item</th>
-    <th style="padding:6px 10px;font-weight:bold">Responsible Party</th>
-    <th style="padding:6px 10px;font-weight:bold">Due Date</th>
-    <th style="padding:6px 10px;font-weight:bold">Status</th>
+    <th scope="col" style="padding:6px 10px;font-weight:bold">Action Item</th>
+    <th scope="col" style="padding:6px 10px;font-weight:bold">Responsible Party</th>
+    <th scope="col" style="padding:6px 10px;font-weight:bold">Due Date</th>
+    <th scope="col" style="padding:6px 10px;font-weight:bold">Status</th>
   </tr>
   ${blankRow}${blankRow}${blankRow}${blankRow}${blankRow}${blankRow}
 </table>
@@ -5753,7 +5769,7 @@ function printFeeProposal(project) {
     <table class="fee-table">
       <thead>
         <tr>
-          <th>Phase of Work</th>
+          <th scope="col">Phase of Work</th>
           <th class="right">Fee</th>
         </tr>
       </thead>
@@ -6008,7 +6024,7 @@ function FeeCalculator({ project, onChange }) {
             <div style={{ display: "flex", gap: 8 }}>
               {auditLog.length > 0 && <Btn small variant="ghost" onClick={() => setShowAudit(v => !v)}>📋 History ({auditLog.length})</Btn>}
               <Btn small variant="ghost" onClick={() => printFeeProposal(project)}>🖨 Fee Proposal</Btn>
-              <Btn small variant="danger" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}>🔓 Unlock & Edit</Btn>
+              <Btn small variant="danger" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}><span aria-hidden="true">🔓</span> Unlock & Edit</Btn>
             </div>
           </div>
 
@@ -6049,7 +6065,7 @@ function FeeCalculator({ project, onChange }) {
           <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 10, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em" }}>Phase Schedule</div>
           <table style={{ marginBottom: 20 }}>
             <thead>
-              <tr><th>Phase</th><th>Fee</th><th>Start</th><th>End</th><th>% Complete</th><th>Billable</th></tr>
+              <tr><th scope="col">Phase</th><th scope="col">Fee</th><th scope="col">Start</th><th scope="col">End</th><th scope="col">% Complete</th><th scope="col">Billable</th></tr>
             </thead>
             <tbody>
               {phasedFees.map(ph => {
@@ -6081,7 +6097,7 @@ function FeeCalculator({ project, onChange }) {
             <div style={{ marginTop: 14, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 16 }}>
               <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>📋 Fee Schedule Audit Log</div>
               <table>
-                <thead><tr><th>Action</th><th>User</th><th>Date</th><th>Setty Fee</th><th>Phase Total</th><th>Notes</th></tr></thead>
+                <thead><tr><th scope="col">Action</th><th scope="col">User</th><th scope="col">Date</th><th scope="col">Setty Fee</th><th scope="col">Phase Total</th><th scope="col">Notes</th></tr></thead>
                 <tbody>
                   {[...auditLog].reverse().map(e => (
                     <tr key={e.id}>
@@ -6100,8 +6116,10 @@ function FeeCalculator({ project, onChange }) {
 
           {/* Unlock modal */}
           {showLockModal && (
-            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-              onClick={e => { if (e.target === e.currentTarget) setShowLockModal(false); }}>
+            <div role="dialog" aria-modal="true" aria-label="Unlock Fee Schedule"
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+              onClick={e => { if (e.target === e.currentTarget) setShowLockModal(false); }}
+              onKeyDown={e => { if (e.key === "Escape") setShowLockModal(false); }}>
               <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 14, padding: 28, width: 440, maxWidth: "90vw" }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>🔓 Unlock Fee Schedule</div>
                 <div style={{ fontSize: 13, color: P.textMuted, marginBottom: 16 }}>This will re-open the fee schedule for editing. Add an optional note for the audit log.</div>
@@ -6112,7 +6130,7 @@ function FeeCalculator({ project, onChange }) {
                   <button onClick={() => setShowLockModal(false)}
                     style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 8, color: P.textMuted, cursor: "pointer", padding: "8px 18px", fontSize: 13 }}>Cancel</button>
                   <button onClick={doUnlock}
-                    style={{ background: P.red, border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontWeight: 700, padding: "8px 20px", fontSize: 13 }}>🔓 Unlock</button>
+                    style={{ background: P.red, border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontWeight: 700, padding: "8px 20px", fontSize: 13 }}><span aria-hidden="true">🔓</span> Unlock</button>
                 </div>
               </div>
             </div>
@@ -6287,10 +6305,10 @@ function FeeCalculator({ project, onChange }) {
       <table style={{ marginBottom: 24 }}>
         <thead>
           <tr>
-            <th>Discipline</th>
-            <th>{project.manualSettyFee > 0 ? "Default % (weight)" : "Default % of AE Fee"}</th>
-            <th>{project.manualSettyFee > 0 ? <>Override % <span style={{ fontWeight: 400 }}>(relative weight of Setty Fee)</span></> : <>Override % of AE Fee <span style={{ fontWeight: 400 }}>(edit to customize)</span></>}</th>
-            <th>Fee Amount</th>
+            <th scope="col">Discipline</th>
+            <th scope="col">{project.manualSettyFee > 0 ? "Default % (weight)" : "Default % of AE Fee"}</th>
+            <th scope="col">{project.manualSettyFee > 0 ? <>Override % <span style={{ fontWeight: 400 }}>(relative weight of Setty Fee)</span></> : <>Override % of AE Fee <span style={{ fontWeight: 400 }}>(edit to customize)</span></>}</th>
+            <th scope="col">Fee Amount</th>
           </tr>
         </thead>
         <tbody>
@@ -6349,11 +6367,11 @@ function FeeCalculator({ project, onChange }) {
             <table style={{ marginBottom: 12, fontSize: 13 }}>
               <thead>
                 <tr>
-                  <th>Sub-Consultant</th>
-                  <th>Method</th>
-                  <th>Value</th>
-                  <th>Fee</th>
-                  <th></th>
+                  <th scope="col">Sub-Consultant</th>
+                  <th scope="col">Method</th>
+                  <th scope="col">Value</th>
+                  <th scope="col">Fee</th>
+                  <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -6429,19 +6447,19 @@ function FeeCalculator({ project, onChange }) {
       <table style={{ marginBottom: 20 }}>
         <thead>
           <tr>
-            <th style={{width:48}}>Order</th>
-            <th>Code</th>
-            <th>Phase Name</th>
-            <th>% of Fee</th>
-            <th style={{ color: P.green }}>Setty Fee</th>
+            <th scope="col" style={{width:48}}>Order</th>
+            <th scope="col">Code</th>
+            <th scope="col">Phase Name</th>
+            <th scope="col">% of Fee</th>
+            <th scope="col" style={{ color: P.green }}>Setty Fee</th>
             {calcSubs.map(s => (
-              <th key={s.id} style={{ color: P.purple, whiteSpace: "nowrap", maxWidth: 120 }}>
+              <th scope="col" key={s.id} style={{ color: P.purple, whiteSpace: "nowrap", maxWidth: 120 }}>
                 {s.name || "Sub"}
               </th>
             ))}
-            {calcSubs.length > 0 && <th style={{ color: P.accentLight }}>Phase Total</th>}
-            <th>Billable</th>
-            <th></th>
+            {calcSubs.length > 0 && <th scope="col" style={{ color: P.accentLight }}>Phase Total</th>}
+            <th scope="col">Billable</th>
+            <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -6599,7 +6617,7 @@ function FeeCalculator({ project, onChange }) {
         <div style={{ marginTop: 14, background: P.bg, border: `1px solid ${P.border}`, borderRadius: 10, padding: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>📋 Fee Schedule Audit Log</div>
           <table>
-            <thead><tr><th>Action</th><th>User</th><th>Date</th><th>Setty Fee</th><th>Phase Total</th><th>Notes</th></tr></thead>
+            <thead><tr><th scope="col">Action</th><th scope="col">User</th><th scope="col">Date</th><th scope="col">Setty Fee</th><th scope="col">Phase Total</th><th scope="col">Notes</th></tr></thead>
             <tbody>
               {[...auditLog].reverse().map(e => (
                 <tr key={e.id}>
@@ -6618,8 +6636,10 @@ function FeeCalculator({ project, onChange }) {
 
       {/* Lock / Unlock modal */}
       {showLockModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={e => { if (e.target === e.currentTarget) setShowLockModal(false); }}>
+        <div role="dialog" aria-modal="true" aria-label={showLockModal === "lock" ? "Finalize and Lock Fee Schedule" : "Unlock Fee Schedule"}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setShowLockModal(false); }}
+          onKeyDown={e => { if (e.key === "Escape") setShowLockModal(false); }}>
           <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 14, padding: 28, width: 440, maxWidth: "90vw" }}>
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>
               {showLockModal === "lock" ? "🔒 Finalize & Lock Fee Schedule" : "🔓 Unlock Fee Schedule"}
@@ -6630,7 +6650,7 @@ function FeeCalculator({ project, onChange }) {
                 : "This will unlock the fee schedule for editing. Add an optional note explaining why."}
             </div>
             {showLockModal === "lock" && !phaseFeeOk && phasedFees.some(p => p.billable && p.manualFee > 0) && (
-              <div style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, color: P.red, fontSize: 13 }}>
+              <div role="alert" style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, color: P.red, fontSize: 13 }}>
                 ⚠ Phase fees total {fmt(totalPhaseFee)}, Setty fee is {fmt(baseFee)} (difference: {fmt(Math.abs(phaseFeeVar))}). You can still lock, but review the discrepancy.
               </div>
             )}
@@ -6838,10 +6858,14 @@ function DatePicker({ value, onChange, disabled, style }) {
   const popW = 220;
 
   return (
-    <div ref={ref} style={{ position: "relative", display: "inline-block", ...style }}>
-      <div onClick={() => { if (!disabled) { setOpen(v => !v); setMode("days"); } }}
+    <div ref={ref} style={{ position: "relative", display: "inline-block", ...style }}
+      onKeyDown={e => { if (e.key === "Escape" && open) { e.stopPropagation(); setOpen(false); setMode("days"); } }}>
+      <button type="button" aria-haspopup="dialog" aria-expanded={open}
+        aria-label={"Choose date" + (displayVal ? ", currently " + displayVal : "")}
+        disabled={disabled}
+        onClick={() => { if (!disabled) { setOpen(v => !v); setMode("days"); } }}
         style={{
-          display: "flex", alignItems: "center", gap: 6,
+          display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left",
           padding: "4px 8px", borderRadius: 6, cursor: disabled ? "not-allowed" : "pointer",
           border: `1px solid ${open ? P.accent : P.border}`,
           background: disabled ? "#2a2a2a" : P.card,
@@ -6849,8 +6873,8 @@ function DatePicker({ value, onChange, disabled, style }) {
           fontSize: 12, fontFamily: "JetBrains Mono", minWidth: 120, userSelect: "none",
         }}>
         <span style={{ flex: 1 }}>{displayVal || "—"}</span>
-        {!disabled && <span style={{ fontSize: 10, color: P.textDim }}>▼</span>}
-      </div>
+        {!disabled && <span aria-hidden="true" style={{ fontSize: 10, color: P.textDim }}>▼</span>}
+      </button>
 
       {open && (
         <div style={{
@@ -6860,7 +6884,7 @@ function DatePicker({ value, onChange, disabled, style }) {
         }}>
           {/* Header */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <button onClick={() => mode === "years" ? setMode("days") : (mode === "months" ? setMode("days") : (viewMonth === 0 ? (setViewMonth(11), setViewYear(y => y-1)) : setViewMonth(m => m-1)))}
+            <button aria-label="Previous month" onClick={() => mode === "years" ? setMode("days") : (mode === "months" ? setMode("days") : (viewMonth === 0 ? (setViewMonth(11), setViewYear(y => y-1)) : setViewMonth(m => m-1)))}
               style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14, padding: "0 4px" }}>‹</button>
             <div style={{ display: "flex", gap: 4 }}>
               {mode === "years" ? (
@@ -6878,7 +6902,7 @@ function DatePicker({ value, onChange, disabled, style }) {
                 </>
               )}
             </div>
-            <button onClick={() => mode === "years" ? (setMode("days")) : (mode === "months" ? setMode("days") : (viewMonth === 11 ? (setViewMonth(0), setViewYear(y => y+1)) : setViewMonth(m => m+1)))}
+            <button aria-label="Next month" onClick={() => mode === "years" ? (setMode("days")) : (mode === "months" ? setMode("days") : (viewMonth === 11 ? (setViewMonth(0), setViewYear(y => y+1)) : setViewMonth(m => m+1)))}
               style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14, padding: "0 4px" }}>›</button>
           </div>
 
@@ -7315,9 +7339,9 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
   <div style="font-weight:700;font-size:13px;color:#1F3864;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid #CBD5E1;padding-bottom:5px;margin-bottom:10px;">Open Milestone Schedule <span style="font-weight:400;color:#94A3B8;text-transform:none;letter-spacing:0;">— FYI</span></div>
   <table style="border-collapse:collapse;width:100%;font-size:13px;">
     <thead><tr style="background:#F1F5F9;">
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Milestone</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Due Date</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Notes</th>
+      <th scope="col" style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Milestone</th>
+      <th scope="col" style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Due Date</th>
+      <th scope="col" style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;text-transform:uppercase;">Notes</th>
     </tr></thead>
     <tbody>${msRows}</tbody>
   </table>` : ""}`}
@@ -7378,6 +7402,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       : "Create Document Set Folder";
     return (
       <button title={tooltip}
+        aria-label={status === "creating" ? "Creating folder" : status === "error" ? "Folder creation failed — retry" : status === "done" ? "Folder created" : "Create Document Set Folder"}
         disabled={status === "creating" || !project.projectFolderUrl}
         onClick={async () => {
           if (!project.projectFolderUrl) return;
@@ -7467,9 +7492,9 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       <table style={{ marginBottom: 28 }}>
         <thead>
           <tr>
-            <th>Phase</th><th>Start</th><th>End</th>
-            <th title="Editable — changing recalculates end date">Duration (WD)</th>
-            <th>% Complete</th><th>Expected %</th><th>Schedule Health</th><th>Progress</th>
+            <th scope="col">Phase</th><th scope="col">Start</th><th scope="col">End</th>
+            <th scope="col" title="Editable — changing recalculates end date">Duration (WD)</th>
+            <th scope="col">% Complete</th><th scope="col">Expected %</th><th scope="col">Schedule Health</th><th scope="col">Progress</th>
           </tr>
         </thead>
         <tbody>
@@ -7594,18 +7619,18 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
         </div>
       </div>
       {emailMsg && (
-        <div style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
+        <div role="status" style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
           background: emailStatus === "done" ? P.greenDim : P.redDim,
           color: emailStatus === "done" ? P.green : P.red,
           border: "1px solid " + (emailStatus === "done" ? P.green : P.red),
           display: "flex", justifyContent: "space-between" }}>
           <span>{emailMsg}</span>
-          <button onClick={() => setEmailMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+          <button onClick={() => setEmailMsg("")} aria-label="Dismiss message" style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
         </div>
       )}
       {/* Sync status message */}
       {syncMsg && !syncingAll && (
-        <div style={{
+        <div role="status" style={{
           padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
           background: syncMsg.startsWith("✓") ? P.greenDim : syncMsg.startsWith("✗") ? P.redDim : P.accentDim,
           color: syncMsg.startsWith("✓") ? P.green : syncMsg.startsWith("✗") ? P.red : P.accentLight,
@@ -7613,7 +7638,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
           display: "flex", justifyContent: "space-between",
         }}>
           <span>{syncMsg}</span>
-          <button onClick={() => setSyncMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+          <button onClick={() => setSyncMsg("")} aria-label="Dismiss message" style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
         </div>
       )}
 
@@ -7657,9 +7682,9 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       <table>
         <thead>
           <tr>
-            <th>Type</th><th>Name</th><th>Due Date</th>
-            <th>% Complete</th><th>Status</th><th>Notes</th>
-            <th title="Outlook calendar sync">📅</th><th></th>
+            <th scope="col">Type</th><th scope="col">Name</th><th scope="col">Due Date</th>
+            <th scope="col">% Complete</th><th scope="col">Status</th><th scope="col">Notes</th>
+            <th scope="col" title="Outlook calendar sync">📅</th><th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -8036,7 +8061,7 @@ function InvoiceModal({ project, onClose, onSave }) {
             Rates are pre-filled from Team tab. Edit hours as needed.
           </div>
           <table>
-            <thead><tr><th>Team Member</th><th>Role</th><th>Rate ($/hr)</th><th>Hours</th><th>Amount</th></tr></thead>
+            <thead><tr><th scope="col">Team Member</th><th scope="col">Role</th><th scope="col">Rate ($/hr)</th><th scope="col">Hours</th><th scope="col">Amount</th></tr></thead>
             <tbody>
               {hoursRows.map((r, idx) => (
                 <tr key={r.memberId}>
@@ -8424,7 +8449,7 @@ function printInvoice(inv, project) {
     <table class="line-items">
       <thead>
         <tr>
-          <th>Phase</th>
+          <th scope="col">Phase</th>
           <th class="right">Phase Fee</th>
           <th class="right">Prev. Billed</th>
           <th class="right">This Invoice</th>
@@ -8681,13 +8706,13 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
   ${invoices.length === 0 ? '<p style="color:#6b7280;">No invoices on record.</p>' : `
   <table style="border-collapse:collapse;width:100%;font-size:13px;">
     <thead><tr style="background:#F1F5F9;">
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Invoice #</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Date</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Milestone</th>
-      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Invoiced</th>
-      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Paid</th>
-      <th style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Balance</th>
-      <th style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Status</th>
+      <th scope="col" style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Invoice #</th>
+      <th scope="col" style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Date</th>
+      <th scope="col" style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Milestone</th>
+      <th scope="col" style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Invoiced</th>
+      <th scope="col" style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Paid</th>
+      <th scope="col" style="padding:8px 12px;text-align:right;font-size:11px;color:#44546A;">Balance</th>
+      <th scope="col" style="padding:8px 12px;text-align:left;font-size:11px;color:#44546A;">Status</th>
     </tr></thead>
     <tbody>${invRows}</tbody>
     <tfoot><tr style="background:#F1F5F9;font-weight:700;">
@@ -8789,8 +8814,8 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
       <table style={{ marginBottom: 30 }}>
         <thead>
           <tr>
-            <th>Phase</th><th>Fee</th><th>% Complete</th>
-            <th>Earned Value</th><th>Invoiced</th><th>Remaining</th>
+            <th scope="col">Phase</th><th scope="col">Fee</th><th scope="col">% Complete</th>
+            <th scope="col">Earned Value</th><th scope="col">Invoiced</th><th scope="col">Remaining</th>
           </tr>
         </thead>
         <tbody>
@@ -8848,13 +8873,13 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
         Invoice Log
       </SectionTitle>
       {emailMsg && (
-        <div style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
+        <div role="status" style={{ padding: "8px 14px", borderRadius: 6, marginBottom: 12, fontSize: 12,
           background: emailStatus === "done" ? P.greenDim : P.redDim,
           color: emailStatus === "done" ? P.green : P.red,
           border: "1px solid " + (emailStatus === "done" ? P.green : P.red),
           display: "flex", justifyContent: "space-between" }}>
           <span>{emailMsg}</span>
-          <button onClick={() => setEmailMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+          <button onClick={() => setEmailMsg("")} aria-label="Dismiss message" style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
         </div>
       )}
       {scanMsg && (
@@ -8911,8 +8936,8 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
         <table>
           <thead>
             <tr>
-              <th>Invoice #</th><th>Date</th><th>Milestone / Phase</th><th>Method</th>
-              <th>Description</th><th>Invoiced</th><th>Amt Paid</th><th>Date Paid</th><th>Balance</th><th>Status</th><th></th>
+              <th scope="col">Invoice #</th><th scope="col">Date</th><th scope="col">Milestone / Phase</th><th scope="col">Method</th>
+              <th scope="col">Description</th><th scope="col">Invoiced</th><th scope="col">Amt Paid</th><th scope="col">Date Paid</th><th scope="col">Balance</th><th scope="col">Status</th><th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
             </tr>
           </thead>
           <tbody>
@@ -9116,15 +9141,15 @@ function printStatement(project) {
     <table class="line-items">
       <thead>
         <tr>
-          <th>Invoice #</th>
-          <th>Invoice Date</th>
-          <th>Milestone / Phase</th>
-          <th>Description</th>
+          <th scope="col">Invoice #</th>
+          <th scope="col">Invoice Date</th>
+          <th scope="col">Milestone / Phase</th>
+          <th scope="col">Description</th>
           <th class="right">Amount</th>
           <th class="right">Paid</th>
           <th class="right">Balance</th>
-          <th>Date Paid</th>
-          <th>Status</th>
+          <th scope="col">Date Paid</th>
+          <th scope="col">Status</th>
         </tr>
       </thead>
       <tbody>${invRows.length ? invRows : `<tr><td colspan="9" style="text-align:center;color:#44546A;font-style:italic;padding:16px;">No invoices recorded</td></tr>`}</tbody>
@@ -9440,7 +9465,7 @@ function SpBrowsePicker({ project, onPick }) {
       marginTop: 6, fontSize: 11, padding: "3px 10px", borderRadius: 4,
       border: "1px solid " + P.border, background: "transparent",
       color: P.accentLight, cursor: "pointer", fontWeight: 600,
-    }}>📂 Browse project folder…</button>
+    }}><span aria-hidden="true">📂</span> Browse project folder…</button>
   );
 
   const rowStyle = { display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderRadius: 4, fontSize: 12 };
@@ -9459,7 +9484,7 @@ function SpBrowsePicker({ project, onPick }) {
         <span onClick={() => { setStack(null); setItems(null); }} title="Close browser" style={{ cursor: "pointer" }}>✕</span>
       </div>
       {busy && <div style={{ fontSize: 11, color: P.textDim }}>Loading…</div>}
-      {err && <div style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
+      {err && <div role="alert" style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
       {!busy && !err && items && items.length === 0 && (
         <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Empty folder.</div>
       )}
@@ -9535,7 +9560,7 @@ function OneNotePagePicker({ project, onPick }) {
         <span style={{ flex: 1 }} />
         <span onClick={() => setOpen(false)} title="Close browser" style={{ cursor: "pointer" }}>✕</span>
       </div>
-      {err && <div style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
+      {err && <div role="alert" style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
       {!sections && !err && <div style={{ fontSize: 11, color: P.textDim }}>Loading…</div>}
       {sections && sections.length === 0 && !err && (
         <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Notebook has no sections yet.</div>
@@ -9595,7 +9620,7 @@ function EmailLogPicker({ project, onPick }) {
       <input value={q} onChange={e => { setRows(null); setQ(e.target.value); }}
         placeholder="Search filed emails (subject, sender)…"
         style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.card, color: P.text, fontSize: 12 }} />
-      {err && <div style={{ fontSize: 11, color: "#f87171", marginTop: 6 }}>{err}</div>}
+      {err && <div role="alert" style={{ fontSize: 11, color: "#f87171", marginTop: 6 }}>{err}</div>}
       {rows === null && !err && <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>Loading…</div>}
       {Array.isArray(rows) && rows.length === 0 && !err && (
         <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginTop: 6 }}>
@@ -9662,13 +9687,13 @@ function AddLinkModal({ project, onAdd, onClose }) {
   const sel      = { width: "100%", padding: "6px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.bg, color: P.text, fontSize: 13 };
 
   return (
-    <div style={overlay} onClick={e => {
+    <div style={overlay} role="dialog" aria-modal="true" aria-label="Add Link" onClick={e => {
       if (e.target !== e.currentTarget) return;
       // Backdrop-close only while the form is untouched — a stray click on the
       // dark area must not discard a filled-in link (the ✕/Cancel remain).
       if (targetId || targetUrl || targetLabel) return;
       onClose();
-    }}>
+    }} onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
       <div style={box}>
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: P.text }}>Add Link</div>
         <div style={{ fontSize: 12, color: P.textDim, marginBottom: 12 }}>Connect this item to another document, entity, or file.</div>
@@ -10014,7 +10039,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                 border: "none", cursor: "pointer" }}>
               {(isRFI ? RFI_STATUSES : SUBMITTAL_STATUSES).map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <button onClick={onClose} style={{ background: "none", border: "none", color: P.textDim, fontSize: 20, cursor: "pointer" }}>✕</button>
+            <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, fontSize: 20, cursor: "pointer" }}>✕</button>
           </div>
         </div>
 
@@ -10178,7 +10203,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             </Btn>
           </div>
           {emailMsg && (
-            <span style={{ fontSize: 11, color: emailStatus === "done" ? P.green : P.red, fontWeight: 500 }}>{emailMsg}</span>
+            <span role="status" style={{ fontSize: 11, color: emailStatus === "done" ? P.green : P.red, fontWeight: 500 }}>{emailMsg}</span>
           )}
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
@@ -10263,15 +10288,15 @@ function RFIsView({ project, onChange, staff, clients }) {
         <table>
           <thead>
             <tr>
-              <th style={{ width: 80 }}>#</th>
-              <th>Title</th>
-              <th>Discipline</th>
-              <th>From</th>
-              <th>Assigned</th>
-              <th>Received</th>
-              <th>Due</th>
-              <th>Status</th>
-              <th></th>
+              <th scope="col" style={{ width: 80 }}>#</th>
+              <th scope="col">Title</th>
+              <th scope="col">Discipline</th>
+              <th scope="col">From</th>
+              <th scope="col">Assigned</th>
+              <th scope="col">Received</th>
+              <th scope="col">Due</th>
+              <th scope="col">Status</th>
+              <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
             </tr>
           </thead>
           <tbody>
@@ -10299,11 +10324,11 @@ function RFIsView({ project, onChange, staff, clients }) {
                     <div style={{ color: overdue ? P.red : P.textMuted, marginBottom: 3 }}>{r.dueDate || "—"}</div>
                     <SlaChip dueDate={r.dueDate} isClosed={RFI_CLOSED_STATUSES.includes(r.status)} />
                   </td>
-                  <td><Badge color={sc} text={r.status} /></td>
+                  <td><Badge color={sc} text={r.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => setEditing(r)}>Open</Btn>
-                      <Btn small variant="danger" onClick={() => deleteRFI(r.id)}>✕</Btn>
+                      <Btn small variant="danger" aria-label={"Delete " + (r.number || "RFI")} onClick={() => deleteRFI(r.id)}>✕</Btn>
                     </div>
                   </td>
                 </tr>
@@ -10418,7 +10443,7 @@ function SubmittalsView({ project, onChange, staff, clients }) {
           <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12, color: P.accentLight }}>Submittal Register</div>
           {register.length > 0 && (
             <table style={{ marginBottom: 12, fontSize: 12 }}>
-              <thead><tr><th>Spec Section</th><th>Description</th><th>Discipline</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th scope="col">Spec Section</th><th scope="col">Description</th><th scope="col">Discipline</th><th scope="col">Status</th><th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th></tr></thead>
               <tbody>
                 {register.map(item => {
                   const linked = subs.find(s => s.registerItemId === item.id);
@@ -10464,16 +10489,16 @@ function SubmittalsView({ project, onChange, staff, clients }) {
         <table>
           <thead>
             <tr>
-              <th style={{ width: 80 }}>#</th>
-              <th>Description</th>
-              <th>Spec</th>
-              <th>Disc.</th>
-              <th>Assigned</th>
-              <th>Received</th>
-              <th>Due</th>
-              <th>Stamp</th>
-              <th>Status</th>
-              <th></th>
+              <th scope="col" style={{ width: 80 }}>#</th>
+              <th scope="col">Description</th>
+              <th scope="col">Spec</th>
+              <th scope="col">Disc.</th>
+              <th scope="col">Assigned</th>
+              <th scope="col">Received</th>
+              <th scope="col">Due</th>
+              <th scope="col">Stamp</th>
+              <th scope="col">Status</th>
+              <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
             </tr>
           </thead>
           <tbody>
@@ -10503,11 +10528,11 @@ function SubmittalsView({ project, onChange, staff, clients }) {
                     <SlaChip dueDate={s.dueDate} isClosed={SUBMITTAL_CLOSED_STATUSES.includes(s.status)} />
                   </td>
                   <td>{s.stamp && s.stamp !== "—" ? <Badge color={stc} text={s.stamp} /> : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}</td>
-                  <td><Badge color={sc} text={s.status} /></td>
+                  <td><Badge color={sc} text={s.status} />{overdue && <Badge color={{ bg: P.redDim, text: P.red }} text="Overdue" />}</td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Btn small variant="ghost" onClick={() => setEditing(s)}>Open</Btn>
-                      <Btn small variant="danger" onClick={() => deleteSubmittal(s.id)}>✕</Btn>
+                      <Btn small variant="danger" aria-label={"Delete " + (s.number || "submittal")} onClick={() => deleteSubmittal(s.id)}>✕</Btn>
                     </div>
                   </td>
                 </tr>
@@ -10757,7 +10782,7 @@ Setty
       {cos.length > 0 && (
         <>
           <table>
-            <thead><tr><th>#</th><th>Name</th><th>Scope</th><th>Milestones &amp; Fee</th><th>Sent?</th><th>Approved?</th><th>Date</th><th>Notes</th><th>Actions</th></tr></thead>
+            <thead><tr><th scope="col">#</th><th scope="col">Name</th><th scope="col">Scope</th><th scope="col">Milestones &amp; Fee</th><th scope="col">Sent?</th><th scope="col">Approved?</th><th scope="col">Date</th><th scope="col">Notes</th><th scope="col">Actions</th></tr></thead>
             <tbody>
               {cos.map(co => {
                 const em = emailMsgs[co.id];
@@ -10863,7 +10888,7 @@ Setty
                 {em && (
                   <tr>
                     <td colSpan={9} style={{ padding: "4px 12px" }}>
-                      <span style={{ fontSize: 11, color: em.status === "done" ? P.green : P.red, fontWeight: 500 }}>{em.msg}</span>
+                      <span role="status" style={{ fontSize: 11, color: em.status === "done" ? P.green : P.red, fontWeight: 500 }}>{em.msg}</span>
                     </td>
                   </tr>
                 )}
@@ -11319,7 +11344,7 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
         return (
           <div style={{ display: "flex", gap: 8 }}>
             <ViewAnalysisDropdown history={history} />
-            <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
+            <Btn small variant="ghost" onClick={openExtractor}><span aria-hidden="true">📄</span> Extract from PDF…</Btn>
           </div>
         );
       })()}>Contract Details</SectionTitle>
@@ -11421,8 +11446,8 @@ function ContractView({ project, onChange, onEagerSave, contractExpSyncState, co
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: `1.5px solid ${P.border}` }}>
-                <th style={{ textAlign: "left", padding: "6px 10px", fontSize: 11, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Role</th>
-                <th style={{ textAlign: "right", padding: "6px 10px", fontSize: 11, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Rate ($/hr)</th>
+                <th scope="col" style={{ textAlign: "left", padding: "6px 10px", fontSize: 11, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Role</th>
+                <th scope="col" style={{ textAlign: "right", padding: "6px 10px", fontSize: 11, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 }}>Rate ($/hr)</th>
               </tr>
             </thead>
             <tbody>
@@ -12092,9 +12117,11 @@ function ProjectDirectoryView({ project, onChange, clients }) {
                   })()}
                   <button onClick={() => startEdit(c)}
                     title={c._derived ? "Make a project-specific copy of this contact (lets you edit independently of the source)" : "Edit"}
+                    aria-label={"Edit " + (c.name || "contact")}
                     style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: "4px 6px" }}>✏</button>
                   <button onClick={() => removeContact(c)}
                     title={c._derived ? "Auto-rolled — edit at source to remove" : "Remove from this project's directory"}
+                    aria-label={"Remove " + (c.name || "contact")}
                     style={{ background: "none", border: "none", color: c._derived ? P.textDim : P.red, cursor: c._derived ? "help" : "pointer", fontSize: 14, padding: "4px 6px", opacity: c._derived ? 0.4 : 1 }}>✕</button>
                 </div>
               </div>
@@ -12599,7 +12626,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
         Assign disciplines to generate a weekly Work Breakdown Structure. Staff can be assigned to multiple disciplines.
       </div>
       <table style={{ marginBottom: 24 }}>
-        <thead><tr><th>Name</th><th>Role / Title</th><th>QA/QC</th><th>Disciplines</th><th>Billing Rate ($/hr)</th><th></th></tr></thead>
+        <thead><tr><th scope="col">Name</th><th scope="col">Role / Title</th><th scope="col">QA/QC</th><th scope="col">Disciplines</th><th scope="col">Billing Rate ($/hr)</th><th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th></tr></thead>
         <tbody>
           {team.map(m => {
             const isPM = m.role === "Project Manager" || m.role === "Deputy Project Manager";
@@ -12755,10 +12782,10 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
               <table>
                 <thead>
                   <tr>
-                    <th style={{ minWidth: 100, position: "sticky", left: 0, background: P.card, zIndex: 2 }}>Week Of</th>
-                    <th style={{ minWidth: 80 }}>Phase</th>
+                    <th scope="col" style={{ minWidth: 100, position: "sticky", left: 0, background: P.card, zIndex: 2 }}>Week Of</th>
+                    <th scope="col" style={{ minWidth: 80 }}>Phase</th>
                     {staffRows.map((row, i) => (
-                      <th key={i} style={{ minWidth: 90, textAlign: "center" }}>
+                      <th scope="col" key={i} style={{ minWidth: 90, textAlign: "center" }}>
                         <div style={{ fontWeight: 700 }}>{row.unassigned ? "Unassigned" : (row.member?.name || "TBD")}</div>
                         <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>
                           {row.isPM ? row.role : (row.discs || []).map(d => (
@@ -12768,7 +12795,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
                         <div style={{ fontSize: 10, color: P.accentLight, fontWeight: 400 }}>{row.totalBudget} hrs total</div>
                       </th>
                     ))}
-                    <th style={{ minWidth: 80, textAlign: "center" }}>Team Total</th>
+                    <th scope="col" style={{ minWidth: 80, textAlign: "center" }}>Team Total</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -13019,7 +13046,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
               });
             });
             downloadCSV("team_wbs_" + new Date().toISOString().slice(0,10) + ".csv", headers, csvRows);
-          }}>⬇ Export CSV</Btn>
+          }}><span aria-hidden="true">⬇</span> Export CSV</Btn>
         </div>
       </div>
       <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 20 }}>
@@ -13051,8 +13078,8 @@ function TeamWBSView({ projects, onNavigateToProject }) {
           <table>
             <thead>
               <tr>
-                <th style={{ minWidth: 110, position: "sticky", left: 0, background: P.card, zIndex: 2 }}>Week Of</th>
-                <th style={{ minWidth: 120 }}>Projects Active</th>
+                <th scope="col" style={{ minWidth: 110, position: "sticky", left: 0, background: P.card, zIndex: 2 }}>Week Of</th>
+                <th scope="col" style={{ minWidth: 120 }}>Projects Active</th>
                 {visibleCols.map((col, i) => {
                   const totalBudget = col.entries.reduce((a, e) => a + e.memberBudget, 0);
                   const totalRemaining = col.entries.reduce((a, e) => {
@@ -13068,7 +13095,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
                   const isPMOnAny = col.entries.some(e => e.isPM);
                   const hasPMAndDisc = col.entries.some(e => e.isPM && Object.keys(e.discBreakdown).length > 0);
                   return (
-                    <th key={i} style={{ minWidth: 90, textAlign: "center" }}>
+                    <th scope="col" key={i} style={{ minWidth: 90, textAlign: "center" }}>
                       <div style={{ fontWeight: 700 }}>{col.displayName}</div>
                       <div style={{ fontSize: 10, color: P.textDim, fontWeight: 400 }}>
                         {col.entries.length} project{col.entries.length !== 1 ? "s" : ""}
@@ -13083,7 +13110,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
                     </th>
                   );
                 })}
-                <th style={{ minWidth: 90, textAlign: "center" }}>Team Total</th>
+                <th scope="col" style={{ minWidth: 90, textAlign: "center" }}>Team Total</th>
               </tr>
             </thead>
             <tbody>
@@ -13360,7 +13387,7 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <ViewAnalysisDropdown history={getAnalysisHistory(form)} />
-              <Btn small variant="ghost" onClick={openExtractor}>📄 Extract from PDF…</Btn>
+              <Btn small variant="ghost" onClick={openExtractor}><span aria-hidden="true">📄</span> Extract from PDF…</Btn>
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
@@ -13478,11 +13505,11 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
                   <table style={{ marginBottom: 16 }}>
                     <thead>
                       <tr>
-                        <th>Task Order</th>
-                        <th>TO #</th>
-                        <th>PM</th>
-                        <th>Status</th>
-                        <th style={{ textAlign: "right" }}>Fee</th>
+                        <th scope="col">Task Order</th>
+                        <th scope="col">TO #</th>
+                        <th scope="col">PM</th>
+                        <th scope="col">Status</th>
+                        <th scope="col" style={{ textAlign: "right" }}>Fee</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -13639,8 +13666,8 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
           <table style={{ marginBottom: 28 }}>
             <thead>
               <tr>
-                <th>Project</th><th>CO #</th><th>Name</th><th>Fee</th>
-                <th>Date Sent</th><th>Days Out</th><th>Notes</th><th></th>
+                <th scope="col">Project</th><th scope="col">CO #</th><th scope="col">Name</th><th scope="col">Fee</th>
+                <th scope="col">Date Sent</th><th scope="col">Days Out</th><th scope="col">Notes</th><th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -13685,8 +13712,8 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
           <table style={{ marginBottom: 28 }}>
             <thead>
               <tr>
-                <th>Project</th><th>CO #</th><th>Name</th><th>Fee</th>
-                <th>Date Created</th><th>Scope</th><th>Notes</th><th></th>
+                <th scope="col">Project</th><th scope="col">CO #</th><th scope="col">Name</th><th scope="col">Fee</th>
+                <th scope="col">Date Created</th><th scope="col">Scope</th><th scope="col">Notes</th><th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -13858,7 +13885,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
           rows.push(["Project Number", "Project Name", "Total Fee", "Total Invoiced", "Total Paid", "Remaining"]);
           Object.values(projectTotals).forEach(p => rows.push([p.projectNumber || "", p.name, Math.round(p.totalFee), Math.round(p.totalInvoiced), Math.round(p.totalPaid || 0), Math.round(p.totalRemaining)]));
           downloadCSV("cashflow_" + new Date().toISOString().slice(0,10) + ".csv", headers, rows);
-        }}>⬇ Export CSV</Btn>
+        }}><span aria-hidden="true">⬇</span> Export CSV</Btn>
         <Btn small variant="ghost" onClick={() => {
           // ── Monthly Invoicing Update & 6-Month Projections ────────────────
           const today = new Date();
@@ -13949,7 +13976,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
           });
           rows.push(["", "", "", "", "TOTAL PROJECTED", "", ...monthTotals]);
           downloadCSV("invoicing_update_" + currentYM + ".csv", [], rows);
-        }}>⬇ Invoicing Update</Btn>
+        }}><span aria-hidden="true">⬇</span> Invoicing Update</Btn>
       </div>
       <div style={{ color: P.textMuted, fontSize: 13, marginBottom: 24 }}>
         Combined fee projections and billing across {activeProjects.length} active project{activeProjects.length !== 1 ? "s" : ""}. Expected fee distributed by phase schedule; invoiced amounts shown by actual invoice date.
@@ -14011,13 +14038,13 @@ function CashFlowView({ projects, onNavigateToProject }) {
         <table>
           <thead>
             <tr>
-              <th style={{ minWidth: 110 }}>Month</th>
-              <th style={{ textAlign: "right" }}>Expected Fee</th>
-              <th style={{ textAlign: "right" }}>Invoiced</th>
-              <th style={{ textAlign: "right" }}>Received</th>
-              <th style={{ textAlign: "right" }}>Cumul. Expected</th>
-              <th style={{ textAlign: "right" }}>Cumul. Invoiced</th>
-              <th style={{ minWidth: 180 }}>Active Projects</th>
+              <th scope="col" style={{ minWidth: 110 }}>Month</th>
+              <th scope="col" style={{ textAlign: "right" }}>Expected Fee</th>
+              <th scope="col" style={{ textAlign: "right" }}>Invoiced</th>
+              <th scope="col" style={{ textAlign: "right" }}>Received</th>
+              <th scope="col" style={{ textAlign: "right" }}>Cumul. Expected</th>
+              <th scope="col" style={{ textAlign: "right" }}>Cumul. Invoiced</th>
+              <th scope="col" style={{ minWidth: 180 }}>Active Projects</th>
             </tr>
           </thead>
           <tbody>
@@ -14071,12 +14098,12 @@ function CashFlowView({ projects, onNavigateToProject }) {
       <table>
         <thead>
           <tr>
-            <th>Project</th>
-            <th style={{ textAlign: "right" }}>Contract Value</th>
-            <th style={{ textAlign: "right" }}>Invoiced</th>
-            <th style={{ textAlign: "right" }}>Received</th>
-            <th style={{ textAlign: "right" }}>Outstanding</th>
-            <th style={{ textAlign: "right" }}>Remaining to Bill</th>
+            <th scope="col">Project</th>
+            <th scope="col" style={{ textAlign: "right" }}>Contract Value</th>
+            <th scope="col" style={{ textAlign: "right" }}>Invoiced</th>
+            <th scope="col" style={{ textAlign: "right" }}>Received</th>
+            <th scope="col" style={{ textAlign: "right" }}>Outstanding</th>
+            <th scope="col" style={{ textAlign: "right" }}>Remaining to Bill</th>
           </tr>
         </thead>
         <tbody>
@@ -14259,7 +14286,7 @@ function GanttView({ project }) {
             {phases.length} phase{phases.length !== 1 ? "s" : ""} · {milestones.length} milestone{milestones.length !== 1 ? "s" : ""}
           </span>
         </div>
-        <Btn small variant="ghost" onClick={exportCSV}>⬇ Export to Excel</Btn>
+        <Btn small variant="ghost" onClick={exportCSV}><span aria-hidden="true">⬇</span> Export to Excel</Btn>
       </div>
 
       {/* Gantt body */}
@@ -14292,7 +14319,9 @@ function GanttView({ project }) {
 
         {/* Scrollable SVG timeline */}
         <div style={{ flex: 1, overflowX: "auto", overflowY: "visible" }}>
-          <svg width={totalWidth} height={svgH} style={{ display: "block", fontFamily: "inherit" }}>
+          <svg width={totalWidth} height={svgH} role="img"
+            aria-label={"Project schedule Gantt chart for " + (project.name || project.projectNumber || "this project") + ": " + phases.length + " phase" + (phases.length === 1 ? "" : "s") + ", " + milestones.length + " milestone" + (milestones.length === 1 ? "" : "s")}
+            style={{ display: "block", fontFamily: "inherit" }}>
 
             {/* Month columns */}
             {months.map((m, i) => (
@@ -14598,29 +14627,41 @@ const SUB_DISCIPLINES = ["Civil", "Structural", "Geotechnical", "Landscape", "Fa
 // global directory.
 function SubContactTypeahead({ value, contactsAtFirm, onPick, onChange }) {
   const [open, setOpen] = React.useState(false);
+  const wrapRef = React.useRef(null);
+  const listRef = React.useRef(null);
   const q = (value || "").toLowerCase();
   const matches = (contactsAtFirm || [])
     .filter(c => !q || (c.name || "").toLowerCase().includes(q) || (c.email || "").toLowerCase().includes(q))
     .slice(0, 6);
   return (
-    <div style={{ position: "relative" }}>
+    <div ref={wrapRef} style={{ position: "relative" }}>
       <input
         value={value || ""}
         onChange={e => { onChange(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onBlur={() => setTimeout(() => { if (!wrapRef.current || !wrapRef.current.contains(document.activeElement)) setOpen(false); }, 150)}
+        onKeyDown={e => {
+          if (e.key === "ArrowDown" && open) { e.preventDefault(); const b = listRef.current && listRef.current.querySelector("button"); if (b) b.focus(); }
+          else if (e.key === "Escape") setOpen(false);
+        }}
         placeholder={contactsAtFirm && contactsAtFirm.length ? "Contact name… (firm's contacts)" : "Contact name…"}
         style={{ width: "100%" }} />
       {open && matches.length > 0 && (
-        <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 220, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
+        <div ref={listRef} style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 220, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
           {matches.map(ct => (
-            <div key={ct.id} onMouseDown={() => { onPick(ct); setOpen(false); }}
-              style={{ padding: "7px 10px", cursor: "pointer", borderBottom: "1px solid " + P.border, fontSize: 12 }}
+            <button type="button" key={ct.id} onMouseDown={() => { onPick(ct); setOpen(false); }}
+              onClick={() => { onPick(ct); setOpen(false); }}
+              onKeyDown={e => {
+                if (e.key === "ArrowDown") { e.preventDefault(); const n = e.currentTarget.nextElementSibling; if (n) n.focus(); }
+                else if (e.key === "ArrowUp") { e.preventDefault(); const p = e.currentTarget.previousElementSibling; if (p && p.tagName === "BUTTON") p.focus(); else { const inp = wrapRef.current && wrapRef.current.querySelector("input"); if (inp) inp.focus(); } }
+                else if (e.key === "Escape") { e.stopPropagation(); const inp = wrapRef.current && wrapRef.current.querySelector("input"); if (inp) inp.focus(); setOpen(false); }
+              }}
+              style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", padding: "7px 10px", cursor: "pointer", borderBottom: "1px solid " + P.border, fontSize: 12, color: P.text }}
               onMouseOver={e => e.currentTarget.style.background = P.accentDim}
               onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-              <div style={{ fontWeight: 600 }}>{ct.name || "(no name)"}</div>
-              {(ct.title || ct.email) && <div style={{ color: P.textDim, fontSize: 11 }}>{[ct.title, ct.email].filter(Boolean).join(" · ")}</div>}
-            </div>
+              <span style={{ display: "block", fontWeight: 600 }}>{ct.name || "(no name)"}</span>
+              {(ct.title || ct.email) && <span style={{ display: "block", color: P.textDim, fontSize: 11 }}>{[ct.title, ct.email].filter(Boolean).join(" · ")}</span>}
+            </button>
           ))}
         </div>
       )}
@@ -14804,7 +14845,7 @@ function SubsView({ project, onChange, clients, onAddClient }) {
         <div style={{ marginTop: 24 }}>
           <SectionTitle>Fee Summary</SectionTitle>
           <table>
-            <thead><tr><th>Discipline</th><th>Firm</th><th>Contract</th><th>Sub Fee</th><th>PO Amount</th><th>Billed</th><th>Paid</th><th>Outstanding</th></tr></thead>
+            <thead><tr><th scope="col">Discipline</th><th scope="col">Firm</th><th scope="col">Contract</th><th scope="col">Sub Fee</th><th scope="col">PO Amount</th><th scope="col">Billed</th><th scope="col">Paid</th><th scope="col">Outstanding</th></tr></thead>
             <tbody>
               {subs.map(sub => {
                 const stColor = SUB_CONTRACT_COLORS[sub.contractStatus] || SUB_CONTRACT_COLORS["Not Started"];
@@ -14959,7 +15000,7 @@ function ProjectionsView({ project }) {
           csvRows.push(["Month", "Expected Fee", "Invoiced"]);
           Object.values(monthlyMap).sort((a,b) => a.month > b.month ? 1:-1).forEach(m => csvRows.push([m.month, Math.round(m.fee), Math.round(m.invoiced)]));
           downloadCSV((project.projectNumber || project.name || "project").replace(/[^a-zA-Z0-9]/g,"_") + "_projections_" + new Date().toISOString().slice(0,10) + ".csv", headers, csvRows);
-        }}>⬇ Export CSV</Btn>
+        }}><span aria-hidden="true">⬇</span> Export CSV</Btn>
       </div>
       <div style={{ fontSize: 12, color: P.textDim, marginBottom: 20 }}>
         Projected billing schedule based on milestone due dates. Amounts shown are remaining uninvoiced fees.
@@ -14993,8 +15034,8 @@ function ProjectionsView({ project }) {
           <table style={{ marginBottom: 28 }}>
             <thead>
               <tr>
-                <th>Milestone</th><th>Phase</th><th>Due Date</th>
-                <th>Contract Amt</th><th>Invoiced</th><th>Remaining</th><th>Status</th>
+                <th scope="col">Milestone</th><th scope="col">Phase</th><th scope="col">Due Date</th>
+                <th scope="col">Contract Amt</th><th scope="col">Invoiced</th><th scope="col">Remaining</th><th scope="col">Status</th>
               </tr>
             </thead>
             <tbody>
@@ -15052,7 +15093,7 @@ function ProjectionsView({ project }) {
                 {/* Monthly breakdown table */}
                 <table style={{ marginTop: 12 }}>
                   <thead>
-                    <tr><th>Month</th><th>Milestones</th><th>Expected Fee</th><th>Invoiced</th><th>Remaining</th></tr>
+                    <tr><th scope="col">Month</th><th scope="col">Milestones</th><th scope="col">Expected Fee</th><th scope="col">Invoiced</th><th scope="col">Remaining</th></tr>
                   </thead>
                   <tbody>
                     {monthlyCashFlow.map(m => {
@@ -16070,21 +16111,21 @@ function PhotosView({ project }) {
             zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", gap: 16,
           }}>
             {/* Close */}
-            <button onClick={() => setLb(null)} style={{
+            <button onClick={() => setLb(null)} aria-label="Close image viewer" style={{
               position: "absolute", top: 14, right: 14,
               background: "rgba(255,255,255,0.1)", border: "none", color: "#fff",
               borderRadius: "50%", width: 38, height: 38, fontSize: 20, cursor: "pointer", lineHeight: 1,
             }}>✕</button>
             {/* Prev / Next */}
             {lb.items.length > 1 && (
-              <button onClick={() => setLb(p => ({ ...p, index: (p.index - 1 + p.items.length) % p.items.length }))} style={{
+              <button onClick={() => setLb(p => ({ ...p, index: (p.index - 1 + p.items.length) % p.items.length }))} aria-label="Previous image" style={{
                 position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)",
                 background: "rgba(255,255,255,0.1)", border: "none", color: "#fff",
                 borderRadius: "50%", width: 46, height: 46, fontSize: 26, cursor: "pointer", lineHeight: 1,
               }}>‹</button>
             )}
             {lb.items.length > 1 && (
-              <button onClick={() => setLb(p => ({ ...p, index: (p.index + 1) % p.items.length }))} style={{
+              <button onClick={() => setLb(p => ({ ...p, index: (p.index + 1) % p.items.length }))} aria-label="Next image" style={{
                 position: "absolute", right: 290, top: "50%", transform: "translateY(-50%)",
                 background: "rgba(255,255,255,0.1)", border: "none", color: "#fff",
                 borderRadius: "50%", width: 46, height: 46, fontSize: 26, cursor: "pointer", lineHeight: 1,
@@ -16968,7 +17009,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                             </div>
                           )}
                           {relScMsg && (
-                            <div style={{ fontSize: 11, marginTop: 5, whiteSpace: "pre-line", color: relScStatus === "done" ? P.green : relScStatus === "error" ? P.red : P.textDim }}>
+                            <div role="status" style={{ fontSize: 11, marginTop: 5, whiteSpace: "pre-line", color: relScStatus === "done" ? P.green : relScStatus === "error" ? P.red : P.textDim }}>
                               {relScMsg}
                             </div>
                           )}
@@ -17270,7 +17311,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                   </button>
                 </div>
                 {proposalSyncMsg && (
-                  <div style={{ fontSize: 11, marginTop: 4, color: proposalSyncMsg.startsWith("✓") ? P.green : proposalSyncMsg.startsWith("⚠") ? P.yellow : P.red }}>
+                  <div role="status" style={{ fontSize: 11, marginTop: 4, color: proposalSyncMsg.startsWith("✓") ? P.green : proposalSyncMsg.startsWith("⚠") ? P.yellow : P.red }}>
                     {proposalSyncMsg}
                   </div>
                 )}
@@ -18136,7 +18177,7 @@ function EmailsView({ project, onChange }) {
             style={{ fontSize: 12, padding: "3px 8px", width: 240 }}
           />
           {(logSearch || searchTerm) && (
-            <button onClick={clearSearch}
+            <button onClick={clearSearch} aria-label="Clear search"
               style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13 }}>✕</button>
           )}
           {searchTerm && logSearch !== searchTerm && (
@@ -18600,7 +18641,7 @@ function CalendarImportPanel({ project, onImport }) {
 
   if (!open) return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <Btn small variant="ghost" onClick={() => { setOpen(true); setImportStatus(""); }}>&#128197; Import from Calendar</Btn>
+      <Btn small variant="ghost" onClick={() => { setOpen(true); setImportStatus(""); }}><span aria-hidden="true">&#128197;</span> Import from Calendar</Btn>
       {importStatus && (
         <span style={{ fontSize: 11, fontWeight: 600,
           color: importStatus.startsWith("✓") ? "#34d399" : "#f87171" }}>
@@ -18931,7 +18972,7 @@ function NotesView({ project, onChange }) {
                       {note.oneNoteUrl ? "✎" : "📓"}
                     </button>
                     <Btn small variant="ghost" onClick={() => isEditing ? setEditingId(null) : startEdit(note)}>{isEditing ? "Cancel" : "Edit"}</Btn>
-                    <Btn small variant="danger" onClick={() => deleteNote(note.id)}>{"x"}</Btn>
+                    <Btn small variant="danger" aria-label={"Delete note" + (note.category ? " — " + note.category : "")} onClick={() => deleteNote(note.id)}>{"x"}</Btn>
                   </div>
                 </div>
                 {linkingNoteId === note.id && (
@@ -18971,7 +19012,7 @@ function NotesView({ project, onChange }) {
                         {calStatus[note.id] === "syncing" ? "⏳ Syncing…" : calStatus[note.id] === "synced" || note.calendarEventId ? "✓ 📅 Synced" : "📅 Sync to NY Calendar"}
                       </button>
                       {calMsg[note.id] && (
-                        <span style={{ fontSize: 11, color: calMsg[note.id].startsWith("✓") ? "#4ade80" : calMsg[note.id].startsWith("⚠") ? P.yellow : P.red }}>
+                        <span role="status" style={{ fontSize: 11, color: calMsg[note.id].startsWith("✓") ? "#4ade80" : calMsg[note.id].startsWith("⚠") ? P.yellow : P.red }}>
                           {calMsg[note.id]}
                         </span>
                       )}
@@ -19149,7 +19190,7 @@ function ReimbursablesView({ project, onChange }) {
       ) : (
         <table>
           <thead>
-            <tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Billable</th><th></th></tr>
+            <tr><th scope="col">Date</th><th scope="col">Category</th><th scope="col">Description</th><th scope="col">Amount</th><th scope="col">Billable</th><th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th></tr>
           </thead>
           <tbody>
             {reimbs.slice().sort((a,b) => b.date.localeCompare(a.date)).map(r => (
@@ -19167,7 +19208,7 @@ function ReimbursablesView({ project, onChange }) {
                 <td style={{ textAlign: "center" }}>
                   <input type="checkbox" checked={r.billable} onChange={e => updateEntry(r.id, { billable: e.target.checked })} />
                 </td>
-                <td><Btn small variant="danger" onClick={() => deleteEntry(r.id)}>x</Btn></td>
+                <td><Btn small variant="danger" aria-label={"Delete expense" + (r.description ? " " + r.description : "")} onClick={() => deleteEntry(r.id)}>x</Btn></td>
               </tr>
             ))}
             <tr style={{ background: P.bg, borderTop: "2px solid " + P.border }}>
@@ -19514,6 +19555,7 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
     : "Create Document Set Folder";
   return (
     <button title={tooltip}
+      aria-label={spSt === "creating" ? "Creating folder" : spSt === "error" ? "Folder creation failed — retry" : spSt === "done" ? "Folder created" : "Create Document Set Folder"}
       disabled={spSt === "creating" || !project.projectFolderUrl}
       onClick={async () => {
         if (!project.projectFolderUrl) return;
@@ -19813,7 +19855,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             {tipState.tip}
           </div>
           <button onClick={dismissTip}
-            title="Dismiss for today"
+            title="Dismiss for today" aria-label="Dismiss tip for today"
             style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0, opacity: 0.7 }}>
             ×
           </button>
@@ -19898,12 +19940,14 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
 
       {/* Add Non-Billable Milestone Modal */}
       {showAddMilestone && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={e => { if (e.target === e.currentTarget) setShowAddMilestone(false); }}>
+        <div role="dialog" aria-modal="true" aria-label="Add Non-Billable Milestone"
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setShowAddMilestone(false); }}
+          onKeyDown={e => { if (e.key === "Escape") setShowAddMilestone(false); }}>
           <div style={{ background: P.card, border: `1px solid ${P.border}`, borderRadius: 14, padding: 28, width: 480, maxWidth: "90vw" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div style={{ fontWeight: 700, fontSize: 16 }}>+ Non-Billable Milestone</div>
-              <button onClick={() => setShowAddMilestone(false)}
+              <button onClick={() => setShowAddMilestone(false)} aria-label="Close"
                 style={{ background: "none", border: "none", color: P.textMuted, cursor: "pointer", fontSize: 18, lineHeight: 1 }}>✕</button>
             </div>
 
@@ -19913,6 +19957,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
               <input
                 value={addMilSearch}
                 onChange={e => { setAddMilSearch(e.target.value); setAddMilProjectId(""); }}
+                onKeyDown={e => {
+                  if (e.key === "ArrowDown") { e.preventDefault(); const b = e.currentTarget.parentElement.querySelector("button[data-mil-opt]"); if (b) b.focus(); }
+                }}
                 placeholder="Type project name or number…"
                 autoFocus
                 style={{ width: "100%", marginBottom: 8 }} />
@@ -19921,15 +19968,20 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                   {filteredProjects.length === 0
                     ? <div style={{ padding: "10px 14px", color: P.textDim, fontSize: 13 }}>No projects found</div>
                     : filteredProjects.map(p => (
-                      <div key={p.id}
+                      <button type="button" key={p.id} data-mil-opt
                         onClick={() => { setAddMilProjectId(p.id); setAddMilSearch(p.name + (p.projectNumber ? " [" + p.projectNumber + "]" : "")); }}
-                        style={{ padding: "10px 14px", cursor: "pointer", borderBottom: `1px solid ${P.border}`, fontSize: 13 }}
+                        onKeyDown={e => {
+                          if (e.key === "ArrowDown") { e.preventDefault(); const n = e.currentTarget.nextElementSibling; if (n) n.focus(); }
+                          else if (e.key === "ArrowUp") { e.preventDefault(); const pr = e.currentTarget.previousElementSibling; if (pr && pr.tagName === "BUTTON") pr.focus(); else { const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); } }
+                          else if (e.key === "Escape") { e.stopPropagation(); const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); }
+                        }}
+                        style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", padding: "10px 14px", cursor: "pointer", borderBottom: `1px solid ${P.border}`, fontSize: 13, color: P.text }}
                         onMouseEnter={e => e.currentTarget.style.background = P.cardHover}
                         onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                         <span style={{ fontWeight: 600, color: P.accentLight }}>{p.name}</span>
                         {p.projectNumber && <span style={{ color: P.textMuted, marginLeft: 8, fontSize: 12 }}>[{p.projectNumber}]</span>}
                         {p.projectManager && <span style={{ color: P.textDim, marginLeft: 8, fontSize: 11 }}>PM: {p.projectManager}</span>}
-                      </div>
+                      </button>
                     ))
                   }
                 </div>
@@ -19958,7 +20010,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             </div>
 
             {addMilMsg && (
-              <div style={{ fontSize: 13, marginBottom: 14, padding: "8px 12px", borderRadius: 6,
+              <div role="status" style={{ fontSize: 13, marginBottom: 14, padding: "8px 12px", borderRadius: 6,
                 background: addMilMsg.startsWith("✓") ? P.greenDim : P.redDim,
                 color: addMilMsg.startsWith("✓") ? P.green : P.red,
                 border: `1px solid ${addMilMsg.startsWith("✓") ? P.green : P.red}` }}>
@@ -19998,8 +20050,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
 
       {/* In Construction modal */}
       {showInConstruction && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={e => { if (e.target === e.currentTarget) setShowInConstruction(false); }}>
+        <div role="dialog" aria-modal="true" aria-label="In Construction Administration"
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={e => { if (e.target === e.currentTarget) setShowInConstruction(false); }}
+          onKeyDown={e => { if (e.key === "Escape") setShowInConstruction(false); }}>
           <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: "min(1280px, 98vw)", maxHeight: "92vh", overflowY: "auto", overflowX: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div style={{ fontWeight: 700, fontSize: 16 }}>In Construction Administration{dashPMFilter !== "All" ? " — " + dashPMFilter : ""}</div>
@@ -20056,7 +20110,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 }}>
                   {showCAInvoice ? "✕ Cancel Batch Invoice" : "✉ Invoice CA Projects"}
                 </Btn>}
-                <button onClick={() => { setShowInConstruction(false); setShowCAInvoice(false); }}
+                <button onClick={() => { setShowInConstruction(false); setShowCAInvoice(false); }} aria-label="Close"
                   style={{ background: "none", border: "none", color: P.textMuted, cursor: "pointer", fontSize: 20 }}>✕</button>
               </div>
             </div>
@@ -20066,8 +20120,8 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 ? <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>No projects currently in construction.</div>
                 : (
                   <table>
-                    <thead><tr><th>#</th><th>Project</th><th>Client</th><th>PM</th>
-                      {pmsCan("financials.view") && <><th>Total Fee</th><th>Invoiced</th><th>Remaining</th></>}</tr></thead>
+                    <thead><tr><th scope="col">#</th><th scope="col">Project</th><th scope="col">Client</th><th scope="col">PM</th>
+                      {pmsCan("financials.view") && <><th scope="col">Total Fee</th><th scope="col">Invoiced</th><th scope="col">Remaining</th></>}</tr></thead>
                     <tbody>
                       {inConstructionProjects.map(p => {
                         const { totalFee, totalInvoiced } = buildProjectCashFlow(p);
@@ -20098,16 +20152,16 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                 <table style={{ fontSize: 13 }}>
                   <thead>
                     <tr>
-                      <th style={{ width: 28 }}></th>
-                      <th>Project</th>
-                      <th>Milestone</th>
-                      <th>Due Date</th>
-                      <th>Milestone Fee</th>
-                      <th>% Invoiced</th>
-                      <th>This Month Projection</th>
-                      <th>Amount to Invoice</th>
-                      <th>Description</th>
-                      <th>Status</th>
+                      <th scope="col" style={{ width: 28 }}><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
+                      <th scope="col">Project</th>
+                      <th scope="col">Milestone</th>
+                      <th scope="col">Due Date</th>
+                      <th scope="col">Milestone Fee</th>
+                      <th scope="col">% Invoiced</th>
+                      <th scope="col">This Month Projection</th>
+                      <th scope="col">Amount to Invoice</th>
+                      <th scope="col">Description</th>
+                      <th scope="col">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -20375,28 +20429,28 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             )}
           </div>
           {dashSyncMsg && (
-            <div style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6,
+            <div role="status" style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6,
               background: dashSyncMsg.startsWith("✓") ? P.greenDim : dashSyncMsg.startsWith("⚠") ? P.yellowDim : P.redDim,
               color: dashSyncMsg.startsWith("✓") ? P.green : dashSyncMsg.startsWith("⚠") ? P.yellow : P.red,
               border: `1px solid ${dashSyncMsg.startsWith("✓") ? P.green : dashSyncMsg.startsWith("⚠") ? P.yellow : P.red}`,
               display: "flex", alignItems: "center", gap: 8 }}>
               {dashSyncMsg}
-              <button onClick={() => setDashSyncMsg("")} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 12 }}>✕</button>
+              <button onClick={() => setDashSyncMsg("")} aria-label="Dismiss message" style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 12 }}>✕</button>
             </div>
           )}
         </div>
         <table>
           <thead>
             <tr style={{ position: "sticky", top: 54, zIndex: 50 }}>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Project</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>PM</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Milestone</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Type</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Due</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Progress</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Notes</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50 }}>Project Status</th>
-              <th style={{ position: "sticky", top: 54, zIndex: 50, width: 44 }}>📅</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>Project</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>PM</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>Milestone</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>Type</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>Due</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>Progress</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>Notes</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50 }}>Project Status</th>
+              <th scope="col" style={{ position: "sticky", top: 54, zIndex: 50, width: 44 }}>📅</th>
             </tr>
           </thead>
           <tbody>
@@ -20971,8 +21025,8 @@ async function sendProposalForReview(project) {
   <table style="border-collapse:collapse;width:100%;font-size:12.5px;margin-bottom:12px;">
     <thead>
       <tr>
-        <th style="text-align:left;padding:6px 10px;font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #1F3864;">Phase of Work</th>
-        <th style="text-align:right;padding:6px 10px;font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #1F3864;">Fee</th>
+        <th scope="col" style="text-align:left;padding:6px 10px;font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #1F3864;">Phase of Work</th>
+        <th scope="col" style="text-align:right;padding:6px 10px;font-size:10px;color:#44546A;text-transform:uppercase;letter-spacing:.05em;border-bottom:1.5px solid #1F3864;">Fee</th>
       </tr>
     </thead>
     <tbody>
@@ -22159,7 +22213,7 @@ function ScopeView({ project, onChange }) {
             📨 Send Proposal
           </Btn>
           {scopeLocked
-            ? <Btn variant="warning" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}>🔓 Unlock Scope</Btn>
+            ? <Btn variant="warning" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}><span aria-hidden="true">🔓</span> Unlock Scope</Btn>
             : <Btn variant="success" onClick={() => { setShowLockModal("lock"); setLockNote(""); }}>🔒 Lock Scope</Btn>
           }
           <Btn onClick={() => printScopeOfServices(project)}>🖨 Print</Btn>
@@ -22181,7 +22235,7 @@ function ScopeView({ project, onChange }) {
           errors), with explicit "go to Drafts" guidance so users don't wonder
           where their email went. Auto-clears after several seconds. */}
       {proposalMsg && (
-        <div style={{
+        <div role="status" style={{
           marginBottom: 16,
           padding: "12px 16px",
           background: proposalKind === "success" ? P.greenDim : proposalKind === "error" ? P.redDim : P.accentDim,
@@ -22197,7 +22251,7 @@ function ScopeView({ project, onChange }) {
         }}>
           <div>{proposalMsg}</div>
           <button onClick={() => setProposalMsg("")}
-            title="Dismiss"
+            title="Dismiss" aria-label="Dismiss message"
             style={{ background: "none", border: "none", color: "inherit", opacity: 0.6, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0 }}>
             ×
           </button>
@@ -22322,10 +22376,10 @@ function ScopeView({ project, onChange }) {
             <table style={{ marginTop: 8, fontSize: 12 }}>
               <thead>
                 <tr>
-                  <th>Action</th>
-                  <th>User</th>
-                  <th>Date</th>
-                  <th>Note</th>
+                  <th scope="col">Action</th>
+                  <th scope="col">User</th>
+                  <th scope="col">Date</th>
+                  <th scope="col">Note</th>
                 </tr>
               </thead>
               <tbody>
@@ -22901,7 +22955,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
               <div style={{ gridColumn: "1/-1", background: P.card, border: "1px solid " + P.border, borderRadius: 12, padding: 24 }}>
                 <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Linked Projects <span style={{ color: P.textDim, fontWeight: 400, fontSize: 12 }}>({linked.length})</span></div>
                 <table>
-                  <thead><tr><th>#</th><th>Project</th><th>Role</th><th>PM</th><th>Status</th></tr></thead>
+                  <thead><tr><th scope="col">#</th><th scope="col">Project</th><th scope="col">Role</th><th scope="col">PM</th><th scope="col">Status</th></tr></thead>
                   <tbody>
                     {linked.map(p => {
                       const role = sameCo(p.client, form.name) && sameCo(p.prime, form.name) ? "Client + Prime" : sameCo(p.client, form.name) ? "Client" : "Prime/GC";
@@ -23024,14 +23078,14 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
         <table>
           <thead>
             <tr>
-              <th>Company</th>
-              <th>Rating</th>
-              <th>Type</th>
-              <th>Certs</th>
-              <th>Contacts</th>
-              <th>Primary Contact</th>
-              <th>Projects</th>
-              <th></th>
+              <th scope="col">Company</th>
+              <th scope="col">Rating</th>
+              <th scope="col">Type</th>
+              <th scope="col">Certs</th>
+              <th scope="col">Contacts</th>
+              <th scope="col">Primary Contact</th>
+              <th scope="col">Projects</th>
+              <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
             </tr>
           </thead>
           <tbody>
@@ -23141,7 +23195,7 @@ function QuickAddCompanyModal({ filter, prefill, onSave, onClose, existingClient
       <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 480, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 17, fontWeight: 800 }}>Quick Add {typeLabel}</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20, lineHeight: 1 }}>x</button>
+          <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20, lineHeight: 1 }}>x</button>
         </div>
 
         <Field label="Company Name">
@@ -24488,19 +24542,22 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
         <button onClick={() => emailLinkToPerson(perm)}
           style={{ background: "none", border: "none", color: P.textDim,
             cursor: "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
-          title={"Email folder link(s) to " + perm.email + " (creates an Outlook draft)"}>📧</button>
+          title={"Email folder link(s) to " + perm.email + " (creates an Outlook draft)"}
+          aria-label={"Email folder link to " + perm.email}>📧</button>
         <button onClick={() => removePerson(perm)}
           style={{ background: "none", border: "none", color: P.red || "#ef4444",
             cursor: "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
-          title={"Remove " + perm.email}>✕</button>
+          title={"Remove " + perm.email} aria-label={"Remove " + perm.email}>✕</button>
       </div>
     );
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+    <div role="dialog" aria-modal="true" aria-label="Manage Portal Sharing"
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
       zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
       <div style={{ background: P.bg, borderRadius: 10, width: "100%", maxWidth: 520,
         maxHeight: "85vh", display: "flex", flexDirection: "column",
         boxShadow: "0 8px 32px rgba(0,0,0,0.4)" }}>
@@ -24514,7 +24571,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
               {(project.projectNumber || project.name || "").trim()} — NYSharesite
             </div>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none",
+          <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none",
             color: P.textDim, cursor: "pointer", fontSize: 18 }}>✕</button>
         </div>
 
@@ -24645,7 +24702,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
 
           {/* Action status */}
           {actionMsg && (
-            <div style={{ fontSize: 11, marginTop: 10,
+            <div role="status" style={{ fontSize: 11, marginTop: 10,
               color: actionStatus === "done" ? P.green : actionStatus === "error" ? P.red : P.textDim }}>
               {actionMsg}
             </div>
@@ -24684,8 +24741,10 @@ function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClo
     onClose();
   }
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div role="dialog" aria-modal="true" aria-label={"Add Contact" + (companyName ? " — " + companyName : "")}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 3000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
       <div style={{ background: P.card, border: "1px solid " + P.accent, borderRadius: 12, padding: 24, width: 400, maxWidth: "90vw" }}>
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 16, color: P.accentLight }}>
           Add Contact{companyName ? " — " + companyName : ""}
@@ -24748,7 +24807,7 @@ function POCSection({ pocList, onChange, clients, companyName, onUpdateClient })
               {poc.phone && <span>{poc.phone}</span>}
             </div>
           </div>
-          <button onClick={() => remove(i)} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14, padding: "2px 4px" }}>✕</button>
+          <button onClick={() => remove(i)} aria-label={"Remove contact " + (poc.name || "")} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 14, padding: "2px 4px" }}>✕</button>
         </div>
       ))}
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -24756,20 +24815,30 @@ function POCSection({ pocList, onChange, clients, companyName, onUpdateClient })
           <input value={query}
             onChange={e => { setQuery(e.target.value); setTypeaheadOpen(true); }}
             onFocus={() => setTypeaheadOpen(true)}
-            onBlur={() => setTimeout(() => setTypeaheadOpen(false), 150)}
+            onBlur={e => { const wrap = e.currentTarget.parentElement; setTimeout(() => { if (!wrap || !wrap.contains(document.activeElement)) setTypeaheadOpen(false); }, 150); }}
+            onKeyDown={e => {
+              if (e.key === "ArrowDown" && typeaheadOpen) { e.preventDefault(); const b = e.currentTarget.parentElement.querySelector("button[data-poc-opt]"); if (b) b.focus(); }
+              else if (e.key === "Escape") setTypeaheadOpen(false);
+            }}
             placeholder={companyName ? "Search " + companyName + " contacts…" : "Search contacts…"}
             style={{ width: "100%", fontSize: 13 }} />
           {typeaheadOpen && filtered.length > 0 && (
             <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 400, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
               {filtered.map(ct => (
-                <div key={ct.id} onMouseDown={() => addFromDir(ct)}
-                  style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border }}
+                <button type="button" key={ct.id} data-poc-opt onMouseDown={() => addFromDir(ct)}
+                  onClick={() => addFromDir(ct)}
+                  onKeyDown={e => {
+                    if (e.key === "ArrowDown") { e.preventDefault(); const n = e.currentTarget.nextElementSibling; if (n) n.focus(); }
+                    else if (e.key === "ArrowUp") { e.preventDefault(); const p = e.currentTarget.previousElementSibling; if (p && p.tagName === "BUTTON") p.focus(); else { const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); } }
+                    else if (e.key === "Escape") { e.stopPropagation(); const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); setTypeaheadOpen(false); }
+                  }}
+                  style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border, color: P.text }}
                   onMouseOver={e => e.currentTarget.style.background = P.accentDim}
                   onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{ct.name}</div>
-                  {ct.title && <div style={{ fontSize: 11, color: P.textDim }}>{ct.title}</div>}
-                  {ct.email && <div style={{ fontSize: 11, color: P.textDim }}>{ct.email}</div>}
-                </div>
+                  <span style={{ display: "block", fontWeight: 600, fontSize: 13 }}>{ct.name}</span>
+                  {ct.title && <span style={{ display: "block", fontSize: 11, color: P.textDim }}>{ct.title}</span>}
+                  {ct.email && <span style={{ display: "block", fontSize: 11, color: P.textDim }}>{ct.email}</span>}
+                </button>
               ))}
             </div>
           )}
@@ -24834,7 +24903,11 @@ function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClien
         value={value || ""}
         onChange={e => { onChange(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => { setOpen(false); setShowAdd(false); }, 200)}
+        onBlur={e => { const wrap = e.currentTarget.parentElement; setTimeout(() => { if (!wrap || !wrap.contains(document.activeElement)) { setOpen(false); setShowAdd(false); } }, 200); }}
+        onKeyDown={e => {
+          if (e.key === "ArrowDown" && open) { e.preventDefault(); const b = e.currentTarget.parentElement.querySelector("button[data-ct-opt]"); if (b) b.focus(); }
+          else if (e.key === "Escape") setOpen(false);
+        }}
         placeholder={noCompany ? "Set Client / Prime first…" : (placeholder || "Search contacts…")}
         disabled={noCompany}
         style={{ width: "100%", opacity: noCompany ? 0.5 : 1 }}
@@ -24847,14 +24920,20 @@ function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClien
             </div>
           )}
           {filtered.map(ct => (
-            <div key={ct.id} onMouseDown={() => selectContact(ct)}
-              style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border }}
+            <button type="button" key={ct.id} data-ct-opt onMouseDown={() => selectContact(ct)}
+              onClick={() => selectContact(ct)}
+              onKeyDown={e => {
+                if (e.key === "ArrowDown") { e.preventDefault(); const n = e.currentTarget.nextElementSibling; if (n && n.tagName === "BUTTON") n.focus(); }
+                else if (e.key === "ArrowUp") { e.preventDefault(); const p = e.currentTarget.previousElementSibling; if (p && p.tagName === "BUTTON") p.focus(); else { const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); } }
+                else if (e.key === "Escape") { e.stopPropagation(); const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); setOpen(false); }
+              }}
+              style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border, color: P.text }}
               onMouseOver={e => e.currentTarget.style.background = P.accentDim}
               onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{ct.name}</div>
-              {ct.title && <div style={{ fontSize: 11, color: P.textDim }}>{ct.title}</div>}
-              {ct.email && <div style={{ fontSize: 11, color: P.textDim }}>{ct.email}</div>}
-            </div>
+              <span style={{ display: "block", fontWeight: 600, fontSize: 13 }}>{ct.name}</span>
+              {ct.title && <span style={{ display: "block", fontSize: 11, color: P.textDim }}>{ct.title}</span>}
+              {ct.email && <span style={{ display: "block", fontSize: 11, color: P.textDim }}>{ct.email}</span>}
+            </button>
           ))}
           {!showAdd && (
             <div onMouseDown={e => { e.preventDefault(); setShowAdd(true); setNewName(value || ""); }}
@@ -24925,25 +25004,35 @@ function CompanyTypeahead({ value, onChange, clients, filter, placeholder, onAdd
         value={value || ""}
         onChange={e => { onChange(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 200)}
+        onBlur={e => { const wrap = e.currentTarget.parentElement; setTimeout(() => { if (!wrap || !wrap.contains(document.activeElement)) setOpen(false); }, 200); }}
+        onKeyDown={e => {
+          if (e.key === "ArrowDown" && open) { e.preventDefault(); const b = e.currentTarget.parentElement.querySelector("button[data-co-opt]"); if (b) b.focus(); }
+          else if (e.key === "Escape") setOpen(false);
+        }}
         placeholder={placeholder || "Type to search…"}
         style={{ width: "100%" }}
       />
       {open && (matches.length > 0 || showAddNew) && (
         <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 200, background: P.card, border: "1px solid " + P.accent, borderRadius: 8, width: "100%", minWidth: 240, boxShadow: "0 4px 16px rgba(0,0,0,.4)", overflow: "hidden" }}>
           {matches.map(c => (
-            <div key={c.id}
+            <button type="button" key={c.id} data-co-opt
               onMouseDown={() => { onChange(c.name); setOpen(false); }}
-              style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border }}
+              onClick={() => { onChange(c.name); setOpen(false); }}
+              onKeyDown={e => {
+                if (e.key === "ArrowDown") { e.preventDefault(); const n = e.currentTarget.nextElementSibling; if (n && n.tagName === "BUTTON") n.focus(); }
+                else if (e.key === "ArrowUp") { e.preventDefault(); const p = e.currentTarget.previousElementSibling; if (p && p.tagName === "BUTTON") p.focus(); else { const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); } }
+                else if (e.key === "Escape") { e.stopPropagation(); const inp = e.currentTarget.parentElement.parentElement.querySelector("input"); if (inp) inp.focus(); setOpen(false); }
+              }}
+              style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid " + P.border, color: P.text }}
               onMouseOver={e => e.currentTarget.style.background = P.accentDim}
               onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+              <span style={{ display: "block", fontWeight: 600, fontSize: 13 }}>{c.name}</span>
               {(c.contacts||[]).length > 0 && (
-                <div style={{ fontSize: 11, color: P.textDim }}>
+                <span style={{ display: "block", fontSize: 11, color: P.textDim }}>
                   {c.contacts[0].name || ""}{c.contacts[0].name && c.contacts[0].title ? " · " + c.contacts[0].title : ""}
-                </div>
+                </span>
               )}
-            </div>
+            </button>
           ))}
           {showAddNew && (
             <div onMouseDown={() => { setShowModal(true); setOpen(false); }}
@@ -24985,12 +25074,14 @@ function QuickAddStaffModal({ prefill, onSave, onClose }) {
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div role="dialog" aria-modal="true" aria-label="Quick Add Staff Member"
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}
+      onKeyDown={e => { if (e.key === "Escape") onClose(); }}>
       <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 14, padding: 28, width: 440, boxShadow: "0 20px 60px rgba(0,0,0,.6)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 17, fontWeight: 800 }}>Quick Add Staff Member</div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20, lineHeight: 1 }}>x</button>
+          <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 20, lineHeight: 1 }}>x</button>
         </div>
         <Field label="Full Name">
           <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
@@ -25471,12 +25562,12 @@ function TimesheetHelper({ staff, projects, onClose }) {
               <table style={{ width: "100%", marginBottom: 0 }}>
                 <thead>
                   <tr>
-                    <th>Type</th>
-                    <th>Project</th>
-                    <th>Item</th>
-                    <th>Due / Status</th>
-                    <th>WBS Hrs</th>
-                    <th></th>
+                    <th scope="col">Type</th>
+                    <th scope="col">Project</th>
+                    <th scope="col">Item</th>
+                    <th scope="col">Due / Status</th>
+                    <th scope="col">WBS Hrs</th>
+                    <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -25545,11 +25636,11 @@ function TimesheetHelper({ staff, projects, onClose }) {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: P.accentDim }}>
-                    <th style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight, width: 100 }}>Project #</th>
-                    <th style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight }}>Project Name</th>
-                    <th style={{ textAlign: "center", padding: "7px 10px", fontSize: 11, color: P.accentLight, width: 72 }}>Hours</th>
-                    <th style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight }}>Notes / Tasks</th>
-                    <th style={{ width: 28 }} className="no-print"></th>
+                    <th scope="col" style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight, width: 100 }}>Project #</th>
+                    <th scope="col" style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight }}>Project Name</th>
+                    <th scope="col" style={{ textAlign: "center", padding: "7px 10px", fontSize: 11, color: P.accentLight, width: 72 }}>Hours</th>
+                    <th scope="col" style={{ textAlign: "left", padding: "7px 10px", fontSize: 11, color: P.accentLight }}>Notes / Tasks</th>
+                    <th scope="col" style={{ width: 28 }} className="no-print"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -25615,7 +25706,7 @@ function TimesheetHelper({ staff, projects, onClose }) {
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 12, alignItems: "center" }} className="no-print">
               <Btn small variant="ghost" onClick={addExtraRow}>+ Add Row</Btn>
-              <Btn small variant="primary" onClick={exportExcel}>⬇ Export to Excel</Btn>
+              <Btn small variant="primary" onClick={exportExcel}><span aria-hidden="true">⬇</span> Export to Excel</Btn>
               <span style={{ fontSize: 11, color: P.textDim }}>Downloads a .csv that opens in Excel</span>
             </div>
           </div>
@@ -25951,12 +26042,12 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
             <table style={{ margin: 0 }}>
               <thead>
                 <tr>
-                  <th style={{ paddingLeft: 18 }}>Item</th>
-                  <th>Project</th>
-                  <th>Role on Project</th>
-                  <th>Due</th>
-                  <th>Status</th>
-                  <th>% Done</th>
+                  <th scope="col" style={{ paddingLeft: 18 }}>Item</th>
+                  <th scope="col">Project</th>
+                  <th scope="col">Role on Project</th>
+                  <th scope="col">Due</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">% Done</th>
                 </tr>
               </thead>
               <tbody>
@@ -26238,7 +26329,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                   <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
                     <Btn small variant="ghost" onClick={e => { e.stopPropagation(); setTimesheetStaff(s); }}>📋 Timesheet</Btn>
                     <Btn small variant="ghost" onClick={() => startEdit(s)}>Edit</Btn>
-                    <Btn small variant="danger" onClick={() => deleteStaff(s.id)}>✕</Btn>
+                    <Btn small variant="danger" aria-label={"Remove staff member " + (s.name || "")} onClick={() => deleteStaff(s.id)}>✕</Btn>
                   </div>
                 </div>
 
@@ -26251,12 +26342,12 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                       <table style={{ margin: 0 }}>
                         <thead>
                           <tr>
-                            <th style={{ paddingLeft: 18 }}>Milestone</th>
-                            <th>Project</th>
-                            <th>Role on Project</th>
-                            <th>Due</th>
-                            <th>Status</th>
-                            <th>% Done</th>
+                            <th scope="col" style={{ paddingLeft: 18 }}>Milestone</th>
+                            <th scope="col">Project</th>
+                            <th scope="col">Role on Project</th>
+                            <th scope="col">Due</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">% Done</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -26409,14 +26500,14 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
           <table>
             <thead>
               <tr>
-                <th>Project</th>
-                <th>Client</th>
-                <th>Status</th>
-                <th>Proposal Due</th>
-                <th>Probability</th>
-                <th>Fee Value</th>
-                <th>Weighted</th>
-                <th></th>
+                <th scope="col">Project</th>
+                <th scope="col">Client</th>
+                <th scope="col">Status</th>
+                <th scope="col">Proposal Due</th>
+                <th scope="col">Probability</th>
+                <th scope="col">Fee Value</th>
+                <th scope="col">Weighted</th>
+                <th scope="col"><span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -26580,7 +26671,8 @@ function ConflictResolutionModal({ projectName, projectId, conflicts, localProje
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 5000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+    <div role="dialog" aria-modal="true" aria-label={"Save Conflict — " + projectName}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 5000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div style={{ background: P.card, border: `2px solid ${P.yellow}`, borderRadius: 14, padding: 28, width: 720, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto" }}>
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontWeight: 800, fontSize: 18, color: P.yellow }}>⚠ Save Conflict — {projectName}</div>
@@ -26975,6 +27067,7 @@ function pmsNudge(message, dedupeKey) {
   if (!el) {
     el = document.createElement("div");
     el.id = "pmsNudgeToast";
+    el.setAttribute("role", "status");
     el.style.cssText = "position:fixed;top:70px;left:50%;transform:translateX(-50%);" +
       "background:#33270a;color:#fbbf24;border:1px solid #fbbf24;font-weight:600;" +
       "font-size:13px;padding:10px 20px;border-radius:10px;box-shadow:0 8px 22px rgba(0,0,0,.45);" +
@@ -27039,6 +27132,15 @@ function App() {
       }
     });
   }, []);
+  // A11y: when the top-level view changes, move focus to the new view's main
+  // heading so screen-reader/keyboard users land on the new content. Skipped on
+  // first render (initialLoad) so page-load focus is untouched.
+  const viewFocusFirstRun = React.useRef(true);
+  React.useEffect(() => {
+    if (viewFocusFirstRun.current) { viewFocusFirstRun.current = false; return; }
+    const h = document.querySelector("#pms-main h2");
+    if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: false }); }
+  }, [view]);
   const [search, setSearch] = useState("");
   const [filterPM, setFilterPM] = useState("All");
   const [filterQAQC, setFilterQAQC] = useState("All");
@@ -27972,9 +28074,9 @@ function renameCompanyAcrossProjects(oldName, newName) {
 
   // ── Load error screen — show app anyway with empty state ──
   const loadErrorBanner = loadError ? (
-    <div style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 16px", margin: "16px 32px", fontSize: 12, color: P.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <div role="alert" style={{ background: P.redDim, border: `1px solid ${P.red}`, borderRadius: 8, padding: "10px 16px", margin: "16px 32px", fontSize: 12, color: P.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
       <span>⚠ Could not load data: {loadError}. Changes may not save until the issue is resolved.</span>
-      <button onClick={() => setLoadError(null)} style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 16 }}>✕</button>
+      <button onClick={() => setLoadError(null)} aria-label="Dismiss error" style={{ background: "none", border: "none", color: P.red, cursor: "pointer", fontSize: 16 }}>✕</button>
     </div>
   ) : null;
 
@@ -28081,7 +28183,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
         )}
         <div style={{ flex: 1 }} />
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
-        <Btn small variant="ghost" onClick={exportCSV}>⬇ CSV</Btn>
+        <Btn small variant="ghost" onClick={exportCSV}><span aria-hidden="true">⬇</span> CSV</Btn>
         <Btn small onClick={addProject}>+ New Project</Btn>
       </nav>
 
@@ -28165,7 +28267,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
 
     {/* Phase 5 — Network retry banner (visible only during transient-failure backoff) */}
     {networkRetry.active && (
-      <div style={{ position: "fixed", bottom: 16, right: 16, zIndex: 4500,
+      <div role="status" style={{ position: "fixed", bottom: 16, right: 16, zIndex: 4500,
         background: P.card, border: `2px solid ${P.yellow}`, borderRadius: 8,
         padding: "12px 16px", maxWidth: 360, fontSize: 12, boxShadow: "0 4px 24px rgba(0,0,0,0.5)" }}>
         <div style={{ fontWeight: 700, color: P.yellow, marginBottom: 4 }}>
@@ -28198,7 +28300,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
           Download a backup copy if anything looks missing.
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Btn small onClick={downloadSnapshotBackup}>⬇ Download backup</Btn>
+          <Btn small onClick={downloadSnapshotBackup}><span aria-hidden="true">⬇</span> Download backup</Btn>
           <Btn small onClick={dismissSnapshotRecovery}>Dismiss</Btn>
         </div>
       </div>
@@ -28221,7 +28323,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
     )}
 
     {/* ─── Celebration toast (milestone-complete, etc.) ─── */}
-    <div id="pmsCelebrationToast"
+    <div id="pmsCelebrationToast" role="status" aria-live="polite" aria-atomic="true"
       style={{ position: "fixed", top: 70, left: "50%", transform: "translateX(-50%) translateY(-16px) scale(0.92)", background: "linear-gradient(135deg, #ffd86b 0%, #f5a623 100%)", color: "#4a2800", fontWeight: 700, fontSize: 13, padding: "10px 20px", borderRadius: 999, boxShadow: "0 8px 22px rgba(245, 166, 35, 0.4), 0 2px 4px rgba(0, 0, 0, 0.15)", zIndex: 9998, opacity: 0, transition: "opacity 0.32s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.42s cubic-bezier(0.2, 1.4, 0.4, 1)", pointerEvents: "none", maxWidth: "calc(100% - 28px)" }} />
 
     <style>{`
