@@ -326,7 +326,7 @@
     <h2 style="margin:0;">New Site Report</h2>
     <button class="btn btn-ghost" id="backToLandingBtn">← Back</button>
   </div>
-  <label>Project</label>
+  <label for="projectPicker">Project</label>
   <input id="projectPicker" list="projectOptions" placeholder="Type to search projects…" autocomplete="off">
   <datalist id="projectOptions"></datalist>
 </div>
@@ -363,10 +363,10 @@
   </div>
   <h2>Project</h2>
   <div class="grid-2">
-    <div><label>Project Name</label><input id="projectName" readonly /></div>
-    <div><label>Project Number</label><input id="projectNumber" readonly /></div>
-    <div style="grid-column: 1/-1;"><label>Client</label><input id="clientName" readonly /></div>
-    <div style="grid-column: 1/-1;"><label>Address</label><input id="projectAddress" readonly /></div>
+    <div><label for="projectName">Project Name</label><input id="projectName" readonly /></div>
+    <div><label for="projectNumber">Project Number</label><input id="projectNumber" readonly /></div>
+    <div style="grid-column: 1/-1;"><label for="clientName">Client</label><input id="clientName" readonly /></div>
+    <div style="grid-column: 1/-1;"><label for="projectAddress">Address</label><input id="projectAddress" readonly /></div>
   </div>
 </div>
 
@@ -374,10 +374,10 @@
 <div class="card" id="visitCard" style="display:none;">
   <h2>Visit</h2>
   <div class="grid-2">
-    <div><label>Visit Date</label><input type="date" id="visitDate" /></div>
-    <div><label>Weather / Conditions</label><input id="weather" placeholder="e.g. 65°F, clear" /></div>
+    <div><label for="visitDate">Visit Date</label><input type="date" id="visitDate" /></div>
+    <div><label for="weather">Weather / Conditions</label><input id="weather" placeholder="e.g. 65°F, clear" /></div>
   </div>
-  <div style="margin-top: 10px;"><label>General Notes</label><textarea id="generalNotes" rows="2" placeholder="Anything to note before the item list…"></textarea></div>
+  <div style="margin-top: 10px;"><label for="generalNotes">General Notes</label><textarea id="generalNotes" rows="2" placeholder="Anything to note before the item list…"></textarea></div>
   <div class="meta-line" style="margin-top:8px;">Attendees per discipline roll up automatically from the "By" field on each item.</div>
 </div>
 
@@ -397,7 +397,7 @@
   <h2>Add Item</h2>
   <div style="display:grid; grid-template-columns:1.2fr 1.2fr 1fr 1fr 1fr; gap:12px;">
     <div>
-      <label>Discipline</label>
+      <label for="newDiscipline">Discipline</label>
       <select id="newDiscipline">
         <option>Architectural</option>
         <option>Structural</option>
@@ -410,11 +410,11 @@
         <option>Other</option>
       </select>
     </div>
-    <div><label>Location / Room</label><input id="newLocation" placeholder="e.g. Rm 304, RTU-1 Roof, Stair B Lvl 2" /></div>
-    <div><label>Plan (optional)</label>
+    <div><label for="newLocation">Location / Room</label><input id="newLocation" placeholder="e.g. Rm 304, RTU-1 Roof, Stair B Lvl 2" /></div>
+    <div><label for="newPlanId">Plan (optional)</label>
       <select id="newPlanId"><option value="">— No plan yet —</option></select>
     </div>
-    <div><label>By</label><input id="newEnteredBy" placeholder="Your initials / name" title="Defaults to you. Edit if logging on someone else's behalf." /></div>
+    <div><label for="newEnteredBy">By</label><input id="newEnteredBy" placeholder="Your initials / name" title="Defaults to you. Edit if logging on someone else's behalf." /></div>
     <div>
       <label>Photo (optional)</label>
       <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
@@ -427,13 +427,13 @@
         <input type="file" id="newPhoto" accept="image/*" style="display:none;" />
       </div>
       <div id="photoPreview" style="display:none; margin-top:8px; position:relative; width:120px;">
-        <img id="photoPreviewImg" style="width:120px; height:90px; object-fit:cover; border-radius:6px; border:1px solid var(--border);" />
+        <img id="photoPreviewImg" alt="Preview of selected photo" style="width:120px; height:90px; object-fit:cover; border-radius:6px; border:1px solid var(--border);" />
         <button type="button" id="photoPreviewClear" title="Clear photo" style="position:absolute; top:-6px; right:-6px; background:var(--red); color:white; border:none; border-radius:50%; width:20px; height:20px; cursor:pointer; font-size:11px; line-height:1;">×</button>
       </div>
     </div>
   </div>
-  <div style="margin-top: 10px;"><label>Description</label><textarea id="newDescription" rows="2" placeholder="The punchlist item itself…"></textarea></div>
-  <div style="margin-top: 10px;"><label>Notes (optional)</label><input id="newNotes" placeholder="Supplemental notes" /></div>
+  <div style="margin-top: 10px;"><label for="newDescription">Description</label><textarea id="newDescription" rows="2" placeholder="The punchlist item itself…"></textarea></div>
+  <div style="margin-top: 10px;"><label for="newNotes">Notes (optional)</label><input id="newNotes" placeholder="Supplemental notes" /></div>
   <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center;">
     <button class="btn btn-primary" id="addItemBtn">+ Add Item</button>
     <span class="status info" id="addItemStatus" style="display:none;"></span>
@@ -868,8 +868,9 @@ async function loadAndRenderReportsList() {
       const disciplines = [...new Set((r.items || []).map(i => i.discipline))].sort();
       const itemCount = (r.items || []).length;
       const status = r.status || "in_progress";
-      const card = document.createElement("div");
-      card.style.cssText = "border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:8px; cursor:pointer; background:var(--bg); transition:border-color .15s;";
+      const card = document.createElement("button");
+      card.type = "button";
+      card.style.cssText = "display:block; width:100%; text-align:left; font:inherit; color:inherit; border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:8px; cursor:pointer; background:var(--bg); transition:border-color .15s;";
       card.onmouseover = () => card.style.borderColor = "var(--blue)";
       card.onmouseout  = () => card.style.borderColor = "var(--border)";
       card.onclick = () => loadExistingReportById(row.id);
@@ -1135,9 +1136,9 @@ function renderPlans() {
     const card = document.createElement("div");
     card.style.cssText = "background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow:hidden;";
     card.innerHTML = `
-      <div style="aspect-ratio:4/3; background:var(--border); cursor:pointer;" title="Click to open placement view">
-        <img src="${plan.imageDataUrl}" style="width:100%; height:100%; object-fit:contain; background:#fff;" />
-      </div>
+      <button type="button" data-open style="display:block; width:100%; padding:0; border:none; aspect-ratio:4/3; background:var(--border); cursor:pointer;" title="Click to open placement view" aria-label="Open placement view for ${escapeHtml(plan.label)}">
+        <img src="${plan.imageDataUrl}" alt="${escapeHtml(plan.label)} key plan" style="width:100%; height:100%; object-fit:contain; background:#fff;" />
+      </button>
       <div style="padding:8px 10px;">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
           <div style="font-weight:600; font-size:12px; color:var(--text); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(plan.label)}</div>
@@ -1146,7 +1147,7 @@ function renderPlans() {
         <div style="font-size:10px; color:var(--dim); margin-top:2px;">${pinned} item${pinned===1?"":"s"} pinned</div>
       </div>`;
     card.querySelector("[data-del]").onclick = (ev) => { ev.stopPropagation(); deletePlan(plan.id); };
-    card.querySelector("img").onclick = () => openPlacementForPlan(plan.id);
+    card.querySelector("[data-open]").onclick = () => openPlacementForPlan(plan.id);
     list.appendChild(card);
   });
 }
@@ -1224,8 +1225,9 @@ function renderPlacementCanvas() {
     itemsOnPlan.forEach(it => {
       const isActive = it.id === placementActiveItemId;
       const placed = it.pin && it.pin.x != null && it.pin.y != null;
-      const row = document.createElement("div");
-      row.style.cssText = `padding:6px 8px; border-radius:6px; cursor:pointer; margin-bottom:4px; ${isActive ? "background:var(--accent-dim); border:1px solid var(--blue);" : "border:1px solid transparent;"}`;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.style.cssText = `display:block; width:100%; text-align:left; font:inherit; color:inherit; padding:6px 8px; border-radius:6px; cursor:pointer; margin-bottom:4px; ${isActive ? "background:var(--accent-dim); border:1px solid var(--blue);" : "background:transparent; border:1px solid transparent;"}`;
       row.onclick = () => { placementActiveItemId = it.id; renderPlacementCanvas(); };
       row.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
@@ -1577,15 +1579,16 @@ async function openProjectPhotosPicker() {
 // thumbnail area — `aspect-ratio: 1` was unreliable inside the picker grid
 // (cells collapsed to ~60px tall), so this pattern is the workhorse.
 function buildPhotoCard(file, sessionName) {
-  const card = document.createElement("div");
-  card.style.cssText = "background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow:hidden; cursor:pointer; transition:border-color .15s, transform .15s;";
+  const card = document.createElement("button");
+  card.type = "button";
+  card.style.cssText = "display:block; width:100%; padding:0; text-align:left; font:inherit; color:inherit; background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow:hidden; cursor:pointer; transition:border-color .15s, transform .15s;";
   card.onmouseover = () => { card.style.borderColor = "var(--blue)"; card.style.transform = "translateY(-2px)"; };
   card.onmouseout  = () => { card.style.borderColor = "var(--border)"; card.style.transform = "none"; };
   const thumbUrl = file.thumbnails?.[0]?.medium?.url;
   card.innerHTML = `
     <div style="position:relative; width:100%; padding-top:100%; background:var(--border);">
       ${thumbUrl
-        ? `<img src="${thumbUrl}" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover;" />`
+        ? `<img src="${thumbUrl}" alt="${escapeHtml(file.name)}" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover;" />`
         : `<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:10px;">no preview</div>`}
     </div>
     <div style="padding:6px 8px; font-size:11px;">
@@ -1789,7 +1792,7 @@ function renderItemRow(item) {
   const row = document.createElement("div");
   row.className = "item-row";
   const photoHtml = item.photoDataUrl
-    ? `<img src="${item.photoDataUrl}" class="item-photo" alt="" />`
+    ? `<img src="${item.photoDataUrl}" class="item-photo" alt="Photo for item ${num}" />`
     : `<div class="item-photo-empty">no photo</div>`;
   let pinHtml = "";
   if (item.pin?.planId) {
@@ -1835,7 +1838,7 @@ function renderItemEditForm(num) {
     .join("");
 
   const photoPreview = editingItem.photoDataUrl
-    ? `<img src="${editingItem.photoDataUrl}" style="width:80px; height:60px; object-fit:cover; border-radius:4px; border:1px solid var(--border);" />`
+    ? `<img src="${editingItem.photoDataUrl}" alt="Current item photo" style="width:80px; height:60px; object-fit:cover; border-radius:4px; border:1px solid var(--border);" />`
     : `<div style="width:80px; height:60px; display:flex; align-items:center; justify-content:center; background:var(--border); border-radius:4px; color:var(--muted); font-size:10px;">no photo</div>`;
 
   wrap.innerHTML = `
@@ -1845,8 +1848,8 @@ function renderItemEditForm(num) {
     </div>
     <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:8px;">
       <div>
-        <label>Discipline</label>
-        <select data-field="discipline">
+        <label for="editDiscipline">Discipline</label>
+        <select id="editDiscipline" data-field="discipline">
           <option${editingItem.discipline === "Architectural" ? " selected" : ""}>Architectural</option>
           <option${editingItem.discipline === "Structural" ? " selected" : ""}>Structural</option>
           <option${editingItem.discipline === "Mechanical" ? " selected" : ""}>Mechanical</option>
@@ -1858,15 +1861,15 @@ function renderItemEditForm(num) {
           <option${editingItem.discipline === "Other" ? " selected" : ""}>Other</option>
         </select>
       </div>
-      <div><label>Location / Room</label><input data-field="location" value="${escapeHtml(editingItem.location || "")}" /></div>
-      <div><label>By</label><input data-field="enteredBy" value="${escapeHtml(editingItem.enteredBy || "")}" /></div>
+      <div><label for="editLocation">Location / Room</label><input id="editLocation" data-field="location" value="${escapeHtml(editingItem.location || "")}" /></div>
+      <div><label for="editEnteredBy">By</label><input id="editEnteredBy" data-field="enteredBy" value="${escapeHtml(editingItem.enteredBy || "")}" /></div>
     </div>
-    <div style="margin-bottom:8px;"><label>Description</label><textarea data-field="description" rows="2">${escapeHtml(editingItem.description || "")}</textarea></div>
-    <div style="margin-bottom:8px;"><label>Notes</label><input data-field="notes" value="${escapeHtml(editingItem.notes || "")}" /></div>
+    <div style="margin-bottom:8px;"><label for="editDescription">Description</label><textarea id="editDescription" data-field="description" rows="2">${escapeHtml(editingItem.description || "")}</textarea></div>
+    <div style="margin-bottom:8px;"><label for="editNotes">Notes</label><input id="editNotes" data-field="notes" value="${escapeHtml(editingItem.notes || "")}" /></div>
     <div style="display:grid; grid-template-columns:1fr 2fr; gap:8px; margin-bottom:10px;">
       <div>
-        <label>Plan</label>
-        <select data-field="planId">${planOptions}</select>
+        <label for="editPlanId">Plan</label>
+        <select id="editPlanId" data-field="planId">${planOptions}</select>
       </div>
       <div>
         <label>Photo</label>
