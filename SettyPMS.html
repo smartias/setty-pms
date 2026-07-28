@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v83-lost-pursuits-contact-card";
+    window.__appVersion = "2026-07-28-pms-v84-pipeline-search-directory-card";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22998,6 +22998,10 @@ function StarRating({ average, count, myVote, onRate }) {
 }
 
 function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToProject, onRenameCompany }) {
+  // Contact whose card is being emailed, or null. Same modal the per-project
+  // Directory tab uses; the company name comes from the record being edited,
+  // since contacts here don't carry their own `company` field.
+  const [cardFor, setCardFor] = React.useState(null);
   const [editingId, setEditingId] = React.useState(null);
   const [form, setForm] = React.useState(null);
   const [search, setSearch] = React.useState("");
@@ -23263,6 +23267,10 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
             {contacts.length === 0 && (
               <div style={{ color: P.textDim, fontSize: 13, textAlign: "center", padding: "20px 0" }}>No contacts yet.</div>
             )}
+            {cardFor && (
+              <SendContactCardModal contact={cardFor} clients={clients}
+                projectName="" onClose={() => setCardFor(null)} />
+            )}
             {contacts.map((ct, i) => (
               <div key={ct.id} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 12, opacity: ct.inactive ? 0.55 : 1 }}>
                 {ct.inactive && (
@@ -23322,6 +23330,10 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                     })()}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
+                    {ct.email && (
+                      <Btn small variant="ghost" onClick={() => setCardFor({ ...ct, company: form.name || "" })}
+                        title={"Email " + (ct.name || "this contact") + "'s contact card to someone"}>📇 Send card</Btn>
+                    )}
                     <Btn small variant="ghost" onClick={() => toggleContactInactive(ct)}>{ct.inactive ? "Reactivate" : "Mark inactive"}</Btn>
                     <Btn small variant="danger" onClick={() => removeContact(ct.id)}>Remove</Btn>
                   </div>
@@ -26782,13 +26794,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     () => (projects || []).filter(p => p.status === "Lost")
       .sort((a, b) => String(b.lostDate || "").localeCompare(String(a.lostDate || ""))),
     [projects]);
-  const lostValue = lost.reduce((a, p) =>
-    a + (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0), 0);
-  const lostByReason = {};
-  lost.forEach(p => {
-    const k = p.lostReason || "Not recorded";
-    lostByReason[k] = (lostByReason[k] || 0) + 1;
-  });
+
 
   // Slide the Status toggle: Proposal Due ⇄ Proposal Submitted (slide right = "done")
   function toggleStatus(p) {
@@ -26813,6 +26819,29 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     setLostFor(null);
   }
 
+  // Free-text filter across both tables on this page. Matches the fields people
+  // actually search by — name, number, client, status — plus the loss reason and
+  // debrief on Lost rows, so "incumbent" or "undercut" finds the right pursuit.
+  const [q, setQ] = useState("");
+  function matchesQuery(p) {
+    const s = q.trim().toLowerCase();
+    if (!s) return true;
+    return [p.name, p.projectNumber, p.clientName, p.status, p.lostReason, p.lostNote]
+      .some(v => String(v || "").toLowerCase().includes(s));
+  }
+  const shownPipeline = sorted.filter(matchesQuery);
+  const shownLost = lost.filter(matchesQuery);
+
+  // Rollups describe the VISIBLE lost rows, so the chips can never contradict
+  // the table under them when a search is active.
+  const lostValue = shownLost.reduce((a, p) =>
+    a + (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0), 0);
+  const lostByReason = {};
+  shownLost.forEach(p => {
+    const k = p.lostReason || "Not recorded";
+    lostByReason[k] = (lostByReason[k] || 0) + 1;
+  });
+
   // Back on the board, loss stamps cleared — otherwise a restored pursuit that's
   // later lost again would carry a stale reason from the first time around.
   function handleRestore(p) {
@@ -26828,7 +26857,21 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
           <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>Pipeline</h2>
           <div style={{ color: P.textMuted, fontSize: 13 }}>Proposals & projects pending award</div>
         </div>
-        <Btn small onClick={onAddProject}>+ New Pipeline Project</Btn>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <div style={{ position: "relative" }}>
+            <input value={q} onChange={e => setQ(e.target.value)}
+              aria-label="Search pipeline"
+              placeholder="Search pipeline…"
+              style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, color: P.text,
+                padding: "7px 28px 7px 11px", fontSize: 13, fontFamily: "inherit", width: 250 }} />
+            {q && (
+              <button onClick={() => setQ("")} title="Clear search"
+                style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: 2 }}>✕</button>
+            )}
+          </div>
+          <Btn small onClick={onAddProject}>+ New Pipeline Project</Btn>
+        </div>
       </div>
 
       {/* KPIs */}
@@ -26863,7 +26906,8 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
         <Card style={{ marginBottom: 24 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>
-              Lost Pursuits <span style={{ color: P.textDim, fontWeight: 400 }}>({lost.length})</span>
+              Lost Pursuits <span style={{ color: P.textDim, fontWeight: 400 }}>
+                ({q.trim() ? shownLost.length + " of " + lost.length : lost.length})</span>
             </div>
             <Btn small variant="ghost" onClick={() => setShowLost(false)}>Close</Btn>
           </div>
@@ -26872,11 +26916,14 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
             Restoring one puts it back as <strong>Proposal Due</strong> and clears its loss record.
           </div>
 
-          {lost.length === 0 ? (
-            <div style={{ color: P.textDim, textAlign: "center", padding: 30 }}>Nothing lost yet.</div>
+          {shownLost.length === 0 ? (
+            <div style={{ color: P.textDim, textAlign: "center", padding: 30 }}>
+              {lost.length === 0 ? "Nothing lost yet." : "No lost pursuits match “" + q.trim() + "”."}
+            </div>
           ) : (
             <>
-              {/* Reason rollup — the point of capturing a reason at all */}
+              {/* Reason rollup — the point of capturing a reason at all.
+                  Recomputed from the visible rows so it never contradicts them. */}
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16, alignItems: "center" }}>
                 <span style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8,
                   padding: "5px 12px", fontSize: 12, color: P.textMuted }}>
@@ -26895,7 +26942,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                   <tr><th>Project</th><th>Client</th><th>Lost</th><th>Reason</th><th>Fee Value</th><th></th></tr>
                 </thead>
                 <tbody>
-                  {lost.map(p => {
+                  {shownLost.map(p => {
                     const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
                     return (
                       <tr key={p.id}>
@@ -26935,10 +26982,16 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
 
       {/* Pipeline table */}
       <Card>
-        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 16 }}>All Pipeline Projects</div>
-        {pipeline.length === 0 ? (
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 16 }}>
+          {q.trim() ? "Matching Pipeline Projects" : "All Pipeline Projects"}
+          {q.trim() && <span style={{ color: P.textDim, fontWeight: 400 }}> ({shownPipeline.length} of {pipeline.length})</span>}
+        </div>
+        {shownPipeline.length === 0 ? (
           <div style={{ color: P.textDim, textAlign: "center", padding: 40 }}>
-            No pipeline projects. <button onClick={onAddProject} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer" }}>Add one</button>
+            {pipeline.length === 0
+              ? <>No pipeline projects. <button onClick={onAddProject} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer" }}>Add one</button></>
+              : <>No pipeline projects match “{q.trim()}”.{canSeeLost && shownLost.length > 0 && !showLost &&
+                  <> {shownLost.length} lost {shownLost.length === 1 ? "pursuit matches" : "pursuits match"} — <button onClick={() => setShowLost(true)} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer", padding: 0 }}>show them</button>.</>}</>}
           </div>
         ) : (
           <table>
@@ -26955,7 +27008,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
               </tr>
             </thead>
             <tbody>
-              {sorted.map(p => {
+              {shownPipeline.map(p => {
                 const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
                 const weighted = fee * ((p.probability ?? 50) / 100);
                 const isOverdue = p.proposalDueDate && new Date(p.proposalDueDate) < now && !PAST_DUE_EXEMPT.includes(p.status);
