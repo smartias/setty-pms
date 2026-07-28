@@ -586,7 +586,10 @@ const MSAL_CONFIG = {
     redirectUri: window.location.origin + window.location.pathname,
     navigateToLoginRequestUrl: true,
   },
-  cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
+  // localStorage, not sessionStorage: session storage is cleared when the tab
+  // closes, so every visit meant signing in again. localStorage keeps the session
+  // across tabs and browser restarts until the token expires or you sign out.
+  cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
   system: { allowNativeBroker: false },
 };
 // Sites.READ.All, not ReadWrite. The only thing that ever wrote to a SharePoint
@@ -1323,7 +1326,7 @@ async function refreshFolderBrowser(loadFiles) {
     browseChildFolders = await listChildFolders(browsePath);
     sel.innerHTML = browseChildFolders.length
       ? '<option value="">' + browseChildFolders.length + " subfolder" +
-        (browseChildFolders.length === 1 ? "" : "s") + " : choose one to open\u2026</option>" +
+        (browseChildFolders.length === 1 ? "" : "s") + ": choose one to open\u2026</option>" +
         browseChildFolders.map(n => '<option value="' + n.replace(/"/g, "&quot;") + '">' + n + "</option>").join("")
       : '<option value="">No subfolders here</option>';
     setStatus("browseStatus", "", "");
