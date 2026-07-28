@@ -589,7 +589,13 @@ const MSAL_CONFIG = {
   cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
   system: { allowNativeBroker: false },
 };
-const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.ReadWrite.All", "Mail.ReadWrite"];
+// Sites.READ.All, not ReadWrite. The only thing that ever wrote to a SharePoint
+// SITE (rather than a document library) was the "Transmittals Sent" list, removed
+// with the register work. Everything left is driveItem work: listing folders,
+// uploading, creating share links, all covered by Files.ReadWrite.All.
+// Sites.Read.All is already admin-consented on this app; Sites.ReadWrite.All never
+// was, which is what made Entra prompt for the entire scope set on every sign-in.
+const GRAPH_SCOPES = ["User.Read", "Files.ReadWrite.All", "Sites.Read.All", "Mail.ReadWrite"];
 // NYSharesite (client portal) drive — same constant PMS uses for portal
 // folder creation. Transmittal sends publish into "<project>/Setty
 // Deliverables/<dated folder>" here when the project has a portal.
@@ -1302,7 +1308,7 @@ async function refreshFolderBrowser(loadFiles) {
     browseChildFolders = await listChildFolders(browsePath);
     sel.innerHTML = browseChildFolders.length
       ? '<option value="">' + browseChildFolders.length + " subfolder" +
-        (browseChildFolders.length === 1 ? "" : "s") + " \u2014 choose one to open\u2026</option>" +
+        (browseChildFolders.length === 1 ? "" : "s") + " : choose one to open\u2026</option>" +
         browseChildFolders.map(n => '<option value="' + n.replace(/"/g, "&quot;") + '">' + n + "</option>").join("")
       : '<option value="">No subfolders here</option>';
     setStatus("browseStatus", "", "");
@@ -1339,10 +1345,20 @@ async function startBrowsingProject(proj) {
   if (!root) {
     document.getElementById("folderBrowser").style.display = "none";
     setStatus("loadStatus", "warn",
-      "\u26a0 No SharePoint folder is recorded in PMS for this project \u2014 paste the folder URL instead (below).");
+      "\u26a0 No SharePoint folder is recorded in PMS for this project. Paste the folder URL instead, below.");
     return;
   }
+  // Land on "Outgoing" when it exists: that is where the dated submission folders
+  // live, and it is the starting point for practically every transmittal. Saves a
+  // click on the common path and shows the submissions straight away. Read-only
+  // listing, so no additional permission is involved.
   browsePath = root;
+  try {
+    const top = await listChildFolders(root);
+    const outgoing = top.find(n => n.toLowerCase() === "outgoing") ||
+                     top.find(n => n.toLowerCase().indexOf("outgoing") !== -1);
+    if (outgoing) browsePath = root + "/" + outgoing;
+  } catch (e) { /* no Outgoing, or listing failed: stay at the project root */ }
   await refreshFolderBrowser(false);
 }
 
@@ -1351,14 +1367,14 @@ function renderProjectResults(matches) {
   if (!matches.length) { box.style.display = "none"; box.innerHTML = ""; return; }
   box.innerHTML = matches.map((p, i) =>
     '<div role="option" data-idx="' + i + '" style="padding:7px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border,#30363d)">' +
-    '<b>' + (p.projectNumber || "") + "</b> \u2014 " + (p.name || "") + "</div>").join("");
+    '<b>' + (p.projectNumber || "") + "</b> " + (p.name || "") + "</div>").join("");
   box.style.display = "block";
   Array.from(box.children).forEach(el => {
     el.onmouseenter = () => el.style.background = "var(--card2,#21262d)";
     el.onmouseleave = () => el.style.background = "";
     el.onclick = () => {
       const p = matches[+el.getAttribute("data-idx")];
-      document.getElementById("projectSearch").value = (p.projectNumber || "") + " \u2014 " + (p.name || "");
+      document.getElementById("projectSearch").value = (p.projectNumber || "") + " - " + (p.name || "");
       box.style.display = "none";
       startBrowsingProject(p);
     };
@@ -1678,7 +1694,7 @@ async function backfillTransmittal() {
   }
   const dateVal = (document.getElementById("backfillDate").value || "").trim();
   if (!dateVal) {
-    setStatus("backfillStatus", "error", "\u2717 Set the date this transmittal was issued \u2014 without it the entry would be dated today and the history would be wrong.");
+    setStatus("backfillStatus", "error", "\u2717 Set the date this transmittal was issued. Without it the entry would be dated today and the history would be wrong.");
     document.getElementById("backfillDate").focus();
     return;
   }
