@@ -590,13 +590,22 @@ let pmsMilestoneId = "";
 // its "generated" state. Fire-and-forget — a logging failure must never
 // affect the user's perception that their generation worked.
 async function logTransmittalGenerated(distributionKind, extra = {}) {
-  if (!pmsProjectId) return; // legacy callers from non-PMS context: nothing to log against
+  // Direct launches (no ?projectId in the URL) used to skip logging entirely,
+  // which silently punched holes in the transmittal record. Fall back to
+  // resolving the id from the loaded project list by number.
+  const projId = pmsProjectId || (() => {
+    const n = (document.getElementById("projectNumber")?.value || "").trim();
+    if (!n) return "";
+    const hit = (pmsProjects || []).find(p => String(p.projectNumber || "").trim() === n);
+    return hit ? (hit.id || "") : "";
+  })();
+  if (!projId) return; // genuinely cannot attribute this transmittal to a project
   const folderUrlDecoded = decodeURIComponent(folderUrl || "");
   const subject = (document.getElementById("transmittalNo")?.value || "") +
                   " · " +
                   (document.getElementById("projectName")?.value || "");
   const row = {
-    project_id:    pmsProjectId,
+    project_id:    projId,
     msg_id:        pmsMilestoneId ? ("milestone:" + pmsMilestoneId) : null,
     operation:     "transmittal-generated",
     sp_folder_url: folderUrlDecoded || null,
@@ -604,6 +613,21 @@ async function logTransmittalGenerated(distributionKind, extra = {}) {
       distributionKind, // "save-sp" | "zip" | "send-email"
       transmittalNumber: document.getElementById("transmittalNo")?.value || "",
       generatedAt: new Date().toISOString(),
+      milestoneName: (resolvedFolderPath || "").split("/").pop() || "",
+      // The sheet register. parseFilename() has already split each file into
+      // sheet number / title / revision / discipline; without persisting it
+      // here that work is thrown away and nothing can answer "which revision
+      // of this sheet is current?". Snapshot the names too, so later renames
+      // in SharePoint cannot rewrite history.
+      sheets: (sheets || [])
+        .filter(sh => sh.include && sh.filename)
+        .map(sh => ({
+          sheetNo:    sh.sheetNo    || "",
+          title:      sh.title      || "",
+          revision:   sh.revision   || "",
+          discipline: sh.discipline || "",
+          filename:   sh.filename,
+        })),
       ...extra,
     },
     email_subject: subject,
@@ -1846,7 +1870,6 @@ async function saveToSharePoint() {
 // (The Outgoing *folder* itself isn't shareable — governance policy on the
 // Project Document Library — which is why the zip workaround exists.)
 
-const TRANSMITTALS_AUDIT_LIST = "Transmittals Sent";
 const ANONYMOUS_LINK_EXPIRY_DAYS = 30;
 
 document.getElementById("sendToClientBtn").onclick = sendToClient;
@@ -1948,20 +1971,11 @@ async function sendToClient() {
       packageName = zipName;
     }
 
-    // ── 3. Append audit row to Transmittals Sent list (non-fatal) ───────────
-    setStatus("sendStatus", "info", "⏳ Logging transmittal…");
-    try {
-      await appendTransmittalAuditRow({
-        linkInfo: { link: { webUrl: linkUrl }, expirationDateTime: expiryIso },
-        recipientEmail, totalBytes, zipName: packageName,
-      });
-    } catch (auditErr) {
-      console.warn("Audit log write failed (non-fatal):", auditErr);
-      setStatus("sendStatus", "warn", "⚠ Email is ready but audit log write failed — copy the link manually if needed: " + linkUrl);
-      // Continue — the email is still useful even if the audit row didn't write.
-    }
-    // Refresh the history panel so a successful send shows up immediately.
-    void loadTransmittalHistory();
+    // ── 3. The transmittal record is written to pms_filing_log by
+    //       logTransmittalGenerated() at the end of this function, and the
+    //       history panel refreshes once that write lands. The old
+    //       "Transmittals Sent" SharePoint list was removed: it never worked
+    //       in practice and the Postgres path already succeeds.
 
     // ── 4. Create an Outlook draft via Graph (HTML body so the share URL can
     //       hide behind a readable label) and open it for review. ─────────────
@@ -1978,12 +1992,17 @@ async function sendToClient() {
     setStatus("sendStatus", "success", deliveryMode === "portal"
       ? `✓ ${fileBlobs.length + 1} file${fileBlobs.length ? "s" : ""} published to the Client Portal (${packageName}). Outlook draft open — review and click Send.`
       : `✓ Package uploaded. Outlook draft open — review and click Send. Link expires ${new Date(expiryIso).toLocaleDateString()}.`);
+    // Refresh the history panel only once the log row has actually landed,
+    // otherwise the send just made would be missing from the table.
     void logTransmittalGenerated("send-email", {
       recipientEmail,
+      ccEmails: (ccRecipients || []).map(r => r.email).filter(Boolean),
       deliveryMode,
       packageSizeMB: +(totalBytes / 1024 / 1024).toFixed(2),
       linkExpiresAt: expiryIso || undefined,
-    });
+      linkUrl: linkUrl || undefined,
+      packageName,
+    }).then(() => loadTransmittalHistory());
   } catch (e) {
     setStatus("sendStatus", "error", "✗ " + e.message);
     console.error(e);
@@ -2129,84 +2148,13 @@ async function createAnonymousLink(itemId) {
 // Writes one row per send to the "Transmittals Sent" SharePoint list on the
 // NYC Projects site. Schema must match the column names exactly (see CLAUDE
 // conversation for the column list).
-async function appendTransmittalAuditRow({ uploadedItem, linkInfo, recipientEmail, totalBytes, zipName }) {
-  const projectName = document.getElementById("projectName").value || "";
-  const projectNumber = document.getElementById("projectNumber").value || "";
-  const milestoneName = (resolvedFolderPath || "").split("/").pop() || "";
-  const senderUpn = msalAccount?.username || "";
-  const senderName = msalAccount?.name || senderUpn;
-
-  // Recipient line — primary plus any CC, labeled so the record shows who
-  // was copied. CC list comes from the ccRecipients picker.
-  const ccEmails = (ccRecipients || []).map(r => r.email).filter(Boolean);
-  const recipientEmails = ccEmails.length
-    ? `To: ${recipientEmail}\nCC: ${ccEmails.join(", ")}`
-    : recipientEmail;
-
-  // FilesIncluded as newline-separated text — preserves the exact list
-  // sent even if files are later renamed/deleted in SharePoint. Use the same
-  // include-filter the send used, not all folder files.
-  const sentNames = (sheets || []).filter(s => s.include && s.filename).map(s => s.filename);
-  const filesIncluded = (sentNames.length ? sentNames : folderFiles.map(f => f.name))
-    .concat([generatedFileName]).join("\n");
-
-  // SharePoint DateTime columns can reject ISO strings carrying millisecond
-  // precision — strip ".123Z" down to "Z". Portal sends have no expiry —
-  // omit the field entirely rather than writing an empty string.
-  const linkExpiry = linkInfo.expirationDateTime
-    ? linkInfo.expirationDateTime.replace(/\.\d{3}Z$/, "Z")
-    : null;
-
-  const fields = {
-    Title: `${projectNumber || "—"} - ${milestoneName}`.slice(0, 255),
-    ProjectNumber: projectNumber,
-    ProjectName: projectName,
-    MilestoneName: milestoneName,
-    RecipientEmails: recipientEmails,
-    ZipFileName: zipName,
-    // Hyperlink columns require { Url, Description } object form via Graph.
-    AnonymousLink: { Url: linkInfo.link.webUrl, Description: zipName },
-    FilesIncluded: filesIncluded,
-    FileCount: (sentNames.length || folderFiles.length) + 1,
-    TotalSizeMB: Number((totalBytes / 1024 / 1024).toFixed(2)),
-    SenderUPN: senderUpn,
-    SenderDisplayName: senderName,
-    CustomMessage: "",
-    Status: "Sent",
-  };
-  // Only include typed columns when we actually have a value — passing an
-  // explicit null can trigger HTTP 400 invalidRequest.
-  if (linkExpiry) {
-    fields.LinkExpiry = linkExpiry;
-  }
-  if (folderUrl) {
-    fields.OutgoingFolderUrl = { Url: decodeURIComponent(folderUrl), Description: "Source folder" };
-  }
-
-  // Direct fetch (not graphFetch) so we capture the FULL Graph error body —
-  // graphFetch truncates to 200 chars, which hides which field was rejected.
-  const token = await getToken();
-  const url = "https://graph.microsoft.com/v1.0/sites/setty.sharepoint.com:/sites/NYCProjects:/lists/" +
-    encodeURIComponent(TRANSMITTALS_AUDIT_LIST) + "/items";
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
-    body: JSON.stringify({ fields }),
-  });
-  if (!res.ok) {
-    const fullError = await res.text();
-    console.error("[TX] Audit row write failed — HTTP " + res.status);
-    console.error("[TX] Full Graph response:", fullError);
-    console.error("[TX] Fields payload sent:", JSON.stringify(fields, null, 2));
-    throw new Error("Audit row HTTP " + res.status + " — full error logged to console");
-  }
-  return res.json();
-}
 
 // ─── TRANSMITTAL HISTORY ──────────────────────────────────────────────────────
-// Reads the "Transmittals Sent" SharePoint list, filters to the current
-// project, and renders past sends as a record-keeping table. Read-only —
-// independent of the audit-write path, so it works even while that's broken.
+// Reads past sends from pms_filing_log (operation = "transmittal-generated").
+// Previously this read a "Transmittals Sent" SharePoint list that was never
+// successfully created, so the panel always errored; the Postgres log has been
+// recording successfully the whole time. Rows are mapped into the shape
+// renderHistoryTable() already expects so the renderer is unchanged.
 async function loadTransmittalHistory() {
   const projNum = (document.getElementById("projectNumber").value || "").trim();
   const wrap    = document.getElementById("historyTableWrap");
@@ -2216,23 +2164,50 @@ async function loadTransmittalHistory() {
     setStatus("historyStatus", "info", "Load a project to see its transmittal history.");
     return;
   }
-  setStatus("historyStatus", "info", "⏳ Loading transmittal history…");
+  setStatus("historyStatus", "info", "\u23f3 Loading transmittal history\u2026");
   try {
-    const token = await getToken();
-    // Fetch the list with all fields expanded; filter client-side by project.
-    // Fine for a moderate-size log — avoids needing an indexed column.
-    const url = "https://graph.microsoft.com/v1.0/sites/setty.sharepoint.com:/sites/NYCProjects:/lists/" +
-      encodeURIComponent(TRANSMITTALS_AUDIT_LIST) + "/items?$expand=fields&$top=500";
-    const res = await fetch(url, { headers: { "Authorization": "Bearer " + token } });
-    if (!res.ok) throw new Error("HTTP " + res.status + " — list may not exist yet");
-    const data = await res.json();
+    const proj = (pmsProjects || []).find(p => String(p.projectNumber || "").trim() === projNum);
+    const projId = pmsProjectId || (proj ? proj.id : "");
+    if (!projId) {
+      setStatus("historyStatus", "info", "No transmittals logged for this project yet.");
+      wrap.innerHTML = ""; countEl.textContent = ""; return;
+    }
+    const url = SUPABASE_URL + "/rest/v1/pms_filing_log"
+      + "?operation=eq.transmittal-generated"
+      + "&project_id=eq." + encodeURIComponent(projId)
+      + "&select=created_at,files,status,user_email,sp_folder_url"
+      + "&order=created_at.desc&limit=500";
+    const res = await fetch(url, {
+      headers: {
+        "apikey": SUPABASE_ANON,
+        "Authorization": "Bearer " + settyAuth.token(),
+      },
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const rows = await res.json();
 
-    const items = (data.value || [])
-      .filter(it => (((it.fields || {}).ProjectNumber) || "").trim() === projNum)
-      .sort((a, b) => (b.createdDateTime || "").localeCompare(a.createdDateTime || ""));
+    // Map log rows onto the field names renderHistoryTable() reads.
+    const items = (rows || []).map(r => {
+      const f = r.files || {};
+      const sheetCount = Array.isArray(f.sheets) ? f.sheets.length : null;
+      return {
+        createdDateTime: r.created_at || "",
+        fields: {
+          MilestoneName:   f.milestoneName || (r.sp_folder_url || "").split("/").pop() || "",
+          RecipientEmails: [f.recipientEmail, (f.ccEmails || []).length ? "CC: " + f.ccEmails.join(", ") : ""]
+                             .filter(Boolean).join("\n"),
+          FileCount:       sheetCount == null ? "\u2014" : sheetCount,
+          AnonymousLink:   f.linkUrl ? { Url: f.linkUrl, Description: f.packageName || "Download" } : "",
+          LinkExpiry:      f.linkExpiresAt || "",
+          SenderUPN:       r.user_email || "",
+          SenderDisplayName: r.user_email || "",
+          Status:          r.status === "success" ? "Sent" : (r.status || ""),
+        },
+      };
+    });
 
     countEl.textContent = items.length ? items.length + " logged" : "";
-    historyTxNumbers = items.map(it => ({ date: (it.createdDateTime || "").slice(0, 10) }));
+    historyTxNumbers = (rows || []).map(r => ({ date: (r.created_at || "").slice(0, 10) }));
     maybePrefillTxNo();
     if (!items.length) {
       setStatus("historyStatus", "info", "No transmittals logged for this project yet.");
