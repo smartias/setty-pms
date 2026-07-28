@@ -214,11 +214,18 @@ const SUBMITTAL_OPEN = new Set(["Received", "Under Review", "Pending Sub Review"
 const openActionItems = (p: any) =>
   (p.notes ?? []).filter((n: any) => n.actionItem && (n.actionStatus ?? "open") !== "done");
 
+// A milestone is DONE when pctComplete hits 100, full stop. `status` is a
+// legacy field the app no longer writes on auto-built milestones — it is null
+// on most rows and goes stale at "Not Started" on the rest, so testing it alone
+// reports finished work as overdue. Mirrors milestoneStatus() in SettyPMS.html.
+const milestoneDone = (m: any) =>
+  (m.status ?? "") === "Completed" || Number(m.pctComplete ?? 0) >= 100;
+
 function summarizeProject(p: any): Record<string, unknown> {
   const today = new Date().toISOString().slice(0, 10);
   const plausible = (d: string) => d >= "2015-01-01" && d <= "2100-12-31";
   const live = (p.milestones ?? []).filter((m: any) =>
-    m.dueDate && plausible(m.dueDate) && !m.cancelled && (m.status ?? "") !== "Completed");
+    m.dueDate && plausible(m.dueDate) && !m.cancelled && !milestoneDone(m));
   const overdue = live.filter((m: any) => m.dueDate < today);
   const next = live.filter((m: any) => m.dueDate >= today)
     .sort((a: any, b: any) => String(a.dueDate).localeCompare(String(b.dueDate)))[0];
@@ -529,7 +536,12 @@ mcp.tool("list_milestones", {
       milestones: ms.map((m: any) => ({
         name: m.name, type: m.type, phase: m.phase || null, startDate: m.startDate || null, dueDate: m.dueDate || null,
         pctComplete: m.pctComplete || 0,
-        status: m.status || ((m.pctComplete || 0) >= 100 ? "Completed" : (m.pctComplete || 0) > 0 ? "In Progress" : "Not Started"),
+        // Derive from pctComplete FIRST. A stored status of "Not Started" on a
+        // 100%-complete milestone is stale data, not a fact — reporting it made
+        // finished concept-phase work read as open.
+        status: (m.pctComplete || 0) >= 100 ? "Completed"
+              : (m.pctComplete || 0) > 0 ? "In Progress"
+              : (m.status || "Not Started"),
         ...(m.type === "billable" ? { fee: m.fee } : {}), datePinned: !!m.dueDateManual,
       })),
     });

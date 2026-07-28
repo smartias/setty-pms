@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-25-intel-v28-bulk-prefs";
+    window.__appVersion = "2026-07-28-intel-v29-register-as-of";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -261,7 +261,7 @@ const state = {
   selP: new Set(),           // bulk-selected practice ids
   selA: new Set(),           // bulk-selected agency-preference ids
   graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "", view: "people" } },
-  heat: { rows: [], loaded: false, loading: false, f: { agency: "", quiet: false } },
+  heat: { rows: [], asof: {}, blocked: {}, loaded: false, loading: false, f: { agency: "", quiet: false } },
   prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", type: "", status: "" } },
 };
 
@@ -879,6 +879,15 @@ async function loadHeat() {
   state.heat.loading = true;
   try { state.heat.rows = (await sb("POST", "/rest/v1/rpc/pms_portfolio_heatmap", {})) || []; }
   catch (e) { toast("Heat map load failed: " + e.message, "error"); state.heat.rows = []; }
+  // Register freshness. The RFI/submittal "overdue" counts come from status text
+  // frozen at import time, so they are only as true as the last register load.
+  // Non-fatal: if this fails the counts still render, just without the as-of date.
+  try { state.heat.asof = (await sb("POST", "/rest/v1/rpc/pms_register_asof", {})) || {}; }
+  catch (e) { state.heat.asof = {}; }
+  // Blocked dependencies: inputs we are waiting on while drawing from an
+  // assumption. Keyed by project NUMBER, same as the heatmap rows.
+  try { state.heat.blocked = (await sb("POST", "/rest/v1/rpc/pms_blocked_dependencies", {})) || {}; }
+  catch (e) { state.heat.blocked = {}; }
   state.heat.loaded = true; state.heat.loading = false;
   state.counts.heatmap = state.heat.rows.filter(r => heatTier(r) === "hot").length;
   render();
@@ -917,6 +926,37 @@ function arScore(r) {
   const cli  = (r.ar_client_days || 0) > 60 ? Math.min((r.ar_client_due || 0) / 25000, 5) : 0;
   return proj + cli;
 }
+const blockedDeps = num => (state.heat.blocked || {})[num] || [];
+
+// ── Blocked-dependency escalation ───────────────────────────────────────────
+// A blocked dependency is an input we are waiting on (waiting_on, asked_since)
+// while the drawings advance on an assumption (assumption, expiry_event,
+// expiry_date). Unlike an overdue milestone it has no natural "late" moment:
+// the work looks healthy right up until the assumption turns out wrong.
+//
+// Each dep carries: waiting_on, days_waiting, last_chased, assumption,
+// expiry_event, expiry_date, days_to_expiry (negative once past), severity.
+//
+// TODO(Sara): decide what makes one of these urgent. Things worth weighing,
+// none of which are obviously right:
+//   • days_waiting alone is weak. Three weeks on a CA submittal is routine;
+//     three weeks on an input feeding a set that issues Monday is not.
+//   • days_to_expiry is probably the sharper signal. The WNBA case is only
+//     scary because 8/11 is close, not because SSR is slow.
+//   • partial delivery (mechanical in, plumbing/FP out) should probably NOT
+//     de-escalate. The remaining gap is what lands in the drawings.
+//   • going quiet may matter more than being late: last_chased far in the past
+//     can mean everyone assumed someone else had it.
+// Return a number. 0 means "do not surface". The caller adds it to the score
+// and treats >= ESCALATE_AT as hot.
+const ESCALATE_AT = 3;
+function dependencyRisk(d) {
+  return 0; // ← replace
+}
+
+const blockedScore = num => blockedDeps(num).reduce((a, d) => a + dependencyRisk(d), 0);
+const blockedHot = num => blockedDeps(num).some(d => dependencyRisk(d) >= ESCALATE_AT);
+
 function heatScore(r) {
   const base =
       Math.min(r.emails_30d || 0, 40) * 0.15
@@ -928,7 +968,8 @@ function heatScore(r) {
     + (r.actions_open || 0) + (r.actions_overdue || 0)
     + r.ms_overdue * 2 + (r.ms_due_30d || 0)
     + r.risks_high * 1.5 + r.risks_med * 0.75 + r.risks_low * 0.25
-    + r.open_requests * 0.5;
+    + r.open_requests * 0.5
+    + blockedScore(r.num);
   return isOnHold(r) ? base * 0.25 : base;
 }
 // Badge/hot thresholds (separate from the score so a project can score high
@@ -939,10 +980,23 @@ function heatTier(r) {
   if (isOnHold(r)) return "hold";
   if (r.rfis_overdue > 0 || r.subs_overdue > 0 || r.ms_overdue > 0
       || (r.actions_overdue || 0) > 0 || (r.pay_flags || 0) > 0
-      || frictionHot(r) || arHot(r)) return "hot";
+      || frictionHot(r) || arHot(r) || blockedHot(r.num)) return "hot";
   return heatScore(r) >= 1.5 ? "watch" : "quiet";
 }
 const fmtK = n => n >= 1000 ? "$" + (n / 1000).toFixed(n >= 100000 ? 0 : 1) + "k" : "$" + Math.round(n);
+// Provenance stamp for RFI/submittal overdue counts. Those come from status
+// text ("Open - Overdue") frozen when the Procore register was imported, so
+// they age. Within a week the count is effectively current and the tag stays
+// out of the way; past that it carries an explicit date.
+const REGISTER_FRESH_DAYS = 7;
+const registerAsOf = (num, kind) => (state.heat.asof || {})[num]?.[kind] || null;
+function asOfTag(asof) {
+  if (!asof) return ` <span style="color:var(--muted);font-size:11px" title="No register load date recorded for this project.">as of ?</span>`;
+  const d = new Date(asof + "T00:00:00");
+  const days = Math.round((Date.now() - d.getTime()) / 86400000);
+  if (days <= REGISTER_FRESH_DAYS) return "";
+  return ` <span style="color:var(--muted);font-size:11px" title="From the register loaded ${esc(asof)}, ${days} days ago. Overdue is Procore's label at import time, not a live due-date check.">as of ${d.getMonth() + 1}/${d.getDate()}</span>`;
+}
 const payBadge = r => (r.pay_flags || 0) > 0
   ? ` <span title="Payment-risk language in ${r.pay_flags} email thread${r.pay_flags===1?"":"s"} (90d) — latest ${esc(r.pay_last||"")}">💰${r.pay_flags > 1 ? "×" + r.pay_flags : ""}</span>` : "";
 const frictionBadge = r => frictionHot(r)
@@ -1016,15 +1070,22 @@ function renderHeatmap() {
   const tableRows = [...rows].sort((a, b) => heatScore(b) - heatScore(a)).map(r => {
     const tier = heatTier(r), t = HEAT_TIER[tier];
     const tierWord = { hot: "Hot", watch: "Watch", quiet: "Quiet", hold: "On hold" }[tier] || tier;
-    const cell = (open, overdue, word) => open ? `${open}${overdue ? ` <span style="color:var(--red)">(${overdue} ${word})</span>` : ""}` : `<span style="color:var(--muted)">—</span>`;
+    // `overdue` here is Procore's own "Open - Overdue" label frozen at import
+    // time, NOT a live due-date comparison. Stamp it with the register's load
+    // date so a five-week-old snapshot cannot read as today's news.
+    const cell = (open, overdue, word, asof) => {
+      if (!open) return `<span style="color:var(--muted)">—</span>`;
+      const od = overdue ? ` <span style="color:var(--red)">(${overdue} ${word})</span>` : "";
+      return `${open}${od}${overdue ? asOfTag(asof) : ""}`;
+    };
     const risks = r.risks_high + r.risks_med + r.risks_low;
     return `<tr class="hm-tr" data-num="${esc(r.num)}" style="cursor:pointer;border-bottom:1px solid var(--border)">
       <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><span class="sr-only">${tierWord} tier: </span><button type="button" class="hm-open" data-num="${esc(r.num)}"><b>${esc(r.name || r.num)}</b></button>${payBadge(r)}${frictionBadge(r)}${arBadge(r)} <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
       <td style="padding:7px 10px;color:var(--dim)">${esc(r.agency || "")}</td>
       <td style="padding:7px 10px;font-weight:800;color:${t.stroke}">${Math.round(heatScore(r) * 10) / 10}${heatTier(r) === "hold" ? ` <span style="color:var(--muted);font-size:11px">⏸ on hold</span>` : ""}</td>
       <td style="padding:7px 10px">${r.emails_30d ? `${r.emails_30d} <span style="color:var(--muted);font-size:11px">emails</span>` : `<span style="color:var(--muted)">—</span>`}</td>
-      <td style="padding:7px 10px">${cell(r.rfis_open, r.rfis_overdue, "overdue")}</td>
-      <td style="padding:7px 10px">${cell(r.subs_open, r.subs_overdue, "overdue")}</td>
+      <td style="padding:7px 10px">${cell(r.rfis_open, r.rfis_overdue, "overdue", registerAsOf(r.num, "rfis_asof"))}</td>
+      <td style="padding:7px 10px">${cell(r.subs_open, r.subs_overdue, "overdue", registerAsOf(r.num, "subs_asof"))}</td>
       <td style="padding:7px 10px">${cell(r.actions_open, r.actions_overdue, "overdue")}</td>
       <td style="padding:7px 10px">${r.ms_overdue ? `<span style="color:var(--red)">${r.ms_overdue} overdue</span>` : ""}${r.ms_overdue && r.ms_due_30d ? " · " : ""}${r.ms_due_30d ? `${r.ms_due_30d} due soon` : ""}${!r.ms_overdue && !r.ms_due_30d ? `<span style="color:var(--muted)">—</span>` : ""}</td>
       <td style="padding:7px 10px">${risks ? `${risks}${r.risks_high ? ` <span style="color:var(--red)">(${r.risks_high} high)</span>` : ""}` : `<span style="color:var(--muted)">—</span>`}${r.open_requests ? ` <span style="color:var(--dim);font-size:11px">+${r.open_requests} req</span>` : ""}</td>
@@ -1069,9 +1130,29 @@ function heatTipHTML(r) {
   if (r.ar_client && (r.ar_client_days || 0) > 60 && (r.ar_client_due || 0) > (r.ar_due || 0))
     L.push(line("🏦", `client <b>${esc(r.ar_client)}</b> owes <span style="color:var(--red)"><b>${fmtK(r.ar_client_due)}</b></span> firm-wide · oldest ${r.ar_client_days}d`));
   if (r.emails_30d) L.push(line("📨", `<b>${r.emails_30d}</b> email${r.emails_30d===1?"":"s"} in the last 30 days`));
-  if (r.rfis_open) L.push(line("❓", `<b>${r.rfis_open}</b> open RFI${r.rfis_open===1?"":"s"}${r.rfis_overdue ? ` · <span style="color:var(--red)">${r.rfis_overdue} overdue</span>` : ""}`));
-  if (r.subs_open) L.push(line("📦", `<b>${r.subs_open}</b> open submittal${r.subs_open===1?"":"s"}${r.subs_overdue ? ` · <span style="color:var(--red)">${r.subs_overdue} overdue</span>` : ""}`));
+  if (r.rfis_open) L.push(line("❓", `<b>${r.rfis_open}</b> open RFI${r.rfis_open===1?"":"s"}${r.rfis_overdue ? ` · <span style="color:var(--red)">${r.rfis_overdue} overdue</span>${asOfTag(registerAsOf(r.num, "rfis_asof"))}` : ""}`));
+  if (r.subs_open) L.push(line("📦", `<b>${r.subs_open}</b> open submittal${r.subs_open===1?"":"s"}${r.subs_overdue ? ` · <span style="color:var(--red)">${r.subs_overdue} overdue</span>${asOfTag(registerAsOf(r.num, "subs_asof"))}` : ""}`));
   if (r.actions_open) L.push(line("✅", `<b>${r.actions_open}</b> open action item${r.actions_open===1?"":"s"}${r.actions_overdue ? ` · <span style="color:var(--red)">${r.actions_overdue} overdue</span>` : ""}`));
+  // Blocked dependencies read as prose, not a count. The number is meaningless
+  // ("1 blocked dependency"); what matters is who owes what, what we drew
+  // instead, and when that guess stops being safe.
+  blockedDeps(r.num).forEach(d => {
+    const urgent = dependencyRisk(d) >= ESCALATE_AT;
+    const wait = d.days_waiting != null ? ` · waiting ${d.days_waiting}d` : "";
+    const who = d.waiting_on ? `on <b>${esc(d.waiting_on)}</b>` : "on an outstanding input";
+    const head = `<span style="color:var(--${urgent ? "red" : "dim"})">blocked ${who}</span>${wait}: ${esc(d.title || "")}`;
+    const sub = [];
+    if (d.assumption) sub.push(`proceeding on: ${esc(d.assumption)}`);
+    if (d.expiry_event) sub.push(`stops being safe when: ${esc(d.expiry_event)}`);
+    if (d.expiry_date) {
+      const dte = d.days_to_expiry;
+      sub.push(dte != null && dte < 0
+        ? `<span style="color:var(--red)">needed by ${esc(d.expiry_date)}, ${-dte}d past</span>`
+        : `needed by ${esc(d.expiry_date)}${dte != null ? ` (${dte}d)` : ""}`);
+    }
+    L.push(line("⛓", head + (sub.length
+      ? `<div style="color:var(--muted);font-size:11px;margin-left:20px">${sub.join("<br>")}</div>` : "")));
+  });
   if (r.ms_overdue) L.push(line("🗓", `<span style="color:var(--red)"><b>${r.ms_overdue}</b> milestone${r.ms_overdue===1?"":"s"} past due</span>`));
   if (r.ms_due_30d) L.push(line("🗓", `<b>${r.ms_due_30d}</b> milestone${r.ms_due_30d===1?"":"s"} due in the next 30 days`));
   if (r.next_due) L.push(line("→", `next milestone ${esc(r.next_due)}`));
