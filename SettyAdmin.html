@@ -1007,8 +1007,16 @@ function renderGuide() {
             <td>ALL shared data (projects, emails, knowledge tables), authentication, the Edge Functions (MCP, billing feed, unsubscribe…), scheduled jobs (nightly email mirror, MCP keep-warm), and the function secrets.</td>
             <td>Dashboard → Edge Functions → Secrets holds <code>MCP_SHARED_SECRET</code> and the <code>GRAPH_*</code> credentials. Database backups: Supabase daily + our own mirror (Backups tab).</td></tr>
         <tr><td><b>Microsoft Entra — Setty tenant</b><br><span style="color:var(--muted);font-size:12px">✓ firm-owned</span></td>
-            <td>App registrations: <code>c4739c11…</code> (staff sign-in for the whole suite) and <code>b49e795c…</code> ("Setty PMS MCP" — Claude connector OAuth + app-only SharePoint reading; its client secret lives here).</td>
-            <td>IT (Nikhil) administers; admin consent is required for any new permission — the tenant blocks self-consent.</td></tr>
+            <td><b>Three</b> app registrations, renamed 28 Jul 2026 so they can be told apart:
+              <table style="margin:6px 0"><thead><tr><th>Name</th><th>App (client) ID</th><th>Used by</th><th>Delegated scopes</th></tr></thead><tbody>
+                <tr><td><b>Setty PMS - Suite Sign-in</b></td><td><code>c4739c11-e89b-4a04-9580-f2d886356301</code></td><td>PMS, admin console, transmittal tool. Shared by MSAL <i>and</i> the Supabase Azure provider.</td><td><code>User.Read</code>, <code>Files.ReadWrite.All</code>, <code>Sites.ReadWrite.All</code>, <code>Mail.ReadWrite</code></td></tr>
+                <tr><td><b>Setty PMS - Outlook and Word Add-in</b></td><td><code>8e5155fb-6221-4508-97ea-3661438c6688</code></td><td>Both Office add-ins</td><td><code>User.Read</code>, <code>Mail.Read</code>, <code>Files.ReadWrite.All</code>, <code>Calendars.ReadWrite.Shared</code>, <code>Notes.ReadWrite</code></td></tr>
+                <tr><td><b>Setty PMS - Claude Connector</b></td><td><code>b49e795c-2af3-4ab9-aa39-52539d4a7a99</code></td><td>MCP connector OAuth + app-only SharePoint reading. Its client secret lives here.</td><td>exposes <code>api://b49e795c…/MCP.Access</code>; app-only <code>Sites.Selected</code></td></tr>
+              </tbody></table>
+              <b>Identify an app by its scopes, never by its name.</b> The three had near-identical names until they were renamed, which repeatedly sent people to the wrong one. <code>Sites.ReadWrite.All</code> appears in exactly one of them, so a consent screen listing "Edit or delete items in all site collections" is always the suite sign-in app. When a consent prompt appears, the <code>client_id</code> in the address bar is the only unambiguous signal.</td>
+            <td>IT (Nikhil) administers; admin consent is required for any new permission — the tenant blocks self-consent.
+              <div style="margin-top:6px"><b>Consent is per-scope and all-or-nothing in appearance:</b> if three of four scopes are granted and one is not, Entra prompts for the <i>entire</i> set, which looks identical to nothing being consented at all. Check the specific scope rather than the summary text.</div>
+              <div style="margin-top:6px">Renaming an app is safe: the client ID, redirect URIs, existing consent and secrets are all unaffected. Rename <b>both</b> the App registration and the Enterprise application, since users see the latter.</div></td></tr>
         <tr><td><b>Microsoft 365</b></td>
             <td>The content itself: SharePoint NYCProjects site (project folders), per-project OneNote notebooks, everyone's mail.</td>
             <td>Firm-owned; the apps only ever touch it as the signed-in user.</td></tr>
