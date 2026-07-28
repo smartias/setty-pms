@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v85b-status-nudge-wording";
+    window.__appVersion = "2026-07-28-pms-v87-email-drafts-mailto";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11724,114 +11724,28 @@ function getProjectCompanies(project) {
 }
 
 // ─── CONTACT CARD ────────────────────────────────────────────────────────────
-// "Send Card" turns a directory contact into something the recipient can
-// actually keep: a vCard (.vcf) attachment their mail client will import, plus
-// a readable HTML card in the body for anyone who just wants to look at it.
+// 📇 opens a new mail message with the contact's details laid out in the body,
+// ready to address and send from the desktop client.
 //
-// Delivery is deliberately a DRAFT, not a send. Sending via Graph needs
-// Mail.Send, which IT has not consented to; the suite holds Mail.ReadWrite (see
-// GRAPH_SCOPES), and POST /me/messages is within that. So we build the message
-// completely — recipients, body, attachment — and hand it to you in Outlook to
-// review and send. No new admin consent required.
-
-// vCard 3.0 escaping per RFC 2426 §2.4.2: backslash, semicolon, comma and
-// newlines are the reserved characters inside a property value.
-function vcardEscape(s) {
-  return String(s || "")
-    .replace(/\\/g, "\\\\").replace(/;/g, "\\;")
-    .replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+// Was a Graph draft (POST /me/messages) with a .vcf attachment. Graph can only
+// hand back an Outlook Web deeplink, so it opened a browser tab that then had
+// to be forwarded — awkward enough that Sara asked for plain drafts everywhere
+// (2026-07-28). TRADE-OFF: mailto: cannot carry an attachment, so the .vcf is
+// gone; the recipient copies the details rather than importing a contact file.
+//
+// No recipient or note field any more either — both are quicker to type in
+// Outlook, so the button goes straight to the draft with no modal in between.
+function buildContactCardMailto(c) {
+  const card = [c.name, c.title, c.company, c.email, c.phone]
+    .map(s => String(s || "").trim()).filter(Boolean).join("\r\n");
+  // Two blank lines first so the cursor has somewhere natural to type a note
+  // above the card without having to make room.
+  return "mailto:?subject=" + encodeURIComponent("Contact: " + (c.name || c.email || "").trim())
+    + "&body=" + encodeURIComponent("\r\n\r\n" + card);
 }
 
-// Directory contacts carry a single free-text `name`, but vCard's N property
-// wants structured Family;Given. Last whitespace-separated token is treated as
-// the surname — right for "Jane Doe" and "Maria Del Rio Santos", wrong for a
-// handful of names, which is why FN (the display name) stays verbatim.
-function splitContactName(full) {
-  const parts = String(full || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length < 2) return { first: parts[0] || "", last: "" };
-  return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] };
-}
-
-function buildVCard(c) {
-  const { first, last } = splitContactName(c.name);
-  const lines = [
-    "BEGIN:VCARD",
-    "VERSION:3.0",
-    "N:" + vcardEscape(last) + ";" + vcardEscape(first) + ";;;",
-    "FN:" + vcardEscape(c.name || c.email || "Contact"),
-  ];
-  if (c.company) lines.push("ORG:" + vcardEscape(c.company));
-  if (c.title)   lines.push("TITLE:" + vcardEscape(c.title));
-  if (c.email)   lines.push("EMAIL;TYPE=INTERNET,WORK:" + vcardEscape(c.email));
-  if (c.phone)   lines.push("TEL;TYPE=WORK,VOICE:" + vcardEscape(c.phone));
-  if (c.notes)   lines.push("NOTE:" + vcardEscape(c.notes));
-  lines.push("END:VCARD");
-  // vCard requires CRLF between properties. Long lines aren't folded at 75
-  // octets — Outlook, Apple Mail and Gmail all accept unfolded values.
-  return lines.join("\r\n") + "\r\n";
-}
-
-// btoa() is latin1-only, so UTF-8 encode first — otherwise a contact named
-// "José" or a firm with an en-dash throws InvalidCharacterError.
-function b64utf8(str) {
-  const bytes = new TextEncoder().encode(str);
-  let bin = "";
-  bytes.forEach(b => { bin += String.fromCharCode(b); });
-  return btoa(bin);
-}
-
-function cardEsc(s) {
-  return String(s || "")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function buildContactCardHtml(c, note, projectName) {
-  const rows = [
-    ["Title", c.title],
-    ["Company", c.company],
-    ["Email", c.email ? '<a href="mailto:' + cardEsc(c.email) + '">' + cardEsc(c.email) + "</a>" : ""],
-    ["Phone", c.phone],
-  ].filter(r => r[1]);
-  return [
-    '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2937">',
-    note ? "<p>" + cardEsc(note).replace(/\r?\n/g, "<br>") + "</p>" : "",
-    '<table cellpadding="0" cellspacing="0" style="border:1px solid #d1d5db;border-radius:8px;padding:16px;background:#f9fafb">',
-    '<tr><td style="font-size:17px;font-weight:700;padding-bottom:8px">' + cardEsc(c.name || c.email || "Contact") + "</td></tr>",
-    rows.map(([k, v]) =>
-      '<tr><td style="padding:2px 0"><span style="color:#6b7280">' + k + ":</span> " +
-      (k === "Email" ? v : cardEsc(v)) + "</td></tr>").join(""),
-    "</table>",
-    projectName
-      ? '<p style="color:#6b7280;font-size:12px">From the project directory for <strong>' + cardEsc(projectName) + "</strong>.</p>"
-      : "",
-    '<p style="color:#6b7280;font-size:12px">The attached .vcf can be saved straight into your contacts.</p>',
-    "</div>",
-  ].join("");
-}
-
-// Builds the draft and returns its Outlook Web URL. Two Graph calls because
-// /me/messages won't take attachments inline on create, then a re-read for
-// webLink (the create response omits it on some tenants).
-async function createContactCardDraft({ contact, toEmails, note, projectName }) {
-  // Graph rejects any item name containing \ / : * ? " < > | — same sanitize
-  // invariant every folder/file generator in the suite follows.
-  const safeName = (contact.name || contact.email || "contact")
-    .replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || "contact";
-  const draft = await graphFetch("POST", "/me/messages", {
-    subject: "Contact card: " + (contact.name || contact.email || "contact"),
-    body: { contentType: "HTML", content: buildContactCardHtml(contact, note, projectName) },
-    toRecipients: toEmails.map(a => ({ emailAddress: { address: a } })),
-  });
-  if (!draft || !draft.id) throw new Error("Outlook didn't return a draft — check that you're signed in, then try again.");
-  await graphFetch("POST", "/me/messages/" + draft.id + "/attachments", {
-    "@odata.type": "#microsoft.graph.fileAttachment",
-    name: safeName + ".vcf",
-    contentType: "text/vcard",
-    contentBytes: b64utf8(buildVCard(contact)),
-  });
-  const fresh = await graphFetch("GET", "/me/messages/" + draft.id + "?$select=webLink");
-  return (fresh && fresh.webLink) || draft.webLink || "";
+function openContactCardEmail(c) {
+  window.location.href = buildContactCardMailto(c);
 }
 
 // ─── PROPOSAL STATUS CHECK-IN ────────────────────────────────────────────────
@@ -11888,170 +11802,35 @@ function buildStatusCheckEmail(project) {
 
   return {
     subject: "Following up — " + proj + num,
-    html: '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2937">'
-      + body.map(p => "<p>" + cardEsc(p).replace(/\r?\n/g, "<br>") + "</p>").join("")
-      + "</div>",
+    // Plain text, blank line between paragraphs. mailto: bodies are text-only;
+    // the recipient's client renders it as a normal typed message.
+    text: body.join("\n\n"),
     toEmails,
     namedButNoEmail: toEmails.length === 0 && pocs.length > 0,
     noContact: pocs.length === 0,
   };
 }
 
-async function createStatusCheckDraft(project) {
+// mailto: opens a NEW message in whatever mail client the machine is set up
+// with — desktop Outlook here — already addressed and filled in, sitting there
+// to edit and send. That's the whole reason this isn't a Graph draft any more:
+// POST /me/messages could only ever hand back an Outlook Web deeplink, which
+// meant opening a browser tab and forwarding out of it. mailto: also works
+// signed-out and needs no Graph scope at all.
+//
+// RFC 6068: recipients comma-separated, everything percent-encoded. CRLF for
+// line breaks — bare \n drops the formatting in some Outlook builds.
+function buildStatusCheckMailto(project) {
   const mail = buildStatusCheckEmail(project);
-  const draft = await graphFetch("POST", "/me/messages", {
-    subject: mail.subject,
-    body: { contentType: "HTML", content: mail.html },
-    toRecipients: mail.toEmails.map(a => ({ emailAddress: { address: a } })),
-  });
-  if (!draft || !draft.id) throw new Error("Outlook didn't return a draft — check that you're signed in.");
-  const fresh = await graphFetch("GET", "/me/messages/" + draft.id + "?$select=webLink");
-  return (fresh && fresh.webLink) || draft.webLink || "";
+  return "mailto:" + encodeURIComponent(mail.toEmails.join(",")).replace(/%40/g, "@").replace(/%2C/g, ",")
+    + "?subject=" + encodeURIComponent(mail.subject)
+    + "&body=" + encodeURIComponent(mail.text.replace(/\r?\n/g, "\r\n"));
 }
 
-function SendContactCardModal({ contact, clients, projectName, onClose }) {
-  const [recips, setRecips] = React.useState([]);   // [{ name, email }]
-  const [q, setQ] = React.useState("");
-  const [note, setNote] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const [err, setErr] = React.useState("");
-  const [draftLink, setDraftLink] = React.useState("");
-
-  // Typeahead over the whole clients/contacts database, minus anyone already
-  // added and the card's own subject — mailing someone their own card is a typo.
-  const suggestions = React.useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (s.length < 2) return [];
-    const have = new Set(recips.map(r => r.email.toLowerCase()));
-    const self = (contact.email || "").trim().toLowerCase();
-    const out = [];
-    (clients || []).forEach(cl => (cl.contacts || []).forEach(ct => {
-      const em = (ct.email || "").trim();
-      if (!em || have.has(em.toLowerCase()) || em.toLowerCase() === self) return;
-      if (out.length >= 6) return;
-      if (((ct.name || "") + " " + em + " " + (cl.name || "")).toLowerCase().includes(s)) {
-        out.push({ name: ct.name || em, email: em, company: cl.name || "" });
-      }
-    }));
-    return out;
-  }, [q, clients, recips, contact]);
-
-  function addRecip(r) {
-    setErr("");
-    setRecips(list => list.some(x => x.email.toLowerCase() === r.email.toLowerCase())
-      ? list : [...list, { name: r.name, email: r.email }]);
-    setQ("");
-  }
-
-  // Enter on a free-typed address. Anything that isn't plausibly an address is
-  // rejected here rather than by Graph, where the error is far less readable.
-  function addTyped() {
-    const raw = q.trim().replace(/[;,]+$/, "");
-    if (!raw) return;
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) { setErr('"' + raw + '" doesn\'t look like an email address.'); return; }
-    addRecip({ name: raw, email: raw });
-  }
-
-  async function createDraft() {
-    setErr(""); setBusy(true);
-    try {
-      const link = await createContactCardDraft({
-        contact, toEmails: recips.map(r => r.email), note, projectName,
-      });
-      setDraftLink(link || "");
-    } catch (e) {
-      setErr(e.message || "Couldn't create the draft.");
-    } finally { setBusy(false); }
-  }
-
-  const inputStyle = {
-    width: "100%", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8,
-    color: P.text, padding: "9px 11px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box",
-  };
-
-  return (
-    <Modal title={"Send contact card — " + (contact.name || contact.email || "contact")} onClose={onClose}>
-      {draftLink ? (
-        <div>
-          <div style={{ color: P.green, fontWeight: 700, fontSize: 14, marginBottom: 8 }}>✓ Draft ready in Outlook</div>
-          <div style={{ color: P.textMuted, fontSize: 13, lineHeight: 1.6, marginBottom: 20 }}>
-            The card and its .vcf attachment are on a draft addressed to{" "}
-            {recips.map(r => r.name).join(", ")}. Open it, give it a read, and hit Send.
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            <Btn variant="ghost" onClick={onClose}>Done</Btn>
-            <Btn onClick={() => window.open(draftLink, "_blank", "noopener")}>Open draft in Outlook →</Btn>
-          </div>
-        </div>
-      ) : (
-        <div>
-          {/* What's being sent */}
-          <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 14, marginBottom: 18 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{contact.name || "(no name)"}</div>
-            <div style={{ fontSize: 12, color: P.textMuted, lineHeight: 1.7 }}>
-              {contact.title && <div>{contact.title}</div>}
-              {contact.company && <div>{contact.company}</div>}
-              {contact.email && <div>✉ {contact.email}</div>}
-              {contact.phone && <div>📞 {contact.phone}</div>}
-            </div>
-          </div>
-
-          {/* Recipients */}
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Send to</div>
-          {recips.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-              {recips.map(r => (
-                <span key={r.email} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: P.accentDim,
-                  color: P.accentLight, borderRadius: 999, padding: "3px 10px", fontSize: 12 }}>
-                  {r.name}
-                  <button onClick={() => setRecips(list => list.filter(x => x.email !== r.email))}
-                    title={"Remove " + r.email}
-                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0 }}>✕</button>
-                </span>
-              ))}
-            </div>
-          )}
-          <input value={q} onChange={e => { setQ(e.target.value); setErr(""); }}
-            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addTyped(); } }}
-            placeholder="Search your contacts, or type an email address and press Enter"
-            style={inputStyle} />
-          {suggestions.length > 0 && (
-            <div style={{ border: `1px solid ${P.border}`, borderRadius: 8, marginTop: 6, overflow: "hidden" }}>
-              {suggestions.map(s => (
-                <div key={s.email} onClick={() => addRecip(s)}
-                  style={{ padding: "8px 11px", cursor: "pointer", fontSize: 12.5, borderBottom: `1px solid ${P.border}` }}
-                  onMouseOver={e => e.currentTarget.style.background = P.bg}
-                  onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-                  <span style={{ fontWeight: 600 }}>{s.name}</span>
-                  <span style={{ color: P.textDim }}> · {s.email}{s.company ? " · " + s.company : ""}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Optional note */}
-          <div style={{ fontSize: 12, fontWeight: 700, margin: "18px 0 6px" }}>
-            Note <span style={{ color: P.textDim, fontWeight: 400 }}>(optional — appears above the card)</span>
-          </div>
-          <textarea value={note} onChange={e => setNote(e.target.value)} rows={3}
-            placeholder="Here's the contact at DASNY I mentioned…"
-            style={{ ...inputStyle, resize: "vertical" }} />
-
-          {err && <div style={{ color: P.red, fontSize: 12, marginTop: 12 }}>{err}</div>}
-
-          <div style={{ color: P.textDim, fontSize: 11.5, marginTop: 16, lineHeight: 1.6 }}>
-            This creates a draft in your Outlook with a .vcf attached — nothing is sent until you press Send there.
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-            <Btn disabled={busy || recips.length === 0} onClick={createDraft}>
-              {busy ? "Building draft…" : "Create draft"}
-            </Btn>
-          </div>
-        </div>
-      )}
-    </Modal>
-  );
+// "2026-07-28" → "07/28/2026". ISO input is already zero-padded.
+function fmtShortDate(iso) {
+  const [y, m, d] = String(iso || "").split("-");
+  return y && m && d ? m + "/" + d + "/" + y : "";
 }
 
 function ProjectDirectoryView({ project, onChange, clients }) {
@@ -12071,8 +11850,6 @@ function ProjectDirectoryView({ project, onChange, clients }) {
   // Tracks which contact's button was just clicked for copy feedback.
   // Shape: { id, kind: "email" | "block" } or null. Auto-clears after 1.5s.
   const [justCopied, setJustCopied] = React.useState(null);
-  // Contact whose card is being emailed, or null. See SendContactCardModal.
-  const [cardFor, setCardFor] = React.useState(null);
 
   function setF(field, val) { setForm(f => ({ ...f, [field]: val })); }
 
@@ -12370,11 +12147,6 @@ function ProjectDirectoryView({ project, onChange, clients }) {
         </div>
       )}
 
-      {cardFor && (
-        <SendContactCardModal contact={cardFor} clients={clients}
-          projectName={project.name} onClose={() => setCardFor(null)} />
-      )}
-
       {/* Grouped by company */}
       {Object.keys(byCompany).sort((a, b) => {
         // Push "(No Company)" to the end
@@ -12455,7 +12227,7 @@ function ProjectDirectoryView({ project, onChange, clients }) {
                 </div>
                 <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
                   {c.email && (
-                    <button onClick={() => setCardFor(c)}
+                    <button onClick={() => openContactCardEmail(c)}
                       title={"Email " + (c.name || "this contact") + "'s contact card to someone"}
                       style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: "4px 6px" }}>📇</button>
                   )}
@@ -23073,10 +22845,6 @@ function StarRating({ average, count, myVote, onRate }) {
 }
 
 function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToProject, onRenameCompany }) {
-  // Contact whose card is being emailed, or null. Same modal the per-project
-  // Directory tab uses; the company name comes from the record being edited,
-  // since contacts here don't carry their own `company` field.
-  const [cardFor, setCardFor] = React.useState(null);
   const [editingId, setEditingId] = React.useState(null);
   const [form, setForm] = React.useState(null);
   const [search, setSearch] = React.useState("");
@@ -23342,10 +23110,6 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
             {contacts.length === 0 && (
               <div style={{ color: P.textDim, fontSize: 13, textAlign: "center", padding: "20px 0" }}>No contacts yet.</div>
             )}
-            {cardFor && (
-              <SendContactCardModal contact={cardFor} clients={clients}
-                projectName="" onClose={() => setCardFor(null)} />
-            )}
             {contacts.map((ct, i) => (
               <div key={ct.id} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 12, opacity: ct.inactive ? 0.55 : 1 }}>
                 {ct.inactive && (
@@ -23406,7 +23170,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     {ct.email && (
-                      <Btn small variant="ghost" onClick={() => setCardFor({ ...ct, company: form.name || "" })}
+                      <Btn small variant="ghost" onClick={() => openContactCardEmail({ ...ct, company: form.name || "" })}
                         title={"Email " + (ct.name || "this contact") + "'s contact card to someone"}>📇 Send card</Btn>
                     )}
                     <Btn small variant="ghost" onClick={() => toggleContactInactive(ct)}>{ct.inactive ? "Reactivate" : "Mark inactive"}</Btn>
@@ -26917,22 +26681,17 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     lostByReason[k] = (lostByReason[k] || 0) + 1;
   });
 
-  // ✉ Status — draft a nudge to the proposal POC about award status.
-  const [statusBusy, setStatusBusy] = useState(null);   // project id mid-flight
-  const [statusMsg, setStatusMsg] = useState(null);     // { id, text, link }
-  async function emailStatusCheck(p) {
-    // Open the tab synchronously, inside the click handler. A tab opened after
-    // the await has lost the user-gesture and browsers treat it as a popup.
-    const win = window.open("about:blank", "_blank");
-    setStatusBusy(p.id); setStatusMsg(null);
-    try {
-      const link = await createStatusCheckDraft(p);
-      if (win) { win.opener = null; win.location.href = link; }
-      else setStatusMsg({ id: p.id, text: "Draft ready — your browser blocked the tab.", link });
-    } catch (e) {
-      if (win) win.close();
-      setStatusMsg({ id: p.id, text: e.message || "Couldn't create the draft." });
-    } finally { setStatusBusy(null); }
+  // ✉ Status — open a pre-filled nudge to the proposal POC about award status.
+  // Synchronous: assigning a mailto: URL hands off to the OS mail handler and
+  // leaves this page exactly where it is.
+  //
+  // NOTE the stamp records that the message was OPENED, not that it was sent —
+  // mailto: gives us no callback, so there's no way to know whether it actually
+  // went out. Kept as "Status sent on …" per Sara; the honest reading is "you
+  // drafted one on this date".
+  function emailStatusCheck(p) {
+    window.location.href = buildStatusCheckMailto(p);
+    onUpdateProject({ ...p, statusCheckSentAt: new Date().toISOString().slice(0, 10) });
   }
 
   // Back on the board, loss stamps cleared — otherwise a restored pursuit that's
@@ -27158,26 +26917,24 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                             {(() => {
                               const pocs = ((p.projectContacts || {}).proposal || []).filter(x => x && (x.name || x.email));
                               const named = pocs.map(x => x.name || x.email).filter(Boolean).join(", ");
+                              const sent = fmtShortDate(p.statusCheckSentAt);
                               return (
-                                <Btn small variant="ghost" disabled={statusBusy === p.id}
-                                  onClick={() => emailStatusCheck(p)}
-                                  title={named
-                                    ? "Email " + named + " to check on award status"
-                                    : "Draft a status check-in — no proposal contact listed, so you'll add the address in Outlook"}>
-                                  {statusBusy === p.id ? "…" : "✉ Status"}
+                                <Btn small variant="ghost" onClick={() => emailStatusCheck(p)}
+                                  title={sent
+                                    ? "Status check-in opened " + sent + " — click to send another"
+                                    : named
+                                      ? "Email " + named + " to check on award status"
+                                      : "Open a status check-in — no proposal contact listed, so you'll add the address in Outlook"}>
+                                  {sent ? "✓ Status" : "✉ Status"}
                                 </Btn>
                               );
                             })()}
                             <Btn small variant="success" onClick={() => setConfirm({ projectId: p.id, action: "award" })}>🏆 Award</Btn>
                             <Btn small variant="danger" onClick={() => setLostFor(p)}>✗ Lost</Btn>
                           </div>
-                          {statusMsg && statusMsg.id === p.id && (
-                            <div style={{ fontSize: 11, color: statusMsg.link ? P.textMuted : P.red, marginTop: 5, whiteSpace: "normal", maxWidth: 240 }}>
-                              {statusMsg.text}{" "}
-                              {statusMsg.link && (
-                                <a href={statusMsg.link} target="_blank" rel="noopener noreferrer"
-                                  style={{ color: P.accentLight }}>Open it</a>
-                              )}
+                          {p.statusCheckSentAt && (
+                            <div style={{ fontSize: 11, color: P.green, marginTop: 5, whiteSpace: "nowrap" }}>
+                              Status sent on {fmtShortDate(p.statusCheckSentAt)}
                             </div>
                           )}
                         </div>
