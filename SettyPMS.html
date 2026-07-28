@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v91-portal-share-retry";
+    window.__appVersion = "2026-07-28-pms-v92-portal-confirm-and-guest-display";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -24581,6 +24581,10 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
   const [query, setQuery]               = React.useState("");
   const [actionMsg, setActionMsg]       = React.useState("");
   const [actionStatus, setActionStatus] = React.useState("idle");
+  // Clicking a name used to fire the invite immediately, which meant one stray
+  // click emailed a real client and granted them folder access with no way to
+  // take it back quietly. Selection is now inert and a separate button commits.
+  const [selected, setSelected]         = React.useState(null);
 
   // Flatten all contacts with emails from the clients directory.
   // Contacts from the project's own client company come first.
@@ -24638,16 +24642,44 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       const uploadsId      = project.clientUploadsFolderUrl     ? await resolveItemId(project.clientUploadsFolderUrl)     : null;
       const deliverablesId = project.settyDeliverablesFolderUrl ? await resolveItemId(project.settyDeliverablesFolderUrl) : null;
 
+      // A freshly provisioned B2B guest often comes back WITHOUT
+      // grantedToV2.user.email. SharePoint populates siteUser first and carries
+      // the identity as a #EXT# UPN, lesley_gmail.com#EXT#@setty.onmicrosoft.com.
+      // Reading only user.email meant that entry had no email at all and was
+      // skipped outright, so a client who had JUST been invited successfully
+      // did not appear in this list. That reads as "the add silently failed".
+      // Decode the UPN back to the real address instead.
+      //
+      // isInternal also moves from a "setty.com" substring test to an exact
+      // domain suffix. Unrelated to the bug above (setty.onmicrosoft.com does
+      // NOT contain setty.com as a substring, so guests were never caught by
+      // it) but the suffix form is the correct test and it does now catch
+      // internal @setty.onmicrosoft.com accounts, which the substring missed.
+      function externalEmail(idObj) {
+        if (!idObj) return "";
+        const direct = idObj.email || "";
+        if (direct && direct.indexOf("#EXT#") === -1) return direct;
+        const raw = String(direct || idObj.loginName || idObj.userPrincipalName || "");
+        const upn = raw.split("|").pop();       // drop any i:0#.f|membership| claims prefix
+        const ext = upn.split("#EXT#")[0];
+        if (ext === upn) return upn;            // not an #EXT# form, use as-is
+        const sep = ext.lastIndexOf("_");       // local_domain.com -> local@domain.com
+        return sep === -1 ? ext : ext.slice(0, sep) + "@" + ext.slice(sep + 1);
+      }
+      const isInternal = e => /@setty\.(com|onmicrosoft\.com)$/i.test(String(e).trim());
+
       async function getPerms(itemId) {
         if (!itemId) return [];
         const resp = await graphFetch("GET", "/drives/" + driveId + "/items/" + itemId + "/permissions");
         const out = [];
         for (const p of (resp?.value || [])) {
-          // Direct grant from /invite — grantedToV2.user.email
-          if (p.grantedToV2?.user?.email) {
-            const email = p.grantedToV2.user.email;
-            if (!email.toLowerCase().includes("setty.com")) {
-              out.push({ id: p.id, email, name: p.grantedToV2.user.displayName || email,
+          const g = p.grantedToV2;
+          // Direct grant from /invite. Prefer user, fall back to siteUser.
+          if (g && (g.user || g.siteUser)) {
+            const email = externalEmail(g.user) || externalEmail(g.siteUser);
+            if (email && !isInternal(email)) {
+              out.push({ id: p.id, email,
+                name: (g.user && g.user.displayName) || (g.siteUser && g.siteUser.displayName) || email,
                 roles: p.roles || [], itemId });
             }
           }
@@ -24655,8 +24687,8 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           // surface them so users can clean up old permissions.
           else if (p.link && p.grantedToIdentitiesV2?.length) {
             for (const identity of p.grantedToIdentitiesV2) {
-              const email = identity.user?.email || identity.siteUser?.email;
-              if (email && !email.toLowerCase().includes("setty.com")) {
+              const email = externalEmail(identity.user) || externalEmail(identity.siteUser);
+              if (email && !isInternal(email)) {
                 out.push({ id: p.id, email, name: identity.user?.displayName || email,
                   roles: p.roles || [], itemId });
               }
@@ -24689,6 +24721,13 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       const targets = [];
       if (perms?.uploadsId)      targets.push({ itemId: perms.uploadsId,      role: "write" });
       if (perms?.deliverablesId) targets.push({ itemId: perms.deliverablesId, role: "read"  });
+      // Without this guard the loop below simply does not execute and we report
+      // a green "Added" for a share that never happened. Both ids are null
+      // whenever the project has no portal folder URLs stored, which is easy to
+      // hit on projects whose folders were made outside the app.
+      if (targets.length === 0) {
+        throw new Error("No portal folders are linked to this project yet. Create the client portal folders first, then add people.");
+      }
       const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim().slice(0, 40).trim()].filter(Boolean).join(" - ");
       for (const t of targets) {
         // Use the actual folder names so the invitation email matches what
@@ -24702,6 +24741,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       setActionStatus("done");
       setActionMsg("✓ Added " + contact.email);
       setQuery("");
+      setSelected(null);
       await loadPerms();
     } catch(e) {
       setActionStatus("error");
@@ -24969,12 +25009,16 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                     const projFiltered  = filtered.filter(c => projEmails.has(c.email));
                     const otherFiltered = filtered.filter(c => !projEmails.has(c.email));
                     function ContactRow({ c }) {
+                      const isSel = !!selected && selected.email === c.email;
                       return (
-                        <div key={c.email} onClick={() => addPerson(c)}
+                        <div key={c.email} onClick={() => setSelected(isSel ? null : c)}
+                          role="button" aria-pressed={isSel}
                           style={{ padding: "7px 10px", cursor: "pointer",
-                            borderBottom: `1px solid ${P.border}` }}
-                          onMouseEnter={e => e.currentTarget.style.background = P.bgCard || "#1a2535"}
-                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            borderBottom: `1px solid ${P.border}`,
+                            borderLeft: isSel ? `3px solid ${P.accent}` : "3px solid transparent",
+                            background: isSel ? P.accent + "22" : "transparent" }}
+                          onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = P.bgCard || "#1a2535"; }}
+                          onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = "transparent"; }}>
                           <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{c.name}</div>
                           <div style={{ fontSize: 11, color: P.textDim }}>
                             {c.email}{c.company ? " · " + c.company : ""}
@@ -25011,6 +25055,36 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                   })()
               }
             </div>
+
+            {/* Commit step. Selecting a name does nothing on its own; this is
+                the only thing that grants access and emails the client, and it
+                spells out both consequences before the click. */}
+            {selected && (
+              <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 6,
+                border: `1px solid ${P.accent}`, background: P.accent + "14",
+                display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{selected.name}</div>
+                  <div style={{ fontSize: 11, color: P.textDim }}>{selected.email}</div>
+                  <div style={{ fontSize: 10, color: P.textDim, marginTop: 3 }}>
+                    Gets upload access plus view access to deliverables. Microsoft emails them an invitation.
+                  </div>
+                </div>
+                <button onClick={() => setSelected(null)} disabled={actionStatus === "working"}
+                  style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+                    color: P.textDim, cursor: actionStatus === "working" ? "not-allowed" : "pointer",
+                    fontSize: 12, padding: "6px 12px" }}>
+                  Cancel
+                </button>
+                <button onClick={() => addPerson(selected)} disabled={actionStatus === "working"}
+                  style={{ background: P.accent, border: "none", borderRadius: 6, color: "#fff",
+                    cursor: actionStatus === "working" ? "not-allowed" : "pointer",
+                    opacity: actionStatus === "working" ? 0.6 : 1,
+                    fontSize: 12, fontWeight: 700, padding: "6px 16px", whiteSpace: "nowrap" }}>
+                  {actionStatus === "working" ? "Adding…" : "Add to portal"}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Action status */}
