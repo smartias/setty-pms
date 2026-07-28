@@ -113,7 +113,10 @@
 // executed Phase 4 flip and the Phase 5 enforcement rollout;
 // v7 brings the Claude/MCP runbook current: server v31 + the OAuth
 // resource/scope fix, the local Python bridge marked deprecated, and a
-// dated status card so the tab can be handed to IT as-is).
+// dated status card so the tab can be handed to IT as-is; v7 also
+// documents the add-in's two live hosting URLs in the continuity
+// runbook -- the silent-failure mode where a push reaches nobody
+// because the deployed manifest still names the old location).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -991,7 +994,22 @@ function renderGuide() {
       <p style="margin-top:10px"><b>How to deploy each piece:</b></p>
       <ul>
         <li><b>PMS + satellite apps + this console:</b> edit in the git clone, push a branch, merge to <code>main</code> on <code>smartias/setty-pms</code> (or "Add files via upload" for a quick fix) — GitHub Pages publishes automatically, no build step, no CI. <b>Merge, never overwrite,</b> main.</li>
-        <li><b>Outlook/Word add-in:</b> push to <code>main</code> on <code>smartias/setty-pms-addin</code>, then bump the <code>taskpane.js?v=</code> cache token in taskpane.html or Outlook keeps serving the old JS.</li>
+        <li><b>Outlook/Word add-in:</b> push to <code>main</code> on <code>smartias/setty-pms-addin</code>, then bump the <code>taskpane.js?v=</code> cache token in taskpane.html (and <code>word/taskpane.html</code> for the Word add-in) or Office keeps serving the old JS.
+          <div style="border-left:3px solid var(--amber);padding-left:10px;margin:8px 0 4px">
+            <b>⚠ Two live hosting URLs — a push can reach nobody.</b> The add-in was originally served from the <b>root of the <code>setty-pms</code> repo</b>, then moved to its own repo <code>setty-pms-addin</code> (created 18 Jun 2026). <b>The old location was never taken down and still returns 200</b>, serving a <b>29 May</b> build:
+            <table style="margin:6px 0"><thead><tr><th>URL</th><th>Serving</th></tr></thead><tbody>
+              <tr><td><code>smartias.github.io/setty-pms/taskpane.html</code> <span style="color:var(--muted)">(old)</span></td><td><code>?v=20260529-2</code> — stale</td></tr>
+              <tr><td><code>smartias.github.io/setty-pms-addin/taskpane.html</code> <span style="color:var(--muted)">(current)</span></td><td><code>?v=2026-07-25-…</code> — live</td></tr>
+            </tbody></table>
+            Because the old URL still works, the move failed <b>silently</b> — no 404 to trip over. What the firm actually runs is decided by the <b>SourceLocation in the manifest deployed to M365</b>, not by which repo you pushed to. So the usual rule — <i>"the manifest is only pointers, code changes need no redeploy"</i> — holds <b>only while the hosting URL is stable</b>; a hosting move turns it into <b>redeploy required exactly once</b>, and nothing warns you.
+            <div style="margin-top:6px">Current manifests in the clone (both correctly naming <code>setty-pms-addin</code>) — these are what M365 should be deploying:</div>
+            <table style="margin:6px 0"><thead><tr><th>File</th><th>M365 entry</th><th>Id</th><th>Version</th></tr></thead><tbody>
+              <tr><td><code>manifest.xml</code></td><td>Setty PMS <span style="color:var(--muted)">(Outlook)</span></td><td><code>7e5f4b2a-8d3c-4a1f-b2e9-6c0d5f3a8b1e</code></td><td>1.1.0.0</td></tr>
+              <tr><td><code>word/manifest.xml</code></td><td>Setty PMS Filer <span style="color:var(--muted)">(Word)</span></td><td><code>3b9a1d52-7c4e-4f08-9e21-7d5fa48c1903</code></td><td>1.0.0.0</td></tr>
+            </tbody></table>
+            When redeploying a manifest: the <b>Id must match</b> the deployed one or M365 adds a second add-in instead of updating, and the <b>Version should be incremented</b> or clients may not refetch. <b>Cleanup, only after the manifest is repointed:</b> delete <code>taskpane.html</code>/<code>taskpane.js</code> from the <code>setty-pms</code> repo root so this cannot recur — doing it before would break the firm's add-in mid-flight.
+          </div>
+        </li>
         <li><b>Edge Functions (MCP, billing feed…):</b> deployed from the Supabase dashboard or MCP tooling. <b>The live function is the source of truth</b> — always pull the deployed source first (dashboard → the function → source, or <code>get_edge_function</code>) before editing; on-disk copies drift stale. Health-check after every deploy.</li>
         <li><b>Database changes:</b> SQL migrations via the Supabase dashboard SQL editor; RLS policies and scheduled jobs live there too.</li>
       </ul>
@@ -1002,7 +1020,8 @@ function renderGuide() {
         <li><b>An app won't load:</b> check GitHub Pages status on the repo, then the browser console. The apps are static files — rolling back = reverting the file on main.</li>
         <li><b>Claude/MCP or billing feed down:</b> the Claude/MCP tab here has live health checks; function logs are in the Supabase dashboard.</li>
         <li><b>Sign-in problems:</b> Supabase Dashboard → Authentication (the Azure provider config + allowed redirect URLs) and the Entra app registrations (IT).</li>
-        <li><b>Filing/add-in problems:</b> the Filing Log tab shows per-email success/errors with the user and error text.</li>
+        <li><b>Filing/add-in problems:</b> the Filing Log tab shows per-email success/errors with the user and error text.
+            <b>If a shipped add-in change works for you but not firm-wide, check the deployed manifest's <code>SourceLocation</code> URL before debugging any code</b> — see the two-URL warning under "How to deploy each piece" above. A sideloaded manifest on your own machine can point somewhere different from what everyone else is served.</li>
         <li><b>Locked out of this console</b> (no admins left in the roles list): from the Supabase dashboard SQL editor run
             <code>insert into pms_user_roles (email, role) values ('you@setty.com','admin');</code> — the service role bypasses RLS.</li>
       </ol>
