@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v89-portal-share-policy-error";
+    window.__appVersion = "2026-07-28-pms-v90-portal-share-audit-log";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -24496,13 +24496,22 @@ function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
 }
 
 
-// Graph collapses every tenant-policy sharing rejection into a generic
-// `sharingFailed` 400. The real reason (guest invitations disabled in Entra,
-// external sharing off on the site, a blocked recipient domain) is discarded
-// server-side before it reaches us, so no amount of client-side logging can
-// recover it. Say plainly that this is a policy block and name who can lift
-// it: dumping raw Graph JSON in the UI just sends people hunting for a bug
-// that is not in this app.
+// Graph collapses EVERY sharing rejection into a generic `sharingFailed` 400
+// and discards the reason server-side, so nothing client-side can recover it.
+// At least five different faults produce this identical code: guest invites
+// disabled in Entra, external sharing off at the tenant or site, a domain
+// allow/block list, a sensitivity label overriding the site, and a
+// directory-wide invitation block triggered by bulk invites.
+//
+// So do NOT name a cause here. v89 did, and it was wrong: it told the user to
+// have IT enable guest invitations, which IT had already done weeks earlier,
+// costing a round trip. Point at the one place the real reason actually
+// survives instead. SharePoint throws the B2B error away, but Entra logs it
+// under Audit logs, activity "Invite external user", in Status reason.
+//
+// The request-id and timestamp are the only durable handles on a failed
+// share, and they are the first thing IT and Microsoft support ask for, so
+// pull them out of innerError rather than dropping the payload.
 //
 // Deliberately no fallback. Retrying with sendInvitation:false would quietly
 // succeed for people who are already guests and fail for everyone else, and
@@ -24511,10 +24520,13 @@ function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
 function portalShareErrorMessage(err) {
   const raw = String((err && err.message) || err || "");
   if (raw.indexOf("sharingFailed") === -1) return raw;
-  return "External sharing is blocked by tenant policy, so this person was not added. " +
-    "Contact IT: they need to allow guest invitations in Entra (External Identities, " +
-    "External collaboration settings) and confirm external sharing is turned on for the " +
-    "NYSharesite site in the SharePoint admin center.";
+  const id   = (raw.match(/"request-id"\s*:\s*"([^"]*)"/) || [])[1] || "";
+  const when = (raw.match(/"date"\s*:\s*"([^"]*)"/)       || [])[1] || "";
+  return "Microsoft refused this share and SharePoint does not report why. " +
+    "Ask IT to open Entra admin center, Monitoring and health, Audit logs, filter " +
+    "activity to Invite external user, and read Status reason on the failed entry. " +
+    "That names the actual cause." +
+    (id ? " Request ID " + id + (when ? " at " + when : "") + "." : "");
 }
 
 
