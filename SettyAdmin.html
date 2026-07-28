@@ -1160,6 +1160,42 @@ function renderMcp() {
     </div>
 
     <div class="card doc">
+      <div class="sechead">Roadmap — drawing intelligence <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">(tracking, updated 28 Jul 2026)</span></div>
+      <p>Goal: ask Claude what is <i>on</i> the drawings, not just which drawings exist. The target question is
+         <b>"what is the history of the Perchloric Fume Hood on project XYZ?"</b> — when it first appeared, on which
+         sheets, at which revision, and what the design shows. That is three separate capabilities, so it is staged.</p>
+      <table><thead><tr><th style="width:80px">Phase</th><th>What it delivers</th><th style="width:150px">Status</th></tr></thead><tbody>
+        <tr><td><b>0</b></td>
+            <td><b>Verify the drawings carry a text layer.</b> Tested <code>read_document</code> against real Tabler sheets (SAPX196006.00). The drawings are Revit vector exports, so the text layer is complete — and it holds in both eras.
+              <ul style="margin:6px 0">
+                <li><b>E211, 2025 plan sheet — 12,447 characters.</b> Equipment tags (<code>UH-4</code>, <code>CHWP-2</code>, <code>FCU-11</code>, <code>CH-1</code>), specifications inline (<code>350KW, 208V, 3PH DIESEL GENERATOR</code>), room names and numbers, and all 38 keynotes in full prose.</li>
+                <li><b>M801, 2019 CD submission — 9,753 characters.</b> Full controls abbreviation list, general requirements, equipment tags. <b>Age is not a problem.</b></li>
+              </ul></td>
+            <td><span class="pill ok">PASSED 28 Jul</span></td></tr>
+        <tr><td><b>1</b></td>
+            <td><b>The transmittal register.</b> Know which sheet went out at which revision, when, and to whom. The transmittal app already parses sheet number, title, revision and discipline from filenames; this persists them to <code>pms_filing_log</code>. The SharePoint "Transmittals Sent" list was dropped, having never worked.</td>
+            <td><span class="pill info">PR #74 OPEN</span><br><span style="font-size:11.5px;color:var(--muted)">then blocked on adoption — the register only fills as the app gets used</span></td></tr>
+        <tr><td><b>2</b></td>
+            <td><b>Drawing text index + <code>search_drawings</code>.</b> Extract text per sheet per revision into a table, indexed <i>lazily on demand and cached</i> rather than by bulk sweep. Then an MCP tool returning sheet, revision and matching snippet. <b>This alone answers "which sheets show the perchloric fume hood," which is most of the value.</b></td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span></td></tr>
+        <tr><td><b>3</b></td>
+            <td><b>History across revisions.</b> Group the index by sheet and term to derive "first appeared on M-601 Rev 2, issued with Bulletin #3, still present at Rev 4." <b>Easier than expected:</b> phase 0 found that each sheet's revision block is itself in the text layer, so per-sheet history can be read straight off the drawing rather than reconstructed. The transmittal register still adds who received it and in which package, but this is no longer hard-blocked on register depth or on transmittal adoption.</td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span><br><span style="font-size:11.5px;color:var(--muted)">unblocked by phase 0</span></td></tr>
+        <tr><td><b>4</b></td>
+            <td><b><code>view_drawing</code> — visual read.</b> Render a specific sheet, or a region of one, so Claude can read what the text layer cannot show. Server-side rendering was proven working on 18 Jun 2026 and never built.</td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span><br><span style="font-size:11.5px;color:var(--muted)">raises token usage — see note</span></td></tr>
+        <tr><td><b>5</b></td>
+            <td><b>Optional: structured schedule extraction.</b> Equipment schedules are tabular; parsing them into rows would make "what are the design parameters" an exact answer rather than prose. Only worth doing if phase 2 shows schedules extract cleanly but read confusingly.</td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">MAYBE</span></td></tr>
+      </tbody></table>
+      <ul style="margin-top:10px">
+        <li><b>Findings from phase 0, worth building on.</b> <b>(a)</b> Each sheet's <b>revision block extracts as text</b> — E211 returned <code>A ADDENDUM #A 01/22/2025 / B ADDENDUM #B 02/05/2025 / C BULLETIN #1 04/11/2025</code>, and the 2019 base issue returned the same header with an empty table. So the drawings describe their own revision history. <b>(b)</b> Sheet metadata should be read from the <b>title block, not the filename</b>: the title block reliably yields sheet number, drawing title, date, drawn-by, checked-by, project number and phase, whereas filenames are inconsistent across eras — 2025 files are <code>E211 - GROUND FLOOR PLAN - EAST WING - ELECTRICAL POWER.pdf</code> while 2019 files are a bare <code>M801.pdf</code>.</li>
+        <li><b>Phase 4 is the one that changes the cost story.</b> Everything up to it is text, which is cheap. Images consume far more context than text, so when <code>view_drawing</code> ships the answer to "what does this cost" changes from "minimal" to "minimal, plus drawing rendering when someone asks for it." That is a deliberate trade, worth flagging to leadership when it lands rather than after.</li>
+        <li><b>Two hard-won constraints for phase 4.</b> Use the <b>deno.land</b> build of imagescript — <code>npm:imagescript</code> crashes the edge worker on an unsupported native codec. And an E-size sheet at full scale is roughly 140MB of bitmap, so resolution must be capped around 1500–2000px; but at that size small text is illegible, so the tool needs a <b>region/crop argument</b> rather than whole-sheet rendering. Phases 1–3 are what make that targetable: the register names the file and the index names the sheet.</li>
+        <li><b>Index lazily, never in bulk.</b> The 24 Jun firm-wide outage was write contention from a bulk sweep. The field-photo index already uses the lazy pattern — it fills as people browse — and this should match it.</li>
+        <li><b>Keep the MCP read-only.</b> Register writes happen in the transmittal app; the connector only ever reads.</li>
+      </ul>
+
       <div class="sechead">Best practices (IT &amp; whoever maintains this)</div>
       <ul>
         <li><b>Rollout timing:</b> the connector is <b>independent of the security-rollout phases</b> — it never touches the anon key or user database sessions (it has its own gate + a server-side key), so the Phase 4 RLS flip changed nothing for it. Connect it whenever IT is ready; the admin-consent step is usually the long pole, so start that early.</li>
