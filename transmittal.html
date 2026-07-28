@@ -353,15 +353,40 @@
   <div class="card">
     <h2 class="card-title">📁 Folder &amp; Project Info</h2>
     <div class="folder-url-display" id="folderUrlDisplay">No folder linked — paste the project's SharePoint folder URL below, or open this tool from a project's PMS page.</div>
-    <!-- Manual folder entry — feeds the exact same code path as the ?folder=
-         deep link, so the tool is usable when opened without one. -->
-    <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:14px;">
-      <div style="flex:1">
-        <label for="folderUrlInput">SharePoint Folder URL</label>
-        <input type="text" id="folderUrlInput" placeholder="Paste the folder's SharePoint URL (…/Project Document Library/…)"/>
+    <!-- Pick a project, then walk its folder tree. Replaces hunting a URL in
+         SharePoint and pasting it: picking from the list means the project is
+         matched exactly rather than regexed out of a path, and the full path
+         stays known so the issue date and milestone name can be read from a
+         dated ancestor folder rather than the leaf. -->
+    <div style="margin-bottom:14px">
+      <label for="projectSearch">Project</label>
+      <div style="position:relative">
+        <input type="text" id="projectSearch" autocomplete="off" placeholder="Start typing a project name or number…"/>
+        <div id="projectSearchResults" role="listbox" style="display:none;position:absolute;z-index:20;left:0;right:0;max-height:240px;overflow-y:auto;background:var(--card,#161b22);border:1px solid var(--border,#30363d);border-radius:8px;margin-top:2px"></div>
       </div>
-      <button type="button" class="btn btn-ghost" id="useFolderUrlBtn" onclick="applyFolderUrlInput()" style="white-space:nowrap">Use this folder</button>
     </div>
+
+    <div id="folderBrowser" style="display:none;margin-bottom:14px">
+      <label for="folderChildSelect">Folder</label>
+      <div id="folderBreadcrumb" style="font-size:12px;color:var(--muted,#8b949e);margin-bottom:6px;word-break:break-all"></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn btn-ghost" id="folderUpBtn" style="white-space:nowrap">↑ Up</button>
+        <select id="folderChildSelect" style="flex:1;min-width:220px"></select>
+      </div>
+      <div class="status" id="browseStatus" role="status"></div>
+    </div>
+
+    <details style="margin-bottom:14px">
+      <summary style="cursor:pointer;font-size:12.5px;color:var(--muted,#8b949e)">Or paste a SharePoint folder URL</summary>
+      <div style="display:flex;gap:10px;align-items:flex-end;margin-top:8px">
+        <div style="flex:1">
+          <label for="folderUrlInput">SharePoint Folder URL</label>
+          <input type="text" id="folderUrlInput" placeholder="Paste the folder's SharePoint URL (…/Project Document Library/…)"/>
+        </div>
+        <button type="button" class="btn btn-ghost" id="useFolderUrlBtn" onclick="applyFolderUrlInput()" style="white-space:nowrap">Use this folder</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted,#8b949e);margin-top:6px">For the few projects with no folder recorded in PMS, or a folder outside the usual tree.</div>
+    </details>
     <div class="form-row">
       <div>
         <label for="projectName">Project Name</label>
@@ -629,7 +654,10 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
       distributionKind, // "save-sp" | "zip" | "send-email"
       transmittalNumber: document.getElementById("transmittalNo")?.value || "",
       generatedAt: new Date().toISOString(),
-      milestoneName: (resolvedFolderPath || "").split("/").pop() || "",
+      // Prefer the dated ancestor ("2025-04-10_Bulletin #1") over the leaf,
+      // which is often just "Drawings" or a discipline letter.
+      milestoneName: datedPathSegment(resolvedFolderPath) ||
+                     (resolvedFolderPath || "").split("/").pop() || "",
       // The sheet register. parseFilename() has already split each file into
       // sheet number / title / revision / discipline; without persisting it
       // here that work is thrown away and nothing can answer "which revision
@@ -1218,6 +1246,140 @@ function maybePrefillTxNo() {
   checkTxNoAgainstHistory(next);
 }
 
+// ─── PROJECT SEARCH + FOLDER BROWSER ────────────────────────────────────
+// Walking the tree beats pasting a URL for three reasons: the project is
+// matched exactly instead of being regexed out of a path, the full path stays
+// known (so a dated ancestor folder can supply the issue date and milestone
+// name even when the leaf is "Drawings" or "M"), and you cannot accidentally
+// point at another project's folder.
+const LIB_PREFIX = "Project Document Library/";
+let browsePath = "";        // path relative to the library root
+let browseChildFolders = [];
+
+function libraryPathFromUrl(u) {
+  const decoded = safeDecodeFolderUrl(u || "");
+  const i = decoded.indexOf(LIB_PREFIX);
+  return i === -1 ? "" : decoded.slice(i + LIB_PREFIX.length).replace(/\/+$/, "");
+}
+function urlFromLibraryPath(p) {
+  return "https://setty.sharepoint.com/sites/NYCProjects/" + LIB_PREFIX + p;
+}
+
+async function ensureDriveId() {
+  if (resolvedDriveId) return resolvedDriveId;
+  const token = await getToken();
+  const site = await graphFetch("GET", "/sites/setty.sharepoint.com:/sites/NYCProjects:", null, token);
+  const drives = await graphFetch("GET", `/sites/${site.id}/drives`, null, token);
+  const drive = (drives.value || []).find(d => d.name === "Project Document Library");
+  if (!drive) throw new Error("Project Document Library not found");
+  resolvedDriveId = drive.id;
+  return resolvedDriveId;
+}
+
+async function listChildFolders(path) {
+  const driveId = await ensureDriveId();
+  const token = await getToken();
+  const url = path
+    ? `/drives/${driveId}/root:/${encodeURIComponent(path)}:/children?$top=200&$select=id,name,folder`
+    : `/drives/${driveId}/root/children?$top=200&$select=id,name,folder`;
+  const res = await graphFetch("GET", url, null, token);
+  return (res.value || []).filter(c => c.folder).map(c => c.name)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+function renderBreadcrumb() {
+  const el = document.getElementById("folderBreadcrumb");
+  el.textContent = browsePath ? "\ud83d\udcc1 " + browsePath.split("/").join("  \u203a  ") : "\ud83d\udcc1 (project root)";
+  document.getElementById("folderUpBtn").disabled = !browsePath || browsePath.indexOf("/") === -1;
+}
+
+async function refreshFolderBrowser(loadFiles) {
+  const sel = document.getElementById("folderChildSelect");
+  document.getElementById("folderBrowser").style.display = "block";
+  renderBreadcrumb();
+  setStatus("browseStatus", "info", "\u23f3 Reading folders\u2026");
+  try {
+    browseChildFolders = await listChildFolders(browsePath);
+    sel.innerHTML = browseChildFolders.length
+      ? '<option value="">' + browseChildFolders.length + " subfolder" +
+        (browseChildFolders.length === 1 ? "" : "s") + " \u2014 choose one to open\u2026</option>" +
+        browseChildFolders.map(n => '<option value="' + n.replace(/"/g, "&quot;") + '">' + n + "</option>").join("")
+      : '<option value="">No subfolders here</option>';
+    setStatus("browseStatus", "", "");
+  } catch (e) {
+    sel.innerHTML = '<option value="">Could not read folders</option>';
+    setStatus("browseStatus", "error", "\u2717 " + e.message);
+    return;
+  }
+  if (loadFiles && browsePath) {
+    folderUrl = urlFromLibraryPath(browsePath);
+    document.getElementById("folderUrlInput").value = folderUrl;
+    document.getElementById("folderUrlDisplay").textContent = safeDecodeFolderUrl(folderUrl);
+    await loadFolder();
+  }
+}
+
+document.getElementById("folderChildSelect").onchange = async function () {
+  const name = this.value;
+  if (!name) return;
+  browsePath = browsePath ? browsePath + "/" + name : name;
+  await refreshFolderBrowser(true);
+};
+document.getElementById("folderUpBtn").onclick = async function () {
+  if (!browsePath) return;
+  browsePath = browsePath.split("/").slice(0, -1).join("/");
+  await refreshFolderBrowser(true);
+};
+
+async function startBrowsingProject(proj) {
+  document.getElementById("projectName").value   = proj.name || "";
+  document.getElementById("projectNumber").value = proj.projectNumber || "";
+  if (typeof updateRecipientFromProject === "function") { try { updateRecipientFromProject(); } catch (e) {} }
+  const root = libraryPathFromUrl(proj.projectFolderUrl || "");
+  if (!root) {
+    document.getElementById("folderBrowser").style.display = "none";
+    setStatus("loadStatus", "warn",
+      "\u26a0 No SharePoint folder is recorded in PMS for this project \u2014 paste the folder URL instead (below).");
+    return;
+  }
+  browsePath = root;
+  await refreshFolderBrowser(false);
+}
+
+function renderProjectResults(matches) {
+  const box = document.getElementById("projectSearchResults");
+  if (!matches.length) { box.style.display = "none"; box.innerHTML = ""; return; }
+  box.innerHTML = matches.map((p, i) =>
+    '<div role="option" data-idx="' + i + '" style="padding:7px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border,#30363d)">' +
+    '<b>' + (p.projectNumber || "") + "</b> \u2014 " + (p.name || "") + "</div>").join("");
+  box.style.display = "block";
+  Array.from(box.children).forEach(el => {
+    el.onmouseenter = () => el.style.background = "var(--card2,#21262d)";
+    el.onmouseleave = () => el.style.background = "";
+    el.onclick = () => {
+      const p = matches[+el.getAttribute("data-idx")];
+      document.getElementById("projectSearch").value = (p.projectNumber || "") + " \u2014 " + (p.name || "");
+      box.style.display = "none";
+      startBrowsingProject(p);
+    };
+  });
+}
+
+document.getElementById("projectSearch").oninput = function () {
+  const q = (this.value || "").toLowerCase().trim();
+  if (q.length < 2) { document.getElementById("projectSearchResults").style.display = "none"; return; }
+  const matches = (pmsProjects || []).filter(p =>
+    String(p.name || "").toLowerCase().includes(q) ||
+    String(p.projectNumber || "").toLowerCase().includes(q)).slice(0, 25);
+  renderProjectResults(matches);
+};
+document.addEventListener("click", e => {
+  if (!e.target.closest || !e.target.closest("#projectSearch, #projectSearchResults")) {
+    const box = document.getElementById("projectSearchResults");
+    if (box) box.style.display = "none";
+  }
+});
+
 document.getElementById("loadFolderBtn").onclick = loadFolder;
 
 async function loadFolder() {
@@ -1490,10 +1652,19 @@ function parseFolderDate(name) {
   return isNaN(new Date(iso + "T12:00:00Z").getTime()) ? "" : iso;
 }
 
+// Walk the path from the leaf upward: the dated folder is usually an ancestor
+// ("Outgoing/2025-04-10_Bulletin #1/Drawings"), so reading only the last
+// segment finds nothing.
+function datedPathSegment(path) {
+  const parts = String(path || "").split("/").filter(Boolean).reverse();
+  for (const seg of parts) { if (parseFolderDate(seg)) return seg; }
+  return "";
+}
+
 function prefillBackfillDate() {
   const el = document.getElementById("backfillDate");
   if (!el || el.value) return; // never overwrite a date someone typed
-  const guess = parseFolderDate((resolvedFolderPath || "").split("/").pop() || "");
+  const guess = parseFolderDate(datedPathSegment(resolvedFolderPath));
   if (guess) el.value = guess;
 }
 
