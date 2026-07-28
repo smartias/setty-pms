@@ -516,6 +516,22 @@
         <div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5">
           <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow. Projects with a Client Portal: the checked files + cover are published to a dated folder under <strong>Setty Deliverables</strong> and the email links there (no expiry — clients use their portal access). Projects without a portal: files are zipped and shared via a 30-day anonymous link. Either way an Outlook draft opens for review — nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
         </div>
+
+        <div style="margin-top:16px;padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:8px;background:var(--card2)">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">Backfill &mdash; record a transmittal that already went out</div>
+          <div style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-bottom:10px">
+            For logging historic submissions so the drawing register covers past issues. This <strong>only writes the log entry</strong>:
+            nothing is zipped, uploaded, emailed or sent. Load the submission folder above, check the sheets that went out, set the
+            date they were actually issued, then log it. Review the parsed sheet numbers and revisions in the table first &mdash; a file
+            that does not follow current naming may read as revision 0 rather than unknown.
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <label for="backfillDate" style="font-size:12.5px">Date issued</label>
+            <input type="date" id="backfillDate" style="border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px">
+            <button class="btn" id="backfillBtn">&#128194; Log past transmittal</button>
+          </div>
+          <div class="status" id="backfillStatus" role="status"></div>
+        </div>
       </div>
     </div>
     <div class="status" id="generateStatus" role="status"></div>
@@ -589,7 +605,7 @@ let pmsMilestoneId = "";
 // shared pms_filing_log table. PMS reads this on load to render the chip in
 // its "generated" state. Fire-and-forget — a logging failure must never
 // affect the user's perception that their generation worked.
-async function logTransmittalGenerated(distributionKind, extra = {}) {
+async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) {
   // Direct launches (no ?projectId in the URL) used to skip logging entirely,
   // which silently punched holes in the transmittal record. Fall back to
   // resolving the id from the loaded project list by number.
@@ -633,6 +649,17 @@ async function logTransmittalGenerated(distributionKind, extra = {}) {
     email_subject: subject,
     status:        "success",
   };
+
+  // Backfill: a past transmittal recorded after the fact. Stamp the real issue
+  // date on BOTH the row and the payload — the row so ordering and history
+  // queries are honest, the payload as a fallback in case the explicit
+  // created_at is ever rejected. Mark it so a reconstructed record can never
+  // be mistaken for a live send.
+  if (opts.issuedAt) {
+    row.created_at     = opts.issuedAt;
+    row.files.issuedAt = opts.issuedAt;
+    row.files.backfilled = true;
+  }
   try {
     await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log", {
       method: "POST",
@@ -1250,6 +1277,7 @@ async function loadFolder() {
 
     renderTable();
     document.getElementById("sheetListCard").style.display = "block";
+    prefillBackfillDate();
 
   } catch(e) {
     setStatus("loadStatus", "error", "✗ " + e.message);
@@ -1447,6 +1475,65 @@ document.getElementById("sortBtn").onclick = () => {
 document.getElementById("generateBtn").onclick = generateDocx;
 document.getElementById("saveToSpBtn").onclick = saveToSharePoint;
 document.getElementById("zipBtn").onclick = packageAsZip;
+
+// ─── BACKFILL — log a transmittal that already went out ───────────────────────
+// Historic submissions live in dated Outgoing subfolders ("2025-01-21_Addendum
+// #1"), so the issue date is usually already in the folder name. Parse it as a
+// default rather than making someone retype it, but leave it editable.
+function parseFolderDate(name) {
+  const t = String(name || "");
+  let m = t.match(/(20\d{2})[-_.](\d{1,2})[-_.](\d{1,2})/);        // 2025-01-21
+  if (!m) m = t.match(/(20\d{2})(\d{2})(\d{2})/);                   // 20250121
+  if (!m) return "";
+  const [, y, mo, d] = m;
+  const iso = y + "-" + String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+  return isNaN(new Date(iso + "T12:00:00Z").getTime()) ? "" : iso;
+}
+
+function prefillBackfillDate() {
+  const el = document.getElementById("backfillDate");
+  if (!el || el.value) return; // never overwrite a date someone typed
+  const guess = parseFolderDate((resolvedFolderPath || "").split("/").pop() || "");
+  if (guess) el.value = guess;
+}
+
+async function backfillTransmittal() {
+  const btn = document.getElementById("backfillBtn");
+  setStatus("backfillStatus", "", "");
+  const included = (sheets || []).filter(sh => sh.include && sh.filename);
+  if (!included.length) {
+    setStatus("backfillStatus", "error", "\u2717 Load a folder and check the sheets that went out first.");
+    return;
+  }
+  const dateVal = (document.getElementById("backfillDate").value || "").trim();
+  if (!dateVal) {
+    setStatus("backfillStatus", "error", "\u2717 Set the date this transmittal was issued \u2014 without it the entry would be dated today and the history would be wrong.");
+    document.getElementById("backfillDate").focus();
+    return;
+  }
+  // Midday UTC keeps the calendar date stable either side of the date line.
+  const issuedAt = new Date(dateVal + "T12:00:00Z").toISOString();
+  if (isNaN(new Date(issuedAt).getTime())) {
+    setStatus("backfillStatus", "error", "\u2717 That date could not be read.");
+    return;
+  }
+  if (!window.confirm("Log " + included.length + " sheet" + (included.length === 1 ? "" : "s") +
+                      " as issued on " + dateVal + "?\n\nThis only writes the register entry. Nothing is sent.")) return;
+
+  btn.disabled = true;
+  setStatus("backfillStatus", "info", "\u23f3 Logging\u2026");
+  try {
+    await logTransmittalGenerated("backfill", { sheetCount: included.length }, { issuedAt });
+    setStatus("backfillStatus", "success", "\u2713 Logged " + included.length + " sheet" +
+      (included.length === 1 ? "" : "s") + " as issued " + dateVal + ".");
+    void loadTransmittalHistory();
+  } catch (e) {
+    setStatus("backfillStatus", "error", "\u2717 " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById("backfillBtn").onclick = backfillTransmittal;
 
 // ─── PACKAGE DRAWINGS AS ZIP ──────────────────────────────────────────────────
 // Bundles every drawing file (.pdf/.dwg/.rvt/.dgn/.dxf) found in the folder into
@@ -2191,7 +2278,7 @@ async function loadTransmittalHistory() {
       const f = r.files || {};
       const sheetCount = Array.isArray(f.sheets) ? f.sheets.length : null;
       return {
-        createdDateTime: r.created_at || "",
+        createdDateTime: f.issuedAt || r.created_at || "",
         fields: {
           MilestoneName:   f.milestoneName || (r.sp_folder_url || "").split("/").pop() || "",
           RecipientEmails: [f.recipientEmail, (f.ccEmails || []).length ? "CC: " + f.ccEmails.join(", ") : ""]
@@ -2201,7 +2288,8 @@ async function loadTransmittalHistory() {
           LinkExpiry:      f.linkExpiresAt || "",
           SenderUPN:       r.user_email || "",
           SenderDisplayName: r.user_email || "",
-          Status:          r.status === "success" ? "Sent" : (r.status || ""),
+          Status:          f.backfilled ? "Logged (backfill)"
+                             : (r.status === "success" ? "Sent" : (r.status || "")),
         },
       };
     });
