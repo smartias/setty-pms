@@ -1160,6 +1160,37 @@ function renderMcp() {
     </div>
 
     <div class="card doc">
+      <div class="sechead">Roadmap — drawing intelligence <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">(tracking, updated 28 Jul 2026)</span></div>
+      <p>Goal: ask Claude what is <i>on</i> the drawings, not just which drawings exist. The target question is
+         <b>"what is the history of the Perchloric Fume Hood on project XYZ?"</b> — when it first appeared, on which
+         sheets, at which revision, and what the design shows. That is three separate capabilities, so it is staged.</p>
+      <table><thead><tr><th style="width:80px">Phase</th><th>What it delivers</th><th style="width:150px">Status</th></tr></thead><tbody>
+        <tr><td><b>0</b></td>
+            <td><b>Verify the drawings carry a text layer.</b> Run <code>read_document</code> against real sheets — a schedule, a plan, a details sheet, old and new projects — and see whether equipment names come back as text. CAD-exported PDFs usually keep schedules, keynotes and tags as real text, which makes everything below cheap. Scanned sheets have none, which forces OCR or vision far earlier and at much higher cost. <b>Everything forks on this answer, so nothing should be built before it.</b></td>
+            <td><span class="pill warn">NOT STARTED</span><br><span style="font-size:11.5px;color:var(--muted)">cheap, do first</span></td></tr>
+        <tr><td><b>1</b></td>
+            <td><b>The transmittal register.</b> Know which sheet went out at which revision, when, and to whom. The transmittal app already parses sheet number, title, revision and discipline from filenames; this persists them to <code>pms_filing_log</code>. The SharePoint "Transmittals Sent" list was dropped, having never worked.</td>
+            <td><span class="pill info">PR #74 OPEN</span><br><span style="font-size:11.5px;color:var(--muted)">then blocked on adoption — the register only fills as the app gets used</span></td></tr>
+        <tr><td><b>2</b></td>
+            <td><b>Drawing text index + <code>search_drawings</code>.</b> Extract text per sheet per revision into a table, indexed <i>lazily on demand and cached</i> rather than by bulk sweep. Then an MCP tool returning sheet, revision and matching snippet. <b>This alone answers "which sheets show the perchloric fume hood," which is most of the value.</b></td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span></td></tr>
+        <tr><td><b>3</b></td>
+            <td><b>History across revisions.</b> Group the index by sheet and term to derive "first appeared on M-601 Rev 2, issued with Bulletin #3, still present at Rev 4." Mostly a query over phases 1 and 2, little new machinery — but it needs the register to have real depth first.</td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span></td></tr>
+        <tr><td><b>4</b></td>
+            <td><b><code>view_drawing</code> — visual read.</b> Render a specific sheet, or a region of one, so Claude can read what the text layer cannot show. Server-side rendering was proven working on 18 Jun 2026 and never built.</td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span><br><span style="font-size:11.5px;color:var(--muted)">raises token usage — see note</span></td></tr>
+        <tr><td><b>5</b></td>
+            <td><b>Optional: structured schedule extraction.</b> Equipment schedules are tabular; parsing them into rows would make "what are the design parameters" an exact answer rather than prose. Only worth doing if phase 2 shows schedules extract cleanly but read confusingly.</td>
+            <td><span class="pill" style="background:var(--card2);color:var(--muted)">MAYBE</span></td></tr>
+      </tbody></table>
+      <ul style="margin-top:10px">
+        <li><b>Phase 4 is the one that changes the cost story.</b> Everything up to it is text, which is cheap. Images consume far more context than text, so when <code>view_drawing</code> ships the answer to "what does this cost" changes from "minimal" to "minimal, plus drawing rendering when someone asks for it." That is a deliberate trade, worth flagging to leadership when it lands rather than after.</li>
+        <li><b>Two hard-won constraints for phase 4.</b> Use the <b>deno.land</b> build of imagescript — <code>npm:imagescript</code> crashes the edge worker on an unsupported native codec. And an E-size sheet at full scale is roughly 140MB of bitmap, so resolution must be capped around 1500–2000px; but at that size small text is illegible, so the tool needs a <b>region/crop argument</b> rather than whole-sheet rendering. Phases 1–3 are what make that targetable: the register names the file and the index names the sheet.</li>
+        <li><b>Index lazily, never in bulk.</b> The 24 Jun firm-wide outage was write contention from a bulk sweep. The field-photo index already uses the lazy pattern — it fills as people browse — and this should match it.</li>
+        <li><b>Keep the MCP read-only.</b> Register writes happen in the transmittal app; the connector only ever reads.</li>
+      </ul>
+
       <div class="sechead">Best practices (IT &amp; whoever maintains this)</div>
       <ul>
         <li><b>Rollout timing:</b> the connector is <b>independent of the security-rollout phases</b> — it never touches the anon key or user database sessions (it has its own gate + a server-side key), so the Phase 4 RLS flip changed nothing for it. Connect it whenever IT is ready; the admin-consent step is usually the long pole, so start that early.</li>
