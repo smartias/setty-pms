@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v87-email-drafts-mailto";
+    window.__appVersion = "2026-07-28-pms-v88-vcard-back-no-emdash";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11724,28 +11724,130 @@ function getProjectCompanies(project) {
 }
 
 // ─── CONTACT CARD ────────────────────────────────────────────────────────────
-// 📇 opens a new mail message with the contact's details laid out in the body,
-// ready to address and send from the desktop client.
+// The one email feature that is NOT a mailto: draft, decided deliberately.
 //
-// Was a Graph draft (POST /me/messages) with a .vcf attachment. Graph can only
-// hand back an Outlook Web deeplink, so it opened a browser tab that then had
-// to be forwarded — awkward enough that Sara asked for plain drafts everywhere
-// (2026-07-28). TRADE-OFF: mailto: cannot carry an attachment, so the .vcf is
-// gone; the recipient copies the details rather than importing a contact file.
+// Everything else in the suite opens mailto: so the message lands in desktop
+// Outlook (see the status check-in below). mailto: cannot carry an attachment,
+// and the whole point of a contact card is that the recipient can SAVE it, so
+// this one keeps the Graph path to preserve the .vcf. The cost is that Graph
+// only returns an Outlook Web deeplink, so the draft opens in a browser tab.
+// Sara weighed both and chose the attachment here, mailto: everywhere else.
 //
-// No recipient or note field any more either — both are quicker to type in
-// Outlook, so the button goes straight to the draft with no modal in between.
-function buildContactCardMailto(c) {
-  const card = [c.name, c.title, c.company, c.email, c.phone]
-    .map(s => String(s || "").trim()).filter(Boolean).join("\r\n");
-  // Two blank lines first so the cursor has somewhere natural to type a note
-  // above the card without having to make room.
-  return "mailto:?subject=" + encodeURIComponent("Contact: " + (c.name || c.email || "").trim())
-    + "&body=" + encodeURIComponent("\r\n\r\n" + card);
+// No recipient or note field: both are quicker to type on the draft itself, so
+// the button goes straight there with an empty To line.
+//
+// Mail.ReadWrite covers POST /me/messages. Sending would need Mail.Send, which
+// IT has not consented to, so you press Send yourself.
+
+// vCard 3.0 escaping per RFC 2426 section 2.4.2: backslash, semicolon, comma
+// and newlines are the reserved characters inside a property value.
+function vcardEscape(s) {
+  return String(s || "")
+    .replace(/\\/g, "\\\\").replace(/;/g, "\\;")
+    .replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 }
 
-function openContactCardEmail(c) {
-  window.location.href = buildContactCardMailto(c);
+// Directory contacts carry a single free-text `name`, but vCard's N property
+// wants structured Family;Given. The last whitespace-separated token is treated
+// as the surname, right for "Jane Doe" and "Maria Del Rio Santos", wrong for a
+// handful of names, which is why FN (the display name) stays verbatim.
+function splitContactName(full) {
+  const parts = String(full || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return { first: parts[0] || "", last: "" };
+  return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] };
+}
+
+function buildVCard(c) {
+  const { first, last } = splitContactName(c.name);
+  const lines = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    "N:" + vcardEscape(last) + ";" + vcardEscape(first) + ";;;",
+    "FN:" + vcardEscape(c.name || c.email || "Contact"),
+  ];
+  if (c.company) lines.push("ORG:" + vcardEscape(c.company));
+  if (c.title)   lines.push("TITLE:" + vcardEscape(c.title));
+  if (c.email)   lines.push("EMAIL;TYPE=INTERNET,WORK:" + vcardEscape(c.email));
+  if (c.phone)   lines.push("TEL;TYPE=WORK,VOICE:" + vcardEscape(c.phone));
+  if (c.notes)   lines.push("NOTE:" + vcardEscape(c.notes));
+  lines.push("END:VCARD");
+  // vCard requires CRLF between properties. Long lines aren't folded at 75
+  // octets; Outlook, Apple Mail and Gmail all accept unfolded values.
+  return lines.join("\r\n") + "\r\n";
+}
+
+// btoa() is latin1-only, so UTF-8 encode first, otherwise a contact named
+// "José" or a firm with an en-dash throws InvalidCharacterError.
+function b64utf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
+
+function cardEsc(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function buildContactCardHtml(c) {
+  const rows = [
+    ["Title", c.title],
+    ["Company", c.company],
+    ["Email", c.email ? '<a href="mailto:' + cardEsc(c.email) + '">' + cardEsc(c.email) + "</a>" : ""],
+    ["Phone", c.phone],
+  ].filter(r => r[1]);
+  return [
+    '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2937">',
+    "<p></p>",
+    '<table cellpadding="0" cellspacing="0" style="border:1px solid #d1d5db;border-radius:8px;padding:16px;background:#f9fafb">',
+    '<tr><td style="font-size:17px;font-weight:700;padding-bottom:8px">' + cardEsc(c.name || c.email || "Contact") + "</td></tr>",
+    rows.map(([k, v]) =>
+      '<tr><td style="padding:2px 0"><span style="color:#6b7280">' + k + ":</span> " +
+      (k === "Email" ? v : cardEsc(v)) + "</td></tr>").join(""),
+    "</table>",
+    '<p style="color:#6b7280;font-size:12px">The attached .vcf can be saved straight into your contacts.</p>',
+    "</div>",
+  ].join("");
+}
+
+// Builds the draft and returns its Outlook Web URL. Two Graph calls because
+// /me/messages won't take attachments inline on create, then a re-read for
+// webLink (the create response omits it on some tenants).
+async function createContactCardDraft(contact) {
+  // Graph rejects any item name containing \ / : * ? " < > | , the same
+  // sanitize invariant every folder/file generator in the suite follows.
+  const safeName = (contact.name || contact.email || "contact")
+    .replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || "contact";
+  const draft = await graphFetch("POST", "/me/messages", {
+    subject: "Contact: " + (contact.name || contact.email || "contact"),
+    body: { contentType: "HTML", content: buildContactCardHtml(contact) },
+    toRecipients: [],
+  });
+  if (!draft || !draft.id) throw new Error("Outlook didn't return a draft. Check that you're signed in, then try again.");
+  await graphFetch("POST", "/me/messages/" + draft.id + "/attachments", {
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: safeName + ".vcf",
+    contentType: "text/vcard",
+    contentBytes: b64utf8(buildVCard(contact)),
+  });
+  const fresh = await graphFetch("GET", "/me/messages/" + draft.id + "?$select=webLink");
+  return (fresh && fresh.webLink) || draft.webLink || "";
+}
+
+async function openContactCardEmail(c) {
+  // Open the tab synchronously, inside the click handler. A tab opened after
+  // the await has lost the user-gesture and browsers treat it as a popup.
+  const win = window.open("about:blank", "_blank");
+  try {
+    const link = await createContactCardDraft(c);
+    if (win) { win.opener = null; win.location.href = link; }
+    else window.prompt("Draft created with the .vcf attached. Copy this link to open it:", link);
+  } catch (e) {
+    if (win) win.close();
+    window.alert("Couldn't create the contact card draft.\n\n" + (e.message || e));
+  }
 }
 
 // ─── PROPOSAL STATUS CHECK-IN ────────────────────────────────────────────────
@@ -11790,7 +11892,7 @@ function buildStatusCheckEmail(project) {
       whenPhrase = "our proposal for " + proj + ", submitted in " + month + yearSuffix;
     }
     const days = Math.floor((Date.now() - new Date(project.proposalDueDate).getTime()) / 86400000);
-    if (days >= 90) opener = "Hope you've been well — it's been a few months since we last connected on this one.";
+    if (days >= 90) opener = "Hope you've been well. It's been a few months since we last connected on this one.";
   }
 
   const body = [
@@ -11801,7 +11903,7 @@ function buildStatusCheckEmail(project) {
   ];
 
   return {
-    subject: "Following up — " + proj + num,
+    subject: "Following up on " + proj + num,
     // Plain text, blank line between paragraphs. mailto: bodies are text-only;
     // the recipient's client renders it as a normal typed message.
     text: body.join("\n\n"),
@@ -26546,7 +26648,7 @@ function LostPursuitModal({ project, onCancel, onConfirm }) {
   const [reason, setReason] = React.useState("");
   const [note, setNote] = React.useState("");
   return (
-    <Modal title={"Mark as Lost — " + (project.name || "Untitled")} onClose={onCancel}>
+    <Modal title={"Mark as Lost: " + (project.name || "Untitled")} onClose={onCancel}>
       <div style={{ color: P.textMuted, fontSize: 13, lineHeight: 1.6, marginBottom: 20 }}>
         This archives the pursuit and takes it off the pipeline board. It stays
         recoverable from <strong>Lost Pursuits</strong> on this page.
@@ -26843,7 +26945,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
             {pipeline.length === 0
               ? <>No pipeline projects. <button onClick={onAddProject} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer" }}>Add one</button></>
               : <>No pipeline projects match “{q.trim()}”.{canSeeLost && shownLost.length > 0 && !showLost &&
-                  <> {shownLost.length} lost {shownLost.length === 1 ? "pursuit matches" : "pursuits match"} — <button onClick={() => setShowLost(true)} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer", padding: 0 }}>show them</button>.</>}</>}
+                  <> {shownLost.length} lost {shownLost.length === 1 ? "pursuit matches" : "pursuits match"}: <button onClick={() => setShowLost(true)} style={{ color: P.accent, background: "none", border: "none", cursor: "pointer", padding: 0 }}>show them</button>.</>}</>}
           </div>
         ) : (
           <table>
@@ -26921,10 +27023,10 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                               return (
                                 <Btn small variant="ghost" onClick={() => emailStatusCheck(p)}
                                   title={sent
-                                    ? "Status check-in opened " + sent + " — click to send another"
+                                    ? "Status check-in opened " + sent + ". Click to send another."
                                     : named
                                       ? "Email " + named + " to check on award status"
-                                      : "Open a status check-in — no proposal contact listed, so you'll add the address in Outlook"}>
+                                      : "Open a status check-in. No proposal contact listed, so you'll add the address in Outlook."}>
                                   {sent ? "✓ Status" : "✉ Status"}
                                 </Btn>
                               );
