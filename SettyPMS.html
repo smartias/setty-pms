@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v85-proposal-status-nudge";
+    window.__appVersion = "2026-07-28-pms-v85b-status-nudge-wording";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11844,9 +11844,10 @@ async function createContactCardDraft({ contact, toEmails, note, projectName }) 
 // (or they're listed without an email), the draft still opens with an empty To
 // line for you to fill in — deliberately, so the button always does something.
 
-// SARA: this is the wording. It's client-facing tone with primes and agencies,
-// which is your call, not mine — rewrite freely. Everything else keys off it.
-function buildStatusCheckEmail(project, senderName) {
+// Wording is Sara's, supplied verbatim 2026-07-28. Note there is deliberately
+// no signature line — Outlook does NOT auto-apply your signature to a draft
+// created through Graph, so whoever sends it types their own sign-off.
+function buildStatusCheckEmail(project) {
   const pocs = ((project.projectContacts || {}).proposal || [])
     .filter(p => p && (p.name || p.email));
   const toEmails = pocs.map(p => (p.email || "").trim()).filter(Boolean);
@@ -11859,22 +11860,30 @@ function buildStatusCheckEmail(project, senderName) {
   const proj = project.name || "the project";
   const num = project.projectNumber ? " (" + project.projectNumber + ")" : "";
 
-  // How long it's been changes how you'd naturally open the note.
+  // "submitted in June" — the month, not a full date. The year is appended only
+  // when it isn't the current one, so a pursuit from last June doesn't read as
+  // this June. With no proposalDueDate the date reference drops out entirely
+  // rather than being invented.
   let whenPhrase = "the proposal we submitted for " + proj;
   let opener = "Hope things are going well.";
   if (project.proposalDueDate) {
+    const [yy, mm] = String(project.proposalDueDate).split("-");
+    const months = ["January","February","March","April","May","June",
+                    "July","August","September","October","November","December"];
+    const month = months[parseInt(mm, 10) - 1];
+    if (month) {
+      const yearSuffix = parseInt(yy, 10) === new Date().getFullYear() ? "" : " " + yy;
+      whenPhrase = "our proposal for " + proj + ", submitted in " + month + yearSuffix;
+    }
     const days = Math.floor((Date.now() - new Date(project.proposalDueDate).getTime()) / 86400000);
-    whenPhrase = "our proposal for " + proj + ", submitted " + fmtDate(project.proposalDueDate);
     if (days >= 90) opener = "Hope you've been well — it's been a few months since we last connected on this one.";
-    else if (days >= 30) opener = "Hope things are going well.";
   }
 
   const body = [
     greeting,
     opener + " I wanted to follow up on " + whenPhrase + ".",
     "Has there been any movement on the award, or is there anything further you need from us while it's under review?",
-    "Happy to walk through any part of our submission or provide additional information if that would be helpful.",
-    "Thanks,\n" + (senderName || ""),
+    "Thanks for including us and let us know if we can help with anything!",
   ];
 
   return {
@@ -11888,8 +11897,8 @@ function buildStatusCheckEmail(project, senderName) {
   };
 }
 
-async function createStatusCheckDraft(project, senderName) {
-  const mail = buildStatusCheckEmail(project, senderName);
+async function createStatusCheckDraft(project) {
+  const mail = buildStatusCheckEmail(project);
   const draft = await graphFetch("POST", "/me/messages", {
     subject: mail.subject,
     body: { contentType: "HTML", content: mail.html },
@@ -26917,8 +26926,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     const win = window.open("about:blank", "_blank");
     setStatusBusy(p.id); setStatusMsg(null);
     try {
-      const who = (settyAuth.displayName && settyAuth.displayName()) || getCurrentUser() || "";
-      const link = await createStatusCheckDraft(p, who === "Unknown" ? "" : who);
+      const link = await createStatusCheckDraft(p);
       if (win) { win.opener = null; win.location.href = link; }
       else setStatusMsg({ id: p.id, text: "Draft ready — your browser blocked the tab.", link });
     } catch (e) {
