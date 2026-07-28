@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v84-pipeline-search-directory-card";
+    window.__appVersion = "2026-07-28-pms-v85b-status-nudge-wording";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -11830,6 +11830,81 @@ async function createContactCardDraft({ contact, toEmails, note, projectName }) 
     contentType: "text/vcard",
     contentBytes: b64utf8(buildVCard(contact)),
   });
+  const fresh = await graphFetch("GET", "/me/messages/" + draft.id + "?$select=webLink");
+  return (fresh && fresh.webLink) || draft.webLink || "";
+}
+
+// ─── PROPOSAL STATUS CHECK-IN ────────────────────────────────────────────────
+// "✉ Status" on a pipeline row drafts a polite nudge to the proposal POC asking
+// whether there's been movement on award. Same draft-not-send model as the
+// contact card: Mail.Send isn't consented, Mail.ReadWrite is — and a follow-up
+// to a client is something you want to read before it goes out anyway.
+//
+// Recipients come from project.projectContacts.proposal[]. If nobody is listed
+// (or they're listed without an email), the draft still opens with an empty To
+// line for you to fill in — deliberately, so the button always does something.
+
+// Wording is Sara's, supplied verbatim 2026-07-28. Note there is deliberately
+// no signature line — Outlook does NOT auto-apply your signature to a draft
+// created through Graph, so whoever sends it types their own sign-off.
+function buildStatusCheckEmail(project) {
+  const pocs = ((project.projectContacts || {}).proposal || [])
+    .filter(p => p && (p.name || p.email));
+  const toEmails = pocs.map(p => (p.email || "").trim()).filter(Boolean);
+
+  // Greet by first name only when we're writing to exactly one person; a named
+  // greeting on a multi-recipient nudge reads as a mail merge.
+  const firstNames = pocs.map(p => String(p.name || "").trim().split(/\s+/)[0]).filter(Boolean);
+  const greeting = firstNames.length === 1 ? "Hi " + firstNames[0] + "," : "Hello,";
+
+  const proj = project.name || "the project";
+  const num = project.projectNumber ? " (" + project.projectNumber + ")" : "";
+
+  // "submitted in June" — the month, not a full date. The year is appended only
+  // when it isn't the current one, so a pursuit from last June doesn't read as
+  // this June. With no proposalDueDate the date reference drops out entirely
+  // rather than being invented.
+  let whenPhrase = "the proposal we submitted for " + proj;
+  let opener = "Hope things are going well.";
+  if (project.proposalDueDate) {
+    const [yy, mm] = String(project.proposalDueDate).split("-");
+    const months = ["January","February","March","April","May","June",
+                    "July","August","September","October","November","December"];
+    const month = months[parseInt(mm, 10) - 1];
+    if (month) {
+      const yearSuffix = parseInt(yy, 10) === new Date().getFullYear() ? "" : " " + yy;
+      whenPhrase = "our proposal for " + proj + ", submitted in " + month + yearSuffix;
+    }
+    const days = Math.floor((Date.now() - new Date(project.proposalDueDate).getTime()) / 86400000);
+    if (days >= 90) opener = "Hope you've been well — it's been a few months since we last connected on this one.";
+  }
+
+  const body = [
+    greeting,
+    opener + " I wanted to follow up on " + whenPhrase + ".",
+    "Has there been any movement on the award, or is there anything further you need from us while it's under review?",
+    "Thanks for including us and let us know if we can help with anything!",
+  ];
+
+  return {
+    subject: "Following up — " + proj + num,
+    html: '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2937">'
+      + body.map(p => "<p>" + cardEsc(p).replace(/\r?\n/g, "<br>") + "</p>").join("")
+      + "</div>",
+    toEmails,
+    namedButNoEmail: toEmails.length === 0 && pocs.length > 0,
+    noContact: pocs.length === 0,
+  };
+}
+
+async function createStatusCheckDraft(project) {
+  const mail = buildStatusCheckEmail(project);
+  const draft = await graphFetch("POST", "/me/messages", {
+    subject: mail.subject,
+    body: { contentType: "HTML", content: mail.html },
+    toRecipients: mail.toEmails.map(a => ({ emailAddress: { address: a } })),
+  });
+  if (!draft || !draft.id) throw new Error("Outlook didn't return a draft — check that you're signed in.");
   const fresh = await graphFetch("GET", "/me/messages/" + draft.id + "?$select=webLink");
   return (fresh && fresh.webLink) || draft.webLink || "";
 }
@@ -26842,6 +26917,24 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     lostByReason[k] = (lostByReason[k] || 0) + 1;
   });
 
+  // ✉ Status — draft a nudge to the proposal POC about award status.
+  const [statusBusy, setStatusBusy] = useState(null);   // project id mid-flight
+  const [statusMsg, setStatusMsg] = useState(null);     // { id, text, link }
+  async function emailStatusCheck(p) {
+    // Open the tab synchronously, inside the click handler. A tab opened after
+    // the await has lost the user-gesture and browsers treat it as a popup.
+    const win = window.open("about:blank", "_blank");
+    setStatusBusy(p.id); setStatusMsg(null);
+    try {
+      const link = await createStatusCheckDraft(p);
+      if (win) { win.opener = null; win.location.href = link; }
+      else setStatusMsg({ id: p.id, text: "Draft ready — your browser blocked the tab.", link });
+    } catch (e) {
+      if (win) win.close();
+      setStatusMsg({ id: p.id, text: e.message || "Couldn't create the draft." });
+    } finally { setStatusBusy(null); }
+  }
+
   // Back on the board, loss stamps cleared — otherwise a restored pursuit that's
   // later lost again would carry a stale reason from the first time around.
   function handleRestore(p) {
@@ -27060,9 +27153,33 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                           <Btn small variant="ghost" onClick={() => setConfirm(null)}>Cancel</Btn>
                         </div>
                       ) : (
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <Btn small variant="success" onClick={() => setConfirm({ projectId: p.id, action: "award" })}>🏆 Award</Btn>
-                          <Btn small variant="danger" onClick={() => setLostFor(p)}>✗ Lost</Btn>
+                        <div>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {(() => {
+                              const pocs = ((p.projectContacts || {}).proposal || []).filter(x => x && (x.name || x.email));
+                              const named = pocs.map(x => x.name || x.email).filter(Boolean).join(", ");
+                              return (
+                                <Btn small variant="ghost" disabled={statusBusy === p.id}
+                                  onClick={() => emailStatusCheck(p)}
+                                  title={named
+                                    ? "Email " + named + " to check on award status"
+                                    : "Draft a status check-in — no proposal contact listed, so you'll add the address in Outlook"}>
+                                  {statusBusy === p.id ? "…" : "✉ Status"}
+                                </Btn>
+                              );
+                            })()}
+                            <Btn small variant="success" onClick={() => setConfirm({ projectId: p.id, action: "award" })}>🏆 Award</Btn>
+                            <Btn small variant="danger" onClick={() => setLostFor(p)}>✗ Lost</Btn>
+                          </div>
+                          {statusMsg && statusMsg.id === p.id && (
+                            <div style={{ fontSize: 11, color: statusMsg.link ? P.textMuted : P.red, marginTop: 5, whiteSpace: "normal", maxWidth: 240 }}>
+                              {statusMsg.text}{" "}
+                              {statusMsg.link && (
+                                <a href={statusMsg.link} target="_blank" rel="noopener noreferrer"
+                                  style={{ color: P.accentLight }}>Open it</a>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </td>
