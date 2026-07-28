@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v88-vcard-back-no-emdash";
+    window.__appVersion = "2026-07-28-pms-v89-portal-share-policy-error";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -24472,9 +24472,16 @@ function SharePointFolderField({ project, onUpdate, onEagerSave, clients, projec
 // stay comfortably under that cap — the long per-scenario sign-in guide that
 // used to live here got the whole call rejected. Keep only the essentials;
 // the one-time-passcode hint matters most (it unblocks non-Microsoft users).
-// Keep this WELL under 500 chars even with long project names — SharePoint
+// Keep this WELL under 500 chars even with long project names. SharePoint
 // appears to validate length after HTML-encoding, so avoid quote characters
-// entirely (each " becomes &quot; = 6 chars). Worst case here is ~330 chars.
+// entirely (each " becomes &quot; = 6 chars). Budget, measured: the fixed
+// text is ~290 chars and folderLabel adds up to 53, so the 400-char slice in
+// shareDriveItemWithUser leaves only ~57 for projLabel. Callers MUST cap the
+// project name (see addPerson): an uncapped one shipped silently truncated
+// invites. Measured, "SAPX266123 - Brooklyn Public Library New Lots Branch
+// Renovation" builds 405 chars and loses the sign-off. Anything past ~76
+// chars of name starts eating the one-time-passcode hint, which is the part
+// that unblocks non-Microsoft clients, so keep the cap well ahead of that.
 function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
   const access = role === "write" ? "edit access" : "view access";
   const purpose = role === "write"
@@ -24486,6 +24493,28 @@ function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
     'No Microsoft account? On the sign-in page choose Send code and enter the passcode Microsoft emails you - no password or new account needed.\n\n' +
     'Questions? Just reply to this email.'
   );
+}
+
+
+// Graph collapses every tenant-policy sharing rejection into a generic
+// `sharingFailed` 400. The real reason (guest invitations disabled in Entra,
+// external sharing off on the site, a blocked recipient domain) is discarded
+// server-side before it reaches us, so no amount of client-side logging can
+// recover it. Say plainly that this is a policy block and name who can lift
+// it: dumping raw Graph JSON in the UI just sends people hunting for a bug
+// that is not in this app.
+//
+// Deliberately no fallback. Retrying with sendInvitation:false would quietly
+// succeed for people who are already guests and fail for everyone else, and
+// an org-wide link would widen access past the named client. For a client
+// portal, failing honestly beats silently sharing more than intended.
+function portalShareErrorMessage(err) {
+  const raw = String((err && err.message) || err || "");
+  if (raw.indexOf("sharingFailed") === -1) return raw;
+  return "External sharing is blocked by tenant policy, so this person was not added. " +
+    "Contact IT: they need to allow guest invitations in Entra (External Identities, " +
+    "External collaboration settings) and confirm external sharing is turned on for the " +
+    "NYSharesite site in the SharePoint admin center.";
 }
 
 
@@ -24609,7 +24638,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       const targets = [];
       if (perms?.uploadsId)      targets.push({ itemId: perms.uploadsId,      role: "write" });
       if (perms?.deliverablesId) targets.push({ itemId: perms.deliverablesId, role: "read"  });
-      const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim()].filter(Boolean).join(" - ");
+      const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim().slice(0, 40).trim()].filter(Boolean).join(" - ");
       for (const t of targets) {
         // Use the actual folder names so the invitation email matches what
         // the client sees after signing in.
@@ -24624,7 +24653,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       await loadPerms();
     } catch(e) {
       setActionStatus("error");
-      setActionMsg("✗ " + e.message);
+      setActionMsg("✗ " + portalShareErrorMessage(e));
     }
   }
 
