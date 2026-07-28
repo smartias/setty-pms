@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v90-portal-share-audit-log";
+    window.__appVersion = "2026-07-28-pms-v92-portal-confirm-and-guest-display";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5106,8 +5106,37 @@ async function createSharePointFolder(project) {
 // guests — Graph rejects the whole call with `sharingFailed`. Existing
 // guests would work either way, but we have no cheap client-side check, so
 // we always send the invitation.
-async function shareDriveItemWithUser(driveId, itemId, email, role, message) {
+// RETRY IS LOAD-BEARING, do not remove it. Sharing with a brand-new external
+// address is two operations: Entra creates the B2B guest, then SharePoint
+// "ensures" that guest onto the site collection. The second step routinely
+// runs before the first has replicated and fails with what the SharePoint web
+// UI calls the "instant-on issue on Entra", whose own text says to retry in a
+// few moments. Graph reports it as the SAME generic `sharingFailed` as a hard
+// policy block, so we cannot tell the two apart from the response.
+//
+// This cost weeks of misdiagnosis on 7/28: the transient race looked exactly
+// like a tenant policy block, and IT kept correctly reporting that nothing was
+// misconfigured, because nothing was. Only the web UI surfaced the real reason.
+//
+// Retrying is safe because granting the same permission twice is a no-op, so
+// a retry costs nothing when the grant actually landed. A genuine policy block
+// just fails every attempt and falls through to the error path.
+async function shareDriveItemWithUser(driveId, itemId, email, role, message, onRetry) {
   if (!email) throw new Error("shareDriveItemWithUser: email required");
+  const RETRY_DELAYS_MS = [4000, 9000, 15000]; // ~28s total before giving up
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await shareDriveItemOnce(driveId, itemId, email, role, message);
+    } catch (e) {
+      const retryable = String((e && e.message) || "").indexOf("sharingFailed") !== -1;
+      if (!retryable || attempt >= RETRY_DELAYS_MS.length) throw e;
+      if (onRetry) onRetry(attempt + 1, RETRY_DELAYS_MS.length + 1);
+      await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
+async function shareDriveItemOnce(driveId, itemId, email, role, message) {
   return await graphFetch("POST",
     "/drives/" + driveId + "/items/" + itemId + "/invite",
     {
@@ -24498,10 +24527,18 @@ function buildSharePointInvitationMessage({ folderLabel, role, projLabel }) {
 
 // Graph collapses EVERY sharing rejection into a generic `sharingFailed` 400
 // and discards the reason server-side, so nothing client-side can recover it.
-// At least five different faults produce this identical code: guest invites
-// disabled in Entra, external sharing off at the tenant or site, a domain
-// allow/block list, a sensitivity label overriding the site, and a
-// directory-wide invitation block triggered by bulk invites.
+// At least six different faults produce this identical code. In descending
+// order of how often they actually happen here:
+//   1. The transient Entra "instant-on" provisioning race (see the retry loop
+//      in shareDriveItemWithUser). BY FAR the most common, and the only one
+//      that is not a misconfiguration. This is why the retry exists and why
+//      this message leads with "wait and try again".
+//   2. Guest invites disabled in Entra (allowInvitesFrom).
+//   3. External sharing off at the tenant or site.
+//   4. A domain allow/block list, in SharePoint or Entra (separate controls).
+//   5. A sensitivity label overriding the site's sharing setting.
+//   6. A directory-wide invitation block triggered by bulk invites, which
+//      needs a Microsoft support case rather than a settings change.
 //
 // So do NOT name a cause here. v89 did, and it was wrong: it told the user to
 // have IT enable guest invitations, which IT had already done weeks earlier,
@@ -24522,10 +24559,12 @@ function portalShareErrorMessage(err) {
   if (raw.indexOf("sharingFailed") === -1) return raw;
   const id   = (raw.match(/"request-id"\s*:\s*"([^"]*)"/) || [])[1] || "";
   const when = (raw.match(/"date"\s*:\s*"([^"]*)"/)       || [])[1] || "";
-  return "Microsoft refused this share and SharePoint does not report why. " +
-    "Ask IT to open Entra admin center, Monitoring and health, Audit logs, filter " +
-    "activity to Invite external user, and read Status reason on the failed entry. " +
-    "That names the actual cause." +
+  return "Microsoft refused this share, and it did not recover across several retries. " +
+    "Most often this just means the guest account is still being set up on Microsoft's " +
+    "side, so waiting a minute and adding them again is worth trying first. " +
+    "If it keeps failing, ask IT to open Entra admin center, Monitoring and health, " +
+    "Audit logs, filter activity to Invite external user, and read Status reason on the " +
+    "failed entry. That names the actual cause." +
     (id ? " Request ID " + id + (when ? " at " + when : "") + "." : "");
 }
 
@@ -24542,6 +24581,10 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
   const [query, setQuery]               = React.useState("");
   const [actionMsg, setActionMsg]       = React.useState("");
   const [actionStatus, setActionStatus] = React.useState("idle");
+  // Clicking a name used to fire the invite immediately, which meant one stray
+  // click emailed a real client and granted them folder access with no way to
+  // take it back quietly. Selection is now inert and a separate button commits.
+  const [selected, setSelected]         = React.useState(null);
 
   // Flatten all contacts with emails from the clients directory.
   // Contacts from the project's own client company come first.
@@ -24599,16 +24642,44 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       const uploadsId      = project.clientUploadsFolderUrl     ? await resolveItemId(project.clientUploadsFolderUrl)     : null;
       const deliverablesId = project.settyDeliverablesFolderUrl ? await resolveItemId(project.settyDeliverablesFolderUrl) : null;
 
+      // A freshly provisioned B2B guest often comes back WITHOUT
+      // grantedToV2.user.email. SharePoint populates siteUser first and carries
+      // the identity as a #EXT# UPN, lesley_gmail.com#EXT#@setty.onmicrosoft.com.
+      // Reading only user.email meant that entry had no email at all and was
+      // skipped outright, so a client who had JUST been invited successfully
+      // did not appear in this list. That reads as "the add silently failed".
+      // Decode the UPN back to the real address instead.
+      //
+      // isInternal also moves from a "setty.com" substring test to an exact
+      // domain suffix. Unrelated to the bug above (setty.onmicrosoft.com does
+      // NOT contain setty.com as a substring, so guests were never caught by
+      // it) but the suffix form is the correct test and it does now catch
+      // internal @setty.onmicrosoft.com accounts, which the substring missed.
+      function externalEmail(idObj) {
+        if (!idObj) return "";
+        const direct = idObj.email || "";
+        if (direct && direct.indexOf("#EXT#") === -1) return direct;
+        const raw = String(direct || idObj.loginName || idObj.userPrincipalName || "");
+        const upn = raw.split("|").pop();       // drop any i:0#.f|membership| claims prefix
+        const ext = upn.split("#EXT#")[0];
+        if (ext === upn) return upn;            // not an #EXT# form, use as-is
+        const sep = ext.lastIndexOf("_");       // local_domain.com -> local@domain.com
+        return sep === -1 ? ext : ext.slice(0, sep) + "@" + ext.slice(sep + 1);
+      }
+      const isInternal = e => /@setty\.(com|onmicrosoft\.com)$/i.test(String(e).trim());
+
       async function getPerms(itemId) {
         if (!itemId) return [];
         const resp = await graphFetch("GET", "/drives/" + driveId + "/items/" + itemId + "/permissions");
         const out = [];
         for (const p of (resp?.value || [])) {
-          // Direct grant from /invite — grantedToV2.user.email
-          if (p.grantedToV2?.user?.email) {
-            const email = p.grantedToV2.user.email;
-            if (!email.toLowerCase().includes("setty.com")) {
-              out.push({ id: p.id, email, name: p.grantedToV2.user.displayName || email,
+          const g = p.grantedToV2;
+          // Direct grant from /invite. Prefer user, fall back to siteUser.
+          if (g && (g.user || g.siteUser)) {
+            const email = externalEmail(g.user) || externalEmail(g.siteUser);
+            if (email && !isInternal(email)) {
+              out.push({ id: p.id, email,
+                name: (g.user && g.user.displayName) || (g.siteUser && g.siteUser.displayName) || email,
                 roles: p.roles || [], itemId });
             }
           }
@@ -24616,8 +24687,8 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           // surface them so users can clean up old permissions.
           else if (p.link && p.grantedToIdentitiesV2?.length) {
             for (const identity of p.grantedToIdentitiesV2) {
-              const email = identity.user?.email || identity.siteUser?.email;
-              if (email && !email.toLowerCase().includes("setty.com")) {
+              const email = externalEmail(identity.user) || externalEmail(identity.siteUser);
+              if (email && !isInternal(email)) {
                 out.push({ id: p.id, email, name: identity.user?.displayName || email,
                   roles: p.roles || [], itemId });
               }
@@ -24650,6 +24721,13 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
       const targets = [];
       if (perms?.uploadsId)      targets.push({ itemId: perms.uploadsId,      role: "write" });
       if (perms?.deliverablesId) targets.push({ itemId: perms.deliverablesId, role: "read"  });
+      // Without this guard the loop below simply does not execute and we report
+      // a green "Added" for a share that never happened. Both ids are null
+      // whenever the project has no portal folder URLs stored, which is easy to
+      // hit on projects whose folders were made outside the app.
+      if (targets.length === 0) {
+        throw new Error("No portal folders are linked to this project yet. Create the client portal folders first, then add people.");
+      }
       const projLabel = [(project.projectNumber || "").trim(), (project.name || "").trim().slice(0, 40).trim()].filter(Boolean).join(" - ");
       for (const t of targets) {
         // Use the actual folder names so the invitation email matches what
@@ -24657,11 +24735,13 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
         const names = portalFolderNames(project);
         const folderLabel = t.itemId === perms.uploadsId ? names.uploads : names.deliverables;
         const message = buildSharePointInvitationMessage({ folderLabel, role: t.role, projLabel });
-        await shareDriveItemWithUser(driveId, t.itemId, contact.email, t.role, message);
+        await shareDriveItemWithUser(driveId, t.itemId, contact.email, t.role, message, (n, of) =>
+          setActionMsg("⏳ Microsoft is still setting up " + contact.email + ". Retrying (" + n + " of " + of + ")…"));
       }
       setActionStatus("done");
       setActionMsg("✓ Added " + contact.email);
       setQuery("");
+      setSelected(null);
       await loadPerms();
     } catch(e) {
       setActionStatus("error");
@@ -24929,12 +25009,16 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                     const projFiltered  = filtered.filter(c => projEmails.has(c.email));
                     const otherFiltered = filtered.filter(c => !projEmails.has(c.email));
                     function ContactRow({ c }) {
+                      const isSel = !!selected && selected.email === c.email;
                       return (
-                        <div key={c.email} onClick={() => addPerson(c)}
+                        <div key={c.email} onClick={() => setSelected(isSel ? null : c)}
+                          role="button" aria-pressed={isSel}
                           style={{ padding: "7px 10px", cursor: "pointer",
-                            borderBottom: `1px solid ${P.border}` }}
-                          onMouseEnter={e => e.currentTarget.style.background = P.bgCard || "#1a2535"}
-                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            borderBottom: `1px solid ${P.border}`,
+                            borderLeft: isSel ? `3px solid ${P.accent}` : "3px solid transparent",
+                            background: isSel ? P.accent + "22" : "transparent" }}
+                          onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = P.bgCard || "#1a2535"; }}
+                          onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = "transparent"; }}>
                           <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{c.name}</div>
                           <div style={{ fontSize: 11, color: P.textDim }}>
                             {c.email}{c.company ? " · " + c.company : ""}
@@ -24971,6 +25055,36 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                   })()
               }
             </div>
+
+            {/* Commit step. Selecting a name does nothing on its own; this is
+                the only thing that grants access and emails the client, and it
+                spells out both consequences before the click. */}
+            {selected && (
+              <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 6,
+                border: `1px solid ${P.accent}`, background: P.accent + "14",
+                display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{selected.name}</div>
+                  <div style={{ fontSize: 11, color: P.textDim }}>{selected.email}</div>
+                  <div style={{ fontSize: 10, color: P.textDim, marginTop: 3 }}>
+                    Gets upload access plus view access to deliverables. Microsoft emails them an invitation.
+                  </div>
+                </div>
+                <button onClick={() => setSelected(null)} disabled={actionStatus === "working"}
+                  style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+                    color: P.textDim, cursor: actionStatus === "working" ? "not-allowed" : "pointer",
+                    fontSize: 12, padding: "6px 12px" }}>
+                  Cancel
+                </button>
+                <button onClick={() => addPerson(selected)} disabled={actionStatus === "working"}
+                  style={{ background: P.accent, border: "none", borderRadius: 6, color: "#fff",
+                    cursor: actionStatus === "working" ? "not-allowed" : "pointer",
+                    opacity: actionStatus === "working" ? 0.6 : 1,
+                    fontSize: 12, fontWeight: 700, padding: "6px 16px", whiteSpace: "nowrap" }}>
+                  {actionStatus === "working" ? "Adding…" : "Add to portal"}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Action status */}
