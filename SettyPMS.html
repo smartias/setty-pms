@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-25-pms-v82-ux4-modal-a11y-focus";
+    window.__appVersion = "2026-07-28-pms-v83-lost-pursuits-contact-card";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -149,6 +149,17 @@ const PROJECT_STATUSES = [
 // Pipeline statuses — projects not yet awarded, shown in Pipeline view only
 const PIPELINE_STATUSES = ["Proposal Due", "Proposal Submitted"];
 const AWARDED_STATUSES  = ["Not Started","In Progress","In for Review","On Hold","Top Priority","In Construction Administration","Completed","Cancelled","Lost"];
+
+// Why a pursuit was lost — captured on the Pipeline "✗ Lost" confirm so the
+// Lost Pursuits list doubles as win/loss history. Stored as project.lostReason,
+// alongside free-text project.lostNote and an ISO project.lostDate stamp.
+// Pursuits lost before this shipped have none of the three and render as "—".
+// Sara owns this list: it's BD vocabulary, not a technical constant — rewording
+// or reordering it is safe, existing rows just keep whatever string they stored.
+const LOSS_REASONS = [
+  "Fee / Price", "Schedule", "Incumbent retained",
+  "Scope fit", "No decision / cancelled", "Other",
+];
 
 function isPipeline(p) { return PIPELINE_STATUSES.includes(p.status); }
 function isAwarded(p)  { return !isPipeline(p); }
@@ -11673,6 +11684,262 @@ function getProjectCompanies(project) {
   return companies;
 }
 
+// ─── CONTACT CARD ────────────────────────────────────────────────────────────
+// "Send Card" turns a directory contact into something the recipient can
+// actually keep: a vCard (.vcf) attachment their mail client will import, plus
+// a readable HTML card in the body for anyone who just wants to look at it.
+//
+// Delivery is deliberately a DRAFT, not a send. Sending via Graph needs
+// Mail.Send, which IT has not consented to; the suite holds Mail.ReadWrite (see
+// GRAPH_SCOPES), and POST /me/messages is within that. So we build the message
+// completely — recipients, body, attachment — and hand it to you in Outlook to
+// review and send. No new admin consent required.
+
+// vCard 3.0 escaping per RFC 2426 §2.4.2: backslash, semicolon, comma and
+// newlines are the reserved characters inside a property value.
+function vcardEscape(s) {
+  return String(s || "")
+    .replace(/\\/g, "\\\\").replace(/;/g, "\\;")
+    .replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+}
+
+// Directory contacts carry a single free-text `name`, but vCard's N property
+// wants structured Family;Given. Last whitespace-separated token is treated as
+// the surname — right for "Jane Doe" and "Maria Del Rio Santos", wrong for a
+// handful of names, which is why FN (the display name) stays verbatim.
+function splitContactName(full) {
+  const parts = String(full || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return { first: parts[0] || "", last: "" };
+  return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1] };
+}
+
+function buildVCard(c) {
+  const { first, last } = splitContactName(c.name);
+  const lines = [
+    "BEGIN:VCARD",
+    "VERSION:3.0",
+    "N:" + vcardEscape(last) + ";" + vcardEscape(first) + ";;;",
+    "FN:" + vcardEscape(c.name || c.email || "Contact"),
+  ];
+  if (c.company) lines.push("ORG:" + vcardEscape(c.company));
+  if (c.title)   lines.push("TITLE:" + vcardEscape(c.title));
+  if (c.email)   lines.push("EMAIL;TYPE=INTERNET,WORK:" + vcardEscape(c.email));
+  if (c.phone)   lines.push("TEL;TYPE=WORK,VOICE:" + vcardEscape(c.phone));
+  if (c.notes)   lines.push("NOTE:" + vcardEscape(c.notes));
+  lines.push("END:VCARD");
+  // vCard requires CRLF between properties. Long lines aren't folded at 75
+  // octets — Outlook, Apple Mail and Gmail all accept unfolded values.
+  return lines.join("\r\n") + "\r\n";
+}
+
+// btoa() is latin1-only, so UTF-8 encode first — otherwise a contact named
+// "José" or a firm with an en-dash throws InvalidCharacterError.
+function b64utf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
+
+function cardEsc(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function buildContactCardHtml(c, note, projectName) {
+  const rows = [
+    ["Title", c.title],
+    ["Company", c.company],
+    ["Email", c.email ? '<a href="mailto:' + cardEsc(c.email) + '">' + cardEsc(c.email) + "</a>" : ""],
+    ["Phone", c.phone],
+  ].filter(r => r[1]);
+  return [
+    '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2937">',
+    note ? "<p>" + cardEsc(note).replace(/\r?\n/g, "<br>") + "</p>" : "",
+    '<table cellpadding="0" cellspacing="0" style="border:1px solid #d1d5db;border-radius:8px;padding:16px;background:#f9fafb">',
+    '<tr><td style="font-size:17px;font-weight:700;padding-bottom:8px">' + cardEsc(c.name || c.email || "Contact") + "</td></tr>",
+    rows.map(([k, v]) =>
+      '<tr><td style="padding:2px 0"><span style="color:#6b7280">' + k + ":</span> " +
+      (k === "Email" ? v : cardEsc(v)) + "</td></tr>").join(""),
+    "</table>",
+    projectName
+      ? '<p style="color:#6b7280;font-size:12px">From the project directory for <strong>' + cardEsc(projectName) + "</strong>.</p>"
+      : "",
+    '<p style="color:#6b7280;font-size:12px">The attached .vcf can be saved straight into your contacts.</p>',
+    "</div>",
+  ].join("");
+}
+
+// Builds the draft and returns its Outlook Web URL. Two Graph calls because
+// /me/messages won't take attachments inline on create, then a re-read for
+// webLink (the create response omits it on some tenants).
+async function createContactCardDraft({ contact, toEmails, note, projectName }) {
+  // Graph rejects any item name containing \ / : * ? " < > | — same sanitize
+  // invariant every folder/file generator in the suite follows.
+  const safeName = (contact.name || contact.email || "contact")
+    .replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || "contact";
+  const draft = await graphFetch("POST", "/me/messages", {
+    subject: "Contact card: " + (contact.name || contact.email || "contact"),
+    body: { contentType: "HTML", content: buildContactCardHtml(contact, note, projectName) },
+    toRecipients: toEmails.map(a => ({ emailAddress: { address: a } })),
+  });
+  if (!draft || !draft.id) throw new Error("Outlook didn't return a draft — check that you're signed in, then try again.");
+  await graphFetch("POST", "/me/messages/" + draft.id + "/attachments", {
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: safeName + ".vcf",
+    contentType: "text/vcard",
+    contentBytes: b64utf8(buildVCard(contact)),
+  });
+  const fresh = await graphFetch("GET", "/me/messages/" + draft.id + "?$select=webLink");
+  return (fresh && fresh.webLink) || draft.webLink || "";
+}
+
+function SendContactCardModal({ contact, clients, projectName, onClose }) {
+  const [recips, setRecips] = React.useState([]);   // [{ name, email }]
+  const [q, setQ] = React.useState("");
+  const [note, setNote] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const [draftLink, setDraftLink] = React.useState("");
+
+  // Typeahead over the whole clients/contacts database, minus anyone already
+  // added and the card's own subject — mailing someone their own card is a typo.
+  const suggestions = React.useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (s.length < 2) return [];
+    const have = new Set(recips.map(r => r.email.toLowerCase()));
+    const self = (contact.email || "").trim().toLowerCase();
+    const out = [];
+    (clients || []).forEach(cl => (cl.contacts || []).forEach(ct => {
+      const em = (ct.email || "").trim();
+      if (!em || have.has(em.toLowerCase()) || em.toLowerCase() === self) return;
+      if (out.length >= 6) return;
+      if (((ct.name || "") + " " + em + " " + (cl.name || "")).toLowerCase().includes(s)) {
+        out.push({ name: ct.name || em, email: em, company: cl.name || "" });
+      }
+    }));
+    return out;
+  }, [q, clients, recips, contact]);
+
+  function addRecip(r) {
+    setErr("");
+    setRecips(list => list.some(x => x.email.toLowerCase() === r.email.toLowerCase())
+      ? list : [...list, { name: r.name, email: r.email }]);
+    setQ("");
+  }
+
+  // Enter on a free-typed address. Anything that isn't plausibly an address is
+  // rejected here rather than by Graph, where the error is far less readable.
+  function addTyped() {
+    const raw = q.trim().replace(/[;,]+$/, "");
+    if (!raw) return;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) { setErr('"' + raw + '" doesn\'t look like an email address.'); return; }
+    addRecip({ name: raw, email: raw });
+  }
+
+  async function createDraft() {
+    setErr(""); setBusy(true);
+    try {
+      const link = await createContactCardDraft({
+        contact, toEmails: recips.map(r => r.email), note, projectName,
+      });
+      setDraftLink(link || "");
+    } catch (e) {
+      setErr(e.message || "Couldn't create the draft.");
+    } finally { setBusy(false); }
+  }
+
+  const inputStyle = {
+    width: "100%", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8,
+    color: P.text, padding: "9px 11px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box",
+  };
+
+  return (
+    <Modal title={"Send contact card — " + (contact.name || contact.email || "contact")} onClose={onClose}>
+      {draftLink ? (
+        <div>
+          <div style={{ color: P.green, fontWeight: 700, fontSize: 14, marginBottom: 8 }}>✓ Draft ready in Outlook</div>
+          <div style={{ color: P.textMuted, fontSize: 13, lineHeight: 1.6, marginBottom: 20 }}>
+            The card and its .vcf attachment are on a draft addressed to{" "}
+            {recips.map(r => r.name).join(", ")}. Open it, give it a read, and hit Send.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Btn variant="ghost" onClick={onClose}>Done</Btn>
+            <Btn onClick={() => window.open(draftLink, "_blank", "noopener")}>Open draft in Outlook →</Btn>
+          </div>
+        </div>
+      ) : (
+        <div>
+          {/* What's being sent */}
+          <div style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8, padding: 14, marginBottom: 18 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{contact.name || "(no name)"}</div>
+            <div style={{ fontSize: 12, color: P.textMuted, lineHeight: 1.7 }}>
+              {contact.title && <div>{contact.title}</div>}
+              {contact.company && <div>{contact.company}</div>}
+              {contact.email && <div>✉ {contact.email}</div>}
+              {contact.phone && <div>📞 {contact.phone}</div>}
+            </div>
+          </div>
+
+          {/* Recipients */}
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Send to</div>
+          {recips.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+              {recips.map(r => (
+                <span key={r.email} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: P.accentDim,
+                  color: P.accentLight, borderRadius: 999, padding: "3px 10px", fontSize: 12 }}>
+                  {r.name}
+                  <button onClick={() => setRecips(list => list.filter(x => x.email !== r.email))}
+                    title={"Remove " + r.email}
+                    style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0 }}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <input value={q} onChange={e => { setQ(e.target.value); setErr(""); }}
+            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addTyped(); } }}
+            placeholder="Search your contacts, or type an email address and press Enter"
+            style={inputStyle} />
+          {suggestions.length > 0 && (
+            <div style={{ border: `1px solid ${P.border}`, borderRadius: 8, marginTop: 6, overflow: "hidden" }}>
+              {suggestions.map(s => (
+                <div key={s.email} onClick={() => addRecip(s)}
+                  style={{ padding: "8px 11px", cursor: "pointer", fontSize: 12.5, borderBottom: `1px solid ${P.border}` }}
+                  onMouseOver={e => e.currentTarget.style.background = P.bg}
+                  onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                  <span style={{ fontWeight: 600 }}>{s.name}</span>
+                  <span style={{ color: P.textDim }}> · {s.email}{s.company ? " · " + s.company : ""}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Optional note */}
+          <div style={{ fontSize: 12, fontWeight: 700, margin: "18px 0 6px" }}>
+            Note <span style={{ color: P.textDim, fontWeight: 400 }}>(optional — appears above the card)</span>
+          </div>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={3}
+            placeholder="Here's the contact at DASNY I mentioned…"
+            style={{ ...inputStyle, resize: "vertical" }} />
+
+          {err && <div style={{ color: P.red, fontSize: 12, marginTop: 12 }}>{err}</div>}
+
+          <div style={{ color: P.textDim, fontSize: 11.5, marginTop: 16, lineHeight: 1.6 }}>
+            This creates a draft in your Outlook with a .vcf attached — nothing is sent until you press Send there.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+            <Btn disabled={busy || recips.length === 0} onClick={createDraft}>
+              {busy ? "Building draft…" : "Create draft"}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function ProjectDirectoryView({ project, onChange, clients }) {
   const directory = project.directory || [];
   const merged = buildMergedDirectory(project);
@@ -11690,6 +11957,8 @@ function ProjectDirectoryView({ project, onChange, clients }) {
   // Tracks which contact's button was just clicked for copy feedback.
   // Shape: { id, kind: "email" | "block" } or null. Auto-clears after 1.5s.
   const [justCopied, setJustCopied] = React.useState(null);
+  // Contact whose card is being emailed, or null. See SendContactCardModal.
+  const [cardFor, setCardFor] = React.useState(null);
 
   function setF(field, val) { setForm(f => ({ ...f, [field]: val })); }
 
@@ -11987,6 +12256,11 @@ function ProjectDirectoryView({ project, onChange, clients }) {
         </div>
       )}
 
+      {cardFor && (
+        <SendContactCardModal contact={cardFor} clients={clients}
+          projectName={project.name} onClose={() => setCardFor(null)} />
+      )}
+
       {/* Grouped by company */}
       {Object.keys(byCompany).sort((a, b) => {
         // Push "(No Company)" to the end
@@ -12066,6 +12340,11 @@ function ProjectDirectoryView({ project, onChange, clients }) {
                   {c.notes && <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>{c.notes}</div>}
                 </div>
                 <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
+                  {c.email && (
+                    <button onClick={() => setCardFor(c)}
+                      title={"Email " + (c.name || "this contact") + "'s contact card to someone"}
+                      style={{ background: "none", border: "none", color: P.textDim, cursor: "pointer", fontSize: 13, padding: "4px 6px" }}>📇</button>
+                  )}
                   {(() => {
                     const isCopied = justCopied && justCopied.id === c.id && justCopied.kind === "block";
                     return (
@@ -26302,6 +26581,55 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 
+// Confirm step for "✗ Lost". Marking a pursuit lost is the one pipeline action
+// that both archives the project and destroys its place on the board, so it gets
+// a real dialog instead of the inline confirm the Award action uses — and the
+// extra beat is what makes capturing a reason worth asking for.
+function LostPursuitModal({ project, onCancel, onConfirm }) {
+  const [reason, setReason] = React.useState("");
+  const [note, setNote] = React.useState("");
+  return (
+    <Modal title={"Mark as Lost — " + (project.name || "Untitled")} onClose={onCancel}>
+      <div style={{ color: P.textMuted, fontSize: 13, lineHeight: 1.6, marginBottom: 20 }}>
+        This archives the pursuit and takes it off the pipeline board. It stays
+        recoverable from <strong>Lost Pursuits</strong> on this page.
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Why was it lost?</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+        {LOSS_REASONS.map(r => {
+          const on = reason === r;
+          return (
+            <button key={r} onClick={() => setReason(r)}
+              style={{ padding: "6px 13px", borderRadius: 999, cursor: "pointer", fontSize: 12,
+                fontWeight: on ? 700 : 500, background: on ? P.accentDim : P.bg,
+                color: on ? P.accentLight : P.textMuted,
+                border: `1px solid ${on ? P.accent : P.border}`, transition: "all .15s" }}>
+              {r}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+        Debrief <span style={{ color: P.textDim, fontWeight: 400 }}>(optional)</span>
+      </div>
+      <textarea value={note} onChange={e => setNote(e.target.value)} rows={3}
+        placeholder="Who won it, what the fee spread was, anything worth knowing next time…"
+        style={{ width: "100%", background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8,
+          color: P.text, padding: "9px 11px", fontSize: 13, fontFamily: "inherit",
+          resize: "vertical", boxSizing: "border-box" }} />
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
+        <Btn variant="danger" disabled={!reason} onClick={() => onConfirm(reason, note)}>
+          {reason ? "Mark Lost & Archive" : "Pick a reason first"}
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── PIPELINE DASHBOARD ───────────────────────────────────────────────────────
 function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpdateProject }) {
   const pipeline = projects.filter(p => !p.archived && isPipeline(p));
@@ -26336,7 +26664,25 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     return a.proposalDueDate > b.proposalDueDate ? 1 : -1;
   });
 
-  const [confirm, setConfirm] = useState(null); // { projectId, action: "award"|"lost" }
+  const [confirm, setConfirm] = useState(null);    // { projectId, action: "award" } — inline Award confirm
+  const [lostFor, setLostFor] = useState(null);    // pursuit pending the "why?" modal
+  const [showLost, setShowLost] = useState(false); // Lost Pursuits panel open?
+
+  // Lost pursuits are archived by handleLost AND their status leaves
+  // PIPELINE_STATUSES, so `pipeline` above is blind to them twice over. Rebuild
+  // from the full projects array; newest loss first, undated legacy rows last.
+  const canSeeLost = pmsCan("pipeline.edit");
+  const lost = React.useMemo(
+    () => (projects || []).filter(p => p.status === "Lost")
+      .sort((a, b) => String(b.lostDate || "").localeCompare(String(a.lostDate || ""))),
+    [projects]);
+  const lostValue = lost.reduce((a, p) =>
+    a + (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((b, ph) => b + ph.fee, 0), 0);
+  const lostByReason = {};
+  lost.forEach(p => {
+    const k = p.lostReason || "Not recorded";
+    lostByReason[k] = (lostByReason[k] || 0) + 1;
+  });
 
   // Slide the Status toggle: Proposal Due ⇄ Proposal Submitted (slide right = "done")
   function toggleStatus(p) {
@@ -26349,9 +26695,24 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
     setConfirm(null);
   }
 
-  function handleLost(p) {
-    onUpdateProject({ ...p, status: "Lost", archived: true });
-    setConfirm(null);
+  // Reason is required by the modal; the debrief note is optional. lostDate is
+  // stamped here so the list can sort and win/loss reporting has a real date.
+  function handleLost(p, reason, note) {
+    onUpdateProject({
+      ...p, status: "Lost", archived: true,
+      lostDate: new Date().toISOString().slice(0, 10),
+      lostReason: reason || "",
+      lostNote: (note || "").trim(),
+    });
+    setLostFor(null);
+  }
+
+  // Back on the board, loss stamps cleared — otherwise a restored pursuit that's
+  // later lost again would carry a stale reason from the first time around.
+  function handleRestore(p) {
+    const patch = { ...p, status: "Proposal Due", archived: false };
+    delete patch.lostDate; delete patch.lostReason; delete patch.lostNote;
+    onUpdateProject(patch);
   }
 
   return (
@@ -26365,12 +26726,20 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
       </div>
 
       {/* KPIs */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${canSeeLost ? 6 : 5},1fr)`, gap: 14, marginBottom: 24 }}>
         <KpiBox label="Pipeline Projects" val={pipeline.length} color={P.accent} />
         <KpiBox label="Total Fee Value" val={fmt(totalValue)} color={P.accentLight} />
         <KpiBox label="Weighted Value" val={fmt(weightedValue)} color={P.green} />
         <KpiBox label="Proposals Overdue" val={overdue.length} color={overdue.length > 0 ? P.red : P.textMuted} />
         <KpiBox label="Due in 14 Days" val={dueSoon.length} color={dueSoon.length > 0 ? P.yellow : P.textMuted} />
+        {/* Lost pursuits — pipeline.edit gates it (Operations, admin, marketing,
+            contracts, PMs), matching who owns go/no-go and BD history. */}
+        {canSeeLost && (
+          <KpiBox label="Lost Pursuits" val={lost.length}
+            color={showLost ? P.red : P.textMuted}
+            sub={showLost ? "Hide list ▲" : "View list ▼"}
+            onClick={() => setShowLost(v => !v)} />
+        )}
       </div>
 
       {/* Status pills */}
@@ -26382,6 +26751,81 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
           </div>
         ))}
       </div>
+
+      {/* Lost pursuits — archived on loss, so they never appear in the table below */}
+      {canSeeLost && showLost && (
+        <Card style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>
+              Lost Pursuits <span style={{ color: P.textDim, fontWeight: 400 }}>({lost.length})</span>
+            </div>
+            <Btn small variant="ghost" onClick={() => setShowLost(false)}>Close</Btn>
+          </div>
+          <div style={{ color: P.textMuted, fontSize: 12, marginBottom: 14 }}>
+            Archived when marked lost, which is why they're absent from the board above.
+            Restoring one puts it back as <strong>Proposal Due</strong> and clears its loss record.
+          </div>
+
+          {lost.length === 0 ? (
+            <div style={{ color: P.textDim, textAlign: "center", padding: 30 }}>Nothing lost yet.</div>
+          ) : (
+            <>
+              {/* Reason rollup — the point of capturing a reason at all */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16, alignItems: "center" }}>
+                <span style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 8,
+                  padding: "5px 12px", fontSize: 12, color: P.textMuted }}>
+                  Fee value lost: <strong style={{ color: P.red, fontFamily: "JetBrains Mono, monospace" }}>{fmt(lostValue)}</strong>
+                </span>
+                {Object.keys(lostByReason).sort((a, b) => lostByReason[b] - lostByReason[a]).map(r => (
+                  <span key={r} style={{ background: P.bg, border: `1px solid ${P.border}`, borderRadius: 999,
+                    padding: "4px 12px", fontSize: 11.5, color: r === "Not recorded" ? P.textDim : P.textMuted }}>
+                    {r} · <strong>{lostByReason[r]}</strong>
+                  </span>
+                ))}
+              </div>
+
+              <table>
+                <thead>
+                  <tr><th>Project</th><th>Client</th><th>Lost</th><th>Reason</th><th>Fee Value</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {lost.map(p => {
+                    const fee = (p.phases || []).filter(ph => ph.billable && ph.fee > 0).reduce((a, ph) => a + ph.fee, 0);
+                    return (
+                      <tr key={p.id}>
+                        <td>
+                          <button onClick={() => onNavigateToProject(p.id)}
+                            style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontWeight: 600, fontSize: 13, padding: 0, textAlign: "left" }}>
+                            {p.name}
+                          </button>
+                          {p.projectNumber && <div style={{ fontSize: 11, color: P.textDim }}>{p.projectNumber}</div>}
+                        </td>
+                        <td style={{ color: P.textMuted, fontSize: 13 }}>{p.clientName || "—"}</td>
+                        <td style={{ color: P.textMuted, fontSize: 13, whiteSpace: "nowrap" }}>{p.lostDate || "—"}</td>
+                        <td style={{ fontSize: 13, maxWidth: 280 }}>
+                          {p.lostReason
+                            ? <span style={{ color: P.text }}>{p.lostReason}</span>
+                            : <span style={{ color: P.textDim }}>—</span>}
+                          {p.lostNote && (
+                            <div style={{ fontSize: 11.5, color: P.textDim, fontStyle: "italic", marginTop: 3, lineHeight: 1.5 }}>
+                              {p.lostNote}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13, color: P.textMuted }}>{fee > 0 ? fmt(fee) : "—"}</td>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          <Btn small variant="ghost" onClick={() => handleRestore(p)}
+                            title="Put this back on the pipeline board as Proposal Due">↩ Restore</Btn>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
+        </Card>
+      )}
 
       {/* Pipeline table */}
       <Card>
@@ -26452,19 +26896,14 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
                     <td style={{ whiteSpace: "nowrap" }}>
                       {confirm?.projectId === p.id ? (
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <span style={{ fontSize: 11, color: P.textMuted }}>
-                            {confirm.action === "award" ? "Mark as Awarded?" : "Mark as Lost & archive?"}
-                          </span>
-                          <Btn small variant={confirm.action === "award" ? "success" : "danger"}
-                            onClick={() => confirm.action === "award" ? handleAward(p) : handleLost(p)}>
-                            Confirm
-                          </Btn>
+                          <span style={{ fontSize: 11, color: P.textMuted }}>Mark as Awarded?</span>
+                          <Btn small variant="success" onClick={() => handleAward(p)}>Confirm</Btn>
                           <Btn small variant="ghost" onClick={() => setConfirm(null)}>Cancel</Btn>
                         </div>
                       ) : (
                         <div style={{ display: "flex", gap: 6 }}>
                           <Btn small variant="success" onClick={() => setConfirm({ projectId: p.id, action: "award" })}>🏆 Award</Btn>
-                          <Btn small variant="danger" onClick={() => setConfirm({ projectId: p.id, action: "lost" })}>✗ Lost</Btn>
+                          <Btn small variant="danger" onClick={() => setLostFor(p)}>✗ Lost</Btn>
                         </div>
                       )}
                     </td>
@@ -26475,6 +26914,11 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
           </table>
         )}
       </Card>
+
+      {lostFor && (
+        <LostPursuitModal project={lostFor} onCancel={() => setLostFor(null)}
+          onConfirm={(reason, note) => handleLost(lostFor, reason, note)} />
+      )}
     </div>
   );
 }
