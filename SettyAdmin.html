@@ -110,7 +110,10 @@
 // v5 adds last-admin/self-demote guards on role changes, a confirm on
 // override removal, and the pre-Phase-4 warning banner on the matrix;
 // v6 updates the System Guide Security section + matrix notes for the
-// executed Phase 4 flip and the Phase 5 enforcement rollout).
+// executed Phase 4 flip and the Phase 5 enforcement rollout;
+// v7 brings the Claude/MCP runbook current: server v31 + the OAuth
+// resource/scope fix, the local Python bridge marked deprecated, and a
+// dated status card so the tab can be handed to IT as-is).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -1031,9 +1034,24 @@ function renderMcp() {
     </div>
 
     <div class="card doc">
+      <div class="sechead">Current status — 28 Jul 2026</div>
+      <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
+        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>v31, live.</b> On 25 Jul the OAuth discovery metadata was corrected so the advertised resource matches the requested scope — this was the cause of the Entra <b>9010010</b> sign-in failures.</td></tr>
+        <tr><td>Org-wide connector on claude.ai</td><td><b>Pending IT.</b> Adding it makes it available across the org — that is expected and by design (see the note below).</td></tr>
+        <tr><td>Entra app registration <code>${ENTRA_APP}</code></td><td>Exists and is admin-consented for the SharePoint document reading. Still to confirm: the <code>MCP.Access</code> delegated scope is consented, and Claude's callback URI is registered.</td></tr>
+        <tr><td>Local Python bridge (per-device)</td><td><b>Deprecated — being retired.</b> Pilot-era install; see the warning under the admin steps below. Note the server still accepts the pilot shared secret, so any surviving install keeps working until <code>MCP_SHARED_SECRET</code> is rotated — rotation is what actually decommissions it.</td></tr>
+      </tbody></table>
+      <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector is read-only and returns the same
+        firm-wide project view the PMS apps already show every member of staff. Role permissions in PMS govern what a person can
+        <i>do</i> (file email, edit pipeline, edit projects), not which projects they can read — so enabling this org-wide does not
+        widen anyone's access to data they cannot already open in PMS. It does not expose the billing feed, admin console, or any
+        write path.</p>
+    </div>
+
+    <div class="card doc">
       <div class="sechead">How the server is set up</div>
       <ul>
-        <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. Currently v28.</li>
+        <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. Currently <b>v31</b> — v31 corrected the OAuth discovery metadata (see Authentication below).</li>
         <li><b>Data path:</b> the function holds the service-role key server-side and reads <code>pms_projects</code>, <code>pms_project_emails</code> and the analytics SQL functions. A 5-minute in-memory cache plus a slim field projection keeps broad questions fast.</li>
         <li><b>Documents &amp; templates:</b> project documents and the live "Templates for MCP Connector" SharePoint folder are read through a separate app-only Microsoft Graph app (client credentials, read-only Sites permission — the one admin-consented piece).</li>
         <li><b>Permission model:</b> shared service view — any authorized caller sees all PMS data (same as the PMS itself today). Read-only: there are no write tools.</li>
@@ -1060,6 +1078,14 @@ function renderMcp() {
       <ul style="margin-top:8px">
         <li><b>Entra app for the connector:</b> <code>${ENTRA_APP}</code>, exposing scope <code>api://${ENTRA_APP}/MCP.Access</code>.</li>
         <li><b>Accepted audiences:</b> <code>${ENTRA_APP}</code> or <code>api://${ENTRA_APP}</code>; tokens from any other tenant are rejected.</li>
+        <li><b>Discovery metadata — fixed in v31 (25 Jul 2026):</b> <code>/.well-known/oauth-protected-resource</code> now advertises
+            <code>resource</code> = <code>api://${ENTRA_APP}</code>, which matches the scope Claude requests
+            (<code>api://${ENTRA_APP}/MCP.Access</code>). Earlier versions advertised the Supabase function URL as the resource
+            instead; Entra rejected that mismatch with <b>9010010</b> — <i>"the resource parameter provided in the request doesn't
+            match with the requested scopes."</i> Use the discovery link at the top of this tab to confirm the two agree.</li>
+        <li><b>No separate authorization-server document is needed:</b> the discovery response names the Setty tenant's Microsoft
+            login endpoint, and Claude reads Microsoft's own metadata from there. A 404 on
+            <code>/.well-known/oauth-authorization-server</code> is expected and not a fault.</li>
       </ul>
     </div>
 
@@ -1072,7 +1098,13 @@ function renderMcp() {
         <li><b>Consent (the usual blocker here):</b> this tenant disables user self-consent for <i>everything</i>, so users hit <b>AADSTS65001</b> until an admin consents. The <code>MCP.Access</code> delegated permission must appear under the app's <b>API permissions</b> list (not just "Expose an API") — then IT clicks <b>Grant admin consent for Setty</b> there. One click, tenant-wide, permanent.</li>
         <li><b>Users enable it:</b> each person turns the connector on under Settings → Connectors in claude.ai; the first use walks them through the Microsoft sign-in. After that they can just ask — "what's open on SAPX256001?" — and Claude uses the PMS tools.</li>
       </ol>
-      <p style="font-size:12.5px"><b>If the org-level connector stays blocked</b> (only Claude org Owners can add connectors, and Desktop extension installs are org-gated too): the proven no-approval fallback is the <b>local server bridge</b> — a small Python stdio bridge wired into <code>claude_desktop_config.json</code>, the same pattern IT already uses for the SETTYAI tools. The ready-to-deploy folder is <code>dev/setty-pms-mcpb/local-server/</code> (server.py + config snippet + install notes); it talks to the same live endpoint with the pilot secret.</p>
+      <p style="font-size:12.5px;border-left:3px solid var(--warn,#b45309);padding-left:10px"><b>⚠ Local Python bridge — deprecated, do not deploy to new devices.</b>
+        Before the org-level connector was available, a small Python stdio bridge (<code>dev/setty-pms-mcpb/local-server/server.py</code>,
+        plus the <code>setty-pms.mcpb</code> bundle) was installed per-device and wired into <code>claude_desktop_config.json</code>,
+        matching the SETTYAI tools pattern. <b>It carries the shared secret in plain text inside the file</b>, so every user of a bridged
+        device reaches the server as one generic caller rather than as themselves — no Microsoft sign-in, no per-user identity, nothing
+        for the Phase 5 role work to act on. It also has to be touched on every machine to change anything. The OAuth connector above
+        supersedes it. Retire existing installs rather than updating them, and rotate <code>MCP_SHARED_SECRET</code> once the last one is gone.</p>
       <p style="font-size:12.5px"><b>Testing outside claude.ai:</b> Claude Code can attach it with
         <code>claude mcp add --transport http setty-pms ${MCP_URL}</code> (add
         <code>--header "Authorization: Bearer &lt;secret&gt;"</code> to use the pilot secret), and the MCP Inspector
@@ -1087,9 +1119,10 @@ function renderMcp() {
         <tr><td>OAuth starts but Claude can't register itself</td><td>That's the Entra no-dynamic-registration limitation — paste the client ID into the connector's Advanced settings (step 2 above).</td></tr>
         <tr><td>Microsoft error <b>AADSTS50011</b> (redirect URI mismatch)</td><td>Add the exact callback URI from the error to app registration <code>${ENTRA_APP}</code>.</td></tr>
         <tr><td>Microsoft error <b>AADSTS65001 / 90094</b> (needs approval)</td><td>Admin consent hasn't been granted for <code>MCP.Access</code> — step 4 above. Expected on first setup: this tenant blocks all self-consent.</td></tr>
+        <tr><td>Microsoft error <b>9010010</b> (<i>resource parameter doesn't match the requested scopes</i>)</td><td>The server's discovery metadata and the requested scope disagree on the resource identifier. <b>Fixed server-side in v31</b> — open the <b>OAuth discovery metadata</b> link above and confirm <code>resource</code> reads <code>api://${ENTRA_APP}</code> (not the Supabase URL). If it does and sign-in still fails, remove and re-add the connector so Claude re-reads the metadata rather than a cached copy.</td></tr>
         <tr><td>Signed in, but every tool call returns Unauthorized</td><td>The token Claude got isn't for our API — verify the connector requests scope <code>api://${ENTRA_APP}/MCP.Access</code> (audience mismatch is rejected server-side), and that the account is in the Setty tenant.</td></tr>
         <tr><td>First question times out, second works</td><td>Cold start: the function loads the portfolio on first use, then caches for 5 minutes. A keep-warm job pings /health every 2 minutes, but the first call right after a deploy can still be slow — one retry is normal.</td></tr>
-        <tr><td>Claude Desktop shows the connector "offline" intermittently</td><td>That's the local bridge, not the server (the server logs show calls completing in 1–2.5s). If the config uses <code>npx -y mcp-remote</code>, pin a known-good version (e.g. <code>mcp-remote@0.1.37</code>) so it stops re-downloading "latest" on every launch.</td></tr>
+        <tr><td>Claude Desktop shows the connector "offline" intermittently</td><td>That's the local bridge, not the server (the server logs show calls completing in 1–2.5s). Preferred fix: retire the bridge and use the OAuth connector. If a bridge must stay up temporarily and its config uses <code>npx -y mcp-remote</code>, pin a known-good version (e.g. <code>mcp-remote@0.1.37</code>) so it stops re-downloading "latest" on every launch.</td></tr>
         <tr><td>A newly added tool doesn't show up</td><td>MCP clients cache the tool list at connect time — disconnect/reconnect the connector (or restart Desktop) after any server update.</td></tr>
         <tr><td>Everything worked, then stopped for everyone</td><td>Check whether the shared secret was rotated or the function was redeployed mid-conversation; re-try, then check Supabase function logs.</td></tr>
       </tbody></table>
@@ -1099,11 +1132,20 @@ function renderMcp() {
     <div class="card doc">
       <div class="sechead">Best practices (IT &amp; whoever maintains this)</div>
       <ul>
-        <li><b>Rollout timing:</b> the connector is <b>independent of the security-rollout phases</b> — it never touches the anon key or user database sessions (it has its own gate + a server-side key), so the Phase 4 RLS flip changes nothing for it. Connect it whenever IT is ready; the admin-consent step is usually the long pole, so start that early.</li>
+        <li><b>Rollout timing:</b> the connector is <b>independent of the security-rollout phases</b> — it never touches the anon key or user database sessions (it has its own gate + a server-side key), so the Phase 4 RLS flip changed nothing for it. Connect it whenever IT is ready; the admin-consent step is usually the long pole, so start that early.</li>
+        <li><b>Where the connector sits relative to Phase 5</b> <span style="color:var(--muted)">(verified against deployed v31 source, 28 Jul 2026)</span>:
+            the Microsoft sign-in is an <b>authentication gate, not an identity</b> — <code>verifyEntraToken()</code> checks the token's
+            signature, issuer, audience and tenant and returns <i>true/false</i>, discarding the payload. No user claim (oid, upn,
+            preferred_username) reaches any query. Every read then goes out with the <code>SUPABASE_SERVICE_ROLE_KEY</code>, which bypasses
+            RLS by design, and the source contains no reference to <code>pms_has_cap</code> or <code>auth.uid</code>. So role capabilities do
+            <b>not</b> narrow what the connector returns, and the sign-in proves only "this is a current Setty account."
+            That is acceptable because the connector is read-only and surfaces what staff already see in PMS — but note it is
+            <b>not</b> one config change away from per-role scoping: the verifier would have to return its claims, and each tool
+            would need to filter on them.</li>
         <li><b>Keep it read-only.</b> All writes go through the PMS apps, which handle versioning and conflict protection. Adding write tools to the connector is a deliberate architecture decision, not a tweak.</li>
         <li><b>Finalize before broad rollout:</b> because clients cache the tool list, add/settle new tools first, then have the team connect — otherwise everyone needs a reconnect to see them.</li>
         <li><b>Deploy discipline:</b> pull the live source before editing (disk copies drift stale — deploying one would regress features), keep <code>verify_jwt</code> off with the deno.json import map on every deploy, and hit <code>/health</code> afterward — a 200 proves it compiled and booted.</li>
-        <li><b>Rotating the shared secret:</b> set a new <code>MCP_SHARED_SECRET</code> in Supabase function secrets — old callers cut off instantly. Then update wherever the secret is embedded (Desktop bridge configs / local-server install). The OAuth path is unaffected by rotation.</li>
+        <li><b>Rotating the shared secret:</b> set a new <code>MCP_SHARED_SECRET</code> in Supabase function secrets — old callers cut off instantly. The OAuth path is unaffected by rotation, so once the deprecated local bridges are decommissioned this can be rotated freely with nothing else to update. Until then it is also embedded in any remaining bridge install.</li>
         <li><b>New permissions need lead time:</b> any new Entra scope or Graph permission requires an IT admin-consent click (tenant policy) — plan it into the schedule rather than discovering it at rollout.</li>
         <li><b>Watch, don't guess:</b> Supabase dashboard → Edge Functions → pms-mcp → Logs shows every request with timing; the server has been measured healthy at ~1–2s warm, so persistent slowness reports usually point at the client bridge or a cold start, not the server.</li>
         <li><b>Data caveat everyone should know:</b> shared service view — any connected user can ask about <i>any</i> project (same as the PMS itself). If per-user or per-role visibility is ever needed, the Entra sign-in already identifies the user; scoping would build on the Phase 5 roles registry.</li>
