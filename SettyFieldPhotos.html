@@ -94,17 +94,20 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
   --navy: #1F3864; --red: #C00000; --bg: #0F1117; --card: #1A1D2E;
-  --blue: #3B82F6; --green: #10B981; --text: #E2E8F0; --dim: #64748B;
+  --blue: #3B82F6; --green: #10B981; --text: #E2E8F0; --dim: #8b98ab;
   --border: #2D3148; --hover: #252840; --input: #0D1021;
 }
 html, body { height: 100%; background: var(--bg); color: var(--text); font-family: Calibri, 'Segoe UI', sans-serif; font-size: 15px; }
 a { color: var(--blue); text-decoration: none; }
 button { cursor: pointer; font-family: inherit; font-size: 14px; border: none; border-radius: 6px; transition: all .2s; }
-input, select, textarea { font-family: inherit; font-size: 14px; background: var(--input); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 12px; width: 100%; outline: none; transition: border-color .2s; }
+input, select, textarea { font-family: inherit; font-size: 14px; background: var(--input); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 12px; width: 100%; transition: border-color .2s; }
+:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
 input:focus, select:focus, textarea:focus { border-color: var(--blue); }
 select option { background: var(--card); }
 label { font-size: 13px; color: var(--dim); display: block; margin-bottom: 4px; }
 .hidden { display: none !important; }
+/* Visually hidden but still read by screen readers. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* Auth screen */
 #authScreen { display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column; gap: 24px; }
@@ -145,7 +148,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 .project-picker { position: relative; margin-bottom: 20px; }
 .project-picker input { font-size: 15px; padding: 10px 14px; }
 .picker-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; max-height: 240px; overflow-y: auto; z-index: 100; }
-.picker-item { padding: 10px 14px; cursor: pointer; transition: background .15s; font-size: 14px; }
+.picker-item { display: block; width: 100%; text-align: left; background: transparent; color: inherit; border: none; border-radius: 0; padding: 10px 14px; cursor: pointer; transition: background .15s; font-size: 14px; }
 .picker-item:hover, .picker-item.selected { background: var(--hover); }
 .picker-item .proj-num { color: var(--dim); font-size: 12px; margin-top: 2px; }
 .selected-project { background: var(--card); border: 1px solid var(--green); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; }
@@ -153,16 +156,17 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 .selected-project .proj-info small { color: var(--dim); font-size: 12px; display: block; margin-top: 2px; }
 
 /* Drop zone */
-.dropzone { border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px; text-align: center; cursor: pointer; transition: all .2s; margin-bottom: 20px; }
+.dropzone { position: relative; border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px; text-align: center; cursor: pointer; transition: all .2s; margin-bottom: 20px; }
 .dropzone:hover, .dropzone.drag-over { border-color: var(--blue); background: rgba(59,130,246,.06); }
 .dropzone .dz-icon { font-size: 40px; margin-bottom: 10px; }
 .dropzone p { color: var(--dim); font-size: 14px; margin-bottom: 6px; }
 .dropzone strong { color: var(--blue); }
+.dropzone:has(input:focus-visible) { outline: 2px solid #60a5fa; outline-offset: 2px; border-color: var(--blue); }
 .file-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 8px; margin-bottom: 16px; }
 .file-thumb { position: relative; aspect-ratio: 1; border-radius: 6px; overflow: hidden; background: var(--card); border: 1px solid var(--border); }
 .file-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .file-thumb .remove-btn { position: absolute; top: 3px; right: 3px; background: rgba(0,0,0,.7); color: white; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 11px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-.file-thumb .fname { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.65); font-size: 9px; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: white; }
+.file-thumb .fname { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.65); font-size: 11px; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: white; }
 .file-thumb .status-icon { position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; font-size: 10px; display: flex; align-items: center; justify-content: center; }
 .status-icon.ok  { background: var(--green); }
 .status-icon.err { background: var(--red); }
@@ -238,7 +242,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 .gallery-toolbar .spacer { flex: 1; }
 .gallery-body { flex: 1; overflow-y: auto; padding: 16px 20px; }
 .folder-group { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
-.folder-header { padding: 12px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; user-select: none; transition: background .2s; }
+.folder-header { width: 100%; text-align: left; background: transparent; color: inherit; border: none; border-radius: 0; font-size: inherit; padding: 12px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px; user-select: none; transition: background .2s; }
 .folder-header:hover { background: var(--hover); }
 .folder-chevron { color: var(--dim); font-size: 12px; transition: transform .25s; }
 .folder-header.open .folder-chevron { transform: rotate(90deg); }
@@ -254,6 +258,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 .photo-card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .photo-card .card-name { padding: 6px 8px; font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .photo-card .cb { position: absolute; top: 6px; left: 6px; width: 18px; height: 18px; border-radius: 4px; cursor: pointer; accent-color: var(--blue); }
+.photo-card .card-open { display: block; width: 100%; padding: 0; background: transparent; border: none; border-radius: 0; color: inherit; text-align: left; font-size: inherit; cursor: pointer; }
 .photo-card .tooltip { display: none; position: absolute; bottom: 36px; left: 50%; transform: translateX(-50%); background: rgba(10,12,24,.95); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12px; white-space: nowrap; z-index: 50; pointer-events: none; min-width: 200px; }
 .photo-card:hover .tooltip { display: block; }
 .tooltip-row { display: flex; gap: 6px; margin-bottom: 3px; }
@@ -310,6 +315,18 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
   .gallery-toolbar select, .gallery-toolbar input { max-width: 100%; }
   .tabs .tab-btn { padding: 10px 14px; font-size: 13px; }
 }
+/* ─── Reduced motion ───
+   Kill decorative animation/transitions for users whose OS asks for it.
+   (The film-strip sprocket scroll has its own guard above; this catches
+   everything else — toast slide-in, upload spinner, hover transitions.) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 </style>
 </head>
 <body>
@@ -336,9 +353,9 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
       <span>SETTY</span>
     </div>
     <div class="hdr-divider"></div>
-    <div class="hdr-title">Field Photos</div>
+    <h1 class="hdr-title">Field Photos</h1>
     <span class="hdr-user" id="hdrUser"></span>
-    <span id="appVersion" style="font-size:10px;color:rgba(255,255,255,0.4);margin-right:8px;font-family:monospace" title="App version — useful for diagnostics. Mismatched between team members = someone has stale code."></span>
+    <span id="appVersion" style="font-size:10px;color:rgba(255,255,255,0.75);margin-right:8px;font-family:monospace" title="App version — useful for diagnostics. Mismatched between team members = someone has stale code."></span>
     <!-- Cross-link to the Site Reports tool. Same Microsoft auth via shared
          MSAL client ID, so signing in once works for both pages. -->
     <a href="https://smartias.github.io/setty-pms/SiteReport.html" target="_blank" rel="noreferrer"
@@ -356,39 +373,39 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
     });
   </script>
 
-  <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('upload',this)">&#8593; Upload</button>
-    <button class="tab-btn" onclick="switchTab('gallery',this)">&#9783; Gallery</button>
-    <button class="tab-btn" onclick="switchTab('batch',this)">&#8615; Batch Download</button>
+  <div class="tabs" role="tablist" aria-label="Field Photos sections">
+    <button class="tab-btn active" id="uploadTabBtn" role="tab" aria-selected="true" aria-controls="uploadTab" onclick="switchTab('upload',this)">&#8593; Upload</button>
+    <button class="tab-btn" id="galleryTabBtn" role="tab" aria-selected="false" aria-controls="galleryTab" onclick="switchTab('gallery',this)">&#9783; Gallery</button>
+    <button class="tab-btn" id="batchTabBtn" role="tab" aria-selected="false" aria-controls="batchTab" onclick="switchTab('batch',this)">&#8615; Batch Download</button>
   </div>
 
   <!-- Upload Tab -->
-  <div id="uploadTab" class="tab-content active">
+  <div id="uploadTab" class="tab-content active" role="tabpanel" aria-labelledby="uploadTabBtn">
     <div style="padding:20px;max-width:860px;margin:0 auto;">
-      <div class="section-title">Select Project</div>
+      <h2 class="section-title">Select Project</h2>
       <div class="project-picker">
-        <input type="text" id="projSearch" placeholder="Search by project name or number..." autocomplete="off" oninput="filterProjects()" onfocus="showDropdown()" />
+        <input type="text" id="projSearch" aria-label="Search projects by name or number" placeholder="Search by project name or number..." autocomplete="off" oninput="filterProjects()" onfocus="showDropdown()" />
         <div class="picker-dropdown hidden" id="projDropdown"></div>
       </div>
       <div id="selectedProjectCard" class="hidden"></div>
 
-      <div class="section-title">Photos</div>
-      <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+      <h2 class="section-title">Photos</h2>
+      <div class="dropzone" id="dropzone" onclick="if(event.target.id!=='fileInput')document.getElementById('fileInput').click()">
         <div class="dz-icon">&#128247;</div>
         <p><strong>Tap to select</strong> or drag &amp; drop photos here</p>
         <p>JPEG, PNG, HEIC, MP4, MOV supported &bull; Multiple files OK</p>
-        <input type="file" id="fileInput" multiple accept="image/*,video/*,.heic,.heif,.mp4,.mov,.avi,.m4v" style="display:none" onchange="handleFiles(this.files)" />
+        <input type="file" id="fileInput" multiple accept="image/*,video/*,.heic,.heif,.mp4,.mov,.avi,.m4v" aria-label="Select photos or videos to upload" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;" onchange="handleFiles(this.files)" />
       </div>
       <div class="file-previews" id="filePreviews"></div>
 
-      <div class="section-title">Metadata</div>
+      <h2 class="section-title">Metadata</h2>
       <div class="form-grid">
         <div class="form-group">
-          <label>Date Taken *</label>
+          <label for="fDate">Date Taken *</label>
           <input type="date" id="fDate" />
         </div>
         <div class="form-group">
-          <label>Phase *</label>
+          <label for="fPhase">Phase *</label>
           <select id="fPhase">
             <option value="">— Select Phase —</option>
             <option>Existing Conditions</option>
@@ -402,7 +419,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
           </select>
         </div>
         <div class="form-group">
-          <label>System Type</label>
+          <label for="fSystem">System Type</label>
           <select id="fSystem">
             <option value="">— Select System —</option>
             <option>General</option>
@@ -419,32 +436,32 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
           </select>
         </div>
         <div class="form-group">
-          <label>Site Address <span style="font-size:11px;color:var(--dim);font-weight:400;">(auto-filled from GPS)</span></label>
+          <label for="fAddress">Site Address <span style="font-size:11px;color:var(--dim);font-weight:400;">(auto-filled from GPS)</span></label>
           <input type="text" id="fAddress" placeholder="e.g. 350 5th Ave, New York, NY" />
         </div>
         <div class="form-group">
-          <label>Location / Floor</label>
+          <label for="fLocation">Location / Floor</label>
           <input type="text" id="fLocation" placeholder="e.g. Room 202, Roof, Mech Room" />
         </div>
         <div class="form-group">
-          <label>Photographer</label>
+          <label for="fPhotographer">Photographer</label>
           <input type="text" id="fPhotographer" />
         </div>
         <div class="form-group">
-          <label>Tags (comma-separated)</label>
+          <label for="fTags">Tags (comma-separated)</label>
           <input type="text" id="fTags" placeholder="hvac, rooftop, ahu-1" />
         </div>
         <div class="form-group full">
-          <label>Notes</label>
+          <label for="fNotes">Notes</label>
           <textarea id="fNotes" rows="3" placeholder="Any additional notes about this batch of photos..."></textarea>
         </div>
       </div>
 
       <div class="compress-row">
-        <label>Compression Quality:</label>
+        <label for="compQuality">Compression Quality:</label>
         <input type="range" id="compQuality" min="40" max="95" value="80" oninput="document.getElementById('qualVal').textContent=this.value+'%'" />
         <span id="qualVal">80%</span>
-        <label style="margin-left:12px;">Max Width:</label>
+        <label for="compWidth" style="margin-left:12px;">Max Width:</label>
         <input type="range" id="compWidth" min="800" max="4000" step="200" value="2400" oninput="document.getElementById('widthVal').textContent=this.value+'px'" />
         <span id="widthVal">2400px</span>
       </div>
@@ -454,7 +471,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
           <strong id="progressTitle">Uploading...</strong>
           <span id="progressCount" style="font-size:13px;color:var(--dim);"></span>
         </div>
-        <div class="progress-bar-wrap"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
+        <div class="progress-bar-wrap" role="progressbar" aria-labelledby="progressTitle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
         <div class="progress-label" id="progressLabel"></div>
       </div>
 
@@ -465,12 +482,12 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
   </div>
 
   <!-- Gallery Tab -->
-  <div id="galleryTab" class="tab-content" style="display:none;flex-direction:column;height:calc(100vh - 96px);">
+  <div id="galleryTab" class="tab-content" role="tabpanel" aria-labelledby="galleryTabBtn" style="display:none;flex-direction:column;height:calc(100vh - 96px);">
     <div class="gallery-toolbar">
-      <select id="galProject" onchange="loadGallery()">
+      <select id="galProject" aria-label="Filter by project" onchange="loadGallery()">
         <option value="">All Projects</option>
       </select>
-      <select id="galPhase" onchange="filterGallery()">
+      <select id="galPhase" aria-label="Filter by phase" onchange="filterGallery()">
         <option value="">All Phases</option>
         <option>Existing Conditions</option>
         <option>Demo/Abatement</option>
@@ -481,11 +498,11 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
         <option>Punch List</option>
         <option>Final/Completed</option>
       </select>
-      <select id="galSort" onchange="filterGallery()">
+      <select id="galSort" aria-label="Sort order" onchange="filterGallery()">
         <option value="desc">Newest First</option>
         <option value="asc">Oldest First</option>
       </select>
-      <input type="text" id="galSearch" placeholder="Search photos..." oninput="filterGallery()" style="max-width:180px;" />
+      <input type="text" id="galSearch" aria-label="Search photos" placeholder="Search photos..." oninput="filterGallery()" style="max-width:180px;" />
       <div class="spacer"></div>
       <button class="btn-ghost" onclick="refreshGallery()" style="white-space:nowrap;">&#8635; Refresh</button>
     </div>
@@ -499,9 +516,9 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
   </div>
 
   <!-- Batch Tab -->
-  <div id="batchTab" class="tab-content" style="display:none;">
+  <div id="batchTab" class="tab-content" role="tabpanel" aria-labelledby="batchTabBtn" style="display:none;">
     <div style="padding:20px;max-width:860px;margin:0 auto;">
-      <div class="section-title">Batch Download</div>
+      <h2 class="section-title">Batch Download</h2>
       <div class="batch-toolbar">
         <button class="btn-ghost" onclick="toggleSelectAll()">Select All</button>
         <button class="btn-ghost" onclick="clearSelection()">Clear</button>
@@ -519,16 +536,16 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
 </div>
 
 <!-- Lightbox -->
-<div id="lightbox" onclick="closeLightboxOnBg(event)">
-  <button class="lb-close" onclick="closeLightbox()">&#215;</button>
-  <button class="lb-nav" id="lbPrev" onclick="navLightbox(-1)">&#8249;</button>
-  <button class="lb-nav" id="lbNext" onclick="navLightbox(1)">&#8250;</button>
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Photo viewer" onclick="closeLightboxOnBg(event)">
+  <button class="lb-close" aria-label="Close photo viewer" onclick="closeLightbox()">&#215;</button>
+  <button class="lb-nav" id="lbPrev" aria-label="Previous photo" onclick="navLightbox(-1)">&#8249;</button>
+  <button class="lb-nav" id="lbNext" aria-label="Next photo" onclick="navLightbox(1)">&#8250;</button>
   <div class="lb-img-wrap"><img id="lbImg" src="" alt="" /></div>
   <div class="lb-meta" id="lbMeta"></div>
 </div>
 
 <!-- Toast Area -->
-<div id="toastArea"></div>
+<div id="toastArea" role="status" aria-live="polite"></div>
 
 <script>
 // ---- Config ----
@@ -918,7 +935,8 @@ function filterProjects() {
     return;
   }
   filtered.forEach(p => {
-    const el = document.createElement('div');
+    const el = document.createElement('button');
+    el.type = 'button';
     el.className = 'picker-item';
     el.innerHTML = `<div>${p.name}</div><div class="proj-num">${p.projectNumber || ''} &bull; ${p.projectAddress || ''}</div>`;
     el.onclick = () => selectProject(p);
@@ -1121,9 +1139,9 @@ function renderPreviews() {
   pendingFiles.forEach((pf, i) => {
     const div = document.createElement('div');
     div.className = 'file-thumb';
-    const statusIcon = pf.status === 'ok'       ? '<div class="status-icon ok" title="Uploaded">&#10003;</div>' :
-                       pf.status === 'err'      ? '<div class="status-icon err" title="Upload failed — click × to remove">&#33;</div>' :
-                       pf.status === 'uploading' ? '<div class="status-icon uploading" title="Uploading…">&#8635;</div>' : '';
+    const statusIcon = pf.status === 'ok'       ? '<div class="status-icon ok" title="Uploaded">&#10003;<span class="sr-only">Uploaded</span></div>' :
+                       pf.status === 'err'      ? '<div class="status-icon err" title="Upload failed — click × to remove">&#33;<span class="sr-only">Upload failed</span></div>' :
+                       pf.status === 'uploading' ? '<div class="status-icon uploading" title="Uploading…">&#8635;<span class="sr-only">Uploading</span></div>' : '';
     div.innerHTML = `
       ${statusIcon}
       ${pf.previewUrl
@@ -1131,7 +1149,7 @@ function renderPreviews() {
         : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:28px;">&#127910;</div>`}
       ${pf.isVideo ? `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.55);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;pointer-events:none;">&#9654;</div>` : ''}
       <div class="fname">${pf.file.name}</div>
-      ${pf.status !== 'ok' && pf.status !== 'uploading' ? `<button class="remove-btn" onclick="removeFile(${i})" title="Remove">&#215;</button>` : ''}`;
+      ${pf.status !== 'ok' && pf.status !== 'uploading' ? `<button class="remove-btn" onclick="removeFile(${i})" title="Remove" aria-label="Remove ${escHtml(pf.file.name)} from upload queue">&#215;</button>` : ''}`;
     wrap.appendChild(div);
   });
 }
@@ -1372,7 +1390,9 @@ async function startUpload() {
   const total = toUpload.length;
 
   function setProgress(n, label) {
-    document.getElementById('progressBar').style.width = Math.round((n / (total + 2)) * 100) + '%';
+    const pct = Math.round((n / (total + 2)) * 100);
+    document.getElementById('progressBar').style.width = pct + '%';
+    document.querySelector('#uploadProgress .progress-bar-wrap').setAttribute('aria-valuenow', pct);
     document.getElementById('progressCount').textContent = `${n}/${total}`;
     document.getElementById('progressLabel').textContent = label;
     document.getElementById('progressTitle').textContent = n <= total ? 'Uploading...' : 'Finishing up...';
@@ -1394,8 +1414,9 @@ async function startUpload() {
           const fname = pf.file.name.replace(/[^a-zA-Z0-9._\- ]/g, '_');
           setProgress(i + 1, `Uploading video ${fname}...`);
           await uploadWithSession(uploadFolder, fname, pf.file, pct => {
-            document.getElementById('progressBar').style.width =
-              Math.round(((i + pct) / (total + 2)) * 100) + '%';
+            const overall = Math.round(((i + pct) / (total + 2)) * 100);
+            document.getElementById('progressBar').style.width = overall + '%';
+            document.querySelector('#uploadProgress .progress-bar-wrap').setAttribute('aria-valuenow', overall);
           });
         } else {
           // Images: compress then upload.
@@ -1490,6 +1511,7 @@ async function startUpload() {
 
     prog.classList.remove('running');     // upload finished — stop the film
     document.getElementById('progressBar').style.width = '100%';
+    document.querySelector('#uploadProgress .progress-bar-wrap').setAttribute('aria-valuenow', 100);
     document.getElementById('progressBar').style.background = 'var(--green)';
     document.getElementById('progressTitle').innerHTML =
       `&#10003; ${okCount} photo${okCount !== 1 ? 's' : ''} uploaded` +
@@ -1637,14 +1659,14 @@ function renderGallery() {
     div.className = 'folder-group';
     div.dataset.folderId = g.folderId;
     div.innerHTML = `
-      <div class="folder-header" onclick="toggleFolder(this, '${g.folderId}')">
+      <button type="button" class="folder-header" aria-expanded="false" onclick="toggleFolder(this, '${g.folderId}')">
         <span class="folder-chevron">&#9654;</span>
         <div class="folder-meta">
           <div class="folder-name">${escHtml(g.folderName)}</div>
           <div class="folder-sub">${escHtml(g.projectLabel)}</div>
         </div>
         <span class="folder-count" id="fc-${g.folderId}">...</span>
-      </div>
+      </button>
       <div class="folder-photos" id="fp-${g.folderId}"></div>`;
     body.appendChild(div);
     // Fetch the count once per gallery load. Re-renders (every search
@@ -1724,6 +1746,7 @@ async function toggleFolder(headerEl, folderId) {
   headerEl.classList.toggle('open');
   const photosEl = document.getElementById('fp-' + folderId);
   const isOpen = headerEl.classList.contains('open');
+  headerEl.setAttribute('aria-expanded', String(isOpen));
 
   if (!isOpen) {
     photosEl.classList.remove('open');
@@ -1784,12 +1807,12 @@ async function toggleFolder(headerEl, folderId) {
       ${meta.notes ? `<div class="tooltip-row"><span class="tlabel">Notes:</span>${escHtml(meta.notes.slice(0,80))}</div>` : ''}`;
 
     card.innerHTML = `
-      <input type="checkbox" class="cb" onchange="toggleBatch(${gIdx}, this.checked)" onclick="event.stopPropagation()" />
-      <div class="thumb">${thumbUrl ? `<img src="${thumbUrl}" alt="${escHtml(item.name)}" loading="lazy" />` : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:28px;">&#128247;</div>'}</div>
-      <div class="card-name">${escHtml(item.name)}</div>
+      <input type="checkbox" class="cb" aria-label="Select ${escHtml(item.name)} for batch download" onchange="toggleBatch(${gIdx}, this.checked)" onclick="event.stopPropagation()" />
+      <button type="button" class="card-open" aria-label="View ${escHtml(item.name)}"><div class="thumb">${thumbUrl ? `<img src="${thumbUrl}" alt="${escHtml(item.name)}" loading="lazy" />` : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:28px;">&#128247;</div>'}</div>
+      <div class="card-name">${escHtml(item.name)}</div></button>
       <div class="tooltip">${tooltipHtml}</div>`;
 
-    card.addEventListener('click', e => {
+    card.querySelector('.card-open').addEventListener('click', e => {
       if (e.target.type === 'checkbox') return;
       openLightbox(parseInt(card.dataset.gidx));
     });
@@ -1801,16 +1824,21 @@ async function toggleFolder(headerEl, folderId) {
 }
 
 // ---- Lightbox ----
+let lbReturnFocusEl = null;   // element to restore focus to when the lightbox closes
+
 function openLightbox(idx) {
   lbIndex = idx;
+  lbReturnFocusEl = document.activeElement;
   renderLightbox();
   document.getElementById('lightbox').classList.add('open');
+  document.querySelector('#lightbox .lb-close').focus();
 }
 
 async function renderLightbox() {
   const item = galleryData[lbIndex];
   if (!item) return;
 
+  document.getElementById('lightbox').setAttribute('aria-label', item.name || 'Photo viewer');
   document.getElementById('lbImg').src = item.thumbUrl || '';
 
   // Try to get full-res URL
@@ -1842,6 +1870,9 @@ async function renderLightbox() {
 function closeLightbox() {
   document.getElementById('lightbox').classList.remove('open');
   document.getElementById('lbImg').src = '';
+  // Hand focus back to the gallery card that opened the viewer.
+  if (lbReturnFocusEl && document.contains(lbReturnFocusEl)) lbReturnFocusEl.focus();
+  lbReturnFocusEl = null;
 }
 
 function closeLightboxOnBg(e) {
@@ -1854,10 +1885,20 @@ function navLightbox(dir) {
 }
 
 document.addEventListener('keydown', e => {
-  if (!document.getElementById('lightbox').classList.contains('open')) return;
+  const lb = document.getElementById('lightbox');
+  if (!lb.classList.contains('open')) return;
   if (e.key === 'Escape') closeLightbox();
   if (e.key === 'ArrowRight') navLightbox(1);
   if (e.key === 'ArrowLeft') navLightbox(-1);
+  if (e.key === 'Tab') {
+    // Trap focus inside the dialog while it's open.
+    const focusables = [...lb.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+      .filter(el => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (document.activeElement === last || !lb.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+  }
 });
 
 // ---- Batch Download ----
@@ -1919,7 +1960,7 @@ function renderBatchList() {
         <div class="bmeta">${escHtml(item.projectLabel || '')} &bull; ${escHtml(item.folderName || '')}</div>
       </div>
       <div class="batch-size">${item.size ? formatSize(item.size) : ''}</div>
-      <button class="btn-ghost" style="padding:4px 10px;font-size:12px;" onclick="toggleBatch(${idx}, false);syncBatchCheckboxes();updateBatchUI();">&#215;</button>`;
+      <button class="btn-ghost" style="padding:4px 10px;font-size:12px;" aria-label="Remove ${escHtml(item.name)} from selection" onclick="toggleBatch(${idx}, false);syncBatchCheckboxes();updateBatchUI();">&#215;</button>`;
     list.appendChild(div);
   });
 }
@@ -1972,12 +2013,16 @@ function switchTab(name, btnEl) {
     el.classList.remove('active');
     el.style.display = 'none';
   });
-  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el => {
+    el.classList.remove('active');
+    el.setAttribute('aria-selected', 'false');
+  });
 
   const tabEl = document.getElementById(name + 'Tab');
   tabEl.style.display = name === 'gallery' ? 'flex' : 'block';
   tabEl.classList.add('active');
-  if (btnEl) btnEl.classList.add('active');
+  const btn = btnEl || document.getElementById(name + 'TabBtn');
+  if (btn) { btn.classList.add('active'); btn.setAttribute('aria-selected', 'true'); }
 
   if (name === 'batch') renderBatchList();
 }
@@ -2008,6 +2053,9 @@ function toast(msg, type, opts) {
   const area = document.getElementById('toastArea');
   const el = document.createElement('div');
   el.className = 'toast ' + (type || '');
+  // Errors interrupt (assertive alert); everything else rides the polite
+  // #toastArea live region. Errors already linger 10s before auto-dismiss.
+  if (type === 'error') el.setAttribute('role', 'alert');
   el.textContent = msg;
   // Optional tappable link — phones have no F12 console, so anything the
   // user needs to follow up on must be tappable in the toast itself.

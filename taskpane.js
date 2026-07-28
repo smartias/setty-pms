@@ -220,6 +220,7 @@ function setupEventListeners() {
   // mainView header-logo no longer exists). Counter is shared across both.
   let _logoClickCount = 0;
   let _logoClickTimer = null;
+  let _creditsPrevFocus = null;
   document.querySelectorAll(".header-logo, #versionFooter").forEach(logoEl => {
     logoEl.title = "v" + (window.__appVersion || "");
     logoEl.onclick = () => {
@@ -228,7 +229,14 @@ function setupEventListeners() {
       if (_logoClickCount >= 5) {
         _logoClickCount = 0;
         const overlay = document.getElementById("creditsOverlay");
-        if (overlay) overlay.classList.add("show");
+        if (overlay) {
+          overlay.classList.add("show");
+          // Dialog focus management — remember where the user was, move
+          // focus into the card so Escape/screen readers work, restore later.
+          _creditsPrevFocus = document.activeElement;
+          const card = overlay.querySelector(".credits-card");
+          if (card) card.focus();
+        }
         loadConfetti().then(ok => {
           if (!ok || typeof confetti !== "function") return;
           confetti({ particleCount: 40, spread: 60, origin: { y: 0.5 }, scalar: 0.7, ...(getSeasonalConfettiOpts() || {}) });
@@ -239,7 +247,19 @@ function setupEventListeners() {
     };
   });
   const credits = document.getElementById("creditsOverlay");
-  if (credits) credits.onclick = () => credits.classList.remove("show");
+  if (credits) {
+    const closeCredits = () => {
+      credits.classList.remove("show");
+      if (_creditsPrevFocus && typeof _creditsPrevFocus.focus === "function") {
+        try { _creditsPrevFocus.focus(); } catch (_) { /* element may be gone */ }
+      }
+      _creditsPrevFocus = null;
+    };
+    credits.onclick = closeCredits; // click anywhere still closes
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && credits.classList.contains("show")) closeCredits();
+    });
+  }
   // Hint banner link — single entry point for "open project in PMS" so the
   // URL/permissions logic stays in one place (openSelectedProjectInPms).
   const spHintLink = document.getElementById("spFolderHintLink");
@@ -325,10 +345,10 @@ function setupEventListeners() {
       ).slice(0, 10);
       if (!matches.length) { dropdown.style.display = "none"; return; }
       dropdown.innerHTML = matches.map(p => `
-        <div class="proj-option" data-id="${p.id}">
+        <button type="button" class="proj-option" data-id="${p.id}">
           <div class="proj-num">${p.projectNumber || ""}</div>
           <div class="proj-name">${p.name || ""}</div>
-        </div>
+        </button>
       `).join("");
       dropdown.style.display = "block";
     }, 150);
@@ -1312,6 +1332,7 @@ function applyEmailFlowEmphasis() {
       input.value = _customSpFolderName || _getDefaultSpFolderSubject();
       input.maxLength = 70;
       input.title = "Folder name (the date prefix is added automatically)";
+      input.setAttribute("aria-label", "SharePoint folder name");
       input.style.cssText = "display:block;width:100%;box-sizing:border-box;font-size:12px;padding:5px 8px;margin:2px 0 6px;border:1px solid var(--primary);border-radius:4px;";
       capSp.appendChild(input);
 
@@ -2185,6 +2206,7 @@ function showPendingFilingBanner() {
     if (!mainView) return;
     const el = document.createElement("div");
     el.id = "filingPendingBanner";
+    el.setAttribute("role", "alert"); // interrupted saves warrant an assertive announcement
     el.style.cssText = "display:none;background:#fef3c7;border:1px solid #f59e0b;color:#78350f;padding:8px 12px;margin:8px 12px;border-radius:6px;font-size:12px;";
     mainView.insertBefore(el, mainView.firstChild);
   }
@@ -3066,7 +3088,7 @@ async function sweepRecentMail() {
         " · already filed " + r.alreadyFiled + "  — preview only, nothing saved.";
     }
     const grp = (t) => '<div style="font-weight:600;margin:8px 0 4px;">' + t + "</div>";
-    const meta = (t) => '<span style="color:#888;">' + t + "</span>";
+    const meta = (t) => '<span style="color:#616161;">' + t + "</span>";
     const rowCss = 'style="padding:4px 0;border-top:1px solid #eee;font-size:12px;"';
     const lines = [];
     if (r.file.length) {
@@ -3107,7 +3129,7 @@ function renderSweepResults(scanned, b) {
   const esc = (s) => String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const grp = (t) => '<div style="font-weight:600;margin:8px 0 4px;">' + t + "</div>";
-  const meta = (t) => '<span style="color:#888;">' + t + "</span>";
+  const meta = (t) => '<span style="color:#616161;">' + t + "</span>";
   const rowCss = 'style="padding:4px 0;border-top:1px solid #eee;font-size:12px;"';
   const out = [];
   if (b.file.length) {
@@ -3264,7 +3286,7 @@ function renderSweepReviewQueue() {
   const resultsEl = document.getElementById("sweepResults");
   if (!resultsEl) return;
   const pending = _sweepReview.filter((e) => !e._done);
-  if (!pending.length) { resultsEl.innerHTML = '<span style="color:#888;">Review queue clear.</span>'; return; }
+  if (!pending.length) { resultsEl.innerHTML = '<span style="color:#616161;">Review queue clear.</span>'; return; }
   const bcss = 'style="margin:2px 4px 2px 0;padding:2px 8px;font-size:12px;cursor:pointer;"';
   const rows = ['<div style="font-weight:600;margin:8px 0 4px;">🟡 Review (' + pending.length + ' left)</div>'];
   _sweepReview.forEach((e, i) => {
@@ -3273,7 +3295,7 @@ function renderSweepReviewQueue() {
       '<button type="button" data-sw="file" data-i="' + i + '" data-ci="' + ci + '" ' + bcss + ">" +
       sweepEsc(c.project.projectNumber || c.project.name) + "</button>").join("");
     rows.push('<div style="padding:6px 0;border-top:1px solid #eee;font-size:12px;">' +
-      sweepEsc(e.subject) + '<br><span style="color:#888;">' + sweepEsc(e.from) + " · " +
+      sweepEsc(e.subject) + '<br><span style="color:#616161;">' + sweepEsc(e.from) + " · " +
       sweepEsc((e.date || "").slice(0, 10)) + "</span><br>File to: " + cands +
       '<button type="button" data-sw="skip" data-i="' + i + '" ' + bcss + ">Skip</button></div>");
   });
@@ -3730,7 +3752,7 @@ async function renderResponseWatchlist() {
             <div class="wl-meta">${escHtml(r.client_name || r.client_email || "")}${proj ? " · " + escHtml(proj.name) : ""} · flagged ${escHtml(_relativeTime(r.added_at))}</div>
             <div class="wl-reasons">${escHtml(reasons)} ${due}</div>
           </div>
-          <button type="button" class="wl-dismiss" data-cid="${escHtml(r.conversation_id)}" title="Not awaiting a reply — dismiss">×</button>
+          <button type="button" class="wl-dismiss" data-cid="${escHtml(r.conversation_id)}" title="Not awaiting a reply — dismiss" aria-label="Dismiss watchlist item">×</button>
         </div>`;
     }).join("");
     list.querySelectorAll(".wl-open").forEach(el => {
@@ -4287,6 +4309,9 @@ function pickQuip(pool) {
 // are instant. Returns a Promise<boolean> — true when ready, false on load error.
 let _confettiLoadPromise = null;
 function loadConfetti() {
+  // Respect reduced-motion: resolve(false) so every celebration call site
+  // skips the confetti burst (they all check the boolean before firing).
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return Promise.resolve(false);
   if (typeof confetti === "function") return Promise.resolve(true);
   if (_confettiLoadPromise) return _confettiLoadPromise;
   _confettiLoadPromise = new Promise(resolve => {
@@ -5912,8 +5937,8 @@ async function sendToTeamsChannel() {
       `<h3 style="margin:0 0 8px">${safeSubject}</h3>` +
       (safeFrom ? `<p style="color:#666;font-size:12px;margin:0 0 8px">From: <strong>${safeFrom}</strong></p>` : "") +
       `<blockquote style="border-left:3px solid #ddd;margin:8px 0;padding:0 0 0 12px">${origBody || "<p><em>(no body)</em></p>"}</blockquote>` +
-      (attCount > 0 ? `<p style="color:#888;font-size:11px;font-style:italic">📎 Original email has ${attCount} attachment${attCount === 1 ? "" : "s"} — share separately if needed.</p>` : "") +
-      `<p style="color:#888;font-size:11px;font-style:italic">Shared from Outlook via PMS Add-in</p>`;
+      (attCount > 0 ? `<p style="color:#595959;font-size:11px;font-style:italic">📎 Original email has ${attCount} attachment${attCount === 1 ? "" : "s"} — share separately if needed.</p>` : "") +
+      `<p style="color:#595959;font-size:11px;font-style:italic">Shared from Outlook via PMS Add-in</p>`;
 
     // Use the on-demand ChannelMessage.Send token (not the default getToken)
     // so the consent prompt only fires the first time the user posts to a
@@ -6292,12 +6317,16 @@ function setRfiMode(mode) {
   document.getElementById("rfiExistingForm").style.display = mode === "existing" ? "" : "none";
   document.getElementById("rfiModeNew").className      = "btn mode-tab " + (mode === "new"      ? "btn-blue"  : "btn-ghost");
   document.getElementById("rfiModeExisting").className = "btn mode-tab " + (mode === "existing" ? "btn-blue"  : "btn-ghost");
+  document.getElementById("rfiModeNew").setAttribute("aria-pressed",      mode === "new"      ? "true" : "false");
+  document.getElementById("rfiModeExisting").setAttribute("aria-pressed", mode === "existing" ? "true" : "false");
 }
 function setSubMode(mode) {
   document.getElementById("subNewForm").style.display      = mode === "new"      ? "" : "none";
   document.getElementById("subExistingForm").style.display = mode === "existing" ? "" : "none";
   document.getElementById("subModeNew").className      = "btn mode-tab " + (mode === "new"      ? "btn-purple" : "btn-ghost");
   document.getElementById("subModeExisting").className = "btn mode-tab " + (mode === "existing" ? "btn-purple" : "btn-ghost");
+  document.getElementById("subModeNew").setAttribute("aria-pressed",      mode === "new"      ? "true" : "false");
+  document.getElementById("subModeExisting").setAttribute("aria-pressed", mode === "existing" ? "true" : "false");
 }
 function renderRfiPicker() {
   const sel  = document.getElementById("rfiExistingSelect");
@@ -8433,7 +8462,7 @@ async function showDatesView() {
   showView("datesView");
   document.getElementById("milestoneForm").style.display = "none";
   const list = document.getElementById("datesList");
-  list.innerHTML = '<p style="color:#64748b;font-size:12px;text-align:center;padding:16px 0;">⏳ Scanning email…</p>';
+  list.innerHTML = '<p style="color:#616161;font-size:12px;text-align:center;padding:16px 0;">⏳ Scanning email…</p>';
   try {
     const token = await getToken();
     const html  = await getEmailBodyHtml(token);
@@ -8442,16 +8471,16 @@ async function showDatesView() {
     const text = (tmp.innerText || tmp.textContent || "").replace(/\s+/g, " ");
     const dates = extractDueDates(text, emailItem?.dateTimeCreated);
     if (!dates.length) {
-      list.innerHTML = '<p style="color:#64748b;font-size:12px;text-align:center;padding:20px 0;">No due dates found in this email.</p>';
+      list.innerHTML = '<p style="color:var(--text-soft);font-size:12px;text-align:center;padding:20px 0;">No due dates found in this email.</p>';
       return;
     }
     list.innerHTML = dates.map((d, i) => `
       <div class="date-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
-          <span style="font-size:13px;font-weight:700;color:${d.hasKeyword ? "#60b4ff" : "#e2e8f0"};">${escHtml(d.display)}</span>
+          <span style="font-size:13px;font-weight:700;color:${d.hasKeyword ? "var(--primary)" : "var(--text)"};">${escHtml(d.display)}</span>
           ${d.hasKeyword ? '<span style="font-size:10px;background:#1e3a5f;color:#60b4ff;padding:1px 7px;border-radius:4px;flex-shrink:0;">deadline</span>' : ""}
         </div>
-        <div style="font-size:11px;color:#64748b;line-height:1.5;margin-bottom:8px;font-style:italic;">${escHtml(d.ctx)}</div>
+        <div style="font-size:11px;color:var(--text-soft);line-height:1.5;margin-bottom:8px;font-style:italic;">${escHtml(d.ctx)}</div>
         <button class="btn btn-blue" style="padding:5px 12px;font-size:11px;margin-bottom:0;"
           onclick="prefillMilestone('${d.iso}')">➕ Use this date</button>
       </div>
@@ -8472,7 +8501,7 @@ function prefillMilestone(iso) {
 function showManualMilestoneForm() {
   showView("datesView");
   const list = document.getElementById("datesList");
-  if (list) list.innerHTML = '<p style="color:#64748b;font-size:12px;text-align:center;padding:16px 0;">Manual mode: enter milestone details below.</p>';
+  if (list) list.innerHTML = '<p style="color:#616161;font-size:12px;text-align:center;padding:16px 0;">Manual mode: enter milestone details below.</p>';
   const defaultDate = new Date();
   const iso = defaultDate.getFullYear() + "-" + String(defaultDate.getMonth() + 1).padStart(2, "0") + "-" + String(defaultDate.getDate()).padStart(2, "0");
   prefillMilestone(iso);
@@ -8617,14 +8646,14 @@ function showPeopleView() {
       }
       return `
       <div class="participant-row${fullyFiled ? ' added' : ''}" data-idx="${i}"${fullyFiled ? ' style="opacity:0.8;"' : ''}>
-        <div class="participant-id">
-          <div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        <button type="button" class="participant-id">
+          <span style="display:block;font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${escHtml(p.displayName || p.emailAddress)}
-          </div>
-          ${p.displayName && p.displayName !== p.emailAddress ? `<div style="font-size:11px;color:var(--text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+          </span>
+          ${p.displayName && p.displayName !== p.emailAddress ? `<span style="display:block;font-size:11px;color:var(--text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
             ${escHtml(p.emailAddress || "")}
-          </div>` : ""}
-        </div>
+          </span>` : ""}
+        </button>
         ${statusHtml}
         <span class="pill" style="background:${labelBg[p.label]||'var(--surface-2)'};color:${labelColor[p.label]||'var(--text-soft)'};">
           ${escHtml(p.label || "")}
@@ -9169,13 +9198,25 @@ function showView(id) {
     const el = document.getElementById(v);
     if (el) el.classList.toggle("active", v === id);
   });
+  // Move focus to the new view's first heading so screen-reader users hear
+  // the view change. Skipped on the very first call (initial render) so the
+  // add-in doesn't yank focus away from Outlook while loading.
+  if (showView._hasShownView) {
+    const view = document.getElementById(id);
+    const heading = view && view.querySelector("h1, h2");
+    if (heading) {
+      heading.setAttribute("tabindex", "-1");
+      heading.focus();
+    }
+  }
+  showView._hasShownView = true;
 }
 // Fallback: if Office.onReady never fires (browser preview / load failure),
 // replace spinner with a plain message after 5 seconds
 setTimeout(() => {
   const loading = document.getElementById("loadingView");
   if (loading && loading.style.display !== "none") {
-    loading.innerHTML = '<p style="color:#94a3b8;font-size:12px;text-align:center;padding:0 16px;">Open this add-in from Outlook.<br/>To sideload, use the manifest.xml file.</p>';
+    loading.innerHTML = '<p style="color:#616161;font-size:12px;text-align:center;padding:0 16px;">Open this add-in from Outlook.<br/>To sideload, use the manifest.xml file.</p>';
   }
 }, 5000);
 // While a "⏳ …" busy message is showing, this holds its element id so the
@@ -9186,6 +9227,9 @@ function setStatus(elId, type, msg) {
   const el = document.getElementById(elId);
   if (!el) return;
   el.className = "status-msg" + (msg ? " show " + type : "");
+  // Errors should interrupt the screen reader (role=alert); everything else
+  // announces politely via the static role="status" the markup starts with.
+  el.setAttribute("role", type === "error" ? "alert" : "status");
   // "⏳" prefix = busy message. Swap the static emoji for the animated
   // spinner so users can tell a working save from a stuck one — every
   // existing call site opts in just by keeping the emoji convention.
@@ -9193,6 +9237,7 @@ function setStatus(elId, type, msg) {
     el.textContent = msg.slice(1).trim();
     const spin = document.createElement("span");
     spin.className = "spinner";
+    spin.setAttribute("aria-hidden", "true");
     spin.style.cssText = "vertical-align:-2px;margin-right:6px;";
     el.prepend(spin);
     _busyStatusElId = elId;

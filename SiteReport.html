@@ -27,6 +27,7 @@
       if (document.getElementById("__updateBanner")) return;
       const banner = document.createElement("div");
       banner.id = "__updateBanner";
+      banner.setAttribute("role", "alert");
       banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);";
       banner.innerHTML = '<span>🔄 New version available (' + remote + '). Reload to update.</span><button id="__updateBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Reload now</button>';
       document.body.appendChild(banner);
@@ -47,7 +48,7 @@
       --border: #30363d;
       --text: #e6edf3;
       --dim: #94a3b8;
-      --muted: #64748b;
+      --muted: #8b98ab;
       --green: #10b981;
       --yellow: #f59e0b;
       --red: #ef4444;
@@ -58,7 +59,8 @@
     h2 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 22px 0 10px; }
     label { font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
     input, select, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit; width: 100%; }
-    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--blue); }
+    input:focus, select:focus, textarea:focus { border-color: var(--blue); }
+    :focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
     textarea { resize: vertical; }
     button { font-family: inherit; cursor: pointer; }
     .btn { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
@@ -232,6 +234,16 @@
       40%  { transform: translateX(-50%) scale(1.2); }
       100% { transform: translateX(-50%) scale(1); }
     }
+    /* ─── Reduced motion ───
+       Kill decorative animation/transitions for users whose OS asks for it. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
   <script src="https://unpkg.com/docx@8.2.3/build/index.umd.js"></script>
@@ -254,7 +266,7 @@
     window.addEventListener("load", () => {
       if (typeof docx === "undefined" || !docx.Packer) {
         document.body.insertAdjacentHTML("afterbegin",
-          "<div style='background:#450a0a;color:#f87171;padding:12px 20px;font-size:13px;border-bottom:1px solid #7f1d1d'>" +
+          "<div role='alert' style='background:#450a0a;color:#f87171;padding:12px 20px;font-size:13px;border-bottom:1px solid #7f1d1d'>" +
           "⚠ Word library failed to load. Check your internet connection and refresh — save-to-SharePoint won't work without it.</div>"
         );
       }
@@ -264,8 +276,8 @@
 <body>
 
 <!-- Sign-in overlay -->
-<div class="sign-in-overlay" id="signInOverlay">
-  <div style="font-size: 22px; font-weight: 700;">SETTY Site Report</div>
+<div class="sign-in-overlay" id="signInOverlay" role="dialog" aria-modal="true" aria-labelledby="signInTitle">
+  <h2 id="signInTitle" style="font-size: 22px; font-weight: 700;">SETTY Site Report</h2>
   <div style="color: var(--dim); max-width: 420px;">Sign in with your Setty Microsoft account to load project info and generate site reports.</div>
   <button class="btn btn-primary" id="signInBtn">Sign in</button>
 </div>
@@ -326,7 +338,7 @@
     <h2 style="margin:0;">New Site Report</h2>
     <button class="btn btn-ghost" id="backToLandingBtn">← Back</button>
   </div>
-  <label>Project</label>
+  <label for="projectPicker">Project</label>
   <input id="projectPicker" list="projectOptions" placeholder="Type to search projects…" autocomplete="off">
   <datalist id="projectOptions"></datalist>
 </div>
@@ -363,10 +375,10 @@
   </div>
   <h2>Project</h2>
   <div class="grid-2">
-    <div><label>Project Name</label><input id="projectName" readonly /></div>
-    <div><label>Project Number</label><input id="projectNumber" readonly /></div>
-    <div style="grid-column: 1/-1;"><label>Client</label><input id="clientName" readonly /></div>
-    <div style="grid-column: 1/-1;"><label>Address</label><input id="projectAddress" readonly /></div>
+    <div><label for="projectName">Project Name</label><input id="projectName" readonly /></div>
+    <div><label for="projectNumber">Project Number</label><input id="projectNumber" readonly /></div>
+    <div style="grid-column: 1/-1;"><label for="clientName">Client</label><input id="clientName" readonly /></div>
+    <div style="grid-column: 1/-1;"><label for="projectAddress">Address</label><input id="projectAddress" readonly /></div>
   </div>
 </div>
 
@@ -374,10 +386,10 @@
 <div class="card" id="visitCard" style="display:none;">
   <h2>Visit</h2>
   <div class="grid-2">
-    <div><label>Visit Date</label><input type="date" id="visitDate" /></div>
-    <div><label>Weather / Conditions</label><input id="weather" placeholder="e.g. 65°F, clear" /></div>
+    <div><label for="visitDate">Visit Date</label><input type="date" id="visitDate" /></div>
+    <div><label for="weather">Weather / Conditions</label><input id="weather" placeholder="e.g. 65°F, clear" /></div>
   </div>
-  <div style="margin-top: 10px;"><label>General Notes</label><textarea id="generalNotes" rows="2" placeholder="Anything to note before the item list…"></textarea></div>
+  <div style="margin-top: 10px;"><label for="generalNotes">General Notes</label><textarea id="generalNotes" rows="2" placeholder="Anything to note before the item list…"></textarea></div>
   <div class="meta-line" style="margin-top:8px;">Attendees per discipline roll up automatically from the "By" field on each item.</div>
 </div>
 
@@ -397,7 +409,7 @@
   <h2>Add Item</h2>
   <div style="display:grid; grid-template-columns:1.2fr 1.2fr 1fr 1fr 1fr; gap:12px;">
     <div>
-      <label>Discipline</label>
+      <label for="newDiscipline">Discipline</label>
       <select id="newDiscipline">
         <option>Architectural</option>
         <option>Structural</option>
@@ -410,11 +422,11 @@
         <option>Other</option>
       </select>
     </div>
-    <div><label>Location / Room</label><input id="newLocation" placeholder="e.g. Rm 304, RTU-1 Roof, Stair B Lvl 2" /></div>
-    <div><label>Plan (optional)</label>
+    <div><label for="newLocation">Location / Room</label><input id="newLocation" placeholder="e.g. Rm 304, RTU-1 Roof, Stair B Lvl 2" /></div>
+    <div><label for="newPlanId">Plan (optional)</label>
       <select id="newPlanId"><option value="">— No plan yet —</option></select>
     </div>
-    <div><label>By</label><input id="newEnteredBy" placeholder="Your initials / name" title="Defaults to you. Edit if logging on someone else's behalf." /></div>
+    <div><label for="newEnteredBy">By</label><input id="newEnteredBy" placeholder="Your initials / name" title="Defaults to you. Edit if logging on someone else's behalf." /></div>
     <div>
       <label>Photo (optional)</label>
       <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
@@ -427,30 +439,30 @@
         <input type="file" id="newPhoto" accept="image/*" style="display:none;" />
       </div>
       <div id="photoPreview" style="display:none; margin-top:8px; position:relative; width:120px;">
-        <img id="photoPreviewImg" style="width:120px; height:90px; object-fit:cover; border-radius:6px; border:1px solid var(--border);" />
-        <button type="button" id="photoPreviewClear" title="Clear photo" style="position:absolute; top:-6px; right:-6px; background:var(--red); color:white; border:none; border-radius:50%; width:20px; height:20px; cursor:pointer; font-size:11px; line-height:1;">×</button>
+        <img id="photoPreviewImg" alt="Preview of selected photo" style="width:120px; height:90px; object-fit:cover; border-radius:6px; border:1px solid var(--border);" />
+        <button type="button" id="photoPreviewClear" title="Clear photo" aria-label="Clear photo" style="position:absolute; top:-6px; right:-6px; background:var(--red); color:white; border:none; border-radius:50%; width:20px; height:20px; cursor:pointer; font-size:11px; line-height:1;">×</button>
       </div>
     </div>
   </div>
-  <div style="margin-top: 10px;"><label>Description</label><textarea id="newDescription" rows="2" placeholder="The punchlist item itself…"></textarea></div>
-  <div style="margin-top: 10px;"><label>Notes (optional)</label><input id="newNotes" placeholder="Supplemental notes" /></div>
+  <div style="margin-top: 10px;"><label for="newDescription">Description</label><textarea id="newDescription" rows="2" placeholder="The punchlist item itself…"></textarea></div>
+  <div style="margin-top: 10px;"><label for="newNotes">Notes (optional)</label><input id="newNotes" placeholder="Supplemental notes" /></div>
   <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center;">
     <button class="btn btn-primary" id="addItemBtn">+ Add Item</button>
-    <span class="status info" id="addItemStatus" style="display:none;"></span>
+    <span class="status info" id="addItemStatus" role="status" aria-live="polite" style="display:none;"></span>
   </div>
 </div>
 
 <!-- Items list (grouped by discipline) -->
 <div id="itemsList"></div>
 
-<div class="status info no-print" id="globalStatus" style="display:none; margin-top: 16px;"></div>
+<div class="status info no-print" id="globalStatus" role="status" aria-live="polite" style="display:none; margin-top: 16px;"></div>
 
 <!-- Pin Placement Modal (key-plan pin picker) -->
-<div id="placementModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:600; align-items:center; justify-content:center; padding:24px;">
+<div id="placementModal" class="no-print" role="dialog" aria-modal="true" aria-labelledby="placementTitle" tabindex="-1" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:600; align-items:center; justify-content:center; padding:24px;">
   <div style="background:var(--card); border:1px solid var(--border); border-radius:12px; max-width:1200px; width:100%; max-height:94vh; display:flex; flex-direction:column; box-shadow:0 12px 48px rgba(0,0,0,.6);">
     <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--border); gap:12px;">
       <div>
-        <div style="font-size:15px; font-weight:700;" id="placementTitle">Place Pin</div>
+        <h3 style="font-size:15px; font-weight:700;" id="placementTitle">Place Pin</h3>
         <div id="placementSub" style="font-size:11px; color:var(--dim); margin-top:2px;">Click anywhere on the plan to drop the pin. Drag an existing pin to nudge it.</div>
       </div>
       <div style="display:flex; gap:6px;">
@@ -463,11 +475,11 @@
 </div>
 
 <!-- Project Photos Picker Modal -->
-<div id="photoPickerModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:500; align-items:flex-start; justify-content:center; padding:40px 20px; overflow-y:auto;">
+<div id="photoPickerModal" class="no-print" role="dialog" aria-modal="true" aria-labelledby="photoPickerTitle" tabindex="-1" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:500; align-items:flex-start; justify-content:center; padding:40px 20px; overflow-y:auto;">
   <div style="background:var(--card); border:1px solid var(--border); border-radius:12px; max-width:980px; width:100%; max-height:90vh; display:flex; flex-direction:column; box-shadow:0 10px 40px rgba(0,0,0,.6);">
     <div style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border);">
       <div>
-        <div style="font-size:16px; font-weight:700;">Pick a Project Photo</div>
+        <h3 id="photoPickerTitle" style="font-size:16px; font-weight:700;">Pick a Project Photo</h3>
         <div id="photoPickerSub" style="font-size:12px; color:var(--dim); margin-top:2px;">Loading…</div>
       </div>
       <button class="btn btn-ghost" id="closePhotoPickerBtn">Close</button>
@@ -719,8 +731,18 @@ function ensureItemNumbers() {
   items.filter(i => !i.num).forEach(it => { it.num = nextNumberFor(it.discipline); });
 }
 
+// While the sign-in overlay is showing, everything behind it is inert so
+// keyboard and screen-reader users can't reach controls that don't work yet.
+// Removed in onSignedIn().
+function setAppInert(on) {
+  document.querySelectorAll("body > *:not(#signInOverlay):not(script)").forEach(el => {
+    if (on) el.setAttribute("inert", ""); else el.removeAttribute("inert");
+  });
+}
+
 // ─── INIT ────────────────────────────────────────────────────────────────────
 (async function init() {
+  setAppInert(true);   // app is non-interactive until sign-in completes
   document.getElementById("visitDate").value = localDateStr();
 
   msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
@@ -745,6 +767,7 @@ document.getElementById("signOutBtn").onclick = async () => {
 
 function onSignedIn() {
   document.getElementById("signInOverlay").style.display = "none";
+  setAppInert(false);
   document.getElementById("signOutBtn").style.display = "inline-block";
   document.getElementById("headerUser").textContent = msalAccount.name || msalAccount.username;
   loadProjects();
@@ -872,8 +895,9 @@ async function loadAndRenderReportsList() {
       const disciplines = [...new Set((r.items || []).map(i => i.discipline))].sort();
       const itemCount = (r.items || []).length;
       const status = r.status || "in_progress";
-      const card = document.createElement("div");
-      card.style.cssText = "border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:8px; cursor:pointer; background:var(--bg); transition:border-color .15s;";
+      const card = document.createElement("button");
+      card.type = "button";
+      card.style.cssText = "display:block; width:100%; text-align:left; font:inherit; color:inherit; border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:8px; cursor:pointer; background:var(--bg); transition:border-color .15s;";
       card.onmouseover = () => card.style.borderColor = "var(--blue)";
       card.onmouseout  = () => card.style.borderColor = "var(--border)";
       card.onclick = () => loadExistingReportById(row.id);
@@ -998,7 +1022,14 @@ document.getElementById("addItemBtn").onclick = async () => {
   const notes       = document.getElementById("newNotes").value.trim();
   const enteredBy   = document.getElementById("newEnteredBy").value.trim();
 
-  if (!description) { setAddStatus("error", "Description is required."); return; }
+  const descEl = document.getElementById("newDescription");
+  if (!description) {
+    descEl.setAttribute("aria-invalid", "true");
+    descEl.focus();
+    setAddStatus("error", "Description is required.");
+    return;
+  }
+  descEl.removeAttribute("aria-invalid");
 
   // Plan: stored as { planId, x, y } on the item. x/y default to null until
   // the user actually places the pin via the placement modal. An item with a
@@ -1139,18 +1170,18 @@ function renderPlans() {
     const card = document.createElement("div");
     card.style.cssText = "background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow:hidden;";
     card.innerHTML = `
-      <div style="aspect-ratio:4/3; background:var(--border); cursor:pointer;" title="Click to open placement view">
-        <img src="${plan.imageDataUrl}" style="width:100%; height:100%; object-fit:contain; background:#fff;" />
-      </div>
+      <button type="button" data-open style="display:block; width:100%; padding:0; border:none; aspect-ratio:4/3; background:var(--border); cursor:pointer;" title="Click to open placement view" aria-label="Open placement view for ${escapeHtml(plan.label)}">
+        <img src="${plan.imageDataUrl}" alt="${escapeHtml(plan.label)} key plan" style="width:100%; height:100%; object-fit:contain; background:#fff;" />
+      </button>
       <div style="padding:8px 10px;">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
           <div style="font-weight:600; font-size:12px; color:var(--text); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(plan.label)}</div>
-          <button class="icon-btn" title="Remove plan" data-del="${plan.id}">✕</button>
+          <button class="icon-btn" title="Remove plan" aria-label="Remove plan ${escapeHtml(plan.label)}" data-del="${plan.id}">✕</button>
         </div>
         <div style="font-size:10px; color:var(--dim); margin-top:2px;">${pinned} item${pinned===1?"":"s"} pinned</div>
       </div>`;
     card.querySelector("[data-del]").onclick = (ev) => { ev.stopPropagation(); deletePlan(plan.id); };
-    card.querySelector("img").onclick = () => openPlacementForPlan(plan.id);
+    card.querySelector("[data-open]").onclick = () => openPlacementForPlan(plan.id);
     list.appendChild(card);
   });
 }
@@ -1178,9 +1209,11 @@ function openPlacementForPlan(planId) {
 function openPlacementModal() {
   const plan = plans.find(p => p.id === placementActivePlanId);
   if (!plan) return;
-  document.getElementById("placementModal").style.display = "flex";
+  const modal = document.getElementById("placementModal");
+  modal.style.display = "flex";
   document.getElementById("placementTitle").textContent = "Place on plan: " + plan.label;
   renderPlacementCanvas();
+  modal.focus();   // move focus into the dialog (container has tabindex="-1")
 }
 document.getElementById("placementCloseBtn").onclick = () => {
   document.getElementById("placementModal").style.display = "none";
@@ -1228,8 +1261,9 @@ function renderPlacementCanvas() {
     itemsOnPlan.forEach(it => {
       const isActive = it.id === placementActiveItemId;
       const placed = it.pin && it.pin.x != null && it.pin.y != null;
-      const row = document.createElement("div");
-      row.style.cssText = `padding:6px 8px; border-radius:6px; cursor:pointer; margin-bottom:4px; ${isActive ? "background:var(--accent-dim); border:1px solid var(--blue);" : "border:1px solid transparent;"}`;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.style.cssText = `display:block; width:100%; text-align:left; font:inherit; color:inherit; padding:6px 8px; border-radius:6px; cursor:pointer; margin-bottom:4px; ${isActive ? "background:var(--accent-dim); border:1px solid var(--blue);" : "background:transparent; border:1px solid transparent;"}`;
       row.onclick = () => { placementActiveItemId = it.id; renderPlacementCanvas(); };
       row.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
@@ -1247,6 +1281,24 @@ function renderPlacementCanvas() {
   canvasBox.style.cssText = "flex:1; position:relative; max-height:75vh; overflow:auto; background:#fff; border:1px solid var(--border); border-radius:8px;";
   const positioner = document.createElement("div");
   positioner.style.cssText = "position:relative; display:inline-block;";
+  // Keyboard alternative to clicking the plan: focus the plan and press
+  // Enter to drop the active item's pin at center, then fine-tune with the
+  // pin's own arrow-key handling.
+  positioner.tabIndex = 0;
+  positioner.setAttribute("role", "button");
+  positioner.setAttribute("aria-label", "Plan image — press Enter to place a pin at center for the active item");
+  positioner.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" || ev.target !== positioner) return;
+    if (!placementActiveItemId) return;
+    const it = items.find(i => i.id === placementActiveItemId);
+    if (!it) return;
+    ev.preventDefault();
+    if (!it.pin) it.pin = { planId: placementActivePlanId, x: null, y: null };
+    if (it.pin.x == null || it.pin.y == null) { it.pin.x = 0.5; it.pin.y = 0.5; }
+    renderPlacementCanvas();
+    // Hand focus to the (re)placed pin so arrow-key nudging can start.
+    document.querySelector(`#placementCanvasWrap [data-pin-item="${it.id}"]`)?.focus();
+  });
   const img = document.createElement("img");
   img.src = plan.imageDataUrl;
   img.style.cssText = "display:block; max-width:100%; height:auto;";
@@ -1292,6 +1344,44 @@ function renderPlacementCanvas() {
       font-family:'JetBrains Mono',monospace; font-weight:700; font-size:10px;
       border:2px solid white; box-shadow:0 2px 6px rgba(0,0,0,.4);
       cursor:move; user-select:none; touch-action:none;`;
+    // Keyboard alternative to drag: the pin is a focusable button. Arrows
+    // nudge 1% of the plan (Shift = 5%); [ / ] rotate the camera direction
+    // 15° per press; Enter/Space makes this the active pin (shows its
+    // rotation handle), mirroring click.
+    pin.tabIndex = 0;
+    pin.setAttribute("role", "button");
+    pin.setAttribute("data-pin-item", it.id);
+    pin.setAttribute("aria-label", "Pin for item " + (numberByItemId[it.id] || "") + " — arrow keys move, brackets rotate");
+    pin.addEventListener("keydown", (ev) => {
+      const step = ev.shiftKey ? 0.05 : 0.01;
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowRight" || ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+        if (ev.key === "ArrowLeft")  it.pin.x = clamp(it.pin.x - step, 0, 1);
+        if (ev.key === "ArrowRight") it.pin.x = clamp(it.pin.x + step, 0, 1);
+        if (ev.key === "ArrowUp")    it.pin.y = clamp(it.pin.y - step, 0, 1);
+        if (ev.key === "ArrowDown")  it.pin.y = clamp(it.pin.y + step, 0, 1);
+        // Live DOM update — same no-re-render path the pointer drag uses,
+        // so the pin keeps focus while it moves.
+        group.style.left = (it.pin.x * 100).toFixed(2) + "%";
+        group.style.top  = (it.pin.y * 100).toFixed(2) + "%";
+        ev.preventDefault(); ev.stopPropagation();
+      } else if (ev.key === "[" || ev.key === "]") {
+        const delta = (ev.key === "]" ? 1 : -1) * (Math.PI / 12);   // 15°
+        const angle = (it.pin.direction == null ? 0 : it.pin.direction) + delta;
+        it.pin.direction = angle;
+        arrowWrap.style.transform = `rotate(${angle}rad)`;
+        arrowWrap.style.opacity = "1";
+        handle.style.left = (Math.cos(angle) * HANDLE_OFFSET) + "px";
+        handle.style.top  = (Math.sin(angle) * HANDLE_OFFSET) + "px";
+        handle.style.background = "#FFFFFF";
+        handle.style.color = "#1F3864";
+        ev.preventDefault(); ev.stopPropagation();
+      } else if (ev.key === "Enter" || ev.key === " ") {
+        placementActiveItemId = it.id;
+        renderPlacementCanvas();
+        document.querySelector(`#placementCanvasWrap [data-pin-item="${it.id}"]`)?.focus();
+        ev.preventDefault(); ev.stopPropagation();
+      }
+    });
     pin.onclick = (ev) => { ev.stopPropagation(); placementActiveItemId = it.id; renderPlacementCanvas(); };
     pin.onpointerdown = (ev) => {
       ev.preventDefault();
@@ -1438,6 +1528,14 @@ function clearPickedPhoto() {
   document.getElementById("newPhoto").value = "";
 }
 
+// Clear the invalid flag as soon as the field becomes valid again.
+document.getElementById("newDescription").addEventListener("input", (e) => {
+  if (e.target.value.trim()) e.target.removeAttribute("aria-invalid");
+});
+document.getElementById("visitDate").addEventListener("change", (e) => {
+  if (e.target.value) e.target.removeAttribute("aria-invalid");
+});
+
 document.getElementById("capturePhotoBtn").onclick = () =>
   document.getElementById("newPhoto").click();
 
@@ -1456,6 +1554,28 @@ document.getElementById("photoPreviewClear").onclick = clearPickedPhoto;
 document.getElementById("pickProjectPhotoBtn").onclick = openProjectPhotosPicker;
 document.getElementById("closePhotoPickerBtn").onclick = () =>
   document.getElementById("photoPickerModal").style.display = "none";
+
+// Keyboard support for the overlay dialogs: Escape closes, Tab cycles within
+// the dialog instead of tabbing into the page underneath.
+function trapDialogKeys(modalId, closeFn) {
+  const modal = document.getElementById(modalId);
+  modal.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeFn(); return; }
+    if (e.key !== "Tab") return;
+    const focusables = [...modal.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )].filter(el => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === modal)) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  });
+}
+trapDialogKeys("placementModal", () => document.getElementById("placementCloseBtn").click());
+trapDialogKeys("photoPickerModal", () => document.getElementById("closePhotoPickerBtn").click());
 
 // ─── GRAPH HELPERS ───────────────────────────────────────────────────────────
 async function getGraphToken() {
@@ -1514,6 +1634,7 @@ async function openProjectPhotosPicker() {
   const grid  = document.getElementById("photoPickerGrid");
   const sub   = document.getElementById("photoPickerSub");
   modal.style.display = "flex";
+  modal.focus();   // move focus into the dialog (container has tabindex="-1")
   grid.innerHTML = "";
   sub.textContent = "Loading…";
 
@@ -1581,15 +1702,16 @@ async function openProjectPhotosPicker() {
 // thumbnail area — `aspect-ratio: 1` was unreliable inside the picker grid
 // (cells collapsed to ~60px tall), so this pattern is the workhorse.
 function buildPhotoCard(file, sessionName) {
-  const card = document.createElement("div");
-  card.style.cssText = "background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow:hidden; cursor:pointer; transition:border-color .15s, transform .15s;";
+  const card = document.createElement("button");
+  card.type = "button";
+  card.style.cssText = "display:block; width:100%; padding:0; text-align:left; font:inherit; color:inherit; background:var(--bg); border:1px solid var(--border); border-radius:8px; overflow:hidden; cursor:pointer; transition:border-color .15s, transform .15s;";
   card.onmouseover = () => { card.style.borderColor = "var(--blue)"; card.style.transform = "translateY(-2px)"; };
   card.onmouseout  = () => { card.style.borderColor = "var(--border)"; card.style.transform = "none"; };
   const thumbUrl = file.thumbnails?.[0]?.medium?.url;
   card.innerHTML = `
     <div style="position:relative; width:100%; padding-top:100%; background:var(--border);">
       ${thumbUrl
-        ? `<img src="${thumbUrl}" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover;" />`
+        ? `<img src="${thumbUrl}" alt="${escapeHtml(file.name)}" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover;" />`
         : `<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:10px;">no preview</div>`}
     </div>
     <div style="padding:6px 8px; font-size:11px;">
@@ -1773,7 +1895,7 @@ function renderItems() {
     const section = document.createElement("div");
     section.className = "disc-section";
     section.innerHTML = `
-      <div class="disc-header">${disc} <span class="disc-count">· ${list.length}</span>${attendeesHtml}</div>
+      <h3 class="disc-header">${disc} <span class="disc-count">· ${list.length}</span>${attendeesHtml}</h3>
       <div id="disc-${cssEscape(disc)}"></div>`;
     root.appendChild(section);
     const inner = section.querySelector("#disc-" + cssEscape(disc));
@@ -1793,14 +1915,14 @@ function renderItemRow(item) {
   const row = document.createElement("div");
   row.className = "item-row";
   const photoHtml = item.photoDataUrl
-    ? `<img src="${item.photoDataUrl}" class="item-photo" alt="" />`
+    ? `<img src="${item.photoDataUrl}" class="item-photo" alt="Photo for item ${num}" />`
     : `<div class="item-photo-empty">no photo</div>`;
   let pinHtml = "";
   if (item.pin?.planId) {
     const plan = plans.find(p => p.id === item.pin.planId);
     const placed = item.pin.x != null && item.pin.y != null;
     pinHtml = `
-      <button class="icon-btn no-print" title="${placed ? "Move pin on " + (plan?.label || "plan") : "Place pin on " + (plan?.label || "plan")}" data-place="${item.id}"
+      <button class="icon-btn no-print" title="${placed ? "Move pin on " + (plan?.label || "plan") : "Place pin on " + (plan?.label || "plan")}" aria-label="${escapeHtml(placed ? "Move pin on " + (plan?.label || "plan") : "Place pin on " + (plan?.label || "plan"))}" data-place="${item.id}"
         style="color:${placed ? "var(--green)" : "var(--yellow)"}; font-size:11px; font-weight:600; padding:0;">
         ${placed ? "📍 " + escapeHtml(plan?.label || "plan") : "⚐ Place on " + escapeHtml(plan?.label || "plan")}
       </button>`;
@@ -1818,8 +1940,8 @@ function renderItemRow(item) {
     </div>
     <div class="item-actions">
       ${photoHtml}
-      <button class="icon-btn no-print" title="Edit" data-edit="${item.id}" style="color:var(--accent-light);">✎</button>
-      <button class="icon-btn no-print" title="Remove" data-remove="${item.id}">✕</button>
+      <button class="icon-btn no-print" title="Edit" aria-label="Edit item ${num}" data-edit="${item.id}" style="color:var(--accent-light);">✎</button>
+      <button class="icon-btn no-print" title="Remove" aria-label="Remove item ${num}" data-remove="${item.id}">✕</button>
     </div>`;
   row.querySelector("[data-edit]")?.addEventListener("click", () => startEditItem(item.id));
   row.querySelector("[data-remove]")?.addEventListener("click", () => removeItem(item.id));
@@ -1839,7 +1961,7 @@ function renderItemEditForm(num) {
     .join("");
 
   const photoPreview = editingItem.photoDataUrl
-    ? `<img src="${editingItem.photoDataUrl}" style="width:80px; height:60px; object-fit:cover; border-radius:4px; border:1px solid var(--border);" />`
+    ? `<img src="${editingItem.photoDataUrl}" alt="Current item photo" style="width:80px; height:60px; object-fit:cover; border-radius:4px; border:1px solid var(--border);" />`
     : `<div style="width:80px; height:60px; display:flex; align-items:center; justify-content:center; background:var(--border); border-radius:4px; color:var(--muted); font-size:10px;">no photo</div>`;
 
   wrap.innerHTML = `
@@ -1849,8 +1971,8 @@ function renderItemEditForm(num) {
     </div>
     <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:8px;">
       <div>
-        <label>Discipline</label>
-        <select data-field="discipline">
+        <label for="editDiscipline">Discipline</label>
+        <select id="editDiscipline" data-field="discipline">
           <option${editingItem.discipline === "Architectural" ? " selected" : ""}>Architectural</option>
           <option${editingItem.discipline === "Structural" ? " selected" : ""}>Structural</option>
           <option${editingItem.discipline === "Mechanical" ? " selected" : ""}>Mechanical</option>
@@ -1862,15 +1984,15 @@ function renderItemEditForm(num) {
           <option${editingItem.discipline === "Other" ? " selected" : ""}>Other</option>
         </select>
       </div>
-      <div><label>Location / Room</label><input data-field="location" value="${escapeHtml(editingItem.location || "")}" /></div>
-      <div><label>By</label><input data-field="enteredBy" value="${escapeHtml(editingItem.enteredBy || "")}" /></div>
+      <div><label for="editLocation">Location / Room</label><input id="editLocation" data-field="location" value="${escapeHtml(editingItem.location || "")}" /></div>
+      <div><label for="editEnteredBy">By</label><input id="editEnteredBy" data-field="enteredBy" value="${escapeHtml(editingItem.enteredBy || "")}" /></div>
     </div>
-    <div style="margin-bottom:8px;"><label>Description</label><textarea data-field="description" rows="2">${escapeHtml(editingItem.description || "")}</textarea></div>
-    <div style="margin-bottom:8px;"><label>Notes</label><input data-field="notes" value="${escapeHtml(editingItem.notes || "")}" /></div>
+    <div style="margin-bottom:8px;"><label for="editDescription">Description</label><textarea id="editDescription" data-field="description" rows="2">${escapeHtml(editingItem.description || "")}</textarea></div>
+    <div style="margin-bottom:8px;"><label for="editNotes">Notes</label><input id="editNotes" data-field="notes" value="${escapeHtml(editingItem.notes || "")}" /></div>
     <div style="display:grid; grid-template-columns:1fr 2fr; gap:8px; margin-bottom:10px;">
       <div>
-        <label>Plan</label>
-        <select data-field="planId">${planOptions}</select>
+        <label for="editPlanId">Plan</label>
+        <select id="editPlanId" data-field="planId">${planOptions}</select>
       </div>
       <div>
         <label>Photo</label>
@@ -1959,7 +2081,16 @@ async function doSaveReport(opts) {
   const silent = opts && opts.silent;
   if (!selectedProject) { if (!silent) setGlobalStatus("error", "Select a project first."); return false; }
   const visitDate = document.getElementById("visitDate").value;
-  if (!visitDate) { if (!silent) setGlobalStatus("error", "Set a visit date first."); return false; }
+  if (!visitDate) {
+    if (!silent) {
+      setGlobalStatus("error", "Set a visit date first.");
+      const vd = document.getElementById("visitDate");
+      vd.setAttribute("aria-invalid", "true");
+      vd.focus();
+    }
+    return false;
+  }
+  document.getElementById("visitDate").removeAttribute("aria-invalid");
 
   const nowIso = new Date().toISOString();
   // "creating" is keyed on version (0 until a successful INSERT), NOT on
@@ -2082,7 +2213,14 @@ window.addEventListener("beforeunload", (e) => {
 async function completeAndGenerate() {
   if (!selectedProject) { setGlobalStatus("error", "Select a project first."); return; }
   const visitDate = document.getElementById("visitDate").value;
-  if (!visitDate) { setGlobalStatus("error", "Set a visit date first."); return; }
+  if (!visitDate) {
+    setGlobalStatus("error", "Set a visit date first.");
+    const vd = document.getElementById("visitDate");
+    vd.setAttribute("aria-invalid", "true");
+    vd.focus();
+    return;
+  }
+  document.getElementById("visitDate").removeAttribute("aria-invalid");
   // Fold any open inline edit into the report before finalizing — otherwise
   // the saved record and the Word doc would silently miss it.
   commitOpenEdit();

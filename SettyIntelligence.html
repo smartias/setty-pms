@@ -26,6 +26,7 @@
       if (document.getElementById("__updateBanner")) return;
       const banner = document.createElement("div");
       banner.id = "__updateBanner";
+      banner.setAttribute("role", "status");
       banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,0.4);";
       banner.innerHTML = '<span>🔄 New version available (' + remote + '). Reload to update.</span><button id="__updateBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Reload now</button>';
       document.body.appendChild(banner);
@@ -40,7 +41,7 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --navy: #1F3864; --blue: #3B82F6; --bg: #0d1117; --card: #161b22;
-      --border: #30363d; --text: #e6edf3; --dim: #94a3b8; --muted: #64748b;
+      --border: #30363d; --text: #e6edf3; --dim: #94a3b8; --muted: #8b98ab;
       --green: #10b981; --yellow: #f59e0b; --red: #ef4444; --accent-dim: #1e3a5f;
       --purple: #a78bfa;
     }
@@ -51,7 +52,11 @@
     a:hover { text-decoration: underline; }
     label { font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
     input, select, textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; font-family: inherit; width: 100%; }
-    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--blue); }
+    input:focus, select:focus, textarea:focus { border-color: var(--blue); }
+    :focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .skip-link { position: absolute; left: -9999px; top: 0; z-index: 300; background: var(--navy); color: #fff; padding: 8px 14px; border-radius: 0 0 8px 0; font-size: 13px; font-weight: 600; }
+    .skip-link:focus { left: 0; }
     textarea { resize: vertical; }
     button { font-family: inherit; cursor: pointer; }
     .btn { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); border-radius: 6px; padding: 7px 14px; font-size: 13px; font-weight: 600; }
@@ -65,8 +70,9 @@
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
     .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 12px; }
     .header-user { font-size: 12px; color: var(--dim); }
-    .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px; font-size: 12px; color: var(--dim); cursor: pointer; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px; font: inherit; font-size: 12px; color: var(--dim); cursor: pointer; }
     .chip:hover { border-color: var(--blue); color: var(--text); }
+    .hm-open { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; text-decoration: underline; text-underline-offset: 2px; }
     .pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
     .pill-blue   { background: var(--accent-dim); color: #60a5fa; border: 1px solid var(--blue); }
     .pill-green  { background: #064e3b; color: var(--green); border: 1px solid var(--green); }
@@ -157,21 +163,22 @@
   </style>
 </head>
 <body>
-  <div class="header-bar">
+  <a class="skip-link" href="#view">Skip to main content</a>
+  <header class="header-bar">
     <div>
       <h1>🧠 Institutional Intelligence</h1>
       <div class="header-user">Mined from emails, RFIs, submittals, site reports, meeting minutes &amp; QA comments ·
         <a href="https://smartias.github.io/setty-pms/SettyPMS.html">← Back to PMS</a>
       </div>
     </div>
-    <div class="chip" id="userChip" title="Sign in (used for approvals and lesson authorship)">
+    <button type="button" class="chip" id="userChip" title="Sign in (used for approvals and lesson authorship)">
       👤 <span id="userName">Sign in</span>
-    </div>
-  </div>
+    </button>
+  </header>
 
-  <div class="tabs" id="tabs"></div>
-  <div class="status" id="status"></div>
-  <div id="view"></div>
+  <nav class="tabs" id="tabs" aria-label="Modules"></nav>
+  <div class="status" id="status" role="status" aria-live="polite" aria-atomic="true"></div>
+  <main id="view" tabindex="-1"></main>
 
   <!-- Modal mount -->
   <div id="modalMount"></div>
@@ -276,11 +283,13 @@ function syncUrl() {
 }
 
 const $ = (id) => document.getElementById(id);
+// Loading a11y: mark #view busy while a module is fetching, clear on render.
+const setBusy = (b) => { const v = $("view"); if (!v) return; b ? v.setAttribute("aria-busy", "true") : v.removeAttribute("aria-busy"); };
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 // Hrefs built from database rows: esc() keeps them inside the attribute, but a
 // javascript: value would still execute — only allow http(s).
 const safeUrl = (u) => /^https?:\/\//i.test(String(u == null ? "" : u).trim()) ? String(u).trim() : "";
-function toast(msg, kind) { const el = $("status"); el.className = "status " + (kind || "info"); el.textContent = msg; if (kind === "success") setTimeout(() => { el.className = "status"; }, 3500); }
+function toast(msg, kind) { const el = $("status"); el.className = "status " + (kind || "info"); el.setAttribute("role", kind === "error" ? "alert" : "status"); el.textContent = (kind === "error" ? "Error: " : "") + msg; if (kind === "success") setTimeout(() => { el.className = "status"; }, 3500); }
 
 // ── Data loading ─────────────────────────────────────────────────────────────
 async function loadAll() {
@@ -322,7 +331,17 @@ async function loadCounts() {
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
+// render() replaces #view wholesale, which dumps keyboard focus to <body>.
+// Capture the focused element's id before the rebuild and restore it after.
 function render() {
+  const _focusId = document.activeElement && document.activeElement.id;
+  _renderInner();
+  if (_focusId) {
+    const el = document.getElementById(_focusId);
+    if (el && el !== document.activeElement) el.focus();
+  }
+}
+function _renderInner() {
   $("userName").textContent = settyAuth.isSignedIn()
     ? "✓ " + (state.user || settyAuth.email())
     : (state.user || "Sign in");
@@ -331,7 +350,8 @@ function render() {
     : "Sign in (used for approvals and lesson authorship)";
   renderTabs();
   const v = $("view");
-  if (state.loading) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  if (state.loading) { setBusy(true); v.innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
+  setBusy(false);
   if (state.tab === "brief") return renderBrief();
   if (state.tab === "heatmap") return renderHeatmap();
   if (state.tab === "lessons") return renderLessons();
@@ -345,7 +365,7 @@ function renderTabs() {
   $("tabs").innerHTML = MODULES.map(m => {
     const count = m.key === "lessons" ? state.lessons.length : (state.counts[m.key] ?? "");
     const badge = count === "" ? "" : `<span class="badge">${count}</span>`;
-    return `<button class="tab ${state.tab === m.key ? "active" : ""}" onclick="setTab('${m.key}')">${esc(m.label)} ${badge}</button>`;
+    return `<button class="tab ${state.tab === m.key ? "active" : ""}"${state.tab === m.key ? ' aria-current="page"' : ""} onclick="setTab('${m.key}')">${esc(m.label)} ${badge}</button>`;
   }).join("");
 }
 function setTab(k) { state.tab = k; syncUrl(); render(); }
@@ -392,7 +412,7 @@ function fbHTML(key, itemKey, itemText) {
   const vkey = itemKey ? key + "::" + itemKey : key;
   const v = state.votes[vkey];
   const btn = (val, icon, tip) =>
-    `<button class="fbbtn ${v===val?"on":""}" ${v!=null?"disabled":""} data-k="${esc(key)}" data-i="${esc(itemKey||"")}" data-t="${esc((itemText||"").slice(0,140))}" data-v="${val}" onclick="voteBriefEl(this)" title="${tip}">${icon}</button>`;
+    `<button class="fbbtn ${v===val?"on":""}" aria-label="${val===1?"Mark useful":"Mark not useful"}" ${v!=null?"disabled":""} data-k="${esc(key)}" data-i="${esc(itemKey||"")}" data-t="${esc((itemText||"").slice(0,140))}" data-v="${val}" onclick="voteBriefEl(this)" title="${tip}">${icon}</button>`;
   const hiddenNote = (v === -1 && itemKey)
     ? `<span style="font-size:10px;color:var(--muted);white-space:nowrap">✂ off future briefs here</span>` : "";
   return `<span class="fb no-print" style="display:inline-flex;gap:4px;align-items:baseline;vertical-align:middle">${btn(1,"👍","Useful on this project")}${btn(-1,"👎","Not relevant on this project — removes it from this project's future briefs")}${hiddenNote}</span>`;
@@ -420,12 +440,12 @@ function renderBrief() {
   const b = state.brief;
   const ready = state.briefForNum === state.briefNum && b;
   const body = state.briefLoading
-    ? '<div class="empty">Assembling the brief…</div>'
+    ? '<div class="empty" role="status">Assembling the brief…</div>'
     : (ready ? (b.project ? briefBodyHTML(b) : `<div class="empty">No project found for ${esc(state.briefNum)}.</div>`) : "");
   const chrome = state.embed ? "" : `
     <div class="toolbar">
       <div class="grow">
-        <label>Project</label>
+        <label for="briefNum">Project</label>
         <input id="briefNum" list="briefProjList" value="${esc(state.briefNum)}"
           onchange="setBriefNum(this.value)" placeholder="SAPX number"/>
         <datalist id="briefProjList">${projOpts}</datalist>
@@ -437,6 +457,7 @@ function renderBrief() {
     <div class="status info" style="display:block;margin-bottom:16px">📥 This is what <b>arrives</b> on the project — assembled from the firm's record, not searched for. In the PMS it renders on the project's Overview.</div>`;
   $("view").innerHTML = `${chrome}<div id="briefBody">${body}</div>`;
   if (state.briefForNum !== state.briefNum && state.briefInflight !== state.briefNum) loadBrief(state.briefNum);
+  setBusy(state.briefLoading);
 }
 
 function briefBodyHTML(b) {
@@ -553,7 +574,7 @@ function briefBodyHTML(b) {
       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:8px">Awaiting Setty — their message was last in the thread (${eoi.length})</div>
       ${eoi.map(o=>`<div class="brief-row" style="font-size:12px">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
-          <div style="font-weight:600">${(String(o.urgent)==="true")?`<span class="pill pill-red">urgent</span> `:""}${esc(o.subject||"(no subject)")}${safeUrl(o.link)?` <a href="${esc(safeUrl(o.link))}" target="_blank" rel="noreferrer" title="Open in SharePoint">📁</a>`:""}</div>
+          <div style="font-weight:600">${(String(o.urgent)==="true")?`<span class="pill pill-red">urgent</span> `:""}${esc(o.subject||"(no subject)")}${safeUrl(o.link)?` <a href="${esc(safeUrl(o.link))}" target="_blank" rel="noreferrer" title="Open in SharePoint" aria-label="Open in SharePoint">📁</a>`:""}</div>
           <div style="white-space:nowrap;display:flex;gap:8px;align-items:baseline"><span style="font-family:monospace;font-size:11px;color:${o.age_days>=45?"var(--red)":"var(--muted)"}">${esc(String(o.age_days))}d</span>${fbHTML("inbox_open", (o.subject||"").slice(0,60)+"|"+(o.date||""), o.subject)}</div>
         </div>
         <div style="color:var(--dim)">${esc(o.from||"")}${o.org?` · ${esc(o.org)}`:""}${o.date?` · ${esc(o.date)}`:""}</div>
@@ -732,7 +753,7 @@ function briefBodyHTML(b) {
     <div class="card" style="border-left:3px solid var(--red)">
       <h2>🔔 Needs attention now</h2>
       ${attn.slice(0,8).map(a => `<div class="brief-row" style="font-size:12.5px;display:flex;gap:8px;align-items:baseline">
-        <span style="width:6px;height:6px;border-radius:50%;background:${_sevColor[a.sev]};flex:none;margin-top:5px"></span>
+        <span style="width:6px;height:6px;border-radius:50%;background:${_sevColor[a.sev]};flex:none;margin-top:5px"></span><span class="sr-only">${({high:"High",med:"Medium",low:"Low"})[a.sev]||a.sev} severity:</span>
         <span style="line-height:1.5">${a.txt}</span>
       </div>`).join("")}
     </div>` : "";
@@ -960,7 +981,7 @@ function packBubbles(items) {
 function renderHeatmap() {
   const h = state.heat;
   if (!h.loaded && !h.loading) loadHeat();
-  if (h.loading || !h.loaded) { $("view").innerHTML = '<div class="empty">Scanning the portfolio…</div>'; return; }
+  if (h.loading || !h.loaded) { setBusy(true); $("view").innerHTML = '<div class="empty" role="status">Scanning the portfolio…</div>'; return; }
   const agencies = [...new Set(h.rows.map(r => r.agency).filter(Boolean))].sort();
   const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
   let rows = h.rows.filter(r => !h.f.agency || r.agency === h.f.agency);
@@ -980,7 +1001,7 @@ function renderHeatmap() {
       // Label only when it fits — the tooltip and table carry the rest.
       const nameFits = p.r >= 40, tagFits = p.r >= 22;
       const shortName = (r.name || "").length > 20 ? (r.name || "").slice(0, 19) + "…" : (r.name || "");
-      return `<g class="hm-b" data-num="${esc(r.num)}" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})" style="cursor:pointer">
+      return `<g class="hm-b" data-num="${esc(r.num)}" tabindex="0" role="button" aria-label="${esc(r.name || r.num)}" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})" style="cursor:pointer">
         <circle r="${p.r.toFixed(1)}" fill="${t.fill}" stroke="${t.stroke}" stroke-width="2"/>
         ${nameFits ? `<text y="-8" text-anchor="middle" style="font-size:10.5px;font-weight:700;fill:var(--text)">${esc(shortName)}</text>` : ""}
         ${tagFits ? `<text y="${nameFits ? 6 : -2}" text-anchor="middle" style="font-size:${nameFits ? 9 : 9.5}px;fill:var(--dim)">${esc(heatTag(r.num))}</text>` : ""}
@@ -993,11 +1014,12 @@ function renderHeatmap() {
   const legend = Object.values(HEAT_TIER).map(t =>
     `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)"><span style="width:12px;height:12px;border-radius:50%;background:${t.fill};border:2px solid ${t.stroke};flex:none"></span>${esc(t.label)}</span>`).join("");
   const tableRows = [...rows].sort((a, b) => heatScore(b) - heatScore(a)).map(r => {
-    const t = HEAT_TIER[heatTier(r)];
+    const tier = heatTier(r), t = HEAT_TIER[tier];
+    const tierWord = { hot: "Hot", watch: "Watch", quiet: "Quiet", hold: "On hold" }[tier] || tier;
     const cell = (open, overdue, word) => open ? `${open}${overdue ? ` <span style="color:var(--red)">(${overdue} ${word})</span>` : ""}` : `<span style="color:var(--muted)">—</span>`;
     const risks = r.risks_high + r.risks_med + r.risks_low;
     return `<tr class="hm-tr" data-num="${esc(r.num)}" style="cursor:pointer;border-bottom:1px solid var(--border)">
-      <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><b>${esc(r.name || r.num)}</b>${payBadge(r)}${frictionBadge(r)}${arBadge(r)} <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
+      <td style="padding:7px 10px 7px 0"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.stroke};margin-right:8px"></span><span class="sr-only">${tierWord} tier: </span><button type="button" class="hm-open" data-num="${esc(r.num)}"><b>${esc(r.name || r.num)}</b></button>${payBadge(r)}${frictionBadge(r)}${arBadge(r)} <span style="color:var(--muted);font-size:11px">${esc(r.num)}</span></td>
       <td style="padding:7px 10px;color:var(--dim)">${esc(r.agency || "")}</td>
       <td style="padding:7px 10px;font-weight:800;color:${t.stroke}">${Math.round(heatScore(r) * 10) / 10}${heatTier(r) === "hold" ? ` <span style="color:var(--muted);font-size:11px">⏸ on hold</span>` : ""}</td>
       <td style="padding:7px 10px">${r.emails_30d ? `${r.emails_30d} <span style="color:var(--muted);font-size:11px">emails</span>` : `<span style="color:var(--muted)">—</span>`}</td>
@@ -1011,8 +1033,8 @@ function renderHeatmap() {
   $("view").innerHTML = `
     <div class="status info" style="display:block;margin-bottom:14px">🔥 <b>${hot}</b> of ${rows.length} projects shown are running hot. Bubble <b>size</b> = weighted attention load (30-day email activity, open RFIs &amp; submittals, action items, overdue &amp; upcoming milestones, scope risks, 🚧 contractor RFI friction, 💰/💳 payment &amp; AR flags) · <b>color</b> = tier. AR comes from Accounting's weekly Directors Report; client-level balances flag every project of a slow-paying client. On-hold projects are deprioritized. Click a bubble to open that project's brief.</div>
     <div class="toolbar">
-      <div class="field"><label>Agency</label>
-        <select onchange="state.heat.f.agency=this.value; render()"><option value="">All</option>${opt(agencies, h.f.agency)}</select></div>
+      <div class="field"><label for="hmAgency">Agency</label>
+        <select id="hmAgency" onchange="state.heat.f.agency=this.value; render()"><option value="">All</option>${opt(agencies, h.f.agency)}</select></div>
       <div class="field" style="display:flex;align-items:center;gap:8px;padding-bottom:8px">
         <input type="checkbox" id="hmQuiet" class="selbox" ${h.f.quiet ? "checked" : ""} onchange="state.heat.f.quiet=this.checked; render()"/>
         <label for="hmQuiet" style="margin:0;cursor:pointer">Show quiet &amp; on-hold projects</label></div>
@@ -1021,15 +1043,15 @@ function renderHeatmap() {
     <div class="card" style="position:relative">
       <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">${legend}</div>
       ${svg}
-      <div id="hmTip" style="position:absolute;display:none;pointer-events:none;z-index:50;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;max-width:280px;box-shadow:0 4px 18px rgba(0,0,0,.5)"></div>
+      <div id="hmTip" style="position:absolute;display:none;z-index:50;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;max-width:280px;box-shadow:0 4px 18px rgba(0,0,0,.5)"></div>
     </div>
     <div class="card" style="overflow-x:auto">
       <h2 style="margin-top:0">Same data as a list</h2>
       <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px">
         <thead><tr style="text-align:left;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--border)">
-          <th style="padding:6px 10px 6px 0">Project</th><th style="padding:6px 10px">Agency</th><th style="padding:6px 10px">Score</th>
-          <th style="padding:6px 10px">Activity (30d)</th><th style="padding:6px 10px">RFIs</th><th style="padding:6px 10px">Submittals</th>
-          <th style="padding:6px 10px">Action items</th><th style="padding:6px 10px">Milestones</th><th style="padding:6px 10px">Risks</th>
+          <th scope="col" style="padding:6px 10px 6px 0">Project</th><th scope="col" style="padding:6px 10px">Agency</th><th scope="col" style="padding:6px 10px">Score</th>
+          <th scope="col" style="padding:6px 10px">Activity (30d)</th><th scope="col" style="padding:6px 10px">RFIs</th><th scope="col" style="padding:6px 10px">Submittals</th>
+          <th scope="col" style="padding:6px 10px">Action items</th><th scope="col" style="padding:6px 10px">Milestones</th><th scope="col" style="padding:6px 10px">Risks</th>
         </tr></thead>
         <tbody>${tableRows || `<tr><td colspan="9" class="empty">Nothing to show.</td></tr>`}</tbody>
       </table>
@@ -1067,19 +1089,37 @@ function wireHeatmap() {
   const open = num => { setBriefNum(num); setTab("brief"); };
   if (svgEl) {
     const box = svgEl.parentElement;
+    // 1.4.13: dismissible (Escape — see the document keydown handler), hoverable
+    // (moving the pointer onto the tooltip keeps it open) and persistent.
+    let hideTimer = null;
+    const showTip = r2 => { clearTimeout(hideTimer); tip.innerHTML = heatTipHTML(r2); tip.style.display = "block"; };
+    const hideTip = () => { clearTimeout(hideTimer); tip.style.display = "none"; };
+    const hideTipSoon = () => { clearTimeout(hideTimer); hideTimer = setTimeout(hideTip, 250); };
+    tip.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+    tip.addEventListener("mouseleave", hideTipSoon);
     svgEl.querySelectorAll(".hm-b").forEach(g => {
       const r = byNum[g.dataset.num]; if (!r) return;
       g.addEventListener("click", () => open(r.num));
-      g.addEventListener("mouseenter", () => { tip.innerHTML = heatTipHTML(r); tip.style.display = "block"; });
+      g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(r.num); } });
+      g.addEventListener("mouseenter", () => showTip(r));
       g.addEventListener("mousemove", e => {
         const b = box.getBoundingClientRect();
         const x = Math.min(e.clientX - b.left + 14, b.width - 290);
         tip.style.left = Math.max(6, x) + "px"; tip.style.top = (e.clientY - b.top + 14) + "px";
       });
-      g.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+      g.addEventListener("mouseleave", hideTipSoon);
+      // Keyboard: focusing a bubble shows the tooltip beside it, blur hides it.
+      g.addEventListener("focus", () => {
+        showTip(r);
+        const b = box.getBoundingClientRect(), gb = g.getBoundingClientRect();
+        const x = Math.min(gb.left - b.left + gb.width / 2, b.width - 290);
+        tip.style.left = Math.max(6, x) + "px"; tip.style.top = (gb.bottom - b.top + 8) + "px";
+      });
+      g.addEventListener("blur", hideTip);
     });
   }
   document.querySelectorAll(".hm-tr").forEach(tr => tr.addEventListener("click", () => open(tr.dataset.num)));
+  document.querySelectorAll(".hm-open").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); open(b.dataset.num); }));
 }
 
 // ── Best Practices module (review queue of auto-generated practices) ─────────
@@ -1116,33 +1156,33 @@ function renderPractices() {
   $("view").innerHTML = `
     <div class="toolbar">
       <div class="grow">
-        <label>Search</label>
+        <label for="pfq">Search</label>
         <input id="pfq" placeholder="title, text, theme, system…" value="${esc(state.pfilter.q||"")}"
           oninput="state.pfilter.q=this.value; renderPracticeList()"/>
       </div>
       <div class="field">
-        <label>Discipline</label>
-        <select onchange="state.pfilter.discipline=this.value; renderPracticeList()">
+        <label for="pfDiscipline">Discipline</label>
+        <select id="pfDiscipline" onchange="state.pfilter.discipline=this.value; renderPracticeList()">
           <option value="">All</option>${opt(disciplines, state.pfilter.discipline)}
         </select>
       </div>
       <div class="field">
-        <label>Theme</label>
-        <select onchange="state.pfilter.theme=this.value; renderPracticeList()">
+        <label for="pfTheme">Theme</label>
+        <select id="pfTheme" onchange="state.pfilter.theme=this.value; renderPracticeList()">
           <option value="">All</option>${opt(themes, state.pfilter.theme)}
         </select>
       </div>
       <div class="field">
-        <label>Type</label>
-        <select onchange="state.pfilter.type=this.value; renderPracticeList()">
+        <label for="pfType">Type</label>
+        <select id="pfType" onchange="state.pfilter.type=this.value; renderPracticeList()">
           <option value="">All</option>
           <option value="design" ${state.pfilter.type==="design"?"selected":""}>Design / coordination</option>
           <option value="workflow" ${state.pfilter.type==="workflow"?"selected":""}>🧭 Workflow</option>
         </select>
       </div>
       <div class="field">
-        <label>Status</label>
-        <select onchange="state.pfilter.status=this.value; renderPracticeList()">
+        <label for="pfStatus">Status</label>
+        <select id="pfStatus" onchange="state.pfilter.status=this.value; renderPracticeList()">
           <option value="">All</option>
           <option value="suggested" ${state.pfilter.status==="suggested"?"selected":""}>Suggested</option>
           <option value="draft" ${state.pfilter.status==="draft"?"selected":""}>Needs review</option>
@@ -1167,7 +1207,7 @@ function renderPracticeReviewNote() {
 }
 function renderPracticeList() {
   const el = $("bpList"); if (!el) return;
-  if (state.practicesLoading) { el.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  if (state.practicesLoading) { setBusy(true); el.innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
   const rows = practicesFiltered();
   el.innerHTML = `<div id="bulkBarP">${bulkBar("P")}</div>` + (rows.length ? rows.map(renderPracticeCard).join("")
     : ((state.practices || []).length ? '<div class="empty">No best practices match these filters.</div>'
@@ -1187,7 +1227,7 @@ function renderPracticeCard(p) {
     p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(p.practice_id)}" onclick="setPracticeStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
   ].filter(Boolean).join(" ");
   return `<div class="lesson ${esc(p.status||"draft")}">
-    <div class="lesson-top"><input type="checkbox" class="selbox" ${state.selP.has(p.practice_id)?"checked":""} data-id="${esc(p.practice_id)}" onchange="toggleSel('P',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/><div style="flex:1">
+    <div class="lesson-top"><input type="checkbox" class="selbox" aria-label="Select: ${esc((p.title||"").slice(0,80))}" ${state.selP.has(p.practice_id)?"checked":""} data-id="${esc(p.practice_id)}" onchange="toggleSel('P',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/><div style="flex:1">
       <div class="lesson-summary">${esc(p.title)}</div>
       <div class="lesson-meta">
         ${p.issue_type==="workflow"?`<span class="pill pill-purple">🧭 workflow</span>`:""}
@@ -1286,7 +1326,7 @@ function prefsFiltered() {
 }
 function renderAgencyPrefs() {
   if (!state.prefs.loaded && !state.prefs.loading) loadAgencyPrefs();
-  if (state.prefs.loading || !state.prefs.loaded) { $("view").innerHTML = '<div class="empty">Loading…</div>'; return; }
+  if (state.prefs.loading || !state.prefs.loaded) { setBusy(true); $("view").innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
   const all = state.prefs.rows;
   const agencies = [...new Set(all.map(p => p.agency).filter(Boolean))].sort();
   const types = [...new Set(all.map(p => p.preference_type).filter(Boolean))].sort();
@@ -1295,15 +1335,15 @@ function renderAgencyPrefs() {
   $("view").innerHTML = `
     ${pending ? `<div class="status info" style="display:block;margin-bottom:14px">🏛️ <b>${pending}</b> mined preference${pending===1?"":"s"} awaiting review. Approved preferences arrive on every matching project brief (max 8 per brief).</div>` : ""}
     <div class="toolbar">
-      <div class="grow"><label>Search</label>
-        <input placeholder="requirement, quote, discipline…" value="${esc(state.prefs.f.q||"")}"
+      <div class="grow"><label for="apQ">Search</label>
+        <input id="apQ" placeholder="requirement, quote, discipline…" value="${esc(state.prefs.f.q||"")}"
           oninput="state.prefs.f.q=this.value; renderPrefList()"/></div>
-      <div class="field"><label>Agency</label>
-        <select onchange="state.prefs.f.agency=this.value; renderPrefList()"><option value="">All</option>${opt(agencies, state.prefs.f.agency)}</select></div>
-      <div class="field"><label>Type</label>
-        <select onchange="state.prefs.f.type=this.value; renderPrefList()"><option value="">All</option>${opt(types, state.prefs.f.type)}</select></div>
-      <div class="field"><label>Status</label>
-        <select onchange="state.prefs.f.status=this.value; renderPrefList()">
+      <div class="field"><label for="apAgency">Agency</label>
+        <select id="apAgency" onchange="state.prefs.f.agency=this.value; renderPrefList()"><option value="">All</option>${opt(agencies, state.prefs.f.agency)}</select></div>
+      <div class="field"><label for="apType">Type</label>
+        <select id="apType" onchange="state.prefs.f.type=this.value; renderPrefList()"><option value="">All</option>${opt(types, state.prefs.f.type)}</select></div>
+      <div class="field"><label for="apStatus">Status</label>
+        <select id="apStatus" onchange="state.prefs.f.status=this.value; renderPrefList()">
           <option value="">All</option>
           <option value="suggested" ${state.prefs.f.status==="suggested"?"selected":""}>Suggested</option>
           <option value="active" ${state.prefs.f.status==="active"?"selected":""}>Active (on briefs)</option>
@@ -1348,7 +1388,7 @@ function renderPrefCard(p) {
     p.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(p.pref_id)}" onclick="setPrefStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
   ].filter(Boolean).join(" ");
   const selbox = p.status === "suggested"
-    ? `<input type="checkbox" class="selbox" ${state.selA.has(p.pref_id)?"checked":""} data-id="${esc(p.pref_id)}" onchange="toggleSel('A',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/>`
+    ? `<input type="checkbox" class="selbox" aria-label="Select: ${esc((p.requirement_or_preference||"").slice(0,80))}" ${state.selA.has(p.pref_id)?"checked":""} data-id="${esc(p.pref_id)}" onchange="toggleSel('A',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/>`
     : "";
   return `<div class="lesson ${p.status === "suggested" ? "draft" : esc(p.status||"")}">
     <div class="lesson-top">${selbox}<div style="flex:1">
@@ -1404,22 +1444,22 @@ function renderGraph() {
   $("view").innerHTML = `
     <div class="status info" style="display:block;margin-bottom:14px">🧠 Built from <b>${rows.length}</b> authored work items — RFI answers, submittal reviews and approved lessons. Use <b>Go-to directory</b> to answer "who do I put on this?": pick the system or agency and it names the people with the deepest real track record.</div>
     <div class="toolbar">
-      <div class="field"><label>View</label>
-        <select onchange="state.graph.f.view=this.value; renderGraphList()">
+      <div class="field"><label for="gfView">View</label>
+        <select id="gfView" onchange="state.graph.f.view=this.value; renderGraphList()">
           <option value="people" ${g.f.view==="people"?"selected":""}>👤 People</option>
           <option value="system" ${g.f.view==="system"?"selected":""}>🎯 Go-to directory — by system</option>
           <option value="agency" ${g.f.view==="agency"?"selected":""}>🏛️ Go-to directory — by agency</option>
         </select></div>
       <div class="grow">
-        <label>Search (system, spec section, subject, person)</label>
-        <input placeholder="e.g. chilled water, 232113, geothermal…" value="${esc(g.f.q)}" oninput="state.graph.f.q=this.value; renderGraphList()"/>
+        <label for="gfQ">Search (system, spec section, subject, person)</label>
+        <input id="gfQ" placeholder="e.g. chilled water, 232113, geothermal…" value="${esc(g.f.q)}" oninput="state.graph.f.q=this.value; renderGraphList()"/>
       </div>
-      <div class="field"><label>Discipline</label>
-        <select onchange="state.graph.f.discipline=this.value; renderGraphList()"><option value="">All</option>${opt(distinct("discipline"), g.f.discipline)}</select></div>
-      <div class="field"><label>Agency</label>
-        <select onchange="state.graph.f.agency=this.value; renderGraphList()"><option value="">All</option>${opt(distinct("agency"), g.f.agency)}</select></div>
-      <div class="field"><label>Source</label>
-        <select onchange="state.graph.f.kind=this.value; renderGraphList()">
+      <div class="field"><label for="gfDiscipline">Discipline</label>
+        <select id="gfDiscipline" onchange="state.graph.f.discipline=this.value; renderGraphList()"><option value="">All</option>${opt(distinct("discipline"), g.f.discipline)}</select></div>
+      <div class="field"><label for="gfAgency">Agency</label>
+        <select id="gfAgency" onchange="state.graph.f.agency=this.value; renderGraphList()"><option value="">All</option>${opt(distinct("agency"), g.f.agency)}</select></div>
+      <div class="field"><label for="gfKind">Source</label>
+        <select id="gfKind" onchange="state.graph.f.kind=this.value; renderGraphList()">
           <option value="">All</option>
           <option value="rfi" ${g.f.kind==="rfi"?"selected":""}>RFI answers</option>
           <option value="submittal" ${g.f.kind==="submittal"?"selected":""}>Submittal reviews</option>
@@ -1431,7 +1471,7 @@ function renderGraph() {
 }
 function renderGraphList() {
   const el = $("graphList"); if (!el) return;
-  if (state.graph.loading) { el.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  if (state.graph.loading) { setBusy(true); el.innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
   const f = state.graph.f, q = (f.q || "").toLowerCase();
   const rows = state.graph.rows.filter(r =>
     (!f.discipline || (r.discipline||"").includes(f.discipline)) &&
@@ -1536,25 +1576,25 @@ function renderLessons() {
   $("view").innerHTML = `
     <div class="toolbar">
       <div class="grow">
-        <label>Search</label>
+        <label for="fq">Search</label>
         <input id="fq" placeholder="summary, system, project, person, tag…" value="${esc(state.filter.q)}"
           oninput="state.filter.q=this.value; renderLessonList()"/>
       </div>
       <div class="field">
-        <label>Agency</label>
-        <select onchange="state.filter.agency=this.value; renderLessonList()">
+        <label for="lfAgency">Agency</label>
+        <select id="lfAgency" onchange="state.filter.agency=this.value; renderLessonList()">
           <option value="">All</option>${opt(agencies, state.filter.agency)}
         </select>
       </div>
       <div class="field">
-        <label>Discipline</label>
-        <select onchange="state.filter.discipline=this.value; renderLessonList()">
+        <label for="lfDiscipline">Discipline</label>
+        <select id="lfDiscipline" onchange="state.filter.discipline=this.value; renderLessonList()">
           <option value="">All</option>${opt(DISCIPLINES, state.filter.discipline)}
         </select>
       </div>
       <div class="field">
-        <label>Status</label>
-        <select onchange="state.filter.status=this.value; renderLessonList()">
+        <label for="lfStatus">Status</label>
+        <select id="lfStatus" onchange="state.filter.status=this.value; renderLessonList()">
           <option value="">All</option>
           <option value="pending" ${state.filter.status==="pending"?"selected":""}>Needs review (suggested + draft)</option>
           <option value="suggested" ${state.filter.status==="suggested"?"selected":""}>Suggested</option>
@@ -1564,8 +1604,8 @@ function renderLessons() {
         </select>
       </div>
       <div class="field">
-        <label>Origin</label>
-        <select onchange="state.filter.origin=this.value; renderLessonList()">
+        <label for="lfOrigin">Origin</label>
+        <select id="lfOrigin" onchange="state.filter.origin=this.value; renderLessonList()">
           <option value="">All</option>
           <option value="mined" ${state.filter.origin==="mined"?"selected":""}>🤖 Mined</option>
           <option value="manual" ${state.filter.origin==="manual"?"selected":""}>✍ Manual</option>
@@ -1627,12 +1667,12 @@ function renderLessonCard(l) {
     `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="openLessonForm(this.dataset.id)">Edit</button>`,
     l.status !== "approved" ? `<button class="btn btn-success btn-sm" data-id="${esc(l.lesson_id)}" onclick="approveLesson(this.dataset.id)">✓ Approve</button>` : "",
     l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="setLessonStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
-    `<button class="btn btn-danger btn-sm" data-id="${esc(l.lesson_id)}" onclick="deleteLesson(this.dataset.id)" title="Delete permanently">🗑</button>`,
+    `<button class="btn btn-danger btn-sm" data-id="${esc(l.lesson_id)}" onclick="deleteLesson(this.dataset.id)" title="Delete permanently" aria-label="Delete lesson">🗑</button>`,
   ].filter(Boolean).join(" ");
   return `
     <div class="lesson ${esc(l.status||"draft")}">
       <div class="lesson-top">
-        <input type="checkbox" class="selbox" ${state.selL.has(l.lesson_id)?"checked":""} data-id="${esc(l.lesson_id)}" onchange="toggleSel('L',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/>
+        <input type="checkbox" class="selbox" aria-label="Select: ${esc((l.lesson_summary||"").slice(0,80))}" ${state.selL.has(l.lesson_id)?"checked":""} data-id="${esc(l.lesson_id)}" onchange="toggleSel('L',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/>
         <div style="flex:1">
           <div class="lesson-summary">${esc(l.lesson_summary)}</div>
           <div class="lesson-meta">${pills}</div>
@@ -1661,53 +1701,53 @@ function openLessonForm(id) {
   const sel = (arr, val) => `<option value=""></option>` + arr.map(a => `<option value="${esc(a)}" ${a===val?"selected":""}>${esc(a)}</option>`).join("");
   $("modalMount").innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
-        <h3>${id ? "Edit Lesson" : "New Lesson"}</h3>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="lessonModalTitle">
+        <h3 id="lessonModalTitle">${id ? "Edit Lesson" : "New Lesson"}</h3>
         <div class="fieldset full">
-          <label>Lesson summary *</label>
+          <label for="f_summary">Lesson summary *</label>
           <textarea id="f_summary" rows="3" placeholder="What happened and what we learned…">${esc(l.lesson_summary||"")}</textarea>
         </div>
         <div class="form-grid">
           <div>
-            <label>Project</label>
+            <label for="f_project">Project</label>
             <input id="f_project" list="projList" value="${esc(l.project_id||"")}" placeholder="SAPX number"/>
             <datalist id="projList">${projOpts}</datalist>
           </div>
           <div>
-            <label>Agency</label>
+            <label for="f_agency">Agency</label>
             <input id="f_agency" value="${esc(l.agency||"")}" placeholder="e.g. DASNY, CUNY, SUNY, EDC"/>
           </div>
           <div>
-            <label>Discipline</label>
+            <label for="f_discipline">Discipline</label>
             <select id="f_discipline">${sel(DISCIPLINES, l.discipline)}</select>
           </div>
           <div>
-            <label>System</label>
+            <label for="f_system">System</label>
             <input id="f_system" value="${esc(l.system||"")}" placeholder="e.g. Electrical service, Refrigerant piping"/>
           </div>
           <div>
-            <label>Issue type</label>
+            <label for="f_issue">Issue type</label>
             <select id="f_issue">${sel(ISSUE_TYPES, l.issue_type)}</select>
           </div>
           <div>
-            <label>Confidence</label>
+            <label for="f_conf">Confidence</label>
             <select id="f_conf">${["low","medium","high"].map(c=>`<option value="${c}" ${(l.confidence||"medium")===c?"selected":""}>${c}</option>`).join("")}</select>
           </div>
           <div>
-            <label>From (Setty person)</label>
+            <label for="f_person">From (Setty person)</label>
             <input id="f_person" list="staffList" value="${esc(l.so_person||"")}" placeholder="whose experience this is"/>
             <datalist id="staffList">${staffOpts}</datalist>
           </div>
           <div>
-            <label>Source reference</label>
+            <label for="f_source">Source reference</label>
             <input id="f_source" value="${esc(l.source_reference||"")}" placeholder="e.g. RFI 042; email 2026-03-11"/>
           </div>
           <div class="full">
-            <label>Reusable prompt <span style="text-transform:none;font-weight:400;color:var(--muted)">(guidance the agents / proposals will inject)</span></label>
+            <label for="f_prompt">Reusable prompt <span style="text-transform:none;font-weight:400;color:var(--muted)">(guidance the agents / proposals will inject)</span></label>
             <textarea id="f_prompt" rows="2" placeholder="e.g. On renovation projects, confirm utility service capacity and Con Edison pathway before DD pricing.">${esc(l.reusable_prompt||"")}</textarea>
           </div>
           <div class="full">
-            <label>Tags <span style="text-transform:none;font-weight:400;color:var(--muted)">(comma separated)</span></label>
+            <label for="f_tags">Tags <span style="text-transform:none;font-weight:400;color:var(--muted)">(comma separated)</span></label>
             <input id="f_tags" value="${esc((l.tags||[]).join(", "))}" placeholder="renovation, con-edison, shutdown"/>
           </div>
         </div>
@@ -1719,10 +1759,35 @@ function openLessonForm(id) {
     </div>`;
   focusModal();
 }
-function closeModal() { $("modalMount").innerHTML = ""; }
-// Modal a11y: Escape closes, focus moves into the modal on open.
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+let _modalOpener = null;
+function closeModal() {
+  $("modalMount").innerHTML = "";
+  // Return focus to whatever opened the modal (captured in focusModal).
+  if (_modalOpener && document.contains(_modalOpener)) { try { _modalOpener.focus(); } catch (_) {} }
+  _modalOpener = null;
+}
+// Modal a11y: Escape closes (and dismisses the heat-map tooltip), focus moves
+// into the modal on open and back to the opener on close, and Tab is trapped
+// inside the dialog while it is open.
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    const tip = $("hmTip"); if (tip) tip.style.display = "none";
+    closeModal();
+    return;
+  }
+  if (e.key !== "Tab") return;
+  const modal = document.querySelector("#modalMount .modal");
+  if (!modal) return;
+  const focusables = [...modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(el => !el.disabled && el.offsetParent !== null);
+  if (!focusables.length) return;
+  const first = focusables[0], last = focusables[focusables.length - 1];
+  if (e.shiftKey) {
+    if (document.activeElement === first || !modal.contains(document.activeElement)) { e.preventDefault(); last.focus(); }
+  } else if (document.activeElement === last || !modal.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+});
 function focusModal() {
+  _modalOpener = document.activeElement;
   setTimeout(() => {
     const el = document.querySelector(".modal textarea, .modal input, .modal select, .modal button");
     if (el) el.focus();
@@ -1731,8 +1796,8 @@ function focusModal() {
 function openConfirmModal(message, confirmLabel, onYes) {
   $("modalMount").innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal" style="max-width:440px">
-        <h3>Are you sure?</h3>
+      <div class="modal" style="max-width:440px" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+        <h3 id="confirmModalTitle">Are you sure?</h3>
         <p style="font-size:13px;color:var(--dim);line-height:1.6">${esc(message)}</p>
         <div class="modal-actions">
           <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -1746,10 +1811,10 @@ function openConfirmModal(message, confirmLabel, onYes) {
 function openNameModal(onDone) {
   $("modalMount").innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal" style="max-width:420px">
-        <h3>Who are you?</h3>
+      <div class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="nameModalTitle">
+        <h3 id="nameModalTitle">Who are you?</h3>
         <div class="fieldset">
-          <label>Your name (used to attribute approvals and authorship)</label>
+          <label for="nameInput">Your name (used to attribute approvals and authorship)</label>
           <input id="nameInput" value="${esc(state.user||"")}" placeholder="e.g. Sara Arias"/>
         </div>
         <div class="modal-actions">
@@ -1783,20 +1848,20 @@ function openSignInModal() {
   }
   $("modalMount").innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal" style="max-width:440px">
-        <h3>Sign in</h3>
+      <div class="modal" style="max-width:440px" role="dialog" aria-modal="true" aria-labelledby="signInModalTitle">
+        <h3 id="signInModalTitle">Sign in</h3>
         <div class="fieldset">
           <button class="btn btn-primary" id="msSignInBtn" style="width:100%">Sign in with Microsoft</button>
         </div>
         <div class="fieldset">
-          <label>Or email me a one-time code</label>
+          <label for="otpEmail">Or email me a one-time code</label>
           <div style="display:flex;gap:8px">
-            <input id="otpEmail" type="email" placeholder="you@setty.com" style="flex:1"/>
+            <input id="otpEmail" type="email" autocomplete="email" placeholder="you@setty.com" style="flex:1"/>
             <button class="btn btn-ghost" id="otpSendBtn">Send code</button>
           </div>
           <div id="otpStep2" style="display:none;margin-top:8px">
             <div style="display:flex;gap:8px;margin-top:8px">
-              <input id="otpCode" inputmode="numeric" placeholder="6-digit code" style="flex:1"/>
+              <input id="otpCode" inputmode="numeric" autocomplete="one-time-code" aria-label="One-time code" placeholder="6-digit code" style="flex:1"/>
               <button class="btn btn-primary" id="otpVerifyBtn">Verify</button>
             </div>
           </div>
@@ -1838,14 +1903,14 @@ function openMineModal() {
   ];
   $("modalMount").innerHTML = `
     <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
-        <h3>🤖 Mine for lessons</h3>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mineModalTitle">
+        <h3 id="mineModalTitle">🤖 Mine for lessons</h3>
         <p style="font-size:13px;color:var(--dim);line-height:1.6;margin-bottom:14px">
           The extractor reads your existing project record and proposes lesson candidates, each citing the source record.
           Candidates land here as <b>Needs review</b> — nothing enters firm knowledge until you approve it. No forms, no manual entry.
         </p>
         <div class="fieldset">
-          <label>Scope</label>
+          <label for="mine_project">Scope</label>
           <input id="mine_project" list="mineProjList" placeholder="All projects (leave blank) or a SAPX number"/>
           <datalist id="mineProjList">${projOpts}</datalist>
         </div>
