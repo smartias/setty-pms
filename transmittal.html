@@ -837,6 +837,21 @@ async function loadPmsData() {
       if (proj) {
         document.getElementById("projectName").value = proj.name || "";
         document.getElementById("projectNumber").value = proj.projectNumber || "";
+        // Seed the picker as well. Launched from PMS the project is already
+        // known, so leaving the search box empty made people retype a project
+        // that was on screen in front of them just to reveal the folder
+        // browser. Skip when ?folder= was supplied: that path already has its
+        // folder and must not be redirected to Outgoing. Only browse when
+        // already signed in, so page load never triggers an auth prompt.
+        const searchBox = document.getElementById("projectSearch");
+        if (searchBox && !searchBox.value) {
+          searchBox.value = (proj.projectNumber || "") + " - " + (proj.name || "");
+          if (!folderUrl && msalAccount) {
+            try { await startBrowsingProject(proj); } catch (e) {
+              console.warn("[TX] could not open folder browser:", e.message);
+            }
+          }
+        }
       } else {
         // Project not found by number — use URL params directly
         if (urlProject) document.getElementById("projectName").value = decodeURIComponent(urlProject);
