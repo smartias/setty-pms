@@ -1914,6 +1914,27 @@ async function getNYCCalendarId() {
   }
 }
 
+// ── TEMP DEBUG (2026-07-30) — remove once the Rafi calendar-access
+// investigation is done. Surfaces exactly what /me/calendars returns for the
+// SIGNED-IN user, so we can tell whether a shared calendar that's visible in
+// their Outlook client is actually visible to Graph under their own account —
+// those are two different things, and this settles it without guesswork.
+async function debugMyCalendars() {
+  try {
+    const data = await graphFetch("GET", "/me/calendars?$top=50");
+    const cals = data?.value || [];
+    const nyc = cals.find(c => c.name.toLowerCase().includes("nyc") || c.name.toLowerCase().includes("shared"));
+    return {
+      email: settyAuth.email(),
+      count: cals.length,
+      names: cals.map(c => c.name),
+      matched: nyc ? nyc.name : null,
+    };
+  } catch (e) {
+    return { email: settyAuth.email(), error: e.message };
+  }
+}
+
 async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId, pmName) {
   if (!milestone.dueDate) return { success: false, error: "No due date" };
 
@@ -19957,6 +19978,14 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   const [dashOutlookConflicts, setDashOutlookConflicts] = useState(() =>
     Date.now() - _dashCalPullCache.at < DASH_CAL_PULL_TTL_MS ? _dashCalPullCache.conflicts : []);
   const [dashOutlookChecking, setDashOutlookChecking] = useState(false);
+  // TEMP DEBUG (2026-07-30) — see debugMyCalendars(); remove with it.
+  const [dashCalDebug, setDashCalDebug] = useState(null);
+  const [dashCalDebugLoading, setDashCalDebugLoading] = useState(false);
+  async function runDashCalDebug() {
+    setDashCalDebugLoading(true);
+    setDashCalDebug(await debugMyCalendars());
+    setDashCalDebugLoading(false);
+  }
 
   async function sweepOutlookDates(force = false) {
     if (!force && Date.now() - _dashCalPullCache.at < DASH_CAL_PULL_TTL_MS) return;
@@ -20135,6 +20164,28 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
           </div>
           <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
             These synced milestones were moved or removed in Outlook. Choose which date wins.
+          </div>
+          {/* TEMP DEBUG (2026-07-30) — checks whether the NYC Shared Calendar is
+              visible to Graph under YOUR sign-in, separate from whether Outlook's
+              client shows it. Remove this block once the investigation is closed. */}
+          <div style={{ marginBottom: 8, padding: "6px 8px", background: "rgba(0,0,0,0.15)", borderRadius: 6 }}>
+            <button onClick={runDashCalDebug} disabled={dashCalDebugLoading}
+              style={{ background: "none", border: `1px solid ${P.yellow}`, borderRadius: 5, color: P.yellow, cursor: "pointer", fontSize: 11.5, padding: "3px 8px" }}>
+              {dashCalDebugLoading ? "Checking…" : "🔍 Check my calendar access"}
+            </button>
+            {dashCalDebug && (
+              <div style={{ fontSize: 11.5, color: P.textMuted, marginTop: 6, lineHeight: 1.5 }}>
+                <div>Signed in as: <b>{dashCalDebug.email}</b></div>
+                {dashCalDebug.error ? (
+                  <div>Graph error: {dashCalDebug.error}</div>
+                ) : (
+                  <>
+                    <div>Calendars Graph sees for this account ({dashCalDebug.count}): {dashCalDebug.names.join(", ") || "(none)"}</div>
+                    <div>NYC/Shared match: <b>{dashCalDebug.matched || "NOT FOUND"}</b></div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           {dashOutlookConflicts.map(c => (
             <div key={c.milestoneId} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "7px 0", borderTop: `1px solid ${P.border}` }}>
