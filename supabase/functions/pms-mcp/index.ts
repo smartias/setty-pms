@@ -353,6 +353,11 @@ const READABLE_EXT = new Set(["pdf", "docx", "xlsx", "xls", "xlsm", "txt", "csv"
 // that has not started yet.
 const CA_STATUS = "In Construction Administration";
 
+// Page cap when walking a project folder. 10 pages of 200 is 2,000 entries,
+// comfortably above the largest Emails folder in the firm while still bounding
+// the worst case to ten sequential Graph calls for a single folder.
+const MAX_FOLDER_PAGES = 10;
+
 // How strongly a name says "this is the record of a meeting that happened".
 // Scored against real filenames rather than assumed ones, because the assumed
 // ones were wrong: on 280 Broadway the minutes are "2026.07.29_Design Meeting
@@ -410,23 +415,46 @@ const REVIEW_ATTACHMENT_RE = /comments?|dr\.?\s*checks|drchecks|minutes|review|m
 // Rank a project's meeting records across BOTH the Project Management folder and
 // the Emails folder. Bounded on purpose: every level here is a Graph round trip,
 // so this walks two folders and at most a handful of subfolders under each.
-async function meetingRecords(projectNumber: string, cap: number): Promise<{ items: any[]; note: string }> {
+async function meetingRecords(
+  projectNumber: string,
+  cap: number,
+): Promise<{ items: any[]; truncated: boolean; note: string }> {
   const num = String(projectNumber || "").toLowerCase().trim();
-  if (!num) return { items: [], note: "This project has no project number, so its SharePoint folder cannot be located." };
+  if (!num) {
+    return { items: [], truncated: false, note: "This project has no project number, so its SharePoint folder cannot be located." };
+  }
   const drive = await docDriveId();
   const root = await findProjectFolderInDrive(drive, num);
-  if (!root) return { items: [], note: `No folder starting with "${projectNumber}" in ${DOC_LIBRARY}.` };
+  if (!root) return { items: [], truncated: false, note: `No folder starting with "${projectNumber}" in ${DOC_LIBRARY}.` };
 
   const SELECT = "?$select=id,name,folder,file,size,lastModifiedDateTime&$top=200";
-  const children = async (id: string): Promise<any[]> =>
-    (await graphGet(`/drives/${drive}/items/${id}/children${SELECT}`)).value || [];
+  // Follow @odata.nextLink. Graph caps a page at 200 entries and the longest-
+  // running projects blow past that: Tabler has 3,226 filed emails, 771 of them
+  // with attachments. Reading only the first page would treat a truncated slice
+  // as the whole folder and then pick the "newest" meetings out of it, which is
+  // worse than finding nothing because it looks like it worked. Bounded at
+  // MAX_FOLDER_PAGES so one pathological folder cannot stall the briefing, and
+  // the caller is TOLD when that bound is hit rather than guessing.
+  let listTruncated = false;
+  const children = async (id: string): Promise<any[]> => {
+    const out: any[] = [];
+    let url: string = `/drives/${drive}/items/${id}/children${SELECT}`;
+    for (let page = 0; url; page++) {
+      if (page >= MAX_FOLDER_PAGES) { listTruncated = true; break; }
+      const res = await graphGet(url);
+      out.push(...(res.value || []));
+      const next = res["@odata.nextLink"];
+      url = next ? String(next).replace("https://graph.microsoft.com/v1.0", "") : "";
+    }
+    return out;
+  };
 
   const kids = await children(root.id);
   const pm = kids.find((k: any) => k.folder && PM_FOLDER_RE.test(String(k.name)));
   const mail = kids.find((k: any) => k.folder && EMAIL_FOLDER_RE.test(String(k.name)));
   if (!pm && !mail) {
     return {
-      items: [],
+      items: [], truncated: false,
       note: "This project has neither a Project Management folder nor an Emails folder, so nothing " +
         "is filed to read. Fall back to search_emails and search_notes for the narrative.",
     };
@@ -493,13 +521,19 @@ async function meetingRecords(projectNumber: string, cap: number): Promise<{ ite
     .map((f) => ({ ...f, readable: READABLE_EXT.has(f.ext) }));
 
   const searched = [pm && pm.name, mail && mail.name].filter(Boolean).join(" and ");
+  const truncatedWarning = listTruncated
+    ? ` NOTE: this project has more filed history than one pass reads (stopped at ${MAX_FOLDER_PAGES * 200} ` +
+      "entries), so older material may be missing. Recent meetings are unaffected; for anything historical, " +
+      "search_emails covers the full log."
+    : "";
   return {
     items,
-    note: items.length
+    truncated: listTruncated,
+    note: (items.length
       ? `Newest first, with minutes ranked above agendas filed the same day. Searched ${searched}. ` +
         "Read the top one or two."
       : `Searched ${searched} (${scanned} entries); nothing is named like a meeting record. ` +
-        "Try search_emails, or browse with list_project_documents.",
+        "Try search_emails, or browse with list_project_documents.") + truncatedWarning,
   };
 }
 
@@ -557,7 +591,10 @@ mcp.tool("project_briefing", {
     // Either can fail without costing the caller the rest of the briefing.
     const [docs, mail] = await Promise.all([
       meetingRecords(p.projectNumber, docCap)
-        .catch((e) => ({ items: [] as any[], note: "SharePoint lookup failed: " + String((e as any)?.message ?? e) })),
+        .catch((e) => ({
+          items: [] as any[], truncated: false,
+          note: "SharePoint lookup failed: " + String((e as any)?.message ?? e),
+        })),
       recentMail(pid, mailCap).catch(() => [] as any[]),
     ]);
 
@@ -611,7 +648,7 @@ mcp.tool("project_briefing", {
       client: p.clientName ?? null,
       clientContact: p.clientContact ?? null,
       construction,
-      meetingRecords: { count: docs.items.length, note: docs.note, documents: docs.items },
+      meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
       reviewComments: mail.filter((m: any) => m.reviewComments.length),
       recentEmails: mail.slice(0, 10).map((m: any) =>
         ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),

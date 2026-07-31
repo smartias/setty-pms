@@ -43,6 +43,15 @@ Two things it is easy to get wrong, both learned the hard way:
   "minutes" nor "notes". `scoreMeetingDoc()` handles the spread, and an agenda has to
   score *below* the minutes filed beside it or the wrong document gets read.
 
+- **Paginate the folder listings.** Graph caps a page at 200 entries. Tabler has 3,226
+  filed emails and 771 with attachments, so its Emails folder is the kind that overflows
+  a single page. Reading only the first page treats a truncated slice as the whole folder
+  and then picks the "newest" meetings out of it, which is worse than finding nothing
+  because it looks like it worked. `meetingRecords()` follows `@odata.nextLink` up to
+  `MAX_FOLDER_PAGES` and reports `truncated: true` when it stops early. Note that
+  `list_project_documents` still takes only the first page; that predates this and is
+  worth fixing separately.
+
 That heuristic is the fragile part, so it has tests, built from real filenames across six
 projects:
 
