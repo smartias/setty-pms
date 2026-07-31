@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-31-pms-v93-overhead-roles-and-inactive-staff";
+    window.__appVersion = "2026-07-31-pms-v94-overhead-roles-and-inactive-staff";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -406,6 +406,16 @@ function milestoneStatus(pct) {
   if (!pct || pct === 0) return "Not Started";
   if (pct >= 100) return "Completed";
   return "In Progress";
+}
+
+// THE done-test for a milestone. pctComplete is canonical; `status` is a legacy
+// field that is null on auto-built milestones and goes stale at "Not Started"
+// on hand-entered ones, so a 100%-complete milestone can still read as open.
+// Every overdue/upcoming calculation must go through this, not a bare
+// `status !== "Completed"` check.
+function isMilestoneDone(m) {
+  if (!m) return false;
+  return m.status === "Completed" || milestoneStatus(m.pctComplete) === "Completed";
 }
 
 // Phase pctComplete is derived from its billable milestones
@@ -20123,7 +20133,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   ];
   const now = new Date();
   const in14 = new Date(); in14.setDate(in14.getDate() + 14);
-  const isItemDone = m => ["rfi","submittal"].includes(m.type) ? false : milestoneStatus(m.pctComplete) === "Completed";
+  // RFI/submittal rows above are already pre-filtered to open statuses, so they
+  // are never "done" here. Milestones go through the canonical pct-based test.
+  const isItemDone = m => ["rfi","submittal"].includes(m.type) ? false : isMilestoneDone(m);
   const overdue = allMilestones.filter(m => m.dueDate && new Date(m.dueDate) < now && !isItemDone(m));
   const upcoming = allMilestones.filter(m => { const d = new Date(m.dueDate); return d >= now && d <= in14 && !isItemDone(m); });
 
