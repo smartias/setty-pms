@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-28-pms-v93-overdue-honors-pct-complete";
+    window.__appVersion = "2026-07-31-pms-v94-overhead-roles-and-inactive-staff";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -12686,6 +12686,33 @@ function ProjectChecklistsView({ project, onChange }) {
 
 const WBS_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection"];
 const WBS_HOURLY_RATE = 170;
+
+// ── Overhead roles ─────────────────────────────────────────────────────────
+// Firm functions that carry no billable rate and take no share of a project's
+// WBS hours. Someone in one of these roles can still sit on a project team —
+// they just don't consume design fee, the same way QA/QC doesn't.
+const OVERHEAD_ROLES = ["Director", "Finance", "Admin", "BIM", "IT", "Marketing"];
+// Word-boundary match so "BIM Coordinator", "IT Manager" and "Director of
+// Operations" all read as overhead without having to enumerate every title.
+// Compiled once: this runs inside render loops.
+const OVERHEAD_ROLE_RE = new RegExp("\\b(" + OVERHEAD_ROLES.join("|") + ")\\b", "i");
+const roleIsOverhead = (role) => OVERHEAD_ROLE_RE.test(String(role || ""));
+// The role name is only the DEFAULT. An explicit `overhead` boolean always wins,
+// so an unusual title can be marked overhead by hand, or a false positive
+// cleared, without anyone having to edit the list above.
+function isOverhead(m) {
+  if (!m) return false;
+  return typeof m.overhead === "boolean" ? m.overhead : roleIsOverhead(m.role);
+}
+// Offered as a datalist on the role field. Deliberately NOT an enum: existing
+// entries carry free-text titles like "Sr Electrical Engineer" and must survive.
+const ROLE_SUGGESTIONS = [
+  "Principal", "Project Manager", "Deputy Project Manager",
+  "Sr. Mechanical Engineer", "Mechanical Engineer",
+  "Sr. Electrical Engineer", "Electrical Engineer",
+  "Sr. Plumbing/FP Engineer", "Plumbing Engineer", "Fire Protection Engineer",
+  "Designer", "Drafter", "QA/QC",
+].concat(OVERHEAD_ROLES);
 const DISC_COLORS = {
   "Mechanical":      { bg: "#1a2a3a", text: "#60b4ff" },
   "Electrical":      { bg: "#2a1a3a", text: "#c084fc" },
@@ -12739,13 +12766,17 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
     const protectedRoles = ["Project Manager", "Deputy Project Manager"];
     const role = protectedRoles.includes(existing?.role) ? existing.role : (s.role || "Engineer");
     // Fire Teams card immediately on directory pick (full name + discipline known at this moment)
-    updateMember(memberId, {
+    // Carry the directory's overhead decision onto the team row, so a manual
+    // override set once in the Staff Directory isn't silently re-derived here.
+    const patch = {
       name: s.name,
       role,
       rate: s.rate || 0,
       disciplines: s.disciplines || [],
       email: s.email || "",
-    }, { notifyTeams: true, debounceTeams: false, teamsDelay: 500 });
+    };
+    if (typeof s.overhead === "boolean") patch.overhead = s.overhead;
+    updateMember(memberId, patch, { notifyTeams: true, debounceTeams: false, teamsDelay: 500 });
     setTypeaheadOpen(null);
   }
 
@@ -12814,16 +12845,21 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
   if (pm)  staffRows.push({ member: pm,  isPM: true,  role: "PM",  totalBudget: pmHours });
   if (dpm) staffRows.push({ member: dpm, isPM: true,  role: "DPM", totalBudget: dpmHours });
 
-  // Non-PM staff: budget = sum across their disciplines, split equally among staff in that disc
+  // Non-PM staff: budget = sum across their disciplines, split equally among staff in that disc.
+  // Overhead roles are excluded from BOTH the divisor and the rows: they consume no
+  // design fee, so counting them would dilute everyone else's share and then show
+  // them a zero-hour line. (isQAQC is deliberately left alone here — it has never
+  // been excluded from this maths, and changing that would move existing numbers.)
   const discStaffCount = {};
   WBS_DISCIPLINES.forEach(disc => {
     discStaffCount[disc] = team.filter(m => {
+      if (isOverhead(m)) return false;
       const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
       return discs.includes(disc);
     }).length || 1;
   });
 
-  team.filter(m => m.role !== "Project Manager" && m.role !== "Deputy Project Manager").forEach(m => {
+  team.filter(m => m.role !== "Project Manager" && m.role !== "Deputy Project Manager" && !isOverhead(m)).forEach(m => {
     const discs = m.disciplines || (m.discipline ? [m.discipline] : []);
     let totalBudget = 0;
     const discBreakdown = {};
@@ -12935,8 +12971,11 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
                   />
                   {typeaheadOpen === m.id && (() => {
                     const q = (m.name || "").toLowerCase();
+                    // Inactive staff are excluded from the picker. They stay on any
+                    // team they're already on; this only stops them being added anew.
                     const matches = (staff || []).filter(s =>
-                      !q || s.name.toLowerCase().includes(q) || (s.email || "").toLowerCase().includes(q)
+                      !s.inactive &&
+                      (!q || s.name.toLowerCase().includes(q) || (s.email || "").toLowerCase().includes(q))
                     ).slice(0, 8);
                     const showAdd = onAddStaff && q.length > 0;
                     if (!matches.length && !showAdd) return null;
@@ -12998,7 +13037,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
                 </td>
                 <td>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {!m.isQAQC ? WBS_DISCIPLINES.map(d => {
+                    {!m.isQAQC && !isOverhead(m) ? WBS_DISCIPLINES.map(d => {
                       const on = memberDiscs.includes(d);
                       const dc = DISC_COLORS[d];
                       return (
@@ -13010,10 +13049,16 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
                           {d}
                         </button>
                       );
-                    }) : <span style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Not on WBS</span>}
+                    }) : <span style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>
+                          Not on WBS{isOverhead(m) && !m.isQAQC ? " — overhead role" : ""}
+                        </span>}
                   </div>
                 </td>
-                <td><input type="number" value={m.rate} onChange={e => updateMember(m.id, { rate: +e.target.value })} style={{ width: 100 }} /></td>
+                <td>
+                  {isOverhead(m)
+                    ? <span style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Non-billable</span>
+                    : <input type="number" value={m.rate} onChange={e => updateMember(m.id, { rate: +e.target.value })} style={{ width: 100 }} />}
+                </td>
                 <td>
                   {!isPM
                     ? <Btn small variant="danger" onClick={() => { if (window.confirm("Remove " + (m.name || "this person") + " from the project team?\n\nThis will remove their hours from the WBS view. Any RFIs or Submittals assigned to them will remain but show as unassigned.")) onChange({ ...project, teamMembers: team.filter(x => x.id !== m.id) }); }}>✕</Btn>
@@ -26395,7 +26440,7 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <select value={linkPick} onChange={e => setLinkPick(e.target.value)}>
             <option value="">— Select your name —</option>
-            {(staff || []).filter(s => s.name).sort((a, b) => a.name.localeCompare(b.name))
+            {(staff || []).filter(s => s.name && !s.inactive).sort((a, b) => a.name.localeCompare(b.name))
               .map(s => <option key={s.id} value={s.id}>{s.name}{s.email ? " (has email)" : ""}</option>)}
           </select>
           <Btn variant="primary" disabled={!linkPick} onClick={linkMe}>This is me</Btn>
@@ -26604,6 +26649,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   const [staffRfiModal, setStaffRfiModal] = React.useState(null);
   const [staffSubModal, setStaffSubModal] = React.useState(null);
   const [timesheetStaff, setTimesheetStaff] = React.useState(null); // staff member to generate timesheet for
+  const [showInactive, setShowInactive] = React.useState(false);
 
   // staffName → open items across active projects (excludes On Hold / Lost)
   const now = new Date();
@@ -26635,7 +26681,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
   }
 
   function deleteStaff(id) {
-    if (!window.confirm("Remove this staff member from the directory? They will remain on any projects they are already assigned to.")) return;
+    if (!window.confirm("Delete this staff member from the directory?\n\nThis removes the record and its id permanently. If they have simply left or moved on, use \"Mark inactive\" instead — that hides them everywhere while keeping historical hours and project assignments resolvable.\n\nThey will remain on any projects they are already assigned to either way.")) return;
     onUpdateStaff(staff.filter(s => s.id !== id));
   }
 
@@ -26644,9 +26690,18 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
     setForm({ ...form, disciplines: discs.includes(disc) ? discs.filter(d => d !== disc) : [...discs, disc] });
   }
 
+  // Inactive people are hidden by default but never removed. Searching still has
+  // to reach them, otherwise "why can't I find X" has no answer short of toggling
+  // a checkbox you'd have to know about.
+  const inactiveCount = staff.filter(s => s.inactive).length;
   const filtered = staff.filter(s =>
-    !search || s.name.toLowerCase().includes(search.toLowerCase()) || (s.email || "").toLowerCase().includes(search.toLowerCase()) || (s.role || "").toLowerCase().includes(search.toLowerCase())
+    (showInactive || !s.inactive) &&
+    (!search || s.name.toLowerCase().includes(search.toLowerCase()) || (s.email || "").toLowerCase().includes(search.toLowerCase()) || (s.role || "").toLowerCase().includes(search.toLowerCase()))
   );
+
+  function toggleInactive(s) {
+    onUpdateStaff(staff.map(x => x.id === s.id ? Object.assign({}, x, { inactive: !x.inactive }) : x));
+  }
 
   if (editingId !== null) {
     return (
@@ -26666,13 +26721,37 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                 placeholder="e.g. jane@setty.com" style={{ width: "100%" }} type="email" />
             </Field>
             <Field label="Default Role / Title">
-              <input value={form.role || ""} onChange={e => setForm({ ...form, role: e.target.value })}
+              <input value={form.role || ""} list="staffRoleSuggestions"
+                onChange={e => setForm({ ...form, role: e.target.value })}
                 placeholder="e.g. Mechanical Engineer" style={{ width: "100%" }} />
+              <datalist id="staffRoleSuggestions">
+                {ROLE_SUGGESTIONS.map(r => <option key={r} value={r} />)}
+              </datalist>
             </Field>
-            <Field label="Default Billing Rate ($/hr)" style={{ gridColumn: "1 / -1" }}>
-              <input type="number" value={form.rate || ""} onChange={e => setForm({ ...form, rate: +e.target.value })}
-                placeholder="0" style={{ width: 160 }} />
+            <Field label="Overhead role" style={{ gridColumn: "1 / -1" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input type="checkbox" checked={isOverhead(form)}
+                  onChange={e => setForm({ ...form, overhead: e.target.checked })}
+                  style={{ width: 15, height: 15, cursor: "pointer", accentColor: P.purple }} />
+                <span>Non-billable. Excluded from WBS hours and project fee.</span>
+              </label>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>
+                {typeof form.overhead === "boolean"
+                  ? "Set manually. Changing the role won't override it."
+                  : (roleIsOverhead(form.role)
+                      ? "Derived from the role name. Tick or untick to set it explicitly."
+                      : "Derived from the role name. " + OVERHEAD_ROLES.join(", ") + " are overhead by default.")}
+              </div>
             </Field>
+            {!isOverhead(form) && (
+              <Field label="Default Billing Rate ($/hr)" style={{ gridColumn: "1 / -1" }}>
+                <input type="number" value={form.rate || ""} onChange={e => setForm({ ...form, rate: +e.target.value })}
+                  placeholder="0" style={{ width: 160 }} />
+                <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>
+                  Leave blank if unknown. A blank rate bills at $0/hr if hours are logged against this person.
+                </div>
+              </Field>
+            )}
             <Field label="Default Disciplines" style={{ gridColumn: "1 / -1" }}>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {["Mechanical", "Electrical", "Plumbing", "Fire Protection"].map(d => {
@@ -26690,6 +26769,18 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
               </div>
               <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>These defaults pre-fill when adding this person to a project team — editable per project.</div>
             </Field>
+            <Field label="Status" style={{ gridColumn: "1 / -1" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input type="checkbox" checked={!!form.inactive}
+                  onChange={e => setForm({ ...form, inactive: e.target.checked })}
+                  style={{ width: 15, height: 15, cursor: "pointer", accentColor: P.amber || P.textDim }} />
+                <span>Inactive — hide from pickers and the directory</span>
+              </label>
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>
+                Nothing is deleted. They stay on every project they're already assigned to, and their
+                record and id are untouched, so historical hours and assignments keep resolving.
+              </div>
+            </Field>
           </div>
           <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
             <Btn onClick={saveForm} disabled={!form.name.trim()}>{editingId === "__new__" ? "Add to Directory" : "Save Changes"}</Btn>
@@ -26706,13 +26797,26 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Staff Directory</h2>
-          <div style={{ fontSize: 13, color: P.textMuted }}>{staff.length} staff member{staff.length !== 1 ? "s" : ""} · names auto-suggest when assigning to project teams</div>
+          <div style={{ fontSize: 13, color: P.textMuted }}>
+            {staff.length - inactiveCount} active staff member{(staff.length - inactiveCount) !== 1 ? "s" : ""}
+            {inactiveCount > 0 ? " · " + inactiveCount + " inactive" + (showInactive ? " (shown)" : " (hidden)") : ""}
+            {" · names auto-suggest when assigning to project teams"}
+          </div>
         </div>
         <Btn onClick={startNew}>+ Add Staff Member</Btn>
       </div>
 
-      <input placeholder="Search by name, email, or role…" value={search} onChange={e => setSearch(e.target.value)}
-        style={{ width: 300, marginBottom: 16 }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
+        <input placeholder="Search by name, email, or role…" value={search} onChange={e => setSearch(e.target.value)}
+          style={{ width: 300 }} />
+        {inactiveCount > 0 && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12.5, color: P.textMuted }}>
+            <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)}
+              style={{ width: 14, height: 14, cursor: "pointer" }} />
+            Show inactive ({inactiveCount})
+          </label>
+        )}
+      </div>
 
       {filtered.length === 0 ? (
         <div style={{ background: P.card, border: "1px solid " + P.border, borderRadius: 10, padding: 40, textAlign: "center", color: P.textDim, fontSize: 13 }}>
@@ -26745,12 +26849,25 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
 
                   {/* Name + role */}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{s.name}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ opacity: s.inactive ? 0.55 : 1 }}>{s.name}</span>
+                      {s.inactive && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: P.border, color: P.textMuted, letterSpacing: 0.4 }}>INACTIVE</span>
+                      )}
+                      {isOverhead(s) && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: P.accentDim, color: P.accentLight, letterSpacing: 0.4 }}>OVERHEAD</span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 12, color: P.textMuted }}>{s.role || "—"}{s.email ? " · " + s.email : ""}</div>
                   </div>
 
-                  {/* Rate */}
-                  {s.rate > 0 && <div style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.textDim }}>${s.rate}/hr</div>}
+                  {/* Rate. Overhead roles are non-billable by definition, so an
+                      absent rate there is correct rather than missing data. */}
+                  {isOverhead(s)
+                    ? <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>non-billable</div>
+                    : s.rate > 0
+                      ? <div style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: P.textDim }}>${s.rate}/hr</div>
+                      : <div style={{ fontSize: 11, color: P.amber || P.textDim, fontStyle: "italic" }}>no rate</div>}
 
                   {/* Disciplines */}
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -26775,11 +26892,17 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
                     {milEntries.length === 0 && <span style={{ fontSize: 11, color: P.textDim }}>no open items</span>}
                   </div>
 
-                  {/* Edit / delete */}
-                  <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+                  {/* Edit / retire. Inactive is the intended way to retire someone —
+                      it keeps the record and its id, which project team members and
+                      historical hours resolve against. Delete is still here for genuine
+                      mistakes (a test entry, a duplicate) but is deliberately last. */}
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }} onClick={e => e.stopPropagation()}>
                     <Btn small variant="ghost" onClick={e => { e.stopPropagation(); setTimesheetStaff(s); }}>📋 Timesheet</Btn>
                     <Btn small variant="ghost" onClick={() => startEdit(s)}>Edit</Btn>
-                    <Btn small variant="danger" aria-label={"Remove staff member " + (s.name || "")} onClick={() => deleteStaff(s.id)}>✕</Btn>
+                    <Btn small variant="ghost"
+                      aria-label={(s.inactive ? "Reactivate " : "Mark inactive: ") + (s.name || "")}
+                      onClick={() => toggleInactive(s)}>{s.inactive ? "↩ Reactivate" : "Mark inactive"}</Btn>
+                    <Btn small variant="danger" aria-label={"Delete staff member " + (s.name || "")} onClick={() => deleteStaff(s.id)}>✕</Btn>
                   </div>
                 </div>
 
