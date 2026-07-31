@@ -175,16 +175,37 @@ async function siteDrives(): Promise<Array<{ id: string; name: string }>> {
   return _drives;
 }
 // Find a project's root folder (named by NUMBER, e.g. "<number> - ...") within a drive.
+//
+// This is a LINEAR SCAN of the drive root, which holds roughly one folder per
+// project, paged at 200. At 148 projects that is one Graph call; the firm adds
+// ~27 projects a year, so it becomes two calls in about two years and keeps
+// climbing. Every briefing and every list_project_documents pays it, and
+// list_project_documents pays it once per drive across ~37 libraries.
+//
+// So memoize. Folder ids are stable, so a HIT is a permanent fact and is cached
+// without expiry. A MISS is not: a project folder created after the scan would
+// otherwise stay invisible for the life of the instance, so misses expire on the
+// same 300s clock getProjects() uses.
+const _projFolder = new Map<string, { item: any; at: number }>();
+const PROJ_FOLDER_MISS_TTL = 300000;
 async function findProjectFolderInDrive(driveId: string, numPrefix: string): Promise<any | null> {
+  const key = driveId + "|" + numPrefix;
+  const hit = _projFolder.get(key);
+  if (hit && (hit.item || (Date.now() - hit.at) < PROJ_FOLDER_MISS_TTL)) return hit.item;
+
   let url: string = `/drives/${driveId}/root/children?$select=id,name,folder&$top=200`;
   while (url) {
     const page = await graphGet(url);
     for (const it of (page.value || [])) {
-      if (it.folder && String(it.name).toLowerCase().startsWith(numPrefix)) return it;
+      if (it.folder && String(it.name).toLowerCase().startsWith(numPrefix)) {
+        _projFolder.set(key, { item: it, at: Date.now() });
+        return it;
+      }
     }
     const next = page["@odata.nextLink"];
     url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
   }
+  _projFolder.set(key, { item: null, at: Date.now() });
   return null;
 }
 // Find root folders whose NAME CONTAINS a needle (case-insensitive). For name-based
@@ -351,7 +372,13 @@ const READABLE_EXT = new Set(["pdf", "docx", "xlsx", "xls", "xlsm", "txt", "csv"
 // Only projects in construction generate RFIs and submittals. Reporting "no open
 // RFIs" on a design-phase job reads as a finding when it is really just a phase
 // that has not started yet.
-const CA_STATUS = "In Construction Administration";
+//
+// Matched loosely rather than by equality against the exact PMS status string
+// "In Construction Administration". An exact match is a silent coupling to the
+// app's status vocabulary: rename or recase it there and the gate stops firing
+// with nothing to show for it. A substring test survives that.
+const CA_STATUS_RE = /construction\s*admin/i;
+const inConstructionAdmin = (status: unknown) => CA_STATUS_RE.test(String(status ?? ""));
 
 // Page cap when walking a project folder. 10 pages of 200 is 2,000 entries,
 // comfortably above the largest Emails folder in the firm while still bounding
@@ -612,7 +639,7 @@ mcp.tool("project_briefing", {
     // reached CA they are not "zero open" — they do not exist yet, and saying
     // so out loud reads as a finding when it is really just an unstarted phase.
     const rfis = p.rfis ?? [], subs = p.submittals ?? [];
-    const inCA = String(p.status || "") === CA_STATUS;
+    const inCA = inConstructionAdmin(p.status);
     const construction = (inCA || rfis.length || subs.length)
       ? {
         openRFIs: rfis.filter((r: any) => RFI_OPEN.has(r.status)).length, totalRFIs: rfis.length,

@@ -141,7 +141,71 @@ check(tabler[0].n === "2024-10-25_Meeting Notes",
 check(new Set(["2019-05-22_Meeting Notes","2024-10-25_Meeting Notes","2024-06-14_Meeting Notes"]
   .map((n) => scoreMeetingDoc(n))).size === 1, "Tabler folder scores should all tie, proving date does the work");
 
-const total = pairs.length + keep.length + drop.length + dates.length + 2;
+// ---------------------------------------------------------------------------
+// 4. Drift detector.
+//
+// The two functions above are copies. A copy that silently goes stale is worse
+// than no test, because it keeps passing while testing code that no longer
+// ships. Rather than restructure index.ts into modules just to make it
+// importable, compare the function BODIES directly: type annotations live in
+// the signature, so the bodies should be character-identical once comments and
+// whitespace are normalised away.
+import { readFileSync } from "node:fs";
+
+// Pull a function body out of source by matching braces from its signature.
+// Every brace inside these two functions is balanced, including the ones in
+// regex quantifiers like \d{2} and in template literals, so counting works.
+function extractBody(src, fnName) {
+  const start = src.indexOf("function " + fnName);
+  if (start < 0) return null;
+  const open = src.indexOf("{", start);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) return src.slice(open + 1, i);
+  }
+  return null;
+}
+const normalise = (body) => body
+  .split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n")
+  .replace(/\s+/g, " ").trim();
+
+const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+const here = readFileSync(new URL(import.meta.url), "utf8");
+for (const fn of ["scoreMeetingDoc", "nameDate"]) {
+  const a = extractBody(shipped, fn);
+  const b = extractBody(here, fn);
+  check(a !== null, `could not find ${fn} in index.ts — extractor needs updating`);
+  check(b !== null, `could not find ${fn} in this test file — extractor needs updating`);
+  check(a !== null && b !== null && normalise(a) === normalise(b),
+    `${fn} has DRIFTED from index.ts. The copy in this test no longer matches the ` +
+    `shipped function, so these assertions are testing dead code. Sync them and re-run.`);
+}
+
+// ---------------------------------------------------------------------------
+// 5. The construction-admin gate.
+//
+// The match was deliberately loosened from equality against the exact PMS status
+// string to a substring test, so that renaming or recasing the status in the app
+// does not silently disable the gate. That only helps if it still selects
+// exactly one status. Checked against all eleven values present in the data.
+const CA_STATUS_RE = /construction\s*admin/i;
+const REAL_STATUSES = [
+  "In Progress", "Proposal Submitted", "In Construction Administration", "On Hold",
+  "Lost", "In for Review", "Completed", "Proposal Due", "Not Started",
+  "Top Priority", "Cancelled",
+];
+const caMatches = REAL_STATUSES.filter((s) => CA_STATUS_RE.test(s));
+check(caMatches.length === 1 && caMatches[0] === "In Construction Administration",
+  `CA gate should match exactly one real status, matched: ${JSON.stringify(caMatches)}`);
+
+// And the regex itself is a copy, so it drifts like the functions do.
+const caLine = (src) => (src.match(/^const CA_STATUS_RE = .*$/m) || [""])[0].trim();
+check(caLine(shipped) !== "" && caLine(shipped) === caLine(here),
+  `CA_STATUS_RE has DRIFTED. index.ts has "${caLine(shipped)}", this test has "${caLine(here)}".`);
+
+const total = pairs.length + keep.length + drop.length + dates.length + 2 + 6 + 2;
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
   : `\nall ${total} assertions pass (${pairs.length} minutes-vs-agenda pairs, ${keep.length} records kept, ` +
