@@ -16,6 +16,43 @@ That is no longer necessary. This directory was seeded from the deployed **v32**
 
 If you have any doubt about whether that still holds, verify rather than assume. See below.
 
+## `project_briefing`, and why it exists
+
+Asked "what's going on with 280 Broadway", the connector used to answer out of the
+structured PMS record: milestones, fee, contacts, open counts. Sara's verdict was that
+this is not useful, because it is the same thing anyone can read off the PMS web app in
+seconds. The substance of a status question is in the **meeting minutes** and the
+**review comments**, and getting there took a second round trip every time.
+
+`project_briefing` is the fix. One call returns the orientation block *and* the ranked
+minutes *and* the review-comment attachments, with a `readNext` list and guidance that
+tells the model to read the documents before answering. `get_project` now describes
+itself as background and points here.
+
+Two things it is easy to get wrong, both learned the hard way:
+
+- **Minutes live in two places, and which one is per-project.** Some projects file them
+  in the numbered `01 📋 Project Management` folder. Others — 280 Broadway among them —
+  have an empty PM folder and keep every set of minutes in the `Emails` folder, as the
+  attachment it arrived as. Searching only the PM folder finds nothing on those projects.
+  Both are scanned. Note also that folder names carry numeric and emoji prefixes, so
+  matching is by substring; an exact `subfolder: 'Project Management'` lookup returns zero.
+- **There is no firm-wide naming convention for minutes.** They appear as
+  `... - Minutes.pdf`, `Meeting minutes`, `Mtg 001 Minutes_Final.pdf`, `_Notes.pdf`, and
+  on 280 Broadway as `2026.07.29_Design Meeting #16.pdf`, which contains neither
+  "minutes" nor "notes". `scoreMeetingDoc()` handles the spread, and an agenda has to
+  score *below* the minutes filed beside it or the wrong document gets read.
+
+That heuristic is the fragile part, so it has tests, built from real filenames across six
+projects:
+
+```bash
+node supabase/functions/pms-mcp/scoreMeetingDoc.test.mjs
+```
+
+The function is copied into the test rather than imported, because importing `index.ts`
+would boot the server. Change the scoring in one place and you must change it in both.
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.

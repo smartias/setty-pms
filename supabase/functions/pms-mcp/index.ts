@@ -294,10 +294,14 @@ function slimProjectForDetail(p: any) {
 
 mcp.tool("get_project", {
   description:
-    "Full detail for one project, looked up by exact project number, id, or name. " +
+    "Structured PMS record for one project, looked up by exact project number, id, or name. " +
     "Milestones, phases, team, and contacts come in full; RFIs, submittals, notes, and " +
     "emails are summarized (counts + status) — use search_rfis_submittals, list_milestones, " +
     "search_notes, or search_emails to read those in detail. " +
+    "NOT A STATUS ANSWER ON ITS OWN. These are the same fields anyone can read off the PMS web app " +
+    "in seconds, so reciting them back is not useful. If the question is 'what is going on with " +
+    "<project>' or anything like it, call project_briefing instead — it returns this record PLUS " +
+    "the meeting minutes and review comments that actually say what is happening. " +
     "AUTHORITATIVE HERE — do NOT infer these from documents: `scopeContent` is the project's SCOPE as " +
     "maintained in PMS, and `directory` / `projectContacts` / `clientContact` / `teamMembers` are the " +
     "PROJECT DIRECTORY. Prefer these over anything found in a contract, proposal, or other document.",
@@ -307,7 +311,314 @@ mcp.tool("get_project", {
     if (!pid) return asText({ error: `No project matching \"${identifier}\"` });
     const p = await getProjectById(pid);
     if (!p) return asText({ error: `No project matching \"${identifier}\"` });
-    return asText(slimProjectForDetail(p));
+    const out = slimProjectForDetail(p);
+    out._note = "Structured record only. For a 'what is going on' question this is background, not " +
+      "the answer — call project_briefing to get the recent meeting minutes and review comments with it.";
+    return asText(out);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// project_briefing — the "what's going on with <project>" entry point.
+//
+// The structured PMS record is not an answer to that question. It is the same
+// set of fields anyone at the firm can read off the PMS web app in seconds, so
+// reciting it back costs a round trip and adds nothing. What people actually
+// want is the narrative record: the most recent meeting minutes, and the
+// agency/contractor review comments. This tool puts both in front of the model
+// in ONE call, so the minutes-led answer happens on the first pass, not the
+// second.
+//
+// Minutes live in TWO places and the split is per-project, not per-firm:
+//   * the numbered Project Management folder, on projects that file them there;
+//   * the Emails folder, as the attachment they arrived as, which is the ONLY
+//     copy on plenty of projects. 280 Broadway (SAPX256018.00) has an empty PM
+//     folder and every set of minutes sitting in Emails.
+// Searching only the PM folder finds nothing on those projects, so search both.
+// ---------------------------------------------------------------------------
+
+// Folders under a project root worth scanning. Names carry numeric and emoji
+// prefixes ("01 📋 Project Management"), so match on substring, never equality.
+// Bare "PM" is deliberately not matched: too many folders start with those
+// letters. "Emails" is plural on some projects and singular on others.
+const PM_FOLDER_RE = /project\s*management/i;
+const EMAIL_FOLDER_RE = /^\s*emails?\s*$/i;
+
+// Extensions read_document can extract text from. Anything else comes back as a
+// webUrl pointer, so flagging it up front saves a wasted read.
+const READABLE_EXT = new Set(["pdf", "docx", "xlsx", "xls", "xlsm", "txt", "csv", "htm", "html"]);
+
+// Only projects in construction generate RFIs and submittals. Reporting "no open
+// RFIs" on a design-phase job reads as a finding when it is really just a phase
+// that has not started yet.
+const CA_STATUS = "In Construction Administration";
+
+// How strongly a name says "this is the record of a meeting that happened".
+// Scored against real filenames rather than assumed ones, because the assumed
+// ones were wrong: on 280 Broadway the minutes are "2026.07.29_Design Meeting
+// #16.pdf", carrying neither "minutes" nor "notes", while the agenda beside it
+// abbreviates to "Mtg". So MEETING and MTG have to score on their own, and
+// AGENDA has to be a penalty rather than a bonus — otherwise "Progress Meeting
+// Agenda #16" outranks the actual minutes, which is exactly backwards. The
+// penalty is small enough that agendas still surface when no minutes exist.
+// Also runs against FOLDER names: the Emails folder files each message under
+// "YYYY_MM_DD <subject>", so "2026_07_17 Meeting minutes" is itself the signal.
+function scoreMeetingDoc(name: string): number {
+  // Fold separators to spaces BEFORE matching. Underscore is a word character,
+  // so \bagenda\b does not match "_Agenda_2026-07-29.pdf" — which silently let
+  // that agenda outscore the minutes it was filed next to.
+  const n = name.toLowerCase().replace(/[_.\-]+/g, " ");
+  let s = 0;
+  // MINUTES, MEETING and AGENDA match unanchored because the firm concatenates
+  // them ("OAMeeting2", "PreconstructionAgenda"). They are distinctive enough
+  // that a substring hit is a true hit. NOTES and MTG keep their boundaries:
+  // "notes" would otherwise fire on "keynotes"/"denotes", and three letters of
+  // "mtg" inside a longer word means nothing.
+  if (/minutes?/.test(n)) s += 10;
+  if (/\bnotes?\b/.test(n)) s += 8;
+  if (/meeting|\bmtg\b/.test(n)) s += 6;
+  if (/\b(design|progress|coordination|oac|kick\s*-?\s*off|kickoff|workshop|site\s*visit|bi.?weekly)\b/.test(n)) s += 3;
+  if (/agendas?/.test(n)) s -= 4;
+  if (/\b(sign[\s_-]*in|attendance|roster|invite|calendar)\b/.test(n)) s -= 8;
+  return s;
+}
+
+// The meeting date out of a file or folder name, or null. Needed because
+// lastModifiedDateTime lies: Tabler's 41 meeting folders were bulk-migrated and
+// every one of them reports the same June-2026 timestamp, so ordering by Graph
+// metadata puts its 2019 and 2024 meetings in arbitrary order. The name is the
+// honest date. Handles 2024-10-25, 2026.07.29, 2026_07_17, 20260729 and the
+// six-digit 260602 form, all of which are in live use.
+function nameDate(name: string): string | null {
+  const n = name.replace(/[_.]+/g, "-");
+  // Scan every candidate, not just the first: "2020.40-01_..." leads with a
+  // project number that looks like a date and would otherwise mask the real one.
+  for (const m of n.matchAll(/(20\d{2})-?(\d{2})-?(\d{2})/g)) {
+    if (+m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) return `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  for (const m of n.matchAll(/\b(\d{2})(\d{2})(\d{2})\b/g)) {
+    if (+m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) return `20${m[1]}-${m[2]}-${m[3]}`;
+  }
+  return null;
+}
+
+// Attachment names worth reading: design-review feedback from an agency or a
+// contractor. "Dr Checks" / DrChecks is the agencies' review system, i.e. the
+// same thing under another name.
+const REVIEW_ATTACHMENT_RE = /comments?|dr\.?\s*checks|drchecks|minutes|review|markup|backcheck/i;
+
+// Rank a project's meeting records across BOTH the Project Management folder and
+// the Emails folder. Bounded on purpose: every level here is a Graph round trip,
+// so this walks two folders and at most a handful of subfolders under each.
+async function meetingRecords(projectNumber: string, cap: number): Promise<{ items: any[]; note: string }> {
+  const num = String(projectNumber || "").toLowerCase().trim();
+  if (!num) return { items: [], note: "This project has no project number, so its SharePoint folder cannot be located." };
+  const drive = await docDriveId();
+  const root = await findProjectFolderInDrive(drive, num);
+  if (!root) return { items: [], note: `No folder starting with "${projectNumber}" in ${DOC_LIBRARY}.` };
+
+  const SELECT = "?$select=id,name,folder,file,size,lastModifiedDateTime&$top=200";
+  const children = async (id: string): Promise<any[]> =>
+    (await graphGet(`/drives/${drive}/items/${id}/children${SELECT}`)).value || [];
+
+  const kids = await children(root.id);
+  const pm = kids.find((k: any) => k.folder && PM_FOLDER_RE.test(String(k.name)));
+  const mail = kids.find((k: any) => k.folder && EMAIL_FOLDER_RE.test(String(k.name)));
+  if (!pm && !mail) {
+    return {
+      items: [],
+      note: "This project has neither a Project Management folder nor an Emails folder, so nothing " +
+        "is filed to read. Fall back to search_emails and search_notes for the narrative.",
+    };
+  }
+
+  // `date` is the meeting date: from the name where there is one, otherwise the
+  // folder it sits in (dated subfolders name the meeting, their files often do
+  // not), otherwise Graph's timestamp as a last resort.
+  const tag = (it: any, folder: string) => ({
+    itemId: drive + "|" + it.id,
+    name: it.name,
+    folder,
+    date: nameDate(String(it.name)) ?? nameDate(folder) ?? String(it.lastModifiedDateTime ?? "").slice(0, 10),
+    modified: it.lastModifiedDateTime ?? null,
+    ext: (String(it.name).split(".").pop() || "").toLowerCase(),
+    score: scoreMeetingDoc(String(it.name)),
+  });
+
+  const files: any[] = [];
+  let scanned = 0;
+
+  // Both folders are shaped the same way: loose files at the top, plus dated
+  // subfolders holding the rest. Under Emails each subfolder is one message
+  // ("2026_07_29 ... Bi-Weekly Meeting"), so its NAME already says whether the
+  // attachments inside are worth opening. Pick subfolders by that name score
+  // first and recency second, which is what keeps this to a few round trips
+  // instead of one per message.
+  const harvest = async (parent: any, subCap: number) => {
+    const inside = await children(parent.id);
+    scanned += inside.length;
+    for (const it of inside) if (it.file) files.push(tag(it, parent.name));
+    const subs = inside.filter((it: any) => it.folder)
+      .map((it: any) => ({
+        it,
+        score: scoreMeetingDoc(String(it.name)),
+        date: nameDate(String(it.name)) ?? String(it.lastModifiedDateTime ?? "").slice(0, 10),
+      }))
+      .filter((x: any) => x.score > 0)
+      // Newest meeting first. Score only breaks ties, because on a project with
+      // 40-odd identically-named "Meeting Notes" folders the score is constant
+      // and the date is the only thing that distinguishes them.
+      .sort((a: any, b: any) => String(b.date).localeCompare(String(a.date)) || (b.score - a.score))
+      .slice(0, subCap);
+    for (const { it: sf } of subs) {
+      try {
+        for (const f of await children(sf.id)) {
+          if (f.file) files.push(tag(f, parent.name + "/" + sf.name));
+        }
+      } catch { /* one unreadable subfolder must not sink the whole briefing */ }
+    }
+  };
+
+  for (const [folder, subCap] of [[pm, 3], [mail, 4]] as Array<[any, number]>) {
+    if (!folder) continue;
+    try { await harvest(folder, subCap); } catch { /* keep whatever the other folder gave us */ }
+  }
+
+  // Recency dominates, score only breaks ties within the same day. Sorting by
+  // score first would rank an older set of minutes above the newest meeting,
+  // which is the opposite of what "what's going on" is asking for. Comparing by
+  // DAY still lets minutes outrank the agenda filed beside them the same day.
+  files.sort((a, b) => String(b.date).localeCompare(String(a.date)) || (b.score - a.score));
+  const items = files.filter((f) => f.score > 0).slice(0, cap)
+    .map((f) => ({ ...f, readable: READABLE_EXT.has(f.ext) }));
+
+  const searched = [pm && pm.name, mail && mail.name].filter(Boolean).join(" and ");
+  return {
+    items,
+    note: items.length
+      ? `Newest first, with minutes ranked above agendas filed the same day. Searched ${searched}. ` +
+        "Read the top one or two."
+      : `Searched ${searched} (${scanned} entries); nothing is named like a meeting record. ` +
+        "Try search_emails, or browse with list_project_documents.",
+  };
+}
+
+// The project's recent filed correspondence, with each message's review-comment
+// attachments called out. Deliberately NOT filtered to has_attachments: the
+// briefing reports these as "recent emails", and silently dropping every message
+// without a file would make that label a lie. Reads the email log rather than
+// walking the SharePoint Emails folder, because attachment names are already
+// indexed in Postgres and one query beats a Graph call per message.
+async function recentMail(pid: string, cap: number): Promise<any[]> {
+  const rows = await sbGet(
+    "pms_project_emails?project_id=eq." + pid +
+    "&select=record_id,subject,from_name,from_address,direction,email_date,attachment_names" +
+    "&order=email_date.desc.nullslast&limit=" + cap,
+  );
+  return (rows || []).map((r: any) => {
+    const names: string[] = Array.isArray(r.attachment_names) ? r.attachment_names
+      : (typeof r.attachment_names === "string" && r.attachment_names ? [r.attachment_names] : []);
+    return {
+      recordId: r.record_id, date: r.email_date, direction: r.direction,
+      from: r.from_name || r.from_address, subject: r.subject,
+      attachments: names,
+      reviewComments: names.filter((n) => REVIEW_ATTACHMENT_RE.test(String(n))),
+    };
+  });
+}
+
+mcp.tool("project_briefing", {
+  description:
+    "THE entry point for 'what's going on with <project>', 'catch me up on <project>', 'status " +
+    "of <project>' and anything like it. One call returns: a compact orientation block from the " +
+    "PMS record; the project's most recent MEETING MINUTES, ranked and ready for read_document, " +
+    "found across BOTH its SharePoint Project Management folder and its Emails folder (many " +
+    "projects only ever have the emailed copy); recent email attachments that look like agency " +
+    "or contractor REVIEW COMMENTS; and the newest filed emails and OneNote notes. " +
+    "The structured PMS fields are NOT the answer to a status question — the whole firm can " +
+    "already read those off the PMS web app, so repeating them is not useful. The substance is in " +
+    "the minutes. Work the `readNext` list with read_document BEFORE answering, and lead with " +
+    "what those documents say is outstanding. Use get_project only when someone wants the record " +
+    "itself (fee, directory, scope, full milestone list).",
+  inputSchema: z.object({
+    identifier: z.string().describe("Project number, id, or name"),
+    documents: z.number().optional().describe("How many meeting records to rank and return (default 6, max 20)"),
+    emails: z.number().optional().describe("How many recent filed emails to scan (default 25, max 60)"),
+  }),
+  handler: async ({ identifier, documents, emails }) => {
+    const pid = await resolveProjectId(identifier);
+    if (!pid) return asText({ error: `No project matching "${identifier}"` });
+    const p = await getProjectById(pid);
+    if (!p) return asText({ error: `No project matching "${identifier}"` });
+    const docCap = Math.min(Math.max(documents ?? 6, 1), 20);
+    const mailCap = Math.min(Math.max(emails ?? 25, 1), 60);
+
+    // Graph and Postgres are independent; neither should wait on the other.
+    // Either can fail without costing the caller the rest of the briefing.
+    const [docs, mail] = await Promise.all([
+      meetingRecords(p.projectNumber, docCap)
+        .catch((e) => ({ items: [] as any[], note: "SharePoint lookup failed: " + String((e as any)?.message ?? e) })),
+      recentMail(pid, mailCap).catch(() => [] as any[]),
+    ]);
+
+    const notes = (p.notes ?? [])
+      .filter((n: any) => n.body)
+      .sort((a: any, b: any) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")))
+      .slice(0, 8)
+      .map((n: any) => ({
+        noteId: n.id, date: n.createdAt ?? n.updatedAt ?? null, author: n.author ?? null,
+        category: n.category ?? null, actionItem: !!n.actionItem,
+        preview: htmlToText(n.body || "").slice(0, 300),
+      }));
+
+    // RFIs and submittals belong to construction. On a project that has not
+    // reached CA they are not "zero open" — they do not exist yet, and saying
+    // so out loud reads as a finding when it is really just an unstarted phase.
+    const rfis = p.rfis ?? [], subs = p.submittals ?? [];
+    const inCA = String(p.status || "") === CA_STATUS;
+    const construction = (inCA || rfis.length || subs.length)
+      ? {
+        openRFIs: rfis.filter((r: any) => RFI_OPEN.has(r.status)).length, totalRFIs: rfis.length,
+        openSubmittals: subs.filter((s: any) => SUBMITTAL_OPEN.has(s.status)).length, totalSubmittals: subs.length,
+        note: "Use search_rfis_submittals / read_rfi_submittal for detail.",
+      }
+      : null;
+
+    const readNext = docs.items.filter((d: any) => d.readable).slice(0, 3)
+      .map((d: any) => ({ itemId: d.itemId, name: d.name, why: "Meeting record — read_document this before answering." }));
+
+    const guidance = [
+      "The orientation block is BACKGROUND, not the answer. Anyone can read those fields off the " +
+      "PMS web app in seconds, so do not lead with them and do not pad an answer with them.",
+      readNext.length
+        ? "Call read_document on `readNext` now, then lead your answer with what the minutes say is " +
+          "outstanding: the open items, who owes each one, and when it is due."
+        : "No meeting records were found, so build the answer from `recentEmails` (summarize_project_emails " +
+          "for bodies), `reviewComments` and `recentNotes` instead.",
+      "Where the documents CONTRADICT the structured record — a milestone reading overdue that the " +
+      "minutes show as closed out, a phase at 0% that the meetings have clearly moved past — say so. " +
+      "That reconciliation is worth reporting. The raw fields on their own are not.",
+      construction
+        ? "This project is in construction, so RFI and submittal traffic is real; check it."
+        : `This project is not in Construction Administration (status: ${p.status || "unknown"}). RFIs and ` +
+          "submittals do not exist yet, so they are omitted here. Do not report their absence as a finding.",
+    ];
+
+    return asText({
+      project: summarizeProject(p),
+      projectManager: p.projectManager ?? null,
+      deputyProjectManager: p.deputyProjectManager ?? null,
+      client: p.clientName ?? null,
+      clientContact: p.clientContact ?? null,
+      construction,
+      meetingRecords: { count: docs.items.length, note: docs.note, documents: docs.items },
+      reviewComments: mail.filter((m: any) => m.reviewComments.length),
+      recentEmails: mail.slice(0, 10).map((m: any) =>
+        ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),
+      recentNotes: notes,
+      readNext,
+      guidance,
+    });
   },
 });
 
