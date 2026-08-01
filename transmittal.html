@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-01-transmittal-v7-signin-persistence";
+    window.__appVersion = "2026-08-01-transmittal-v8-folder-url-percent";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -650,7 +650,7 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     return hit ? (hit.id || "") : "";
   })();
   if (!projId) return; // genuinely cannot attribute this transmittal to a project
-  const folderUrlDecoded = decodeURIComponent(folderUrl || "");
+  const folderUrlDecoded = safeDecodeFolderUrl(folderUrl);
   const subject = (document.getElementById("transmittalNo")?.value || "") +
                   " · " +
                   (document.getElementById("projectName")?.value || "");
@@ -1193,10 +1193,20 @@ function onContactSelected() {
   } catch(e) {}
 }
 
-// decodeURIComponent that tolerates already-decoded URLs (a pasted URL with a
-// literal "%" would otherwise throw URIError and break the load path).
+// decodeURIComponent that tolerates already-decoded URLs. Drawing-set folders
+// legitimately carry a literal "%" ("2024-10-24_Revised 100% CD Submission"),
+// and these URLs reach us already decoded: URLSearchParams.get() decodes the
+// ?folder= param once, and the folder input is populated with the decoded
+// form. A second decode then throws URIError("URI malformed") and takes the
+// whole load path down. Decode runs of well-formed escapes individually so a
+// bare "%" survives, keeping multi-byte sequences (%E2%80%93) intact by
+// decoding the run as a unit rather than escape by escape.
 function safeDecodeFolderUrl(u) {
-  try { return decodeURIComponent(u || ""); } catch (e) { return u || ""; }
+  const s = String(u || "");
+  try { return decodeURIComponent(s); } catch (e) {}
+  return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, function (run) {
+    try { return decodeURIComponent(run); } catch (e2) { return run; }
+  });
 }
 
 // Manual folder entry (no ?folder= deep link). Sets the same `folderUrl`
@@ -1436,7 +1446,7 @@ async function loadFolder() {
     // Build folder path from URL
     let folderPath = "";
     if (folderUrl) {
-      const url = decodeURIComponent(folderUrl);
+      const url = safeDecodeFolderUrl(folderUrl);
       const libIdx = url.indexOf("Project Document Library/");
       if (libIdx !== -1) {
         folderPath = url.slice(libIdx + "Project Document Library/".length);
@@ -1886,7 +1896,11 @@ async function generateDocx() {
 
     const projectName = document.getElementById("projectName").value.trim() || "Project";
     const projectNumber = document.getElementById("projectNumber").value.trim() || "";
-    const spFolderUrl = decodeURIComponent(new URLSearchParams(window.location.search).get("folder") || "");
+    // Read the folderUrl global, not the ?folder= param: a manually pasted
+    // folder never reaches the URL, and sourcing from the param left the
+    // SharePoint link blank on the generated transmittal. The global is
+    // seeded from the param at init, so deep links are unaffected.
+    const spFolderUrl = safeDecodeFolderUrl(folderUrl);
     const recipientName = document.getElementById("recipientName").value.trim() || "";
     const recipientEmail = document.getElementById("recipientEmail").value.trim() || "";
     const recipientCompany = document.getElementById("recipientCompany").value.trim() || "";
@@ -2392,7 +2406,7 @@ async function publishToPortal(fileBlobs, settyDeliverablesUrl) {
   // Resolve the Deliverables folder's drive-root-relative path from its webUrl.
   // Stored URLs look like:
   //   https://setty.sharepoint.com/sites/NYSharesite/Shared%20Documents/{proj}/Setty%20Deliverables
-  const decoded = decodeURIComponent(settyDeliverablesUrl);
+  const decoded = safeDecodeFolderUrl(settyDeliverablesUrl);
   const marker = "/Shared Documents/";
   const idx = decoded.indexOf(marker);
   if (idx === -1) {
