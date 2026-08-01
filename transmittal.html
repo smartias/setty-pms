@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-01-transmittal-v8-folder-url-percent";
+    window.__appVersion = "2026-08-01-transmittal-v9-param-double-decode";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -739,18 +739,21 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
         document.getElementById("transmittalNo").value = "T-001";
       }
     }
-    // Also read project info passed from PMS
+    // Also read project info passed from PMS. No decodeURIComponent on
+    // these: URLSearchParams.get() has already decoded them, and a second
+    // pass throws URIError on any name carrying a literal "%" ("100% CD
+    // Phase"). Same defect as the folder URLs, different fields.
     const projectParam = params.get("project");
     const numberParam  = params.get("number");
     const clientParam  = params.get("client");
     if (projectParam && !document.getElementById("projectName").value)
-      document.getElementById("projectName").value = decodeURIComponent(projectParam);
+      document.getElementById("projectName").value = projectParam;
     if (numberParam && !document.getElementById("projectNumber").value)
-      document.getElementById("projectNumber").value = decodeURIComponent(numberParam);
+      document.getElementById("projectNumber").value = numberParam;
     // The clientName input was removed in the recipient-UI redesign — guard
     // against its absence so the client= URL param doesn't crash init.
     const clientEl = document.getElementById("clientName");
-    if (clientParam && clientEl) clientEl.value = decodeURIComponent(clientParam);
+    if (clientParam && clientEl) clientEl.value = clientParam;
     if (numberParam || projectParam) {
       // Auto-generate transmittal number
       document.getElementById("transmittalNo").value = "T-001";
@@ -835,8 +838,7 @@ async function loadPmsData() {
     const urlNumber = new URLSearchParams(window.location.search).get("number");
     const urlProject = new URLSearchParams(window.location.search).get("project");
     if (urlNumber) {
-      const decodedNum = decodeURIComponent(urlNumber);
-      const proj = pmsProjects.find(p => p.projectNumber === decodedNum);
+      const proj = pmsProjects.find(p => p.projectNumber === urlNumber);
       if (proj) {
         document.getElementById("projectName").value = proj.name || "";
         document.getElementById("projectNumber").value = proj.projectNumber || "";
@@ -857,8 +859,8 @@ async function loadPmsData() {
         }
       } else {
         // Project not found by number — use URL params directly
-        if (urlProject) document.getElementById("projectName").value = decodeURIComponent(urlProject);
-        document.getElementById("projectNumber").value = decodedNum;
+        if (urlProject) document.getElementById("projectName").value = urlProject;
+        document.getElementById("projectNumber").value = urlNumber;
       }
     }
 

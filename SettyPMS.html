@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-07-31-pms-v94-overhead-roles-and-inactive-staff";
+    window.__appVersion = "2026-08-01-pms-v95-folder-url-percent";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3022,6 +3022,25 @@ async function createProposalFolder(project) {
   return result.webUrl;
 }
 
+// decodeURIComponent that tolerates already-decoded URLs. SharePoint folder
+// names legitimately carry a literal "%": AEC submission sets are named
+// "100% CD", "50% DD", "2024-10-24_Revised 100% CD Submission", and email
+// folders inherit the subject line, which is not stripped of "%". Folder
+// URLs reach us already decoded on several routes (URLSearchParams.get()
+// decodes a ?folder= param once, and the Overview folder box is a free-text
+// paste). A second decode then throws URIError("URI malformed") and takes
+// the whole caller down. Decode RUNS of well-formed escapes so a bare "%"
+// survives, decoding each run as a unit to keep multi-byte sequences
+// (%E2%80%93) intact. Returns decodeURIComponent()'s exact result whenever
+// that succeeds, so every path that works today is byte-for-byte unchanged.
+function safeDecodeFolderUrl(u) {
+  const s = String(u || "");
+  try { return decodeURIComponent(s); } catch (e) {}
+  return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, function (run) {
+    try { return decodeURIComponent(run); } catch (e2) { return run; }
+  });
+}
+
 async function createMilestoneSpFolder(project, milestone) {
   const { driveId } = await resolveSpIds();
   const projectFolderUrl = (project.projectFolderUrl || "").trim();
@@ -3029,7 +3048,7 @@ async function createMilestoneSpFolder(project, milestone) {
     throw new Error("This project has no SharePoint folder URL. Create one on the Overview tab first, then try again.");
   }
 
-  const urlParts = decodeURIComponent(projectFolderUrl).replace(/\/+$/, "").split("/");
+  const urlParts = safeDecodeFolderUrl(projectFolderUrl).replace(/\/+$/, "").split("/");
   const projFolderName = (urlParts[urlParts.length - 1] || "").trim();
   if (!projFolderName) {
     throw new Error("Could not parse project folder name from URL: " + projectFolderUrl);
@@ -5011,7 +5030,7 @@ async function installProjectShortcuts(project, allProjects) {
   }
 
   // ── Step 2: write all shortcuts into the main project folder root ──
-  const folderName = decodeURIComponent(project.projectFolderUrl.split("/").pop());
+  const folderName = safeDecodeFolderUrl(project.projectFolderUrl.split("/").pop());
   const installed = [];
   const failed = [];
   for (const sc of shortcuts) {
@@ -5335,7 +5354,7 @@ async function createClientPortalFolders(project) {
   if (project.projectFolderUrl) {
     try {
       const { driveId: mainDriveId } = await resolveSpIds();
-      const decoded = decodeURIComponent(project.projectFolderUrl);
+      const decoded = safeDecodeFolderUrl(project.projectFolderUrl);
       const folderNameMatch = decoded.match(/\/([^\/]+)\/?$/);
       if (!folderNameMatch) throw new Error("Could not parse folder name from projectFolderUrl");
       const mainFolderName = folderNameMatch[1];
@@ -5614,7 +5633,7 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
 
   // Get project folder name from stored URL
   const urlParts = folderUrl.split("/");
-  const projectFolderName = decodeURIComponent(urlParts[urlParts.length - 1]);
+  const projectFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]);
 
   // Ensure folder exists (POST with conflictBehavior:replace is idempotent)
   async function ensureFolder(parentPath, name) {
@@ -7360,7 +7379,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       // The milestone's Document Set folder leads the list when one exists —
       // it's where the deliverables actually live.
       if (m.outgoingFolderUrl) {
-        const folderName = decodeURIComponent((m.outgoingFolderUrl.split("/").pop() || "")).replace(/&/g, "&amp;").replace(/</g, "&lt;") || "Open folder";
+        const folderName = safeDecodeFolderUrl((m.outgoingFolderUrl.split("/").pop() || "")).replace(/&/g, "&amp;").replace(/</g, "&lt;") || "Open folder";
         bits.push(`<span style="color:#94A3B8;">Document Set Folder:</span> <a href="${m.outgoingFolderUrl}" style="color:#2F5496;">${folderName}</a>`);
       }
       (m.links || []).forEach(lk => {
@@ -9506,7 +9525,7 @@ function SpBrowsePicker({ project, onPick }) {
   const [err,   setErr]   = React.useState("");
 
   const rootName = project.projectFolderUrl
-    ? decodeURIComponent(project.projectFolderUrl).replace(/\/+$/, "").split("/").pop()
+    ? safeDecodeFolderUrl(project.projectFolderUrl).replace(/\/+$/, "").split("/").pop()
     : null;
 
   async function load(newStack) {
@@ -10073,7 +10092,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     try {
       const { driveId } = await resolveSpIds();
       const urlParts = project.projectFolderUrl.split("/");
-      const projFolderName = decodeURIComponent(urlParts[urlParts.length - 1]);
+      const projFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]);
       const typLabel = isRFI ? "RFIs" : "Submittals";
       const itemName = form.number + (isRFI ? " " + form.title : " " + form.description);
       const safeName = itemName.replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
@@ -15509,8 +15528,7 @@ async function searchPmsCorpus(queryString, entityTypes, driveItemQuery) {
 }
 
 function normalizeUrl(url) {
-  try { return decodeURIComponent(url || "").toLowerCase().replace(/\/$/, ""); }
-  catch { return (url || "").toLowerCase().replace(/\/$/, ""); }
+  return safeDecodeFolderUrl(url).toLowerCase().replace(/\/$/, "");
 }
 
 // Scan the project's link graph to find PMS entities connected to a search result URL.
@@ -15862,7 +15880,7 @@ function InvestigationView({ project }) {
       // and plain-space queries produce reliable <c0> highlight snippets from Graph.
       let fileQ = baseQ;
       if (scopeToProject && project.projectFolderUrl) {
-        const folderUrl = decodeURIComponent(project.projectFolderUrl).replace(/\/$/, "");
+        const folderUrl = safeDecodeFolderUrl(project.projectFolderUrl).replace(/\/$/, "");
         const terms = [kwQ].filter(Boolean).join(" ");
         fileQ = terms ? `${terms} path:"${folderUrl}"` : `path:"${folderUrl}"`;
       }
@@ -16331,7 +16349,7 @@ function PhotosView({ project }) {
   function getProjFolderName() {
     if (!project.projectFolderUrl) return null;
     const parts = project.projectFolderUrl.split("/");
-    return decodeURIComponent(parts[parts.length - 1]);
+    return safeDecodeFolderUrl(parts[parts.length - 1]);
   }
 
   async function loadGallery() {
@@ -24728,7 +24746,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
 
   // Resolve a subfolder item ID from its SharePoint webUrl
   async function resolveItemId(folderUrl) {
-    const decoded = decodeURIComponent(folderUrl);
+    const decoded = safeDecodeFolderUrl(folderUrl);
     const parts   = decoded.replace(/\/$/, "").split("/");
     const subName    = parts[parts.length - 1];
     const parentName = parts[parts.length - 2];

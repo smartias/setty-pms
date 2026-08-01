@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Site Report</title>
   <script>
-    window.__appVersion = "2026-07-25-sitereport-v2-auth-popup-icon";
+    window.__appVersion = "2026-08-01-sitereport-v3-folder-url-percent";
 
     // Auto-update banner — same pattern as transmittal.html / SettyFieldPhotos.
     async function _checkForUpdate() {
@@ -1616,6 +1616,25 @@ async function graphFetch(method, path, body, contentType) {
   if (!res.ok) throw new Error("Graph " + res.status + ": " + (await res.text()));
   return res.status === 204 ? null : res.json();
 }
+// decodeURIComponent that tolerates already-decoded URLs. SharePoint folder
+// names legitimately carry a literal "%": AEC submission sets are named
+// "100% CD", "50% DD", "2024-10-24_Revised 100% CD Submission", and email
+// folders inherit the subject line, which is not stripped of "%". Folder
+// URLs reach us already decoded on several routes (URLSearchParams.get()
+// decodes a ?folder= param once, and the Overview folder box is a free-text
+// paste). A second decode then throws URIError("URI malformed") and takes
+// the whole caller down. Decode RUNS of well-formed escapes so a bare "%"
+// survives, decoding each run as a unit to keep multi-byte sequences
+// (%E2%80%93) intact. Returns decodeURIComponent()'s exact result whenever
+// that succeeds, so every path that works today is byte-for-byte unchanged.
+function safeDecodeFolderUrl(u) {
+  const s = String(u || "");
+  try { return decodeURIComponent(s); } catch (e) {}
+  return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, function (run) {
+    try { return decodeURIComponent(run); } catch (e2) { return run; }
+  });
+}
+
 function encodePath(p) { return p.split("/").map(encodeURIComponent).join("/"); }
 
 // Idempotent folder create. Graph returns 409 / similar if the folder already
@@ -1645,7 +1664,7 @@ async function openProjectPhotosPicker() {
 
   try {
     // Same folder convention as SettyFieldPhotos: <projectFolder>/Photos/<session>/<files>
-    const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+    const folderSegment = safeDecodeFolderUrl(selectedProject.projectFolderUrl.split("/").pop());
     const photosPath = folderSegment + "/Photos";
     const root = await graphFetch("GET",
       `/drives/${DRIVE_ID}/root:/${encodePath(photosPath)}:/children?$select=id,name,folder,file&$top=200`);
@@ -2556,7 +2575,7 @@ async function uploadSiteReportPhoto(item) {
     const baseName = loc ? `${num} ${loc}` : num;
     const suffix = item.id.slice(0, 4);
     const filename = `${sanitizeFilename(baseName)} (${suffix}).jpg`;
-    const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+    const folderSegment = safeDecodeFolderUrl(selectedProject.projectFolderUrl.split("/").pop());
     const photosRoot   = await ensureFolder(folderSegment, "Photos");
     const sessionLabel = `${visitDate} Site Report Photos`;
     const sessionPath  = await ensureFolder(photosRoot, sessionLabel);
@@ -2614,7 +2633,7 @@ function mirrorPhotoSession() {
     if (!selectedProject?.projectFolderUrl) return;
     const visitDate = document.getElementById("visitDate").value;
     if (!visitDate) return;
-    const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+    const folderSegment = safeDecodeFolderUrl(selectedProject.projectFolderUrl.split("/").pop());
     const sessionLabel = `${visitDate} Site Report Photos`;
     const folderPath = folderSegment + "/Photos/" + sessionLabel;
     const count = items.filter(i => i.uploadedPath && i.uploadedPath.indexOf(folderPath + "/") === 0).length;
@@ -2741,7 +2760,7 @@ async function compositePlanWithPins(plan, pinnedItems, numberByItemId) {
 // lookup, minor naming variants on the user's SharePoint produced a second
 // folder alongside the original.
 async function uploadWordToSharePoint(blob, filename, visitDate) {
-  const folderSegment = decodeURIComponent(selectedProject.projectFolderUrl.split("/").pop());
+  const folderSegment = safeDecodeFolderUrl(selectedProject.projectFolderUrl.split("/").pop());
   const reportsRoot = await findOrCreateReportsFolder(folderSegment);
   const visitFolder = await ensureFolder(reportsRoot, visitDate);
   const targetPath  = visitFolder + "/" + filename;
