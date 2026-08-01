@@ -112,6 +112,12 @@ const SP_SITE_ID = Deno.env.get("GRAPH_SITE_ID") ??
 const DOC_LIBRARY = Deno.env.get("GRAPH_DOC_LIBRARY") ?? "Project Document Library";
 const MAX_DOC_CHARS = 50000;
 const MAX_DOC_BYTES = 20 * 1024 * 1024;
+// Sheet extraction is a different bargain from read_document: it walks pages and
+// returns a few structured fields per sheet, never the file body, so the 20MB
+// bound above (which is about response size) is the wrong limit for it. Combined
+// discipline books routinely run past it — Tabler's electrical book is 42MB.
+const SHEET_MAX_BYTES = 64 * 1024 * 1024;
+const SHEET_OVERSIZE_BUDGET = 96 * 1024 * 1024;
 
 let _graphTok: { token: string; exp: number } | null = null;
 async function graphToken(): Promise<string> {
@@ -208,6 +214,25 @@ async function findProjectFolderInDrive(driveId: string, numPrefix: string): Pro
   _projFolder.set(key, { item: null, at: Date.now() });
   return null;
 }
+// Graph caps a children listing at 200 entries and hands back a nextLink. Reading
+// only the first page passes a truncated slice off as the whole folder, which is
+// worse than an error because it looks like it worked — Tabler's Emails folder
+// holds 3,226 items. Follow the link, bounded, and REPORT stopping early.
+async function listChildren(path: string): Promise<{ value: any[]; truncated: boolean }> {
+  const out: any[] = [];
+  let url: string = path;
+  let pages = 0;
+  while (url) {
+    if (pages >= MAX_FOLDER_PAGES) return { value: out, truncated: true };
+    const page = await graphGet(url);
+    for (const it of (page.value || [])) out.push(it);
+    pages++;
+    const next = page["@odata.nextLink"];
+    url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
+  }
+  return { value: out, truncated: false };
+}
+
 // Find root folders whose NAME CONTAINS a needle (case-insensitive). For name-based
 // libraries (Proposals/Contracts). Empty needle returns the first folders (browse).
 // Bounded to 15 pages (~3000 folders) per drive.
@@ -259,8 +284,11 @@ function summarizeProject(p: any): Record<string, unknown> {
   };
 }
 
+// Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
+// /health so "is my change live?" is answerable without diffing the source.
+const BUILD = "2026-08-01-path-scoped-crawl";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.0.0",
+  name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1247,13 +1275,16 @@ mcp.tool("list_project_documents", {
         const listPath = (rel
           ? `/drives/${dId}/items/${fId}:/${rel}:/children`
           : `/drives/${dId}/items/${fId}/children`) + "?$select=id,name,size,folder,file,lastModifiedDateTime&$top=200";
-        const page = await graphGet(listPath);
+        const page = await listChildren(listPath);
         const items = (page.value || []).map((it: any) => ({
           itemId: dId + "|" + it.id, name: it.name, type: it.folder ? "folder" : "file",
           library: libName, size: it.size, modified: it.lastModifiedDateTime,
           ext: it.file ? (String(it.name).split(".").pop() || "").toLowerCase() : undefined,
         }));
-        return asText({ folderId, library: libName, path: subfolder || "/", count: items.length, items });
+        return asText({
+          folderId, library: libName, path: subfolder || "/", count: items.length, items,
+          ...(page.truncated ? { truncated: true, coverageWarning: `This folder holds more than ${MAX_FOLDER_PAGES * 200} entries and the listing stopped there. Treat it as a PARTIAL listing — open a subfolder to narrow it.` } : {}),
+        });
       }
       const wanted = library ? drives.filter((d) => d.name.toLowerCase() === library.toLowerCase()) : drives;
       // Mode 2: find folders by NAME (Proposals/Contracts). Triggered by folderMatch, or by
@@ -1283,20 +1314,22 @@ mcp.tool("list_project_documents", {
           ? `/drives/${dr.id}/items/${folder.id}:/${rel}:/children`
           : `/drives/${dr.id}/items/${folder.id}/children`) + "?$select=id,name,size,folder,file,lastModifiedDateTime&$top=200";
         try {
-          const page = await graphGet(listPath);
-          return { name: dr.name, items: (page.value || []).map((it: any) => ({
+          const page = await listChildren(listPath);
+          return { name: dr.name, truncated: page.truncated, items: (page.value || []).map((it: any) => ({
             itemId: dr.id + "|" + it.id, name: it.name, type: it.folder ? "folder" : "file",
             library: dr.name, size: it.size, modified: it.lastModifiedDateTime,
             ext: it.file ? (String(it.name).split(".").pop() || "").toLowerCase() : undefined,
           })) };
-        } catch { return { name: dr.name, items: [] as any[] }; }
+        } catch { return { name: dr.name, truncated: false, items: [] as any[] }; }
       }));
-      const found = per.filter(Boolean) as Array<{ name: string; items: any[] }>;
+      const found = per.filter(Boolean) as Array<{ name: string; truncated: boolean; items: any[] }>;
       const items = found.flatMap((f) => f.items);
+      const partialLibs = found.filter((f) => f.truncated).map((f) => f.name);
       return asText({
         project: projectNumber, path: subfolder || "/",
         availableLibraries: drives.map((d) => d.name), librariesWithProject: found.map((f) => f.name),
         count: items.length, items,
+        ...(partialLibs.length ? { truncated: true, coverageWarning: `Listing stopped at ${MAX_FOLDER_PAGES * 200} entries in ${partialLibs.join(", ")}. Treat it as a PARTIAL listing — open a subfolder to narrow it.` } : {}),
         hint: "Proposals/Contract libraries are named by project/client NAME, not number. To reach this project's proposal or contract folder, call again with folderMatch:'<distinctive word from the project name>' + library:'Proposals' (or 'Contract Library'), then folderId to open it.",
       });
     } catch (e) {
@@ -1442,6 +1475,22 @@ const TREE_MAX_FILES = 4000;
 const TREE_MAX_REQUESTS = 150;
 const _treeCache = new Map<string, { at: number; files: any[]; libraries: string[]; truncated: boolean }>();
 
+// One file row, shaped the same whether it came from the whole-project walk or
+// from a path-scoped one. `folderPath` is relative to the PROJECT ROOT in both,
+// which is what lets a caller filter either result set the same way.
+function treeFileRow(driveId: string, driveName: string, it: any, nodePath: string) {
+  return {
+    itemId: driveId + "|" + it.id,
+    name: it.name,
+    library: driveName,
+    folderPath: nodePath || "/",
+    webUrl: it.webUrl || null,
+    modified: it.lastModifiedDateTime || null,
+    size: it.size,
+    ext: (String(it.name).split(".").pop() || "").toLowerCase(),
+  };
+}
+
 async function projectTree(numPrefix: string) {
   const hit = _treeCache.get(numPrefix);
   if (hit && Date.now() - hit.at < TREE_TTL) return hit;
@@ -1477,16 +1526,7 @@ async function projectTree(numPrefix: string) {
           if (it.folder) {
             queue.push({ id: it.id, path });
           } else if (files.length < TREE_MAX_FILES) {
-            files.push({
-              itemId: dr.id + "|" + it.id,
-              name: it.name,
-              library: dr.name,
-              folderPath: node.path || "/",
-              webUrl: it.webUrl || null,
-              modified: it.lastModifiedDateTime || null,
-              size: it.size,
-              ext: (String(it.name).split(".").pop() || "").toLowerCase(),
-            });
+            files.push(treeFileRow(dr.id, dr.name, it, node.path));
           } else { truncated = true; }
         }
         const next = page["@odata.nextLink"];
@@ -1497,6 +1537,85 @@ async function projectTree(numPrefix: string) {
   const out = { at: Date.now(), files, libraries, truncated };
   _treeCache.set(numPrefix, out);
   return out;
+}
+
+// ── Path-scoped crawl. The whole-project walk is the WRONG tool once the caller
+// has already named the folder they mean.
+//
+// TREE_MAX_REQUESTS bounds projectTree across the ENTIRE project, breadth-first
+// across every library. On a large job the budget runs out before the walk
+// reaches deep set subfolders, so those files are simply absent from
+// `tree.files` — and a caller filtering that array by path concludes "no files
+// found under X", which reads as a bad path when the path is fine.
+//
+// Confirmed on SAPX196006.00 (Tabler) on 2026-08-01: the 68 sheet PDFs under
+// `Outgoing/2024-10-24_Revised 100% CD Submission/INDIVIDUAL PDF's/<DISCIPLINE>`
+// were invisible, while under `Outgoing/2025-01-21_Addendum #1` the sibling
+// `Specifications` folder WAS present and `Drawing` was not. So it is ORDER
+// dependent, not a depth rule anyone could predict or work around.
+//
+// Resolving the named path directly costs one Graph call and spends the whole
+// budget beneath it, which is why this exists rather than a bigger cap.
+const SUBTREE_MAX_REQUESTS = 120;
+
+async function subtreeFiles(numPrefix: string, rel: string): Promise<{
+  files: any[];
+  truncated: boolean;
+  resolvedIn: string[];
+  scanned: number;
+}> {
+  const relClean = String(rel || "").replace(/^\/+|\/+$/g, "");
+  const encoded = relClean.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+  const drives = await siteDrives();
+  const files: any[] = [];
+  const resolvedIn: string[] = [];
+  let requests = 0;
+  let truncated = false;
+
+  for (const dr of drives) {
+    let root: any = null;
+    try { root = await findProjectFolderInDrive(dr.id, numPrefix); } catch { continue; }
+    if (!root) continue;
+
+    // The path API 404s when the folder is absent from THIS library, which is
+    // the normal case for most of the ~37 libraries. Not an error, just a miss.
+    let start: any = root;
+    if (encoded) {
+      try {
+        start = await graphGet(
+          `/drives/${dr.id}/items/${root.id}:/${encoded}:?$select=id,name,folder`,
+        );
+        requests++;
+      } catch { continue; }
+    }
+    if (!start || !start.folder) continue;
+    resolvedIn.push(dr.name);
+
+    const queue: Array<{ id: string; path: string }> = [{ id: start.id, path: relClean }];
+    while (queue.length) {
+      if (requests >= SUBTREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
+      const node = queue.shift()!;
+      let url = `/drives/${dr.id}/items/${node.id}/children` +
+        "?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200";
+      while (url) {
+        if (requests >= SUBTREE_MAX_REQUESTS) { truncated = true; break; }
+        let page: any;
+        try { page = await graphGet(url); } catch { break; }
+        requests++;
+        for (const it of (page.value || [])) {
+          const path = node.path ? node.path + "/" + it.name : it.name;
+          if (it.folder) {
+            queue.push({ id: it.id, path });
+          } else if (files.length < TREE_MAX_FILES) {
+            files.push(treeFileRow(dr.id, dr.name, it, node.path));
+          } else { truncated = true; }
+        }
+        const next = page["@odata.nextLink"];
+        url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
+      }
+    }
+  }
+  return { files, truncated, resolvedIn, scanned: requests };
 }
 
 // ── Pure scoring. Kept free of Graph and DB calls so it can be tested directly;
@@ -1782,8 +1901,19 @@ mcp.tool("extract_sheet_index", {
     "phase, and page N of M. Handles BOOKED packages — a single addendum or bulletin PDF holding many " +
     "sheets is split page by page, one row per sheet. Use this to reconstruct what a set actually " +
     "contained, and to build a current full set by combining a baseline submission with every partial " +
-    "issued after it (group by sheetNo, keep the latest sheetDate). This is READ-ONLY: it returns rows " +
-    "for review and writes nothing to the transmittal register.",
+    "issued after it. TO BUILD THAT COMPOSITE, GROUP BY sheetNo AND KEEP THE LATEST revisionDate — " +
+    "NOT sheetDate, which is the BASE ISSUE date and never moves (it reads the same on every sheet of " +
+    "a project, so grouping on it ties on every row), and NOT the revision label, which is unsortable " +
+    "because the scheme changes mid-project (letters A/B/C for early addenda, then numbers 2, 3, 6, 9, " +
+    "13; sheet E211 exists at both rev 'C' and rev '6', and a label sort returns the SUPERSEDED one). " +
+    "A sheet with no revisionDate is a base issue at revision 0 and sorts earliest. The revision label " +
+    "is also NOT the bulletin number (Bulletin #010 stamps revision 7), and revisionDate is not the " +
+    "set's folder date. Completeness is judged PER " +
+    "DISCIPLINE, because each discipline's title blocks state their own set size (E 'of 68', M 'of 54') " +
+    "— see byDiscipline[<letter>].setTotal / .isPartial. Pass the subfolder EXACTLY as " +
+    "list_project_documents reports it: an exact path is resolved directly, anything else falls back to " +
+    "a capped whole-project folder walk that may not reach deep set folders. This is READ-ONLY: it " +
+    "returns rows for review and writes nothing to the transmittal register.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number, id, or name"),
     subfolder: z.string().describe("The set folder under Outgoing, e.g. 'Outgoing/2026-04-17_Bulletin #13'"),
@@ -1798,31 +1928,67 @@ mcp.tool("extract_sheet_index", {
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
 
-    let tree;
+    const numPrefix = String(project).toLowerCase().trim();
+    const want = String(subfolder || "").replace(/^\/+|\/+$/g, "").toLowerCase();
+
+    // Resolve the named folder directly and crawl only beneath it. Falling back
+    // to the whole-project walk is what keeps a path that is CLOSE but not exact
+    // working (set folders carry dates and emoji prefixes), but the direct
+    // resolve has to be tried first or a big project silently returns nothing.
+    let inSet: any[] = [];
+    let scope: any = { mode: "direct" };
+    let crawlTruncated = false;
     try {
-      tree = await projectTree(String(project).toLowerCase().trim());
+      const sub = await subtreeFiles(numPrefix, subfolder);
+      inSet = sub.files;
+      crawlTruncated = sub.truncated;
+      scope = { mode: "direct", resolvedIn: sub.resolvedIn, graphCalls: sub.scanned };
+      if (!sub.resolvedIn.length) scope.pathResolved = false;
     } catch (e) {
       return asText({ project, error: `Could not read SharePoint folders: ${String((e as any)?.message ?? e)}` });
     }
-    const want = String(subfolder || "").replace(/^\/+|\/+$/g, "").toLowerCase();
-    const inSet = tree.files.filter((f: any) => {
-      const path = String(f.folderPath || "").toLowerCase();
-      return path === want || path.startsWith(want + "/");
-    });
+
+    let treeTruncated = false;
     if (!inSet.length) {
+      let tree;
+      try {
+        tree = await projectTree(numPrefix);
+      } catch (e) {
+        return asText({ project, error: `Could not read SharePoint folders: ${String((e as any)?.message ?? e)}` });
+      }
+      treeTruncated = tree.truncated;
+      inSet = tree.files.filter((f: any) => {
+        const path = String(f.folderPath || "").toLowerCase();
+        return path === want || path.startsWith(want + "/");
+      });
+      if (inSet.length) { scope = { mode: "project-walk-fallback", pathResolved: false }; crawlTruncated = tree.truncated; }
+    }
+
+    if (!inSet.length) {
+      // Say which of the two it is. "No files found" that really meant "the
+      // crawl ran out of budget" is the exact failure this tool shipped with.
+      const exhausted = scope.pathResolved === false && treeTruncated;
       return asText({
-        project, subfolder, count: 0, sheets: [],
-        reason: `No files found under "${subfolder}".`,
-        nextStep: "Check the path with list_project_documents — set folders carry dates and sometimes emoji prefixes.",
+        project, subfolder, count: 0, sheets: [], scope,
+        reason: exhausted
+          ? `The folder "${subfolder}" could not be resolved directly, and the whole-project folder walk hit its request cap before covering the project — so this is an INCOMPLETE scan, not proof the path is wrong.`
+          : scope.pathResolved === false
+          ? `No folder "${subfolder}" exists under this project in any library.`
+          : `The folder "${subfolder}" resolved but holds no files.`,
+        crawlTruncated: exhausted,
+        nextStep: exhausted
+          ? "Confirm the exact path with list_project_documents and pass it verbatim — an exact path is resolved directly and does not depend on the walk."
+          : "Check the path with list_project_documents — set folders carry dates and sometimes emoji prefixes.",
       });
     }
     const pdfs = inSet.filter((f: any) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath));
     const excludedFolders = [...new Set(inSet.filter((f: any) => NON_SHEET_FOLDER.test(f.folderPath)).map((f: any) => f.folderPath))];
     if (!pdfs.length) {
       return asText({
-        project, subfolder, count: 0, sheets: [],
+        project, subfolder, scope, count: 0, sheets: [],
         reason: `Found ${inSet.length} file(s) under "${subfolder}" but no drawing PDFs outside CAD/Revit/Specs folders.`,
         excludedFolders,
+        ...(crawlTruncated ? { crawlWarning: "The folder crawl also hit its request cap, so this listing is incomplete." } : {}),
         nextStep: "This set may hold only native files or specs. Check with list_project_documents.",
       });
     }
@@ -1832,12 +1998,42 @@ mcp.tool("extract_sheet_index", {
     const seen = new Map<string, any>();
     let duplicates = 0, pagesParsed = 0, filesOpened = 0, truncated = false;
 
-    for (const f of pdfs) {
+    // Baseline sets often ship ONE combined book per discipline beside (or
+    // instead of) the individual sheets. Tabler's combined electrical PDF is
+    // 42MB, over MAX_DOC_BYTES, so it used to be dropped as one quiet `unparsed`
+    // row — on a set that ships combined-only that silently loses the whole
+    // discipline.
+    //
+    // Sheet extraction reads text one page at a time and never returns the file
+    // body, so it can afford a larger cap than the generic document reader,
+    // whose 20MB bound is about response size. The real limit here is edge-worker
+    // memory, so: a bigger per-file cap, a budget on TOTAL oversized bytes per
+    // call, and oversized files taken LAST — a book that OOMs must not cost us
+    // the individual sheets that were going to parse fine.
+    const oversized: any[] = [];
+    let oversizeBytes = 0;
+    const isBig = (f: any) => Number(f.size) > MAX_DOC_BYTES;
+    const ordered = [...pdfs].sort((a, b) => Number(isBig(a)) - Number(isBig(b)));
+
+    for (const f of ordered) {
       if (filesOpened >= fileCap || pagesParsed >= pageCap) { truncated = true; break; }
       const bar = f.itemId.indexOf("|");
       const drive = f.itemId.slice(0, bar);
       const realId = f.itemId.slice(bar + 1);
-      if (f.size > MAX_DOC_BYTES) { unparsed.push({ file: f.name, reason: "too large to open inline", webUrl: f.webUrl }); continue; }
+      const big = isBig(f);
+      const sizeMB = Math.round(Number(f.size) / 104857.6) / 10;
+      if (big) {
+        if (Number(f.size) > SHEET_MAX_BYTES || oversizeBytes + Number(f.size) > SHEET_OVERSIZE_BUDGET) {
+          oversized.push({
+            file: f.name, sizeMB, folderPath: f.folderPath, webUrl: f.webUrl, opened: false,
+            reason: Number(f.size) > SHEET_MAX_BYTES
+              ? `${sizeMB}MB is over the ${SHEET_MAX_BYTES / 1048576}MB single-file cap for inline parsing`
+              : "would exceed this call's oversized-file memory budget",
+          });
+          continue;
+        }
+        oversizeBytes += Number(f.size);
+      }
       let buf: ArrayBuffer;
       try {
         const res = await fetch(
@@ -1848,6 +2044,7 @@ mcp.tool("extract_sheet_index", {
         buf = await res.arrayBuffer();
       } catch (e) { unparsed.push({ file: f.name, reason: String((e as any)?.message ?? e) }); continue; }
       filesOpened++;
+      const sheetsBefore = sheets.length;
       try {
         const { getDocumentProxy } = await import("unpdf");
         const pdf: any = await getDocumentProxy(new Uint8Array(buf));
@@ -1874,26 +2071,66 @@ mcp.tool("extract_sheet_index", {
         }
       } catch (e) {
         unparsed.push({ file: f.name, reason: `PDF parse failed: ${String((e as any)?.message ?? e)}` });
+        if (big) {
+          oversized.push({ file: f.name, sizeMB, folderPath: f.folderPath, webUrl: f.webUrl, opened: true,
+            reason: `opened at ${sizeMB}MB but parsing failed: ${String((e as any)?.message ?? e)}` });
+        }
+      }
+      if (big) {
+        const got = sheets.length - sheetsBefore;
+        if (got > 0) oversized.push({ file: f.name, sizeMB, folderPath: f.folderPath, webUrl: f.webUrl, opened: true, sheetsFound: got });
       }
     }
 
     sheets.sort((a, b) => String(a.sheetNo).localeCompare(String(b.sheetNo)));
-    const byDiscipline: Record<string, number> = {};
-    for (const s of sheets) byDiscipline[s.discipline] = (byDiscipline[s.discipline] || 0) + 1;
-    const setTotals = [...new Set(sheets.map((s) => s.setTotal).filter(Boolean))];
+
+    // The sheets state their own set size, so a partial issue is self-evident —
+    // but that size is PER DISCIPLINE. Tabler's title blocks say "of 68" on E,
+    // "of 54" on M and "of 22" on T, so the old whole-result test (exactly ONE
+    // distinct total across every sheet) evaluated false on every package that
+    // spans more than one discipline: Bulletin #13's 8 sheets across E and M
+    // were reported as a complete set. Group first, then compare.
+    const byDiscipline: Record<string, any> = {};
+    for (const s of sheets) {
+      const d = s.discipline || "?";
+      const e = byDiscipline[d] || (byDiscipline[d] = { sheets: 0, setTotal: null, totalsSeen: [] as number[] });
+      e.sheets++;
+      if (s.setTotal && !e.totalsSeen.includes(s.setTotal)) e.totalsSeen.push(s.setTotal);
+    }
+    for (const d of Object.keys(byDiscipline)) {
+      const e = byDiscipline[d];
+      // Sheets within one discipline should agree on the total. When they do not
+      // — a set assembled from two issues — the largest is the safest floor for
+      // "how many there should be", so a partial is never called complete.
+      if (e.totalsSeen.length > 1) e.conflictingTotals = [...e.totalsSeen].sort((a: number, b: number) => a - b);
+      e.setTotal = e.totalsSeen.length ? Math.max(...e.totalsSeen) : null;
+      e.isPartial = e.setTotal ? e.sheets < e.setTotal : null;
+      delete e.totalsSeen;
+    }
+    const rated = Object.values(byDiscipline).filter((e: any) => e.setTotal !== null);
+    const partialDisciplines = Object.keys(byDiscipline).filter((d) => byDiscipline[d].isPartial === true);
 
     return asText({
-      project, subfolder,
+      project, subfolder, scope,
       count: sheets.length,
       byDiscipline,
-      // The sheets state their own set size, so a partial issue is self-evident:
-      // 4 sheets that each say "of 68" is a bulletin, not a full set.
-      setTotalPerSheet: setTotals,
-      isPartialIssue: setTotals.length === 1 && sheets.length < Number(setTotals[0]),
+      // Partial when ANY discipline is short of its own stated total. Null, not
+      // false, when no title block stated a total — unknown is not "complete".
+      isPartialIssue: rated.length ? partialDisciplines.length > 0 : null,
+      ...(partialDisciplines.length ? { partialDisciplines } : {}),
       scanned: { pdfs: pdfs.length, filesOpened, pagesParsed, duplicatesCollapsed: duplicates },
       ...(excludedFolders.length ? { excludedFolders } : {}),
       sheets,
       ...(unparsed.length ? { unparsed } : {}),
+      ...(oversized.length
+        ? {
+          oversizedFiles: oversized,
+          oversizedWarning: oversized.some((o) => !o.opened)
+            ? `${oversized.filter((o) => !o.opened).length} combined PDF(s) were TOO LARGE to open, so any sheet that exists ONLY inside them is missing from this result. Open them via webUrl, or re-run against the individual-PDF subfolder.`
+            : `${oversized.length} oversized PDF(s) were opened successfully — no sheets lost.`,
+        }
+        : {}),
+      ...(crawlTruncated ? { crawlWarning: "The SharePoint folder crawl hit its request cap, so some files under this path were not seen. Results are incomplete." } : {}),
       ...(truncated ? { coverageWarning: `Stopped at ${filesOpened} file(s) / ${pagesParsed} page(s). Raise maxFiles/maxPages, or run per subfolder.` } : {}),
       note: "Revision comes from each sheet's own revision block; an empty block means base issue, revision 0. " +
         "Rows are NOT written anywhere — this is a read-only extraction for review.",
@@ -2368,6 +2605,6 @@ app.use("/pms-mcp/mcp", async (c, next) => {
 });
 
 app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
-app.get("/pms-mcp/health", (c) => c.json({ ok: true }));
+app.get("/pms-mcp/health", (c) => c.json({ ok: true, build: BUILD }));
 
 Deno.serve(app.fetch);
