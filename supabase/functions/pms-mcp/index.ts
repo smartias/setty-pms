@@ -1431,6 +1431,276 @@ mcp.tool("read_document", {
   },
 });
 
+// ─── PROJECT FILE INDEX + RANKED RETRIEVAL (roadmap P0.3) ───────────────────
+// The pitch this serves is "here is a faster door", not "change where you save".
+// Someone asks for the current fire protection narrative and gets a link before
+// they could have navigated the folder tree. That means the whole project tree
+// has to be in hand at scoring time, so the walk is cached per project rather
+// than re-run per call.
+const TREE_TTL = 300000;
+const TREE_MAX_FILES = 4000;
+const TREE_MAX_REQUESTS = 150;
+const _treeCache = new Map<string, { at: number; files: any[]; libraries: string[]; truncated: boolean }>();
+
+async function projectTree(numPrefix: string) {
+  const hit = _treeCache.get(numPrefix);
+  if (hit && Date.now() - hit.at < TREE_TTL) return hit;
+
+  const drives = await siteDrives();
+  const files: any[] = [];
+  const libraries: string[] = [];
+  let requests = 0;
+  let truncated = false;
+
+  for (const dr of drives) {
+    let root: any = null;
+    try { root = await findProjectFolderInDrive(dr.id, numPrefix); } catch { continue; }
+    if (!root) continue;
+    libraries.push(dr.name);
+
+    // Breadth-first. Depth-first on a project with a deep Outgoing tree would
+    // spend the whole request budget inside one set folder and never reach the
+    // siblings, so the shallow, high-signal folders would be the ones missed.
+    const queue: Array<{ id: string; path: string }> = [{ id: root.id, path: "" }];
+    while (queue.length) {
+      if (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
+      const node = queue.shift()!;
+      let url = `/drives/${dr.id}/items/${node.id}/children` +
+        "?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200";
+      while (url) {
+        if (requests >= TREE_MAX_REQUESTS) { truncated = true; break; }
+        let page: any;
+        try { page = await graphGet(url); } catch { break; }
+        requests++;
+        for (const it of (page.value || [])) {
+          const path = node.path ? node.path + "/" + it.name : it.name;
+          if (it.folder) {
+            queue.push({ id: it.id, path });
+          } else if (files.length < TREE_MAX_FILES) {
+            files.push({
+              itemId: dr.id + "|" + it.id,
+              name: it.name,
+              library: dr.name,
+              folderPath: node.path || "/",
+              webUrl: it.webUrl || null,
+              modified: it.lastModifiedDateTime || null,
+              size: it.size,
+              ext: (String(it.name).split(".").pop() || "").toLowerCase(),
+            });
+          } else { truncated = true; }
+        }
+        const next = page["@odata.nextLink"];
+        url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
+      }
+    }
+  }
+  const out = { at: Date.now(), files, libraries, truncated };
+  _treeCache.set(numPrefix, out);
+  return out;
+}
+
+// ── Pure scoring. Kept free of Graph and DB calls so it can be tested directly;
+// see findDocument.test.mjs.
+const norm = (s: string) => String(s || "").toLowerCase().replace(/[_\-.]+/g, " ").replace(/\s+/g, " ").trim();
+const STOPWORDS = new Set(["the", "a", "an", "of", "for", "and", "to", "in", "on", "current", "latest", "newest", "me", "get", "find", "show", "please"]);
+
+// The firm's own vocabulary. "Design criteria" is almost never what the file is
+// called: the same document ships as an OPR, a Basis of Design, or a Narrative.
+const DOC_TYPE_WORDS: Record<string, string[]> = {
+  Narrative: ["narrative", "basis of design", "bod", "opr", "owners project requirements", "design report", "criteria"],
+  Calc: ["calc", "calculation", "calculations", "load", "sizing", "takeoff"],
+  Spec: ["spec", "specs", "specification", "specifications", "division"],
+  "Comment Log": ["comment", "comments", "drchecks", "dr checks", "response", "responses", "backcheck"],
+  Transmittal: ["transmittal", "cover sheet"],
+  Minutes: ["minutes", "meeting notes", "mtg", "notes"],
+  Report: ["report", "survey", "study", "assessment", "scorecard"],
+};
+const DISCIPLINE_WORDS: Record<string, string[]> = {
+  M: ["mechanical", "hvac", "ductwork", "hthw"],
+  E: ["electrical", "power", "lighting", "normal power"],
+  P: ["plumbing", "domestic water", "sanitary"],
+  FP: ["fire protection", "sprinkler", "standpipe", "fp"],
+  FA: ["fire alarm", "fa"],
+  T: ["technology", "telecom", "security", "av"],
+};
+
+// Folder semantics are already domain knowledge encoded in list_project_documents;
+// reuse the same reading rather than inventing a second one.
+function folderArea(folderPath: string): string {
+  const p = norm(folderPath);
+  if (p.includes("outgoing")) return "Outgoing";
+  if (p.includes("email")) return "Emails";
+  if (p.includes("project management")) return "Project Management";
+  if (p.includes("design")) return "Design";
+  return "Other";
+}
+
+function parseQuery(query: string, discipline?: string, docType?: string) {
+  const n = norm(query);
+  const tokens = n.split(" ").filter((t) => t && !STOPWORDS.has(t));
+  let wantType = docType || null;
+  if (!wantType) {
+    for (const [type, words] of Object.entries(DOC_TYPE_WORDS)) {
+      if (words.some((w) => n.includes(w))) { wantType = type; break; }
+    }
+  }
+  let wantDisc = discipline || null;
+  if (!wantDisc) {
+    for (const [code, words] of Object.entries(DISCIPLINE_WORDS)) {
+      if (words.some((w) => n.includes(w))) { wantDisc = code; break; }
+    }
+  }
+  // "latest"/"current" is an intent, not a search term: it asks for a recency
+  // tiebreak rather than a file with that word in its name.
+  const wantsCurrent = /\b(current|latest|newest|most recent)\b/.test(n);
+  return { tokens, wantType, wantDisc, wantsCurrent };
+}
+
+function scoreDocument(file: any, q: ReturnType<typeof parseQuery>, nowMs: number): number {
+  const name = norm(file.name);
+  const path = norm(file.folderPath);
+  let s = 0;
+
+  // Filename match dominates. A term in the name is a far stronger signal than
+  // the same term in an ancestor folder, which every sibling file also inherits.
+  for (const t of q.tokens) {
+    if (name.includes(t)) s += 10;
+    else if (path.includes(t)) s += 3;
+  }
+  // Nothing matched at all: not a candidate. Returning it anyway is how a
+  // ranked list turns into "here is the whole folder, good luck".
+  if (s === 0) return 0;
+
+  if (q.wantType) {
+    const words = DOC_TYPE_WORDS[q.wantType] || [];
+    if (words.some((w) => name.includes(w))) s += 8;
+    else if (words.some((w) => path.includes(w))) s += 3;
+  }
+  if (q.wantDisc) {
+    const words = DISCIPLINE_WORDS[q.wantDisc] || [];
+    const code = q.wantDisc.toLowerCase();
+    if (words.some((w) => name.includes(w))) s += 8;
+    // A bare discipline letter is only meaningful as a sheet-name segment
+    // ("STTQ-01-E"), never as a loose substring, or every name with an E hits.
+    else if (new RegExp("(^| )" + code + "( |$)").test(name)) s += 6;
+    else if (words.some((w) => path.includes(w))) s += 3;
+  }
+
+  const area = folderArea(file.folderPath);
+  if (area === "Outgoing") s += 6;            // what we issued: the usual answer
+  else if (area === "Project Management") s += 3;
+  else if (area === "Design") s -= 2;         // internal calcs, rarely the ask
+  if (/\bsuperseded|\bold\b|\barchive/.test(path)) s -= 12;
+
+  if (file.ext === "pdf") s += 2;
+  else if (["docx", "doc", "xlsx", "xls"].includes(file.ext)) s += 1;
+  else if (["url", "lnk", "ini", "tmp"].includes(file.ext)) s -= 10;
+
+  // Recency as a tiebreak, not a ranking axis. Bulk migrations flattened
+  // lastModifiedDateTime firm-wide, so it is weak evidence: worth a nudge
+  // between otherwise-equal files, never worth outranking a name match.
+  const dateInPath = /(\d{4})-(\d{2})-(\d{2})/.exec(file.folderPath || "");
+  const stamp = dateInPath ? Date.parse(dateInPath[0]) : Date.parse(file.modified || "");
+  if (!isNaN(stamp)) {
+    const years = (nowMs - stamp) / (365.25 * 24 * 3600 * 1000);
+    s += Math.max(-3, 3 - years);
+    if (q.wantsCurrent) s += Math.max(-4, 4 - years * 1.5);
+  }
+  return s;
+}
+
+mcp.tool("find_document", {
+  description:
+    "Find a project document by describing it in plain language, e.g. 'current phase 3 fire protection " +
+    "narrative' or 'Bulletin 13 electrical drawings'. Returns ranked matches, each with its library, " +
+    "folder path, and a clickable webUrl. THIS IS THE FASTEST WAY to get to a specific document when you " +
+    "know roughly what it is but not where it lives; use list_project_documents instead when you want to " +
+    "browse a known folder, and read_document to open a result (pass the itemId returned here). " +
+    "Ranking favours filename matches, the Outgoing folder (sets we issued), and recency. Results are " +
+    "NOT filtered by supersession, so treat a hit as 'this document exists here', not 'this is current' " +
+    "— call get_current_set for the authoritative issued set.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number, id, or name"),
+    query: z.string().describe("Plain-language description of the document, e.g. 'fire protection narrative'"),
+    discipline: z.string().optional().describe("Restrict to a discipline: M, E, P, FP, FA or T"),
+    docType: z.string().optional().describe("Restrict to a type: Narrative, Calc, Spec, Comment Log, Transmittal, Minutes or Report"),
+    limit: z.number().optional().describe("Max results (default 10, max 30)"),
+  }),
+  handler: async ({ projectNumber, query, discipline, docType, limit }) => {
+    const lim = Math.min(Math.max(limit ?? 10, 1), 30);
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) {
+      return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm the number with search_projects." });
+    }
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+
+    let tree;
+    try {
+      tree = await projectTree(String(project).toLowerCase().trim());
+    } catch (e) {
+      return asText({
+        project, query,
+        error: `Could not read this project's SharePoint folders: ${String((e as any)?.message ?? e)}`,
+        nextStep: "This is a lookup failure, not an empty project. Retry, or browse with list_project_documents.",
+      });
+    }
+    if (!tree.files.length) {
+      return asText({
+        project, query, count: 0, results: [],
+        reason: tree.libraries.length
+          ? `Found this project's folder in ${tree.libraries.join(", ")} but it contains no files.`
+          : "No folder for this project in any SharePoint library — it is most likely not provisioned yet.",
+        nextStep: "Confirm with list_project_documents. If the project is new, the folders may not exist yet.",
+      });
+    }
+
+    const q = parseQuery(query, discipline, docType);
+    const now = Date.now();
+    const scored = tree.files
+      .map((f: any) => ({ f, s: scoreDocument(f, q, now) }))
+      .filter((r) => r.s > 0)
+      .sort((a, b) => b.s - a.s || String(b.f.modified || "").localeCompare(String(a.f.modified || "")));
+
+    if (!scored.length) {
+      return asText({
+        project, query, count: 0, results: [],
+        searched: { files: tree.files.length, libraries: tree.libraries },
+        reason: `Nothing in this project's ${tree.files.length} files matches "${query}".`,
+        nextStep: "Try fewer or different words. The firm names design-criteria documents 'OPR', 'Basis of Design' " +
+          "or 'Narrative' rather than 'design criteria'. list_project_documents will show what is actually there.",
+        ...(tree.truncated ? { coverageWarning: "The folder walk hit its cap, so some files were not indexed." } : {}),
+      });
+    }
+
+    return asText({
+      project, query,
+      interpreted: {
+        terms: q.tokens,
+        docType: q.wantType, discipline: q.wantDisc,
+        recencyPreferred: q.wantsCurrent,
+      },
+      searched: { files: tree.files.length, libraries: tree.libraries },
+      count: scored.length,
+      returned: Math.min(scored.length, lim),
+      results: scored.slice(0, lim).map((r) => ({
+        name: r.f.name,
+        library: r.f.library,
+        folderPath: r.f.folderPath,
+        area: folderArea(r.f.folderPath),
+        status: "unknown",
+        webUrl: r.f.webUrl,
+        itemId: r.f.itemId,
+        modified: r.f.modified,
+        score: Math.round(r.s * 10) / 10,
+      })),
+      statusNote: "status is 'unknown' for every result: supersession is not wired in yet (roadmap P0.2). " +
+        "Do not describe a result as the current revision on the strength of this tool.",
+      ...(tree.truncated ? { coverageWarning: `The folder walk hit its cap after ${tree.files.length} files, so results may be incomplete.` } : {}),
+    });
+  },
+});
+
 mcp.tool("search_field_photos", {
   description:
     "Search field-photo upload sessions from the Field Photos mobile app (and Site Report photo " +

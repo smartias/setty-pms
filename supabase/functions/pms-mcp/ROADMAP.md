@@ -108,10 +108,20 @@ gatekeeps admin consent.
 ## Revised delivery order
 
 ```
-P0.1 -> P0.2 (derived) -> P0.3 -> P1.6 -> P1.4 -> P1.5 -> P2.7 -> P2.8 -> P2.9 -> P3.10 -> P3.11 -> P3.12
+P0.1 -> P0.3 -> P0.2 (derived) -> P1.6 -> P1.4 -> P1.5 -> P2.7 -> P2.8 -> P2.9 -> P3.10 -> P3.11 -> P3.12
 ```
 
-Two changes from the original:
+**P0.3 moved ahead of P0.2 (2026-08-01).** The two differ in how their value
+arrives. P0.2's answers are only as good as register coverage, and the register
+holds 11 rows today, so a P0.2 built now would return `unknown` for essentially
+every sheet in the firm. Its worth grows as backfill lands. P0.3 has no such
+dependency: it reads the SharePoint tree that already exists for every
+provisioned project, so it is fully useful on day one, and it is the adoption
+demo (ask for a document, get a link faster than you could navigate to it).
+Build P0.3 while the register fills, then land P0.2 into data it can be right
+about.
+
+Two further changes from the original:
 
 - **Metadata Prerequisites drop off the critical path.** They are no longer a
   gate on P0.2. Provision them later to sharpen P2.8/P2.9.
@@ -201,6 +211,37 @@ Acceptance:
 
 Effort: M
 
+### P0.3 status: built, not deployed
+
+Branch `connector-find-document`. `find_document(projectNumber, query,
+discipline?, docType?, limit?)` plus `findDocument.test.mjs` (35 assertions).
+
+Design decisions worth keeping:
+
+- **The tree is walked breadth-first and cached per project** (5 min TTL, 4000
+  file / 150 request caps). Depth-first on a project with a deep Outgoing tree
+  would spend the whole budget inside one set folder and never reach its
+  siblings, so the shallow high-signal folders would be exactly the ones missed.
+  Hitting a cap sets `coverageWarning` rather than silently returning less.
+- **Recency is scored off the date in the folder NAME**, falling back to
+  `lastModifiedDateTime`. Bulk migration flattened the Graph stamps firm-wide,
+  so they are weak evidence: worth a tiebreak, never worth outranking a name
+  match. This is what lets three identically-named `FP Narrative Phase 3.pdf`
+  files in three set folders be ranked correctly.
+- **A file matching no query term scores 0 and is dropped.** Without that floor
+  a ranked list degrades into "here is the whole folder, good luck".
+- **Low-value hits are down-ranked, not hidden.** Superseded folders take -12
+  and `.url` shortcuts -10, so they can still appear but cannot win. Hiding
+  them would be a silent empty by another name.
+- **A bare discipline letter only matches as a sheet-name segment**, never as a
+  loose substring, or "E" hits every filename containing an e.
+- **`status` is `"unknown"` on every result**, with a note telling the model not
+  to call a hit current. Supersession is P0.2. Claiming otherwise here would
+  manufacture the exact wrong-revision risk the roadmap exists to remove.
+- Doc-type vocabulary encodes the firm's actual naming: "design criteria" maps
+  to Narrative, alongside OPR and Basis of Design, because nobody names the file
+  "design criteria".
+
 ---
 
 ## P1: Auto-outputs that seed the folder
@@ -216,17 +257,24 @@ which is what lets P0.1 stop relying on inference.
 Build:
 - Most of this exists in `transmittal.html`. The work is exposing it and
   closing gaps, not rebuilding it.
-- Fix the coverage gap from finding 2: ensure every distribution kind writes a
-  sheet register, not just the folder-backed ones.
 - Optionally stamp issued files `Status = Current` and flip the prior set to
   `Superseded`. With P0.2 derived, this is an enrichment, not a dependency.
+
+**CORRECTION (2026-08-01):** an earlier draft of this item claimed the sheet
+register was only written for folder-backed distribution kinds and that
+`send-email` needed fixing. That is wrong, and chasing it would waste a day.
+`logTransmittalGenerated()` writes `files.sheets[]` unconditionally from the
+loaded sheet list, whatever the distribution kind. The rows with no sheets are
+all from May 2026 and simply predate the feature, which landed 2026-07-28 in
+`b32f5d4`. The only genuine gap is an ad-hoc transmittal sent with no folder
+loaded, which has no sheet list to snapshot.
 
 Acceptance:
 - After issuing, `get_current_set` returns the new set from the log with no
   inference, and the prior set is marked superseded.
-- A `send-email` transmittal writes a populated `files.sheets[]`.
 
-Effort: M (down from L, given the existing tool)
+Effort: S (down from L: the tool already does the hard part, and the
+parseFilename fix has landed)
 
 ### P1.4 `get_review_comments` + `draft_comment_responses`
 
