@@ -1007,6 +1007,207 @@ mcp.tool("read_rfi_submittal", {
   },
 });
 
+// ─── TRANSMITTAL REGISTER / CURRENT SET ─────────────────────────────────────
+// The register is pms_filing_log rows tagged operation = 'transmittal-generated',
+// written by transmittal.html at the moment a set is issued. That is what makes
+// it authoritative: it records the ISSUING EVENT rather than a label somebody has
+// to remember to set on every upload, so it cannot silently go blank the way a
+// SharePoint status column does.
+async function transmittalRows(pid: string): Promise<any[]> {
+  const rows = await sbGetAll(
+    "pms_filing_log?select=created_at,sp_folder_url,files,email_subject" +
+    "&project_id=eq." + encodeURIComponent(pid) +
+    "&operation=eq.transmittal-generated&order=created_at.desc",
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
+// Set folders are named "<ISO date>_<set name>", e.g. "2025-01-21_Addendum #1".
+// Rank the inference fallback on the date in the NAME, never on Graph's
+// lastModifiedDateTime — a bulk migration flattened those firm-wide, so the
+// modified stamp says when the file moved, not when the set was issued.
+function setFolderDate(name: string): string | null {
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(name || ""));
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
+const sheetsOf = (row: any): any[] => Array.isArray(row?.files?.sheets) ? row.files.sheets : [];
+
+// The register's `discipline` field cannot be trusted on its own. parseFilename()
+// in transmittal.html assumes the filename LEADS with the discipline ("M-501",
+// "FP-301"), but sheets named with a building series first — "STTQ-01-E_Bulletin
+// #13.pdf" — record discipline "STTQ" (the series) and sheetNo "STTQ-01" for BOTH
+// the E and the M sheet. So match the stored field OR a discipline token embedded
+// in the filename, which is where the letter actually survives.
+function sheetDisciplines(sheet: any): string[] {
+  const out = new Set<string>();
+  const stored = String(sheet?.discipline || "").toLowerCase().trim();
+  if (stored) out.add(stored);
+  const base = String(sheet?.filename || "").replace(/\.[a-z0-9]+$/i, "");
+  for (const m of base.matchAll(/[-_]([A-Z]{1,3})(?=[-_.\s]|$)/g)) out.add(m[1].toLowerCase());
+  const lead = /^([A-Z]{1,3})[-_]?\d/.exec(base);
+  if (lead) out.add(lead[1].toLowerCase());
+  return [...out];
+}
+const sheetHasDiscipline = (sheet: any, disc: string) => sheetDisciplines(sheet).includes(disc);
+const hasDiscipline = (row: any, disc: string) => sheetsOf(row).some((s: any) => sheetHasDiscipline(s, disc));
+
+mcp.tool("get_current_set", {
+  description:
+    "Authoritative answer to \"what is the current issued set?\" for a project — the drawing/spec set " +
+    "most recently transmitted, with its transmittal number, issue date, sheet register (sheet number, " +
+    "title, revision, discipline) and a clickable folder link. Reads the transmittal register, which " +
+    "records every set issued through the Setty transmittal tool. If the project has no transmittal " +
+    "record, falls back to the newest dated folder under Outgoing and flags the answer inferred:true. " +
+    "AN INFERRED ANSWER IS A STRONG LEAD, NOT A GUARANTEE — when repeating one, say it was inferred " +
+    "from the folder structure and that no transmittal was logged. Never present a superseded set as " +
+    "current.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number, id, or name"),
+    discipline: z.string().optional().describe("Return the newest set containing this discipline, e.g. 'M', 'E', 'FP'. Omit for the newest set overall."),
+  }),
+  handler: async ({ projectNumber, discipline }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) {
+      return asText({
+        error: `No project matching "${projectNumber}".`,
+        nextStep: "Confirm the number with search_projects, then call again.",
+      });
+    }
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const disc = (discipline ?? "").toLowerCase().trim();
+
+    let rows: any[] = [];
+    try {
+      rows = await transmittalRows(pid);
+    } catch (e) {
+      return asText({
+        project,
+        error: `Could not read the transmittal register: ${String((e as any)?.message ?? e)}`,
+        nextStep: "This is a lookup failure, not an empty result — do not conclude the project has no issued set.",
+      });
+    }
+
+    // ── Authoritative path. Rows come back newest-first. A discipline filter asks
+    // for the newest set CONTAINING that discipline, which is not always the newest
+    // set overall: a Bulletin covering only mechanical leaves the current electrical
+    // set several transmittals back.
+    const candidates = disc ? rows.filter((r) => hasDiscipline(r, disc)) : rows;
+    if (candidates.length) {
+      const latest = candidates[0];
+      const f = latest.files || {};
+      const all = sheetsOf(latest);
+      const sheets = disc ? all.filter((s: any) => sheetHasDiscipline(s, disc)) : all;
+      const priorSets = candidates.slice(1, 6).map((r: any) => ({
+        setName: r.files?.milestoneName || null,
+        transmittalNumber: r.files?.transmittalNumber || null,
+        issueDate: r.created_at,
+        superseded: true,
+      }));
+      return asText({
+        project,
+        inferred: false,
+        basis: "Transmittal register (pms_filing_log), the record written when the set was issued.",
+        current: {
+          setName: f.milestoneName || null,
+          transmittalNumber: f.transmittalNumber || null,
+          issueDate: latest.created_at,
+          issuedTo: f.recipientEmail || null,
+          deliveryKind: f.distributionKind || null,
+          webUrl: latest.sp_folder_url || null,
+          // A backfilled row is a set reconstructed after the fact. Authoritative,
+          // but not a live send, and the difference matters if anyone audits it.
+          backfilled: f.backfilled === true,
+          sheetCount: sheets.length,
+          sheets,
+        },
+        ...(disc ? { disciplineFilter: discipline } : {}),
+        ...(sheets.length ? {} : {
+          sheetRegisterNote:
+            "This transmittal has no sheet register. Sets issued before the register was added to the " +
+            "transmittal tool recorded only the set itself, so the set is authoritative but its sheet " +
+            "list is not available here — open the folder link to see the contents.",
+        }),
+        ...(priorSets.length ? { priorSets } : {}),
+        ...(latest.sp_folder_url ? {} : {
+          linkNote: "No folder link was recorded on this transmittal. Use list_project_documents with subfolder:'Outgoing' to locate it.",
+        }),
+      });
+    }
+
+    // ── Inference fallback. Per the register's real coverage this is the common
+    // case today, not the exception, so the basis has to be specific enough that
+    // the reader can judge it rather than a bare "inferred".
+    const discNote = disc && rows.length
+      ? `The register has ${rows.length} transmittal(s) for this project but none recording discipline "${discipline}". Falling back to folder inference for the set overall.`
+      : null;
+    try {
+      const driveId = await docDriveId();
+      const folder = await findProjectFolderInDrive(driveId, String(project).toLowerCase().trim());
+      if (!folder) {
+        return asText({
+          project, inferred: true, current: null,
+          reason: `No folder for ${project} in the ${DOC_LIBRARY}, and no transmittal record.`,
+          nextStep: "The project is most likely not provisioned in SharePoint yet. Confirm with list_project_documents.",
+        });
+      }
+      // Folder names carry numbering and emoji prefixes ("99 📤 Outgoing"), so match
+      // on CONTAINS. An exact-path lookup returns nothing on most projects.
+      const top = await graphGet(`/drives/${driveId}/items/${folder.id}/children?$select=id,name,folder,webUrl&$top=200`);
+      const outgoing = (top.value || []).find((it: any) => it.folder && String(it.name).toLowerCase().includes("outgoing"));
+      if (!outgoing) {
+        return asText({
+          project, inferred: true, current: null,
+          reason: "No transmittal record, and no Outgoing folder in this project's SharePoint folder.",
+          nextStep: "Nothing has been issued through the transmittal tool and there is no Outgoing folder to infer from. Ask the PM directly.",
+          ...(discNote ? { disciplineNote: discNote } : {}),
+        });
+      }
+      const kids = await graphGet(`/drives/${driveId}/items/${outgoing.id}/children?$select=id,name,folder,webUrl,lastModifiedDateTime&$top=200`);
+      const sets = (kids.value || [])
+        .filter((it: any) => it.folder)
+        .map((it: any) => ({ name: it.name, webUrl: it.webUrl, dateInName: setFolderDate(it.name), modified: it.lastModifiedDateTime }))
+        .sort((a: any, b: any) => String(b.dateInName || "").localeCompare(String(a.dateInName || "")));
+      if (!sets.length) {
+        return asText({
+          project, inferred: true, current: null,
+          reason: "No transmittal record, and the Outgoing folder has no set subfolders.",
+          outgoingUrl: outgoing.webUrl || null,
+          nextStep: "Nothing appears to have been issued yet. Confirm with the PM before relying on this.",
+        });
+      }
+      const newest = sets[0];
+      const dated = sets.filter((s: any) => s.dateInName);
+      return asText({
+        project,
+        inferred: true,
+        basis: newest.dateInName
+          ? `No transmittal was logged for this project. Inferred from the newest dated folder under Outgoing: "${newest.name}" (date read from the folder name, ${newest.dateInName}), out of ${sets.length} set folder(s).`
+          : `No transmittal was logged for this project, and no folder under Outgoing carries a date in its name, so ordering is not reliable. Showing "${newest.name}" out of ${sets.length} set folder(s).`,
+        confidence: newest.dateInName ? "dated folder name" : "low — undated folder names",
+        current: {
+          setName: newest.name,
+          transmittalNumber: null,
+          issueDate: newest.dateInName,
+          webUrl: newest.webUrl || null,
+          sheets: [],
+        },
+        sheetRegisterNote: "Inferred sets have no sheet register. Open the folder link, or use list_project_documents with subfolder:'Outgoing/<set name>'.",
+        priorSets: dated.slice(1, 6).map((s: any) => ({ setName: s.name, issueDate: s.dateInName, webUrl: s.webUrl })),
+        nextStep: "Issuing this set through the transmittal tool would make it authoritative here instead of inferred.",
+        ...(discNote ? { disciplineNote: discNote } : {}),
+      });
+    } catch (e) {
+      return asText({
+        project, inferred: true, current: null,
+        error: `No transmittal record, and the SharePoint fallback failed: ${String((e as any)?.message ?? e)}`,
+        nextStep: "This is a lookup failure, not proof that nothing was issued.",
+      });
+    }
+  },
+});
+
 mcp.tool("list_project_documents", {
   description:
     "List a project's SharePoint files/folders across ALL document libraries on the site. THREE modes: " +
