@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-01-transmittal-v6-sheet-discipline";
+    window.__appVersion = "2026-08-01-transmittal-v7-signin-persistence";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -586,7 +586,10 @@ const MSAL_CONFIG = {
     redirectUri: window.location.origin + window.location.pathname,
     navigateToLoginRequestUrl: true,
   },
-  cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false },
+  // localStorage, not sessionStorage: session storage is cleared when the tab
+  // closes, so every visit meant signing in again. localStorage keeps the session
+  // across tabs and browser restarts until the token expires or you sign out.
+  cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false },
   system: { allowNativeBroker: false },
 };
 // Sites.READ.All, not ReadWrite. The only thing that ever wrote to a SharePoint
@@ -1323,7 +1326,7 @@ async function refreshFolderBrowser(loadFiles) {
     browseChildFolders = await listChildFolders(browsePath);
     sel.innerHTML = browseChildFolders.length
       ? '<option value="">' + browseChildFolders.length + " subfolder" +
-        (browseChildFolders.length === 1 ? "" : "s") + " : choose one to open\u2026</option>" +
+        (browseChildFolders.length === 1 ? "" : "s") + ": choose one to open\u2026</option>" +
         browseChildFolders.map(n => '<option value="' + n.replace(/"/g, "&quot;") + '">' + n + "</option>").join("")
       : '<option value="">No subfolders here</option>';
     setStatus("browseStatus", "", "");
