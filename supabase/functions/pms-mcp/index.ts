@@ -1701,6 +1701,206 @@ mcp.tool("find_document", {
   },
 });
 
+// ─── SHEET INDEX: TITLE-BLOCK EXTRACTION ────────────────────────────────────
+// Filenames cannot describe a drawing set. A booked addendum holds many sheets
+// in one PDF, and the name that IS on the file is usually the Revit model
+// ("STTQ-01-E"), not a sheet number — on one 2019 sheet the model name is even
+// the wrong discipline (FP601.pdf records STTQ-01-P.rvt). The title block is
+// Revit-generated and carries the truth: sheet number, title, date, who drew
+// and checked it, project number, phase, and page N of M.
+//
+// Observed on real sheets, 2019 and 2026, which differ in ways a naive parser
+// would trip on (2019 labels it "EYP Project No" after the architect changed,
+// and dates are 11/01/19 vs 10/29/2024):
+//
+//   ... 500 Circle Road  E221 GROUND FLOOR PLAN - COMMONS - ELECTRICAL POWER
+//       10/29/2024 SMA SM 1018037.01 TABLER QUAD NEW RESIDENCE HALL
+//       CONSTRUCTION DOCUMENTS PD 22 68 ...
+//
+// so the anchor is the SHAPE — sheet number, ALL-CAPS title, date, two sets of
+// initials, project number — not any label text.
+const TITLE_BLOCK_RE =
+  /\b([A-Z]{1,3}\d{2,4}[A-Z]?)\s+([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Z]{2,4})\s+([A-Z]{2,4})\s+(\d[\d.]*)\b/;
+const PHASE_RE =
+  /\b(CONSTRUCTION DOCUMENTS|CONTRACT DOCUMENTS|DESIGN DEVELOPMENT|SCHEMATIC DESIGN|BID DOCUMENTS|BID SET|PERMIT SET|PROGRAMMING|VALIDATION)\s+\S+\s+(\d{1,3})\s+(\d{1,3})\b/;
+
+// The revision block is the sheet's own history, and its LAST row is the
+// revision the sheet is currently at. Parsing it row-by-row is fragile because
+// some rows carry no description ("RFI-59 01/14/2026"), so instead anchor on the
+// LAST DATE in the block and read the tokens between the previous date and it.
+// An empty block is not a failure: it means base issue, revision 0.
+function parseRevisionBlock(pageText: string): { revision: string; description: string; date: string | null } {
+  const i = pageText.lastIndexOf("Revisions Rev Description Date");
+  if (i < 0) return { revision: "0", description: "", date: null };
+  const tail = pageText.slice(i + "Revisions Rev Description Date".length);
+  const dates = [...tail.matchAll(/\d{1,2}\/\d{1,2}\/\d{4}/g)];
+  if (!dates.length) return { revision: "0", description: "", date: null };
+  const last = dates[dates.length - 1];
+  const prevEnd = dates.length > 1
+    ? dates[dates.length - 2].index! + dates[dates.length - 2][0].length
+    : 0;
+  const between = tail.slice(prevEnd, last.index!).trim().split(/\s+/).filter(Boolean);
+  return {
+    revision: between.length ? between[0] : "0",
+    description: between.slice(1).join(" "),
+    date: last[0],
+  };
+}
+
+function parseTitleBlock(pageText: string): any | null {
+  const m = TITLE_BLOCK_RE.exec(pageText);
+  if (!m) return null;
+  const sheetNo = m[1];
+  const ph = PHASE_RE.exec(pageText);
+  const rev = parseRevisionBlock(pageText);
+  return {
+    sheetNo,
+    // Discipline comes from the sheet number's own prefix, which is the only
+    // place it is reliably stated. See the parseFilename fix in transmittal.html.
+    discipline: (/^([A-Z]{1,3})/.exec(sheetNo) || [, ""])[1],
+    sheetTitle: m[2].replace(/\s+/g, " ").trim(),
+    sheetDate: m[3],
+    drawnBy: m[4],
+    checkedBy: m[5],
+    projectNo: m[6],
+    phase: ph ? ph[1] : null,
+    pageOfSet: ph ? Number(ph[2]) : null,
+    setTotal: ph ? Number(ph[3]) : null,
+    revision: rev.revision,
+    revisionDescription: rev.description || null,
+    revisionDate: rev.date,
+  };
+}
+
+// Folders inside a set that are not the issued sheets.
+const NON_SHEET_FOLDER = /\b(cad files?|revit models?|specs?|specifications?|native|dwg|working)\b/i;
+
+mcp.tool("extract_sheet_index", {
+  description:
+    "Read the TITLE BLOCK of every drawing sheet in an issued set folder and return one structured row " +
+    "per sheet: sheet number, title, discipline, current revision (from the sheet's own revision block), " +
+    "phase, and page N of M. Handles BOOKED packages — a single addendum or bulletin PDF holding many " +
+    "sheets is split page by page, one row per sheet. Use this to reconstruct what a set actually " +
+    "contained, and to build a current full set by combining a baseline submission with every partial " +
+    "issued after it (group by sheetNo, keep the latest sheetDate). This is READ-ONLY: it returns rows " +
+    "for review and writes nothing to the transmittal register.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number, id, or name"),
+    subfolder: z.string().describe("The set folder under Outgoing, e.g. 'Outgoing/2026-04-17_Bulletin #13'"),
+    maxFiles: z.number().optional().describe("Max PDFs to open (default 25)"),
+    maxPages: z.number().optional().describe("Max pages to parse across all files (default 120)"),
+  }),
+  handler: async ({ projectNumber, subfolder, maxFiles, maxPages }) => {
+    const fileCap = Math.min(Math.max(maxFiles ?? 25, 1), 60);
+    const pageCap = Math.min(Math.max(maxPages ?? 120, 1), 300);
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+
+    let tree;
+    try {
+      tree = await projectTree(String(project).toLowerCase().trim());
+    } catch (e) {
+      return asText({ project, error: `Could not read SharePoint folders: ${String((e as any)?.message ?? e)}` });
+    }
+    const want = String(subfolder || "").replace(/^\/+|\/+$/g, "").toLowerCase();
+    const inSet = tree.files.filter((f: any) => {
+      const path = String(f.folderPath || "").toLowerCase();
+      return path === want || path.startsWith(want + "/");
+    });
+    if (!inSet.length) {
+      return asText({
+        project, subfolder, count: 0, sheets: [],
+        reason: `No files found under "${subfolder}".`,
+        nextStep: "Check the path with list_project_documents — set folders carry dates and sometimes emoji prefixes.",
+      });
+    }
+    const pdfs = inSet.filter((f: any) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath));
+    const excludedFolders = [...new Set(inSet.filter((f: any) => NON_SHEET_FOLDER.test(f.folderPath)).map((f: any) => f.folderPath))];
+    if (!pdfs.length) {
+      return asText({
+        project, subfolder, count: 0, sheets: [],
+        reason: `Found ${inSet.length} file(s) under "${subfolder}" but no drawing PDFs outside CAD/Revit/Specs folders.`,
+        excludedFolders,
+        nextStep: "This set may hold only native files or specs. Check with list_project_documents.",
+      });
+    }
+
+    const sheets: any[] = [];
+    const unparsed: any[] = [];
+    const seen = new Map<string, any>();
+    let duplicates = 0, pagesParsed = 0, filesOpened = 0, truncated = false;
+
+    for (const f of pdfs) {
+      if (filesOpened >= fileCap || pagesParsed >= pageCap) { truncated = true; break; }
+      const bar = f.itemId.indexOf("|");
+      const drive = f.itemId.slice(0, bar);
+      const realId = f.itemId.slice(bar + 1);
+      if (f.size > MAX_DOC_BYTES) { unparsed.push({ file: f.name, reason: "too large to open inline", webUrl: f.webUrl }); continue; }
+      let buf: ArrayBuffer;
+      try {
+        const res = await fetch(
+          `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+          { headers: { Authorization: "Bearer " + (await graphToken()) } },
+        );
+        if (!res.ok) { unparsed.push({ file: f.name, reason: `Graph content ${res.status}` }); continue; }
+        buf = await res.arrayBuffer();
+      } catch (e) { unparsed.push({ file: f.name, reason: String((e as any)?.message ?? e) }); continue; }
+      filesOpened++;
+      try {
+        const { getDocumentProxy } = await import("unpdf");
+        const pdf: any = await getDocumentProxy(new Uint8Array(buf));
+        const total: number = pdf.numPages;
+        for (let i = 1; i <= total; i++) {
+          if (pagesParsed >= pageCap) { truncated = true; break; }
+          pagesParsed++;
+          const pg = await pdf.getPage(i);
+          const tc = await pg.getTextContent();
+          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+          const tb = parseTitleBlock(text);
+          if (!tb) {
+            unparsed.push({ file: f.name, page: i, reason: text.length < 50 ? "no extractable text (scanned?)" : "no title block matched" });
+            continue;
+          }
+          const row = { ...tb, sourceFile: f.name, sourcePage: i, folderPath: f.folderPath, webUrl: f.webUrl, itemId: f.itemId };
+          // A set often ships the SAME sheets twice, once in a combined PDF and
+          // once as individual files. Collapsing here is what stops every sheet
+          // being counted, and later reported, twice.
+          const key = tb.sheetNo + "|" + tb.revision;
+          if (seen.has(key)) { duplicates++; continue; }
+          seen.set(key, row);
+          sheets.push(row);
+        }
+      } catch (e) {
+        unparsed.push({ file: f.name, reason: `PDF parse failed: ${String((e as any)?.message ?? e)}` });
+      }
+    }
+
+    sheets.sort((a, b) => String(a.sheetNo).localeCompare(String(b.sheetNo)));
+    const byDiscipline: Record<string, number> = {};
+    for (const s of sheets) byDiscipline[s.discipline] = (byDiscipline[s.discipline] || 0) + 1;
+    const setTotals = [...new Set(sheets.map((s) => s.setTotal).filter(Boolean))];
+
+    return asText({
+      project, subfolder,
+      count: sheets.length,
+      byDiscipline,
+      // The sheets state their own set size, so a partial issue is self-evident:
+      // 4 sheets that each say "of 68" is a bulletin, not a full set.
+      setTotalPerSheet: setTotals,
+      isPartialIssue: setTotals.length === 1 && sheets.length < Number(setTotals[0]),
+      scanned: { pdfs: pdfs.length, filesOpened, pagesParsed, duplicatesCollapsed: duplicates },
+      ...(excludedFolders.length ? { excludedFolders } : {}),
+      sheets,
+      ...(unparsed.length ? { unparsed } : {}),
+      ...(truncated ? { coverageWarning: `Stopped at ${filesOpened} file(s) / ${pagesParsed} page(s). Raise maxFiles/maxPages, or run per subfolder.` } : {}),
+      note: "Revision comes from each sheet's own revision block; an empty block means base issue, revision 0. " +
+        "Rows are NOT written anywhere — this is a read-only extraction for review.",
+    });
+  },
+});
+
 mcp.tool("search_field_photos", {
   description:
     "Search field-photo upload sessions from the Field Photos mobile app (and Site Report photo " +
