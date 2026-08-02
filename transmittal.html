@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-02-transmittal-v14-disciplines";
+    window.__appVersion = "2026-08-02-transmittal-v15-issue-date";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -642,6 +642,17 @@ let pmsProjectId = "";
 let pmsMilestoneId = "";
 
 // ─── FILING LOG WRITER ──────────────────────────────────────────────────────
+// "2025-04-10_Bulletin #1" -> "2025-04-10T12:00:00.000Z". Noon UTC matches
+// the convention the backfill path already uses, so a live row and a
+// reconstructed row for the same set sort identically instead of by a few
+// hours' accident.
+function setIssueDateFromMilestone(name) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(name || "").trim());
+  if (!m) return "";
+  const iso = m[1] + "-" + m[2] + "-" + m[3] + "T12:00:00.000Z";
+  return isNaN(new Date(iso).getTime()) ? "" : iso;
+}
+
 // Records a successful transmittal generation/distribution event into the
 // shared pms_filing_log table. PMS reads this on load to render the chip in
 // its "generated" state. Fire-and-forget — a logging failure must never
@@ -694,16 +705,26 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     status:        "success",
   };
 
-  // Backfill: a past transmittal recorded after the fact. Stamp the real issue
-  // date on BOTH the row and the payload — the row so ordering and history
-  // queries are honest, the payload as a fallback in case the explicit
-  // created_at is ever rejected. Mark it so a reconstructed record can never
-  // be mistaken for a live send.
-  if (opts.issuedAt) {
-    row.created_at     = opts.issuedAt;
-    row.files.issuedAt = opts.issuedAt;
-    row.files.backfilled = true;
+  // The register answers "what is the CURRENT issued set?", so the date that
+  // has to rank is the SET's issue date, not the moment this docx was built.
+  // Generating a transmittal for an old bulletin today used to stamp only
+  // created_at (i.e. now), which made that bulletin outrank every newer set:
+  // get_current_set reported 2025-04-10_Bulletin #1 as current on a job whose
+  // real current set was Bulletin #13, a year newer. So take the date off the
+  // dated set folder on EVERY path, not just backfill, falling back to now
+  // only when the folder carries no date. generatedAt still records when the
+  // document was actually produced, so no audit information is lost.
+  // Both fields are written: the row so ordering and history queries are
+  // honest, the payload as a fallback if the explicit created_at is rejected.
+  const issuedAt = opts.issuedAt || setIssueDateFromMilestone(row.files.milestoneName);
+  if (issuedAt) {
+    row.created_at     = issuedAt;
+    row.files.issuedAt = issuedAt;
   }
+  // backfilled marks a RECONSTRUCTED record. Deriving the date from the folder
+  // name is not reconstruction, so this stays tied to the explicit opt or a
+  // live send would start masquerading as a rebuilt one.
+  if (opts.issuedAt) row.files.backfilled = true;
   try {
     await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log", {
       method: "POST",
