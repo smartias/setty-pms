@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-02-transmittal-v13-history-sheets";
+    window.__appVersion = "2026-08-02-transmittal-v14-disciplines";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -1848,13 +1848,33 @@ function parseFilename(filename, modifiedDate) {
   };
 }
 
+// Every discipline the sheet table can hold. The dropdown and the two code
+// maps below all read from here: when they were separate lists the parsers
+// could produce a discipline ("Fire Alarm", "Technology") that the dropdown had
+// no option for, so the row displayed the wrong one and you could not pick it
+// back. Add a discipline in ONE place.
+const DISCIPLINES = [
+  ["M",  "Mechanical"],
+  ["E",  "Electrical"],
+  ["P",  "Plumbing"],
+  ["FP", "Fire Protection"],
+  ["FA", "Fire Alarm"],
+  ["T",  "Technology"],
+  ["EN", "Energy"],
+  ["G",  "General"],
+  ["A",  "Architectural"],
+  ["S",  "Structural"],
+  ["C",  "Civil"],
+];
+const DISCIPLINE_NAMES = DISCIPLINES.map(d => d[1]);
+
 function mapDiscipline(code) {
-  const map = { M: "Mechanical", E: "Electrical", P: "Plumbing", FP: "Fire Protection", FA: "Fire Alarm", T: "Technology", G: "General", A: "Architectural", S: "Structural", C: "Civil" };
+  const map = Object.fromEntries(DISCIPLINES);
   return map[code] || code || "General";
 }
 
 function discCode(disc) {
-  const map = { Mechanical: "M", Electrical: "E", Plumbing: "P", "Fire Protection": "FP", "Fire Alarm": "FA", Technology: "T", General: "G", Architectural: "A", Structural: "S", Civil: "C" };
+  const map = Object.fromEntries(DISCIPLINES.map(([c, n]) => [n, c]));
   return map[disc] || "G";
 }
 
@@ -1890,7 +1910,7 @@ function renderTable() {
         <select class="disc-badge disc-${dc}" id="sheet-${s.id}-disc" aria-label="Discipline for ${rowRef}" title="Change discipline"
           style="appearance:none;-webkit-appearance:none;border:none;font:inherit;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;cursor:pointer"
           onchange="sheets[${i}].discipline=this.value;renderTable()">
-          ${["Mechanical","Electrical","Plumbing","Fire Protection","General","Architectural","Structural","Civil"].map(d =>
+          ${DISCIPLINE_NAMES.map(d =>
             `<option ${d === s.discipline ? "selected" : ""}>${d}</option>`
           ).join("")}
         </select>
