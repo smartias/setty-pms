@@ -28,9 +28,9 @@ if (a < 0 || b < 0 || b <= a) {
 // mapDiscipline lives further down the file; the parser only needs its mapping.
 const src = "function mapDiscipline(c){ return ({M:'Mechanical',E:'Electrical',P:'Plumbing',FP:'Fire Protection',T:'Technology'})[c] || c || 'General'; }\n"
   + html.slice(a, b)
-  + "\nexport { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_RE };";
+  + "\nexport { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_PATTERNS };";
 const mod = await import("data:text/javascript;base64," + Buffer.from(src, "utf8").toString("base64"));
-const { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_RE } = mod;
+const { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_PATTERNS } = mod;
 
 let failures = 0, total = 0;
 const check = (c, m) => { total++; if (!c) { failures++; console.error("FAIL: " + m); } };
@@ -65,6 +65,39 @@ eq(f.revisionDate, null, "...with no revision date");
 check(parseTitleBlock("2026-01-27 01-BOYLAN HALL 100% CD.pdf") === null,
   "a bare filename is not mistaken for a title block");
 
+// ── Second layout: sheet number LAST (CHCR Grove, think! architecture) ─────
+// Verbatim from 2024-01-16_Plumbing_CHCR Grove.pdf page 1. The whole reason
+// this pattern exists: the sheet number trails the project number, it carries
+// spaces around its hyphen, and the initials are Revit's unfilled placeholders.
+const CHCR = 'ORIGINAL DRAWING SIZE IS 24"x 36"; SCALE ENTITIES ACCORDINGLY IF REDUCED/ENLARGED SHEET NO. OF ' +
+  '16-01-2024 19:00:26 1/8" = 1\' - 0" C:\\Users\\j.vishal\\Documents\\226014.00_R19_Plumbing.rvt ' +
+  "GENERAL NOTES, SYMBOLS & ABBREVIATIONS 02/01/21 Author Checker 21104 P - 001 P 01 10 " +
+  "PLUMBING DRAWING LIST SHEET DRAWING TITLE 1 P-001 GENERAL NOTES, SYMBOLS & ABBREVIATIONS " +
+  "2 P-100 LEVEL 1 FLOOR UNDERSLAB - PLUMBING NO. REVISIONS DATE";
+
+const c = parseTitleBlock(CHCR);
+check(!!c, "a CHCR Grove sheet parses at all (it did not before this pattern)");
+eq(c.sheetNo, "P-001", 'the spaced "P - 001" is normalised to P-001');
+eq(c.title, "GENERAL NOTES, SYMBOLS & ABBREVIATIONS", "CHCR sheet title");
+eq(c.discipline, "Plumbing", "discipline still comes from the sheet-number prefix");
+eq(c.sheetDate, "02/01/21", "CHCR sheet date");
+// An empty NO. REVISIONS DATE block is a base issue, exactly like Tabler's.
+eq(c.revision, "0", "CHCR empty revision block reads as revision 0");
+eq(c.revisionDate, null, "...with no revision date");
+
+// The two layouts must not poach each other's sheets, or one architect's
+// drawings would silently parse with another's field order.
+check(parseTitleBlock(E221).sheetNo === "E221", "the CHCR pattern does not steal a Tabler sheet");
+eq(TITLE_BLOCK_PATTERNS.length, 2, "two layouts are registered");
+check(!TITLE_BLOCK_PATTERNS[1].re.test(E221), "sheet-number-last does not match a sheet-number-first block");
+check(!TITLE_BLOCK_PATTERNS[0].re.test(CHCR), "sheet-number-first does not match a sheet-number-last block");
+
+// CHCR writes revision dates as 2023.08.11, not 08/11/2023.
+eq(tbRevision("NO. REVISIONS DATE 1 ADDENDUM 1 2024.03.05").revision, "1",
+  "a dotted-date revision row is read");
+eq(tbRevision("NO. REVISIONS DATE 1 ADDENDUM 1 2024.03.05").date, "2024.03.05",
+  "...with its dotted date");
+
 // ── Date conversion ────────────────────────────────────────────────────────
 eq(isoFromUsDate("10/29/2024"), "2024-10-29", "4-digit year");
 eq(isoFromUsDate("11/01/19"), "2019-11-01", "2-digit year expands");
@@ -81,21 +114,33 @@ eq(tbRevision("Revisions Rev Description Date A ADD 01/22/2025 RFI-144 03/25/202
   "a description-less row still yields its label");
 
 // ── Drift check against the connector ──────────────────────────────────────
-// The literal sits on its own line in both files. Match to end of line: a
+// Each literal sits on its own line in both files. Match to end of line: a
 // dotall capture runs straight past it into the next declaration.
-const grab = (src2) => {
-  const m = /const TITLE_BLOCK_RE =\s*(\/[^\n]*\/);/.exec(src2);
+const grab = (src2, name) => {
+  const m = new RegExp("const " + name + " =\\s*(/[^\\n]*/);").exec(src2);
   return m ? m[1].trim() : "";
 };
-const htmlRe = grab(html), mcpRe = grab(mcp);
-check(htmlRe !== "", "found TITLE_BLOCK_RE in transmittal.html");
-check(mcpRe !== "", "found TITLE_BLOCK_RE in the connector");
-check(htmlRe === mcpRe,
-  `TITLE_BLOCK_RE has DRIFTED between transmittal.html and pms-mcp.\n  app: ${htmlRe}\n  mcp: ${mcpRe}`);
-// The revision rule is the subtle one; both sides must anchor on the last date.
-check(html.includes('lastIndexOf("Revisions Rev Description Date")') &&
-      mcp.includes('lastIndexOf("Revisions Rev Description Date")'),
-  "both sides still anchor the revision block the same way");
+for (const name of ["TITLE_BLOCK_SHEET_FIRST", "TITLE_BLOCK_SHEET_LAST"]) {
+  const htmlRe = grab(html, name), mcpRe = grab(mcp, name);
+  check(htmlRe !== "", `found ${name} in transmittal.html`);
+  check(mcpRe !== "", `found ${name} in the connector`);
+  check(htmlRe === mcpRe,
+    `${name} has DRIFTED between transmittal.html and pms-mcp.\n  app: ${htmlRe}\n  mcp: ${mcpRe}`);
+}
+// The header list and date formats have to match too, or one side would read a
+// revision the other cannot see.
+for (const needle of ['"NO. REVISIONS DATE"', "\\d{4}\\.\\d{2}\\.\\d{2}"]) {
+  check(html.includes(needle) && mcp.includes(needle),
+    `both sides know about ${needle}`);
+}
+// The revision rule is the subtle one. Both sides must pick the LAST matching
+// header (templates print a submissions table above the revisions table) and
+// then anchor on the last date within it.
+check(html.includes("const REVISION_HEADERS =") && mcp.includes("const REVISION_HEADERS ="),
+  "both sides read revision headers from a list");
+check(html.includes("if (at > i) { i = at; header = h; }") &&
+      mcp.includes("if (at > i) { i = at; header = h; }"),
+  "both sides take the LAST matching revision header, not the first");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
