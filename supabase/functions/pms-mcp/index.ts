@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-01-per-discipline-completeness";
+const BUILD = "2026-08-01-sheet-index-offset-paging";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1955,17 +1955,22 @@ mcp.tool("extract_sheet_index", {
     "is also NOT the bulletin number (Bulletin #010 stamps revision 7), and revisionDate is not the " +
     "set's folder date. Completeness is judged PER " +
     "DISCIPLINE, because each discipline's title blocks state their own set size (E 'of 68', M 'of 54') " +
-    "— see byDiscipline[<letter>].setTotal / .isPartial. Pass the subfolder EXACTLY as " +
+    "— see byDiscipline[<letter>].setTotal / .isPartial. " +
+    "A FOLDER TOO BIG FOR ONE CALL IS PAGED, NOT TRUNCATED: the result carries paging.nextOffset, so call " +
+    "again with offset:<nextOffset> and keep going until nextOffset is null. Skipping that leaves sheets " +
+    "silently missing, and a big discipline folder needs several rounds. " +
+    "Pass the subfolder EXACTLY as " +
     "list_project_documents reports it: an exact path is resolved directly, anything else falls back to " +
     "a capped whole-project folder walk that may not reach deep set folders. This is READ-ONLY: it " +
     "returns rows for review and writes nothing to the transmittal register.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number, id, or name"),
     subfolder: z.string().describe("The set folder under Outgoing, e.g. 'Outgoing/2026-04-17_Bulletin #13'"),
+    offset: z.number().optional().describe("Skip this many PDFs before extracting. Use it to page through a folder too large for one call: start at 0, then pass the nextOffset from the previous result until it comes back null. File order is stable across calls."),
     maxFiles: z.number().optional().describe("Max PDFs to open (default 25)"),
     maxPages: z.number().optional().describe("Max pages to parse across all files (default 120)"),
   }),
-  handler: async ({ projectNumber, subfolder, maxFiles, maxPages }) => {
+  handler: async ({ projectNumber, subfolder, offset, maxFiles, maxPages }) => {
     const fileCap = Math.min(Math.max(maxFiles ?? 25, 1), 60);
     const pageCap = Math.min(Math.max(maxPages ?? 120, 1), 300);
     const pid = await resolveProjectId(projectNumber);
@@ -2041,7 +2046,7 @@ mcp.tool("extract_sheet_index", {
     const sheets: any[] = [];
     const unparsed: any[] = [];
     const seen = new Map<string, any>();
-    let duplicates = 0, pagesParsed = 0, filesOpened = 0, truncated = false;
+    let duplicates = 0, pagesParsed = 0, filesOpened = 0, stoppedMidFile = false;
 
     // Baseline sets often ship ONE combined book per discipline beside (or
     // instead of) the individual sheets. Tabler's combined electrical PDF is
@@ -2058,10 +2063,31 @@ mcp.tool("extract_sheet_index", {
     const oversized: any[] = [];
     let oversizeBytes = 0;
     const isBig = (f: any) => Number(f.size) > MAX_DOC_BYTES;
-    const ordered = [...pdfs].sort((a, b) => Number(isBig(a)) - Number(isBig(b)));
+    //
+    // The order must also be TOTAL and STABLE, not just big-last. `offset` pages
+    // through this list across calls, and paging an order that can vary between
+    // calls silently skips some files and reads others twice — the caller would
+    // get a plausible, wrong answer with no signal. Graph does not promise a
+    // children order, so sort by path then name rather than trusting the crawl.
+    const ordered = [...pdfs].sort((a, b) =>
+      Number(isBig(a)) - Number(isBig(b)) ||
+      String(a.folderPath).localeCompare(String(b.folderPath)) ||
+      String(a.name).localeCompare(String(b.name)));
 
-    for (const f of ordered) {
-      if (filesOpened >= fileCap || pagesParsed >= pageCap) { truncated = true; break; }
+    // A folder larger than one call's budget can only ever be read from the top
+    // unless the caller can say "resume from here". Without this, the tail of a
+    // 68-file discipline is simply unreachable.
+    const start = Math.min(Math.max(offset ?? 0, 0), ordered.length);
+    const work = ordered.slice(start);
+    // Advances for every entry VISITED, including ones skipped as oversized or
+    // failed downloads. Counting only successes would park the next page on a
+    // file that can never open, and the caller would loop on it forever.
+    let filesConsumed = 0;
+    const consumed = () => filesConsumed - (stoppedMidFile ? 1 : 0);
+
+    for (const f of work) {
+      if (filesOpened >= fileCap || pagesParsed >= pageCap) break;
+      filesConsumed++;
       const bar = f.itemId.indexOf("|");
       const drive = f.itemId.slice(0, bar);
       const realId = f.itemId.slice(bar + 1);
@@ -2095,7 +2121,16 @@ mcp.tool("extract_sheet_index", {
         const pdf: any = await getDocumentProxy(new Uint8Array(buf));
         const total: number = pdf.numPages;
         for (let i = 1; i <= total; i++) {
-          if (pagesParsed >= pageCap) { truncated = true; break; }
+          if (pagesParsed >= pageCap) {
+            // Out of page budget PART WAY THROUGH this file. Do not let it count
+            // as consumed: if the next page started after it, its unread pages
+            // would be skipped forever and the sheets on them lost with no
+            // signal. Point the next call back at this file instead. Re-reading
+            // the pages already taken is cheap, and the caller groups by sheetNo
+            // when building a composite, so the repeats collapse.
+            stoppedMidFile = true;
+            break;
+          }
           pagesParsed++;
           const pg = await pdf.getPage(i);
           const tc = await pg.getTextContent();
@@ -2137,6 +2172,16 @@ mcp.tool("extract_sheet_index", {
       isPartialIssue,
       ...(partialDisciplines.length ? { partialDisciplines } : {}),
       scanned: { pdfs: pdfs.length, filesOpened, pagesParsed, duplicatesCollapsed: duplicates },
+      // Paging state. nextOffset is null ONLY when the folder is exhausted, so
+      // "keep calling until nextOffset is null" is a complete read and needs no
+      // arithmetic from the caller.
+      paging: {
+        offset: start,
+        totalFiles: ordered.length,
+        filesRemaining: Math.max(0, ordered.length - (start + consumed())),
+        nextOffset: start + consumed() < ordered.length ? start + consumed() : null,
+        ...(stoppedMidFile ? { resumesMidFile: true } : {}),
+      },
       ...(excludedFolders.length ? { excludedFolders } : {}),
       sheets,
       ...(unparsed.length ? { unparsed } : {}),
@@ -2149,7 +2194,14 @@ mcp.tool("extract_sheet_index", {
         }
         : {}),
       ...(crawlTruncated ? { crawlWarning: "The SharePoint folder crawl hit its request cap, so some files under this path were not seen. Results are incomplete." } : {}),
-      ...(truncated ? { coverageWarning: `Stopped at ${filesOpened} file(s) / ${pagesParsed} page(s). Raise maxFiles/maxPages, or run per subfolder.` } : {}),
+      ...(start + consumed() < ordered.length
+        ? {
+          coverageWarning: `Read files ${start + 1}-${start + filesConsumed} of ${ordered.length}. ` +
+            `${ordered.length - (start + consumed())} file(s) in this folder have NOT been fully read, so any sheet ` +
+            `that exists only in them is missing here. Call again with offset:${start + consumed()} to continue` +
+            (stoppedMidFile ? ", which re-reads the file the page budget cut short." : "."),
+        }
+        : {}),
       note: "Revision comes from each sheet's own revision block; an empty block means base issue, revision 0. " +
         "Rows are NOT written anywhere — this is a read-only extraction for review.",
     });

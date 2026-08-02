@@ -206,21 +206,66 @@ eq(conflict.byDiscipline.E.conflictingTotals.join(","), "60,68", "the conflict i
 const MB = 1024 * 1024;
 const isBig = (f) => Number(f.size) > MAX_DOC_BYTES;
 const files = [
-  { name: "COMBINED-E.pdf", size: 42 * MB },
-  { name: "E221.pdf", size: 2 * MB },
-  { name: "COMBINED-M.pdf", size: 30 * MB },
-  { name: "E602.pdf", size: 1 * MB },
+  { name: "COMBINED-E.pdf", size: 42 * MB, folderPath: "Outgoing/Set" },
+  { name: "E221.pdf", size: 2 * MB, folderPath: "Outgoing/Set" },
+  { name: "COMBINED-M.pdf", size: 30 * MB, folderPath: "Outgoing/Set" },
+  { name: "E602.pdf", size: 1 * MB, folderPath: "Outgoing/Set" },
 ];
-const ordered = [...files].sort((a, b) => Number(isBig(a)) - Number(isBig(b)));
+const orderOf = (arr) => [...arr].sort((a, b) =>
+  Number(isBig(a)) - Number(isBig(b)) ||
+  String(a.folderPath).localeCompare(String(b.folderPath)) ||
+  String(a.name).localeCompare(String(b.name)));
+const ordered = orderOf(files);
 eq(ordered.map((f) => f.name).join(","), "E221.pdf,E602.pdf,COMBINED-E.pdf,COMBINED-M.pdf",
   "individual sheets are opened BEFORE any oversized book");
 check(ordered.slice(0, 2).every((f) => !isBig(f)), "no oversized file precedes a normal one");
 check(42 * MB > MAX_DOC_BYTES, "the 42MB Tabler electrical book is over the generic document cap");
 check(42 * MB < SHEET_MAX_BYTES, "...but within the sheet-extraction cap, so it is now OPENED");
 check(70 * MB > SHEET_MAX_BYTES, "a 70MB file is still refused rather than risking the worker");
-// Sorting must be stable enough not to reshuffle same-class files.
 eq(ordered.filter(isBig).map((f) => f.name).join(","), "COMBINED-E.pdf,COMBINED-M.pdf",
-  "oversized files keep their original relative order");
+  "oversized files are ordered deterministically among themselves");
+
+// ── 5c. Paging must be TOTAL and STABLE, or offset silently loses files ────
+// offset pages through this order ACROSS CALLS. If the order can vary between
+// calls, page 2 skips files page 1 never read and re-reads others, and the
+// caller gets a plausible wrong answer with no signal. Graph does not promise a
+// children order, so the sort has to impose one.
+const shuffled = [files[3], files[0], files[2], files[1]];
+eq(orderOf(shuffled).map((f) => f.name).join(","), ordered.map((f) => f.name).join(","),
+  "a differently-ordered crawl result yields the SAME order");
+const byPath = orderOf([
+  { name: "M101.pdf", size: 1 * MB, folderPath: "Outgoing/Set/M" },
+  { name: "E101.pdf", size: 1 * MB, folderPath: "Outgoing/Set/E" },
+  { name: "E102.pdf", size: 1 * MB, folderPath: "Outgoing/Set/E" },
+]);
+eq(byPath.map((f) => f.name).join(","), "E101.pdf,E102.pdf,M101.pdf", "ties break on folderPath then name");
+
+// The paging arithmetic, copied from the handler.
+function page(total, offset, fileCap, midFileAt) {
+  const start = Math.min(Math.max(offset ?? 0, 0), total);
+  let filesConsumed = 0, stoppedMidFile = false;
+  for (let i = start; i < total; i++) {
+    if (filesConsumed >= fileCap) break;
+    filesConsumed++;
+    if (midFileAt === i) { stoppedMidFile = true; break; }
+  }
+  const consumed = filesConsumed - (stoppedMidFile ? 1 : 0);
+  return { start, consumed, nextOffset: start + consumed < total ? start + consumed : null };
+}
+eq(page(68, 0, 8).nextOffset, 8, "a 68-file folder reports where to resume");
+eq(page(68, 8, 8).nextOffset, 16, "the second page resumes where the first stopped");
+eq(page(68, 64, 8).nextOffset, null, "the last page reports nextOffset null, so 'until null' terminates");
+eq(page(68, 999, 8).start, 68, "an offset past the end clamps rather than throwing");
+eq(page(68, -5, 8).start, 0, "a negative offset clamps to 0");
+// Walking the whole folder must visit every file exactly once.
+let seenFiles = 0, off = 0, rounds = 0;
+while (off !== null && rounds < 50) { const r = page(68, off, 8); seenFiles += r.consumed; off = r.nextOffset; rounds++; }
+eq(seenFiles, 68, "paging start to finish visits all 68 files exactly once");
+eq(rounds, 9, "...in 9 rounds of 8");
+// A file cut short by the PAGE budget must be re-read, not skipped: its unread
+// pages hold sheets, and skipping them loses those sheets with no signal.
+eq(page(20, 0, 8, 3).nextOffset, 3, "a file stopped mid-way is the NEXT offset, not the one after it");
+eq(page(20, 0, 8, 3).consumed, 3, "...so it is not counted as consumed");
 
 // ── 6. Composite assembly: latest sheetDate per sheet number wins ──────────
 const baseline = [
@@ -261,7 +306,10 @@ has("const key = tb.sheetNo + \"|\" + tb.revision;", "combined-vs-individual ded
 has("e.isPartial = e.setTotal ? e.sheets < e.setTotal : null;", "per-discipline partial test");
 has("isPartialIssue: rated.length ? partialDisciplines.length > 0 : null,", "unknown-is-not-complete rule");
 has("const SHEET_MAX_BYTES = 64 * 1024 * 1024;", "sheet-extraction size cap");
-has("const ordered = [...pdfs].sort((a, b) => Number(isBig(a)) - Number(isBig(b)));", "oversized-last ordering");
+has("Number(isBig(a)) - Number(isBig(b)) ||", "oversized-last ordering");
+has("String(a.folderPath).localeCompare(String(b.folderPath)) ||", "the stable path tie-break offset paging depends on");
+has("const consumed = () => filesConsumed - (stoppedMidFile ? 1 : 0);", "the mid-file resume rule");
+has("nextOffset: start + consumed() < ordered.length ? start + consumed() : null,", "nextOffset arithmetic");
 // The whole point of the path-scoped crawl: an exact subfolder must NOT depend
 // on the capped whole-project walk. If this call disappears, the SAPX196006.00
 // "count: 0 / no files found" failure is back.
