@@ -105,7 +105,7 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v6 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v8 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
@@ -116,7 +116,13 @@
 // executed Phase 4 flip and the Phase 5 enforcement rollout;
 // v7 brings the Claude/MCP runbook current: server v31 + the OAuth
 // resource/scope fix, the local Python bridge marked deprecated, and a
-// dated status card so the tab can be handed to IT as-is).
+// dated status card so the tab can be handed to IT as-is;
+// v8 (2 Aug 2026) brings both status surfaces current again: the connector
+// at deploy 45 / build 2026-08-02-issue-date with 23 tools (documents,
+// drawings and briefing groups added since v31), the deploy procedure
+// corrected now that the source is committed to the repo rather than
+// pulled back off the live function, and the Phase 5 Security section
+// updated to say which capabilities are actually DB-enforced today).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -406,8 +412,8 @@ async function renderRoles() {
         This console — and this list — are <b>admin-only</b>, enforced in the database (guarded RPCs + RLS).
         Roles feed the <b>permission matrix</b> below; signed-in people without a row here get the <b>staff</b> baseline.
         The Phase 4 RLS flip is live (7/24) — all PMS data is signed-in-only. Matrix enforcement on data <i>writes</i>
-        is the Phase 5 final step, attaching per-table <code>pms_has_cap()</code> policy terms; until a table is
-        enforced, the matrix drives app UI only.
+        attaches per-table <code>pms_has_cap()</code> policy terms; three capability slices are enforced and
+        <code>projects.edit</code> is the last one outstanding. Until a table is enforced, the matrix drives app UI only.
         <b>Adding someone onboards them:</b> a <b>welcome email</b> goes out (via <code>pms-user-emails</code> + Resend)
         and <b>SharePoint access</b> to the NYCProjects libraries (Projects / Proposals / Contracts) is granted via a
         Graph sharing invitation — silently if this browser has a Microsoft session from the PMS, otherwise click
@@ -432,8 +438,9 @@ async function renderRoles() {
     <div class="card">
       <div class="sechead">Permission matrix — what each role can do</div>
       <div style="background:var(--amberDim);border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;font-weight:600">
-        ⚠ Phase 5 rollout: this matrix controls what the app shows. Since the 7/24 flip all data is signed-in-only;
-        database <b>write</b> enforcement from this matrix is being attached table-by-table (pms_has_cap policy terms).</div>
+        ⚠ Phase 5 rollout: since the 7/24 flip all data is signed-in-only. Database <b>write</b> enforcement from this matrix
+        is now attached for <code>emails.file</code>, <code>field.report</code> and <code>pipeline.edit</code> (15 policies / 7 tables).
+        <code>projects.edit</code> is the last slice — for that one this matrix still drives app UI only.</div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th scope="col" style="min-width:170px">Capability</th>
           ${ROLES.map(r => `<th scope="col" title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
@@ -894,14 +901,42 @@ function renderGuide() {
         <li><b>External surfaces are read-only and fail-closed:</b> the Claude/MCP endpoint and the SETTYfy billing feed both reject every request without a valid credential, and neither can write PMS data. The feed token can be rotated instantly from the Integration tab.</li>
         <li><b>Operational safety:</b> optimistic-concurrency versioning on project rows, global email de-duplication, a delete-proof email mirror with nightly dated snapshots, Supabase's own daily whole-database backups, and the filing log for auditing what the add-in wrote where.</li>
       </ul>
-      <p style="margin-top:12px"><b>Progress updates — the security rollout.</b> <b>The Phase&nbsp;4 flip is LIVE</b> (2026-07-24). Signed-out browsers now get an empty app with a sign-in card; signed-in staff notice nothing. One deliberate step remains — Phase&nbsp;5 enforcement:</p>
+      <p style="margin-top:12px"><b>Progress updates — the security rollout.</b> <b>The Phase&nbsp;4 flip is LIVE</b> (2026-07-24). Signed-out browsers now get an empty app with a sign-in card; signed-in staff notice nothing. Phase&nbsp;5 enforcement is now <b>three capability slices in and one to go</b> (detail below, re-verified against the live database 2 Aug 2026):</p>
       <div style="margin-top:6px">
         <div class="phaserow"><span class="pill ok">DONE</span><div><b>Phase 1 — Shared sign-in layer.</b> setty-auth.js shipped across the suite: Microsoft sign-in via Supabase Auth, auto-refresh, cross-tab and popup support. The old anon fallback still exists in code but returns no data since the flip.</div></div>
         <div class="phaserow"><span class="pill ok">FORCED BY FLIP</span><div><b>Phase 2 — Team adoption.</b> Strategy call (Sara, 7/24): flip first and let it drive sign-ins — one click, no password, the signed-out gate explains itself. The Sign-ins tab tracks the wave; expect stragglers to hit the 🔐 pill on their first post-flip filing.</div></div>
         <div class="phaserow"><span class="pill ok">DONE</span><div><b>Phase 3 — Admin console &amp; safeguards.</b> This console: sign-in roster, user/role registry, backup monitoring, filing log, integration token control — plus this guide.</div></div>
         <div class="phaserow"><span class="pill ok">LIVE 7/24</span><div><b>Phase 4 — The RLS flip.</b> Executed 2026-07-24: 68 policies across ~35 tables flipped to signed-in-only (<code>TO authenticated</code>), plus anon revoked on the analytics materialized views. Verified: anon reads return empty, anon writes are rejected, Edge Functions / MCP / billing feed unaffected (they use the server-side key). <b>Rollback</b> is captured in <code>pms_ops_snapshots</code> (row <code>phase4-rollback-2026-07-24</code>) — run its content in the SQL editor to revert everything. Post-flip fixes already shipped: the PMS signed-out gate now also covers the loader's error path (v80), and ContractExtractor — the one tool the flip inventory missed, since it lives in OneDrive — was wired to setty-auth (v41).</div></div>
-        <div class="phaserow"><span class="pill warn">FINAL STEP</span><div><b>Phase 5 — Role-based permissions.</b> The backbone is live: a 7-role taxonomy (admin, project manager, engineer, operations, accounting, contracts, marketing — plus the <i>staff</i> baseline for anyone unassigned), the editable role×capability <b>permission matrix</b>, and <b>per-project overrides</b> (e.g. lock a confidential job to its team) — all managed on the Users &amp; Roles tab and resolved in the database by <code>pms_has_cap()</code>. Already enforced: this console is admin-only. <b>Remaining:</b> add <code>pms_has_cap()</code> terms to the data <i>write</i> policies, table-by-table now that the flip has settled, so the matrix becomes database enforcement instead of app-UI gating.</div></div>
+        <div class="phaserow"><span class="pill warn">LAST SLICE</span><div><b>Phase 5 — Role-based permissions.</b> The backbone is live: a 7-role taxonomy (admin, project manager, engineer, operations, accounting, contracts, marketing — plus the <i>staff</i> baseline for anyone unassigned), the editable role×capability <b>permission matrix</b>, and <b>per-project overrides</b> (e.g. lock a confidential job to its team) — all managed on the Users &amp; Roles tab and resolved in the database by <code>pms_has_cap()</code>.
+          <div style="margin-top:8px"><b>Now enforced in the database</b> <span style="color:var(--muted)">(verified 2 Aug 2026: 15 write policies across 7 tables carry <code>pms_has_cap()</code> terms)</span>:
+          <table style="margin-top:6px"><thead><tr><th>Capability</th><th>Tables it now gates</th></tr></thead><tbody>
+            <tr><td><code>emails.file</code></td><td><code>pms_project_emails</code> (insert/update/delete) · <code>pms_email_thread_tags</code></td></tr>
+            <tr><td><code>field.report</code></td><td><code>pms_site_reports</code> · <code>pms_field_photo_sessions</code> · <code>photo_catalog</code> — the last two are scoped <i>per project number</i>, so per-project overrides bite here</td></tr>
+            <tr><td><code>pipeline.edit</code></td><td><code>newsletter_campaigns</code> · <code>newsletter_subscribers</code></td></tr>
+          </tbody></table></div>
+          <div style="margin-top:8px"><b>Remaining — one slice:</b> <code>projects.edit</code> on <code>pms_projects</code>. That table still carries a single permissive policy covering ALL commands with <code>USING true / WITH CHECK true</code>, so <b>any signed-in member of staff can still write any project row</b>; the matrix gates this in app UI only. Note the policy is still named <code>anon_full_pms_projects</code> — a leftover from before the Phase 4 flip. <b>The name is misleading: it is scoped <code>TO authenticated</code>, not anon.</b> Worth renaming when the capability term is attached, so the next person reading the policy list is not alarmed by it.</div></div></div>
       </div>
+      <p style="margin-top:14px"><b>Database advisor sweep — 2 Aug 2026.</b> Supabase's own security linter returns
+        <b>63 advisories: none at ERROR level</b>, 53 WARN and 10 INFO. What they actually are, so this list can be read
+        without alarm:</p>
+      <table style="margin-top:6px"><thead><tr><th>Finding</th><th>Count</th><th>Reading</th></tr></thead><tbody>
+        <tr><td>Permissive <code>USING true</code> write policies</td><td>34</td>
+            <td><b>This is the Phase 5 remaining surface, not a new problem.</b> Every one is scoped <code>TO authenticated</code> — signed-in staff only, never anon. The tables already gated by <code>pms_has_cap()</code> above have dropped off this list; <code>pms_projects</code> is the significant one left.</td></tr>
+        <tr><td><code>SECURITY DEFINER</code> functions callable by <code>authenticated</code> / <code>anon</code></td><td>12</td>
+            <td><b>By design.</b> These are the <code>admin_*</code> RPCs plus <code>pms_has_cap()</code>, <code>my_pms_role()</code>, <code>my_pms_permissions()</code> — they have to be callable to do their job, and they <i>self-gate internally</i> (the <code>admin_*</code> ones raise <code>Admin role required</code> unless the caller's JWT email has <code>role='admin'</code>). Being callable is not being permitted.</td></tr>
+        <tr><td>Materialized views "selectable by anon or authenticated"</td><td>3</td>
+            <td><b>Stale — verified false on 2 Aug.</b> <code>pms_person_work</code>, <code>pms_project_index</code> and <code>pms_contractor_stats</code> currently carry <b>no grants at all</b> to either role; the Phase 4 revoke held. The linter flags any materialized view sitting in the API schema regardless of grants.</td></tr>
+        <tr><td>RLS enabled with no policies</td><td>10 (INFO)</td>
+            <td><b>The safe state, not a gap.</b> RLS on with zero policies denies everyone by default. These are backup and secret-holding tables (<code>pms_clients_dedup_backup</code>, <code>pms_inline_emails_backup</code>, <code>pms_integration_secrets</code>) — reachable only by the service-role key inside Edge Functions, which is what we want.</td></tr>
+        <tr><td><code>pg_trgm</code> / <code>pg_net</code> installed in <code>public</code></td><td>2</td>
+            <td>Housekeeping. Moving an extension between schemas is disruptive relative to the benefit; leave unless a review requires it.</td></tr>
+        <tr><td><code>pms_append_milestone</code> has a mutable <code>search_path</code></td><td>1</td>
+            <td>Genuine small hardening item — pin the <code>search_path</code> next time that function is touched.</td></tr>
+        <tr><td>Leaked-password protection disabled</td><td>1</td>
+            <td><b>Not applicable.</b> Nobody holds a PMS password — sign-in is Microsoft-only via Entra, so there is no password for HaveIBeenPwned to check.</td></tr>
+      </tbody></table>
+      <p style="font-size:12.5px;margin-top:8px;color:var(--muted)">Re-run this any time from the Supabase dashboard (Advisors → Security).
+        The two items actually worth acting on are the <code>projects.edit</code> slice above and the <code>search_path</code> pin.</p>
     </div>
 
     <div class="card doc" id="g-arch">
@@ -920,7 +955,7 @@ function renderGuide() {
           <div class="architem">MSAL + Microsoft Graph v1.0 <span>Drive · Mail · OneNote · Teams · Calendar</span></div>
           <div class="architem">Supabase Auth <span>Azure provider — suite sign-in</span></div>
           <div class="architem">Supabase REST (PostgREST) <span>row-level-secured data API</span></div>
-          <div class="architem">Edge Functions <span>pms-mcp · pms-billing-feed · unsubscribe · rfi-submittal-autosync · pms-backfill</span></div></div>
+          <div class="architem">Edge Functions <span>pms-mcp · pms-billing-feed · pms-user-emails · unsubscribe · rfi-submittal-autosync · pms-backfill · graph-status · pdf-render-test</span></div></div>
         <div class="archcol"><h4>Storage</h4>
           <div class="architem">Supabase Postgres <span>projects · emails · knowledge tables</span></div>
           <div class="architem">SharePoint <span>project folders · photos · templates</span></div>
@@ -973,7 +1008,7 @@ function renderGuide() {
           <p>Read-only JSON feed of billable milestones and projections for the intranet team, bearer-token protected — managed from the Integration tab.</p>
           <div class="src">Edge Function pms-billing-feed</div></div>
         <div class="appcard"><h4>🤖 Claude / MCP server</h4>
-          <p>Read-only connector that lets the team's enterprise Claude accounts search and read PMS data — 18 tools. Full runbook on the Claude/MCP tab.</p>
+          <p>Read-only connector that lets the team's enterprise Claude accounts search and read PMS data — 23 tools. Full runbook on the Claude/MCP tab.</p>
           <div class="src">Edge Function pms-mcp</div></div>
       </div>
     </div>
@@ -1031,7 +1066,7 @@ function renderGuide() {
       <ul>
         <li><b>PMS + satellite apps + this console:</b> edit in the git clone, push a branch, merge to <code>main</code> on <code>smartias/setty-pms</code> (or "Add files via upload" for a quick fix) — GitHub Pages publishes automatically, no build step, no CI. <b>Merge, never overwrite,</b> main.</li>
         <li><b>Outlook/Word add-in:</b> push to <code>main</code> on <code>smartias/setty-pms-addin</code>, then bump the <code>taskpane.js?v=</code> cache token in taskpane.html or Outlook keeps serving the old JS.</li>
-        <li><b>Edge Functions (MCP, billing feed…):</b> deployed from the Supabase dashboard or MCP tooling. <b>The live function is the source of truth</b> — always pull the deployed source first (dashboard → the function → source, or <code>get_edge_function</code>) before editing; on-disk copies drift stale. Health-check after every deploy.</li>
+        <li><b>Edge Functions (MCP, billing feed…):</b> deployed with the Supabase CLI or from the dashboard. <b>Which copy is authoritative now depends on the function.</b> <code>pms-mcp</code> is committed to the repo at <code>supabase/functions/pms-mcp/</code> — edit there and deploy from disk. The others (<code>pms-user-emails</code>, <code>weekly-digest</code>) have <i>not</i> been reconciled, so for those the old rule still holds: pull the deployed source (dashboard → the function → source, or <code>get_edge_function</code>) before editing, because on-disk copies drift stale. Health-check after every deploy.</li>
         <li><b>Database changes:</b> SQL migrations via the Supabase dashboard SQL editor; RLS policies and scheduled jobs live there too.</li>
       </ul>
 
@@ -1077,9 +1112,9 @@ function renderMcp() {
     </div>
 
     <div class="card doc">
-      <div class="sechead">Current status — 28 Jul 2026</div>
+      <div class="sechead">Current status — 2 Aug 2026</div>
       <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
-        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>v31, live.</b> On 25 Jul the OAuth discovery metadata was corrected so the advertised resource matches the requested scope — this was the cause of the Entra <b>9010010</b> sign-in failures.</td></tr>
+        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Deploy 45, live — build <code>2026-08-02-issue-date</code>, 23 tools.</b> The health link above echoes that build string, so "is my change live?" is answerable without diffing source. Since v31 the connector gained the document-finding, drawing-register and project-briefing tools (full list below). The 25 Jul OAuth discovery fix — advertised resource now matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures — remains in place.</td></tr>
         <tr><td>Org-wide connector on claude.ai</td><td><b>Pending IT.</b> Adding it makes it available across the org — that is expected and by design (see the note below).</td></tr>
         <tr><td>Entra app registration <code>${ENTRA_APP}</code></td><td>Exists and is admin-consented for the SharePoint document reading. Still to confirm: the <code>MCP.Access</code> delegated scope is consented, and Claude's callback URI is registered.</td></tr>
         <tr><td>Local Python bridge (per-device)</td><td><b>Deprecated — being retired.</b> Pilot-era install; see the warning under the admin steps below. Note the server still accepts the pilot shared secret, so any surviving install keeps working until <code>MCP_SHARED_SECRET</code> is rotated — rotation is what actually decommissions it.</td></tr>
@@ -1094,20 +1129,27 @@ function renderMcp() {
     <div class="card doc">
       <div class="sechead">How the server is set up</div>
       <ul>
-        <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. Currently <b>v31</b> — v31 corrected the OAuth discovery metadata (see Authentication below).</li>
+        <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. Currently <b>deploy 45</b>, build <code>2026-08-02-issue-date</code>. The deploy number is just Supabase's counter; the <b>build string is the meaningful version</b> — it is set in the source and echoed by <code>/health</code>.</li>
         <li><b>Data path:</b> the function holds the service-role key server-side and reads <code>pms_projects</code>, <code>pms_project_emails</code> and the analytics SQL functions. A 5-minute in-memory cache plus a slim field projection keeps broad questions fast.</li>
         <li><b>Documents &amp; templates:</b> project documents and the live "Templates for MCP Connector" SharePoint folder are read through a separate app-only Microsoft Graph app (client credentials, read-only Sites permission — the one admin-consented piece).</li>
         <li><b>Permission model:</b> shared service view — any authorized caller sees all PMS data (same as the PMS itself today). Read-only: there are no write tools.</li>
-        <li><b>Deploys:</b> from the PMS-MCP folder via <code>supabase functions deploy --no-verify-jwt pms-mcp</code> (always pass the deno.json import map). The live version is the source of truth — pull it before editing.</li>
+        <li><b>Source of truth — changed since v31:</b> the function source is now <b>committed to the repo</b> at <code>supabase/functions/pms-mcp/</code>. It used to live only on the deployed function, so the old rule here was "pull the live source before editing." <b>That rule is retired for <code>pms-mcp</code>:</b> edit the repo copy and deploy from disk. (It still applies to <code>pms-user-emails</code> and <code>weekly-digest</code>, which have not been reconciled yet.)</li>
+        <li><b>Deploys:</b> from the repo root via <code>supabase functions deploy --no-verify-jwt pms-mcp</code> (always pass the deno.json import map). Bump the <code>BUILD</code> constant in <code>index.ts</code> in the same change, then confirm the new string comes back from the health link above — that is the deploy check.</li>
       </ul>
-      <div class="sechead" style="margin-top:14px">The 18 tools</div>
+      <div class="sechead" style="margin-top:14px">The 23 tools</div>
       <table><thead><tr><th>Group</th><th>Tools</th></tr></thead><tbody>
-        <tr><td>Projects</td><td><code>search_projects</code> · <code>get_project</code> · <code>firm_overview</code> · <code>list_milestones</code> · <code>list_action_items</code></td></tr>
+        <tr><td>Projects</td><td><code>search_projects</code> · <code>get_project</code> · <code>firm_overview</code> · <code>list_milestones</code> · <code>list_action_items</code> · <code>project_briefing</code> <span style="color:var(--muted)">(new)</span></td></tr>
         <tr><td>Emails</td><td><code>search_emails</code> · <code>read_email</code> · <code>summarize_project_emails</code></td></tr>
         <tr><td>Notes &amp; CA</td><td><code>search_notes</code> · <code>read_note</code> · <code>search_rfis_submittals</code> · <code>read_rfi_submittal</code> · <code>search_field_photos</code></td></tr>
-        <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code></td></tr>
+        <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code> · <code>find_document</code> <span style="color:var(--muted)">(new)</span></td></tr>
+        <tr><td>Drawings <span style="color:var(--muted)">(new)</span></td><td><code>get_current_set</code> · <code>extract_sheet_index</code></td></tr>
+        <tr><td>Knowledge</td><td><code>search_agency_preferences</code> <span style="color:var(--muted)">(new)</span></td></tr>
         <tr><td>Templates</td><td><code>get_template</code> · <code>get_add_service_template</code> · <code>get_letterhead_template</code></td></tr>
       </tbody></table>
+      <p style="font-size:12.5px;margin-top:8px;color:var(--muted)">Five tools added since the v31 runbook. <code>project_briefing</code> is the one to know about:
+        it answers "what is going on with this job" by returning the project record <i>plus</i> the meeting minutes and review comments, rather than
+        reciting fields anyone can read off the PMS web app. The drawings group reads transmittal sets and sheet registers — still being rolled out
+        per the roadmap further down this tab.</p>
     </div>
 
     <div class="card doc">
@@ -1212,7 +1254,7 @@ function renderMcp() {
       <div class="sechead">Best practices (IT &amp; whoever maintains this)</div>
       <ul>
         <li><b>Rollout timing:</b> the connector is <b>independent of the security-rollout phases</b> — it never touches the anon key or user database sessions (it has its own gate + a server-side key), so the Phase 4 RLS flip changed nothing for it. Connect it whenever IT is ready; the admin-consent step is usually the long pole, so start that early.</li>
-        <li><b>Where the connector sits relative to Phase 5</b> <span style="color:var(--muted)">(verified against deployed v31 source, 28 Jul 2026)</span>:
+        <li><b>Where the connector sits relative to Phase 5</b> <span style="color:var(--muted)">(re-verified against deployed build 2026-08-02-issue-date, 2 Aug 2026 — still true: all connector reads use the server-side key, so the Phase 5 capability checks do not scope connector results)</span>:
             the Microsoft sign-in is an <b>authentication gate, not an identity</b> — <code>verifyEntraToken()</code> checks the token's
             signature, issuer, audience and tenant and returns <i>true/false</i>, discarding the payload. No user claim (oid, upn,
             preferred_username) reaches any query. Every read then goes out with the <code>SUPABASE_SERVICE_ROLE_KEY</code>, which bypasses
