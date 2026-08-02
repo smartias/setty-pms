@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-02-transmittal-v12-titleblock-pattern-2";
+    window.__appVersion = "2026-08-02-transmittal-v13-history-sheets";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -570,7 +570,9 @@
   </div>
 
   <!-- Transmittal History — record-keeping view of past sends for this
-       project, read from the "Transmittals Sent" SharePoint list. -->
+       project, read from pms_filing_log. (The old "Transmittals Sent"
+       SharePoint list was removed with the register work.) Each row
+       expands to show the sheet register captured at issue time. -->
   <div class="card" id="historyCard">
     <h2 class="card-title">🗂️ Transmittal History
       <span class="count-badge" id="historyCount"></span>
@@ -2830,9 +2832,13 @@ async function loadTransmittalHistory() {
     // Map log rows onto the field names renderHistoryTable() reads.
     const items = (rows || []).map(r => {
       const f = r.files || {};
+      const sheetRows = Array.isArray(f.sheets) ? f.sheets : [];
       const sheetCount = Array.isArray(f.sheets) ? f.sheets.length : null;
       return {
         createdDateTime: f.issuedAt || r.created_at || "",
+        // The register rows themselves, so the row can expand without a
+        // second query. They were already in this payload and thrown away.
+        sheets: sheetRows,
         fields: {
           MilestoneName:   f.milestoneName || (r.sp_folder_url || "").split("/").pop() || "",
           RecipientEmails: [f.recipientEmail, (f.ccEmails || []).length ? "CC: " + f.ccEmails.join(", ") : ""]
@@ -2872,7 +2878,7 @@ function renderHistoryTable(items) {
     '<th scope="col">Date</th><th scope="col">Milestone</th><th scope="col">Recipients</th><th scope="col">Files</th>' +
     '<th scope="col">Download</th><th scope="col">Sent By</th><th scope="col">Status</th>' +
     '</tr></thead><tbody>';
-  const body = items.map(it => {
+  const body = items.map((it, idx) => {
     const f = it.fields || {};
     const date = (it.createdDateTime || "").slice(0, 10);
     // Hyperlink columns read back as { Url, Description }; tolerate a bare string too.
@@ -2884,18 +2890,58 @@ function renderHistoryTable(items) {
       : expired
         ? '<span style="color:var(--muted)">link expired</span>'
         : '<a href="' + esc(linkUrl) + '" target="_blank" style="color:var(--blue)">Download ↗</a>';
-    return '<tr>' +
+    // The count is only useful if you can see WHICH sheets. Rows with a
+    // register become a toggle; rows without keep the plain count, because
+    // transmittals logged before the register existed genuinely have none.
+    const sheets = Array.isArray(it.sheets) ? it.sheets : [];
+    const filesCell = sheets.length
+      ? '<button type="button" class="sheet-toggle" data-row="' + idx + '" aria-expanded="false" ' +
+        'style="background:none;border:0;padding:0;color:var(--blue);cursor:pointer;font:inherit;text-decoration:underline">' +
+        esc(f.FileCount) + ' <span class="chev">▸</span></button>'
+      : esc(f.FileCount);
+    const main = '<tr>' +
       '<td>' + esc(date) + '</td>' +
       '<td>' + esc(f.MilestoneName) + '</td>' +
       '<td style="white-space:pre-line">' + esc(f.RecipientEmails) + '</td>' +
-      '<td>' + esc(f.FileCount) + '</td>' +
+      '<td>' + filesCell + '</td>' +
       '<td>' + downloadCell + '</td>' +
       '<td>' + esc(f.SenderDisplayName || f.SenderUPN) + '</td>' +
       '<td>' + esc(f.Status) + '</td>' +
       '</tr>';
+    if (!sheets.length) return main;
+    const detail =
+      '<tr class="sheet-detail" id="sheet-detail-' + idx + '" hidden>' +
+      '<td colspan="7" style="background:var(--card2);padding:10px 14px">' +
+      '<table class="sheet-table" style="margin:0"><thead><tr>' +
+      '<th scope="col">Sheet</th><th scope="col">Title</th><th scope="col">Rev</th>' +
+      '<th scope="col">Discipline</th><th scope="col">File</th>' +
+      '</tr></thead><tbody>' +
+      sheets.map(sh =>
+        '<tr>' +
+        '<td>' + (esc(sh.sheetNo) || "—") + '</td>' +
+        '<td>' + (esc(sh.title) || "—") + '</td>' +
+        '<td>' + (esc(sh.revision) || "—") + '</td>' +
+        '<td>' + (esc(sh.discipline) || "—") + '</td>' +
+        '<td style="color:var(--muted)">' + (esc(sh.filename) || "—") + '</td>' +
+        '</tr>').join("") +
+      '</tbody></table></td></tr>';
+    return main + detail;
   }).join("");
   return head + body + '</tbody></table>';
 }
+
+// Delegated so it survives every re-render of the table.
+document.getElementById("historyTableWrap")?.addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".sheet-toggle");
+  if (!btn) return;
+  const row = document.getElementById("sheet-detail-" + btn.dataset.row);
+  if (!row) return;
+  const nowOpen = row.hidden;
+  row.hidden = !nowOpen;
+  btn.setAttribute("aria-expanded", String(nowOpen));
+  const chev = btn.querySelector(".chev");
+  if (chev) chev.textContent = nowOpen ? "▾" : "▸";
+});
 
 // ─── MAILTO ASSEMBLY ──────────────────────────────────────────────────────────
 // Creates an Outlook draft via Graph and returns the draft object (whose
