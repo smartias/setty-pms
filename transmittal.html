@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-02-transmittal-v14-disciplines";
+    window.__appVersion = "2026-08-02-transmittal-v15-issue-date";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -703,6 +703,20 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     row.created_at     = opts.issuedAt;
     row.files.issuedAt = opts.issuedAt;
     row.files.backfilled = true;
+  } else {
+    // A live send still needs an ISSUE date, and created_at is only a filing
+    // timestamp. Saving an old folder stamps today, which is how Tabler came to
+    // report a year-superseded Bulletin #1 as its current set: the record was
+    // filed 2026-07-30 for a set issued 2025-04-10.
+    //
+    // The set folder carries the real date, so take it. created_at is left
+    // alone and stays honest about when the record was written; issuedAt says
+    // when the work went out. They differ, and both are worth keeping.
+    const folderDate = parseFolderDate(datedPathSegment(resolvedFolderPath));
+    if (folderDate) {
+      row.files.issuedAt     = folderDate + "T12:00:00.000Z";
+      row.files.issuedAtFrom = "set folder name";
+    }
   }
   try {
     await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log", {

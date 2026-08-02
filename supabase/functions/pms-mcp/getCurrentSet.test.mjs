@@ -19,6 +19,19 @@ function setFolderDate(name) {
   const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(name || ""));
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 }
+function registerIssueDate(row) {
+  const explicit = row?.files?.issuedAt;
+  if (explicit) return String(explicit).slice(0, 10);
+  const named = /^\s*(\d{4})[-_](\d{2})[-_](\d{2})/.exec(String(row?.files?.milestoneName || ""));
+  if (named) return `${named[1]}-${named[2]}-${named[3]}`;
+  return String(row?.created_at || "").slice(0, 10);
+}
+function registerIssueDateSource(row) {
+  if (row?.files?.issuedAt) return "stated issue date";
+  if (/^\s*\d{4}[-_]\d{2}[-_]\d{2}/.test(String(row?.files?.milestoneName || ""))) return "set folder name";
+  return "filing timestamp (may not be the issue date)";
+}
+
 const sheetsOf = (row) => Array.isArray(row?.files?.sheets) ? row.files.sheets : [];
 function sheetDisciplines(sheet) {
   const out = new Set();
@@ -69,11 +82,15 @@ const NO_SHEETS = {
 };
 const REGISTER = [T003, T001, T002]; // as PostgREST returns it: order=created_at.desc
 
-let failures = 0;
-const check = (cond, msg) => { if (!cond) { failures++; console.error("FAIL: " + msg); } };
+let failures = 0, ran = 0;
+// Counts what actually ran. The total used to be hardcoded, so assertions added
+// later were silently uncounted and the summary under-reported.
+const check = (cond, msg) => { ran++; if (!cond) { failures++; console.error("FAIL: " + msg); } };
 
 // ── 1. Newest-first selection ───────────────────────────────────────────────
-check(REGISTER[0] === T003, "the newest transmittal by created_at is the current set");
+// created_at order is only the FETCH order now; registerIssueDate decides which
+// set is current. See section 6b.
+check(REGISTER[0] === T003, "PostgREST returns the register newest-first by created_at");
 check(
   REGISTER.map((r) => r.files.transmittalNumber).join(",") === "T-003,T-001,T-002",
   "transmittal NUMBER is not chronological on real data (T-002 predates T-001), so ordering must " +
@@ -149,6 +166,35 @@ const newestFolder = [...dated].sort((a, b) => b.d.localeCompare(a.d))[0];
 check(newestFolder.n === "2026-04-17_Bulletin #13", "the newest dated folder wins the inference fallback");
 check(setFolderDate("  2025-04-10_Bulletin #1") === "2025-04-10", "leading whitespace does not defeat the date parse");
 
+// ── 6b. The issue date is not the filing timestamp ─────────────────────────
+// This is the bug that made get_current_set name a year-superseded set as
+// current on Tabler. T-003 was FILED 2026-07-30 for a set ISSUED 2025-04-10,
+// and created_at outranked Bulletin #13's 2026-04-17.
+const filedLate = { created_at: "2026-07-30 20:23:47+00", files: { milestoneName: "2025-04-10_Bulletin #1", transmittalNumber: "T-003" } };
+const bulletin13 = { created_at: "2026-04-17 12:00:00+00", files: { milestoneName: "2026-04-17_Bulletin #13", issuedAt: "2026-04-17T12:00:00.000Z" } };
+check(registerIssueDate(filedLate) === "2025-04-10", "a filing timestamp does not become the issue date");
+check(registerIssueDate(bulletin13) === "2026-04-17", "a stated issue date is used as-is");
+const ordered = [filedLate, bulletin13].sort((a, b) => registerIssueDate(b).localeCompare(registerIssueDate(a)));
+check(ordered[0].files.milestoneName === "2026-04-17_Bulletin #13",
+  "Bulletin #13 is current, NOT the set whose record happens to be newest");
+
+// issuedAt beats the folder name, and it must. CUNY's folder is
+// "2026-02-02 ... 100% CD SET dated 1-27-26": the folder date is when it was
+// filed, and the name itself says the set is dated 1-27-26.
+const cuny = { created_at: "2026-01-27 12:00:00+00",
+  files: { milestoneName: "2026-02-02 CUNY Brooklyn BMS 100% CD SET dated 1-27-26", issuedAt: "2026-01-27T12:00:00.000Z" } };
+check(registerIssueDate(cuny) === "2026-01-27", "a stated issue date outranks a misleading folder date");
+check(registerIssueDateSource(cuny) === "stated issue date", "...and the source is reported");
+
+// Underscored folder dates parse too: PMS writes "2026_04_16 Comment Response".
+check(registerIssueDate({ created_at: "2026-07-01", files: { milestoneName: "2026_04_16 Comment Response" } }) === "2026-04-16",
+  "an underscored folder date is read");
+// Nothing to go on: fall back, and SAY it is only a filing timestamp.
+const bare = { created_at: "2026-05-18 21:17:58+00", files: { milestoneName: "" } };
+check(registerIssueDate(bare) === "2026-05-18", "with no better source, created_at is used");
+check(registerIssueDateSource(bare) === "filing timestamp (may not be the issue date)",
+  "...and the answer admits what it is based on");
+
 // ── 7. Drift check against the shipped source ──────────────────────────────
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -165,7 +211,7 @@ check(
   "the register query still filters on operation = transmittal-generated",
 );
 
-const total = 26;
+const total = ran;
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
   : `\nall ${total} assertions pass (real register fixtures: 3 transmittals + 1 pre-register send, ` +

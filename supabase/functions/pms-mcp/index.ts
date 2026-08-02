@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-02-disciplines";
+const BUILD = "2026-08-02-issue-date";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1051,8 +1051,43 @@ async function transmittalRows(pid: string): Promise<any[]> {
     "pms_filing_log?select=created_at,sp_folder_url,files,email_subject" +
     "&project_id=eq." + encodeURIComponent(pid) +
     "&operation=eq.transmittal-generated&order=created_at.desc",
+    // Ordered by created_at here only so the fetch is deterministic. The real
+    // ordering happens in JS on registerIssueDate() below, because created_at
+    // is a FILING timestamp and is not always the issue date.
   );
-  return Array.isArray(rows) ? rows : [];
+  return (Array.isArray(rows) ? rows : [])
+    .sort((a, b) => registerIssueDate(b).localeCompare(registerIssueDate(a)));
+}
+
+// When was this set ISSUED, as opposed to when the record was filed?
+//
+// created_at is a filing timestamp. It equals the issue date only when the set
+// was logged the day it went out. Saving an OLD folder through the transmittal
+// tool stamps today, and that is exactly how Tabler ended up reporting a
+// year-superseded Bulletin #1 as current: its record was filed 2026-07-30 for a
+// set issued 2025-04-10, which outranked Bulletin #13.
+//
+// Precedence, most to least trustworthy:
+//   1. files.issuedAt   — someone stated the issue date explicitly.
+//   2. the set folder's leading date — what the set is called.
+//   3. created_at       — last resort, may be a filing timestamp.
+//
+// issuedAt outranks the folder name on purpose. CUNY's folder is
+// "2026-02-02 CUNY Brooklyn BMS 100% CD SET dated 1-27-26": the folder date is
+// when it was filed and the NAME says the set is dated 1-27-26, which is what
+// the person entered. Trusting the folder there would be wrong.
+function registerIssueDate(row: any): string {
+  const explicit = row?.files?.issuedAt;
+  if (explicit) return String(explicit).slice(0, 10);
+  const named = /^\s*(\d{4})[-_](\d{2})[-_](\d{2})/.exec(String(row?.files?.milestoneName || ""));
+  if (named) return `${named[1]}-${named[2]}-${named[3]}`;
+  return String(row?.created_at || "").slice(0, 10);
+}
+// Which of the three it used, so a caller can judge the answer.
+function registerIssueDateSource(row: any): string {
+  if (row?.files?.issuedAt) return "stated issue date";
+  if (/^\s*\d{4}[-_]\d{2}[-_]\d{2}/.test(String(row?.files?.milestoneName || ""))) return "set folder name";
+  return "filing timestamp (may not be the issue date)";
 }
 
 // Set folders are named "<ISO date>_<set name>", e.g. "2025-01-21_Addendum #1".
@@ -1135,7 +1170,7 @@ mcp.tool("get_current_set", {
       const priorSets = candidates.slice(1, 6).map((r: any) => ({
         setName: r.files?.milestoneName || null,
         transmittalNumber: r.files?.transmittalNumber || null,
-        issueDate: r.created_at,
+        issueDate: registerIssueDate(r),
         superseded: true,
       }));
       return asText({
@@ -1145,7 +1180,9 @@ mcp.tool("get_current_set", {
         current: {
           setName: f.milestoneName || null,
           transmittalNumber: f.transmittalNumber || null,
-          issueDate: latest.created_at,
+          issueDate: registerIssueDate(latest),
+          issueDateFrom: registerIssueDateSource(latest),
+          filedAt: latest.created_at,
           issuedTo: f.recipientEmail || null,
           deliveryKind: f.distributionKind || null,
           webUrl: latest.sp_folder_url || null,
