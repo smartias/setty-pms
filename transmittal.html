@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-01-transmittal-v9-param-double-decode";
+    window.__appVersion = "2026-08-02-transmittal-v10-backfill-milestone";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -554,6 +554,10 @@
             <label for="backfillDate" style="font-size:12.5px">Date issued</label>
             <input type="date" id="backfillDate" style="border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px">
             <button class="btn" id="backfillBtn">&#128194; Log past transmittal</button>
+            <label for="backfillMilestone" style="font-size:12.5px;display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" id="backfillMilestone" checked>
+              Also add to the schedule as a completed milestone
+            </label>
           </div>
           <div class="status" id="backfillStatus" role="status"></div>
         </div>
@@ -1739,6 +1743,68 @@ function prefillBackfillDate() {
   if (guess) el.value = guess;
 }
 
+// The project id is needed by both the filing-log write and the milestone
+// write. Direct launches carry no ?projectId, so resolve it from the loaded
+// project list by number. Shared so the two writes can never disagree about
+// which project they are attributing work to.
+function resolveLogProjectId() {
+  if (pmsProjectId) return pmsProjectId;
+  const n = (document.getElementById("projectNumber")?.value || "").trim();
+  if (!n) return "";
+  const hit = (pmsProjects || []).find(p => String(p.projectNumber || "").trim() === n);
+  return hit ? (hit.id || "") : "";
+}
+
+// "2026-04-17_Bulletin #13" -> "Bulletin #13".
+// Three date separators exist in the wild: PMS writes "2026_04_16 Name" when it
+// creates a folder FROM a milestone, while hand-made folders use either
+// "2026-04-17_Name" or "2026-03-11 Name". Strip whichever leads, then turn the
+// remaining underscores into spaces so "Bulletin #2_Resubmission" reads properly.
+function milestoneNameFromFolder(seg) {
+  return String(seg || "")
+    .replace(/^\s*\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*/, "")
+    .replace(/_+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Add the backfilled issue to the schedule as a finished, non-billable
+// milestone. Fire-and-forget relative to the log write: the register entry is
+// the thing the user asked for, and a schedule failure must not make a
+// successful backfill look like it failed.
+//
+// dueDateManual is REQUIRED, not decorative. Phase ends and milestone due dates
+// move in lockstep, and the pin is the only thing stopping an automatic
+// schedule rebuild from dragging a historical issue date to a new one.
+async function addBackfillMilestone(projId, dueDate, folderSeg) {
+  const name = milestoneNameFromFolder(folderSeg) || "Issued set";
+  const milestone = {
+    id: uid(),
+    name,
+    type: "non-billable",
+    phase: "NB",
+    fee: 0,
+    pctComplete: 100,   // canonical done-signal; the status field is legacy and unreliable
+    dueDate,
+    dueDateManual: true,
+    notes: "",
+  };
+  if (folderUrl) milestone.outgoingFolderUrl = folderUrl;
+  const res = await fetch(SUPABASE_URL + "/rest/v1/rpc/pms_append_milestone", {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_ANON,
+      "Authorization": "Bearer " + settyAuth.token(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ p_project_id: projId, p_milestone: milestone }),
+  });
+  if (!res.ok) throw new Error("schedule write failed (" + res.status + ")");
+  // null means a milestone already points at this folder, so nothing was added.
+  const body = await res.json().catch(() => null);
+  return { added: body !== null, name };
+}
+
 async function backfillTransmittal() {
   const btn = document.getElementById("backfillBtn");
   setStatus("backfillStatus", "", "");
@@ -1766,8 +1832,26 @@ async function backfillTransmittal() {
   setStatus("backfillStatus", "info", "\u23f3 Logging\u2026");
   try {
     await logTransmittalGenerated("backfill", { sheetCount: included.length }, { issuedAt });
+    let msNote = "";
+    if (document.getElementById("backfillMilestone")?.checked) {
+      const projId = resolveLogProjectId();
+      if (!projId) {
+        msNote = " Schedule not updated: this transmittal could not be matched to a project.";
+      } else {
+        try {
+          const r = await addBackfillMilestone(projId, dateVal, datedPathSegment(resolvedFolderPath));
+          msNote = r.added
+            ? " Added “" + r.name + "” to the schedule."
+            : " Schedule already has a milestone for this folder, so nothing was added.";
+        } catch (e) {
+          // The register entry succeeded. Say so plainly rather than letting a
+          // schedule problem read as a failed backfill.
+          msNote = " Logged, but the schedule could not be updated: " + e.message;
+        }
+      }
+    }
     setStatus("backfillStatus", "success", "\u2713 Logged " + included.length + " sheet" +
-      (included.length === 1 ? "" : "s") + " as issued " + dateVal + ".");
+      (included.length === 1 ? "" : "s") + " as issued " + dateVal + "." + msNote);
     void loadTransmittalHistory();
   } catch (e) {
     setStatus("backfillStatus", "error", "\u2717 " + e.message);
