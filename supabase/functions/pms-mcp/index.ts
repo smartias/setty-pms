@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-02-drawing-list-tail";
+const BUILD = "2026-08-02-disciplines";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1639,13 +1639,23 @@ const DOC_TYPE_WORDS: Record<string, string[]> = {
   Minutes: ["minutes", "meeting notes", "mtg", "notes"],
   Report: ["report", "survey", "study", "assessment", "scorecard"],
 };
+// Phrases only. The bare codes used to live in here too ("fp", "fa"), and they
+// were matched as SUBSTRINGS, so "fan coil schedule" set the discipline to FA
+// and "surface mounted" did the same. Codes are matched separately below, as
+// whole words. EN is a real code in use: SCA issues "..._EN.pdf" and DASNY's
+// CSI set is "..._EN (DOB SET).pdf" — and it is exactly the one that must never
+// be a substring, or "generator" and "engineering" both become Energy.
+// A discipline code only counts when it stands alone as a word.
+const wholeWord = (code: string) => new RegExp("(^| )" + code.toLowerCase() + "( |$)");
+
 const DISCIPLINE_WORDS: Record<string, string[]> = {
   M: ["mechanical", "hvac", "ductwork", "hthw"],
   E: ["electrical", "power", "lighting", "normal power"],
   P: ["plumbing", "domestic water", "sanitary"],
-  FP: ["fire protection", "sprinkler", "standpipe", "fp"],
-  FA: ["fire alarm", "fa"],
+  FP: ["fire protection", "sprinkler", "standpipe"],
+  FA: ["fire alarm"],
   T: ["technology", "telecom", "security", "av"],
+  EN: ["energy", "energy analysis", "energy model"],
 };
 
 // Folder semantics are already domain knowledge encoded in list_project_documents;
@@ -1671,7 +1681,10 @@ function parseQuery(query: string, discipline?: string, docType?: string) {
   let wantDisc = discipline || null;
   if (!wantDisc) {
     for (const [code, words] of Object.entries(DISCIPLINE_WORDS)) {
-      if (words.some((w) => n.includes(w))) { wantDisc = code; break; }
+      // Phrases may appear anywhere; a bare CODE must stand alone. Substring
+      // matching a two-letter code turns "fan coil" into fire alarm and
+      // "generator" into energy.
+      if (words.some((w) => n.includes(w)) || wholeWord(code).test(n)) { wantDisc = code; break; }
     }
   }
   // "latest"/"current" is an intent, not a search term: it asks for a recency

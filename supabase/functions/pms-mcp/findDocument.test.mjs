@@ -24,13 +24,15 @@ const DOC_TYPE_WORDS = {
   Minutes: ["minutes", "meeting notes", "mtg", "notes"],
   Report: ["report", "survey", "study", "assessment", "scorecard"],
 };
+const wholeWord = (code) => new RegExp("(^| )" + code.toLowerCase() + "( |$)");
 const DISCIPLINE_WORDS = {
   M: ["mechanical", "hvac", "ductwork", "hthw"],
   E: ["electrical", "power", "lighting", "normal power"],
   P: ["plumbing", "domestic water", "sanitary"],
-  FP: ["fire protection", "sprinkler", "standpipe", "fp"],
-  FA: ["fire alarm", "fa"],
+  FP: ["fire protection", "sprinkler", "standpipe"],
+  FA: ["fire alarm"],
   T: ["technology", "telecom", "security", "av"],
+  EN: ["energy", "energy analysis", "energy model"],
 };
 function folderArea(folderPath) {
   const p = norm(folderPath);
@@ -52,7 +54,7 @@ function parseQuery(query, discipline, docType) {
   let wantDisc = discipline || null;
   if (!wantDisc) {
     for (const [code, words] of Object.entries(DISCIPLINE_WORDS)) {
-      if (words.some((w) => n.includes(w))) { wantDisc = code; break; }
+      if (words.some((w) => n.includes(w)) || wholeWord(code).test(n)) { wantDisc = code; break; }
     }
   }
   const wantsCurrent = /\b(current|latest|newest|most recent)\b/.test(n);
@@ -178,6 +180,22 @@ const dcHits = rank("basis of design").map((r) => r.file.name);
 check(dcHits.includes("SQL Basis of Design Guide.pdf"), "'basis of design' finds the BOD guide");
 const oprHits = rank("OPR").map((r) => r.file.name);
 check(oprHits.some((n) => n.includes("OPR")), "'OPR' finds the owner's project requirements sheet");
+
+// ── 3b. Two-letter codes must stand alone ──────────────────────────────────
+// These used to be matched as substrings, which is a quiet way to return the
+// wrong discipline: an MEP vocabulary is full of words containing "fa" and "en".
+const disc = (q) => parseQuery(q).wantDisc;
+check(disc("fan coil unit schedule") === null, '"fan coil" is not Fire Alarm');
+check(disc("surface mounted fixtures") === null, '"surface" is not Fire Alarm');
+check(disc("emergency generator") === null, '"generator" is not Energy');
+check(disc("engineering report") === null, '"engineering" is not Energy');
+// ...but the codes themselves still work when written as words.
+check(disc("FA riser diagram") === "FA", "a bare FA is Fire Alarm");
+check(disc("EN sheets") === "EN", "a bare EN is Energy");
+check(disc("fire alarm riser") === "FA", "the phrase still matches");
+// EN is real and in use: SCA issues "..._EN.pdf", DASNY "..._EN (DOB SET).pdf".
+check(disc("energy analysis") === "EN", '"energy analysis" is Energy');
+check(disc("energy model report") === "EN", '"energy model" is Energy');
 
 // ── 4. Discipline handling ─────────────────────────────────────────────────
 // A bare letter must only match as a sheet-name segment, never as a substring,
