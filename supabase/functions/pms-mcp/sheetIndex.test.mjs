@@ -49,6 +49,29 @@ function parseTitleBlock(pageText) {
 }
 const NON_SHEET_FOLDER = /\b(cad files?|revit models?|specs?|specifications?|native|dwg|working)\b/i;
 
+function summarizeDisciplines(sheets) {
+  const byDiscipline = {};
+  for (const s of sheets) {
+    const d = s.discipline || "?";
+    const e = byDiscipline[d] || (byDiscipline[d] = { sheets: 0, setTotal: null, totalsSeen: [] });
+    e.sheets++;
+    if (s.setTotal && !e.totalsSeen.includes(s.setTotal)) e.totalsSeen.push(s.setTotal);
+  }
+  for (const d of Object.keys(byDiscipline)) {
+    const e = byDiscipline[d];
+    if (e.totalsSeen.length > 1) e.conflictingTotals = [...e.totalsSeen].sort((a, b) => a - b);
+    e.setTotal = e.totalsSeen.length ? Math.max(...e.totalsSeen) : null;
+    e.isPartial = e.setTotal ? e.sheets < e.setTotal : null;
+    delete e.totalsSeen;
+  }
+  const partialDisciplines = Object.keys(byDiscipline).filter((d) => byDiscipline[d].isPartial === true);
+  const rated = Object.values(byDiscipline).filter((e) => e.setTotal !== null);
+  return { byDiscipline, partialDisciplines, isPartialIssue: rated.length ? partialDisciplines.length > 0 : null };
+}
+
+const MAX_DOC_BYTES = 20 * 1024 * 1024;
+const SHEET_MAX_BYTES = 64 * 1024 * 1024;
+
 // ── real page tails, verbatim ───────────────────────────────────────────────
 const TAIL = "500 Circle Road Stony Brook, New York 11790 ";
 // 2026 Bulletin #13, page 1 — a sheet with prior revisions, one row of which
@@ -124,12 +147,80 @@ eq(old.revisionDate, null, "...with no revision date");
 check(FP601.includes("STTQ-01-P.rvt") && old.discipline === "FP",
   "the Revit model name contradicts the real discipline, and the title block wins");
 
-// ── 5. Partial-issue detection ─────────────────────────────────────────────
+// ── 5. Partial-issue detection, PER DISCIPLINE ─────────────────────────────
 // Four sheets that each say "of 68" is a bulletin, not a full set. This is what
 // stops a partial being mistaken for the current full set.
 const totals = [...new Set(book.map((s) => s.setTotal))];
-eq(totals.length, 1, "every sheet in the package agrees on the set size");
+eq(totals.length, 1, "every ELECTRICAL sheet in the package agrees on the set size");
 check(book.length < totals[0], "4 sheets out of 68 is detectably a PARTIAL issue");
+
+// The regression this replaced: set totals are stated PER DISCIPLINE (Tabler is
+// E=68, M=54, T=22), so the old whole-result test — one distinct total across
+// every sheet — was false the moment a package spanned two disciplines, and
+// Bulletin #13's 8 sheets across E and M were reported as a COMPLETE set.
+const bulletin13 = [
+  ...book,                                                      // 4 E sheets, "of 68"
+  { discipline: "E", setTotal: 68 }, { discipline: "E", setTotal: 68 },
+  { discipline: "M", setTotal: 54 }, { discipline: "M", setTotal: 54 },
+];
+const b13 = summarizeDisciplines(bulletin13);
+eq([...new Set(bulletin13.map((s) => s.setTotal))].length, 2,
+  "a two-discipline package yields TWO distinct totals — what defeated the old test");
+eq(b13.isPartialIssue, true, "8 sheets across E and M is a PARTIAL issue, not a full set");
+eq(b13.byDiscipline.E.sheets, 6, "E sheet count");
+eq(b13.byDiscipline.E.setTotal, 68, "E carries its own set total");
+eq(b13.byDiscipline.M.setTotal, 54, "M carries a DIFFERENT set total");
+eq(b13.partialDisciplines.join(","), "E,M", "both disciplines are named as short");
+
+// A genuinely complete single-discipline set is still reported complete.
+const fullT = Array.from({ length: 22 }, () => ({ discipline: "T", setTotal: 22 }));
+eq(summarizeDisciplines(fullT).isPartialIssue, false, "22 of 22 T sheets is NOT partial");
+// Mixed: T complete, E short. Any short discipline makes the ISSUE partial.
+const mixed = summarizeDisciplines([...fullT, { discipline: "E", setTotal: 68 }]);
+eq(mixed.isPartialIssue, true, "one complete discipline does not excuse a short one");
+eq(mixed.partialDisciplines.join(","), "E", "only the short discipline is named");
+eq(mixed.byDiscipline.T.isPartial, false, "...and the complete one is marked complete");
+
+// No stated total is UNKNOWN, not complete. Reporting false here would assert a
+// full set from sheets whose title blocks never said how many there are.
+eq(summarizeDisciplines([{ discipline: "E", setTotal: null }]).isPartialIssue, null,
+  "no stated set total reads as null, never false");
+eq(summarizeDisciplines([{ discipline: "E", setTotal: null }]).byDiscipline.E.isPartial, null,
+  "...per discipline too");
+
+// Disagreeing totals within one discipline: take the largest so a partial is
+// never rounded up into "complete".
+const conflict = summarizeDisciplines([
+  { discipline: "E", setTotal: 60 }, { discipline: "E", setTotal: 68 }, { discipline: "E", setTotal: 68 },
+]);
+eq(conflict.byDiscipline.E.setTotal, 68, "conflicting totals resolve to the largest");
+eq(conflict.byDiscipline.E.isPartial, true, "3 sheets against the largest total is partial");
+eq(conflict.byDiscipline.E.conflictingTotals.join(","), "60,68", "the conflict is surfaced, not hidden");
+
+// ── 5b. Oversized combined books ───────────────────────────────────────────
+// Baseline sets ship one combined PDF per discipline. Tabler's combined
+// electrical book is 42MB, past the 20MB generic document cap, so it used to be
+// dropped as one quiet `unparsed` row. Sheet extraction never returns the file
+// body, so it gets its own larger cap — and oversized files are taken LAST, so a
+// book that fails cannot cost us the individual sheets that would have parsed.
+const MB = 1024 * 1024;
+const isBig = (f) => Number(f.size) > MAX_DOC_BYTES;
+const files = [
+  { name: "COMBINED-E.pdf", size: 42 * MB },
+  { name: "E221.pdf", size: 2 * MB },
+  { name: "COMBINED-M.pdf", size: 30 * MB },
+  { name: "E602.pdf", size: 1 * MB },
+];
+const ordered = [...files].sort((a, b) => Number(isBig(a)) - Number(isBig(b)));
+eq(ordered.map((f) => f.name).join(","), "E221.pdf,E602.pdf,COMBINED-E.pdf,COMBINED-M.pdf",
+  "individual sheets are opened BEFORE any oversized book");
+check(ordered.slice(0, 2).every((f) => !isBig(f)), "no oversized file precedes a normal one");
+check(42 * MB > MAX_DOC_BYTES, "the 42MB Tabler electrical book is over the generic document cap");
+check(42 * MB < SHEET_MAX_BYTES, "...but within the sheet-extraction cap, so it is now OPENED");
+check(70 * MB > SHEET_MAX_BYTES, "a 70MB file is still refused rather than risking the worker");
+// Sorting must be stable enough not to reshuffle same-class files.
+eq(ordered.filter(isBig).map((f) => f.name).join(","), "COMBINED-E.pdf,COMBINED-M.pdf",
+  "oversized files keep their original relative order");
 
 // ── 6. Composite assembly: latest sheetDate per sheet number wins ──────────
 const baseline = [
@@ -167,8 +258,18 @@ has('const i = pageText.lastIndexOf("Revisions Rev Description Date");', "revisi
 has('if (!dates.length) return { revision: "0", description: "", date: null };', "base-issue fallback");
 has('mcp.tool("extract_sheet_index"', "extract_sheet_index is registered");
 has("const key = tb.sheetNo + \"|\" + tb.revision;", "combined-vs-individual dedupe key");
+has("e.isPartial = e.setTotal ? e.sheets < e.setTotal : null;", "per-discipline partial test");
+has("isPartialIssue: rated.length ? partialDisciplines.length > 0 : null,", "unknown-is-not-complete rule");
+has("const SHEET_MAX_BYTES = 64 * 1024 * 1024;", "sheet-extraction size cap");
+has("const ordered = [...pdfs].sort((a, b) => Number(isBig(a)) - Number(isBig(b)));", "oversized-last ordering");
+// The whole point of the path-scoped crawl: an exact subfolder must NOT depend
+// on the capped whole-project walk. If this call disappears, the SAPX196006.00
+// "count: 0 / no files found" failure is back.
+has("const sub = await subtreeFiles(numPrefix, subfolder);", "extract_sheet_index resolves the path directly");
+has("async function subtreeFiles(", "path-scoped crawl exists");
+has("async function listChildren(", "list_project_documents pagination helper exists");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
-  : `\nall ${total} assertions pass (5 real sheets across 2019 and 2026, 4 drift checks)`);
+  : `\nall ${total} assertions pass (5 real sheets across 2019 and 2026, 10 drift checks)`);
 process.exit(failures ? 1 : 0);

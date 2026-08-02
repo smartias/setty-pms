@@ -153,8 +153,12 @@ async function docDriveId(): Promise<string> {
   const list = drives.value || [];
   const match = list.find((d: any) => d.name === DOC_LIBRARY) || list[0];
   if (!match) throw new Error("No document library found on the configured site.");
-  _docDriveId = match.id;
-  return _docDriveId;
+  // Return the local, not the field: TS cannot narrow a mutable module-level
+  // `string | null` after assignment, and `deno check --strict` is only worth
+  // having as a pre-deploy gate if it runs clean.
+  const id: string = match.id;
+  _docDriveId = id;
+  return id;
 }
 async function projectFolder(projectNumber: string): Promise<any | null> {
   const drive = await docDriveId();
@@ -177,8 +181,9 @@ let _drives: Array<{ id: string; name: string }> | null = null;
 async function siteDrives(): Promise<Array<{ id: string; name: string }>> {
   if (_drives) return _drives;
   const d = await graphGet(`/sites/${SP_SITE_ID}/drives?$select=id,name`);
-  _drives = (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
-  return _drives;
+  const list: Array<{ id: string; name: string }> = (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
+  _drives = list;
+  return list;
 }
 // Find a project's root folder (named by NUMBER, e.g. "<number> - ...") within a drive.
 //
@@ -1894,6 +1899,46 @@ function parseTitleBlock(pageText: string): any | null {
 // Folders inside a set that are not the issued sheets.
 const NON_SHEET_FOLDER = /\b(cad files?|revit models?|specs?|specifications?|native|dwg|working)\b/i;
 
+// Is this issue the whole set, or a partial?
+//
+// The sheets state their own set size, so the answer is on the drawings — but
+// that size is PER DISCIPLINE. Tabler's title blocks say "of 68" on E, "of 54"
+// on M and "of 22" on T. The first cut of this tested for exactly ONE distinct
+// total across the entire result and so evaluated FALSE on every package
+// spanning more than one discipline: Bulletin #13's 8 sheets across E and M were
+// reported as a complete set, which is the opposite of the truth and the kind of
+// wrong answer someone would act on. Group by discipline, then compare.
+//
+// Pure — see sheetIndex.test.mjs.
+function summarizeDisciplines(sheets: any[]) {
+  const byDiscipline: Record<string, any> = {};
+  for (const s of sheets) {
+    const d = s.discipline || "?";
+    const e = byDiscipline[d] || (byDiscipline[d] = { sheets: 0, setTotal: null, totalsSeen: [] as number[] });
+    e.sheets++;
+    if (s.setTotal && !e.totalsSeen.includes(s.setTotal)) e.totalsSeen.push(s.setTotal);
+  }
+  for (const d of Object.keys(byDiscipline)) {
+    const e = byDiscipline[d];
+    // Sheets within one discipline should agree on the total. When they do not —
+    // a folder holding two issues, or a renumbered set — the LARGEST is the safe
+    // floor for "how many there should be", so a partial is never called whole.
+    if (e.totalsSeen.length > 1) e.conflictingTotals = [...e.totalsSeen].sort((a: number, b: number) => a - b);
+    e.setTotal = e.totalsSeen.length ? Math.max(...e.totalsSeen) : null;
+    e.isPartial = e.setTotal ? e.sheets < e.setTotal : null;
+    delete e.totalsSeen;
+  }
+  const partialDisciplines = Object.keys(byDiscipline).filter((d) => byDiscipline[d].isPartial === true);
+  const rated = Object.values(byDiscipline).filter((e: any) => e.setTotal !== null);
+  return {
+    byDiscipline,
+    partialDisciplines,
+    // Partial when ANY discipline is short of its own stated total. NULL, not
+    // false, when no title block stated a total — unknown is not "complete".
+    isPartialIssue: rated.length ? partialDisciplines.length > 0 : null,
+  };
+}
+
 mcp.tool("extract_sheet_index", {
   description:
     "Read the TITLE BLOCK of every drawing sheet in an issued set folder and return one structured row " +
@@ -2083,40 +2128,13 @@ mcp.tool("extract_sheet_index", {
     }
 
     sheets.sort((a, b) => String(a.sheetNo).localeCompare(String(b.sheetNo)));
-
-    // The sheets state their own set size, so a partial issue is self-evident —
-    // but that size is PER DISCIPLINE. Tabler's title blocks say "of 68" on E,
-    // "of 54" on M and "of 22" on T, so the old whole-result test (exactly ONE
-    // distinct total across every sheet) evaluated false on every package that
-    // spans more than one discipline: Bulletin #13's 8 sheets across E and M
-    // were reported as a complete set. Group first, then compare.
-    const byDiscipline: Record<string, any> = {};
-    for (const s of sheets) {
-      const d = s.discipline || "?";
-      const e = byDiscipline[d] || (byDiscipline[d] = { sheets: 0, setTotal: null, totalsSeen: [] as number[] });
-      e.sheets++;
-      if (s.setTotal && !e.totalsSeen.includes(s.setTotal)) e.totalsSeen.push(s.setTotal);
-    }
-    for (const d of Object.keys(byDiscipline)) {
-      const e = byDiscipline[d];
-      // Sheets within one discipline should agree on the total. When they do not
-      // — a set assembled from two issues — the largest is the safest floor for
-      // "how many there should be", so a partial is never called complete.
-      if (e.totalsSeen.length > 1) e.conflictingTotals = [...e.totalsSeen].sort((a: number, b: number) => a - b);
-      e.setTotal = e.totalsSeen.length ? Math.max(...e.totalsSeen) : null;
-      e.isPartial = e.setTotal ? e.sheets < e.setTotal : null;
-      delete e.totalsSeen;
-    }
-    const rated = Object.values(byDiscipline).filter((e: any) => e.setTotal !== null);
-    const partialDisciplines = Object.keys(byDiscipline).filter((d) => byDiscipline[d].isPartial === true);
+    const { byDiscipline, partialDisciplines, isPartialIssue } = summarizeDisciplines(sheets);
 
     return asText({
       project, subfolder, scope,
       count: sheets.length,
       byDiscipline,
-      // Partial when ANY discipline is short of its own stated total. Null, not
-      // false, when no title block stated a total — unknown is not "complete".
-      isPartialIssue: rated.length ? partialDisciplines.length > 0 : null,
+      isPartialIssue,
       ...(partialDisciplines.length ? { partialDisciplines } : {}),
       scanned: { pdfs: pdfs.length, filesOpened, pagesParsed, duplicatesCollapsed: duplicates },
       ...(excludedFolders.length ? { excludedFolders } : {}),
