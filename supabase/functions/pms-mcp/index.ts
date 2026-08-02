@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-02-titleblock-pattern-2";
+const BUILD = "2026-08-02-drawing-list";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1962,6 +1962,48 @@ function parseTitleBlock(pageText: string): any | null {
   return null;
 }
 
+// ─── DRAWING LIST ───────────────────────────────────────────────────────────
+// Title blocks do not generalise. A survey of six projects across six owners on
+// 2026-08-02 found only two parsed: every firm lays its title block out
+// differently, and each new architect needs a bespoke pattern.
+//
+// The drawing list does generalise. Every cover sheet seen so far carries one,
+// and the anchor text is character-identical across unrelated practices:
+//
+//   CHCR: PLUMBING DRAWING LIST   SHEET DRAWING TITLE  1 P-001 GENERAL NOTES...
+//   SCA:  FIRE ALARM DRAWING LIST SHEET DRAWING TITLE  1 FA001.00 FIRE ALARM...
+//
+// One page then yields the WHOLE set, architect-independent, instead of N title
+// blocks each needing its own regex.
+//
+// Rows are found by locating the sheet-number tokens and slicing the text
+// BETWEEN them for the title. Matching a title directly does not work: titles
+// legitimately contain digits ("LEVEL 1 FLOOR PLAN"), so any "digits end the
+// title" rule truncates real names.
+const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
+const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?)(?=\s)/g;
+// The final row has no following row to bound it, so it runs on into whatever
+// page section comes next. Cut at the headings that actually follow these lists.
+const DRAWING_LIST_TAIL = /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS)\b/;
+const DRAWING_LIST_MAX_TITLE = 80;
+
+function parseDrawingList(pageText: string): Array<{ sheetNo: string; sheetTitle: string }> {
+  const at = pageText.search(DRAWING_LIST_ANCHOR);
+  if (at < 0) return [];
+  const tail = pageText.slice(at);
+  const rows = [...tail.matchAll(DRAWING_LIST_ROW)];
+  if (rows.length < 2) return []; // one row is far more likely to be noise than a list
+  return rows.map((m, i) => {
+    const from = m.index! + m[0].length;
+    const to = i + 1 < rows.length ? rows[i + 1].index! : tail.length;
+    let title = tail.slice(from, to).trim();
+    const cut = DRAWING_LIST_TAIL.exec(title);
+    if (cut) title = title.slice(0, cut.index).trim();
+    if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
+    return { sheetNo: m[2], sheetTitle: title.replace(/\s+/g, " ") };
+  }).filter((r) => r.sheetTitle.length > 0);
+}
+
 // Folders inside a set that are not the issued sheets.
 const NON_SHEET_FOLDER = /\b(cad files?|revit models?|specs?|specifications?|native|dwg|working)\b/i;
 
@@ -2110,6 +2152,12 @@ mcp.tool("extract_sheet_index", {
     }
 
     const sheets: any[] = [];
+    // Sheets named by a cover sheet's drawing list. Kept separate from parsed
+    // title blocks because a listed sheet is EVIDENCE THE SET CONTAINS IT, not a
+    // reading of the sheet itself: there is no revision, and the file it lives
+    // in is unknown. Merged in at the end, and only where a title block did not
+    // already produce a richer row.
+    const listed = new Map<string, any>();
     const unparsed: any[] = [];
     const seen = new Map<string, any>();
     let duplicates = 0, pagesParsed = 0, filesOpened = 0, stoppedMidFile = false;
@@ -2201,6 +2249,17 @@ mcp.tool("extract_sheet_index", {
           const pg = await pdf.getPage(i);
           const tc = await pg.getTextContent();
           const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+          // A cover sheet names the whole set in one table, whatever the
+          // architect. Harvest it even when this page's own title block parses.
+          for (const row of parseDrawingList(text)) {
+            if (!listed.has(row.sheetNo)) {
+              listed.set(row.sheetNo, {
+                ...row,
+                discipline: (/^([A-Z]{1,3})/.exec(row.sheetNo) || [, ""])[1],
+                listedIn: f.name, listedOnPage: i,
+              });
+            }
+          }
           const tb = parseTitleBlock(text);
           if (!tb) {
             unparsed.push({ file: f.name, page: i, reason: text.length < 50 ? "no extractable text (scanned?)" : "no title block matched" });
@@ -2228,6 +2287,32 @@ mcp.tool("extract_sheet_index", {
       }
     }
 
+    // Merge the drawing list in. A parsed title block always wins: it carries a
+    // revision and a real source page, where a listed sheet carries neither.
+    // Listed-only rows are what make a set countable on projects whose title
+    // block no pattern reads, which after the 2026-08-02 survey is most of them.
+    const parsedNos = new Set(sheets.map((s) => s.sheetNo));
+    let fromList = 0;
+    for (const [no, row] of listed) {
+      if (parsedNos.has(no)) continue;
+      fromList++;
+      sheets.push({
+        sheetNo: no,
+        discipline: row.discipline,
+        sheetTitle: row.sheetTitle,
+        sheetDate: null, drawnBy: null, checkedBy: null, projectNo: null,
+        phase: null, pageOfSet: null, setTotal: null,
+        // No revision is knowable from a list. Saying "0" here would assert a
+        // base issue that nothing on the page supports.
+        revision: null, revisionDescription: null, revisionDate: null,
+        titleBlockLayout: null,
+        source: "drawing-list",
+        sourceFile: row.listedIn, sourcePage: row.listedOnPage,
+        folderPath: subfolder, webUrl: null, itemId: null,
+      });
+    }
+    for (const s of sheets) if (!s.source) s.source = "title-block";
+
     sheets.sort((a, b) => String(a.sheetNo).localeCompare(String(b.sheetNo)));
     const { byDiscipline, partialDisciplines, isPartialIssue } = summarizeDisciplines(sheets);
 
@@ -2237,7 +2322,13 @@ mcp.tool("extract_sheet_index", {
       byDiscipline,
       isPartialIssue,
       ...(partialDisciplines.length ? { partialDisciplines } : {}),
-      scanned: { pdfs: pdfs.length, filesOpened, pagesParsed, duplicatesCollapsed: duplicates },
+      scanned: {
+        pdfs: pdfs.length, filesOpened, pagesParsed, duplicatesCollapsed: duplicates,
+        // Where the rows came from. A set that is all drawing-list means no
+        // title block parsed: the sheet numbers are trustworthy, the revisions
+        // are simply unknown rather than zero.
+        fromTitleBlocks: sheets.length - fromList, fromDrawingList: fromList,
+      },
       // Paging state. nextOffset is null ONLY when the folder is exhausted, so
       // "keep calling until nextOffset is null" is a complete read and needs no
       // arithmetic from the caller.
