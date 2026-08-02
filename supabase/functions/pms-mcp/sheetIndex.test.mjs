@@ -90,6 +90,27 @@ function summarizeDisciplines(sheets) {
   return { byDiscipline, partialDisciplines, isPartialIssue: rated.length ? partialDisciplines.length > 0 : null };
 }
 
+const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
+const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?)(?=\s)/g;
+const DRAWING_LIST_TAIL = /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS)\b/;
+const DRAWING_LIST_MAX_TITLE = 80;
+function parseDrawingList(pageText) {
+  const at = pageText.search(DRAWING_LIST_ANCHOR);
+  if (at < 0) return [];
+  const tail = pageText.slice(at);
+  const rows = [...tail.matchAll(DRAWING_LIST_ROW)];
+  if (rows.length < 2) return [];
+  return rows.map((m, i) => {
+    const from = m.index + m[0].length;
+    const to = i + 1 < rows.length ? rows[i + 1].index : tail.length;
+    let title = tail.slice(from, to).trim();
+    const cut = DRAWING_LIST_TAIL.exec(title);
+    if (cut) title = title.slice(0, cut.index).trim();
+    if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
+    return { sheetNo: m[2], sheetTitle: title.replace(/\s+/g, " ") };
+  }).filter((r) => r.sheetTitle.length > 0);
+}
+
 const MAX_DOC_BYTES = 20 * 1024 * 1024;
 const SHEET_MAX_BYTES = 64 * 1024 * 1024;
 
@@ -179,6 +200,45 @@ check(!TITLE_BLOCK_SHEET_FIRST.test(CHCR), "layout 1 does not match a layout 2 b
 // CHCR dates its revisions 2023.08.11, not 08/11/2023.
 eq(parseRevisionBlock("NO. REVISIONS DATE 1 ADDENDUM 1 2024.03.05").date, "2024.03.05",
   "a dotted revision date is read");
+
+// ── 3c. The drawing list, which DOES generalise ────────────────────────────
+// A survey of 6 projects across 6 owners (2026-08-02) found only 2 title blocks
+// parsed. The drawing list on the cover sheet is identical across firms, so one
+// parser reads all of them. Both fixtures below are verbatim.
+const DL_CHCR = "PLUMBING DRAWING LIST SHEET DRAWING TITLE 1 P-001 GENERAL NOTES, SYMBOLS & ABBREVIATIONS " +
+  "2 P-100 LEVEL 1 FLOOR UNDERSLAB - PLUMBING 3 P-101 LEVEL 1 FLOOR PLAN - PLUMBING " +
+  "4 P-102 LEVEL 2 FLOOR PLAN - PLUMBING 5 P-103 ROOF PLAN - PLUMBING 6 P-501 SANITARY RISER DIAGRAMS " +
+  "8 P-502 DOMESTIC WATER RISER DIAGRAM 9 P-503 STORM RISER DIAGRAM 6 P-601 PLUMBING SCHEDULES " +
+  "10 P-701 PLUMBING DETAILS NEW YORK CITY BUILDING DEPARTMENT NOTES";
+const DL_SCA = "FIRE ALARM DRAWING LIST SHEET DRAWING TITLE 1 FA001.00 FIRE ALARM SYSTEM SYMBOLS, ABBREVIATIONS, NOTES " +
+  "2 FA100.00 CELLAR FLOOR PLAN - FIRE ALARM SYSTEM 3 FA101.00 1ST FLOOR PLAN - FIRE ALARM SYSTEM " +
+  "11 FA401.00 FIRE ALARM SYSTEM TYPICAL DETAILS NYC BUILDING DEPARTMENT NOTES";
+
+const dlC = parseDrawingList(DL_CHCR);
+eq(dlC.length, 10, "CHCR drawing list yields all 10 sheets from ONE page");
+eq(dlC[0].sheetNo, "P-001", "first listed sheet");
+eq(dlC[0].sheetTitle, "GENERAL NOTES, SYMBOLS & ABBREVIATIONS", "first listed title");
+// Titles legitimately contain digits, so a "digits end the title" rule would
+// truncate this one. Slicing between sheet-number tokens is what avoids that.
+eq(dlC[1].sheetTitle, "LEVEL 1 FLOOR UNDERSLAB - PLUMBING", "a title containing a digit survives intact");
+eq(dlC[3].sheetTitle, "LEVEL 2 FLOOR PLAN - PLUMBING", "...and so does the next one");
+// The final row has no following row to bound it and runs into the next section.
+eq(dlC[9].sheetTitle, "PLUMBING DETAILS", "the last title is cut at the following page heading");
+
+const dlS = parseDrawingList(DL_SCA);
+eq(dlS.length, 4, "SCA drawing list parses with the SAME parser");
+eq(dlS[0].sheetNo, "FA001.00", "SCA sheet numbers carry a .00 suffix");
+eq(dlS[1].sheetTitle, "CELLAR FLOOR PLAN - FIRE ALARM SYSTEM", "SCA title");
+eq(dlS[3].sheetTitle, "FIRE ALARM SYSTEM TYPICAL DETAILS", "SCA last title is cut at the heading");
+// The point of the whole exercise: no title-block pattern reads SCA, but the
+// drawing list does.
+check(parseTitleBlock(DL_SCA) === null, "no title-block pattern matches the SCA page");
+check(dlS.length > 0, "...yet its drawing list still yields sheets");
+
+// Not a list: don't invent one from stray numbers.
+eq(parseDrawingList("SOME PLAN 1 P-001 THING").length, 0, "text without the anchor yields nothing");
+eq(parseDrawingList("DRAWING LIST SHEET DRAWING TITLE 1 P-001 ONLY ONE").length, 0,
+  "a single row is treated as noise, not a list");
 
 // ── 4. The 2019 era ────────────────────────────────────────────────────────
 const old = parseTitleBlock(FP601);
