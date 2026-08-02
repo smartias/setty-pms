@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-02-transmittal-v11-title-blocks";
+    window.__appVersion = "2026-08-02-transmittal-v12-titleblock-pattern-2";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -1510,19 +1510,60 @@ async function loadFolder() {
 // These regexes are a PORT of the ones in supabase/functions/pms-mcp/index.ts
 // (extract_sheet_index). If you change the shape of a title block here, change
 // it there too — titleBlock.test.mjs checks the two stay identical.
-const TITLE_BLOCK_RE =
+// Title blocks vary by ARCHITECT, not by us. Each firm's Revit template lays
+// the fields out in its own order, so one regex only ever reads one practice's
+// drawings. This is a list, tried in order, and it will grow.
+//
+// A pattern must FAIL rather than half-match: a wrong sheet number is worse than
+// no sheet number, because the filename fallback is honest about knowing nothing.
+//
+// 1. SHEET NUMBER FIRST. Tabler Quad, Page/EYP template:
+//      E221 GROUND FLOOR PLAN - COMMONS 10/29/2024 SMA SM 1018037.01
+// 2. SHEET NUMBER LAST. CHCR Grove, think! architecture template:
+//      GENERAL NOTES, SYMBOLS & ABBREVIATIONS 02/01/21 Author Checker 21104 P - 001 P 01 10
+//    The sheet number carries spaces around its hyphen, the initials are the
+//    unfilled Revit placeholders "Author" and "Checker", and the trailing
+//    "P 01 10" is discipline, page and set total. That tail is what makes the
+//    match safe on a page otherwise dense with capitals.
+const TITLE_BLOCK_SHEET_FIRST =
   /\b([A-Z]{1,3}\d{2,4}[A-Z]?)\s+([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Z]{2,4})\s+([A-Z]{2,4})\s+(\d[\d.]*)\b/;
+const TITLE_BLOCK_SHEET_LAST =
+  /([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Za-z][\w.]{1,14})\s+([A-Za-z][\w.]{1,14})\s+(\d[\d.]*)\s+([A-Z]{1,3})\s*-\s*(\d{2,4}[A-Z]?)\s+[A-Z]{1,3}\s+(\d{1,3})\s+(\d{1,3})\b/;
+
+const TITLE_BLOCK_PATTERNS = [
+  {
+    layout: "sheet-number-first",
+    re: TITLE_BLOCK_SHEET_FIRST,
+    map: (m) => ({ sheetNo: m[1], title: m[2], sheetDate: m[3] }),
+  },
+  {
+    layout: "sheet-number-last",
+    re: TITLE_BLOCK_SHEET_LAST,
+    // Normalise "P - 001" to "P-001" so it matches how the sheet is written
+    // everywhere else, including the drawing list on the cover sheet.
+    map: (m) => ({ sheetNo: m[6] + "-" + m[7], title: m[1], sheetDate: m[2] }),
+  },
+];
 
 // The revision block's LAST row is the revision the sheet is currently at.
 // Parsing row by row is fragile because some rows carry no description at all
 // ("RFI-59 01/14/2026"), so anchor on the last DATE and read the tokens between
 // the previous date and it. An EMPTY block is a base issue, revision 0 — a fact
 // about the sheet, not a parse failure.
+const REVISION_HEADERS = ["Revisions Rev Description Date", "NO. REVISIONS DATE"];
+const REVISION_DATE_RE = /\d{1,2}\/\d{1,2}\/\d{4}|\d{4}\.\d{2}\.\d{2}/g;
+
 function tbRevision(pageText) {
-  const i = pageText.lastIndexOf("Revisions Rev Description Date");
+  // Take whichever known header appears LAST: some templates print a
+  // submissions table above the revisions table, and revisions is what governs.
+  let i = -1, header = "";
+  for (const h of REVISION_HEADERS) {
+    const at = pageText.lastIndexOf(h);
+    if (at > i) { i = at; header = h; }
+  }
   if (i < 0) return { revision: "0", date: null };
-  const tail = pageText.slice(i + "Revisions Rev Description Date".length);
-  const dates = [...tail.matchAll(/\d{1,2}\/\d{1,2}\/\d{4}/g)];
+  const tail = pageText.slice(i + header.length);
+  const dates = [...tail.matchAll(REVISION_DATE_RE)];
   if (!dates.length) return { revision: "0", date: null };
   const last = dates[dates.length - 1];
   const prevEnd = dates.length > 1 ? dates[dates.length - 2].index + dates[dates.length - 2][0].length : 0;
@@ -1531,9 +1572,16 @@ function tbRevision(pageText) {
 }
 
 function parseTitleBlock(pageText) {
-  const m = TITLE_BLOCK_RE.exec(pageText);
-  if (!m) return null;
-  const sheetNo = m[1];
+  for (const pat of TITLE_BLOCK_PATTERNS) {
+    const m = pat.re.exec(pageText);
+    if (!m) continue;
+    return tbRow(pat.map(m), pageText);
+  }
+  return null;
+}
+
+function tbRow(f, pageText) {
+  const sheetNo = f.sheetNo;
   const rev = tbRevision(pageText);
   return {
     sheetNo,
@@ -1541,8 +1589,8 @@ function parseTitleBlock(pageText) {
     // reliably. A 2019 fire-protection sheet records STTQ-01-P.rvt as its model,
     // so neither the filename nor the model name can be trusted.
     discipline: mapDiscipline((/^([A-Z]{1,3})/.exec(sheetNo) || [, ""])[1]),
-    title: m[2].replace(/\s+/g, " ").trim(),
-    sheetDate: m[3],
+    title: String(f.title).replace(/\s+/g, " ").trim(),
+    sheetDate: f.sheetDate,
     revision: rev.revision,
     revisionDate: rev.date,
   };

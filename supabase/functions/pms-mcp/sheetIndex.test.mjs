@@ -12,16 +12,32 @@
 // spacing is exactly what the regexes have to survive.
 
 // ── copies from index.ts ────────────────────────────────────────────────────
-const TITLE_BLOCK_RE =
+const TITLE_BLOCK_SHEET_FIRST =
   /\b([A-Z]{1,3}\d{2,4}[A-Z]?)\s+([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Z]{2,4})\s+([A-Z]{2,4})\s+(\d[\d.]*)\b/;
+const TITLE_BLOCK_SHEET_LAST =
+  /([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Za-z][\w.]{1,14})\s+([A-Za-z][\w.]{1,14})\s+(\d[\d.]*)\s+([A-Z]{1,3})\s*-\s*(\d{2,4}[A-Z]?)\s+[A-Z]{1,3}\s+(\d{1,3})\s+(\d{1,3})\b/;
+const TITLE_BLOCK_PATTERNS = [
+  { layout: "sheet-number-first", re: TITLE_BLOCK_SHEET_FIRST,
+    map: (m) => ({ sheetNo: m[1], sheetTitle: m[2], sheetDate: m[3], drawnBy: m[4], checkedBy: m[5], projectNo: m[6] }) },
+  { layout: "sheet-number-last", re: TITLE_BLOCK_SHEET_LAST,
+    map: (m) => ({ sheetNo: m[6] + "-" + m[7], sheetTitle: m[1], sheetDate: m[2], drawnBy: m[3], checkedBy: m[4], projectNo: m[5], pageOfSet: Number(m[8]), setTotal: Number(m[9]) }) },
+];
+const REVIT_PLACEHOLDER = /^(author|checker|designer|approver)$/i;
+const realName = (v) => (v && !REVIT_PLACEHOLDER.test(v) ? v : null);
+const REVISION_HEADERS = ["Revisions Rev Description Date", "NO. REVISIONS DATE"];
+const REVISION_DATE_RE = /\d{1,2}\/\d{1,2}\/\d{4}|\d{4}\.\d{2}\.\d{2}/g;
 const PHASE_RE =
   /\b(CONSTRUCTION DOCUMENTS|CONTRACT DOCUMENTS|DESIGN DEVELOPMENT|SCHEMATIC DESIGN|BID DOCUMENTS|BID SET|PERMIT SET|PROGRAMMING|VALIDATION)\s+\S+\s+(\d{1,3})\s+(\d{1,3})\b/;
 
 function parseRevisionBlock(pageText) {
-  const i = pageText.lastIndexOf("Revisions Rev Description Date");
+  let i = -1, header = "";
+  for (const h of REVISION_HEADERS) {
+    const at = pageText.lastIndexOf(h);
+    if (at > i) { i = at; header = h; }
+  }
   if (i < 0) return { revision: "0", description: "", date: null };
-  const tail = pageText.slice(i + "Revisions Rev Description Date".length);
-  const dates = [...tail.matchAll(/\d{1,2}\/\d{1,2}\/\d{4}/g)];
+  const tail = pageText.slice(i + header.length);
+  const dates = [...tail.matchAll(REVISION_DATE_RE)];
   if (!dates.length) return { revision: "0", description: "", date: null };
   const last = dates[dates.length - 1];
   const prevEnd = dates.length > 1 ? dates[dates.length - 2].index + dates[dates.length - 2][0].length : 0;
@@ -29,23 +45,28 @@ function parseRevisionBlock(pageText) {
   return { revision: between.length ? between[0] : "0", description: between.slice(1).join(" "), date: last[0] };
 }
 function parseTitleBlock(pageText) {
-  const m = TITLE_BLOCK_RE.exec(pageText);
-  if (!m) return null;
-  const sheetNo = m[1];
-  const ph = PHASE_RE.exec(pageText);
-  const rev = parseRevisionBlock(pageText);
-  return {
-    sheetNo,
-    discipline: (/^([A-Z]{1,3})/.exec(sheetNo) || [, ""])[1],
-    sheetTitle: m[2].replace(/\s+/g, " ").trim(),
-    sheetDate: m[3], drawnBy: m[4], checkedBy: m[5], projectNo: m[6],
-    phase: ph ? ph[1] : null,
-    pageOfSet: ph ? Number(ph[2]) : null,
-    setTotal: ph ? Number(ph[3]) : null,
-    revision: rev.revision,
-    revisionDescription: rev.description || null,
-    revisionDate: rev.date,
-  };
+  for (const pat of TITLE_BLOCK_PATTERNS) {
+    const m = pat.re.exec(pageText);
+    if (!m) continue;
+    const f = pat.map(m);
+    const ph = PHASE_RE.exec(pageText);
+    const rev = parseRevisionBlock(pageText);
+    return {
+      sheetNo: f.sheetNo,
+      discipline: (/^([A-Z]{1,3})/.exec(f.sheetNo) || [, ""])[1],
+      sheetTitle: String(f.sheetTitle).replace(/\s+/g, " ").trim(),
+      sheetDate: f.sheetDate,
+      drawnBy: realName(f.drawnBy), checkedBy: realName(f.checkedBy), projectNo: f.projectNo,
+      phase: ph ? ph[1] : null,
+      pageOfSet: ph ? Number(ph[2]) : (f.pageOfSet ?? null),
+      setTotal: ph ? Number(ph[3]) : (f.setTotal ?? null),
+      revision: rev.revision,
+      revisionDescription: rev.description || null,
+      revisionDate: rev.date,
+      titleBlockLayout: pat.layout,
+    };
+  }
+  return null;
 }
 const NON_SHEET_FOLDER = /\b(cad files?|revit models?|specs?|specifications?|native|dwg|working)\b/i;
 
@@ -129,6 +150,35 @@ eq(book[3].revision, "13", "E610 revision, different history, trailing 'A A A 13
 eq(book[3].revisionDescription, "BULLETIN 013", "E610 description not polluted by trailing junk");
 // Same file, same bulletin, but genuinely different sheet histories.
 check(book[0].pageOfSet !== book[3].pageOfSet, "sheets in one file occupy different positions in the set");
+
+// ── 3b. Second layout: sheet number LAST (CHCR Grove) ──────────────────────
+// Verbatim from 2024-01-16_Plumbing_CHCR Grove.pdf page 1. Before this pattern
+// the connector read 15 pages of this file and matched nothing, and the app
+// fell back to filenames that carry no sheet number at all.
+const CHCR = 'ORIGINAL DRAWING SIZE IS 24"x 36"; SCALE ENTITIES ACCORDINGLY IF REDUCED/ENLARGED SHEET NO. OF ' +
+  '16-01-2024 19:00:26 1/8" = 1\' - 0" C:\\Users\\j.vishal\\Documents\\226014.00_R19_Plumbing.rvt ' +
+  "GENERAL NOTES, SYMBOLS & ABBREVIATIONS 02/01/21 Author Checker 21104 P - 001 P 01 10 " +
+  "PLUMBING DRAWING LIST SHEET DRAWING TITLE 1 P-001 GENERAL NOTES, SYMBOLS & ABBREVIATIONS NO. REVISIONS DATE";
+const chcr = parseTitleBlock(CHCR);
+check(!!chcr, "a CHCR Grove sheet parses");
+eq(chcr.sheetNo, "P-001", 'the spaced "P - 001" normalises to P-001');
+eq(chcr.sheetTitle, "GENERAL NOTES, SYMBOLS & ABBREVIATIONS", "CHCR title");
+eq(chcr.discipline, "P", "discipline still from the sheet-number prefix");
+eq(chcr.titleBlockLayout, "sheet-number-last", "the layout that matched is reported");
+eq(chcr.pageOfSet, 1, "page comes from the title block when there is no phase line");
+eq(chcr.setTotal, 10, "...and so does the set total");
+eq(chcr.revision, "0", "an empty NO. REVISIONS DATE block is a base issue");
+// Revit's unfilled placeholders must not be reported as people.
+eq(chcr.drawnBy, null, '"Author" is a Revit placeholder, not a person');
+eq(chcr.checkedBy, null, '"Checker" likewise');
+eq(book[0].drawnBy, "SMA", "...but a real initial set is still reported");
+// The layouts must not poach each other's sheets.
+eq(parseTitleBlock(E221).titleBlockLayout, "sheet-number-first", "Tabler still uses layout 1");
+check(!TITLE_BLOCK_SHEET_LAST.test(E221), "layout 2 does not match a layout 1 block");
+check(!TITLE_BLOCK_SHEET_FIRST.test(CHCR), "layout 1 does not match a layout 2 block");
+// CHCR dates its revisions 2023.08.11, not 08/11/2023.
+eq(parseRevisionBlock("NO. REVISIONS DATE 1 ADDENDUM 1 2024.03.05").date, "2024.03.05",
+  "a dotted revision date is read");
 
 // ── 4. The 2019 era ────────────────────────────────────────────────────────
 const old = parseTitleBlock(FP601);
@@ -299,7 +349,9 @@ for (const p of ["PDFS/STTQ-01-FP_INDIVIDUAL PDF", "Outgoing/2026-04-17_Bulletin
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (n, l) => check(shipped.includes(n), `${l} has DRIFTED from this test's copy`);
-has('const i = pageText.lastIndexOf("Revisions Rev Description Date");', "revision-block anchor");
+has("const REVISION_HEADERS =", "revision-header list");
+has("if (at > i) { i = at; header = h; }", "the LAST-matching-header rule");
+has("const TITLE_BLOCK_PATTERNS", "the title-block pattern list");
 has('if (!dates.length) return { revision: "0", description: "", date: null };', "base-issue fallback");
 has('mcp.tool("extract_sheet_index"', "extract_sheet_index is registered");
 has("const key = tb.sheetNo + \"|\" + tb.revision;", "combined-vs-individual dedupe key");

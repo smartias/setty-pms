@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-01-sheet-index-offset-paging";
+const BUILD = "2026-08-02-titleblock-pattern-2";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1843,8 +1843,55 @@ mcp.tool("find_document", {
 //
 // so the anchor is the SHAPE — sheet number, ALL-CAPS title, date, two sets of
 // initials, project number — not any label text.
-const TITLE_BLOCK_RE =
+// Title blocks vary by ARCHITECT, not by us. Each firm's Revit template lays the
+// fields out in its own order, so one regex only ever reads one practice's
+// drawings. This is a list, tried in order, and it will grow.
+//
+// A pattern must FAIL rather than half-match: a wrong sheet number is worse than
+// no sheet number, because the filename fallback is honest about knowing nothing.
+// That is why each pattern anchors on a long, specific run of fields rather than
+// the sheet number alone.
+//
+// 1. SHEET NUMBER FIRST. Tabler Quad, Page/EYP template:
+//      E221 GROUND FLOOR PLAN - COMMONS 10/29/2024 SMA SM 1018037.01
+// 2. SHEET NUMBER LAST. CHCR Grove, think! architecture template:
+//      GENERAL NOTES, SYMBOLS & ABBREVIATIONS 02/01/21 Author Checker 21104 P - 001 P 01 10
+//    Note the sheet number carries spaces around its hyphen, the initials are
+//    the unfilled Revit placeholders "Author" and "Checker" rather than real
+//    ones, and the trailing "P 01 10" is discipline, page, and set total. That
+//    tail is what makes the match safe on a page otherwise dense with capitals.
+const TITLE_BLOCK_SHEET_FIRST =
   /\b([A-Z]{1,3}\d{2,4}[A-Z]?)\s+([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Z]{2,4})\s+([A-Z]{2,4})\s+(\d[\d.]*)\b/;
+const TITLE_BLOCK_SHEET_LAST =
+  /([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Za-z][\w.]{1,14})\s+([A-Za-z][\w.]{1,14})\s+(\d[\d.]*)\s+([A-Z]{1,3})\s*-\s*(\d{2,4}[A-Z]?)\s+[A-Z]{1,3}\s+(\d{1,3})\s+(\d{1,3})\b/;
+
+const TITLE_BLOCK_PATTERNS: Array<{ layout: string; re: RegExp; map: (m: RegExpExecArray) => any }> = [
+  {
+    layout: "sheet-number-first",
+    re: TITLE_BLOCK_SHEET_FIRST,
+    map: (m) => ({
+      sheetNo: m[1], sheetTitle: m[2], sheetDate: m[3],
+      drawnBy: m[4], checkedBy: m[5], projectNo: m[6],
+    }),
+  },
+  {
+    layout: "sheet-number-last",
+    re: TITLE_BLOCK_SHEET_LAST,
+    map: (m) => ({
+      // Normalise "P - 001" to "P-001" so it matches how the sheet is written
+      // everywhere else, including the drawing list on the cover sheet.
+      sheetNo: m[6] + "-" + m[7], sheetTitle: m[1], sheetDate: m[2],
+      drawnBy: m[3], checkedBy: m[4], projectNo: m[5],
+      pageOfSet: Number(m[8]), setTotal: Number(m[9]),
+    }),
+  },
+];
+
+// Revit leaves these in when nobody fills the fields. Reporting them as people
+// would put "Author" in a drawn-by column and make it look like real data.
+const REVIT_PLACEHOLDER = /^(author|checker|designer|approver)$/i;
+const realName = (v: string) => (v && !REVIT_PLACEHOLDER.test(v) ? v : null);
+
 const PHASE_RE =
   /\b(CONSTRUCTION DOCUMENTS|CONTRACT DOCUMENTS|DESIGN DEVELOPMENT|SCHEMATIC DESIGN|BID DOCUMENTS|BID SET|PERMIT SET|PROGRAMMING|VALIDATION)\s+\S+\s+(\d{1,3})\s+(\d{1,3})\b/;
 
@@ -1853,11 +1900,22 @@ const PHASE_RE =
 // some rows carry no description ("RFI-59 01/14/2026"), so instead anchor on the
 // LAST DATE in the block and read the tokens between the previous date and it.
 // An empty block is not a failure: it means base issue, revision 0.
+// Revision-block headers also vary by template, and so do the date formats
+// inside them: Tabler writes 04/17/2026, CHCR writes 2023.08.11.
+const REVISION_HEADERS = ["Revisions Rev Description Date", "NO. REVISIONS DATE"];
+const REVISION_DATE_RE = /\d{1,2}\/\d{1,2}\/\d{4}|\d{4}\.\d{2}\.\d{2}/g;
+
 function parseRevisionBlock(pageText: string): { revision: string; description: string; date: string | null } {
-  const i = pageText.lastIndexOf("Revisions Rev Description Date");
+  // Take whichever known header appears LAST: some templates print a submissions
+  // table above the revisions table, and the revisions one is what governs.
+  let i = -1, header = "";
+  for (const h of REVISION_HEADERS) {
+    const at = pageText.lastIndexOf(h);
+    if (at > i) { i = at; header = h; }
+  }
   if (i < 0) return { revision: "0", description: "", date: null };
-  const tail = pageText.slice(i + "Revisions Rev Description Date".length);
-  const dates = [...tail.matchAll(/\d{1,2}\/\d{1,2}\/\d{4}/g)];
+  const tail = pageText.slice(i + header.length);
+  const dates = [...tail.matchAll(REVISION_DATE_RE)];
   if (!dates.length) return { revision: "0", description: "", date: null };
   const last = dates[dates.length - 1];
   const prevEnd = dates.length > 1
@@ -1872,28 +1930,36 @@ function parseRevisionBlock(pageText: string): { revision: string; description: 
 }
 
 function parseTitleBlock(pageText: string): any | null {
-  const m = TITLE_BLOCK_RE.exec(pageText);
-  if (!m) return null;
-  const sheetNo = m[1];
-  const ph = PHASE_RE.exec(pageText);
-  const rev = parseRevisionBlock(pageText);
-  return {
-    sheetNo,
-    // Discipline comes from the sheet number's own prefix, which is the only
-    // place it is reliably stated. See the parseFilename fix in transmittal.html.
-    discipline: (/^([A-Z]{1,3})/.exec(sheetNo) || [, ""])[1],
-    sheetTitle: m[2].replace(/\s+/g, " ").trim(),
-    sheetDate: m[3],
-    drawnBy: m[4],
-    checkedBy: m[5],
-    projectNo: m[6],
-    phase: ph ? ph[1] : null,
-    pageOfSet: ph ? Number(ph[2]) : null,
-    setTotal: ph ? Number(ph[3]) : null,
-    revision: rev.revision,
-    revisionDescription: rev.description || null,
-    revisionDate: rev.date,
-  };
+  for (const pat of TITLE_BLOCK_PATTERNS) {
+    const m = pat.re.exec(pageText);
+    if (!m) continue;
+    const f = pat.map(m);
+    const ph = PHASE_RE.exec(pageText);
+    const rev = parseRevisionBlock(pageText);
+    return {
+      sheetNo: f.sheetNo,
+      // Discipline comes from the sheet number's own prefix, which is the only
+      // place it is reliably stated. See the parseFilename fix in transmittal.html.
+      discipline: (/^([A-Z]{1,3})/.exec(f.sheetNo) || [, ""])[1],
+      sheetTitle: String(f.sheetTitle).replace(/\s+/g, " ").trim(),
+      sheetDate: f.sheetDate,
+      drawnBy: realName(f.drawnBy),
+      checkedBy: realName(f.checkedBy),
+      projectNo: f.projectNo,
+      phase: ph ? ph[1] : null,
+      // Page and total come from the phase line on templates that print one, and
+      // from the title block itself on those that do not.
+      pageOfSet: ph ? Number(ph[2]) : (f.pageOfSet ?? null),
+      setTotal: ph ? Number(ph[3]) : (f.setTotal ?? null),
+      revision: rev.revision,
+      revisionDescription: rev.description || null,
+      revisionDate: rev.date,
+      // Which template matched. Worth returning: when a project's sheets stop
+      // parsing, the first question is whether the architect changed.
+      titleBlockLayout: pat.layout,
+    };
+  }
+  return null;
 }
 
 // Folders inside a set that are not the issued sheets.
