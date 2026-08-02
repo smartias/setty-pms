@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-02-drawing-list";
+const BUILD = "2026-08-02-drawing-list-tail";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1984,7 +1984,11 @@ const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
 const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?)(?=\s)/g;
 // The final row has no following row to bound it, so it runs on into whatever
 // page section comes next. Cut at the headings that actually follow these lists.
-const DRAWING_LIST_TAIL = /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS)\b/;
+// Includes the revision-table headings, because on SCA's sheets the revision
+// table follows the drawing list directly and the final title swallowed it:
+// "FIRE PROTECTION DETAILS No. Date Revision 1 11/21/2025 Issued for Bid".
+const DRAWING_LIST_TAIL =
+  /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS|No\.\s+Date\s+Revision|Revisions\s+Rev\s+Description|NO\.\s+REVISIONS\s+DATE)\b/;
 const DRAWING_LIST_MAX_TITLE = 80;
 
 function parseDrawingList(pageText: string): Array<{ sheetNo: string; sheetTitle: string }> {

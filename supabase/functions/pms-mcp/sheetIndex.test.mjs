@@ -92,7 +92,8 @@ function summarizeDisciplines(sheets) {
 
 const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
 const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?)(?=\s)/g;
-const DRAWING_LIST_TAIL = /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS)\b/;
+const DRAWING_LIST_TAIL =
+  /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS|No\.\s+Date\s+Revision|Revisions\s+Rev\s+Description|NO\.\s+REVISIONS\s+DATE)\b/;
 const DRAWING_LIST_MAX_TITLE = 80;
 function parseDrawingList(pageText) {
   const at = pageText.search(DRAWING_LIST_ANCHOR);
@@ -234,6 +235,15 @@ eq(dlS[3].sheetTitle, "FIRE ALARM SYSTEM TYPICAL DETAILS", "SCA last title is cu
 // drawing list does.
 check(parseTitleBlock(DL_SCA) === null, "no title-block pattern matches the SCA page");
 check(dlS.length > 0, "...yet its drawing list still yields sheets");
+
+// Caught live on SCA: the revision table follows the drawing list directly, so
+// the final title swallowed it whole. Real output was
+// "FIRE PROTECTION DETAILS No. Date Revision 1 11/21/2025 Issued for Bid".
+const DL_SCA_REV = "FIRE PROTECTION DRAWING LIST SHEET DRAWING TITLE 1 F501.00 FIRE PROTECTION SCHEDULES " +
+  "2 F601.00 FIRE PROTECTION DETAILS No. Date Revision 1 11/21/2025 Issued for Bid";
+const dlR = parseDrawingList(DL_SCA_REV);
+eq(dlR.length, 2, "the revision table is not mistaken for more list rows");
+eq(dlR[1].sheetTitle, "FIRE PROTECTION DETAILS", "the last title stops at the revision heading");
 
 // Not a list: don't invent one from stray numbers.
 eq(parseDrawingList("SOME PLAN 1 P-001 THING").length, 0, "text without the anchor yields nothing");
