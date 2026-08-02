@@ -3,7 +3,7 @@
 The read-only MCP server that exposes PMS data to the firm's enterprise Claude accounts. Runs as a Supabase Edge Function (Deno) using the Streamable-HTTP MCP transport.
 
 - Endpoint: `https://khxmgjilwhdguuepbhne.supabase.co/functions/v1/pms-mcp/mcp`
-- Health: `/functions/v1/pms-mcp/health` (unauthenticated, returns `{"ok":true}`)
+- Health: `/functions/v1/pms-mcp/health` (unauthenticated, returns `{"ok":true,"build":"…"}`)
 - Full runbook: the **Claude / MCP** tab of `SettyAdmin.html`
 
 ## This directory is now the source of truth
@@ -48,9 +48,9 @@ Two things it is easy to get wrong, both learned the hard way:
   a single page. Reading only the first page treats a truncated slice as the whole folder
   and then picks the "newest" meetings out of it, which is worse than finding nothing
   because it looks like it worked. `meetingRecords()` follows `@odata.nextLink` up to
-  `MAX_FOLDER_PAGES` and reports `truncated: true` when it stops early. Note that
-  `list_project_documents` still takes only the first page; that predates this and is
-  worth fixing separately.
+  `MAX_FOLDER_PAGES` and reports `truncated: true` when it stops early.
+  `list_project_documents` now does the same, through the shared `listChildren()` helper,
+  and sets `truncated` + `coverageWarning` on the response when it stops.
 
 That heuristic is the fragile part, so it has tests, built from real filenames across six
 projects:
@@ -118,9 +118,60 @@ circulate minutes by email, not because the heuristic is broken. It is a trend l
 If it does drift badly, the escape hatch is to stop guessing from filenames altogether and
 have the model pick from the folder listing. That costs a round trip and buys robustness.
 
-Known and deliberately not fixed: `list_project_documents` still reads only the first page
-of a folder listing, and 44 of 148 projects have no project number, so the document half of
-a briefing cannot resolve a SharePoint folder for them at all.
+Known and deliberately not fixed: 44 of 148 projects have no project number, so the
+document half of a briefing cannot resolve a SharePoint folder for them at all.
+
+## `extract_sheet_index`, and why it does not use the project tree
+
+Found on 2026-08-01 during the Tabler (SAPX196006.00) sheet-index pilot, and worth
+knowing before touching any of the SharePoint crawl code.
+
+`projectTree()` is a breadth-first walk of every library, capped at
+`TREE_MAX_REQUESTS = 150` **for the whole project**. On a large job the budget runs out
+before the walk reaches deep set subfolders, and those files are then simply absent from
+`tree.files`. Anything filtering that array by path concludes "no files found under X",
+which reads like a bad path when the path is perfectly good. On Tabler that hid all 68
+sheet PDFs under `Outgoing/2024-10-24_Revised 100% CD Submission/INDIVIDUAL PDF's/`, plus
+the Addendum #1, Addendum #2 and Revised Bulletin #1 drawing folders — while
+`list_project_documents` showed every one of them, because it lists on demand.
+
+The tell that it is a budget problem and not a depth rule: under Addendum #1 the sibling
+`Specifications` folder **was** visible and `Drawing` was not. It is order dependent, so
+no depth limit or path convention will predict it.
+
+So `extract_sheet_index` resolves the named `subfolder` through the Graph **path API**
+(`/items/{root}:/{rel}:`) and crawls only beneath it — one request to resolve, then the
+whole budget spent inside the folder the caller actually asked about. The whole-project
+walk stays as a fallback for a path that is close but not exact, and when THAT is what
+answered, the response says so in `scope.mode`. When neither finds anything, the response
+distinguishes "no such folder" from "the crawl ran out of budget, this scan is
+incomplete". Never let a truncated crawl report as an empty folder.
+
+Two smaller things fixed in the same pass, both of which silently reported the wrong
+answer rather than failing:
+
+- **Set totals are PER DISCIPLINE.** Tabler's title blocks say "of 68" on E, "of 54" on M
+  and "of 22" on T. `isPartialIssue` originally tested for exactly one distinct total
+  across the whole result, so any multi-discipline package produced 2+ totals and reported
+  `false` — Bulletin #13's 8 sheets across E and M were called a complete set.
+  `summarizeDisciplines()` groups first, and an issue is partial when **any** discipline is
+  short of its own stated total. A discipline with no stated total reports `null`, not
+  `false`: unknown is not "complete".
+- **Combined books blew the size cap.** Baseline sets often ship one combined PDF per
+  discipline; Tabler's electrical book is 42MB against `MAX_DOC_BYTES` of 20MB, so it was
+  dropped as a single quiet `unparsed` row. On a set that ships combined-only that loses a
+  whole discipline. Sheet extraction walks pages and never returns the file body, so it now
+  has its own `SHEET_MAX_BYTES` (64MB) with a per-call `SHEET_OVERSIZE_BUDGET`, oversized
+  files are opened **last** so a book that fails cannot cost the individual sheets, and any
+  file skipped for size appears in a top-level `oversizedFiles` with an `oversizedWarning`
+  naming what is missing.
+
+All three are covered in `sheetIndex.test.mjs`, including drift checks that fail if the
+direct-resolve call or the per-discipline test is removed from `index.ts`:
+
+```bash
+node supabase/functions/pms-mcp/sheetIndex.test.mjs
+```
 
 ## Deploying
 
@@ -138,7 +189,7 @@ Run it from the repo root. `--no-verify-jwt` is required: the function does its 
 
 ## After every deploy
 
-1. **Health check.** `curl .../pms-mcp/health` should return `{"ok":true}`. A 200 there proves it compiled and booted, which catches most mistakes immediately.
+1. **Health check.** `curl .../pms-mcp/health` returns `{"ok":true,"build":"<BUILD>"}`. A 200 proves it compiled and booted, which catches most mistakes immediately — and `build` proves *your* copy is the one running, so bump the `BUILD` constant with every deploy and check it here rather than assuming.
 2. **Confirm the auth gate.** An unauthenticated `POST` to `/mcp` should return `401`.
 3. **Verify the deploy is byte-exact** against this directory, using `get_edge_function` and comparing hashes. This is what keeps the promise above true.
 4. **Reconnect any Claude client** if tools or their descriptions changed. Clients cache the tool list at connect time, so existing sessions will not see changes until they disconnect and reconnect.
