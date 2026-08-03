@@ -105,7 +105,7 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v8 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v9 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
@@ -122,7 +122,17 @@
 // drawings and briefing groups added since v31), the deploy procedure
 // corrected now that the source is committed to the repo rather than
 // pulled back off the live function, and the Phase 5 Security section
-// updated to say which capabilities are actually DB-enforced today).
+// updated to say which capabilities are actually DB-enforced today;
+// v9 (2 Aug 2026) fixes the step that this integration keeps stalling on:
+// adding the connector is Organization settings -> Connectors and is
+// restricted to a Claude OWNER or Primary Owner, not an Admin, and the
+// section is simply absent for other roles rather than disabled — which
+// reads as a missing feature. The steps now say who does which half,
+// add a two-click way for anyone to prove the server side is healthy
+// before the blame lands on it, note that a 404 on
+// /.well-known/oauth-authorization-server is expected and that no API key
+// is involved, and flag Anthropic's Enterprise-Managed Auth beta as the
+// eventual replacement for per-user connecting).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -1115,7 +1125,10 @@ function renderMcp() {
       <div class="sechead">Current status — 2 Aug 2026</div>
       <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
         <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Deploy 45, live — build <code>2026-08-02-issue-date</code>, 23 tools.</b> The health link above echoes that build string, so "is my change live?" is answerable without diffing source. Since v31 the connector gained the document-finding, drawing-register and project-briefing tools (full list below). The 25 Jul OAuth discovery fix — advertised resource now matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures — remains in place.</td></tr>
-        <tr><td>Org-wide connector on claude.ai</td><td><b>Pending IT.</b> Adding it makes it available across the org — that is expected and by design (see the note below).</td></tr>
+        <tr><td>Org-wide connector on claude.ai</td><td><b>Pending a Claude Owner — not IT.</b> This step lives in claude.ai, not Entra, and
+            <b>only an Owner or Primary Owner can do it</b> (Organization settings → Connectors → Add). A Microsoft admin cannot, however
+            senior. If the person you are asking does not see a Connectors section, they are not an Owner and no amount of Entra work will
+            change that. Adding it makes the connector available across the org, which is expected and by design (see the note below).</td></tr>
         <tr><td>Entra app registration <code>${ENTRA_APP}</code></td><td>Exists and is admin-consented for the SharePoint document reading. Still to confirm: the <code>MCP.Access</code> delegated scope is consented, and Claude's callback URI is registered.</td></tr>
         <tr><td>Local Python bridge (per-device)</td><td><b>Deprecated — being retired.</b> Pilot-era install; see the warning under the admin steps below. Note the server still accepts the pilot shared secret, so any surviving install keeps working until <code>MCP_SHARED_SECRET</code> is rotated — rotation is what actually decommissions it.</td></tr>
       </tbody></table>
@@ -1176,13 +1189,36 @@ function renderMcp() {
 
     <div class="card doc">
       <div class="sechead">Connecting it to enterprise Claude (the admin steps)</div>
+      <p style="font-size:12.5px;border-left:3px solid var(--blue,#2563eb);padding-left:10px;margin-top:0">
+        <b>Read this first — it is where this stalls.</b> Steps 1 and 2 happen in <b>claude.ai</b> and can only be done by an
+        <b>Owner or Primary Owner</b> of the Claude organisation. Steps 3 and 4 happen in <b>Entra</b> and need a Microsoft admin.
+        They are usually different people, and neither can do the other's part.
+        <b>An Admin who is not an Owner will not see the Connectors section at all</b> — the button is absent rather than greyed out,
+        which reads as "it's broken" when it is really "wrong role". Check the role before debugging anything else.</p>
       <ol>
-        <li><b>Add the connector once, org-wide:</b> claude.ai → <b>Admin settings → Connectors → Add custom connector</b>. Name: <code>Setty PMS</code>. URL: the connector URL above (it must end in <code>/mcp</code> — no trailing slash, nothing after it).</li>
+        <li><b>Add the connector once, org-wide <span style="color:var(--muted)">(Claude Owner / Primary Owner only)</span>:</b>
+            claude.ai → <b>Organization settings → Connectors → Add</b>. Name: <code>Setty PMS</code>.
+            URL: the connector URL above (it must end in <code>/mcp</code> — no trailing slash, nothing after it).
+            Owners are the only role that can add a custom connector on Team and Enterprise plans; there is no way to delegate
+            this with a custom role, because connector permissions only cover connectors an Owner has <i>already</i> added.</li>
         <li><b>Give Claude the OAuth client:</b> Entra ID does <b>not</b> support automatic (dynamic) client registration, so open the connector's <b>Advanced settings</b> and enter OAuth Client ID <code>${ENTRA_APP}</code> plus the app's client secret (it lives in the Entra app registration — Sara/IT hold it; it's already proven valid by the working SharePoint document tools).</li>
         <li><b>Authorize Claude's callback in Entra:</b> app registration <code>${ENTRA_APP}</code> → Authentication. For <b>claude.ai in the browser</b>: redirect URI <code>https://claude.ai/api/mcp/auth_callback</code> under the <b>Web</b> platform. For <b>Claude Desktop / Claude Code</b>: they use a localhost loopback instead — add <code>http://localhost</code> and <code>http://127.0.0.1</code> under "Mobile and desktop applications" and set "Allow public client flows" to Yes. If sign-in fails with <b>AADSTS50011</b> (redirect mismatch), copy the exact URI out of that error into the registration.</li>
         <li><b>Consent (the usual blocker here):</b> this tenant disables user self-consent for <i>everything</i>, so users hit <b>AADSTS65001</b> until an admin consents. The <code>MCP.Access</code> delegated permission must appear under the app's <b>API permissions</b> list (not just "Expose an API") — then IT clicks <b>Grant admin consent for Setty</b> there. One click, tenant-wide, permanent.</li>
         <li><b>Users enable it:</b> each person turns the connector on under Settings → Connectors in claude.ai; the first use walks them through the Microsoft sign-in. After that they can just ask — "what's open on SAPX256001?" — and Claude uses the PMS tools.</li>
       </ol>
+      <p style="font-size:12.5px;border-left:3px solid var(--ok,#15803d);padding-left:10px">
+        <b>Before debating whose fault it is:</b> anyone can prove the server half is healthy in two clicks, signed in to nothing.
+        <b>Live health check</b> returns <code>{"ok":true}</code> with a build string, and <b>OAuth discovery metadata</b> must show
+        <code>resource</code> = <code>api://${ENTRA_APP}</code> and a scope of <code>api://${ENTRA_APP}/MCP.Access</code>.
+        If both look right, nothing is outstanding on our side and the remaining work is entirely in claude.ai and Entra.
+        <b>A 404 on <code>/.well-known/oauth-authorization-server</code> is expected</b> — Claude reads Microsoft's metadata from the
+        authorization-server URL named in the discovery document, not from us. Do not chase it.
+        Likewise a <b>custom connector needs no API key</b>: it is OAuth with a client ID and secret, and dynamic client
+        registration is not required.</p>
+      <p style="font-size:12.5px;color:var(--muted)"><b>Worth knowing for later:</b> Anthropic has an
+        <b>Enterprise-Managed Auth</b> beta that provisions connectors org-wide through the identity provider, so staff get them on
+        first login and nobody connects individually. It is waitlist-only today, so it is not the route out of the current setup,
+        but it is the shape this eventually takes.</p>
       <p style="font-size:12.5px;border-left:3px solid var(--warn,#b45309);padding-left:10px"><b>⚠ Local Python bridge — deprecated, do not deploy to new devices.</b>
         Before the org-level connector was available, a small Python stdio bridge (<code>dev/setty-pms-mcpb/local-server/server.py</code>,
         plus the <code>setty-pms.mcpb</code> bundle) was installed per-device and wired into <code>claude_desktop_config.json</code>,
@@ -1210,8 +1246,12 @@ function renderMcp() {
         <tr><td>Claude Desktop shows the connector "offline" intermittently</td><td>That's the local bridge, not the server (the server logs show calls completing in 1–2.5s). Preferred fix: retire the bridge and use the OAuth connector. If a bridge must stay up temporarily and its config uses <code>npx -y mcp-remote</code>, pin a known-good version (e.g. <code>mcp-remote@0.1.37</code>) so it stops re-downloading "latest" on every launch.</td></tr>
         <tr><td>A newly added tool doesn't show up</td><td>MCP clients cache the tool list at connect time — disconnect/reconnect the connector (or restart Desktop) after any server update.</td></tr>
         <tr><td>Everything worked, then stopped for everyone</td><td>Check whether the shared secret was rotated or the function was redeployed mid-conversation; re-try, then check Supabase function logs.</td></tr>
+        <tr><td><b>"I'm an admin and there's no Connectors section"</b></td><td>Only an <b>Owner or Primary Owner</b> can add a custom connector. The section is absent for other roles, not greyed out, so it reads as a missing feature. Confirm the role in claude.ai before anything else — this is the single most common stall on this integration.</td></tr>
       </tbody></table>
-      <p style="font-size:12px;color:var(--muted);margin-top:8px">Owners: Sara Arias &amp; Danny Kang. Server code lives in the PMS-MCP folder (OneDrive) — but always pull the live function before editing; the deployed version is ahead of disk.</p>
+      <p style="font-size:12px;color:var(--muted);margin-top:8px">Owners: Sara Arias &amp; Danny Kang.
+        <b>Server code lives in the repo</b> at <code>supabase/functions/pms-mcp/</code> — edit there and deploy from disk.
+        (The old "pull the live function first, disk is stale" rule was retired for <code>pms-mcp</code> when the source was committed;
+        it still applies to <code>pms-user-emails</code> and <code>weekly-digest</code>.)</p>
     </div>
 
     <div class="card doc">
