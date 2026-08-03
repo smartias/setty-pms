@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-02-transmittal-v15-issue-date";
+    window.__appVersion = "2026-08-02-transmittal-v16-supersede-on-rereg";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -646,6 +646,51 @@ let pmsMilestoneId = "";
 // shared pms_filing_log table. PMS reads this on load to render the chip in
 // its "generated" state. Fire-and-forget — a logging failure must never
 // affect the user's perception that their generation worked.
+// Re-registering a set must REPLACE its record, not add a second one. The
+// backfill path had no upsert at all, so re-reading a folder to correct it left
+// the old filename-derived row sitting alongside the new one and the register
+// then held two conflicting answers for a single issue.
+//
+// Identity is the FOLDER, not the set name. One set is legitimately several
+// rows, because each discipline is transmitted from its own subfolder
+// (Addendum #1 is T-014 through T-017). Keying on the set name would wipe the
+// sibling disciplines every time one of them was re-read.
+//
+// Old rows are MARKED, never deleted. This register is the only record of what
+// went out and when, so a correction should leave a trail rather than erase
+// one — and a mistaken supersede stays recoverable.
+async function supersedePriorRegisterRows(projId, folderUrlDecoded, newTransmittalNo) {
+  if (!projId || !folderUrlDecoded) return { superseded: 0, ids: [] };
+  const headers = {
+    "apikey": SUPABASE_ANON,
+    "Authorization": "Bearer " + settyAuth.token(),
+    "Content-Type": "application/json",
+  };
+  const url = SUPABASE_URL + "/rest/v1/pms_filing_log?select=id,files" +
+    "&project_id=eq." + encodeURIComponent(projId) +
+    "&operation=eq.transmittal-generated" +
+    "&sp_folder_url=eq." + encodeURIComponent(folderUrlDecoded);
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error("lookup " + res.status);
+  // Filtered here rather than in the query: a jsonb null-vs-absent filter is
+  // easy to get subtly wrong in PostgREST, and this list is only ever a handful
+  // of rows for one folder.
+  const prior = (await res.json()).filter(r => r && r.files && r.files.superseded !== true);
+  const ids = [];
+  for (const r of prior) {
+    const files = Object.assign({}, r.files);
+    files.superseded = true;
+    files.supersededAt = new Date().toISOString();
+    if (newTransmittalNo) files.supersededBy = newTransmittalNo;
+    const patch = await fetch(
+      SUPABASE_URL + "/rest/v1/pms_filing_log?id=eq." + encodeURIComponent(r.id),
+      { method: "PATCH", headers: Object.assign({ "Prefer": "return=minimal" }, headers),
+        body: JSON.stringify({ files }) });
+    if (patch.ok) ids.push(r.id);
+  }
+  return { superseded: ids.length, ids };
+}
+
 async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) {
   // Direct launches (no ?projectId in the URL) used to skip logging entirely,
   // which silently punched holes in the transmittal record. Fall back to
@@ -687,6 +732,13 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
           revision:   sh.revision   || "",
           discipline: sh.discipline || "",
           filename:   sh.filename,
+          // Dropping these was why NO register row on any project carried a
+          // revisionDate, even after its title blocks had been read: the reader
+          // did the work and the write threw it away.
+          date:         sh.date         || null,
+          sheetDate:    sh.sheetDate    || null,
+          revisionDate: sh.revisionDate || null,
+          source:       sh.source       || null,
         })),
       ...extra,
     },
@@ -718,6 +770,17 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
       row.files.issuedAtFrom = "set folder name";
     }
   }
+  // Replace, do not duplicate. A failure here is warned about and the write
+  // still goes ahead: losing the record of a transmittal entirely is worse than
+  // leaving a stale row behind, and the stale row is visible in the register.
+  try {
+    const sup = await supersedePriorRegisterRows(projId, folderUrlDecoded, row.files.transmittalNumber);
+    if (sup.superseded) row.files.replaces = sup.ids;
+  } catch (e) {
+    console.warn("[transmittal] could not supersede prior register rows:", e.message);
+    row.files.supersedeFailed = true;
+  }
+
   try {
     await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log", {
       method: "POST",
@@ -1698,6 +1761,13 @@ async function readTitleBlocks() {
           // title block's own date is the BASE issue date and never moves.
           date: isoFromUsDate(tb.revisionDate) || isoFromUsDate(tb.sheetDate) ||
                 (f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 10) : new Date().toISOString().slice(0, 10)),
+          // Keep both dates SEPARATELY as well. `date` above is a best-effort
+          // single value with two fallbacks, so it cannot answer "did this
+          // sheet actually change?" — only a real revisionDate can, and that is
+          // what supersession between sets is decided on.
+          sheetDate: isoFromUsDate(tb.sheetDate) || null,
+          revisionDate: isoFromUsDate(tb.revisionDate) || null,
+          source: "title-block",
           filename: f.name,
         });
       }
@@ -1859,6 +1929,11 @@ function parseFilename(filename, modifiedDate) {
     revision: revision || "0",
     date,
     filename,
+    // Provenance travels with the row into the register. A filename-derived
+    // sheet number is a GUESS; a title-block one is read off the drawing. The
+    // register could not tell them apart, so bad rows were indistinguishable
+    // from good ones and nobody could tell which sets needed re-reading.
+    source: "filename",
   };
 }
 

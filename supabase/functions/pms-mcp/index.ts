@@ -1056,6 +1056,11 @@ async function transmittalRows(pid: string): Promise<any[]> {
     // is a FILING timestamp and is not always the issue date.
   );
   return (Array.isArray(rows) ? rows : [])
+    // A corrected set leaves its old record behind, marked rather than deleted,
+    // so the register keeps a trail of what was filed and when. Those rows must
+    // not reach the reader: a superseded filename-derived row sitting beside its
+    // re-read replacement would put two conflicting answers in the same set.
+    .filter((r: any) => r?.files?.superseded !== true)
     .sort((a, b) => registerIssueDate(b).localeCompare(registerIssueDate(a)));
 }
 

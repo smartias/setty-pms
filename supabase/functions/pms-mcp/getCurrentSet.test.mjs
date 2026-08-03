@@ -195,6 +195,31 @@ check(registerIssueDate(bare) === "2026-05-18", "with no better source, created_
 check(registerIssueDateSource(bare) === "filing timestamp (may not be the issue date)",
   "...and the answer admits what it is based on");
 
+// ── 6b. Superseded rows never reach the reader ─────────────────────────────
+// A corrected set leaves its old record behind, MARKED rather than deleted, so
+// the register keeps a trail. If those rows still came back, a re-read set
+// would sit beside the filename-derived row it was meant to replace and the
+// same issue would hold two conflicting sheet lists.
+const registerFilter = (rows) => rows.filter((r) => r?.files?.superseded !== true);
+
+const stale = { created_at: "2026-04-17 12:00:00+00",
+  files: { transmittalNumber: "T-001", milestoneName: "2026-04-17_Bulletin #13", issuedAt: "2026-04-17",
+    superseded: true, supersededAt: "2026-08-02T19:00:00.000Z", supersededBy: "T-030",
+    sheets: [{ sheetNo: "STTQ-01", filename: "STTQ-01-E_Bulletin #13.pdf", discipline: "STTQ" }] } };
+const fresh = { created_at: "2026-04-17 12:00:00+00",
+  files: { transmittalNumber: "T-030", milestoneName: "2026-04-17_Bulletin #13", issuedAt: "2026-04-17",
+    replaces: ["abc"], sheets: [{ sheetNo: "E221", source: "title-block", revisionDate: "2026-04-17" }] } };
+
+const kept = registerFilter([stale, fresh]);
+check(kept.length === 1, `the superseded row is dropped (kept ${kept.length})`);
+check(kept[0].files.transmittalNumber === "T-030", "the replacement is what survives");
+check(registerFilter([fresh]).length === 1, "an unmarked row is untouched");
+// `superseded` absent must mean live. Every row written before this existed has
+// no such key, and treating those as superseded would empty the register.
+check(registerFilter([{ files: {} }]).length === 1, "a row with no superseded key counts as live");
+check(registerFilter([{ files: { superseded: false } }]).length === 1, "superseded:false is live");
+check(registerFilter([]).length === 0, "an empty register stays empty");
+
 // ── 7. Drift check against the shipped source ──────────────────────────────
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -210,10 +235,14 @@ check(
   shipped.includes("operation=eq.transmittal-generated"),
   "the register query still filters on operation = transmittal-generated",
 );
+check(
+  shipped.includes(".filter((r: any) => r?.files?.superseded !== true)"),
+  "transmittalRows still drops superseded rows",
+);
 
 const total = ran;
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
   : `\nall ${total} assertions pass (real register fixtures: 3 transmittals + 1 pre-register send, ` +
-    `6 folder names, 4 drift checks)`);
+    `6 folder names, 5 drift checks)`);
 process.exit(failures ? 1 : 0);
