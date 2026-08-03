@@ -1056,6 +1056,11 @@ async function transmittalRows(pid: string): Promise<any[]> {
     // is a FILING timestamp and is not always the issue date.
   );
   return (Array.isArray(rows) ? rows : [])
+    // A corrected set leaves its old record behind, marked rather than deleted,
+    // so the register keeps a trail of what was filed and when. Those rows must
+    // not reach the reader: a superseded filename-derived row sitting beside its
+    // re-read replacement would put two conflicting answers in the same set.
+    .filter((r: any) => r?.files?.superseded !== true)
     .sort((a, b) => registerIssueDate(b).localeCompare(registerIssueDate(a)));
 }
 
@@ -1120,6 +1125,145 @@ function sheetDisciplines(sheet: any): string[] {
 const sheetHasDiscipline = (sheet: any, disc: string) => sheetDisciplines(sheet).includes(disc);
 const hasDiscipline = (row: any, disc: string) => sheetsOf(row).some((s: any) => sheetHasDiscipline(s, disc));
 
+// ── Composing the CURRENT FULL SET from the register ─────────────────────────
+// Reading title blocks at request time cannot answer "what is the whole set
+// now". A 68-sheet discipline book is minutes of PDF parsing, and the answer is
+// never in one folder anyway: it is a baseline plus every partial issued since.
+// The register already stores each set's sheets, written when the set was
+// issued, so the current set is a FOLD over those rows rather than a re-read of
+// the drawings.
+//
+// transmittalRows() returns rows newest-first, so the FIRST sighting of a sheet
+// number is its current issuance and every later sighting is superseded. That
+// ordering is the entire mechanism. Do NOT re-sort these rows by revision LABEL:
+// the scheme changes mid-project (letters A/B/C for early addenda, then 2, 3, 6,
+// 13), so a label sort returns the superseded sheet.
+
+// A real sheet number is a discipline prefix and a number: "E221", "M-507",
+// "FP301A". The register also holds filename-parsed backfill rows that recorded
+// a building SERIES instead ("STTQ-01"), which names no single sheet: both the
+// E and the M sheet of a bulletin land on that one key. Folding those in would
+// collapse two disciplines onto one row and overstate coverage, so they are
+// counted out separately where the caller can see them.
+const SHEET_NO_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)$/;
+
+function canonicalSheet(sheet: any): { sheetNo: string; discipline: string } | null {
+  const raw = String(sheet?.sheetNo || "").toUpperCase().replace(/\s+/g, "");
+  const m = SHEET_NO_RE.exec(raw);
+  if (!m) return null;
+  // The prefix is the only reliable statement of discipline. The register's own
+  // `discipline` field is free text that has held "Electrical", "STTQ" and
+  // "General" on the same project, depending on which era wrote the row.
+  return { sheetNo: m[1] + m[2], discipline: m[1] };
+}
+
+// Conventional AEC set order, not alphabetical: a PM scanning a set expects
+// mechanical before electrical. Anything unrecognised sorts last, alphabetically.
+// Codes are kept in step with DISCIPLINE_WORDS below, which is the vocabulary
+// the search tools already use. Two disagreeing lists of discipline codes in one
+// file is a bug waiting to happen.
+const DISCIPLINE_ORDER = ["G", "M", "MS", "P", "FP", "FA", "E", "ES", "T", "TS", "EN"];
+const DISCIPLINE_NAME: Record<string, string> = {
+  G: "General", M: "Mechanical", MS: "Mechanical Site", P: "Plumbing",
+  FP: "Fire Protection", FA: "Fire Alarm", E: "Electrical", ES: "Electrical Site",
+  T: "Technology", TS: "Technology Security", EN: "Energy",
+};
+const disciplineRank = (d: string) => {
+  const i = DISCIPLINE_ORDER.indexOf(d);
+  return i === -1 ? DISCIPLINE_ORDER.length : i;
+};
+// Sheets sort NUMERICALLY within a discipline. A plain string sort puts E1000
+// before E221, which reads as a renumbered set to anyone scanning the list.
+const sheetRank = (no: string) => {
+  const m = SHEET_NO_RE.exec(no);
+  return m ? Number(String(m[2]).replace(/[A-Z]$/, "")) : 0;
+};
+
+function composeCurrentSet(rows: any[]) {
+  const current = new Map<string, any>();
+  const unusable: any[] = [];
+  const sourceSets = new Map<string, any>();
+  let supersededCount = 0;
+
+  for (const row of rows) {
+    const issueDate = registerIssueDate(row);
+    const setName = row?.files?.milestoneName || null;
+    const transmittalNumber = row?.files?.transmittalNumber || null;
+    for (const s of sheetsOf(row)) {
+      const c = canonicalSheet(s);
+      if (!c) {
+        unusable.push({
+          recordedAs: s?.sheetNo ?? null,
+          filename: s?.filename ?? null,
+          fromSet: setName,
+          transmittalNumber,
+        });
+        continue;
+      }
+      if (current.has(c.sheetNo)) { supersededCount++; continue; }
+      current.set(c.sheetNo, {
+        sheetNo: c.sheetNo,
+        discipline: c.discipline,
+        title: String(s?.title || "").replace(/\s+/g, " ").trim() || null,
+        revision: s?.revision ?? null,
+        revisionDate: s?.revisionDate ?? null,
+        issuedIn: setName,
+        transmittalNumber,
+        issueDate,
+        // A backfilled row is a set reconstructed after the fact, not a live
+        // send. It is still authoritative, but the difference matters to anyone
+        // auditing where a sheet's current revision came from.
+        backfilled: row?.files?.backfilled === true,
+        folderUrl: row?.sp_folder_url || null,
+      });
+      const key = `${issueDate}|${setName ?? ""}`;
+      let ss = sourceSets.get(key);
+      if (!ss) {
+        ss = { setName, issueDate, transmittalNumbers: new Set<string>(), currentSheets: 0 };
+        sourceSets.set(key, ss);
+      }
+      ss.currentSheets++;
+      if (transmittalNumber) ss.transmittalNumbers.add(transmittalNumber);
+    }
+  }
+
+  const all = [...current.values()].sort((a, b) =>
+    disciplineRank(a.discipline) - disciplineRank(b.discipline) ||
+    a.discipline.localeCompare(b.discipline) ||
+    sheetRank(a.sheetNo) - sheetRank(b.sheetNo) ||
+    a.sheetNo.localeCompare(b.sheetNo));
+
+  const disciplines: any[] = [];
+  for (const s of all) {
+    let d = disciplines[disciplines.length - 1];
+    if (!d || d.discipline !== s.discipline) {
+      d = {
+        discipline: s.discipline,
+        name: DISCIPLINE_NAME[s.discipline] || s.discipline,
+        sheetCount: 0,
+        sheets: [],
+      };
+      disciplines.push(d);
+    }
+    d.sheetCount++;
+    // The grouping already states the discipline, so it is left off each sheet:
+    // repeating it 190 times is pure response weight.
+    const sheet = { ...s };
+    delete sheet.discipline;
+    d.sheets.push(sheet);
+  }
+
+  return {
+    disciplines,
+    sheetCount: all.length,
+    supersededCount,
+    sourceSets: [...sourceSets.values()]
+      .sort((a, b) => String(b.issueDate).localeCompare(String(a.issueDate)))
+      .map((s) => ({ ...s, transmittalNumbers: [...s.transmittalNumbers].sort() })),
+    unusable,
+  };
+}
+
 mcp.tool("get_current_set", {
   description:
     "Authoritative answer to \"what is the current issued set?\" for a project — the drawing/spec set " +
@@ -1165,14 +1309,39 @@ mcp.tool("get_current_set", {
     if (candidates.length) {
       const latest = candidates[0];
       const f = latest.files || {};
-      const all = sheetsOf(latest);
+      // ONE SET IS SEVERAL REGISTER ROWS. The transmittal tool writes a row per
+      // discipline, so Addendum #1 is four rows (T-014..T-017) that share a set
+      // name and issue date. Reading only candidates[0] reported a single
+      // discipline's slice as "the current set" and silently dropped the rest.
+      const setKey = (r: any) => `${registerIssueDate(r)}|${r?.files?.milestoneName ?? ""}`;
+      const key = setKey(latest);
+      const setRows = candidates.filter((r) => setKey(r) === key);
+      const seenSheet = new Set<string>();
+      const all = setRows.flatMap((r) => sheetsOf(r)).filter((s: any) => {
+        // The same sheet can appear in two rows of one set when a discipline was
+        // transmitted twice. Collapse on sheet number so the count is honest.
+        const k = String(s?.sheetNo || "").toUpperCase().replace(/\s+/g, "") + "|" + String(s?.filename || "");
+        if (seenSheet.has(k)) return false;
+        seenSheet.add(k);
+        return true;
+      });
       const sheets = disc ? all.filter((s: any) => sheetHasDiscipline(s, disc)) : all;
-      const priorSets = candidates.slice(1, 6).map((r: any) => ({
-        setName: r.files?.milestoneName || null,
-        transmittalNumber: r.files?.transmittalNumber || null,
-        issueDate: registerIssueDate(r),
-        superseded: true,
-      }));
+      // Prior sets are listed once each, not once per discipline row, or the
+      // list is five rows of the same addendum.
+      const priorSeen = new Set<string>();
+      const priorSets: any[] = [];
+      for (const r of candidates) {
+        const k = setKey(r);
+        if (k === key || priorSeen.has(k)) continue;
+        priorSeen.add(k);
+        if (priorSets.length >= 5) break;
+        priorSets.push({
+          setName: r.files?.milestoneName || null,
+          transmittalNumber: r.files?.transmittalNumber || null,
+          issueDate: registerIssueDate(r),
+          superseded: true,
+        });
+      }
       return asText({
         project,
         inferred: false,
@@ -1180,6 +1349,10 @@ mcp.tool("get_current_set", {
         current: {
           setName: f.milestoneName || null,
           transmittalNumber: f.transmittalNumber || null,
+          // Every transmittal that makes up this one set. A set issued per
+          // discipline carries several, and naming only the first understates
+          // what was sent.
+          transmittalNumbers: [...new Set(setRows.map((r: any) => r.files?.transmittalNumber).filter(Boolean))].sort(),
           issueDate: registerIssueDate(latest),
           issueDateFrom: registerIssueDateSource(latest),
           filedAt: latest.created_at,
@@ -1193,6 +1366,10 @@ mcp.tool("get_current_set", {
           sheets,
         },
         ...(disc ? { disciplineFilter: discipline } : {}),
+        // The commonest misreading of this tool: a bulletin covering 8 sheets is
+        // the current SET, but it is not the current sheet list for the job.
+        fullSetHint: "This is the most recently ISSUED SET, not the whole job. For every sheet on the project " +
+          "at its most recent issuance, grouped by discipline, call extract_sheet_index with no subfolder.",
         ...(sheets.length ? {} : {
           sheetRegisterNote:
             "This transmittal has no sheet register. Sets issued before the register was added to the " +
@@ -2103,12 +2280,19 @@ function summarizeDisciplines(sheets: any[]) {
 
 mcp.tool("extract_sheet_index", {
   description:
-    "Read the TITLE BLOCK of every drawing sheet in an issued set folder and return one structured row " +
-    "per sheet: sheet number, title, discipline, current revision (from the sheet's own revision block), " +
-    "phase, and page N of M. Handles BOOKED packages — a single addendum or bulletin PDF holding many " +
-    "sheets is split page by page, one row per sheet. Use this to reconstruct what a set actually " +
-    "contained, and to build a current full set by combining a baseline submission with every partial " +
-    "issued after it. TO BUILD THAT COMPOSITE, GROUP BY sheetNo AND KEEP THE LATEST revisionDate — " +
+    "The project's drawing sheet index. CALLED WITH NO subfolder — the normal way — it returns the " +
+    "CURRENT FULL SET: every sheet on the job at its most recent issuance, grouped by discipline in set " +
+    "order (M, P, FP, E, T) and by sheet number within each. That answer is composed from the transmittal " +
+    "register, the sheet list recorded when each set was issued, so it parses no drawings and returns in " +
+    "one query. Ask it for 'the sheet index', 'the current drawing list', or 'what sheets are on this job' " +
+    "and pass nothing but the project. " +
+    "PASS subfolder ONLY to read ONE specific set straight from the drawings — a historical issue, or a " +
+    "set never logged as a transmittal. That path reads the TITLE BLOCK of every sheet in the folder and " +
+    "returns one row per sheet: sheet number, title, discipline, revision (from the sheet's own revision " +
+    "block), phase, and page N of M. It handles BOOKED packages, splitting a single addendum or bulletin " +
+    "PDF page by page. It is also SLOW and budget-bound: a single 22-page discipline book can exceed one " +
+    "request, so prefer the default unless you specifically need one set. " +
+    "IF YOU DO COMPOSE SETS BY HAND from repeated subfolder calls, GROUP BY sheetNo AND KEEP THE LATEST revisionDate — " +
     "NOT sheetDate, which is the BASE ISSUE date and never moves (it reads the same on every sheet of " +
     "a project, so grouping on it ties on every row), and NOT the revision label, which is unsortable " +
     "because the scheme changes mid-project (letters A/B/C for early addenda, then numbers 2, 3, 6, 9, " +
@@ -2127,7 +2311,7 @@ mcp.tool("extract_sheet_index", {
     "returns rows for review and writes nothing to the transmittal register.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number, id, or name"),
-    subfolder: z.string().describe("The set folder under Outgoing, e.g. 'Outgoing/2026-04-17_Bulletin #13'"),
+    subfolder: z.string().optional().describe("ONE set folder under Outgoing to read from the drawings, e.g. 'Outgoing/2026-04-17_Bulletin #13'. OMIT THIS to get the current full set composed from the register, which is what you almost always want — pass it only to read a specific historical issue, or to read a set that was never logged as a transmittal."),
     offset: z.number().optional().describe("Skip this many PDFs before extracting. Use it to page through a folder too large for one call: start at 0, then pass the nextOffset from the previous result until it comes back null. File order is stable across calls."),
     maxFiles: z.number().optional().describe("Max PDFs to open (default 25)"),
     maxPages: z.number().optional().describe("Max pages to parse across all files (default 120)"),
@@ -2139,6 +2323,65 @@ mcp.tool("extract_sheet_index", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
+
+    // ── DEFAULT: the current full set, composed from the register ────────────
+    // No subfolder means "the whole set as it stands", which is the question
+    // people actually ask. Answering it by parsing drawings is not merely slow,
+    // it TIMES OUT: one 22-page discipline book exceeds the request budget, and
+    // the full Tabler set is 192 sheets across five books. Folding the register
+    // is one query and needs no PDF reading at all.
+    if (!subfolder) {
+      let rows: any[] = [];
+      try {
+        rows = await transmittalRows(pid);
+      } catch (e) {
+        return asText({
+          project,
+          error: `Could not read the transmittal register: ${String((e as any)?.message ?? e)}`,
+          nextStep: "This is a lookup failure, not an empty result — do not conclude the project has no issued set.",
+        });
+      }
+      if (!rows.length) {
+        return asText({
+          project, count: 0, disciplines: [],
+          reason: "No set has been logged as a transmittal for this project, so there is no register to compose a current set from.",
+          nextStep: "Read one set straight from the drawings instead: list_project_documents with subfolder:'Outgoing' to find the set folders, then call again passing that folder as subfolder.",
+        });
+      }
+      const composed = composeCurrentSet(rows);
+      const withoutRevision = composed.disciplines
+        .flatMap((d: any) => d.sheets)
+        .filter((s: any) => s.revision === null || s.revision === undefined).length;
+      return asText({
+        project,
+        basis: "Composed from the transmittal register (pms_filing_log) — the sheet lists recorded when each set was issued. No drawings were parsed.",
+        mode: "current-full-set",
+        sheetCount: composed.sheetCount,
+        disciplineCount: composed.disciplines.length,
+        // Ordered set order (M, P, FP, E, T), each discipline's sheets in sheet
+        // number order, one row per sheet at its most recent issuance.
+        disciplines: composed.disciplines,
+        supersededCount: composed.supersededCount,
+        // Which sets the current sheets actually came from. A healthy job shows a
+        // baseline carrying most sheets plus a short tail of recent partials.
+        sourceSets: composed.sourceSets,
+        ...(composed.unusable.length
+          ? {
+            unusableRows: composed.unusable,
+            unusableWarning:
+              `${composed.unusable.length} register row(s) recorded a building SERIES rather than a sheet number ` +
+              `(e.g. "STTQ-01"), so the sheets they cover are NOT in this list. These are filename-parsed backfill ` +
+              `rows. Re-run the set through the transmittal tool's "Read sheet data from drawings" step to replace them.`,
+          }
+          : {}),
+        ...(withoutRevision
+          ? { revisionNote: `${withoutRevision} sheet(s) carry no revision in the register, which means unknown rather than revision 0.` }
+          : {}),
+        note: "Each sheet is shown at its MOST RECENT issuance: the register was folded newest-first, so a sheet " +
+          "reissued in a later bulletin appears only once, at that bulletin. To see what a single set contained " +
+          "instead, pass that set folder as subfolder.",
+      });
+    }
 
     const numPrefix = String(project).toLowerCase().trim();
     const want = String(subfolder || "").replace(/^\/+|\/+$/g, "").toLowerCase();
