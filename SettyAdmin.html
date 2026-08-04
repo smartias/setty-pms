@@ -253,9 +253,31 @@ async function grantSpAccess(email, interactiveOk) {
   }
   return { granted, failed };
 }
-async function sendWelcomeForRow(email, role, display_name) {
-  toast("Sending welcome email to " + email + "…");
+// Inline button feedback. The #status toast sits at the top of the page and is
+// easy to miss when the roster is scrolled down (reported 2026-08-04), and the
+// button gave no sign it had done anything. So async row actions now show their
+// state ON the button: ⏳ while running, ✓ on success, ✗ on failure (full error
+// in the button's tooltip). These handlers don't re-render the table, so the
+// button survives long enough to show the result. toast() stays as the detailed
+// secondary channel for anyone who scrolls up.
+async function withBtn(btn, workingLabel, okLabel, fn) {
+  const orig = btn ? { html: btn.innerHTML, title: btn.title } : null;
+  const clearStyle = () => { btn.style.opacity = ""; btn.style.background = ""; btn.style.color = ""; btn.style.borderColor = ""; };
+  if (btn) { btn.disabled = true; btn.style.opacity = "0.7"; btn.textContent = "⏳ " + workingLabel; }
+  const restore = (ms) => setTimeout(() => { if (!btn) return; clearStyle(); btn.innerHTML = orig.html; btn.title = orig.title; btn.disabled = false; }, ms);
   try {
+    const r = await fn();
+    if (btn) { clearStyle(); btn.textContent = "✓ " + okLabel; btn.style.background = "var(--greenDim)"; btn.style.color = "var(--green)"; btn.style.borderColor = "var(--green)"; restore(2600); }
+    return r;
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    if (btn) { clearStyle(); btn.textContent = "✗ failed"; btn.style.background = "var(--redDim)"; btn.style.color = "var(--red)"; btn.style.borderColor = "var(--red)"; btn.title = msg; restore(6000); }
+    toast(msg, "error");
+    return null;
+  }
+}
+async function sendWelcomeForRow(btn, email, role, display_name) {
+  await withBtn(btn, "sending…", "sent", async () => {
     const res = await fetch(SUPABASE_URL + "/functions/v1/pms-user-emails/welcome", {
       method: "POST",
       headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON,
@@ -263,17 +285,22 @@ async function sendWelcomeForRow(email, role, display_name) {
       body: JSON.stringify({ email, role, display_name: display_name || null, added_by: settyAuth.email() }),
     });
     const j = await res.json().catch(() => ({}));
-    if (res.ok) toast("📬 Welcome email sent to " + email, "success");
-    else toast("Welcome email failed: " + (j.error || res.status), "error");
-  } catch (e) { toast("Welcome email failed: " + e.message, "error"); }
+    if (!res.ok) throw new Error(j.error || ("HTTP " + res.status));
+    toast("📬 Welcome email handed to Resend for " + email, "success");
+    return j;
+  });
 }
-async function grantSpForRow(email) {
-  toast("Granting SharePoint access for " + email + "…");
-  try {
+async function grantSpForRow(btn, email) {
+  await withBtn(btn, "granting…", "granted", async () => {
     const r = await grantSpAccess(email, true);
-    if (r.failed.length === 0) toast("📁 " + email + " granted: " + r.granted.join(", "), "success");
-    else toast("📁 Granted " + r.granted.length + "/" + SP_DRIVES.length + " — failed: " + r.failed.map(f => f.lib + " (" + f.error + ")").join("; "), "error");
-  } catch (e) { toast("SharePoint grant failed: " + e.message, "error"); }
+    if (r.failed.length) {
+      const msg = "Granted " + r.granted.length + "/" + SP_DRIVES.length + " — failed: " + r.failed.map(f => f.lib + " (" + f.error + ")").join("; ");
+      toast("📁 " + msg, "error");
+      throw new Error(msg);
+    }
+    toast("📁 " + email + " granted: " + r.granted.join(", "), "success");
+    return r;
+  });
 }
 const FEED_URL = SUPABASE_URL + "/functions/v1/pms-billing-feed/v1/pms/billable-milestones";
 
@@ -440,8 +467,8 @@ async function renderRoles() {
               <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
             <td style="white-space:nowrap">
-              <button class="btn" title="Send (or re-send) the welcome email — useful after a failed send or for re-onboarding" onclick="sendWelcomeForRow('${esc(x.email)}', '${esc(x.role)}', '${esc(x.display_name || "")}')">✉ Welcome</button>
-              <button class="btn" title="Grant access to the NYCProjects SharePoint libraries (Projects, Proposals, Contracts) via a Graph sharing invitation" onclick="grantSpForRow('${esc(x.email)}')">📁 SP access</button>
+              <button class="btn" title="Send (or re-send) the welcome email — useful after a failed send or for re-onboarding" onclick="sendWelcomeForRow(this, '${esc(x.email)}', '${esc(x.role)}', '${esc(x.display_name || "")}')">✉ Welcome</button>
+              <button class="btn" title="Grant access to the NYCProjects SharePoint libraries (Projects, Proposals, Contracts) via a Graph sharing invitation" onclick="grantSpForRow(this, '${esc(x.email)}')">📁 SP access</button>
               <button class="btn btn-danger" onclick="dropRole('${esc(x.email)}')">Remove</button></td></tr>`).join("") ||
         '<tr><td colspan="5" class="empty">No users yet.</td></tr>'}</tbody></table>
     </div>
@@ -1017,6 +1044,16 @@ function renderGuide() {
         <div class="appcard"><h4>💵 SETTYfy billing feed</h4>
           <p>Read-only JSON feed of billable milestones and projections for the intranet team, bearer-token protected — managed from the Integration tab.</p>
           <div class="src">Edge Function pms-billing-feed</div></div>
+        <div class="appcard"><h4>📬 Email notifications</h4>
+          <p>Outbound mail for the suite: the "you've been added" welcome and the opt-in
+             Monday "week ahead" digest, both via Resend. Sends from the firm's own
+             verified subdomain — <code>digest@pms.setty.com</code> (DKIM/SPF/MX published
+             at Resend, DMARC-aligned under setty.com by subdomain inheritance) — to
+             internal @setty.com recipients only. The digest is triggered Monday mornings
+             by pg_cron (x-pms-cron header); staff opt in under My Projects → ⚙ My Settings.
+             Sender address is the <code>DIGEST_FROM_EMAIL</code> secret; unsubscribe is its
+             own Edge Function.</p>
+          <div class="src">Edge Functions pms-user-emails · unsubscribe</div></div>
         <div class="appcard"><h4>🤖 Claude / MCP server</h4>
           <p>Read-only connector that lets the team's enterprise Claude accounts search and read PMS data — 23 tools. Full runbook on the Claude/MCP tab.</p>
           <div class="src">Edge Function pms-mcp</div></div>
@@ -1050,7 +1087,7 @@ function renderGuide() {
             <td>Public repos by design — the anon key and IDs in them are publishable; security is the sign-in layer + RLS, not secrecy.</td></tr>
         <tr><td><b>Supabase — project <code>khxmgjilwhdguuepbhne</code></b><br><span style="color:var(--muted);font-size:12px">⚠ personal org, Pro plan ($25/mo)</span></td>
             <td>ALL shared data (projects, emails, knowledge tables), authentication, the Edge Functions (MCP, billing feed, unsubscribe…), scheduled jobs (nightly email mirror, MCP keep-warm), and the function secrets.</td>
-            <td>Dashboard → Edge Functions → Secrets holds <code>MCP_SHARED_SECRET</code> and the <code>GRAPH_*</code> credentials. Database backups: Supabase daily + our own mirror (Backups tab).</td></tr>
+            <td>Dashboard → Edge Functions → Secrets holds <code>MCP_SHARED_SECRET</code>, the <code>GRAPH_*</code> credentials, and the email-sender secrets <code>RESEND_API_KEY</code> + <code>DIGEST_FROM_EMAIL</code>. Database backups: Supabase daily + our own mirror (Backups tab).</td></tr>
         <tr><td><b>Microsoft Entra — Setty tenant</b><br><span style="color:var(--muted);font-size:12px">✓ firm-owned</span></td>
             <td><b>Three</b> app registrations, renamed 28 Jul 2026 so they can be told apart:
               <table style="margin:6px 0"><thead><tr><th>Name</th><th>App (client) ID</th><th>Used by</th><th>Delegated scopes</th></tr></thead><tbody>
@@ -1076,7 +1113,7 @@ function renderGuide() {
       <ul>
         <li><b>PMS + satellite apps + this console:</b> edit in the git clone, push a branch, merge to <code>main</code> on <code>smartias/setty-pms</code> (or "Add files via upload" for a quick fix) — GitHub Pages publishes automatically, no build step, no CI. <b>Merge, never overwrite,</b> main.</li>
         <li><b>Outlook/Word add-in:</b> push to <code>main</code> on <code>smartias/setty-pms-addin</code>, then bump the <code>taskpane.js?v=</code> cache token in taskpane.html or Outlook keeps serving the old JS.</li>
-        <li><b>Edge Functions (MCP, billing feed…):</b> deployed with the Supabase CLI or from the dashboard. <b>Which copy is authoritative now depends on the function.</b> <code>pms-mcp</code> is committed to the repo at <code>supabase/functions/pms-mcp/</code> — edit there and deploy from disk. The others (<code>pms-user-emails</code>, <code>weekly-digest</code>) have <i>not</i> been reconciled, so for those the old rule still holds: pull the deployed source (dashboard → the function → source, or <code>get_edge_function</code>) before editing, because on-disk copies drift stale. Health-check after every deploy.</li>
+        <li><b>Edge Functions (MCP, billing feed…):</b> deployed with the Supabase CLI or from the dashboard. <b>Which copy is authoritative now depends on the function.</b> <code>pms-mcp</code> and <code>pms-user-emails</code> are committed to the repo under <code>supabase/functions/</code> — edit there and deploy from disk. <b style="color:var(--amber)">⚠ pms-user-emails must be deployed with <code>--no-verify-jwt</code></b> — it runs with JWT verification off so the browser CORS preflight works, and a plain deploy silently re-enables it and breaks the Admin Console welcome call and the digest cron. The remaining functions (<code>unsubscribe</code>, <code>pms-billing-feed</code>, <code>rfi-submittal-autosync</code>, <code>pms-backfill</code>, <code>graph-status</code>, <code>pdf-render-test</code>) have <i>not</i> been reconciled, so for those the old rule still holds: pull the deployed source (dashboard → the function → source, or <code>get_edge_function</code>) before editing, because on-disk copies drift stale. Health-check after every deploy.</li>
         <li><b>Database changes:</b> SQL migrations via the Supabase dashboard SQL editor; RLS policies and scheduled jobs live there too.</li>
       </ul>
 
