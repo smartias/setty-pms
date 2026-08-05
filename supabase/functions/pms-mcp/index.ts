@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-02-current-full-set";
+const BUILD = "2026-08-05-supersession-status";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1264,6 +1264,175 @@ function composeCurrentSet(rows: any[]) {
   };
 }
 
+// ── P0.2: per-FILE supersession status ───────────────────────────────────────
+// composeCurrentSet answers "what is the whole set now". This answers the
+// narrower question find_document needs: for THIS file, is it the current
+// issuance or has a later set replaced it?
+//
+// The fold is the same one composeCurrentSet uses and for the same reason:
+// rows arrive newest-issue-first, so the first sighting of a sheet number is
+// current and every later sighting is superseded. What differs is the lookup
+// key. A caller here holds a FILENAME, not a sheet number, and the two are not
+// reliably related: FP601.pdf carries the Revit model name STTQ-01-P inside,
+// and a booked addendum holds many sheets in one PDF. So two routes are tried,
+// strongest first, and anything that does not resolve cleanly stays "unknown".
+// Guessing here would manufacture the exact wrong-revision risk P0.2 exists to
+// remove, so every branch below fails toward "unknown" rather than a verdict.
+type SheetStatus = {
+  status: "current" | "superseded";
+  sheetNo: string;
+  discipline: string;
+  revision: string | null;
+  issuedIn: string | null;
+  transmittalNumber: string | null;
+  issueDate: string;
+  backfilled: boolean;
+};
+
+type Registration = {
+  sheetNo: string;
+  setName: string | null;
+  issueDate: string;
+  transmittalNumber: string | null;
+  revision: string | null;
+};
+
+function buildSupersessionIndex(rows: any[]) {
+  // sheetNo -> the sheet's CURRENT issuance (first sighting wins: rows arrive
+  // newest-issue-first).
+  const bySheet = new Map<string, SheetStatus>();
+  // filename (lowercased) -> EVERY set that filename was registered in.
+  //
+  // Every registration is kept, not just the newest, because the same filename
+  // is issued repeatedly and a physical copy exists in each set folder:
+  // "E211 - GROUND FLOOR PLAN - EAST WING - ELECTRICAL POWER.pdf" sits in
+  // Addendum #1, Addendum #2 AND Bulletin #1 on Tabler. Collapsing those to the
+  // newest would label the Addendum #1 copy "current", which is precisely the
+  // wrong-revision claim this feature exists to prevent.
+  const byFilename = new Map<string, Registration[]>();
+  let registeredFiles = 0;
+
+  for (const row of rows) {
+    const issueDate = registerIssueDate(row);
+    const setName = row?.files?.milestoneName || null;
+    const transmittalNumber = row?.files?.transmittalNumber || null;
+    for (const s of sheetsOf(row)) {
+      const fn = String(s?.filename || "").trim().toLowerCase();
+      const c = canonicalSheet(s);
+      if (c && !bySheet.has(c.sheetNo)) {
+        bySheet.set(c.sheetNo, {
+          status: "current",
+          sheetNo: c.sheetNo,
+          discipline: c.discipline,
+          revision: s?.revision ?? null,
+          issuedIn: setName,
+          transmittalNumber,
+          issueDate,
+          backfilled: row?.files?.backfilled === true,
+        });
+      }
+      if (fn) {
+        registeredFiles++;
+        let list = byFilename.get(fn);
+        if (!list) { list = []; byFilename.set(fn, list); }
+        // A registration with no canonical sheet number is still recorded, so
+        // "registered but unkeyable" stays distinguishable from "never seen".
+        list.push({
+          sheetNo: c ? c.sheetNo : "",
+          setName, issueDate, transmittalNumber,
+          revision: s?.revision ?? null,
+        });
+      }
+    }
+  }
+  return { bySheet, byFilename, registeredFiles, sets: rows.length };
+}
+
+// Resolve ONE PHYSICAL FILE against the index.
+//
+// folderPath is what makes this answer about the file rather than the sheet.
+// The same filename lives in several set folders; which copy you are holding is
+// decided by the folder it sits in, so the set name is matched against the path
+// before anything is claimed. Returns null when nothing can be said.
+function fileSupersessionStatus(
+  fileName: string,
+  folderPath: string,
+  idx: ReturnType<typeof buildSupersessionIndex>,
+):
+  | (SheetStatus & { basis: string; supersededBy?: SheetStatus })
+  | { status: "ambiguous"; basis: string; sheetNumbers: string[] }
+  | null {
+  const nameLower = String(fileName || "").trim().toLowerCase();
+  if (!nameLower) return null;
+  const pathLower = String(folderPath || "").toLowerCase();
+
+  const regs = idx.byFilename.get(nameLower);
+  let sheetNo = "";
+  let mine: Registration | null = null;
+
+  if (regs && regs.length) {
+    const keys = new Set(regs.map((r) => r.sheetNo).filter(Boolean));
+    if (keys.size > 1) {
+      // One filename, two different sheet numbers: the STTQ-01 series collision.
+      return {
+        status: "ambiguous",
+        basis: "this filename is registered against more than one sheet number, so no single revision status applies",
+        sheetNumbers: [...keys].sort(),
+      };
+    }
+    if (keys.size === 0) return null; // registered, but never with a usable sheet number
+    sheetNo = [...keys][0];
+    // Which copy is this? The set folder name appears in the path
+    // ("Outgoing/2025-01-21_Addendum #1/Drawings"), so match on it.
+    mine = regs.find((r) => r.setName && pathLower.includes(String(r.setName).toLowerCase())) ?? null;
+    if (!mine) {
+      if (regs.length === 1) {
+        mine = regs[0]; // issued once, so there is only one copy it can be
+      } else {
+        // Registered in several sets and the path names none of them. Which
+        // issuance this file is cannot be established, and picking the newest
+        // would be a guess in the one direction that causes harm.
+        return null;
+      }
+    }
+  } else {
+    // Route 2 — the filename itself parses to a sheet number. Only accepted
+    // when the stem IS the sheet number, so "P111.pdf" resolves and
+    // "2026-05-19 BOYLAN HALL.pdf" does not. Guards the FP601/STTQ-01-P trap.
+    const stem = nameLower.replace(/\.[a-z0-9]+$/i, "").toUpperCase().replace(/\s+/g, "");
+    const c = canonicalSheet({ sheetNo: stem });
+    if (!c || !idx.bySheet.has(c.sheetNo)) return null;
+    sheetNo = c.sheetNo;
+  }
+
+  const currentRec = idx.bySheet.get(sheetNo);
+  if (!currentRec) return null;
+
+  // No registration of its own (route 2): all that can be said is what the
+  // sheet's current issuance is, and only if this file could BE that issuance.
+  if (!mine) {
+    return { ...currentRec, basis: "matched by sheet number parsed from the filename" };
+  }
+
+  const isCurrent = mine.issueDate === currentRec.issueDate &&
+    (mine.setName ?? null) === (currentRec.issuedIn ?? null);
+  if (isCurrent) {
+    return { ...currentRec, basis: "matched by filename in the transmittal register" };
+  }
+  return {
+    status: "superseded",
+    sheetNo,
+    discipline: currentRec.discipline,
+    revision: mine.revision,
+    issuedIn: mine.setName,
+    transmittalNumber: mine.transmittalNumber,
+    issueDate: mine.issueDate,
+    backfilled: currentRec.backfilled,
+    basis: "this copy is from an earlier set; a later set reissued the same sheet",
+    supersededBy: currentRec,
+  };
+}
+
 mcp.tool("get_current_set", {
   description:
     "Authoritative answer to \"what is the current issued set?\" for a project — the drawing/spec set " +
@@ -1967,9 +2136,12 @@ mcp.tool("find_document", {
     "folder path, and a clickable webUrl. THIS IS THE FASTEST WAY to get to a specific document when you " +
     "know roughly what it is but not where it lives; use list_project_documents instead when you want to " +
     "browse a known folder, and read_document to open a result (pass the itemId returned here). " +
-    "Ranking favours filename matches, the Outgoing folder (sets we issued), and recency. Results are " +
-    "NOT filtered by supersession, so treat a hit as 'this document exists here', not 'this is current' " +
-    "— call get_current_set for the authoritative issued set.",
+    "Ranking favours filename matches, the Outgoing folder (sets we issued), and recency. Each result " +
+    "carries a supersession status derived from the transmittal register: 'current' (no later set has " +
+    "reissued that sheet), 'superseded' (one has, with the set that replaced it), 'ambiguous' (the " +
+    "filename maps to more than one sheet) or 'unknown' (the register has never seen this file, so " +
+    "the hit means 'this document exists here' and nothing more). Results are NOT filtered by status; " +
+    "call get_current_set for the authoritative full issued set.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number, id, or name"),
     query: z.string().describe("Plain-language description of the document, e.g. 'fire protection narrative'"),
@@ -2024,6 +2196,71 @@ mcp.tool("find_document", {
       });
     }
 
+    // Supersession (P0.2). A register read failure must not take the search
+    // down: the results are still useful, they just cannot carry a status.
+    let idx: ReturnType<typeof buildSupersessionIndex> | null = null;
+    let registerError: string | null = null;
+    try {
+      idx = buildSupersessionIndex(await transmittalRows(pid));
+    } catch (e) {
+      registerError = String((e as any)?.message ?? e);
+    }
+
+    const counts = { current: 0, superseded: 0, ambiguous: 0, unknown: 0 };
+    const results = scored.slice(0, lim).map((r) => {
+      const verdict = idx ? fileSupersessionStatus(r.f.name, r.f.folderPath, idx) : null;
+      const base = {
+        name: r.f.name,
+        library: r.f.library,
+        folderPath: r.f.folderPath,
+        area: folderArea(r.f.folderPath),
+        webUrl: r.f.webUrl,
+        itemId: r.f.itemId,
+        modified: r.f.modified,
+        score: Math.round(r.s * 10) / 10,
+      };
+      if (!verdict) { counts.unknown++; return { ...base, status: "unknown" }; }
+      if (verdict.status === "ambiguous") {
+        counts.ambiguous++;
+        return { ...base, status: "ambiguous", statusBasis: verdict.basis, sheetNumbers: verdict.sheetNumbers };
+      }
+      counts[verdict.status]++;
+      return {
+        ...base,
+        status: verdict.status,
+        sheetNo: verdict.sheetNo,
+        revision: verdict.revision,
+        issuedIn: verdict.issuedIn,
+        transmittalNumber: verdict.transmittalNumber,
+        issueDate: verdict.issueDate,
+        statusBasis: verdict.basis,
+        ...(verdict.supersededBy ? {
+          supersededBy: {
+            issuedIn: verdict.supersededBy.issuedIn,
+            transmittalNumber: verdict.supersededBy.transmittalNumber,
+            issueDate: verdict.supersededBy.issueDate,
+            revision: verdict.supersededBy.revision,
+          },
+        } : {}),
+        ...(verdict.backfilled ? { backfilled: true } : {}),
+      };
+    });
+
+    // The note is written for the mix actually returned, because a blanket
+    // caveat trains the reader to ignore it. When nothing resolved, say why.
+    const statusNote = registerError
+      ? `status is 'unknown' for every result: the transmittal register could not be read (${registerError}).`
+      : !idx || idx.sets === 0
+      ? "status is 'unknown' for every result: this project has no transmittal records, so there is nothing " +
+        "to establish which revision is current. Treat every hit as 'this document exists here'."
+      : counts.current + counts.superseded + counts.ambiguous === 0
+      ? "status is 'unknown' for every result: none of these filenames appear in this project's " +
+        `${idx.sets} transmittal record(s). A hit means 'this document exists here', not 'this is current'.`
+      : "status is derived from the transmittal register: 'current' means no later set has reissued that " +
+        "sheet, 'superseded' means one has, 'ambiguous' means the filename maps to more than one sheet, and " +
+        "'unknown' means the register has never seen the file. Only current/superseded are claims; " +
+        "call get_current_set for the authoritative full set.";
+
     return asText({
       project, query,
       interpreted: {
@@ -2034,19 +2271,9 @@ mcp.tool("find_document", {
       searched: { files: tree.files.length, libraries: tree.libraries },
       count: scored.length,
       returned: Math.min(scored.length, lim),
-      results: scored.slice(0, lim).map((r) => ({
-        name: r.f.name,
-        library: r.f.library,
-        folderPath: r.f.folderPath,
-        area: folderArea(r.f.folderPath),
-        status: "unknown",
-        webUrl: r.f.webUrl,
-        itemId: r.f.itemId,
-        modified: r.f.modified,
-        score: Math.round(r.s * 10) / 10,
-      })),
-      statusNote: "status is 'unknown' for every result: supersession is not wired in yet (roadmap P0.2). " +
-        "Do not describe a result as the current revision on the strength of this tool.",
+      results,
+      statusCounts: counts,
+      statusNote,
       ...(tree.truncated ? { coverageWarning: `The folder walk hit its cap after ${tree.files.length} files, so results may be incomplete.` } : {}),
     });
   },
@@ -2277,6 +2504,174 @@ function summarizeDisciplines(sheets: any[]) {
     isPartialIssue: rated.length ? partialDisciplines.length > 0 : null,
   };
 }
+
+// ── P1.6 (prepare-only): stage a transmittal without issuing it ──────────────
+// The register is what makes get_current_set authoritative, so it is worth
+// keeping clean. This tool does everything a person would otherwise do by hand
+// before issuing — pick the next number, work out what the set replaces, and
+// spot the filenames that will corrupt the register — and then STOPS.
+//
+// It deliberately does not write. The connector runs on the service-role key
+// and Entra sign-in is a boolean gate rather than an identity, so a write tool
+// here would let anyone signed in issue a transmittal with no permission check
+// and no record of who did it. Issuing stays in transmittal.html, where a
+// person is present and the audit trail names them.
+//
+// The pre-flight matters more than the convenience. Roughly one register row in
+// twelve carries a filename that yields no sheet number, and those rows are
+// exactly why some documents can never be given a revision status. Catching
+// them BEFORE the set is issued is the only cheap moment.
+const TRANSMITTAL_APP = "https://smartias.github.io/setty-pms/transmittal.html";
+
+// The sheet number at the START of a filename, which is the firm's actual
+// convention: "E211 - GROUND FLOOR PLAN - EAST WING - ELECTRICAL POWER.pdf".
+//
+// This is deliberately looser than canonicalSheet(), which demands the whole
+// stem BE the sheet number. That strictness is right in find_document, where a
+// false positive invents a revision status, but wrong here: staging a set is
+// about telling a badly-named file from a well-named one, and requiring the
+// whole stem would flag every properly-named drawing in the firm. The trailing
+// boundary is what keeps it honest: "STTQ-01-E_Bulletin #13.pdf" still fails,
+// because STTQ is four letters, and "2026-05-19 BOYLAN HALL.pdf" fails because
+// it leads with a date.
+function leadingSheetNo(filename: string): { sheetNo: string; discipline: string } | null {
+  const stem = String(filename || "").replace(/\.[a-z0-9]+$/i, "").toUpperCase().trim();
+  const m = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)(?=[-_ .]|$)/.exec(stem);
+  return m ? { sheetNo: m[1] + m[2], discipline: m[1] } : null;
+}
+
+mcp.tool("prepare_transmittal", {
+  description:
+    "Stage a transmittal for a set that is ready to go out, WITHOUT issuing it. Give it a project and " +
+    "the Outgoing set folder, and it returns: the next transmittal number (derived from the register, " +
+    "not guessed), which sheets in the set would SUPERSEDE a currently-issued sheet and which are NEW " +
+    "to the project, any filenames that cannot be parsed into a sheet number (these produce register " +
+    "rows that can never be given a revision status, so fix them before issuing), and a ready-to-open " +
+    "link into the Setty transmittal tool with the project and folder pre-loaded. " +
+    "THIS WRITES NOTHING: a person still issues the set in the transmittal tool, which is what records " +
+    "it in the register. Use it to check a set before it goes out, or to answer 'what would this " +
+    "replace?'.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number, id, or name"),
+    subfolder: z.string().describe("The set folder to stage, exactly as list_project_documents reports it, e.g. 'Outgoing/2026-04-17_Bulletin #13'"),
+  }),
+  handler: async ({ projectNumber, subfolder }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+
+    let rows: any[] = [];
+    try {
+      rows = await transmittalRows(pid);
+    } catch (e) {
+      return asText({
+        project,
+        error: `Could not read the transmittal register: ${String((e as any)?.message ?? e)}`,
+        nextStep: "This is a lookup failure. Do not conclude the project has no prior sets.",
+      });
+    }
+    const idx = buildSupersessionIndex(rows);
+
+    // Next number. Transmittal numbers are NOT chronological (T-002 can predate
+    // T-001 on the same project), so the next one is max+1 by NUMBER, never by
+    // date order or row position.
+    let maxNum = 0;
+    for (const r of rows) {
+      const m = /(\d+)\s*$/.exec(String(r?.files?.transmittalNumber || ""));
+      if (m) maxNum = Math.max(maxNum, Number(m[1]));
+    }
+    const nextTransmittalNumber = `T-${String(maxNum + 1).padStart(3, "0")}`;
+
+    let tree;
+    try {
+      tree = await projectTree(String(project).toLowerCase().trim());
+    } catch (e) {
+      return asText({ project, error: `Could not read this project's SharePoint folders: ${String((e as any)?.message ?? e)}` });
+    }
+    const wanted = String(subfolder).replace(/^\/+|\/+$/g, "").toLowerCase();
+    const inFolder = tree.files.filter((f: any) =>
+      String(f.folderPath || "").replace(/^\/+|\/+$/g, "").toLowerCase() === wanted);
+
+    if (!inFolder.length) {
+      const candidates = [...new Set(tree.files
+        .map((f: any) => String(f.folderPath || ""))
+        .filter((fp: string) => /outgoing/i.test(fp)))].slice(0, 15);
+      return asText({
+        project, subfolder,
+        error: `No files found in "${subfolder}".`,
+        nextStep: "Pass the folder EXACTLY as list_project_documents prints it. Outgoing folders on this project:",
+        outgoingFolders: candidates,
+      });
+    }
+
+    const supersedes: any[] = [], newSheets: any[] = [], unkeyable: any[] = [];
+    for (const f of inFolder) {
+      if (!/\.pdf$/i.test(f.name)) continue;
+      const c = leadingSheetNo(f.name);
+      if (!c) { unkeyable.push({ filename: f.name }); continue; }
+      const cur = idx.bySheet.get(c.sheetNo);
+      if (cur) {
+        supersedes.push({
+          sheetNo: c.sheetNo, filename: f.name,
+          currentlyIssuedIn: cur.issuedIn, currentTransmittal: cur.transmittalNumber,
+          currentIssueDate: cur.issueDate, currentRevision: cur.revision,
+        });
+      } else {
+        newSheets.push({ sheetNo: c.sheetNo, discipline: c.discipline, filename: f.name });
+      }
+    }
+
+    // The folder URL is derived by chopping the filename off a file's webUrl,
+    // which only works when that webUrl is a real library path. SharePoint also
+    // hands back _layouts/15/Doc.aspx?... style links for some items, and
+    // chopping one of those yields ".../_layouts/15", a link to nowhere. So
+    // require the result to still contain the set folder's own name, and omit
+    // the parameter entirely rather than hand over a broken link: transmittal.html
+    // treats folder as optional and the person can pick it in two clicks.
+    const lastSeg = wanted.split("/").filter(Boolean).pop() || "";
+    const lastSegEnc = encodeURIComponent(lastSeg).toLowerCase();
+    let folderUrl: string | null = null;
+    for (const f of inFolder) {
+      const u = String(f?.webUrl || "");
+      if (!u) continue;
+      const parent = u.replace(/\/[^/]*$/, "");
+      const pl = parent.toLowerCase();
+      if (lastSeg && (pl.includes(lastSegEnc) || pl.includes(lastSeg.toLowerCase()))) { folderUrl = parent; break; }
+    }
+    const handoff = TRANSMITTAL_APP +
+      "?project=" + encodeURIComponent(p?.name || "") +
+      "&number=" + encodeURIComponent(project) +
+      (folderUrl ? "&folder=" + encodeURIComponent(folderUrl) : "");
+
+    return asText({
+      project,
+      projectName: p?.name ?? null,
+      subfolder,
+      nextTransmittalNumber,
+      priorSets: idx.sets,
+      filesInFolder: inFolder.length,
+      wouldSupersede: supersedes.sort((a, b) => a.sheetNo.localeCompare(b.sheetNo)),
+      newToProject: newSheets.sort((a, b) => a.sheetNo.localeCompare(b.sheetNo)),
+      ...(unkeyable.length ? {
+        needsAttention: {
+          count: unkeyable.length,
+          files: unkeyable,
+          why: "These filenames do not parse into a sheet number, so the register row they produce can " +
+            "never be given a revision status and they will not appear in get_current_set. Renaming them " +
+            "to lead with the sheet number (E211.pdf, M-507.pdf) before issuing is the only cheap fix.",
+        },
+      } : {}),
+      issueHere: handoff,
+      ...(folderUrl ? {} : {
+        folderLinkNote: "The set folder could not be linked directly, so the transmittal tool opens with " +
+          "the project loaded and the folder left for you to pick.",
+      }),
+      nextStep: "Nothing has been written. Open issueHere to review and issue the set in the transmittal " +
+        "tool, which is what records it in the register.",
+    });
+  },
+});
 
 mcp.tool("extract_sheet_index", {
   description:
