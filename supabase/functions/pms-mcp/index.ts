@@ -1433,6 +1433,66 @@ function fileSupersessionStatus(
   };
 }
 
+// ── P2.9 (derived slice): design phase, without a SharePoint column ──────────
+// The roadmap wanted Phase as a provisioned column. A column has to be set by
+// hand on every upload and is blank the moment someone forgets, which the
+// roadmap itself calls out as the reason search returns stale or nothing. The
+// phase is already written down in the set name on real projects, so derive it
+// the way P0.2 derives status: from something that cannot be left blank.
+//
+//   2019-11-22_Final CD Submission      2024-01-17_100 DD
+//   2026-03-26_SD Interim 2 Progress    2026_02_18 Bid Phase
+//   2025-11-18_Updated 100% CD          2026-05-26_SD-2 Updated Option Drawings
+//
+// WORD BOUNDARIES ARE WRONG HERE. Set names separate with underscores, and \b
+// does not fire between "_" and a letter because "_" is a word character, so
+// \bSD\b misses "_SD-2" entirely. The separator class below treats anything
+// that is not A-Z0-9 as a boundary, which is what makes "_SD" match.
+const PHASE_PATTERNS: Array<{ phase: string; re: RegExp }> = [
+  // Most specific first. A percentage prefix ("100% CD", "50 DD") is a
+  // milestone WITHIN a phase, not a different phase, so it is skipped over.
+  { phase: "CD", re: /(?:^|[^A-Z0-9])(?:\d{1,3}\s*%?\s*)?CD\d?(?:[^A-Z0-9]|$)/ },
+  { phase: "DD", re: /(?:^|[^A-Z0-9])(?:\d{1,3}\s*%?\s*)?DD\d?(?:[^A-Z0-9]|$)/ },
+  { phase: "SD", re: /(?:^|[^A-Z0-9])(?:\d{1,3}\s*%?\s*)?SD\d?(?:[^A-Z0-9]|$)/ },
+  { phase: "Bid", re: /(?:^|[^A-Z0-9])BID(?:[^A-Z0-9]|$)/ },
+  { phase: "CA", re: /(?:^|[^A-Z0-9])CA(?:[^A-Z0-9]|$)/ },
+  { phase: "Programming", re: /(?:^|[^A-Z0-9])PROGRAMMING(?:[^A-Z0-9]|$)/ },
+  { phase: "Validation", re: /(?:^|[^A-Z0-9])VALIDATION(?:[^A-Z0-9]|$)/ },
+];
+// What a set is FOR, when it does not name a phase. An addendum answers bidder
+// questions before award; a bulletin, ASI or RFI response is issued against a
+// construction contract. These are weaker evidence than a stated phase, so they
+// are only consulted second and the basis says which was used.
+const PHASE_BY_ACTIVITY: Array<{ phase: string; re: RegExp; what: string }> = [
+  { phase: "Bid", re: /(?:^|[^A-Z0-9])ADDEND/, what: "addendum" },
+  { phase: "CA", re: /(?:^|[^A-Z0-9])(?:BULLETIN|ASI|RFI)(?:[^A-Z0-9]|$)/, what: "bulletin/ASI/RFI" },
+];
+
+function derivePhase(text: string): { phase: string; basis: string } | null {
+  const t = String(text || "").toUpperCase();
+  if (!t) return null;
+  for (const { phase, re } of PHASE_PATTERNS) {
+    if (re.test(t)) return { phase, basis: "named in the set folder" };
+  }
+  for (const { phase, re, what } of PHASE_BY_ACTIVITY) {
+    if (re.test(t)) return { phase, basis: `inferred from ${what}` };
+  }
+  return null;
+}
+// Accept what people type: "cd", "100% CD", "Construction Documents".
+const PHASE_ALIASES: Record<string, string> = {
+  SD: "SD", SCHEMATIC: "SD", "SCHEMATIC DESIGN": "SD",
+  DD: "DD", "DESIGN DEVELOPMENT": "DD",
+  CD: "CD", "CONSTRUCTION DOCUMENTS": "CD", "CONSTRUCTION DOCUMENT": "CD",
+  BID: "Bid", BIDDING: "Bid",
+  CA: "CA", "CONSTRUCTION ADMINISTRATION": "CA",
+  PROGRAMMING: "Programming", VALIDATION: "Validation",
+};
+function normalisePhase(input: string): string | null {
+  const raw = String(input || "").toUpperCase().replace(/\d{1,3}\s*%?\s*/g, "").trim();
+  return PHASE_ALIASES[raw] ?? null;
+}
+
 mcp.tool("get_current_set", {
   description:
     "Authoritative answer to \"what is the current issued set?\" for a project — the drawing/spec set " +
@@ -2147,9 +2207,10 @@ mcp.tool("find_document", {
     query: z.string().describe("Plain-language description of the document, e.g. 'fire protection narrative'"),
     discipline: z.string().optional().describe("Restrict to a discipline: M, E, P, FP, FA or T"),
     docType: z.string().optional().describe("Restrict to a type: Narrative, Calc, Spec, Comment Log, Transmittal, Minutes or Report"),
+    phase: z.string().optional().describe("Restrict to a design phase: SD, DD, CD, Bid, CA, Programming or Validation. Accepts '100% CD' or 'Construction Documents' too. Derived from the set folder, so files in folders that name no phase are excluded when this is used."),
     limit: z.number().optional().describe("Max results (default 10, max 30)"),
   }),
-  handler: async ({ projectNumber, query, discipline, docType, limit }) => {
+  handler: async ({ projectNumber, query, discipline, docType, phase, limit }) => {
     const lim = Math.min(Math.max(limit ?? 10, 1), 30);
     const pid = await resolveProjectId(projectNumber);
     if (!pid) {
@@ -2206,14 +2267,46 @@ mcp.tool("find_document", {
       registerError = String((e as any)?.message ?? e);
     }
 
+    // Phase (P2.9, derived). Applied BEFORE the limit is taken, or asking for
+    // 10 CD documents would return however many of the top 10 happened to be CD.
+    const wantPhase = phase ? normalisePhase(phase) : null;
+    if (phase && !wantPhase) {
+      return asText({
+        project, query,
+        error: `"${phase}" is not a phase I recognise.`,
+        nextStep: "Use SD, DD, CD, Bid, CA, Programming or Validation. '100% CD' and 'Construction Documents' also work.",
+      });
+    }
+    let phaseFiltered = scored;
+    let droppedNoPhase = 0;
+    if (wantPhase) {
+      phaseFiltered = scored.filter((r) => {
+        const d = derivePhase(r.f.folderPath);
+        if (!d) { droppedNoPhase++; return false; }
+        return d.phase === wantPhase;
+      });
+      if (!phaseFiltered.length) {
+        return asText({
+          project, query, phase: wantPhase, count: 0, results: [],
+          reason: `Nothing in this project matches "${query}" in the ${wantPhase} phase.`,
+          nextStep: droppedNoPhase
+            ? `${droppedNoPhase} matching file(s) sit in folders that name no phase, so they were excluded. ` +
+              "Re-run without the phase filter to see them."
+            : "Try the search without the phase filter, or a different phase.",
+        });
+      }
+    }
+
     const counts = { current: 0, superseded: 0, ambiguous: 0, unknown: 0 };
-    const results = scored.slice(0, lim).map((r) => {
+    const results = phaseFiltered.slice(0, lim).map((r) => {
       const verdict = idx ? fileSupersessionStatus(r.f.name, r.f.folderPath, idx) : null;
+      const ph = derivePhase(r.f.folderPath);
       const base = {
         name: r.f.name,
         library: r.f.library,
         folderPath: r.f.folderPath,
         area: folderArea(r.f.folderPath),
+        ...(ph ? { phase: ph.phase, phaseBasis: ph.basis } : {}),
         webUrl: r.f.webUrl,
         itemId: r.f.itemId,
         modified: r.f.modified,
@@ -2269,8 +2362,19 @@ mcp.tool("find_document", {
         recencyPreferred: q.wantsCurrent,
       },
       searched: { files: tree.files.length, libraries: tree.libraries },
-      count: scored.length,
-      returned: Math.min(scored.length, lim),
+      count: phaseFiltered.length,
+      returned: Math.min(phaseFiltered.length, lim),
+      ...(wantPhase ? {
+        phaseFilter: {
+          phase: wantPhase,
+          matchedBeforeFilter: scored.length,
+          excludedForNoPhase: droppedNoPhase,
+          ...(droppedNoPhase ? {
+            note: `${droppedNoPhase} matching file(s) sit in folders that name no phase and were excluded. ` +
+              "Phase is read from the set folder, so loose files carry none.",
+          } : {}),
+        },
+      } : {}),
       results,
       statusCounts: counts,
       statusNote,
