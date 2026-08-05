@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-01-pms-v95-folder-url-percent";
+    window.__appVersion = "2026-08-05-pms-v96-projects-edit-gate";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -833,6 +833,14 @@ settyAuth.mountPill();
 function pmsCan(cap) {
   try { return settyAuth.can ? settyAuth.can(cap) : true; }
   catch (_) { return true; }
+}
+// Phase 5 slice 5 — projects.edit becomes database-enforced. This is the UI
+// half: block the mutation choke points and say why, so a denied role (today:
+// qaqc) sees "read-only" instead of a failing save. Same permissive fallbacks
+// as pmsCan: signed-out and stale-script users are never blocked client-side.
+function pmsCanEditProjects() { return pmsCan("projects.edit"); }
+function pmsReadOnlyNudge() {
+  pmsNudge("🔒 Your role has read-only access to project data, so this change won't be saved. Ask Sara Arias or Danny Kang if that looks wrong.", "readonly:projects.edit");
 }
 // Fetch my permissions as soon as the stored session is restored; settyAuth
 // fires onChange when they land, and App re-renders off that.
@@ -28249,6 +28257,11 @@ function App() {
     if (!isHydration) changeSeqRef.current += 1;
     saveLocalSnapshot({ projects, termContracts, staff, clients }, { pending: !isHydration });
     if (pendingSave.current) clearTimeout(pendingSave.current); // bug 3 fix: use ref
+    // Phase 5 slice 5 belt-and-braces: inline mutations that bypass
+    // updateProject (setClients / setStaff / setTermContracts handlers) still
+    // change local state, but a read-only role must never reach the network —
+    // post-migration the database would 403 these rows anyway.
+    if (!pmsCanEditProjects()) { if (!isHydration) pmsReadOnlyNudge(); return; }
     pendingSave.current = setTimeout(() => {
       performSave({ projects, termContracts, staff, clients });
     }, 2000);
@@ -28677,6 +28690,7 @@ This will REPLACE all current data. Make sure you have a backup first.`)) return
   }
 
   function confirmCleanup() {
+    if (!pmsCanEditProjects()) { pmsReadOnlyNudge(); return; }
     if (!cleanupPreview) return;
     const n = cleanupPreview.toDelete.length;
     const typed = window.prompt(`Permanently delete ${n} archived project${n !== 1 ? "s" : ""}?\n\nThis CANNOT be undone. These projects and all their data will be gone forever.\n\nType DELETE to confirm:`);
@@ -28708,6 +28722,10 @@ function scheduleProjectTeamsNotify(projectId, fromProject, toProject, delay = 2
 }
 
 function updateProject(updated, options = {}) {
+  // Phase 5 slice 5: read-only roles don't mutate state at all — dropping the
+  // change here (not at save time) keeps React, the local snapshot and the
+  // cloud consistent instead of showing an edit that silently never lands.
+  if (!pmsCanEditProjects()) { pmsReadOnlyNudge(); return; }
   const {
     notifyTeams = true,
     debounceTeams = true,   // default ON — prevents per-keystroke cards
@@ -28750,6 +28768,7 @@ function updateProject(updated, options = {}) {
 // V2: writes only the single project row directly via eagerSaveProjectV2,
 // avoiding the dirty-diff overhead of a full performSaveV2 sweep.
 async function updateProjectAndFlush(updated) {
+  if (!pmsCanEditProjects()) { pmsReadOnlyNudge(); return; }
   if (pendingSave.current) clearTimeout(pendingSave.current);
   // Update React state so UI reflects the change immediately
   const merged = projects.map(p => p.id === updated.id ? updated : p);
@@ -28800,7 +28819,10 @@ function renameCompanyAcrossProjects(oldName, newName) {
 
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
 
-  function addProject() { setShowNewProjectModal(true); }
+  function addProject() {
+    if (!pmsCanEditProjects()) { pmsReadOnlyNudge(); return; }
+    setShowNewProjectModal(true);
+  }
 
   function createProjectFromForm(fields) {
     const p = newProject(fields);
@@ -28961,6 +28983,15 @@ function renameCompanyAcrossProjects(oldName, newName) {
           <span style={{ color: P.accent }}>SETTY</span>
           <span style={{ color: P.textMuted, fontWeight: 400 }}> · PMS</span>
         </h1>
+        {/* Phase 5 slice 5: persistent pill for read-only roles, so the state
+            is announced up front rather than discovered at the first blocked
+            edit. Renders only once permissions are loaded and deny. */}
+        {settyAuth.isSignedIn() && !pmsCanEditProjects() && (
+          <span title="Your role can view everything but not change project data. Managed in the Admin Console permission matrix."
+            style={{ background: "#33270a", color: "#fbbf24", border: "1px solid #fbbf24", borderRadius: 999, padding: "3px 12px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>
+            🔒 Read-only
+          </span>
+        )}
         {/* Staff + Team WBS are Operations-facing (staffing.view capability,
             managed in the Admin Console); everyone gets My Projects instead. */}
         {[{ label: "Dashboard", key: "dashboard" }, { label: "My Projects", key: "myprojects" }, { label: "Pipeline", key: "pipeline" }, { label: "Projects", key: "list" }, { label: "Term Contracts", key: "termcontracts" },
