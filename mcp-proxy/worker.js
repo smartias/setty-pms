@@ -67,12 +67,28 @@ async function proxy(request, origin) {
   const url = new URL(request.url);
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
 
+  // Observability: MCP bodies are tiny JSON-RPC envelopes, so buffering to log
+  // the method name costs nothing and turns "the client sent two requests"
+  // into "the client sent initialize then tools/list". Method names only,
+  // never params: params can carry real project data.
+  let bodyText;
+  if (hasBody) {
+    bodyText = await request.text();
+    try {
+      const rpc = JSON.parse(bodyText);
+      console.log('[mcp]', rpc.method || '(response/no method)', 'id:' + (rpc.id ?? '-'));
+    } catch {
+      console.log('[mcp] non-JSON body,', bodyText.length, 'bytes');
+    }
+  }
+
   const upstream = await fetch(UPSTREAM + url.pathname + url.search, {
     method: request.method,
     headers: request.headers,
-    body: hasBody ? request.body : undefined,
+    body: hasBody ? bodyText : undefined,
     redirect: 'manual',
   });
+  console.log('[mcp] upstream', upstream.status, upstream.headers.get('content-type') || '-');
 
   const headers = new Headers(upstream.headers);
 
