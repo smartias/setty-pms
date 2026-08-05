@@ -78,13 +78,36 @@ campaigns — Sara confirmed).
   contracts.edit has no dedicated table to gate — it stays app-level until/unless
   contract data gets its own rows. Document-only slice; nothing to run today.
 
-## Slice 5 — projects.edit (LAST; after Gates A+B + a quiet week)
+## Slice 5 — projects.edit ✅ LIVE 2026-08-05
 
-The big one: `pms_projects` (the ALL policy → split SELECT open / writes gated),
-`pms_rfis`, `pms_submittals`, `pms_rfi_events`, `pms_submittal_events`,
-`pms_clients`, `pms_meta` (loader upserts it — verify every role can still boot
-the app after gating, see the v80 gate lesson), `pms_data` (legacy). Watch the
-add-in and RFI Sync the next workday; both write these tables constantly.
+Migration `phase5_enforce_projects_edit`; rollback row
+`phase5-slice5-rollback-2026-08-05` (md5 184ba7c3…, 19 policies captured).
+Full SQL + persona script: `phase5-slice5-projects-edit.sql` / `-verify.sql`.
+
+- All 8 tables (`pms_projects`, `pms_rfis`, `pms_submittals`, `pms_rfi_events`,
+  `pms_submittal_events`, `pms_clients`, `pms_meta`, `pms_data`): SELECT open
+  to authenticated, every write → `pms_has_cap('projects.edit', …)`.
+- **Option B (Sara)**: `pms_projects` scopes through `project->>'projectNumber'`
+  (USING + WITH CHECK both — renumbering must not be an escape hatch), so
+  per-project overrides now actually resolve on project rows. The RFI/submittal
+  tables scope through their real `project_number` column.
+- **UI shipped FIRST** (PR #117, PMS v96): mutation choke points guarded +
+  read-only nav pill, so the denied role saw a deliberate read-only app before
+  the database started refusing it.
+- Blast radius at flip time: qaqc only (one user). Staff baseline allowed.
+- RFI Sync + MCP connector are service-role → unaffected (verified, health 200).
+  The add-in runs under the user's own JWT → it IS in scope; watch the Filing
+  Log the next workday.
+
+Verified: 9-persona sweep (all match; qaqc + no-email denied, staff baseline
+allowed; no accounting user exists to test), fabricated per-project lock
+denies inside scope / allows outside (rolled back), real UPDATEs as qaqc → 0
+rows with reads intact, real UPDATEs as engineer → 1 row on projects, meta
+and clients (rolled back).
+
+Leftover cosmetics: the three surviving SELECT policies on the register tables
+still carry `_anon` names (`pms_rfis_select_anon` etc.) — scoped TO
+authenticated, name only. Rename next time those tables are touched.
 
 ## Not in the catalog (open decision)
 
