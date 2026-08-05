@@ -1150,7 +1150,12 @@ function renderGuide() {
 // ── Claude / MCP tab (connector runbook for IT + Claude admins) ──────────────
 function renderMcp() {
   const MCP_BASE = SUPABASE_URL + "/functions/v1/pms-mcp";
-  const MCP_URL = MCP_BASE + "/mcp";
+  // The connector URL is the DISCOVERY PROXY, not the Edge Function directly.
+  // Claude derives OAuth discovery from the ORIGIN of this URL and discards the
+  // path, so a server hosted on a path of someone else's domain can never answer
+  // for itself. The proxy owns a root we control. Source: mcp-proxy/ in the repo.
+  const PROXY_BASE = "https://setty-pms-mcp.sara-arias.workers.dev";
+  const MCP_URL = PROXY_BASE + "/mcp";
   const ENTRA_APP = "b49e795c-2af3-4ab9-aa39-52539d4a7a99";
   $("view").innerHTML = `
     <div class="card doc">
@@ -1161,17 +1166,29 @@ function renderMcp() {
          right next to the database, so there is no extra server to maintain.</p>
       <div class="row" style="margin-top:8px">
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${MCP_URL}').then(()=>toast('Connector URL copied','success'))">Copy connector URL</button>
-        <a class="btn" href="${MCP_BASE}/health" target="_blank" rel="noopener">▶ Live health check</a>
-        <a class="btn" href="${MCP_BASE}/.well-known/oauth-protected-resource" target="_blank" rel="noopener">▶ OAuth discovery metadata</a>
+        <a class="btn" href="${PROXY_BASE}/health" target="_blank" rel="noopener">▶ Live health check</a>
+        <a class="btn" href="${PROXY_BASE}/.well-known/oauth-protected-resource" target="_blank" rel="noopener">▶ Resource metadata</a>
+        <a class="btn" href="${PROXY_BASE}/.well-known/oauth-authorization-server" target="_blank" rel="noopener">▶ Authorization-server metadata</a>
       </div>
       <pre>${MCP_URL}</pre>
-      <p style="font-size:12px;color:var(--muted)">Health check should return {"ok":true} with no sign-in — that alone proves the server is up.</p>
+      <p style="font-size:12px;color:var(--muted)">All three links go through the proxy, which is the path a real client takes.
+        Health check returns {"ok":true} plus a build string with no sign-in, and because it is proxied it proves both hops at once.
+        The two metadata links are the documents Claude reads during sign-in: the resource one must name the proxy as its
+        authorization server, and the authorization-server one must carry an <code>issuer</code> equal to the proxy origin with
+        Microsoft endpoints inside. Run <code>node mcp-proxy/verify.mjs ${PROXY_BASE}</code> to check the whole chain at once.</p>
+      <p style="font-size:12px;border-left:3px solid var(--amber,#b45309);padding-left:10px">
+        <b>Before firm-wide rollout, move this to a custom domain.</b> Cloudflare treats a <code>workers.dev</code> subdomain as a
+        free site meant for hobby projects rather than business-critical traffic, and a freshly deployed one shows occasional
+        platform errors that have nothing to do with our code. Moving it is one CNAME on a Setty domain, with no admin consent and
+        no Graph scopes involved, and the worker itself does not change because every URL it emits derives from the origin of the
+        incoming request.</p>
     </div>
 
     <div class="card doc">
-      <div class="sechead">Current status — 2 Aug 2026</div>
+      <div class="sechead">Current status: 5 Aug 2026</div>
       <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
-        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Deploy 45, live — build <code>2026-08-02-issue-date</code>, 23 tools.</b> The health link above echoes that build string, so "is my change live?" is answerable without diffing source. Since v31 the connector gained the document-finding, drawing-register and project-briefing tools (full list below). The 25 Jul OAuth discovery fix — advertised resource now matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures — remains in place.</td></tr>
+        <tr><td>Discovery proxy (<code>mcp-proxy/</code>)</td><td><b>Live, and it is the URL to give Claude.</b> Verified end to end on 5 Aug: 14/14 checks on the full discovery chain, plus passthrough to the Edge Function confirmed. This is what unblocked org-wide sign-in after weeks of <code>{"error":"requested path is invalid"}</code>. Still on a <code>workers.dev</code> subdomain, so move it to a custom domain before firm-wide rollout (see the note above).</td></tr>
+        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Deploy 50, live. Build <code>2026-08-02-current-full-set</code>, 23 tools.</b> The health link above echoes that build string, so "is my change live?" is answerable without diffing source. Since v31 the connector gained the document-finding, drawing-register and project-briefing tools (full list below). The 25 Jul OAuth discovery fix — advertised resource now matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures — remains in place.</td></tr>
         <tr><td>Org-wide connector on claude.ai</td><td><b>Pending a Claude Owner — not IT.</b> This step lives in claude.ai, not Entra, and
             <b>only an Owner or Primary Owner can do it</b> (Organization settings → Connectors → Add). A Microsoft admin cannot, however
             senior. If the person you are asking does not see a Connectors section, they are not an Owner and no amount of Entra work will
