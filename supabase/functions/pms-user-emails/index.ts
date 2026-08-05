@@ -127,19 +127,21 @@ function welcomeHtml(p: { email: string; role: string; display_name?: string; ad
   const first = (p.display_name || p.email.split("@")[0]).split(/[\s.]/)[0];
   const role = ROLE_LABELS[p.role] || p.role;
   const adminNote = p.role === "admin"
-    ? `<li style="margin:6px 0">As an <b>Admin</b> you also have the <a href="https://smartias.github.io/setty-pms/SettyAdmin.html" style="color:#1F3864">Admin Console</a> — users &amp; roles, permissions, backups and integrations.</li>`
+    ? `<li style="margin:6px 0">As an <b>Admin</b> you also have the <a href="https://smartias.github.io/setty-pms/SettyAdmin.html" style="color:#1F3864">Admin Console</a>: users &amp; roles, permissions, backups and integrations.</li>`
     : "";
   return shell("Welcome to the Setty PMS", `
     <div style="font-size:20pt;color:#1F3864;font-weight:700;line-height:1.1">Welcome to the Setty PMS</div>
     <div style="font-size:11pt;color:#666;margin-top:6px">You've been added as <b style="color:#1F3864">${esc(role)}</b>${p.added_by ? ` by ${esc(p.added_by)}` : ""}</div>
     <hr style="border:none;border-top:2px solid #C00000;margin:14px 0" />
     <p style="font-size:11pt;color:#222">Hi ${esc(first[0].toUpperCase() + first.slice(1))},</p>
-    <p style="font-size:11pt;color:#222">The PMS is Setty's home for projects — milestones, RFIs &amp; submittals, project emails, site photos and more. Your role shapes what you see, so it's already set up for how you work.</p>
+    <p style="font-size:11pt;color:#222">The PMS is Setty's home for projects: milestones, RFIs &amp; submittals, project emails, site photos and more. Your role shapes what you see, so it's already set up for how you work.</p>
     <ul style="font-size:11pt;color:#222;padding-left:20px">
-      <li style="margin:6px 0"><b>Sign in once</b> — open the <a href="${PMS_URL}" style="color:#1F3864">PMS</a> and click "Sign in with Microsoft". Use your ${esc(p.email)} account; there's no separate password.</li>
-      <li style="margin:6px 0"><b>Start with the explainer</b> — the <a href="https://setty.sharepoint.com/sites/NYCProjects/SitePages/Project-Documentation-and-Communication.aspx" style="color:#1F3864">Project Documentation &amp; Communication</a> page covers how Setty files, documents and communicates project work — five minutes well spent before your first project.</li>
-      <li style="margin:6px 0"><b>Build "My Projects"</b> — the My Projects tab lets you join the projects you work on; joining puts you on the project's Team tab.</li>
-      <li style="margin:6px 0"><b>Optional weekly digest</b> — under My Projects → ⚙ My Settings you can turn on a Monday-morning email of everything due on your projects in the next three weeks.</li>
+      <li style="margin:6px 0"><b>Sign in once</b>: open the <a href="${PMS_URL}" style="color:#1F3864">PMS</a> and click "Sign in with Microsoft". Use your ${esc(p.email)} account; there's no separate password.</li>
+      <li style="margin:6px 0"><b>Check for the Outlook add-in</b>: open any email in Outlook and look for the <b>Setty PMS</b> button on the ribbon (under the "..." / <i>Apps</i> menu if the ribbon is crowded). That is how project email gets filed, along with notes, RFIs and submittals. It is deployed centrally, so if you don't see it, ask IT to add you.</li>
+      <li style="margin:6px 0"><b>Keep the add-in pinned open</b>: click the 📌 pin at the top of the Setty PMS panel once. The panel then stays open as you move from message to message and shows you what it knows about each one, including the project it belongs to, that project's recent history, and whether the email is waiting on a reply. Pinned is how it earns its keep; opened one email at a time, it is just a filing button.</li>
+      <li style="margin:6px 0"><b>Start with the explainer</b>: the <a href="https://setty.sharepoint.com/sites/NYCProjects/SitePages/Project-Documentation-and-Communication.aspx" style="color:#1F3864">Project Documentation &amp; Communication</a> page covers how Setty files, documents and communicates project work. Five minutes well spent before your first project.</li>
+      <li style="margin:6px 0"><b>Build "My Projects"</b>: the My Projects tab lets you join the projects you work on; joining puts you on the project's Team tab.</li>
+      <li style="margin:6px 0"><b>Optional weekly digest</b>: under My Projects → ⚙ My Settings you can turn on a Monday-morning email of everything due on your projects in the next three weeks.</li>
       ${adminNote}
     </ul>
     <p style="font-size:11pt;color:#222">Questions? Reply to this email or ask Sara Arias / Danny Kang.</p>
