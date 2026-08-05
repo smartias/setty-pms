@@ -105,7 +105,7 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v9 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v10 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
@@ -132,7 +132,17 @@
 // before the blame lands on it, note that a 404 on
 // /.well-known/oauth-authorization-server is expected and that no API key
 // is involved, and flag Anthropic's Enterprise-Managed Auth beta as the
-// eventual replacement for per-user connecting).
+// eventual replacement for per-user connecting);
+// v10 (5 Aug 2026) RETRACTS the v9 claim that the 404 on
+// /.well-known/oauth-authorization-server is expected and not worth
+// chasing. That 404 is the fault. Entra publishes only
+// openid-configuration and returns 404 at all three RFC 8414 locations,
+// so Claude finds no authorization-server metadata, derives
+// <origin>/authorize from the connector URL, and lands on Supabase's
+// "requested path is invalid". The discovery proxy in mcp-proxy/ answers
+// that document. Also records that the connector app's client secret is
+// now SPLIT in two, because one secret backing both the connector and
+// app-only Graph reading meant rotating it silently broke documents.
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -1218,9 +1228,25 @@ function renderMcp() {
             (<code>api://${ENTRA_APP}/MCP.Access</code>). Earlier versions advertised the Supabase function URL as the resource
             instead; Entra rejected that mismatch with <b>9010010</b> — <i>"the resource parameter provided in the request doesn't
             match with the requested scopes."</i> Use the discovery link at the top of this tab to confirm the two agree.</li>
-        <li><b>No separate authorization-server document is needed:</b> the discovery response names the Setty tenant's Microsoft
-            login endpoint, and Claude reads Microsoft's own metadata from there. A 404 on
-            <code>/.well-known/oauth-authorization-server</code> is expected and not a fault.</li>
+        <li><b style="color:var(--amber)">Authorization-server metadata is the break point (corrected 5 Aug 2026):</b> the discovery
+            response names the Setty tenant's Microsoft login endpoint, but Entra publishes only
+            <code>openid-configuration</code> there and returns <b>404</b> at all three RFC 8414 locations. Claude therefore finds
+            no authorization-server metadata, falls back to deriving <code>&lt;origin&gt;/authorize</code> from the connector URL,
+            and Supabase answers <code>{"error":"requested path is invalid"}</code>.
+            <b>Earlier guidance on this page said that 404 was expected and not worth chasing. That was wrong.</b> It is the fault,
+            and it is why org-wide sign-in never completed.</li>
+        <li><b>The fix is a discovery proxy</b> (<code>mcp-proxy/</code> in the repo). Claude derives OAuth discovery from the
+            <b>origin</b> of the connector URL and discards the path, so it probes the Supabase gateway root, which is not ours to
+            answer. A Supabase custom domain would not help, since it white-labels the same gateway. The proxy owns a root we do
+            control, names <i>itself</i> as the authorization server so the issuer matches where the document was fetched from, and
+            points the endpoints at Entra. Sign-in still goes directly to Microsoft and no token passes through the proxy.</li>
+        <li><b>Two client secrets, deliberately (5 Aug 2026):</b> app <code>${ENTRA_APP}</code> backs two unrelated flows. One
+            secret lives in Supabase as <code>GRAPH_CLIENT_SECRET</code> for <b>app-only SharePoint reading</b>; a separate one
+            lives in the Claude admin console for <b>connector sign-in</b>. They were a single secret until a rotation nearly took
+            document reading down with it. <b style="color:var(--amber)">Never delete "the other" secret while rotating.</b>
+            Removing the Graph one breaks <code>find_document</code>, <code>list_project_documents</code> and
+            <code>read_document</code> for everyone, and it fails at the next token mint rather than at deletion, so the damage
+            surfaces later and looks unrelated.</li>
       </ul>
     </div>
 
@@ -1238,7 +1264,7 @@ function renderMcp() {
             URL: the connector URL above (it must end in <code>/mcp</code> — no trailing slash, nothing after it).
             Owners are the only role that can add a custom connector on Team and Enterprise plans; there is no way to delegate
             this with a custom role, because connector permissions only cover connectors an Owner has <i>already</i> added.</li>
-        <li><b>Give Claude the OAuth client:</b> Entra ID does <b>not</b> support automatic (dynamic) client registration, so open the connector's <b>Advanced settings</b> and enter OAuth Client ID <code>${ENTRA_APP}</code> plus the app's client secret (it lives in the Entra app registration — Sara/IT hold it; it's already proven valid by the working SharePoint document tools).</li>
+        <li><b>Give Claude the OAuth client:</b> Entra ID does <b>not</b> support automatic (dynamic) client registration, so open the connector's <b>Advanced settings</b> and enter OAuth Client ID <code>${ENTRA_APP}</code> plus a client secret. <b>IT should create their own secret</b> in the app registration (Certificates &amp; secrets &rarr; New client secret) and paste it straight in, rather than having one sent to them: the value then never travels through email or chat, and connector sign-in stays independent of the Graph secret described above. Leave every other secret row alone.</li>
         <li><b>Authorize Claude's callback in Entra:</b> app registration <code>${ENTRA_APP}</code> → Authentication. For <b>claude.ai in the browser</b>: redirect URI <code>https://claude.ai/api/mcp/auth_callback</code> under the <b>Web</b> platform. For <b>Claude Desktop / Claude Code</b>: they use a localhost loopback instead — add <code>http://localhost</code> and <code>http://127.0.0.1</code> under "Mobile and desktop applications" and set "Allow public client flows" to Yes. If sign-in fails with <b>AADSTS50011</b> (redirect mismatch), copy the exact URI out of that error into the registration.</li>
         <li><b>Consent (the usual blocker here):</b> this tenant disables user self-consent for <i>everything</i>, so users hit <b>AADSTS65001</b> until an admin consents. The <code>MCP.Access</code> delegated permission must appear under the app's <b>API permissions</b> list (not just "Expose an API") — then IT clicks <b>Grant admin consent for Setty</b> there. One click, tenant-wide, permanent.</li>
         <li><b>Users enable it:</b> each person turns the connector on under Settings → Connectors in claude.ai; the first use walks them through the Microsoft sign-in. After that they can just ask — "what's open on SAPX256001?" — and Claude uses the PMS tools.</li>
@@ -1247,11 +1273,10 @@ function renderMcp() {
         <b>Before debating whose fault it is:</b> anyone can prove the server half is healthy in two clicks, signed in to nothing.
         <b>Live health check</b> returns <code>{"ok":true}</code> with a build string, and <b>OAuth discovery metadata</b> must show
         <code>resource</code> = <code>api://${ENTRA_APP}</code> and a scope of <code>api://${ENTRA_APP}/MCP.Access</code>.
-        If both look right, nothing is outstanding on our side and the remaining work is entirely in claude.ai and Entra.
-        <b>A 404 on <code>/.well-known/oauth-authorization-server</code> is expected</b> — Claude reads Microsoft's metadata from the
-        authorization-server URL named in the discovery document, not from us. Do not chase it.
-        Likewise a <b>custom connector needs no API key</b>: it is OAuth with a client ID and secret, and dynamic client
-        registration is not required.</p>
+        If both look right, the server half is healthy. That is <i>not</i> the same as sign-in working: see the
+        authorization-server metadata note above, which is the actual blocker and is fixed by the discovery proxy rather than by
+        anything in this list. Note also that a <b>custom connector needs no API key</b>: it is OAuth with a client ID and secret,
+        and dynamic client registration is not required.</p>
       <p style="font-size:12.5px;color:var(--muted)"><b>Worth knowing for later:</b> Anthropic has an
         <b>Enterprise-Managed Auth</b> beta that provisions connectors org-wide through the identity provider, so staff get them on
         first login and nobody connects individually. It is waitlist-only today, so it is not the route out of the current setup,
