@@ -58,6 +58,36 @@ All checks must pass before handing the URL to anyone. Every broken link in this
 chain makes clients guess rather than error, which is exactly how the original
 failure hid.
 
+## Runaway-client ceiling
+
+A colleague's proxy burned its entire free-tier quota on a client stuck in an
+OAuth retry loop, so this worker carries a ceiling: 25 proxied requests per
+client per 10 seconds, after which it answers 429 with a Retry-After and
+nothing is forwarded upstream. Only proxied traffic counts, because only
+proxied traffic costs a metered Supabase invocation; discovery documents and
+preflights stay unlimited. Unauthenticated clients share one bucket per IP,
+which is the retry-loop case since a looping client never obtained a token.
+Authenticated sessions get a bucket per token hash, so people sharing an
+egress IP never starve each other. If the limiter itself fails the request is
+allowed through: the ceiling is protection, not a dependency.
+
+What the ceiling does and does not give, measured on this account 2026-08-05:
+
+- period must stay 10. With period = 60 the per-machine counters never
+  converge, so every new connection gets a fresh allowance and the ceiling
+  never engages at any volume. Verified with 400 requests in 18 seconds and
+  600 over 52 seconds, zero rejections, then re-verified at period = 10.
+- Cloudflare's counters are per machine and sync within roughly the window
+  length, so a client that reuses connections hits the ceiling exactly, while
+  a maximally spread storm (new connection per request) is only clipped, not
+  capped. In a 1,000-request soak at 15 a second, rejections began at 16
+  seconds. Treat the ceiling as damage limiting for Supabase, not accounting.
+- The ceiling cannot protect this worker's own free-plan quota of 100k
+  requests per day. Rejected requests still count. A large enough storm takes
+  the connector down for the day for everyone, and the only real fixes are
+  the Workers Paid plan (5 dollars a month, removes the daily cap) or a real
+  hostname behind zone-level protection. Worth doing before wide rollout.
+
 ## Handing it over
 
 The connector URL becomes `https://setty-pms-mcp.<account>.workers.dev/mcp`.

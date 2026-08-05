@@ -3,6 +3,26 @@ main = "worker.js"
 compatibility_date = "2026-01-01"
 workers_dev = true
 
-# No secrets, no bindings, no environment variables. Everything this worker knows
-# is public: the Supabase function URL, the Entra tenant, and the app id URI.
+# No secrets and no environment variables. Everything this worker knows is
+# public: the Supabase function URL, the Entra tenant, and the app id URI.
 # If that ever stops being true, use `wrangler secret put` and never this file.
+
+# Hard ceiling on proxied traffic, per client. Only requests that reach the
+# Edge Function are counted, because those are the ones that cost a metered
+# Supabase invocation; discovery documents are served from this worker for
+# free. 25 per 10 seconds is several times what a busy Claude session
+# generates. A client stuck in an OAuth retry loop hits this wall instead of
+# the Supabase meter.
+#
+# period MUST stay 10. Measured on this account 2026-08-05: with period = 60
+# the per-machine counters never converge, so every new connection gets a
+# fresh allowance and the ceiling never engages, no matter the volume. With
+# period = 10 the counters converge within seconds and the ceiling holds.
+# Verified against live traffic both ways; see PR for the measurements.
+[[ratelimits]]
+name = "PROXY_LIMITER"
+namespace_id = "3001"
+
+  [ratelimits.simple]
+  limit = 25
+  period = 10
