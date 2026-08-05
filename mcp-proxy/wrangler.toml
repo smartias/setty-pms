@@ -1,0 +1,8 @@
+name = "setty-pms-mcp"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# No secrets, no bindings, no environment variables. Everything this worker knows
+# is public: the Supabase function URL, the Entra tenant, and the app id URI.
+# If that ever stops being true, use `wrangler secret put` and never this file.
