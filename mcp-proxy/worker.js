@@ -97,8 +97,33 @@ async function proxy(request, origin) {
   });
 }
 
+// ─── RUNAWAY-CLIENT CEILING ──────────────────────────────────────────────────
+// Guards only the proxied path: every request that reaches proxy() costs a
+// metered Supabase invocation, while discovery documents and CORS preflights
+// are served from this worker for free. A client stuck in an OAuth retry loop
+// is precisely the client that never obtained a token, so unauthenticated
+// traffic shares one bucket per IP and hits the ceiling fast. Authenticated
+// sessions are keyed by a hash of their token as well, so several people
+// working behind one shared egress IP do not eat each other's budget.
+async function rateLimitKey(request) {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const auth = request.headers.get('authorization');
+  if (!auth) return ip;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(auth));
+  const hash = [...new Uint8Array(digest.slice(0, 8))]
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `${ip}:${hash}`;
+}
+
+const rateLimited = () =>
+  new Response(
+    JSON.stringify({ error: 'rate_limited', detail: 'Too many requests. Retry in a minute.' }),
+    { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '60', ...CORS } }
+  );
+
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const origin = url.origin;
     const path = url.pathname;
@@ -115,6 +140,17 @@ export default {
       path.startsWith('/.well-known/openid-configuration')
     ) {
       return json(authorizationServerMetadata(origin));
+    }
+
+    // Everything past this point is forwarded upstream and costs money.
+    try {
+      const { success } = await env.PROXY_LIMITER.limit({ key: await rateLimitKey(request) });
+      if (!success) return rateLimited();
+    } catch (e) {
+      // Limiter unavailable (missing binding, transient platform error): let
+      // the request through. The ceiling is protection, not a dependency, and
+      // a broken limiter must never be the thing that takes the connector down.
+      console.warn('[ratelimit] check failed, allowing request:', e.message);
     }
 
     return proxy(request, origin);
