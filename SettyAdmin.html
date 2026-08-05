@@ -1361,7 +1361,11 @@ function renderMcp() {
         <tr><td>Everything worked, then stopped for everyone</td><td>Check whether the shared secret was rotated or the function was redeployed mid-conversation; re-try, then check Supabase function logs.</td></tr>
         <tr><td><b>"I'm an admin and there's no Connectors section"</b></td><td>Only an <b>Owner or Primary Owner</b> can add a custom connector. The section is absent for other roles, not greyed out, so it reads as a missing feature. Confirm the role in claude.ai before anything else — this is the single most common stall on this integration.</td></tr>
       </tbody></table>
-      <p style="font-size:12px;color:var(--muted);margin-top:8px">Owners: Sara Arias &amp; Danny Kang.
+      <p style="font-size:12px;color:var(--muted);margin-top:8px"><b>Two different kinds of "owner". Do not confuse them.</b>
+        <b>PMS owners</b> (this system, its data and these apps): Sara Arias &amp; Danny Kang.
+        <b>Claude organisation Owners</b> (the only people who can add a custom connector, in claude.ai): Raj &amp; Nikhil.
+        Adding the connector is a <i>Claude</i> Owner action, so it cannot be done by the PMS owners however well they know the system.
+        Corrected 5 Aug 2026: an earlier version of this line named the PMS owners as the Claude Owners, which sent the request to the wrong people.
         <b>Server code lives in the repo</b> at <code>supabase/functions/pms-mcp/</code> — edit there and deploy from disk.
         (The old "pull the live function first, disk is stale" rule was retired for <code>pms-mcp</code> when the source was committed;
         it still applies to <code>pms-user-emails</code> and <code>weekly-digest</code>.)</p>
