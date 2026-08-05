@@ -105,7 +105,7 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v10 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v11 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
@@ -143,6 +143,18 @@
 // that document. Also records that the connector app's client secret is
 // now SPLIT in two, because one secret backing both the connector and
 // app-only Graph reading meant rotating it silently broke documents.
+// v11 (5 Aug 2026, evening) records the first WORKING end-to-end OAuth
+// sign-in and the third stacked bug that fell to get there: the Entra app
+// manifest had api.requestedAccessTokenVersion null, so Microsoft issued
+// v1-format tokens whose issuer (sts.windows.net) fails the server's
+// v2-only check, and every initialize got 401. The visible symptom was
+// claude.ai reporting "This connector has no tools available" while
+// silently retrying initialize. Set to 2 in the manifest, and documented
+// here as an invariant. Also RETRACTS the v9 claim that this tenant
+// blocks all user self-consent: the first real sign-in (5 Aug) consented
+// user-side with no admin involved, so AADSTS65001 is a possible state,
+// not the expected one. Adds the no-tools troubleshooting entry, the
+// enumerate-at-add rule, and the wrangler-tail debugging method.
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -1187,13 +1199,21 @@ function renderMcp() {
     <div class="card doc">
       <div class="sechead">Current status: 5 Aug 2026</div>
       <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
-        <tr><td>Discovery proxy (<code>mcp-proxy/</code>)</td><td><b>Live, and it is the URL to give Claude.</b> Verified end to end on 5 Aug: 14/14 checks on the full discovery chain, plus passthrough to the Edge Function confirmed. This is what unblocked org-wide sign-in after weeks of <code>{"error":"requested path is invalid"}</code>. Still on a <code>workers.dev</code> subdomain, so move it to a custom domain before firm-wide rollout (see the note above).</td></tr>
+        <tr><td>Discovery proxy (<code>mcp-proxy/</code>)</td><td><b>Live, and it is the URL to give Claude.</b> Verified end to end on 5 Aug: 14/14 checks on the full discovery chain, plus passthrough to the Edge Function confirmed. This is what unblocked org-wide sign-in after weeks of <code>{"error":"requested path is invalid"}</code>. A rate limiter is live on the proxied path (25 requests/10s per client, 429 + Retry-After, fail-open), added after a real client was observed retrying a dozen times in half a minute during an auth failure. Still on a <code>workers.dev</code> subdomain, so move it to a custom domain before firm-wide rollout (see the note above).</td></tr>
         <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Deploy 50, live. Build <code>2026-08-02-current-full-set</code>, 23 tools.</b> The health link above echoes that build string, so "is my change live?" is answerable without diffing source. Since v31 the connector gained the document-finding, drawing-register and project-briefing tools (full list below). The 25 Jul OAuth discovery fix remains in place: the advertised resource now matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures.</td></tr>
-        <tr><td>Org-wide connector on claude.ai</td><td><b>Pending a Claude Owner — not IT.</b> This step lives in claude.ai, not Entra, and
+        <tr><td>OAuth sign-in, end to end</td><td><b>WORKS. First confirmed 5 Aug 2026, ~2:50 PM.</b> A real user signed in with a Setty
+            Microsoft account through the proxy and pulled live data: full handshake on the wire (initialize 200, tools/list 200, 23 tools),
+            user-side consent, no admin grant needed. Three stacked defects fell to get here: the discovery origin (fixed by the proxy),
+            the token version (manifest, see the Entra row below), and a client-side tools cache (see troubleshooting). The confirming
+            connector was added on a personal Claude account, which proves the plumbing but is not the rollout.</td></tr>
+        <tr><td>Org-wide connector on claude.ai</td><td><b>Still pending, and it is the remaining step.</b> It lives in claude.ai, not Entra, and
             <b>only an Owner or Primary Owner can do it</b> (Organization settings → Connectors → Add). A Microsoft admin cannot, however
             senior. If the person you are asking does not see a Connectors section, they are not an Owner and no amount of Entra work will
             change that. Adding it makes the connector available across the org, which is expected and by design (see the note below).</td></tr>
-        <tr><td>Entra app registration <code>${ENTRA_APP}</code></td><td>Exists and is admin-consented for the SharePoint document reading. Still to confirm: the <code>MCP.Access</code> delegated scope is consented, and Claude's callback URI is registered.</td></tr>
+        <tr><td>Entra app registration <code>${ENTRA_APP}</code></td><td>Confirmed working 5 Aug: Claude's callback URI is registered, and
+            <code>MCP.Access</code> consents <b>user-side</b> with no admin grant (the blank "Granted for Setty" status on the API permissions
+            page is cosmetic). <b>Invariant: the manifest must keep <code>api.requestedAccessTokenVersion = 2</code></b> (set 5 Aug 2026;
+            the default <code>null</code> means v1 tokens, which the server rejects; full story in the Authentication card below).</td></tr>
         <tr><td>Local Python bridge (per-device)</td><td><b>Deprecated — being retired.</b> Pilot-era install; see the warning under the admin steps below. Note the server still accepts the pilot shared secret, so any surviving install keeps working until <code>MCP_SHARED_SECRET</code> is rotated — rotation is what actually decommissions it.</td></tr>
       </tbody></table>
       <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector is read-only and returns the same
@@ -1240,6 +1260,14 @@ function renderMcp() {
       <ul style="margin-top:8px">
         <li><b>Entra app for the connector:</b> <code>${ENTRA_APP}</code>, exposing scope <code>api://${ENTRA_APP}/MCP.Access</code>.</li>
         <li><b>Accepted audiences:</b> <code>${ENTRA_APP}</code> or <code>api://${ENTRA_APP}</code>; tokens from any other tenant are rejected.</li>
+        <li><b style="color:var(--amber)">Token version is an invariant (found the hard way, 5 Aug 2026):</b> the app manifest must keep
+            <code>api.requestedAccessTokenVersion = 2</code>. Entra's default is <code>null</code>, which means <b>v1-format tokens</b>
+            whose issuer reads <code>sts.windows.net/…</code>. The server validates the v2 issuer only
+            (<code>login.microsoftonline.com/&lt;tenant&gt;/v2.0</code>, <code>index.ts</code> in <code>verifyEntraToken()</code>), so with
+            the default in place <b>every sign-in succeeds at Microsoft and every request then fails with 401</b>. The client shows no
+            error: it silently retries <code>initialize</code> (observed: a dozen attempts in under half a minute) and claude.ai reports
+            <i>"This connector has no tools available."</i> If that setting is ever reset, this is the symptom. After correcting it,
+            Disconnect and reconnect the connector: tokens are minted at connect time, so an existing connection keeps its old-format token.</li>
         <li><b>Discovery metadata — fixed in v31 (25 Jul 2026):</b> <code>/.well-known/oauth-protected-resource</code> now advertises
             <code>resource</code> = <code>api://${ENTRA_APP}</code>, which matches the scope Claude requests
             (<code>api://${ENTRA_APP}/MCP.Access</code>). Earlier versions advertised the Supabase function URL as the resource
@@ -1283,7 +1311,12 @@ function renderMcp() {
             this with a custom role, because connector permissions only cover connectors an Owner has <i>already</i> added.</li>
         <li><b>Give Claude the OAuth client:</b> Entra ID does <b>not</b> support automatic (dynamic) client registration, so open the connector's <b>Advanced settings</b> and enter OAuth Client ID <code>${ENTRA_APP}</code> plus a client secret. <b>IT should create their own secret</b> in the app registration (Certificates &amp; secrets &rarr; New client secret) and paste it straight in, rather than having one sent to them: the value then never travels through email or chat, and connector sign-in stays independent of the Graph secret described above. Leave every other secret row alone.</li>
         <li><b>Authorize Claude's callback in Entra:</b> app registration <code>${ENTRA_APP}</code> → Authentication. For <b>claude.ai in the browser</b>: redirect URI <code>https://claude.ai/api/mcp/auth_callback</code> under the <b>Web</b> platform. For <b>Claude Desktop / Claude Code</b>: they use a localhost loopback instead — add <code>http://localhost</code> and <code>http://127.0.0.1</code> under "Mobile and desktop applications" and set "Allow public client flows" to Yes. If sign-in fails with <b>AADSTS50011</b> (redirect mismatch), copy the exact URI out of that error into the registration.</li>
-        <li><b>Consent (the usual blocker here):</b> this tenant disables user self-consent for <i>everything</i>, so users hit <b>AADSTS65001</b> until an admin consents. The <code>MCP.Access</code> delegated permission must appear under the app's <b>API permissions</b> list (not just "Expose an API") — then IT clicks <b>Grant admin consent for Setty</b> there. One click, tenant-wide, permanent.</li>
+        <li><b>Consent (corrected 5 Aug 2026):</b> earlier versions of this page said the tenant blocks all user self-consent and that an
+            admin grant was required first. <b>The first real sign-in disproved that:</b> <code>MCP.Access</code> consented user-side with
+            no admin involved, and the blank "Granted for Setty and Associates" status on the API permissions page is cosmetic, not a
+            blocker. So expect consent to just work. If a user does hit <b>AADSTS65001</b>, an admin can still clear it for everyone with
+            <b>Grant admin consent for Setty</b> under the app's API permissions, and note the consent prompt always renders the app's
+            <i>entire</i> permission list even when only one scope is new, so it looks bigger than what is being granted.</li>
         <li><b>Users enable it:</b> each person turns the connector on under Settings → Connectors in claude.ai; the first use walks them through the Microsoft sign-in. After that they can just ask — "what's open on SAPX256001?" — and Claude uses the PMS tools.</li>
       </ol>
       <p style="font-size:12.5px;border-left:3px solid var(--ok,#15803d);padding-left:10px">
@@ -1318,12 +1351,13 @@ function renderMcp() {
         <tr><td>Connector won't add / OAuth never starts</td><td>Open the <b>OAuth discovery metadata</b> link — it must return JSON naming the Microsoft login server. Confirm the URL you registered ends exactly in <code>/mcp</code>.</td></tr>
         <tr><td>OAuth starts but Claude can't register itself</td><td>That's the Entra no-dynamic-registration limitation — paste the client ID into the connector's Advanced settings (step 2 above).</td></tr>
         <tr><td>Microsoft error <b>AADSTS50011</b> (redirect URI mismatch)</td><td>Add the exact callback URI from the error to app registration <code>${ENTRA_APP}</code>.</td></tr>
-        <tr><td>Microsoft error <b>AADSTS65001 / 90094</b> (needs approval)</td><td>Admin consent hasn't been granted for <code>MCP.Access</code> — step 4 above. Expected on first setup: this tenant blocks all self-consent.</td></tr>
+        <tr><td><b>Connected, but "This connector has no tools available"</b></td><td><b>This is an auth failure wearing a tools costume</b> (diagnosed on the wire, 5 Aug 2026). The client's <code>initialize</code> is getting 401 from the server and it retries silently instead of surfacing an error, so the UI concludes the server has no tools. Check in order: (1) the app manifest still has <code>requestedAccessTokenVersion = 2</code> (the Authentication card explains); (2) remove the connector and <b>re-add</b> it, because tool inventories are enumerated when a connector is <i>added</i> and editing an entry does not re-enumerate; (3) watch the traffic directly with <code>npx wrangler tail setty-pms-mcp</code> from <code>mcp-proxy/</code>, which logs each request's MCP method and the upstream status, so "who is failing" stops being a debate.</td></tr>
+        <tr><td>Microsoft error <b>AADSTS65001 / 90094</b> (needs approval)</td><td>User consent should work on this tenant (proven 5 Aug 2026), so this error is <i>not</i> expected. If it appears anyway, an admin grants <code>MCP.Access</code> tenant-wide: step 4 above.</td></tr>
         <tr><td>Microsoft error <b>9010010</b> (<i>resource parameter doesn't match the requested scopes</i>)</td><td>The server's discovery metadata and the requested scope disagree on the resource identifier. <b>Fixed server-side in v31</b> — open the <b>OAuth discovery metadata</b> link above and confirm <code>resource</code> reads <code>api://${ENTRA_APP}</code> (not the Supabase URL). If it does and sign-in still fails, remove and re-add the connector so Claude re-reads the metadata rather than a cached copy.</td></tr>
         <tr><td>Signed in, but every tool call returns Unauthorized</td><td>The token Claude got isn't for our API — verify the connector requests scope <code>api://${ENTRA_APP}/MCP.Access</code> (audience mismatch is rejected server-side), and that the account is in the Setty tenant.</td></tr>
         <tr><td>First question times out, second works</td><td>Cold start: the function loads the portfolio on first use, then caches for 5 minutes. A keep-warm job pings /health every 2 minutes, but the first call right after a deploy can still be slow — one retry is normal.</td></tr>
         <tr><td>Claude Desktop shows the connector "offline" intermittently</td><td>That's the local bridge, not the server (the server logs show calls completing in 1–2.5s). Preferred fix: retire the bridge and use the OAuth connector. If a bridge must stay up temporarily and its config uses <code>npx -y mcp-remote</code>, pin a known-good version (e.g. <code>mcp-remote@0.1.37</code>) so it stops re-downloading "latest" on every launch.</td></tr>
-        <tr><td>A newly added tool doesn't show up</td><td>MCP clients cache the tool list at connect time — disconnect/reconnect the connector (or restart Desktop) after any server update.</td></tr>
+        <tr><td>A newly added tool doesn't show up</td><td>MCP clients cache the tool list at connect time: disconnect/reconnect the connector (or restart Desktop) after any server update. For claude.ai connector <i>entries</i> the cache is stickier still: enumeration happens when the connector is added, so after server-side changes remove and re-add the entry rather than editing it.</td></tr>
         <tr><td>Everything worked, then stopped for everyone</td><td>Check whether the shared secret was rotated or the function was redeployed mid-conversation; re-try, then check Supabase function logs.</td></tr>
         <tr><td><b>"I'm an admin and there's no Connectors section"</b></td><td>Only an <b>Owner or Primary Owner</b> can add a custom connector. The section is absent for other roles, not greyed out, so it reads as a missing feature. Confirm the role in claude.ai before anything else — this is the single most common stall on this integration.</td></tr>
       </tbody></table>
