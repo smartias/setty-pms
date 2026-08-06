@@ -1,3 +1,5 @@
-# These files are downloaded and run on Windows verbatim — serve them CRLF.
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
+# These files are downloaded from Pages and run on Windows VERBATIM — the
+# repo blob is what gets served, so store the actual CRLF bytes untouched.
+# (eol=crlf would be wrong: it stores LF and only converts on checkout.)
+*.cmd -text
+*.ps1 -text
