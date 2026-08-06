@@ -51,18 +51,125 @@ async function getProjects(): Promise<any[]> {
   // Pull ONLY the sub-fields the portfolio-wide tools use — EXCLUDING the fat emails[]
   // array (~53% of the blob; email tools query pms_project_emails directly). This halves
   // the cold-cache load (~18MB -> ~9MB). Single-project tools use getProjectById (full blob).
+  // The identifying scalars below are pulled so a project can be found by how
+  // someone DESCRIBES it ("the feasibility study with SCA for Morphosis")
+  // rather than only by its own name. They are short strings, so they cost
+  // almost nothing next to the arrays; emails[] is the field this projection
+  // exists to keep out, and it stays out.
   const SLIM = "pid:project->>id,name:project->>name,projectNumber:project->>projectNumber," +
     "status:project->>status,owner:project->>owner,archived:project->archived," +
+    "prime:project->>prime,clientName:project->>clientName,projectType:project->>projectType," +
+    "projectCity:project->>projectCity,projectState:project->>projectState," +
+    "buildingCategory:project->>buildingCategory,contractNumber:project->>contractNumber," +
+    "primeProjectNumber:project->>primeProjectNumber," +
+    // Term-contract linkage. Without this every task order looks unparented and
+    // list_term_contracts reports 0 work under every master agreement.
+    "isTaskOrder:project->isTaskOrder,taskOrderTermContractId:project->>taskOrderTermContractId," +
     "milestones:project->milestones,rfis:project->rfis,submittals:project->submittals,notes:project->notes";
   const rows = await sbGetAll("pms_projects?select=" + SLIM + "&order=id.asc");
   const data = rows.map((r: any) => ({
     id: r.pid, name: r.name, projectNumber: r.projectNumber, status: r.status,
     owner: r.owner, archived: r.archived === true,
+    prime: r.prime, clientName: r.clientName, projectType: r.projectType,
+    projectCity: r.projectCity, projectState: r.projectState,
+    buildingCategory: r.buildingCategory, contractNumber: r.contractNumber,
+    primeProjectNumber: r.primeProjectNumber,
+    isTaskOrder: r.isTaskOrder === true, taskOrderTermContractId: r.taskOrderTermContractId,
     milestones: r.milestones ?? [], rfis: r.rfis ?? [], submittals: r.submittals ?? [], notes: r.notes ?? [],
   })).filter((p: any) => p.id || p.projectNumber || p.name);
   _projCache = { at: now, data };
   return data;
 }
+
+// ── The Global Directory ─────────────────────────────────────────────────────
+// 766 companies and ~2,600 people the connector could not see at all. Loaded
+// whole because the whole point is searching across every field of it, and it
+// is small: the fat arrays live on projects, not here.
+let _clientCache: { at: number; data: any[] } | null = null;
+async function getClients(): Promise<any[]> {
+  const now = Date.now();
+  if (_clientCache && (now - _clientCache.at) < 300000) return _clientCache.data;
+  const rows = await sbGetAll("pms_clients?select=client&order=id.asc");
+  const data = (rows || []).map((r: any) => r.client).filter(Boolean);
+  _clientCache = { at: now, data };
+  return data;
+}
+
+// Directory vocabulary, as it is actually stored. Callers say "WBE architect"
+// or "woman owned MEP firm", so the spoken forms map onto the stored labels.
+const COMPANY_TYPES = [
+  "Architect", "Specialty Consultant", "Civil Engineer", "Construction Manager",
+  "MEPFP Engineer", "Structural Engineer", "Environmental", "Vendor", "Agency",
+  "General Contractor", "Trade Contractor", "Code/Permit Consultant",
+  "Cost Estimator", "Developer", "Owners Rep",
+];
+const TYPE_ALIASES: Record<string, string> = {
+  architect: "Architect", architecture: "Architect", architectural: "Architect",
+  mep: "MEPFP Engineer", mepfp: "MEPFP Engineer", mechanical: "MEPFP Engineer",
+  electrical: "MEPFP Engineer", plumbing: "MEPFP Engineer",
+  structural: "Structural Engineer", civil: "Civil Engineer",
+  cm: "Construction Manager", "construction manager": "Construction Manager",
+  gc: "General Contractor", "general contractor": "General Contractor",
+  contractor: "Trade Contractor", estimator: "Cost Estimator",
+  expediter: "Code/Permit Consultant", code: "Code/Permit Consultant",
+  environmental: "Environmental", vendor: "Vendor", agency: "Agency",
+  developer: "Developer", "owners rep": "Owners Rep",
+  consultant: "Specialty Consultant",
+};
+// Only three certifications are recorded, and each is spoken several ways.
+const CERT_ALIASES: Record<string, string> = {
+  wbe: "WBE", "woman owned": "WBE", "women owned": "WBE", "woman-owned": "WBE",
+  mbe: "MBE", "minority owned": "MBE", "minority-owned": "MBE",
+  mwbe: "WBE", // an MWBE ask is satisfied by either; WBE is the narrower read
+  sdvosb: "SDVOSB", sdvob: "SDVOSB", veteran: "SDVOSB", "veteran owned": "SDVOSB",
+};
+
+const canonType = (s: string): string | null => {
+  const k = String(s || "").toLowerCase().trim();
+  if (!k) return null;
+  const exact = COMPANY_TYPES.find((t) => t.toLowerCase() === k);
+  if (exact) return exact;
+  return TYPE_ALIASES[k] ?? null;
+};
+const canonCert = (s: string): string | null => {
+  const k = String(s || "").toLowerCase().trim();
+  if (!k) return null;
+  if (["wbe", "mbe", "sdvosb"].includes(k)) return k.toUpperCase();
+  return CERT_ALIASES[k] ?? null;
+};
+
+const contactsOf = (c: any): any[] => Array.isArray(c?.contacts) ? c.contacts : [];
+const isInactiveContact = (p: any) => p?.inactive === true;
+
+// Person names are matched by PREFIX per token, which is what makes "Daniel H"
+// find "Daniel Heuberger". A substring match would need the full surname, and
+// an exact match would need the spelling, neither of which the asker has.
+function personMatches(personName: string, terms: string[]): boolean {
+  const tokens = String(personName || "").toLowerCase().replace(/['"]/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+  if (!tokens.length) return false;
+  return terms.every((t) => tokens.some((tok) => tok.startsWith(t)));
+}
+
+// ── Term contracts and the staff roster ─────────────────────────────────────
+// Both live in ONE row: pms_meta where id = 'app_meta', under data.termContracts
+// and data.staff.
+//
+// ⚠️ NOT pms_data.term_contracts. That table looks authoritative and is a
+// FOSSIL: last written 2026-05-01, holding 81 projects when there are 151 and
+// 8 term contracts when there are 9. Everything else migrated to per-row tables
+// and it was left behind. Verified 2026-08-05 by adding a term contract in the
+// live app and watching which one moved: pms_meta updated, pms_data did not.
+let _metaCache: { at: number; data: any } | null = null;
+async function getAppMeta(): Promise<any> {
+  const now = Date.now();
+  if (_metaCache && (now - _metaCache.at) < 300000) return _metaCache.data;
+  const rows = await sbGet("pms_meta?select=data&id=eq.app_meta&limit=1");
+  const data = (Array.isArray(rows) ? rows[0]?.data : null) ?? {};
+  _metaCache = { at: now, data };
+  return data;
+}
+const termContractsOf = (m: any): any[] => Array.isArray(m?.termContracts) ? m.termContracts : [];
+const staffOf = (m: any): any[] => Array.isArray(m?.staff) ? m.staff : [];
 
 async function getProjectById(pid: string): Promise<any | null> {
   const rows = await sbGet("pms_projects?select=project&project->>id=eq." + encodeURIComponent(pid));
@@ -283,6 +390,9 @@ function summarizeProject(p: any): Record<string, unknown> {
   return {
     name: p.name, projectNumber: p.projectNumber, status: p.status,
     ownerAgency: p.owner || null,
+    // Returned so a caller can see WHY a description matched, and because a
+    // pipeline job is often known by its prime rather than by its own name.
+    prime: p.prime || null,
     nextMilestone: next ? { name: next.name, due: next.dueDate } : null,
     overdueCount: overdue.length, openActionItems: openActionItems(p).length,
     archived: !!p.archived,
@@ -291,7 +401,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-05-align-project-param";
+const BUILD = "2026-08-06-directory-tools-2";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -437,25 +547,373 @@ const _rawTool = mcp.tool.bind(mcp);
   });
 };
 
+// ── Project search ───────────────────────────────────────────────────────────
+// People do not name a project the way the record does. They describe it:
+// "the feasibility study with SCA for Morphosis" names the TYPE, the AGENCY by
+// acronym, and the PRIME, and not one of those is the project's name (which is
+// "St. Therese of Lisieux Feasibility Study"). The old search failed that
+// completely: it looked only at name / number / status / owner, and it required
+// the WHOLE query to appear contiguously in one of them, so any phrase a person
+// would actually say returned nothing.
+//
+// Now every term is scored against every identifying field. A project has to
+// match every meaningful term to be returned, so precision holds, but the terms
+// may land in DIFFERENT fields, which is what makes a description work.
+
+// Words that carry no signal in a project description. Without this, "with" and
+// "for" are terms that nothing matches, and a require-all-terms rule then
+// returns nothing for every naturally phrased query.
+const SEARCH_STOPWORDS = new Set([
+  "a", "an", "the", "with", "for", "of", "on", "at", "in", "and", "to", "by",
+  "project", "job", "study", "our",
+]);
+
+// Agencies are written in full on the record but spoken as acronyms. Mapping is
+// one-way on purpose: typing "SCA" should find "School Construction Authority",
+// and the full name still matches itself by ordinary term overlap.
+const AGENCY_ALIASES: Record<string, string> = {
+  sca: "school construction authority",
+  ddc: "department of design and construction",
+  dasny: "dormitory authority",
+  cuny: "city university",
+  suny: "state university",
+  sucf: "state university construction fund",
+  ogs: "office of general services",
+  edc: "economic development corporation",
+  dep: "department of environmental protection",
+  dot: "department of transportation",
+  nycha: "housing authority",
+  hpd: "housing preservation development",
+};
+
+function projectHaystack(p: any): string {
+  return [
+    p.name, p.projectNumber, p.status, p.owner, p.prime, p.clientName,
+    p.projectType, p.projectCity, p.projectState, p.buildingCategory,
+    p.contractNumber, p.primeProjectNumber,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function scoreProjectMatch(p: any, terms: string[]): number {
+  if (!terms.length) return 1;
+  const hay = projectHaystack(p);
+  let hits = 0;
+  for (const t of terms) {
+    const alias = AGENCY_ALIASES[t];
+    if (hay.includes(t) || (alias && hay.includes(alias))) hits++;
+  }
+  // Every meaningful term must land somewhere. Partial matching would make
+  // "SCA Morphosis" return every SCA job, which is worse than nothing when the
+  // caller is about to act on the answer.
+  return hits === terms.length ? hits : 0;
+}
+
 mcp.tool("search_projects", {
   description:
-    "Search PMS projects by name, project number, status, or owner agency (e.g. DASNY, " +
-    "CUNY, NYC DDC, SUNY Upstate). Returns compact summaries (each includes ownerAgency). " +
-    "Leave query empty to list everything. Excludes archived (closed-out) projects by " +
-    "default — pass includeArchived: true to also search the archive.",
+    "Find PMS projects by anything that identifies them: name, project number, status, owner " +
+    "agency (DASNY, SCA, CUNY, NYC DDC, SUNY...), the PRIME or client firm, project type, or " +
+    "city. Terms may span several of those, so a plain description works: 'feasibility study " +
+    "with SCA for Morphosis' finds the right job even though none of those words is its name. " +
+    "Agency acronyms are understood. Returns compact summaries including ownerAgency and prime. " +
+    "Leave query empty to list everything. Excludes archived (closed-out) projects by default; " +
+    "pass includeArchived: true to search the archive too.",
   inputSchema: z.object({
-    query: z.string().optional().describe("Free text: part of a name, number, status, or owner agency"),
+    query: z.string().optional().describe("Free text: name, number, status, agency, prime/client firm, project type or city. A description spanning several of these works."),
     includeArchived: z.boolean().optional().describe("Include archived/closed-out projects (default false)"),
   }),
   handler: async ({ query, includeArchived }) => {
     const projects = await getProjects();
     const pool = includeArchived ? projects : projects.filter((p) => !p.archived);
-    const q = (query ?? "").toLowerCase().trim();
-    const matched = q
-      ? pool.filter((p) => [p.name, p.projectNumber, p.status, p.owner].filter(Boolean)
-          .some((f: string) => String(f).toLowerCase().includes(q)))
+    const raw = (query ?? "").toLowerCase().trim();
+    const terms = raw
+      ? raw.split(/[^a-z0-9.#&-]+/).filter((t) => t && t.length > 1 && !SEARCH_STOPWORDS.has(t))
+      : [];
+
+    const matched = terms.length
+      ? pool.map((p) => ({ p, s: scoreProjectMatch(p, terms) }))
+          .filter((r) => r.s > 0)
+          .sort((a, b) => b.s - a.s || String(a.p.name).localeCompare(String(b.p.name)))
+          .map((r) => r.p)
       : pool;
-    return asText({ count: matched.length, includeArchived: !!includeArchived, projects: matched.map(summarizeProject) });
+
+    if (raw && !matched.length) {
+      return asText({
+        count: 0, includeArchived: !!includeArchived, projects: [],
+        interpreted: { terms },
+        reason: `No project matches every term in "${query}".`,
+        nextStep: "Drop the least certain term and try again: every term has to match something. " +
+          "The prime firm, owner agency, project type and city are all searchable, so a partial " +
+          "description usually works better than a full sentence.",
+      });
+    }
+
+    return asText({
+      count: matched.length,
+      includeArchived: !!includeArchived,
+      ...(terms.length ? { interpreted: { terms } } : {}),
+      projects: matched.map(summarizeProject),
+    });
+  },
+});
+
+// ─── THE GLOBAL DIRECTORY: COMPANIES, PEOPLE, TERM CONTRACTS ─────────────────
+// Three tools over data the connector could not previously see at all: 766
+// firms, ~2,600 external people, 86 staff and 9 master agreements. The firm's
+// own answer to "who do we know who can do this".
+
+mcp.tool("search_companies", {
+  description:
+    "Search the firm's GLOBAL DIRECTORY of outside companies (766 of them) by what they DO and " +
+    "what they are CERTIFIED as. This is the tool for teaming and outreach questions: " +
+    "\"I need a WBE certified architect for an SCA project\", \"who do we know for cost estimating\", " +
+    "\"find MBE structural engineers\". " +
+    "Certifications recorded are MBE, WBE and SDVOSB, and spoken forms work ('woman owned' = WBE, " +
+    "'minority owned' = MBE, 'veteran owned' = SDVOSB). Company types include Architect, MEPFP " +
+    "Engineer, Structural Engineer, Civil Engineer, Construction Manager, General Contractor, " +
+    "Trade Contractor, Cost Estimator, Code/Permit Consultant, Environmental, Specialty Consultant, " +
+    "Vendor, Agency, Developer and Owners Rep; common shorthand is understood ('MEP', 'GC', 'CM'). " +
+    "Results say whether we have WORKED WITH them before and how many contacts we hold, so a " +
+    "known firm can be preferred over a cold one. Use find_contact to get a person's email.",
+  inputSchema: z.object({
+    query: z.string().optional().describe("Free text on the company name, e.g. 'Dattner'. Optional — omit it and filter by type/cert instead."),
+    type: z.string().optional().describe("What they do, e.g. 'Architect', 'MEP', 'Structural Engineer', 'GC'"),
+    cert: z.string().optional().describe("Certification: WBE, MBE or SDVOSB. 'woman owned' / 'minority owned' / 'veteran owned' also work."),
+    limit: z.number().optional().describe("Max results (default 25, max 100)"),
+  }),
+  handler: async ({ query, type, cert, limit }) => {
+    const lim = Math.min(Math.max(limit ?? 25, 1), 100);
+    const [clients, projects] = await Promise.all([getClients(), getProjects()]);
+
+    const wantType = type ? canonType(type) : null;
+    if (type && !wantType) {
+      return asText({
+        error: `"${type}" is not a company type I recognise.`,
+        nextStep: "Use one of: " + COMPANY_TYPES.join(", ") + ". Shorthand like MEP, GC or CM also works.",
+      });
+    }
+    const wantCert = cert ? canonCert(cert) : null;
+    if (cert && !wantCert) {
+      return asText({
+        error: `"${cert}" is not a certification we record.`,
+        nextStep: "Only MBE, WBE and SDVOSB are tracked. 'woman owned', 'minority owned' and 'veteran owned' map onto those.",
+      });
+    }
+
+    // Firms we have actually worked with, by prime/client name on any project.
+    // A directory hit we already know is worth more than a cold one.
+    const worked = new Map<string, number>();
+    for (const p of projects) {
+      for (const nm of [p.prime, p.clientName]) {
+        const k = String(nm || "").toLowerCase().trim();
+        if (k) worked.set(k, (worked.get(k) ?? 0) + 1);
+      }
+    }
+
+    const q = String(query || "").toLowerCase().trim();
+    const rows = clients.filter((c: any) => {
+      if (wantType && !(Array.isArray(c?.types) && c.types.includes(wantType))) return false;
+      if (wantCert && !(Array.isArray(c?.certs) && c.certs.includes(wantCert))) return false;
+      if (q && !String(c?.name || "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+
+    if (!rows.length) {
+      return asText({
+        count: 0, companies: [],
+        interpreted: { query: query ?? null, type: wantType, cert: wantCert },
+        reason: "No company in the directory matches all of those.",
+        nextStep: wantType && wantCert
+          ? `Try dropping one filter: there may be no ${wantCert} ${wantType} on file yet.`
+          : "Try a broader type, or search without the name.",
+      });
+    }
+
+    const scored = rows.map((c: any) => {
+      const priorProjects = worked.get(String(c.name || "").toLowerCase().trim()) ?? 0;
+      return { c, priorProjects };
+    }).sort((a, b) =>
+      b.priorProjects - a.priorProjects ||
+      String(a.c.name).localeCompare(String(b.c.name)));
+
+    return asText({
+      count: scored.length,
+      returned: Math.min(scored.length, lim),
+      interpreted: { query: query ?? null, type: wantType, cert: wantCert },
+      companies: scored.slice(0, lim).map(({ c, priorProjects }) => ({
+        name: c.name,
+        types: c.types ?? [],
+        certs: c.certs ?? [],
+        address: c.address || null,
+        contacts: contactsOf(c).filter((p: any) => !isInactiveContact(p)).length,
+        ...(priorProjects ? { workedWithUs: true, priorProjects } : { workedWithUs: false }),
+      })),
+      note: "Certifications are as recorded in our directory, not a live check against the " +
+        "certifying agency. Confirm current status with the firm before relying on it in a submission.",
+    });
+  },
+});
+
+mcp.tool("find_contact", {
+  description:
+    "Find a PERSON and their contact details. Searches ~2,600 people across the firm's outside " +
+    "directory AND the 86-person Setty staff roster. " +
+    "Built for the way people actually ask: \"can I get Daniel H from Dattner's email\" works, " +
+    "because names are matched per word by PREFIX, so a first name plus an initial is enough. " +
+    "Give `company` to disambiguate when a first name is common. " +
+    "Returns name, title, company and email; pass includePhone to get phone numbers too. " +
+    "For who is on ONE project specifically, use get_project instead — its `directory` is that " +
+    "job's own contact list, including people picked up from filed email.",
+  inputSchema: z.object({
+    name: z.string().describe("Person's name, or part of it. 'Daniel H' matches 'Daniel Heuberger'."),
+    company: z.string().optional().describe("Narrow to one firm, e.g. 'Dattner'"),
+    includePhone: z.boolean().optional().describe("Include phone numbers (default false)"),
+    limit: z.number().optional().describe("Max results (default 15, max 50)"),
+  }),
+  handler: async ({ name, company, includePhone, limit }) => {
+    const lim = Math.min(Math.max(limit ?? 15, 1), 50);
+    const terms = String(name || "").toLowerCase().replace(/['"]/g, "")
+      .split(/[^a-z0-9]+/).filter(Boolean);
+    if (!terms.length) {
+      return asText({ error: "No name given.", nextStep: "Pass a name or part of one, e.g. name:'Daniel H'." });
+    }
+    const co = String(company || "").toLowerCase().trim();
+
+    const [clients, meta] = await Promise.all([getClients(), getAppMeta()]);
+    const out: any[] = [];
+
+    for (const c of clients) {
+      const cname = String(c?.name || "");
+      if (co && !cname.toLowerCase().includes(co)) continue;
+      for (const p of contactsOf(c)) {
+        if (!personMatches(p?.name, terms)) continue;
+        out.push({
+          name: p.name, title: p.title || null, company: cname,
+          email: p.email || null,
+          ...(includePhone ? { phone: p.phone || null } : {}),
+          ...(p.lastContacted ? { lastContacted: p.lastContacted } : {}),
+          ...(isInactiveContact(p) ? { inactive: true } : {}),
+          source: "directory",
+        });
+      }
+    }
+    // Setty staff, unless the caller narrowed to an outside firm.
+    if (!co || "setty".includes(co) || co.includes("setty")) {
+      for (const s of staffOf(meta)) {
+        if (!personMatches(s?.name, terms)) continue;
+        out.push({
+          name: s.name, title: s.role || null, company: "Setty & Associates",
+          email: s.email || null,
+          ...(Array.isArray(s.disciplines) && s.disciplines.length ? { disciplines: s.disciplines } : {}),
+          ...(s.inactive ? { inactive: true } : {}),
+          source: "staff roster",
+        });
+      }
+    }
+
+    if (!out.length) {
+      return asText({
+        count: 0, people: [],
+        interpreted: { terms, company: company ?? null },
+        reason: `Nobody matching "${name}"${company ? ` at ${company}` : ""}.`,
+        nextStep: "Try just the surname, or drop the company. search_companies confirms how a firm is " +
+          "spelled in the directory, which is often the reason a company filter finds nothing.",
+      });
+    }
+    // Active first, then people we have been in touch with most recently.
+    out.sort((a, b) =>
+      (a.inactive ? 1 : 0) - (b.inactive ? 1 : 0) ||
+      String(b.lastContacted || "").localeCompare(String(a.lastContacted || "")) ||
+      String(a.name).localeCompare(String(b.name)));
+
+    return asText({
+      count: out.length,
+      returned: Math.min(out.length, lim),
+      interpreted: { terms, company: company ?? null },
+      people: out.slice(0, lim),
+    });
+  },
+});
+
+mcp.tool("list_term_contracts", {
+  description:
+    "The firm's TERM CONTRACTS / master agreements (on-call contracts, master consultant and " +
+    "master services agreements) and the task orders running under each. Use for \"what work is " +
+    "running under the Perkins Eastman master agreement\", \"which term contracts do we have with " +
+    "the SCA\", \"which masters have nothing running\", or when someone mentions an on-call or " +
+    "task-order job and you need the parent contract. Each entry gives the contract number, client, " +
+    "status, dates, ceiling value where recorded, and the task-order projects linked to it.",
+  inputSchema: z.object({
+    query: z.string().optional().describe("Free text on contract name, client or contract number, e.g. 'Perkins Eastman' or 'EDC'"),
+    includeExpired: z.boolean().optional().describe("Include contracts whose expiration date has passed (default true; they still carry history)"),
+  }),
+  handler: async ({ query, includeExpired }) => {
+    const [meta, projects] = await Promise.all([getAppMeta(), getProjects()]);
+    const contracts = termContractsOf(meta);
+    if (!contracts.length) {
+      return asText({
+        count: 0, termContracts: [],
+        reason: "No term contracts are recorded.",
+        nextStep: "They are maintained in the PMS Term Contracts tab.",
+      });
+    }
+
+    const byParent = new Map<string, any[]>();
+    for (const p of projects) {
+      const parent = String(p?.taskOrderTermContractId || "").trim();
+      if (!parent) continue;
+      if (!byParent.has(parent)) byParent.set(parent, []);
+      byParent.get(parent)!.push(p);
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const q = String(query || "").toLowerCase().trim();
+    const rows = contracts.filter((t: any) => {
+      if (q) {
+        const hay = [t?.name, t?.client, t?.contractNumber, t?.description].filter(Boolean).join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (includeExpired === false) {
+        const exp = String(t?.expirationDate || "").slice(0, 10);
+        if (exp && exp < today) return false;
+      }
+      return true;
+    });
+
+    if (!rows.length) {
+      return asText({
+        count: 0, termContracts: [],
+        reason: `No term contract matches "${query}".`,
+        nextStep: "Call it with no query to see all of them; there are only a handful.",
+      });
+    }
+
+    const shaped = rows.map((t: any) => {
+      const kids = (byParent.get(String(t?.id || "")) ?? [])
+        .sort((a, b) => String(a.projectNumber || a.name).localeCompare(String(b.projectNumber || b.name)));
+      const exp = String(t?.expirationDate || "").slice(0, 10);
+      return {
+        name: t?.name ?? null,
+        client: t?.client || null,
+        contractNumber: t?.contractNumber || null,
+        status: t?.contractStatus || null,
+        startDate: t?.startDate || null,
+        expirationDate: t?.expirationDate || null,
+        ...(exp && exp < today ? { expired: true } : {}),
+        ceilingValue: t?.ceilingValue ?? null,
+        ...(t?.folderUrl ? { folderUrl: t.folderUrl } : {}),
+        taskOrderCount: kids.length,
+        taskOrders: kids.map((k: any) => ({
+          name: k.name, projectNumber: k.projectNumber || null, status: k.status,
+        })),
+      };
+    }).sort((a, b) => b.taskOrderCount - a.taskOrderCount || String(a.name).localeCompare(String(b.name)));
+
+    return asText({
+      count: shaped.length,
+      termContracts: shaped,
+      note: "Task orders are projects whose taskOrderTermContractId points at the contract. A contract " +
+        "showing 0 does not mean no work was ever done under it, only that no project in PMS is linked to it.",
+    });
   },
 });
 
