@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open in Explorer — Setty PMS</title>
+<!--
+  Bridge page for the settypms: one-click Explorer handler.
+
+  Why this exists: the Outlook add-in's task pane can only open http/https
+  URLs (Office.context.ui.openBrowserWindow rejects custom protocols), so it
+  opens THIS page, and this page fires the settypms: link from inside the
+  real browser, where the handler (see SettyPMS-Explorer-Setup.cmd in this
+  folder) is registered.
+
+  URL contract:  open.html?folder=<encodeURIComponent(project folder name)>
+  URLSearchParams.get() decodes exactly ONCE, and we re-encode exactly once
+  when building the settypms: URI — so folder names with a literal "%"
+  ("100% CD") survive. Do not add another decode here.
+-->
+<style>
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #0f1420; color: #e5e9f0;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .card { max-width: 480px; padding: 32px 36px; background: #171d2b; border: 1px solid #2a3347; border-radius: 12px; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  .folder { color: #8ab4f8; font-weight: 600; word-break: break-all; }
+  p { font-size: 13.5px; color: #9aa4b5; line-height: 1.5; }
+  button, .btn { background: #2563eb; color: #fff; border: none; border-radius: 8px; padding: 9px 16px;
+         font-size: 13.5px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
+  .ghost { background: none; border: 1px solid #2a3347; color: #9aa4b5; margin-left: 8px; }
+  .hint { font-size: 12px; color: #6b7484; margin-top: 18px; border-top: 1px solid #2a3347; padding-top: 12px; }
+  .hint a { color: #8ab4f8; }
+  #copyMsg { font-size: 12px; color: #34d399; margin-left: 8px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📂 Opening in File Explorer…</h1>
+  <p>Project folder: <span class="folder" id="folderName">(none)</span></p>
+  <p>If nothing happened, your browser may be asking to allow "SettyPMS" links
+     (tick "always allow"), or the one-click handler isn't set up on this
+     computer yet.</p>
+  <div>
+    <button id="openBtn">Open again</button>
+    <button id="copyBtn" class="ghost">Copy local path</button>
+    <span id="copyMsg"></span>
+  </div>
+  <div class="hint">
+    No handler yet? Download the one-time
+    <a href="SettyPMS-Explorer-Setup.cmd" download>setup file</a>
+    (readable source <a href="https://github.com/smartias/setty-pms/tree/main/explorer-bridge" target="_blank" rel="noreferrer">here</a>),
+    run it, then click "Open again". No admin rights needed.
+  </div>
+</div>
+<script>
+  // ONE decode (URLSearchParams) + ONE encode below — exact round-trip.
+  var folder = (new URLSearchParams(location.search).get("folder") || "").trim();
+  document.getElementById("folderName").textContent = folder || "(none)";
+
+  function fire() {
+    if (!folder) return;
+    location.href = "settypms:open?folder=" + encodeURIComponent(folder);
+  }
+  document.getElementById("openBtn").onclick = fire;
+
+  // Same-origin bonus: the PMS stores the per-device Explorer root in
+  // localStorage (stage 1's copy-path button). If it's set on this device,
+  // the copy-path fallback works here too.
+  document.getElementById("copyBtn").onclick = function () {
+    var msg = document.getElementById("copyMsg");
+    var root = (localStorage.getItem("pmsExplorerRoot") || "").trim();
+    if (!root) {
+      root = (prompt("Paste the File Explorer path of the folder that CONTAINS your synced project folders:") || "").trim();
+      if (!root) return;
+      localStorage.setItem("pmsExplorerRoot", root);
+    }
+    var path = root.replace(/[\\/]+$/, "") + "\\" + folder;
+    navigator.clipboard.writeText(path).then(function () {
+      msg.textContent = "✓ Copied — Win+E, paste";
+      setTimeout(function () { msg.textContent = ""; }, 3000);
+    }).catch(function () { alert("Could not copy — the path is:\n" + path); });
+  };
+
+  // Auto-fire on load. Browsers that require a user gesture for external
+  // protocols simply no-op here; the "Open again" button is the gesture.
+  if (folder) setTimeout(fire, 250);
+</script>
+</body>
+</html>
