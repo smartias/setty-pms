@@ -291,12 +291,106 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-05-supersession-status";
+const BUILD = "2026-08-05-phase-filter-telemetry";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
+
+// ─── P3.12: TELEMETRY ────────────────────────────────────────────────────────
+// The roadmap rates empty results a P0-grade concern even though the dashboard
+// is P3: one "the connector didn't find it" moment sends someone back to the N:
+// drive for a month, and they do not file a ticket about it. Today nothing
+// records that it happened, so the only gaps we find are the ones someone
+// happens to mention.
+//
+// Instrumented once here rather than in 24 handlers. mcp.tool is wrapped so
+// every tool, including any added later, is covered by construction: a tool
+// that has to be remembered to be instrumented eventually is not.
+//
+// Two rules this must never break:
+//   1. Telemetry cannot fail a tool call. Every path swallows its own errors.
+//   2. Telemetry cannot slow a tool call noticeably. The insert is raced against
+//      a short timeout, so a struggling database costs the caller nothing.
+const TELEMETRY_TIMEOUT_MS = 1500;
+const TELEMETRY_QUERY_MAX = 200;
+
+async function logTelemetry(row: Record<string, unknown>): Promise<void> {
+  try {
+    const insert = fetch(`${SUPABASE_URL}/rest/v1/pms_mcp_telemetry`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+    await Promise.race([
+      insert.then((r) => { if (!r.ok) return r.text().then((t) => console.warn("[telemetry]", r.status, t.slice(0, 200))); }),
+      new Promise((resolve) => setTimeout(resolve, TELEMETRY_TIMEOUT_MS)),
+    ]);
+  } catch (e) {
+    console.warn("[telemetry] insert failed:", String((e as any)?.message ?? e));
+  }
+}
+
+// Classify what the caller actually got. Handlers all return asText(payload),
+// so the payload is the honest signal: a tool that answers "no folder for this
+// project" has NOT served the user, however successful the HTTP call was.
+function classifyResult(payload: any): { outcome: "hit" | "empty" | "error"; resultCount: number | null; detail: string | null } {
+  if (!payload || typeof payload !== "object") return { outcome: "hit", resultCount: null, detail: null };
+  if (payload.error) {
+    return { outcome: "error", resultCount: null, detail: String(payload.error).slice(0, 300) };
+  }
+  const count =
+    typeof payload.count === "number" ? payload.count :
+    Array.isArray(payload.results) ? payload.results.length :
+    Array.isArray(payload.items) ? payload.items.length :
+    Array.isArray(payload.emails) ? payload.emails.length :
+    Array.isArray(payload.notes) ? payload.notes.length :
+    Array.isArray(payload.projects) ? payload.projects.length :
+    null;
+  if (count === 0) {
+    return { outcome: "empty", resultCount: 0, detail: payload.reason ? String(payload.reason).slice(0, 300) : null };
+  }
+  return { outcome: "hit", resultCount: count, detail: null };
+}
+
+const _rawTool = mcp.tool.bind(mcp);
+(mcp as any).tool = (name: string, def: any) => {
+  const inner = def.handler;
+  return _rawTool(name, {
+    ...def,
+    handler: async (args: any) => {
+      const t0 = Date.now();
+      let cls: ReturnType<typeof classifyResult> = { outcome: "hit", resultCount: null, detail: null };
+      try {
+        const res = await inner(args);
+        try {
+          cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
+        } catch { /* not JSON: treat as a hit, the tool answered something */ }
+        return res;
+      } catch (e) {
+        cls = { outcome: "error", resultCount: null, detail: String((e as any)?.message ?? e).slice(0, 300) };
+        throw e;
+      } finally {
+        await logTelemetry({
+          tool: name,
+          project_number: args?.projectNumber ? String(args.projectNumber).slice(0, 120) : null,
+          outcome: cls.outcome,
+          result_count: cls.resultCount,
+          latency_ms: Date.now() - t0,
+          build: BUILD,
+          query: args?.query ? String(args.query).slice(0, TELEMETRY_QUERY_MAX) : null,
+          detail: cls.detail,
+        });
+      }
+    },
+  });
+};
 
 mcp.tool("search_projects", {
   description:
