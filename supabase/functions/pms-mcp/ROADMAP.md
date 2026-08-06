@@ -471,6 +471,37 @@ carries Number, IssueDate, SetName, Recipients and Contents.
 
 ---
 
+## Deferred housekeeping
+
+Not urgent, not forgotten.
+
+### Retire `pms_data`, the fossil singleton
+
+`pms_data` holds `projects`, `term_contracts`, `staff` and `clients` in one row
+and was **last written 2026-05-01**. It carries 81 projects against 151 live, 42
+clients against 766, and 8 term contracts against 9. Everything migrated to
+per-row tables (`pms_projects`, `pms_clients`) or to `pms_meta.app_meta`, and
+nothing appears to read or write it any more.
+
+It is a live trap rather than dead weight: it looks like the authoritative store
+for term contracts and staff, and building `list_term_contracts` on it would
+have shipped a May snapshot presented as current. That nearly happened on
+2026-08-05 and was only caught by adding a record in the app and watching which
+table moved.
+
+Before dropping it:
+
+1. Grep the whole suite for `pms_data` (SettyPMS.html, SettyAdmin.html, the
+   add-in, every Edge Function) and confirm no reader or writer remains.
+2. Check for RLS policies, triggers, views or scheduled jobs referencing it.
+3. Rename rather than drop first: `pms_data_legacy_20260501`. A rename breaks a
+   forgotten caller loudly and is reversible in seconds; a drop is neither.
+4. Leave it renamed for a cycle, watch the logs, then drop.
+
+Owner: unassigned. Raised by Sara 2026-08-06.
+
+---
+
 ## Delivered (2026-08-05)
 
 - **P0.1** `get_current_set`, **P0.3** `find_document` — shipped earlier.
@@ -488,6 +519,28 @@ carries Number, IssueDate, SetName, Recipients and Contents.
   folder name. Columns deliberately not used; see the section above.
 - **P3.12 telemetry** — `pms_mcp_telemetry`, one row per tool call. Found the
   latency problem below within minutes of going live.
+
+### The Global Directory (2026-08-06, not previously on this roadmap)
+
+Raised by Sara: "there should be a company retrieval tool... I need a WBE
+certified Architect for an SCA project", and "can I get Daniel H from Dattner's
+email". Neither was possible: 766 companies, ~2,600 external people, the
+86-person staff roster and 9 master agreements were all invisible to the
+connector.
+
+- **`search_companies`** — filter by what a firm does and what it is certified
+  as, ranked so firms we have worked with come first.
+- **`find_contact`** — person lookup across the outside directory and the staff
+  roster. Prefix-per-word matching is what makes "Daniel H" resolve.
+- **`list_term_contracts`** — the masters and the task orders under each.
+
+**The live store for term contracts and staff is `pms_meta.app_meta`, NOT
+`pms_data`.** See the housekeeping note above; this cost an hour and nearly
+shipped a stale snapshot.
+
+Also worth recording: `get_project` already returns each project's own
+`directory` (92 of 151 projects have one, up to 84 entries), which answers "who
+is on this job" and was not documented anywhere.
 
 ### Latency, found and fixed the same day
 
