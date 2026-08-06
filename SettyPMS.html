@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-06-pms-v97-nyc-onboarding-link";
+    window.__appVersion = "2026-08-06-pms-v98-ask-claude-link";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17383,6 +17383,44 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           })()}
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {/* Ask Claude about this job — opens the user's own Claude seat with a
+              connector-first prompt. Mirrors the Outlook add-in jobcard link
+              (taskpane.js buildJobcard): connector instructed FIRST, inline
+              snapshot kept as a fallback for anyone without the connector. */}
+          <a
+            href={(() => {
+              const today = new Date().toISOString().slice(0, 10);
+              const ms = (project.milestones || []).filter(m => m.dueDate && !isMilestoneDone(m)).sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
+              const nextM = ms.find(m => m.dueDate >= today) || ms[0];
+              const openAI = openActionItemCount(project);
+              const openRfis = (project.rfis || []).filter(r => r.status === "Open" || r.status === "Pending Sub Response").length;
+              // Mirrors SUB_OPEN_STATUSES in the first JSX block (same idiom as archiveBlockers above).
+              const SUB_OPEN = ["Received", "Under Review", "Pending Sub Review"];
+              const openSubs = (project.submittals || []).filter(s => SUB_OPEN.includes(s.status)).length;
+              const lines = [
+                "Brief me on " + (project.projectNumber ? project.projectNumber + " " : "") + (project.name || "this project") +
+                ". Tell me what needs my attention, what's at risk, and what to do next.",
+                "",
+                "Use the Setty PMS connector to answer. Read the recent email history for this project " +
+                "first (including anything I still owe a reply on), then the meeting notes and documents, " +
+                "and cite the specific emails or files you used.",
+                "",
+                "Snapshot from our PMS, as a starting point and a fallback if the connector is unavailable:",
+              ];
+              if (project.status) lines.push("- Status: " + project.status);
+              if (nextM) lines.push("- Next milestone: " + (nextM.name || "Milestone") + " due " + nextM.dueDate);
+              if (openAI > 0) lines.push("- Open action items: " + openAI);
+              if (openRfis > 0) lines.push("- Open RFIs: " + openRfis);
+              if (openSubs > 0) lines.push("- Submittals in review: " + openSubs);
+              return "https://claude.ai/new?q=" + encodeURIComponent(lines.join("\n"));
+            })()}
+            target="_blank" rel="noreferrer"
+            title="Open Claude with a briefing prompt for this project — uses your own Claude account and the Setty PMS connector"
+            style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap",
+              textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
+            💬 Ask Claude
+          </a>
           <button
             title="Copy link to this project"
             onClick={() => {
