@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-06-pms-v99-explorer-path";
+    window.__appVersion = "2026-08-06-pms-v100-explorer-one-click";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17016,6 +17016,19 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
     }
   }
 
+  // Explorer bridge: the project's folder name, extracted once for both the
+  // copy-path button and the one-click settypms: link. Same extraction as
+  // createMilestoneSpFolder — tolerant decode (folder names legitimately carry
+  // a literal %), last path segment.
+  const explorerFolderName = (() => {
+    const spUrl = (project.projectFolderUrl || "").trim();
+    if (!spUrl) return "";
+    const parts = safeDecodeFolderUrl(spUrl).replace(/\/+$/, "").split("/");
+    return (parts[parts.length - 1] || "").trim();
+  })();
+  // One-click mode is per device (set up in My Projects → My Settings).
+  const explorerOneClick = !!explorerFolderName && localStorage.getItem("pmsExplorerHandler") === "1";
+
   const pct = projectOverallPct(project);
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
   const totalFee = (project.phases || []).filter(p => p.billable && p.fee > 0).reduce((a, p) => a + p.fee, 0);
@@ -17456,15 +17469,26 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               zero-install bridge; a one-click settypms: protocol handler is the
               planned stage 2. The Explorer root is per-DEVICE (people sync to
               different places), hence localStorage and not pms_user_prefs. */}
+          {/* One-click mode: a plain protocol link, the same idiom as any
+              "open in app" anchor — the settypms: handler (readable source in
+              explorer-bridge/) opens Explorer at the synced folder. Copy-path
+              button remains the default and the no-handler fallback. */}
+          {explorerOneClick && (
+            <a href={"settypms:open?folder=" + encodeURIComponent(explorerFolderName)}
+              title="Open this project's local synced folder in File Explorer (one-click handler from My Settings)"
+              style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+                color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap",
+                textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+              📂 Open in Explorer
+            </a>
+          )}
+          {!explorerOneClick && (
           <button
-            title={"Copy this project's local folder path for File Explorer (your synced OneDrive copy). First click asks where your synced project folders live. Shift-click to change that saved location."}
+            title={"Copy this project's local folder path for File Explorer (your synced OneDrive copy). First click asks where your synced project folders live. Shift-click to change that saved location. One-click mode is set up in My Projects → My Settings."}
             onClick={e => {
               const spUrl = (project.projectFolderUrl || "").trim();
               if (!spUrl) { alert("This project has no SharePoint folder URL yet — set one on the Overview tab first."); return; }
-              // Same name extraction as createMilestoneSpFolder: tolerant decode
-              // (folder names legitimately carry a literal %), last path segment.
-              const parts = safeDecodeFolderUrl(spUrl).replace(/\/+$/, "").split("/");
-              const folderName = (parts[parts.length - 1] || "").trim();
+              const folderName = explorerFolderName;
               if (!folderName) { alert("Could not read the folder name from this project's SharePoint URL:\n" + spUrl); return; }
               let root = (localStorage.getItem("pmsExplorerRoot") || "").trim();
               if (!root || e.shiftKey) {
@@ -17486,6 +17510,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
             📂 Explorer Path
           </button>
+          )}
           {project.status === "On Hold" && (
             <span title="On Hold projects are excluded from dashboards, the Team WBS and weekly digests until the hold is lifted."
               style={{ background: P.amberDim || "#33270a", color: "#fbbf24", border: "1px solid #fbbf24", borderRadius: 6, fontSize: 11.5, fontWeight: 700, padding: "4px 9px", whiteSpace: "nowrap" }}>
@@ -26450,6 +26475,9 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
   const [q, setQ] = React.useState("");
   const [linkPick, setLinkPick] = React.useState("");
   const [showSettings, setShowSettings] = React.useState(false);
+  // Explorer one-click handler flag — per DEVICE (localStorage, not
+  // pms_user_prefs): the settypms: protocol is registered per machine.
+  const [explorerHandler, setExplorerHandler] = React.useState(() => localStorage.getItem("pmsExplorerHandler") === "1");
   const [, setPrefsTick] = React.useState(0);
   const [prefsMsg, setPrefsMsg] = React.useState("");
   const prefRow = (window.__pmsPrefs && window.__pmsPrefs.row) || {};
@@ -26608,6 +26636,40 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
                 <option value="dashboard">Dashboard</option>
                 <option value="myprojects">My Projects</option>
               </select>
+            </div>
+            {/* Explorer bridge stage 2 — per COMPUTER, not per account: the
+                settypms: link registration and the synced-folder root both live
+                on the machine, so this section reads/writes localStorage and
+                deliberately never touches pms_user_prefs. The installer and the
+                handler script are committed as plain readable files under
+                explorer-bridge/ so anyone (including IT) can audit them. */}
+            <div style={{ borderTop: `1px solid ${P.border}`, paddingTop: 12 }}>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>📂 <b>One-click Explorer</b> <span style={{ color: P.textDim, fontSize: 11 }}>(this computer)</span></div>
+              <div style={{ color: P.textMuted, fontSize: 12, marginBottom: 8 }}>
+                By default the project page's 📂 button copies the local folder path for you to paste into File Explorer.
+                Run the small setup file once (no admin rights needed) and the same button opens Explorer directly.
+                Your first 📂 click after setup asks you to pick the folder that contains your synced project folders,
+                and the browser may ask to allow "SettyPMS" links — tick "always allow".
+              </div>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <a href="explorer-bridge/SettyPMS-Explorer-Setup.cmd" download
+                  style={{ fontSize: 12.5, color: P.accentLight, textDecoration: "none", border: `1px solid ${P.border}`, borderRadius: 6, padding: "4px 10px" }}>
+                  ⬇ Download setup file
+                </a>
+                <a href="https://github.com/smartias/setty-pms/tree/main/explorer-bridge" target="_blank" rel="noreferrer"
+                  style={{ fontSize: 11.5, color: P.textDim }}>
+                  what it does ↗
+                </a>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", fontSize: 12.5 }}>
+                  <input type="checkbox" checked={explorerHandler} onChange={e => {
+                    const on = e.target.checked;
+                    setExplorerHandler(on);
+                    if (on) localStorage.setItem("pmsExplorerHandler", "1");
+                    else localStorage.removeItem("pmsExplorerHandler");
+                  }} />
+                  Setup has been run on this computer — make 📂 one-click
+                </label>
+              </div>
             </div>
             {prefsMsg && <div style={{ fontSize: 12, color: prefsMsg.startsWith("✓") ? P.green : P.red }}>{prefsMsg}</div>}
           </div>
