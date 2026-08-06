@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-05-phase-filter-telemetry";
+const BUILD = "2026-08-05-shared-tree-cache";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2015,12 +2015,24 @@ mcp.tool("read_document", {
 const TREE_TTL = 300000;
 const TREE_MAX_FILES = 4000;
 const TREE_MAX_REQUESTS = 150;
-const _treeCache = new Map<string, { at: number; files: any[]; libraries: string[]; truncated: boolean }>();
+// How many sibling folders to read at once. Graph throttles per app, so this is
+// a balance rather than "as high as possible": 8 turns a ~150-request walk from
+// ~150 serial round trips into ~19 waves without pushing hard enough to earn a
+// 429, which would cost far more than it saved.
+const TREE_CONCURRENCY = 8;
+// One shape for the walk and the cached copy alike, so callers infer the same
+// types whichever layer answered.
+type TreeFile = {
+  itemId: string; name: string; library: string; folderPath: string;
+  webUrl: string; modified: string | null; size: number; ext: string;
+};
+type ProjectTree = { at: number; files: TreeFile[]; libraries: string[]; truncated: boolean };
+const _treeCache = new Map<string, ProjectTree>();
 
 // One file row, shaped the same whether it came from the whole-project walk or
 // from a path-scoped one. `folderPath` is relative to the PROJECT ROOT in both,
 // which is what lets a caller filter either result set the same way.
-function treeFileRow(driveId: string, driveName: string, it: any, nodePath: string) {
+function treeFileRow(driveId: string, driveName: string, it: any, nodePath: string): TreeFile {
   return {
     itemId: driveId + "|" + it.id,
     name: it.name,
@@ -2033,9 +2045,64 @@ function treeFileRow(driveId: string, driveName: string, it: any, nodePath: stri
   };
 }
 
-async function projectTree(numPrefix: string) {
+// The in-memory Map only helps within one isolate, and edge isolates are short
+// lived, so it was missing on nearly every call. The shared copy in Postgres is
+// what actually makes a repeat question fast: one SELECT instead of ~150 Graph
+// round trips. Both layers use the same TTL, and a failure in either falls
+// through to the walk, so the cache can never be the reason an answer is wrong
+// or missing.
+async function treeFromDb(numPrefix: string): Promise<ProjectTree | null> {
+  try {
+    const rows = await sbGet(
+      "pms_mcp_tree_cache?select=cached_at,file_count,truncated,libraries,files" +
+      "&project_prefix=eq." + encodeURIComponent(numPrefix) + "&limit=1");
+    const row = Array.isArray(rows) ? rows[0] : null;
+    if (!row) return null;
+    const at = Date.parse(row.cached_at);
+    if (!Number.isFinite(at) || Date.now() - at >= TREE_TTL) return null;
+    return {
+      at,
+      files: Array.isArray(row.files) ? row.files : [],
+      libraries: Array.isArray(row.libraries) ? row.libraries : [],
+      truncated: !!row.truncated,
+    };
+  } catch (e) {
+    console.warn("[tree-cache] read failed:", String((e as any)?.message ?? e));
+    return null;
+  }
+}
+
+async function treeToDb(numPrefix: string, out: { files: any[]; libraries: string[]; truncated: boolean }) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/pms_mcp_tree_cache?on_conflict=project_prefix`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        project_prefix: numPrefix,
+        cached_at: new Date().toISOString(),
+        file_count: out.files.length,
+        truncated: out.truncated,
+        libraries: out.libraries,
+        files: out.files,
+      }),
+    });
+    if (!res.ok) console.warn("[tree-cache] write", res.status, (await res.text()).slice(0, 200));
+  } catch (e) {
+    console.warn("[tree-cache] write failed:", String((e as any)?.message ?? e));
+  }
+}
+
+async function projectTree(numPrefix: string): Promise<ProjectTree> {
   const hit = _treeCache.get(numPrefix);
   if (hit && Date.now() - hit.at < TREE_TTL) return hit;
+
+  const shared = await treeFromDb(numPrefix);
+  if (shared) { _treeCache.set(numPrefix, shared); return shared; }
 
   const drives = await siteDrives();
   const files: any[] = [];
@@ -2049,35 +2116,65 @@ async function projectTree(numPrefix: string) {
     if (!root) continue;
     libraries.push(dr.name);
 
-    // Breadth-first. Depth-first on a project with a deep Outgoing tree would
-    // spend the whole request budget inside one set folder and never reach the
-    // siblings, so the shallow, high-signal folders would be the ones missed.
-    const queue: Array<{ id: string; path: string }> = [{ id: root.id, path: "" }];
-    while (queue.length) {
-      if (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
-      const node = queue.shift()!;
-      let url = `/drives/${dr.id}/items/${node.id}/children` +
-        "?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200";
-      while (url) {
-        if (requests >= TREE_MAX_REQUESTS) { truncated = true; break; }
-        let page: any;
-        try { page = await graphGet(url); } catch { break; }
-        requests++;
-        for (const it of (page.value || [])) {
-          const path = node.path ? node.path + "/" + it.name : it.name;
-          if (it.folder) {
-            queue.push({ id: it.id, path });
-          } else if (files.length < TREE_MAX_FILES) {
-            files.push(treeFileRow(dr.id, dr.name, it, node.path));
-          } else { truncated = true; }
+    // Breadth-first, one LEVEL at a time, with the folders in each level read
+    // concurrently. Depth-first would spend the whole request budget inside one
+    // set folder and never reach its siblings, so the shallow high-signal
+    // folders would be exactly the ones missed. Level-at-a-time preserves that
+    // ordering while letting the slow part overlap.
+    //
+    // The walk was sequential until 2026-08-05 and cost 16-30 SECONDS per call,
+    // measured by the telemetry added the same day: ~150 Graph round trips at
+    // roughly 150ms each, run one after another. Nothing about the work needed
+    // to be serial. Sibling folders are independent, so the only ordering that
+    // matters is between levels, not within one.
+    let level: Array<{ id: string; path: string }> = [{ id: root.id, path: "" }];
+    while (level.length && requests < TREE_MAX_REQUESTS && files.length < TREE_MAX_FILES) {
+      const nextLevel: Array<{ id: string; path: string }> = [];
+      for (let i = 0; i < level.length; i += TREE_CONCURRENCY) {
+        if (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
+        const batch = level.slice(i, i + TREE_CONCURRENCY);
+        // Budget is claimed BEFORE dispatch so a batch cannot overshoot the cap
+        // by its own width. Each folder needs at least one request; extra pages
+        // are counted as they happen.
+        requests += batch.length;
+        const pages = await Promise.all(batch.map(async (node) => {
+          const out: any[] = [];
+          let url = `/drives/${dr.id}/items/${node.id}/children` +
+            "?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200";
+          let extra = 0;
+          while (url) {
+            let page: any;
+            try { page = await graphGet(url); } catch { break; }
+            out.push(...(page.value || []));
+            const next = page["@odata.nextLink"];
+            url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
+            if (url) extra++;
+          }
+          return { node, items: out, extra };
+        }));
+        for (const { node, items, extra } of pages) {
+          requests += extra;
+          for (const it of items) {
+            const path = node.path ? node.path + "/" + it.name : it.name;
+            if (it.folder) {
+              nextLevel.push({ id: it.id, path });
+            } else if (files.length < TREE_MAX_FILES) {
+              files.push(treeFileRow(dr.id, dr.name, it, node.path));
+            } else { truncated = true; }
+          }
         }
-        const next = page["@odata.nextLink"];
-        url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
       }
+      level = nextLevel;
     }
+    if (level.length && (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES)) truncated = true;
   }
   const out = { at: Date.now(), files, libraries, truncated };
   _treeCache.set(numPrefix, out);
+  // Publish for the next isolate. Awaited rather than fired and forgotten: an
+  // edge function can be torn down as soon as it responds, and a write that
+  // loses that race would leave every call paying for the walk, which is the
+  // bug this exists to fix.
+  await treeToDb(numPrefix, out);
   return out;
 }
 
