@@ -51,13 +51,26 @@ async function getProjects(): Promise<any[]> {
   // Pull ONLY the sub-fields the portfolio-wide tools use — EXCLUDING the fat emails[]
   // array (~53% of the blob; email tools query pms_project_emails directly). This halves
   // the cold-cache load (~18MB -> ~9MB). Single-project tools use getProjectById (full blob).
+  // The identifying scalars below are pulled so a project can be found by how
+  // someone DESCRIBES it ("the feasibility study with SCA for Morphosis")
+  // rather than only by its own name. They are short strings, so they cost
+  // almost nothing next to the arrays; emails[] is the field this projection
+  // exists to keep out, and it stays out.
   const SLIM = "pid:project->>id,name:project->>name,projectNumber:project->>projectNumber," +
     "status:project->>status,owner:project->>owner,archived:project->archived," +
+    "prime:project->>prime,clientName:project->>clientName,projectType:project->>projectType," +
+    "projectCity:project->>projectCity,projectState:project->>projectState," +
+    "buildingCategory:project->>buildingCategory,contractNumber:project->>contractNumber," +
+    "primeProjectNumber:project->>primeProjectNumber," +
     "milestones:project->milestones,rfis:project->rfis,submittals:project->submittals,notes:project->notes";
   const rows = await sbGetAll("pms_projects?select=" + SLIM + "&order=id.asc");
   const data = rows.map((r: any) => ({
     id: r.pid, name: r.name, projectNumber: r.projectNumber, status: r.status,
     owner: r.owner, archived: r.archived === true,
+    prime: r.prime, clientName: r.clientName, projectType: r.projectType,
+    projectCity: r.projectCity, projectState: r.projectState,
+    buildingCategory: r.buildingCategory, contractNumber: r.contractNumber,
+    primeProjectNumber: r.primeProjectNumber,
     milestones: r.milestones ?? [], rfis: r.rfis ?? [], submittals: r.submittals ?? [], notes: r.notes ?? [],
   })).filter((p: any) => p.id || p.projectNumber || p.name);
   _projCache = { at: now, data };
@@ -283,6 +296,9 @@ function summarizeProject(p: any): Record<string, unknown> {
   return {
     name: p.name, projectNumber: p.projectNumber, status: p.status,
     ownerAgency: p.owner || null,
+    // Returned so a caller can see WHY a description matched, and because a
+    // pipeline job is often known by its prime rather than by its own name.
+    prime: p.prime || null,
     nextMilestone: next ? { name: next.name, due: next.dueDate } : null,
     overdueCount: overdue.length, openActionItems: openActionItems(p).length,
     archived: !!p.archived,
@@ -291,7 +307,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-05-align-project-param";
+const BUILD = "2026-08-05-describe-a-project-2";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -437,25 +453,112 @@ const _rawTool = mcp.tool.bind(mcp);
   });
 };
 
+// ── Project search ───────────────────────────────────────────────────────────
+// People do not name a project the way the record does. They describe it:
+// "the feasibility study with SCA for Morphosis" names the TYPE, the AGENCY by
+// acronym, and the PRIME, and not one of those is the project's name (which is
+// "St. Therese of Lisieux Feasibility Study"). The old search failed that
+// completely: it looked only at name / number / status / owner, and it required
+// the WHOLE query to appear contiguously in one of them, so any phrase a person
+// would actually say returned nothing.
+//
+// Now every term is scored against every identifying field. A project has to
+// match every meaningful term to be returned, so precision holds, but the terms
+// may land in DIFFERENT fields, which is what makes a description work.
+
+// Words that carry no signal in a project description. Without this, "with" and
+// "for" are terms that nothing matches, and a require-all-terms rule then
+// returns nothing for every naturally phrased query.
+const SEARCH_STOPWORDS = new Set([
+  "a", "an", "the", "with", "for", "of", "on", "at", "in", "and", "to", "by",
+  "project", "job", "study", "our",
+]);
+
+// Agencies are written in full on the record but spoken as acronyms. Mapping is
+// one-way on purpose: typing "SCA" should find "School Construction Authority",
+// and the full name still matches itself by ordinary term overlap.
+const AGENCY_ALIASES: Record<string, string> = {
+  sca: "school construction authority",
+  ddc: "department of design and construction",
+  dasny: "dormitory authority",
+  cuny: "city university",
+  suny: "state university",
+  sucf: "state university construction fund",
+  ogs: "office of general services",
+  edc: "economic development corporation",
+  dep: "department of environmental protection",
+  dot: "department of transportation",
+  nycha: "housing authority",
+  hpd: "housing preservation development",
+};
+
+function projectHaystack(p: any): string {
+  return [
+    p.name, p.projectNumber, p.status, p.owner, p.prime, p.clientName,
+    p.projectType, p.projectCity, p.projectState, p.buildingCategory,
+    p.contractNumber, p.primeProjectNumber,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function scoreProjectMatch(p: any, terms: string[]): number {
+  if (!terms.length) return 1;
+  const hay = projectHaystack(p);
+  let hits = 0;
+  for (const t of terms) {
+    const alias = AGENCY_ALIASES[t];
+    if (hay.includes(t) || (alias && hay.includes(alias))) hits++;
+  }
+  // Every meaningful term must land somewhere. Partial matching would make
+  // "SCA Morphosis" return every SCA job, which is worse than nothing when the
+  // caller is about to act on the answer.
+  return hits === terms.length ? hits : 0;
+}
+
 mcp.tool("search_projects", {
   description:
-    "Search PMS projects by name, project number, status, or owner agency (e.g. DASNY, " +
-    "CUNY, NYC DDC, SUNY Upstate). Returns compact summaries (each includes ownerAgency). " +
-    "Leave query empty to list everything. Excludes archived (closed-out) projects by " +
-    "default — pass includeArchived: true to also search the archive.",
+    "Find PMS projects by anything that identifies them: name, project number, status, owner " +
+    "agency (DASNY, SCA, CUNY, NYC DDC, SUNY...), the PRIME or client firm, project type, or " +
+    "city. Terms may span several of those, so a plain description works: 'feasibility study " +
+    "with SCA for Morphosis' finds the right job even though none of those words is its name. " +
+    "Agency acronyms are understood. Returns compact summaries including ownerAgency and prime. " +
+    "Leave query empty to list everything. Excludes archived (closed-out) projects by default; " +
+    "pass includeArchived: true to search the archive too.",
   inputSchema: z.object({
-    query: z.string().optional().describe("Free text: part of a name, number, status, or owner agency"),
+    query: z.string().optional().describe("Free text: name, number, status, agency, prime/client firm, project type or city. A description spanning several of these works."),
     includeArchived: z.boolean().optional().describe("Include archived/closed-out projects (default false)"),
   }),
   handler: async ({ query, includeArchived }) => {
     const projects = await getProjects();
     const pool = includeArchived ? projects : projects.filter((p) => !p.archived);
-    const q = (query ?? "").toLowerCase().trim();
-    const matched = q
-      ? pool.filter((p) => [p.name, p.projectNumber, p.status, p.owner].filter(Boolean)
-          .some((f: string) => String(f).toLowerCase().includes(q)))
+    const raw = (query ?? "").toLowerCase().trim();
+    const terms = raw
+      ? raw.split(/[^a-z0-9.#&-]+/).filter((t) => t && t.length > 1 && !SEARCH_STOPWORDS.has(t))
+      : [];
+
+    const matched = terms.length
+      ? pool.map((p) => ({ p, s: scoreProjectMatch(p, terms) }))
+          .filter((r) => r.s > 0)
+          .sort((a, b) => b.s - a.s || String(a.p.name).localeCompare(String(b.p.name)))
+          .map((r) => r.p)
       : pool;
-    return asText({ count: matched.length, includeArchived: !!includeArchived, projects: matched.map(summarizeProject) });
+
+    if (raw && !matched.length) {
+      return asText({
+        count: 0, includeArchived: !!includeArchived, projects: [],
+        interpreted: { terms },
+        reason: `No project matches every term in "${query}".`,
+        nextStep: "Drop the least certain term and try again: every term has to match something. " +
+          "The prime firm, owner agency, project type and city are all searchable, so a partial " +
+          "description usually works better than a full sentence.",
+      });
+    }
+
+    return asText({
+      count: matched.length,
+      includeArchived: !!includeArchived,
+      ...(terms.length ? { interpreted: { terms } } : {}),
+      projects: matched.map(summarizeProject),
+    });
   },
 });
 
