@@ -425,10 +425,10 @@ Effort: M
 
 ---
 
-## Metadata Prerequisites (deferred, no longer a P0 gate)
+## Metadata: DERIVE IT, do not ask people to type it (rewritten 2026-08-05)
 
-Per finding 1 these sharpen P2.8 and P2.9 but do not block P0.2. Provision on
-the Project Document Library when convenient:
+**The original plan here was wrong, and it is worth being explicit about why so
+it does not come back.** It listed five SharePoint columns to provision:
 
 - `Status` (choice: Current / Superseded / Draft)
 - `Revision` (text/number) and `SupersededBy` (link)
@@ -437,13 +437,72 @@ the Project Document Library when convenient:
 - `DocType` (choice: Narrative / Calc / Spec / Comment Log / Transmittal /
   Minutes / Report)
 
-Consider a content type or Power Automate default so these are set at upload
-rather than left blank. Blank metadata is why search returns stale or nothing,
-which reinforces the old habit. This is exactly why the derived path in P0.2 is
-preferred: it cannot be left blank.
+Provisioning columns is an afternoon. **Populating them is a permanent habit
+change**: every person, on every upload, forever. That is the part that does not
+happen, and a column nobody fills is worse than no column, because search then
+returns confidently wrong or nothing at all. The document already said as much
+two paragraphs down without following the thought to its conclusion.
 
-A separate transmittal list is NOT needed. `pms_filing_log` already carries
-Number, IssueDate, SetName, Recipients and Contents.
+**Every one of these is derivable from something that cannot be left blank.**
+Shipped 2026-08-05 and measured against real data:
+
+| Field | Derived from | Status |
+| --- | --- | --- |
+| `Status` / `SupersededBy` | the transmittal register (P0.2) | shipped |
+| `Revision` | the register's per-sheet rows | shipped |
+| `Phase` | the set folder name, e.g. `2019-11-22_Final CD Submission` | shipped (P2.9) |
+| `Discipline` | the sheet-number prefix, e.g. `E211` -> E | shipped, and already
+  more reliable than the register's own free-text `discipline` field, which has
+  held "Electrical", "STTQ" and "General" on one project |
+| `DocType` | filename and folder vocabulary | shipped in `find_document` |
+
+So the columns are not a prerequisite for anything. Do not schedule them.
+
+**If SharePoint's own UI and search are ever wanted to show this**, the answer is
+still not data entry: write the DERIVED values into the columns from a job, so
+they are populated without anyone typing. That needs Graph write scope on the
+site, which IT gatekeeps, so treat it as a separate ask with a real benefit
+attached rather than a prerequisite. Read any such column as a TIEBREAK over the
+derived value, never as a replacement, or one blank cell reintroduces exactly
+the failure this section exists to prevent.
+
+A separate transmittal list is NOT needed either. `pms_filing_log` already
+carries Number, IssueDate, SetName, Recipients and Contents.
+
+---
+
+## Delivered (2026-08-05)
+
+- **P0.1** `get_current_set`, **P0.3** `find_document` — shipped earlier.
+- **P0.2 supersession** — `find_document` results carry
+  `current` / `superseded` / `ambiguous` / `unknown` plus `supersededBy`.
+  Status is about a PHYSICAL FILE, not a sheet: the same filename is issued in
+  several sets and a copy sits in each folder, so the verdict is keyed on the
+  file's own folder. Every branch fails toward `unknown`.
+- **P1.6 `prepare_transmittal`** — prepare-only, no write path. The connector
+  runs on the service-role key and Entra sign-in is a boolean gate, so a write
+  tool would let anyone issue a transmittal unchecked. Its pre-flight flags
+  filenames that yield no sheet number before a set goes out, which is the
+  upstream cause of the ~8% of register rows that can never carry a status.
+- **P2.9 (derived slice)** — `phase` filter on `find_document`, from the set
+  folder name. Columns deliberately not used; see the section above.
+- **P3.12 telemetry** — `pms_mcp_telemetry`, one row per tool call. Found the
+  latency problem below within minutes of going live.
+
+### Latency, found and fixed the same day
+
+`find_document` was taking **16-30 seconds** per call. Two causes, both fixed:
+
+1. The folder walk was **sequential**, ~150 Graph round trips one after another.
+   Now breadth-first a LEVEL at a time with 8 folders in flight, which preserves
+   the ordering that matters and overlaps the waiting. 29s -> 13.6s.
+2. The tree cache was a module-level `Map`, which does not survive between edge
+   isolates, so it missed on nearly every call. Now also written to
+   `pms_mcp_tree_cache` and shared. Warm calls **28s -> under 1s**.
+
+Cold calls remain ~12s (first request per project per TTL). If that needs to
+come down, raise `TREE_CONCURRENCY` or warm popular projects on a schedule.
+Measure with telemetry rather than guessing; that is what it is for.
 
 ---
 

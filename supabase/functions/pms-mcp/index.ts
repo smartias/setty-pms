@@ -291,12 +291,106 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-05-supersession-status";
+const BUILD = "2026-08-05-shared-tree-cache";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
+
+// ─── P3.12: TELEMETRY ────────────────────────────────────────────────────────
+// The roadmap rates empty results a P0-grade concern even though the dashboard
+// is P3: one "the connector didn't find it" moment sends someone back to the N:
+// drive for a month, and they do not file a ticket about it. Today nothing
+// records that it happened, so the only gaps we find are the ones someone
+// happens to mention.
+//
+// Instrumented once here rather than in 24 handlers. mcp.tool is wrapped so
+// every tool, including any added later, is covered by construction: a tool
+// that has to be remembered to be instrumented eventually is not.
+//
+// Two rules this must never break:
+//   1. Telemetry cannot fail a tool call. Every path swallows its own errors.
+//   2. Telemetry cannot slow a tool call noticeably. The insert is raced against
+//      a short timeout, so a struggling database costs the caller nothing.
+const TELEMETRY_TIMEOUT_MS = 1500;
+const TELEMETRY_QUERY_MAX = 200;
+
+async function logTelemetry(row: Record<string, unknown>): Promise<void> {
+  try {
+    const insert = fetch(`${SUPABASE_URL}/rest/v1/pms_mcp_telemetry`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(row),
+    });
+    await Promise.race([
+      insert.then((r) => { if (!r.ok) return r.text().then((t) => console.warn("[telemetry]", r.status, t.slice(0, 200))); }),
+      new Promise((resolve) => setTimeout(resolve, TELEMETRY_TIMEOUT_MS)),
+    ]);
+  } catch (e) {
+    console.warn("[telemetry] insert failed:", String((e as any)?.message ?? e));
+  }
+}
+
+// Classify what the caller actually got. Handlers all return asText(payload),
+// so the payload is the honest signal: a tool that answers "no folder for this
+// project" has NOT served the user, however successful the HTTP call was.
+function classifyResult(payload: any): { outcome: "hit" | "empty" | "error"; resultCount: number | null; detail: string | null } {
+  if (!payload || typeof payload !== "object") return { outcome: "hit", resultCount: null, detail: null };
+  if (payload.error) {
+    return { outcome: "error", resultCount: null, detail: String(payload.error).slice(0, 300) };
+  }
+  const count =
+    typeof payload.count === "number" ? payload.count :
+    Array.isArray(payload.results) ? payload.results.length :
+    Array.isArray(payload.items) ? payload.items.length :
+    Array.isArray(payload.emails) ? payload.emails.length :
+    Array.isArray(payload.notes) ? payload.notes.length :
+    Array.isArray(payload.projects) ? payload.projects.length :
+    null;
+  if (count === 0) {
+    return { outcome: "empty", resultCount: 0, detail: payload.reason ? String(payload.reason).slice(0, 300) : null };
+  }
+  return { outcome: "hit", resultCount: count, detail: null };
+}
+
+const _rawTool = mcp.tool.bind(mcp);
+(mcp as any).tool = (name: string, def: any) => {
+  const inner = def.handler;
+  return _rawTool(name, {
+    ...def,
+    handler: async (args: any) => {
+      const t0 = Date.now();
+      let cls: ReturnType<typeof classifyResult> = { outcome: "hit", resultCount: null, detail: null };
+      try {
+        const res = await inner(args);
+        try {
+          cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
+        } catch { /* not JSON: treat as a hit, the tool answered something */ }
+        return res;
+      } catch (e) {
+        cls = { outcome: "error", resultCount: null, detail: String((e as any)?.message ?? e).slice(0, 300) };
+        throw e;
+      } finally {
+        await logTelemetry({
+          tool: name,
+          project_number: args?.projectNumber ? String(args.projectNumber).slice(0, 120) : null,
+          outcome: cls.outcome,
+          result_count: cls.resultCount,
+          latency_ms: Date.now() - t0,
+          build: BUILD,
+          query: args?.query ? String(args.query).slice(0, TELEMETRY_QUERY_MAX) : null,
+          detail: cls.detail,
+        });
+      }
+    },
+  });
+};
 
 mcp.tool("search_projects", {
   description:
@@ -1433,6 +1527,66 @@ function fileSupersessionStatus(
   };
 }
 
+// ── P2.9 (derived slice): design phase, without a SharePoint column ──────────
+// The roadmap wanted Phase as a provisioned column. A column has to be set by
+// hand on every upload and is blank the moment someone forgets, which the
+// roadmap itself calls out as the reason search returns stale or nothing. The
+// phase is already written down in the set name on real projects, so derive it
+// the way P0.2 derives status: from something that cannot be left blank.
+//
+//   2019-11-22_Final CD Submission      2024-01-17_100 DD
+//   2026-03-26_SD Interim 2 Progress    2026_02_18 Bid Phase
+//   2025-11-18_Updated 100% CD          2026-05-26_SD-2 Updated Option Drawings
+//
+// WORD BOUNDARIES ARE WRONG HERE. Set names separate with underscores, and \b
+// does not fire between "_" and a letter because "_" is a word character, so
+// \bSD\b misses "_SD-2" entirely. The separator class below treats anything
+// that is not A-Z0-9 as a boundary, which is what makes "_SD" match.
+const PHASE_PATTERNS: Array<{ phase: string; re: RegExp }> = [
+  // Most specific first. A percentage prefix ("100% CD", "50 DD") is a
+  // milestone WITHIN a phase, not a different phase, so it is skipped over.
+  { phase: "CD", re: /(?:^|[^A-Z0-9])(?:\d{1,3}\s*%?\s*)?CD\d?(?:[^A-Z0-9]|$)/ },
+  { phase: "DD", re: /(?:^|[^A-Z0-9])(?:\d{1,3}\s*%?\s*)?DD\d?(?:[^A-Z0-9]|$)/ },
+  { phase: "SD", re: /(?:^|[^A-Z0-9])(?:\d{1,3}\s*%?\s*)?SD\d?(?:[^A-Z0-9]|$)/ },
+  { phase: "Bid", re: /(?:^|[^A-Z0-9])BID(?:[^A-Z0-9]|$)/ },
+  { phase: "CA", re: /(?:^|[^A-Z0-9])CA(?:[^A-Z0-9]|$)/ },
+  { phase: "Programming", re: /(?:^|[^A-Z0-9])PROGRAMMING(?:[^A-Z0-9]|$)/ },
+  { phase: "Validation", re: /(?:^|[^A-Z0-9])VALIDATION(?:[^A-Z0-9]|$)/ },
+];
+// What a set is FOR, when it does not name a phase. An addendum answers bidder
+// questions before award; a bulletin, ASI or RFI response is issued against a
+// construction contract. These are weaker evidence than a stated phase, so they
+// are only consulted second and the basis says which was used.
+const PHASE_BY_ACTIVITY: Array<{ phase: string; re: RegExp; what: string }> = [
+  { phase: "Bid", re: /(?:^|[^A-Z0-9])ADDEND/, what: "addendum" },
+  { phase: "CA", re: /(?:^|[^A-Z0-9])(?:BULLETIN|ASI|RFI)(?:[^A-Z0-9]|$)/, what: "bulletin/ASI/RFI" },
+];
+
+function derivePhase(text: string): { phase: string; basis: string } | null {
+  const t = String(text || "").toUpperCase();
+  if (!t) return null;
+  for (const { phase, re } of PHASE_PATTERNS) {
+    if (re.test(t)) return { phase, basis: "named in the set folder" };
+  }
+  for (const { phase, re, what } of PHASE_BY_ACTIVITY) {
+    if (re.test(t)) return { phase, basis: `inferred from ${what}` };
+  }
+  return null;
+}
+// Accept what people type: "cd", "100% CD", "Construction Documents".
+const PHASE_ALIASES: Record<string, string> = {
+  SD: "SD", SCHEMATIC: "SD", "SCHEMATIC DESIGN": "SD",
+  DD: "DD", "DESIGN DEVELOPMENT": "DD",
+  CD: "CD", "CONSTRUCTION DOCUMENTS": "CD", "CONSTRUCTION DOCUMENT": "CD",
+  BID: "Bid", BIDDING: "Bid",
+  CA: "CA", "CONSTRUCTION ADMINISTRATION": "CA",
+  PROGRAMMING: "Programming", VALIDATION: "Validation",
+};
+function normalisePhase(input: string): string | null {
+  const raw = String(input || "").toUpperCase().replace(/\d{1,3}\s*%?\s*/g, "").trim();
+  return PHASE_ALIASES[raw] ?? null;
+}
+
 mcp.tool("get_current_set", {
   description:
     "Authoritative answer to \"what is the current issued set?\" for a project — the drawing/spec set " +
@@ -1861,12 +2015,24 @@ mcp.tool("read_document", {
 const TREE_TTL = 300000;
 const TREE_MAX_FILES = 4000;
 const TREE_MAX_REQUESTS = 150;
-const _treeCache = new Map<string, { at: number; files: any[]; libraries: string[]; truncated: boolean }>();
+// How many sibling folders to read at once. Graph throttles per app, so this is
+// a balance rather than "as high as possible": 8 turns a ~150-request walk from
+// ~150 serial round trips into ~19 waves without pushing hard enough to earn a
+// 429, which would cost far more than it saved.
+const TREE_CONCURRENCY = 8;
+// One shape for the walk and the cached copy alike, so callers infer the same
+// types whichever layer answered.
+type TreeFile = {
+  itemId: string; name: string; library: string; folderPath: string;
+  webUrl: string; modified: string | null; size: number; ext: string;
+};
+type ProjectTree = { at: number; files: TreeFile[]; libraries: string[]; truncated: boolean };
+const _treeCache = new Map<string, ProjectTree>();
 
 // One file row, shaped the same whether it came from the whole-project walk or
 // from a path-scoped one. `folderPath` is relative to the PROJECT ROOT in both,
 // which is what lets a caller filter either result set the same way.
-function treeFileRow(driveId: string, driveName: string, it: any, nodePath: string) {
+function treeFileRow(driveId: string, driveName: string, it: any, nodePath: string): TreeFile {
   return {
     itemId: driveId + "|" + it.id,
     name: it.name,
@@ -1879,9 +2045,64 @@ function treeFileRow(driveId: string, driveName: string, it: any, nodePath: stri
   };
 }
 
-async function projectTree(numPrefix: string) {
+// The in-memory Map only helps within one isolate, and edge isolates are short
+// lived, so it was missing on nearly every call. The shared copy in Postgres is
+// what actually makes a repeat question fast: one SELECT instead of ~150 Graph
+// round trips. Both layers use the same TTL, and a failure in either falls
+// through to the walk, so the cache can never be the reason an answer is wrong
+// or missing.
+async function treeFromDb(numPrefix: string): Promise<ProjectTree | null> {
+  try {
+    const rows = await sbGet(
+      "pms_mcp_tree_cache?select=cached_at,file_count,truncated,libraries,files" +
+      "&project_prefix=eq." + encodeURIComponent(numPrefix) + "&limit=1");
+    const row = Array.isArray(rows) ? rows[0] : null;
+    if (!row) return null;
+    const at = Date.parse(row.cached_at);
+    if (!Number.isFinite(at) || Date.now() - at >= TREE_TTL) return null;
+    return {
+      at,
+      files: Array.isArray(row.files) ? row.files : [],
+      libraries: Array.isArray(row.libraries) ? row.libraries : [],
+      truncated: !!row.truncated,
+    };
+  } catch (e) {
+    console.warn("[tree-cache] read failed:", String((e as any)?.message ?? e));
+    return null;
+  }
+}
+
+async function treeToDb(numPrefix: string, out: { files: any[]; libraries: string[]; truncated: boolean }) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/pms_mcp_tree_cache?on_conflict=project_prefix`, {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_KEY,
+        Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        project_prefix: numPrefix,
+        cached_at: new Date().toISOString(),
+        file_count: out.files.length,
+        truncated: out.truncated,
+        libraries: out.libraries,
+        files: out.files,
+      }),
+    });
+    if (!res.ok) console.warn("[tree-cache] write", res.status, (await res.text()).slice(0, 200));
+  } catch (e) {
+    console.warn("[tree-cache] write failed:", String((e as any)?.message ?? e));
+  }
+}
+
+async function projectTree(numPrefix: string): Promise<ProjectTree> {
   const hit = _treeCache.get(numPrefix);
   if (hit && Date.now() - hit.at < TREE_TTL) return hit;
+
+  const shared = await treeFromDb(numPrefix);
+  if (shared) { _treeCache.set(numPrefix, shared); return shared; }
 
   const drives = await siteDrives();
   const files: any[] = [];
@@ -1895,35 +2116,65 @@ async function projectTree(numPrefix: string) {
     if (!root) continue;
     libraries.push(dr.name);
 
-    // Breadth-first. Depth-first on a project with a deep Outgoing tree would
-    // spend the whole request budget inside one set folder and never reach the
-    // siblings, so the shallow, high-signal folders would be the ones missed.
-    const queue: Array<{ id: string; path: string }> = [{ id: root.id, path: "" }];
-    while (queue.length) {
-      if (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
-      const node = queue.shift()!;
-      let url = `/drives/${dr.id}/items/${node.id}/children` +
-        "?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200";
-      while (url) {
-        if (requests >= TREE_MAX_REQUESTS) { truncated = true; break; }
-        let page: any;
-        try { page = await graphGet(url); } catch { break; }
-        requests++;
-        for (const it of (page.value || [])) {
-          const path = node.path ? node.path + "/" + it.name : it.name;
-          if (it.folder) {
-            queue.push({ id: it.id, path });
-          } else if (files.length < TREE_MAX_FILES) {
-            files.push(treeFileRow(dr.id, dr.name, it, node.path));
-          } else { truncated = true; }
+    // Breadth-first, one LEVEL at a time, with the folders in each level read
+    // concurrently. Depth-first would spend the whole request budget inside one
+    // set folder and never reach its siblings, so the shallow high-signal
+    // folders would be exactly the ones missed. Level-at-a-time preserves that
+    // ordering while letting the slow part overlap.
+    //
+    // The walk was sequential until 2026-08-05 and cost 16-30 SECONDS per call,
+    // measured by the telemetry added the same day: ~150 Graph round trips at
+    // roughly 150ms each, run one after another. Nothing about the work needed
+    // to be serial. Sibling folders are independent, so the only ordering that
+    // matters is between levels, not within one.
+    let level: Array<{ id: string; path: string }> = [{ id: root.id, path: "" }];
+    while (level.length && requests < TREE_MAX_REQUESTS && files.length < TREE_MAX_FILES) {
+      const nextLevel: Array<{ id: string; path: string }> = [];
+      for (let i = 0; i < level.length; i += TREE_CONCURRENCY) {
+        if (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
+        const batch = level.slice(i, i + TREE_CONCURRENCY);
+        // Budget is claimed BEFORE dispatch so a batch cannot overshoot the cap
+        // by its own width. Each folder needs at least one request; extra pages
+        // are counted as they happen.
+        requests += batch.length;
+        const pages = await Promise.all(batch.map(async (node) => {
+          const out: any[] = [];
+          let url = `/drives/${dr.id}/items/${node.id}/children` +
+            "?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200";
+          let extra = 0;
+          while (url) {
+            let page: any;
+            try { page = await graphGet(url); } catch { break; }
+            out.push(...(page.value || []));
+            const next = page["@odata.nextLink"];
+            url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
+            if (url) extra++;
+          }
+          return { node, items: out, extra };
+        }));
+        for (const { node, items, extra } of pages) {
+          requests += extra;
+          for (const it of items) {
+            const path = node.path ? node.path + "/" + it.name : it.name;
+            if (it.folder) {
+              nextLevel.push({ id: it.id, path });
+            } else if (files.length < TREE_MAX_FILES) {
+              files.push(treeFileRow(dr.id, dr.name, it, node.path));
+            } else { truncated = true; }
+          }
         }
-        const next = page["@odata.nextLink"];
-        url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
       }
+      level = nextLevel;
     }
+    if (level.length && (requests >= TREE_MAX_REQUESTS || files.length >= TREE_MAX_FILES)) truncated = true;
   }
   const out = { at: Date.now(), files, libraries, truncated };
   _treeCache.set(numPrefix, out);
+  // Publish for the next isolate. Awaited rather than fired and forgotten: an
+  // edge function can be torn down as soon as it responds, and a write that
+  // loses that race would leave every call paying for the walk, which is the
+  // bug this exists to fix.
+  await treeToDb(numPrefix, out);
   return out;
 }
 
@@ -2147,9 +2398,10 @@ mcp.tool("find_document", {
     query: z.string().describe("Plain-language description of the document, e.g. 'fire protection narrative'"),
     discipline: z.string().optional().describe("Restrict to a discipline: M, E, P, FP, FA or T"),
     docType: z.string().optional().describe("Restrict to a type: Narrative, Calc, Spec, Comment Log, Transmittal, Minutes or Report"),
+    phase: z.string().optional().describe("Restrict to a design phase: SD, DD, CD, Bid, CA, Programming or Validation. Accepts '100% CD' or 'Construction Documents' too. Derived from the set folder, so files in folders that name no phase are excluded when this is used."),
     limit: z.number().optional().describe("Max results (default 10, max 30)"),
   }),
-  handler: async ({ projectNumber, query, discipline, docType, limit }) => {
+  handler: async ({ projectNumber, query, discipline, docType, phase, limit }) => {
     const lim = Math.min(Math.max(limit ?? 10, 1), 30);
     const pid = await resolveProjectId(projectNumber);
     if (!pid) {
@@ -2206,14 +2458,46 @@ mcp.tool("find_document", {
       registerError = String((e as any)?.message ?? e);
     }
 
+    // Phase (P2.9, derived). Applied BEFORE the limit is taken, or asking for
+    // 10 CD documents would return however many of the top 10 happened to be CD.
+    const wantPhase = phase ? normalisePhase(phase) : null;
+    if (phase && !wantPhase) {
+      return asText({
+        project, query,
+        error: `"${phase}" is not a phase I recognise.`,
+        nextStep: "Use SD, DD, CD, Bid, CA, Programming or Validation. '100% CD' and 'Construction Documents' also work.",
+      });
+    }
+    let phaseFiltered = scored;
+    let droppedNoPhase = 0;
+    if (wantPhase) {
+      phaseFiltered = scored.filter((r) => {
+        const d = derivePhase(r.f.folderPath);
+        if (!d) { droppedNoPhase++; return false; }
+        return d.phase === wantPhase;
+      });
+      if (!phaseFiltered.length) {
+        return asText({
+          project, query, phase: wantPhase, count: 0, results: [],
+          reason: `Nothing in this project matches "${query}" in the ${wantPhase} phase.`,
+          nextStep: droppedNoPhase
+            ? `${droppedNoPhase} matching file(s) sit in folders that name no phase, so they were excluded. ` +
+              "Re-run without the phase filter to see them."
+            : "Try the search without the phase filter, or a different phase.",
+        });
+      }
+    }
+
     const counts = { current: 0, superseded: 0, ambiguous: 0, unknown: 0 };
-    const results = scored.slice(0, lim).map((r) => {
+    const results = phaseFiltered.slice(0, lim).map((r) => {
       const verdict = idx ? fileSupersessionStatus(r.f.name, r.f.folderPath, idx) : null;
+      const ph = derivePhase(r.f.folderPath);
       const base = {
         name: r.f.name,
         library: r.f.library,
         folderPath: r.f.folderPath,
         area: folderArea(r.f.folderPath),
+        ...(ph ? { phase: ph.phase, phaseBasis: ph.basis } : {}),
         webUrl: r.f.webUrl,
         itemId: r.f.itemId,
         modified: r.f.modified,
@@ -2269,8 +2553,19 @@ mcp.tool("find_document", {
         recencyPreferred: q.wantsCurrent,
       },
       searched: { files: tree.files.length, libraries: tree.libraries },
-      count: scored.length,
-      returned: Math.min(scored.length, lim),
+      count: phaseFiltered.length,
+      returned: Math.min(phaseFiltered.length, lim),
+      ...(wantPhase ? {
+        phaseFilter: {
+          phase: wantPhase,
+          matchedBeforeFilter: scored.length,
+          excludedForNoPhase: droppedNoPhase,
+          ...(droppedNoPhase ? {
+            note: `${droppedNoPhase} matching file(s) sit in folders that name no phase and were excluded. ` +
+              "Phase is read from the set folder, so loose files carry none.",
+          } : {}),
+        },
+      } : {}),
       results,
       statusCounts: counts,
       statusNote,
