@@ -967,7 +967,9 @@ function linkEntityLabel(kind: string, e: any): string {
 // (older links) is resolved against the project's own lists.
 function outgoingLinks(project: any, entity: any): any[] {
   return (entity?.links ?? []).map((lk: any) => {
-    let target = lk.targetLabel || "";
+    // The app writes targetLabel; the ADD-IN writes `label` and omits linkType
+    // entirely (its links default to "References"). Both shapes are live data.
+    let target = lk.targetLabel || lk.label || "";
     if (!target && lk.targetSystem === "pms") {
       const pair = LINK_LISTS.find(([k]) => k === lk.targetType);
       const e = pair ? (project?.[pair[1]] ?? []).find((x: any) => String(x.id) === String(lk.targetId)) : null;

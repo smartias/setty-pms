@@ -44,7 +44,7 @@ function linkEntityLabel(kind, e) {
 }
 function outgoingLinks(project, entity) {
   return (entity?.links ?? []).map((lk) => {
-    let target = lk.targetLabel || "";
+    let target = lk.targetLabel || lk.label || "";
     if (!target && lk.targetSystem === "pms") {
       const pair = LINK_LISTS.find(([k]) => k === lk.targetType);
       const e = pair ? (project?.[pair[1]] ?? []).find((x) => String(x.id) === String(lk.targetId)) : null;
@@ -134,6 +134,16 @@ check(outS1[0].target === "RFI 007: Duct routing at Level 3",
 
 check(outgoingLinks(project, project.rfis[0]).length === 0, "empty links[] should produce no rows");
 check(outgoingLinks(project, { number: "x" }).length === 0, "entity without links[] should produce no rows");
+
+// The ADD-IN's link shape, verbatim from live data (SAPX226009.00 RFI-028):
+// `label` instead of targetLabel, NO linkType, an email target. Must render
+// as a References/Email row with the label, never as a raw addin-… id.
+const addinShaped = outgoingLinks(project, { links: [
+  { id: "addin-mpbqh9ysbpr44", label: "Related correspondence", targetId: "addin-mpbqgyf1haqz8", createdAt: "2026-05-18T21:46:12.533Z", targetType: "email", targetSystem: "pms" },
+] });
+check(addinShaped[0].relationship === "References" && addinShaped[0].targetKind === "Email" &&
+  addinShaped[0].target === "Related correspondence",
+  "add-in link shape mishandled: " + JSON.stringify(addinShaped[0]));
 
 // Unknown linkType passes through rather than vanishing.
 const weird = outgoingLinks(project, { links: [{ linkType: "blocks", targetSystem: "pms", targetType: "rfi", targetId: "r7", targetLabel: "007" }] });
