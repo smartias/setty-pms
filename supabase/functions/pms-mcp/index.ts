@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-05-shared-tree-cache";
+const BUILD = "2026-08-05-telemetry-project-key";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -315,6 +315,13 @@ const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JS
 //      a short timeout, so a struggling database costs the caller nothing.
 const TELEMETRY_TIMEOUT_MS = 1500;
 const TELEMETRY_QUERY_MAX = 200;
+
+const firstString = (...vals: unknown[]): string | null => {
+  for (const v of vals) {
+    if (typeof v === "string" && v.trim()) return v.trim().slice(0, 120);
+  }
+  return null;
+};
 
 async function logTelemetry(row: Record<string, unknown>): Promise<void> {
   try {
@@ -379,7 +386,12 @@ const _rawTool = mcp.tool.bind(mcp);
       } finally {
         await logTelemetry({
           tool: name,
-          project_number: args?.projectNumber ? String(args.projectNumber).slice(0, 120) : null,
+          // Tools disagree on the parameter name: most take projectNumber,
+          // get_project and project_briefing take identifier. Reading only one
+          // left the project blank on those, which silently breaks the
+          // "empty results by project" report for exactly the tools a PM uses
+          // most. Take whichever is present.
+          project_number: firstString(args?.projectNumber, args?.identifier, args?.project),
           outcome: cls.outcome,
           result_count: cls.resultCount,
           latency_ms: Date.now() - t0,
