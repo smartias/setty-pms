@@ -65,7 +65,13 @@ async function getProjects(): Promise<any[]> {
     // Term-contract linkage. Without this every task order looks unparented and
     // list_term_contracts reports 0 work under every master agreement.
     "isTaskOrder:project->isTaskOrder,taskOrderTermContractId:project->>taskOrderTermContractId," +
-    "milestones:project->milestones,rfis:project->rfis,submittals:project->submittals,notes:project->notes";
+    // Related Projects grouping (sibling phases / sister buildings). Without
+    // these, relatedGroup can never be resolved into actual sibling projects.
+    "relatedGroup:project->>relatedGroup,relatedRole:project->>relatedRole," +
+    // changeOrders ride along for the link graph (incomingLinks scans them);
+    // they are small next to rfis/submittals and nothing like emails[].
+    "milestones:project->milestones,rfis:project->rfis,submittals:project->submittals,notes:project->notes," +
+    "changeOrders:project->changeOrders";
   const rows = await sbGetAll("pms_projects?select=" + SLIM + "&order=id.asc");
   const data = rows.map((r: any) => ({
     id: r.pid, name: r.name, projectNumber: r.projectNumber, status: r.status,
@@ -75,7 +81,9 @@ async function getProjects(): Promise<any[]> {
     buildingCategory: r.buildingCategory, contractNumber: r.contractNumber,
     primeProjectNumber: r.primeProjectNumber,
     isTaskOrder: r.isTaskOrder === true, taskOrderTermContractId: r.taskOrderTermContractId,
+    relatedGroup: r.relatedGroup, relatedRole: r.relatedRole,
     milestones: r.milestones ?? [], rfis: r.rfis ?? [], submittals: r.submittals ?? [], notes: r.notes ?? [],
+    changeOrders: r.changeOrders ?? [],
   })).filter((p: any) => p.id || p.projectNumber || p.name);
   _projCache = { at: now, data };
   return data;
@@ -922,6 +930,100 @@ function rfiSubStatusCounts(arr: any[]) {
   for (const x of (arr || [])) { const s = x?.status || "—"; byStatus[s] = (byStatus[s] || 0) + 1; }
   return byStatus;
 }
+// ── The linkage system, as the PMS app stores it ────────────────────────────
+// Each RFI, submittal, CO, milestone and note carries `links: []` — lightweight
+// pointers with a 7-type AEC taxonomy ("References", "Supersedes", …), created
+// in the app's Add Link modal. Links are ONE-directional; the app computes
+// back-links at render time, and so do we (incomingLinks below). `targetLabel`
+// is snapshotted at creation, so resolution is a fallback, not the norm.
+const LINK_TYPE_LABELS: Record<string, string> = {
+  "references": "References", "documents": "Documents",
+  "responds-to": "Responds To", "resolves": "Resolves", "supersedes": "Supersedes",
+  "originates-from": "Originates From", "affects": "Affects",
+};
+const LINK_KIND_LABELS: Record<string, string> = {
+  rfi: "RFI", submittal: "Submittal", co: "Change Order",
+  milestone: "Milestone", note: "Note", email: "Email",
+};
+// [linkTargetType, project list key] — matches PMS_TARGET_TYPES in the app.
+// Emails are absent on purpose: they live in pms_project_emails, not the blob,
+// and email links carry a snapshotted targetLabel so nothing needs resolving.
+const LINK_LISTS: Array<[string, string]> = [
+  ["rfi", "rfis"], ["submittal", "submittals"], ["co", "changeOrders"],
+  ["milestone", "milestones"], ["note", "notes"],
+];
+function linkEntityLabel(kind: string, e: any): string {
+  if (!e) return "";
+  if (kind === "rfi") return "RFI " + (e.number ?? "") + (e.title ? ": " + e.title : "");
+  if (kind === "submittal") return "Submittal " + (e.number ?? "") + (e.description ? ": " + String(e.description).slice(0, 80) : "");
+  if (kind === "co") return "CO " + (e.number ?? "") + (e.name ? " – " + e.name : "");
+  if (kind === "milestone") return "Milestone: " + (e.name || e.id || "");
+  if (kind === "note") return "Note (" + (e.category || "Note") + ", " + String(e.createdAt || "").slice(0, 10) + ")";
+  if (kind === "email") return "Email: " + (e.subject || "(no subject)");
+  return String(e.name || e.title || e.id || "");
+}
+// Outgoing links of one entity, in sentence-ready form: "<this item>
+// <relationship> <target>". targetLabel wins; a PMS target missing its label
+// (older links) is resolved against the project's own lists.
+function outgoingLinks(project: any, entity: any): any[] {
+  return (entity?.links ?? []).map((lk: any) => {
+    let target = lk.targetLabel || "";
+    if (!target && lk.targetSystem === "pms") {
+      const pair = LINK_LISTS.find(([k]) => k === lk.targetType);
+      const e = pair ? (project?.[pair[1]] ?? []).find((x: any) => String(x.id) === String(lk.targetId)) : null;
+      if (e) target = linkEntityLabel(lk.targetType, e);
+    }
+    return {
+      relationship: LINK_TYPE_LABELS[lk.linkType] || lk.linkType || "References",
+      targetKind: lk.targetSystem === "pms"
+        ? (LINK_KIND_LABELS[lk.targetType] || lk.targetType)
+        : ({ sharepoint: "SharePoint File/Folder", onenote: "OneNote Page", outlook: "Email", external: "External Link" }[lk.targetSystem] || "Link"),
+      target: target || lk.targetUrl || lk.targetId || "(unknown)",
+      ...(lk.targetUrl ? { url: lk.targetUrl } : {}),
+    };
+  });
+}
+// Back-links: every entity on the project whose links[] points AT this one.
+// Each row reads "<from> <relationship> this item" (e.g. RFI 012 Supersedes it).
+function incomingLinks(project: any, kind: string, entityId: any): any[] {
+  const out: any[] = [];
+  for (const [k, listKey] of LINK_LISTS) {
+    for (const e of (project?.[listKey] ?? [])) {
+      for (const lk of (e?.links ?? [])) {
+        if (lk?.targetSystem === "pms" && lk.targetType === kind && String(lk.targetId) === String(entityId)) {
+          out.push({ from: linkEntityLabel(k, e), relationship: LINK_TYPE_LABELS[lk.linkType] || lk.linkType });
+        }
+      }
+    }
+  }
+  return out;
+}
+const LINKED_FROM_NOTE = 'Each row reads "<from> <relationship> this item" — e.g. {from: "RFI 012", relationship: "Supersedes"} means RFI 012 supersedes THIS item.';
+
+// ── Related Projects (sibling grouping) ─────────────────────────────────────
+// Projects sharing a non-empty relatedGroup are one real-world effort split
+// into PMS records: phases, sister buildings, a study and its build-out.
+// relatedRole says what THIS record is within the group. Same normalization
+// as the app (trim + case-fold).
+async function relatedProjectsOf(p: any): Promise<any | null> {
+  const norm = (s: any) => String(s || "").trim().toLowerCase();
+  const g = norm(p?.relatedGroup);
+  if (!g) return null;
+  const all = await getProjects();
+  const siblings = all
+    .filter((x: any) => x.id !== p.id && norm(x.relatedGroup) === g)
+    .map((x: any) => ({
+      projectNumber: x.projectNumber || null, name: x.name || null,
+      role: x.relatedRole || null, status: x.status || null,
+      ...(x.archived ? { archived: true } : {}),
+    }));
+  return {
+    group: p.relatedGroup, thisProjectRole: p.relatedRole || null, siblings,
+    note: "Sibling PMS records of the same real-world effort (phases, sister buildings, related contracts). " +
+      "Look siblings up by projectNumber or name with get_project / project_briefing.",
+  };
+}
+
 function slimProjectForDetail(p: any) {
   const out: any = { ...p };
   out.ownerAgency = p.owner ?? null; // surface the owner agency under a clear name (alias of `owner`)
@@ -955,7 +1057,9 @@ mcp.tool("get_project", {
     "the meeting minutes and review comments that actually say what is happening. " +
     "AUTHORITATIVE HERE — do NOT infer these from documents: `scopeContent` is the project's SCOPE as " +
     "maintained in PMS, and `directory` / `projectContacts` / `clientContact` / `teamMembers` are the " +
-    "PROJECT DIRECTORY. Prefer these over anything found in a contract, proposal, or other document.",
+    "PROJECT DIRECTORY. Prefer these over anything found in a contract, proposal, or other document. " +
+    "If the project belongs to a Related Projects group, `relatedProjects` lists its sibling PMS " +
+    "records (phases, sister buildings) — follow those for the full picture of the effort.",
   inputSchema: z.object({
     projectNumber: z.string().optional().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     identifier: z.string().optional().describe("Deprecated alias for projectNumber. Accepted so clients that cached this tool's schema before 2026-08-05 keep working."),
@@ -968,6 +1072,8 @@ mcp.tool("get_project", {
     const p = await getProjectById(pid);
     if (!p) return asText({ error: `No project matching \"${ref}\"` });
     const out = slimProjectForDetail(p);
+    const related = await relatedProjectsOf(p);
+    if (related) out.relatedProjects = related;
     out._note = "Structured record only. For a 'what is going on' question this is background, not " +
       "the answer — call project_briefing to get the recent meeting minutes and review comments with it.";
     return asText(out);
@@ -1306,12 +1412,15 @@ mcp.tool("project_briefing", {
           "submittals do not exist yet, so they are omitted here. Do not report their absence as a finding.",
     ];
 
+    const related = await relatedProjectsOf(p);
+
     return asText({
       project: summarizeProject(p),
       projectManager: p.projectManager ?? null,
       deputyProjectManager: p.deputyProjectManager ?? null,
       client: p.clientName ?? null,
       clientContact: p.clientContact ?? null,
+      ...(related ? { relatedProjects: related } : {}),
       construction,
       meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
       reviewComments: mail.filter((m: any) => m.reviewComments.length),
@@ -1517,11 +1626,17 @@ mcp.tool("read_note", {
     const projects = await getProjects();
     for (const p of projects) {
       const n = (p.notes ?? []).find((x: any) => x.id === noteId);
-      if (n) return asText({
-        noteId, project: p.projectNumber || p.id, date: n.createdAt || n.updatedAt || null,
-        author: n.author || null, category: n.category || null, actionItem: !!n.actionItem,
-        oneNoteUrl: n.oneNoteUrl || null, text: htmlToText(n.body || ""),
-      });
+      if (n) {
+        const links = outgoingLinks(p, n);
+        const linkedFrom = incomingLinks(p, "note", n.id);
+        return asText({
+          noteId, project: p.projectNumber || p.id, date: n.createdAt || n.updatedAt || null,
+          author: n.author || null, category: n.category || null, actionItem: !!n.actionItem,
+          oneNoteUrl: n.oneNoteUrl || null, text: htmlToText(n.body || ""),
+          ...(links.length ? { links } : {}),
+          ...(linkedFrom.length ? { linkedFrom, linkedFromNote: LINKED_FROM_NOTE } : {}),
+        });
+      }
     }
     return asText({ error: `No note with id \"${noteId}\"` });
   },
@@ -1556,6 +1671,7 @@ mcp.tool("list_milestones", {
               : (m.pctComplete || 0) > 0 ? "In Progress"
               : (m.status || "Not Started"),
         ...(m.type === "billable" ? { fee: m.fee } : {}), datePinned: !!m.dueDateManual,
+        ...((m.links ?? []).length ? { links: outgoingLinks(p, m) } : {}),
       })),
     });
   },
@@ -1606,6 +1722,7 @@ mcp.tool("search_rfis_submittals", {
           status: item.status || null, dueDate: item.dueDate || null, received: item.dateReceived || null,
           closed: item.dateResponded || item.dateReturned || null,
           snippet: htmlToText(item.response || item.comments || item.description || "").slice(0, 200),
+          ...((item.links ?? []).length ? { linkCount: item.links.length, linkNote: "Has linked items — read_rfi_submittal shows them." } : {}),
         });
       };
       if (type !== "submittal") for (const r of (p.rfis ?? [])) add(r, "rfi");
@@ -1641,6 +1758,14 @@ mcp.tool("read_rfi_submittal", {
       closed: item.dateResponded || item.dateReturned || null,
       question: cap(htmlToText(item.description || "")), response: cap(htmlToText(item.response || item.comments || "")),
       notes: item.notes || null,
+      ...(() => {
+        const links = outgoingLinks(p, item);
+        const linkedFrom = incomingLinks(p, type, item.id);
+        return {
+          ...(links.length ? { links } : {}),
+          ...(linkedFrom.length ? { linkedFrom, linkedFromNote: LINKED_FROM_NOTE } : {}),
+        };
+      })(),
     });
   },
 });
