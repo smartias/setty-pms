@@ -291,7 +291,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-05-telemetry-project-key";
+const BUILD = "2026-08-05-align-project-param";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -321,6 +321,39 @@ const firstString = (...vals: unknown[]): string | null => {
     if (typeof v === "string" && v.trim()) return v.trim().slice(0, 120);
   }
   return null;
+};
+
+// ── Project parameter naming ─────────────────────────────────────────────────
+// 15 tools take `projectNumber`; get_project and project_briefing took
+// `identifier`. That inconsistency already cost us once (telemetry read only
+// projectNumber, so those two logged a null project and dropped out of the
+// per-project report silently).
+//
+// The two are aligned on `projectNumber`, but `identifier` is still ACCEPTED,
+// and removing it would be an outage rather than a cleanup. MCP clients cache
+// tool schemas at CONNECT: every session opened before this deploy will keep
+// sending `identifier`, and a hard rename gives all of them
+// "expected string, received undefined" until each user reconnects. Everyone at
+// the firm connected yesterday.
+//
+// So both are optional in the schema and one is required at runtime. Delete the
+// alias only once the connected clients have all cycled, which telemetry can
+// confirm rather than guess: no rows with identifier in use means it is safe.
+const projectRef = (projectNumber?: string, identifier?: string): string | null =>
+  firstString(projectNumber, identifier);
+
+// The parameter is called projectNumber because 15 tools already call it that,
+// but it accepts a NAME just as well, and for a large part of the portfolio the
+// name is the only thing there is: 46 of 151 projects carry no number, and all
+// of them are pipeline (Proposal Submitted, Proposal Due, Lost, Not Started).
+// A number is assigned when the job is won. Any message that says "pass the
+// project number" is therefore wrong for roughly a third of the firm's work,
+// which is why this one leads with both.
+const MISSING_PROJECT_REF = {
+  error: "No project given.",
+  nextStep: "Pass projectNumber with either the number (e.g. 'SAPX256018.00') or the project NAME. " +
+    "Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those. " +
+    "search_projects finds either.",
 };
 
 async function logTelemetry(row: Record<string, unknown>): Promise<void> {
@@ -465,12 +498,17 @@ mcp.tool("get_project", {
     "AUTHORITATIVE HERE — do NOT infer these from documents: `scopeContent` is the project's SCOPE as " +
     "maintained in PMS, and `directory` / `projectContacts` / `clientContact` / `teamMembers` are the " +
     "PROJECT DIRECTORY. Prefer these over anything found in a contract, proposal, or other document.",
-  inputSchema: z.object({ identifier: z.string().describe("Project number, id, or exact name") }),
-  handler: async ({ identifier }) => {
-    const pid = await resolveProjectId(identifier);
-    if (!pid) return asText({ error: `No project matching \"${identifier}\"` });
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
+    identifier: z.string().optional().describe("Deprecated alias for projectNumber. Accepted so clients that cached this tool's schema before 2026-08-05 keep working."),
+  }),
+  handler: async ({ projectNumber, identifier }) => {
+    const ref = projectRef(projectNumber, identifier);
+    if (!ref) return asText(MISSING_PROJECT_REF);
+    const pid = await resolveProjectId(ref);
+    if (!pid) return asText({ error: `No project matching \"${ref}\"` });
     const p = await getProjectById(pid);
-    if (!p) return asText({ error: `No project matching \"${identifier}\"` });
+    if (!p) return asText({ error: `No project matching \"${ref}\"` });
     const out = slimProjectForDetail(p);
     out._note = "Structured record only. For a 'what is going on' question this is background, not " +
       "the answer — call project_briefing to get the recent meeting minutes and review comments with it.";
@@ -741,15 +779,18 @@ mcp.tool("project_briefing", {
     "what those documents say is outstanding. Use get_project only when someone wants the record " +
     "itself (fee, directory, scope, full milestone list).",
   inputSchema: z.object({
-    identifier: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().optional().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
+    identifier: z.string().optional().describe("Deprecated alias for projectNumber. Accepted so clients that cached this tool's schema before 2026-08-05 keep working."),
     documents: z.number().optional().describe("How many meeting records to rank and return (default 6, max 20)"),
     emails: z.number().optional().describe("How many recent filed emails to scan (default 25, max 60)"),
   }),
-  handler: async ({ identifier, documents, emails }) => {
-    const pid = await resolveProjectId(identifier);
-    if (!pid) return asText({ error: `No project matching "${identifier}"` });
+  handler: async ({ projectNumber, identifier, documents, emails }) => {
+    const ref = projectRef(projectNumber, identifier);
+    if (!ref) return asText(MISSING_PROJECT_REF);
+    const pid = await resolveProjectId(ref);
+    if (!pid) return asText({ error: `No project matching "${ref}"` });
     const p = await getProjectById(pid);
-    if (!p) return asText({ error: `No project matching "${identifier}"` });
+    if (!p) return asText({ error: `No project matching "${ref}"` });
     const docCap = Math.min(Math.max(documents ?? 6, 1), 20);
     const mailCap = Math.min(Math.max(emails ?? 25, 1), 60);
 
@@ -948,7 +989,7 @@ mcp.tool("summarize_project_emails", {
     "Pull the most recent filed emails for a project WITH full bodies, to summarize the " +
     "correspondence. Defaults to the 12 newest.",
   inputSchema: z.object({
-    projectNumber: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     limit: z.number().optional().describe("How many recent emails to pull (default 12, max 30)"),
   }),
   handler: async ({ projectNumber, limit }) => {
@@ -1034,7 +1075,7 @@ mcp.tool("list_milestones", {
     "and non-billable. Shows phase, start/due dates, status, % complete, and whether a due date " +
     "is pinned (hand-set). Use for schedule and deadline questions.",
   inputSchema: z.object({
-    projectNumber: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     type: z.enum(["billable", "non-billable"]).optional().describe("Filter by milestone type"),
     includeCompleted: z.boolean().optional().describe("Include 100%-complete milestones (default true)"),
   }),
@@ -1122,7 +1163,7 @@ mcp.tool("read_rfi_submittal", {
     "Read one RFI or submittal in full — the complete question and response (RFI) or description " +
     "and review comments (submittal), plus metadata. Identify it by project + number.",
   inputSchema: z.object({
-    projectNumber: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     type: z.enum(["rfi", "submittal"]).describe("Whether it's an RFI or a submittal"),
     number: z.string().describe("The RFI/submittal number (e.g. '004' or '260513-001-0')"),
   }),
@@ -1610,7 +1651,7 @@ mcp.tool("get_current_set", {
     "from the folder structure and that no transmittal was logged. Never present a superseded set as " +
     "current.",
   inputSchema: z.object({
-    projectNumber: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     discipline: z.string().optional().describe("Return the newest set containing this discipline, e.g. 'M', 'E', 'FP'. Omit for the newest set overall."),
   }),
   handler: async ({ projectNumber, discipline }) => {
@@ -2406,7 +2447,7 @@ mcp.tool("find_document", {
     "the hit means 'this document exists here' and nothing more). Results are NOT filtered by status; " +
     "call get_current_set for the authoritative full issued set.",
   inputSchema: z.object({
-    projectNumber: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     query: z.string().describe("Plain-language description of the document, e.g. 'fire protection narrative'"),
     discipline: z.string().optional().describe("Restrict to a discipline: M, E, P, FP, FA or T"),
     docType: z.string().optional().describe("Restrict to a type: Narrative, Calc, Spec, Comment Log, Transmittal, Minutes or Report"),
@@ -2859,7 +2900,7 @@ mcp.tool("prepare_transmittal", {
     "it in the register. Use it to check a set before it goes out, or to answer 'what would this " +
     "replace?'.",
   inputSchema: z.object({
-    projectNumber: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     subfolder: z.string().describe("The set folder to stage, exactly as list_project_documents reports it, e.g. 'Outgoing/2026-04-17_Bulletin #13'"),
   }),
   handler: async ({ projectNumber, subfolder }) => {
@@ -3012,7 +3053,7 @@ mcp.tool("extract_sheet_index", {
     "a capped whole-project folder walk that may not reach deep set folders. This is READ-ONLY: it " +
     "returns rows for review and writes nothing to the transmittal register.",
   inputSchema: z.object({
-    projectNumber: z.string().describe("Project number, id, or name"),
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     subfolder: z.string().optional().describe("ONE set folder under Outgoing to read from the drawings, e.g. 'Outgoing/2026-04-17_Bulletin #13'. OMIT THIS to get the current full set composed from the register, which is what you almost always want — pass it only to read a specific historical issue, or to read a set that was never logged as a transmittal."),
     offset: z.number().optional().describe("Skip this many PDFs before extracting. Use it to page through a folder too large for one call: start at 0, then pass the nextOffset from the previous result until it comes back null. File order is stable across calls."),
     maxFiles: z.number().optional().describe("Max PDFs to open (default 25)"),
