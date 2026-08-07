@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-06-pms-v101-action-done-myprojects";
+    window.__appVersion = "2026-08-06-pms-v102-explorer-docs";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17495,7 +17495,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
                 root = (prompt(
                   "One-time setup (per computer): paste the File Explorer path of the folder that CONTAINS your synced project folders.\n\n" +
                   "In Explorer, browse to where your OneDrive shortcuts to project folders live, click the address bar, copy, and paste it here.\n\n" +
-                  "Example: C:\\Users\\you\\OneDrive - Setty and Associates",
+                  "Example: C:\\Users\\you\\OneDrive - Setty and Associates\n\n" +
+                  "Tip: prefer this button to OPEN Explorer directly instead of copying a path? Run the one-time setup in My Projects → ⚙ My Settings → One-click Explorer.",
                   root) || "").trim();
                 if (!root) return;
                 localStorage.setItem("pmsExplorerRoot", root);
