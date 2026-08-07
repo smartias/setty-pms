@@ -302,6 +302,18 @@
       if (session.expires_at * 1000 - Date.now() < REFRESH_SKEW_S * 1000) await refresh();
       else scheduleRefresh();
     }
+    // Self-heal a tokens-but-no-profile session. The /user fetch during the
+    // sign-in round-trip fails quietly on a network blip, persisting
+    // { access_token, user: null } — email() then returns "" for up to an hour
+    // (until the next token refresh restores the profile), and staff-matching
+    // UIs like My Projects show a blank "signed in as ," card. Refetch in the
+    // background; store() re-fires listeners so those UIs snap right when the
+    // profile lands. Guarded so a refresh() that already filled user wins.
+    if (session && session.access_token && !session.user) {
+      authFetch("/user", undefined, session.access_token)
+        .then(u => { if (session && !session.user) store({ ...session, user: u }); })
+        .catch(() => {});
+    }
     return session;
   }
 
