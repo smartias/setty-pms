@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-06-pms-v100-explorer-one-click";
+    window.__appVersion = "2026-08-06-pms-v101-action-done-myprojects";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -26407,8 +26407,8 @@ function buildStaffOpenItemsMap(projects) {
 
 // Rows shared by the Staff expanded panel and the My Projects digest — one
 // open item (milestone / RFI / submittal / action item) per row.
-function StaffOpenItemRows({ entries, now, onOpenRfi, onOpenSub, onNavigateToProject, firstColPad = 18 }) {
-  return entries.map(({ ms, project, role, itemType, _rfi, _sub, _project }) => {
+function StaffOpenItemRows({ entries, now, onOpenRfi, onOpenSub, onNavigateToProject, onCompleteAction, firstColPad = 18 }) {
+  return entries.map(({ ms, project, role, itemType, _rfi, _sub, _note, _project }) => {
     const isOv = !!ms.dueDate && new Date(ms.dueDate) < now;
     const isRS = itemType === "rfi" || itemType === "submittal";
     const isActionItem = itemType === "action-item";
@@ -26457,7 +26457,20 @@ function StaffOpenItemRows({ entries, now, onOpenRfi, onOpenSub, onNavigateToPro
             <ProgressBar pct={ms.pctComplete || 0} color={ms.pctComplete >= 100 ? P.green : P.accent} />
             <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim, minWidth: 28 }}>{ms.pctComplete || 0}%</span>
           </div>}
-          {isActionItem && <span style={{ fontSize: 11, color: P.textDim }}>—</span>}
+          {/* Mark-done straight from the digest — same write as the Notes
+              tab's "✓ Mark Done" (actionStatus is the canonical field). The
+              row re-filters out on save, so completion is its own feedback.
+              onCompleteAction is only passed where the viewer can edit
+              projects (Phase 5 gate), so read-only roles never see it. */}
+          {isActionItem && (onCompleteAction && _note ? (
+            <button
+              title="Mark this action item done (reopen from the project's Notes tab)"
+              onClick={ev => { ev.stopPropagation(); onCompleteAction({ project: _project || project, note: _note }); }}
+              style={{ background: P.greenDim, border: `1px solid ${P.green}`, borderRadius: 6,
+                color: P.green, cursor: "pointer", fontSize: 11, fontWeight: 700, padding: "3px 10px", whiteSpace: "nowrap" }}>
+              ✓ Done
+            </button>
+          ) : <span style={{ fontSize: 11, color: P.textDim }}>—</span>)}
         </td>
       </tr>
     );
@@ -26712,7 +26725,10 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
               <tbody>
                 <StaffOpenItemRows entries={[...myOverdue, ...myUpcoming.slice(0, UPCOMING_CAP)]} now={now}
                   onOpenRfi={setRfiModal} onOpenSub={setSubModal}
-                  onNavigateToProject={onNavigateToProject} />
+                  onNavigateToProject={onNavigateToProject}
+                  onCompleteAction={pmsCanEditProjects() ? (({ project, note }) =>
+                    onUpdateProject({ ...project, notes: (project.notes || []).map(n =>
+                      n.id === note.id ? { ...n, actionStatus: "done", updatedAt: new Date().toISOString() } : n) })) : undefined} />
               </tbody>
             </table>
             {myUpcoming.length > UPCOMING_CAP && (
