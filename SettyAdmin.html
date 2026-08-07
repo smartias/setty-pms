@@ -1096,6 +1096,18 @@ function renderGuide() {
          <b>How it gets out:</b> the PMS and Intelligence apps display it; the MCP connector lets anyone ask Claude about it in plain English.</p>
     </div>
 
+    <div class="card doc" id="g-explorer">
+      <div class="sechead">6 · Explorer bridge — open project folders locally</div>
+      <p>PMS folder links open SharePoint <i>Online</i>, which is poor for real file work (PDF processing, zips, batch renames). The Explorer bridge jumps from a project — in the PMS or the Outlook add-in — straight to that project's <b>synced OneDrive copy</b> in File Explorer. It opens folders only; syncing them is OneDrive's job, so a project must already have its OneDrive shortcut for the jump to land.</p>
+      <ul>
+        <li><b>Intended experience — one-click:</b> run the setup file once per computer (<i>My Projects → ⚙ My Settings → One-click Explorer</i>; per-user, no admin rights). It registers a <code>settypms:</code> link type (HKCU) and installs a small PowerShell handler. After that, 📂 opens Explorer directly. First click shows two normal one-time prompts: the browser's "allow SettyPMS links" and a folder picker for where the synced project folders live (remembered in <code>%LOCALAPPDATA%\SettyPMS\explorer-root.txt</code>).</li>
+        <li><b>No setup? Nothing breaks:</b> the PMS 📂 button falls back to copying the local path (paste into Explorer), and the add-in's 📂 lands on a helper page (<code>explorer-bridge/open.html</code>) with the path one click away plus the setup download. The add-in must route through that page because Office task panes can only open http/https links.</li>
+        <li><b>Auditability:</b> the setup file and handler are plain readable text in the repo's <code>explorer-bridge/</code> folder — no bundled binaries, nothing obfuscated. The setup file's header includes the two-line uninstall.</li>
+        <li><b>Security shape:</b> the handler does exactly one thing — open <code>explorer.exe</code> at a single folder name under the user-chosen root. Path separators are stripped, <code>..</code> is rejected, and a missing folder falls back to opening the root (the "add your OneDrive shortcut" cue). No network calls, nothing executed, nothing leaves the machine.</li>
+        <li><b>Troubleshooting:</b> Explorer opens the root instead of the project → that project isn't synced on this machine. Wrong location everywhere → delete <code>explorer-root.txt</code> and the next click asks again. Nothing happens at all → look for the browser's blocked "open SettyPMS?" prompt.</li>
+      </ul>
+    </div>
+
     <div class="card doc" id="g-continuity">
       <details>
       <summary class="sechead" style="cursor:pointer;list-style:none">▸ Continuity — take-over runbook <span style="text-transform:none;letter-spacing:0;font-weight:400">(accounts, deploys, recovery — click to expand)</span></summary>
