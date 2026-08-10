@@ -18,6 +18,8 @@
 // (confirmed by Sara 2026-05-29): RFI open = status "Open"; submittal open =
 // "Under Review"; milestones !cancelled && <100% due in 21 days; action items
 // = notes with actionItem flag not done (undated ones in a separate bucket).
+// Action items are per-person (Sara, 2026-08-10): an item whose owner resolves
+// to a staff email appears only in that owner's digest.
 //
 // verify_jwt is OFF (browser CORS preflight can't carry a JWT) — every route
 // enforces its own auth above. No external imports: plain fetch against
@@ -149,7 +151,7 @@ function welcomeHtml(p: { email: string; role: string; display_name?: string; ad
 }
 
 // ── /digest ──────────────────────────────────────────────────────────────────
-type Item = { type: string; label: string; dueDate?: string; owner?: string };
+type Item = { type: string; label: string; dueDate?: string; owner?: string; ownerEmail?: string };
 type ProjDigest = { projectName: string; projectNumber: string; items: Item[]; undatedActions: Item[] };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -178,7 +180,7 @@ const DIGEST_STATUSES = new Set([
   "In Construction Administration",
 ]);
 
-function buildProjectDigest(project: any, today: Date): ProjDigest | null {
+function buildProjectDigest(project: any, today: Date, nameToEmail: Map<string, string>): ProjDigest | null {
   if (!project || project.archived || !DIGEST_STATUSES.has(project.status || "")) return null;
   const items: Item[] = [];
   const undatedActions: Item[] = [];
@@ -198,15 +200,22 @@ function buildProjectDigest(project: any, today: Date): ProjDigest | null {
     }
   }
   for (const n of project.notes || []) {
-    if (!n.actionItem || (n.actionStatus || "open") === "done") continue;
+    // The Outlook add-in writes owner/dueDate/status; the PMS writes
+    // actionOwner/actionDueDate/actionStatus. Coalesce so add-in items
+    // bucket by their real due date instead of landing in "Anytime".
+    const status = String(n.actionStatus || n.status || "open").toLowerCase();
+    if (!n.actionItem || ["done", "completed", "closed"].includes(status)) continue;
+    const due = n.actionDueDate || n.dueDate || undefined;
+    const owner = (n.actionOwner || n.owner || "").trim() || undefined;
     const item: Item = {
       type: "action",
       label: (n.body || "").slice(0, 120).trim() || "(no description)",
-      dueDate: n.actionDueDate || undefined,
-      owner: n.actionOwner || undefined,
+      dueDate: due,
+      owner,
+      ownerEmail: owner ? nameToEmail.get(owner.toLowerCase()) : undefined,
     };
-    if (!n.actionDueDate) undatedActions.push(item);
-    else if (inLookahead(n.actionDueDate, today)) items.push(item);
+    if (!due) undatedActions.push(item);
+    else if (inLookahead(due, today)) items.push(item);
   }
   items.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
   if (items.length + undatedActions.length === 0) return null;
@@ -328,7 +337,7 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
   // Build each project's digest once; remember which member emails it maps to.
   const perProject: { digest: ProjDigest; memberEmails: Set<string> }[] = [];
   for (const row of projectRows) {
-    const digest = buildProjectDigest(row.project, today);
+    const digest = buildProjectDigest(row.project, today, nameToEmail);
     if (!digest) continue;
     const memberEmails = new Set<string>();
     for (const tm of row.project.teamMembers || []) {
@@ -345,10 +354,22 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
   const failed: { email: string; error: string }[] = [];
   const preview: Record<string, { projects: number; items: number }> = {};
 
+  // Action items are personal: one with an owner we can resolve to a staff
+  // email goes only to that person's digest. Unowned (or unresolvable-owner)
+  // items still go to everyone on the project so nothing silently disappears.
+  const forRecipient = (d: ProjDigest, email: string): ProjDigest | null => {
+    const mine = (i: Item) => i.type !== "action" || !i.ownerEmail || i.ownerEmail === email;
+    const items = d.items.filter(mine);
+    const undatedActions = d.undatedActions.filter(mine);
+    if (items.length + undatedActions.length === 0) return null;
+    return { ...d, items, undatedActions };
+  };
+
   for (const r of recipients) {
     const digests = perProject
       .filter(p => r.scope === "all" || p.memberEmails.has(r.email))
-      .map(p => p.digest);
+      .map(p => forRecipient(p.digest, r.email))
+      .filter((d): d is ProjDigest => d !== null);
     if (digests.length === 0) { skipped.push(r.email); continue; }
     preview[r.email] = {
       projects: digests.length,
