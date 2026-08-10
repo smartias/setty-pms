@@ -20,6 +20,10 @@
 // = notes with actionItem flag not done (undated ones in a separate bucket).
 // Action items are per-person (Sara, 2026-08-10): an item whose owner resolves
 // to a staff email appears only in that owner's digest.
+// "⚠ Overdue" section (Sara, 2026-08-10): open action items / RFIs / submittals
+// past their due date, ONLY when assigned to the recipient. Milestones are
+// deliberately excluded — they often aren't closed out until Monday midday,
+// so an overdue-milestone list would be noisy and inaccurate.
 //
 // verify_jwt is OFF (browser CORS preflight can't carry a JWT) — every route
 // enforces its own auth above. No external imports: plain fetch against
@@ -151,8 +155,8 @@ function welcomeHtml(p: { email: string; role: string; display_name?: string; ad
 }
 
 // ── /digest ──────────────────────────────────────────────────────────────────
-type Item = { type: string; label: string; dueDate?: string; owner?: string; ownerEmail?: string };
-type ProjDigest = { projectName: string; projectNumber: string; items: Item[]; undatedActions: Item[] };
+type Item = { type: string; label: string; dueDate?: string; owner?: string; ownerEmails?: string[] };
+type ProjDigest = { projectName: string; projectNumber: string; items: Item[]; undatedActions: Item[]; overdue: Item[] };
 
 const TYPE_LABELS: Record<string, string> = {
   milestone: "📍 Milestone", rfi: "❓ RFI", submittal: "📋 Submittal", action: "✅ Action",
@@ -184,19 +188,50 @@ function buildProjectDigest(project: any, today: Date, nameToEmail: Map<string, 
   if (!project || project.archived || !DIGEST_STATUSES.has(project.status || "")) return null;
   const items: Item[] = [];
   const undatedActions: Item[] = [];
+  const overdue: Item[] = [];
+
+  const startOfToday = new Date(today); startOfToday.setHours(0, 0, 0, 0);
+  const isOverdue = (due?: string) => {
+    if (!due) return false;
+    const d = new Date(due + "T00:00:00");
+    return !isNaN(d.getTime()) && d < startOfToday;
+  };
+  // rfis[]/submittals[].assignedTo holds per-project teamMembers IDs (arrays,
+  // possibly several people) — resolve through this project's team, falling
+  // back to the staff roster by name for members without an email field.
+  const idToEmail = new Map<string, string>();
+  for (const tm of project.teamMembers || []) {
+    const email = (tm.email || "").toLowerCase().trim() || nameToEmail.get((tm.name || "").toLowerCase().trim()) || "";
+    if (tm.id && email) idToEmail.set(tm.id, email);
+  }
+  const assigneeEmails = (assignedTo: unknown): string[] =>
+    (Array.isArray(assignedTo) ? assignedTo : [])
+      .map(id => idToEmail.get(String(id)))
+      .filter((e): e is string => !!e);
+
+  // Milestones stay look-ahead only — no overdue bucket for them (Sara,
+  // 2026-08-10: often closed out Monday midday, overdue would be noise).
   for (const m of project.milestones || []) {
     if (!m.cancelled && (m.pctComplete ?? 0) < 100 && inLookahead(m.dueDate, today)) {
       items.push({ type: "milestone", label: m.name || "(unnamed milestone)", dueDate: m.dueDate });
     }
   }
   for (const r of project.rfis || []) {
-    if (r.status === "Open" && inLookahead(r.dueDate, today)) {
-      items.push({ type: "rfi", label: [r.number, r.title].filter(Boolean).join(" — "), dueDate: r.dueDate });
+    if (r.status !== "Open") continue;
+    const label = [r.number, r.title].filter(Boolean).join(" — ");
+    if (inLookahead(r.dueDate, today)) items.push({ type: "rfi", label, dueDate: r.dueDate });
+    else if (isOverdue(r.dueDate)) {
+      const ownerEmails = assigneeEmails(r.assignedTo);
+      if (ownerEmails.length) overdue.push({ type: "rfi", label, dueDate: r.dueDate, ownerEmails });
     }
   }
   for (const s of project.submittals || []) {
-    if (s.status === "Under Review" && inLookahead(s.dueDate, today)) {
-      items.push({ type: "submittal", label: [s.number, s.description].filter(Boolean).join(" — "), dueDate: s.dueDate });
+    if (s.status !== "Under Review") continue;
+    const label = [s.number, s.description].filter(Boolean).join(" — ");
+    if (inLookahead(s.dueDate, today)) items.push({ type: "submittal", label, dueDate: s.dueDate });
+    else if (isOverdue(s.dueDate)) {
+      const ownerEmails = assigneeEmails(s.assignedTo);
+      if (ownerEmails.length) overdue.push({ type: "submittal", label, dueDate: s.dueDate, ownerEmails });
     }
   }
   for (const n of project.notes || []) {
@@ -207,22 +242,25 @@ function buildProjectDigest(project: any, today: Date, nameToEmail: Map<string, 
     if (!n.actionItem || ["done", "completed", "closed"].includes(status)) continue;
     const due = n.actionDueDate || n.dueDate || undefined;
     const owner = (n.actionOwner || n.owner || "").trim() || undefined;
+    const ownerEmail = owner ? nameToEmail.get(owner.toLowerCase()) : undefined;
     const item: Item = {
       type: "action",
       label: (n.body || "").slice(0, 120).trim() || "(no description)",
       dueDate: due,
       owner,
-      ownerEmail: owner ? nameToEmail.get(owner.toLowerCase()) : undefined,
+      ownerEmails: ownerEmail ? [ownerEmail] : undefined,
     };
     if (!due) undatedActions.push(item);
     else if (inLookahead(due, today)) items.push(item);
+    else if (isOverdue(due) && item.ownerEmails?.length) overdue.push(item);
   }
   items.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
-  if (items.length + undatedActions.length === 0) return null;
+  overdue.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
+  if (items.length + undatedActions.length + overdue.length === 0) return null;
   return {
     projectName: project.name || "(unnamed project)",
     projectNumber: project.projectNumber || "",
-    items, undatedActions,
+    items, undatedActions, overdue,
   };
 }
 
@@ -236,18 +274,19 @@ const TYPE_CHIP: Record<string, string> = {
   milestone: "#1F3864", rfi: "#B45309", submittal: "#047857", action: "#7C3AED",
 };
 
-function itemLine(i: FlatItem, isLast: boolean): string {
+function itemLine(i: FlatItem, isLast: boolean, dueTag?: string): string {
   return `
     <div style="padding:4px 0;font-size:10pt;color:#222;${isLast ? "" : "border-bottom:1px dotted #e4e4e4"}">
       <span style="color:${TYPE_CHIP[i.type] || "#666"};font-weight:700;font-size:8.5pt;white-space:nowrap">${TYPE_LABELS[i.type] || i.type}</span>
       &nbsp;${esc(i.label)}${i.owner ? ` <span style="color:#888">— ${esc(i.owner)}</span>` : ""}
-      <span style="color:#999;font-size:8.5pt;white-space:nowrap"> · ${esc(i.projectNumber || "")}${i.projectNumber && i.projectName ? " " : ""}${esc(i.projectName)}</span>
+      <span style="color:#999;font-size:8.5pt;white-space:nowrap"> · ${esc(i.projectNumber || "")}${i.projectNumber && i.projectName ? " " : ""}${esc(i.projectName)}</span>${dueTag ? ` <span style="color:#C00000;font-size:8.5pt;font-weight:700;white-space:nowrap">· was due ${esc(dueTag)}</span>` : ""}
     </div>`;
 }
 
 function digestHtml(digests: ProjDigest[], today: Date): string {
   const dated: FlatItem[] = [];
   const undated: FlatItem[] = [];
+  const overdueFlat: FlatItem[] = [];
   for (const d of digests) {
     for (const i of d.items) {
       const flat = { date: i.dueDate, type: i.type, label: i.label, owner: i.owner, projectName: d.projectName, projectNumber: d.projectNumber };
@@ -256,8 +295,12 @@ function digestHtml(digests: ProjDigest[], today: Date): string {
     for (const i of d.undatedActions) {
       undated.push({ type: i.type, label: i.label, owner: i.owner, projectName: d.projectName, projectNumber: d.projectNumber });
     }
+    for (const i of d.overdue) {
+      overdueFlat.push({ date: i.dueDate, type: i.type, label: i.label, owner: i.owner, projectName: d.projectName, projectNumber: d.projectNumber });
+    }
   }
   dated.sort((a, b) => a.date!.localeCompare(b.date!));
+  overdueFlat.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
   const byDate = new Map<string, FlatItem[]>();
   for (const i of dated) {
@@ -300,6 +343,13 @@ function digestHtml(digests: ProjDigest[], today: Date): string {
     </table>`;
   }
 
+  // Personal overdue tray — everything here is assigned to this recipient.
+  const overdueBlock = overdueFlat.length ? `
+    <div style="margin-top:20px;padding:10px 14px;background:#fdf2f2;border-left:3px solid #C00000;border-radius:3px">
+      <div style="font-size:9pt;color:#C00000;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">⚠ Overdue — assigned to you (${overdueFlat.length})</div>
+      ${overdueFlat.map((i, idx) => itemLine(i, idx === overdueFlat.length - 1, fmtDate(i.date))).join("")}
+    </div>` : "";
+
   const undatedBlock = undated.length ? `
     <div style="margin-top:26px;padding:10px 14px;background:#fff8e1;border-left:3px solid #f59e0b;border-radius:3px">
       <div style="font-size:9pt;color:#92400e;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">📌 Anytime — no due date set (${undated.length})</div>
@@ -308,11 +358,12 @@ function digestHtml(digests: ProjDigest[], today: Date): string {
 
   const end = new Date(today); end.setDate(end.getDate() + LOOKAHEAD_DAYS);
   const range = `${today.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
-  const total = dated.length + undated.length;
+  const total = dated.length + undated.length + overdueFlat.length;
   const projCount = digests.length;
   return shell("Your week ahead", `
     <div style="font-size:20pt;color:#1F3864;font-weight:700;line-height:1.1">Your week ahead</div>
-    <div style="font-size:11pt;color:#666;margin-top:6px">${total} item${total !== 1 ? "s" : ""} across ${projCount} project${projCount !== 1 ? "s" : ""} · ${range}</div>
+    <div style="font-size:11pt;color:#666;margin-top:6px">${total} item${total !== 1 ? "s" : ""} across ${projCount} project${projCount !== 1 ? "s" : ""} · ${range}${overdueFlat.length ? ` · <span style="color:#C00000;font-weight:700">${overdueFlat.length} overdue</span>` : ""}</div>
+    ${overdueBlock}
     ${body}
     ${undatedBlock}
     <div style="font-size:9pt;color:#999;margin-top:24px">You get this because the weekly digest is on in <a href="${PMS_URL}#myprojects" style="color:#1F3864">My Projects → ⚙ My Settings</a> — turn it off there any time.</div>
@@ -357,12 +408,14 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
   // Action items are personal: one with an owner we can resolve to a staff
   // email goes only to that person's digest. Unowned (or unresolvable-owner)
   // items still go to everyone on the project so nothing silently disappears.
+  // The overdue bucket is stricter: only items assigned to the recipient.
   const forRecipient = (d: ProjDigest, email: string): ProjDigest | null => {
-    const mine = (i: Item) => i.type !== "action" || !i.ownerEmail || i.ownerEmail === email;
+    const mine = (i: Item) => i.type !== "action" || !i.ownerEmails?.length || i.ownerEmails.includes(email);
     const items = d.items.filter(mine);
     const undatedActions = d.undatedActions.filter(mine);
-    if (items.length + undatedActions.length === 0) return null;
-    return { ...d, items, undatedActions };
+    const overdue = d.overdue.filter(i => i.ownerEmails?.includes(email));
+    if (items.length + undatedActions.length + overdue.length === 0) return null;
+    return { ...d, items, undatedActions, overdue };
   };
 
   for (const r of recipients) {
@@ -373,7 +426,7 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
     if (digests.length === 0) { skipped.push(r.email); continue; }
     preview[r.email] = {
       projects: digests.length,
-      items: digests.reduce((a, d) => a + d.items.length + d.undatedActions.length, 0),
+      items: digests.reduce((a, d) => a + d.items.length + d.undatedActions.length + d.overdue.length, 0),
     };
     if (opts.dryRun) continue;
     const subject = `Your week ahead — ${today.toLocaleDateString("en-US", { month: "long", day: "numeric" })}`;
