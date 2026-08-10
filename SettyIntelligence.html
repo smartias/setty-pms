@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-08-10-intel-v31-graph-inactive-staff";
+    window.__appVersion = "2026-08-10-intel-v32-graph-issue-tags";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1576,11 +1576,21 @@ function renderGraphList() {
   // Submittal "systems" are raw CSI spec sections (232113, 15510) — split them
   // out from the prose themes so neither list drowns the other.
   const isSpec = k => /^\d{5,6}(\.\d+)?$/.test(k);
+  // MasterFormat titles for the sections that actually occur in our log —
+  // exact match first, then the base 6-digit section, then the division.
+  const CSI_TITLES = {
+    "232113":"Hydronic Piping","232113.13":"Underground Hydronic Piping","211313":"Wet-Pipe Sprinklers","260533":"Raceways & Boxes","233113":"Metal Ducts","232300":"Refrigerant Piping","260519":"LV Power Conductors & Cables","233423":"HVAC Power Ventilators","230900":"HVAC Controls / BMS","260529":"Electrical Hangers & Supports","221119":"Domestic Water Specialties","262416":"Panelboards","233713":"Diffusers, Registers & Grilles","262713":"Electricity Metering","221316":"Sanitary Waste & Vent","263213.13":"Diesel Generator Sets","235700":"HVAC Heat Exchangers","262813":"Fuses","224216.16":"Commercial Sinks","224216.13":"Commercial Lavatories","265119":"LED Interior Lighting","230713":"Duct Insulation","230517":"HVAC Sleeves & Seals","230523":"HVAC Valves","238126":"Split-System ACs","262816":"Enclosed Switches & Breakers","284621.11":"Addressable Fire Alarm","233600":"Air Terminal Units","237433":"Dedicated Outdoor-Air Units","264113":"Lightning Protection","221123.13":"Domestic Booster Pumps","221123":"Domestic Water Pumps","232123":"Hydronic Pumps","221116":"Domestic Water Piping","233300":"Duct Accessories","213113":"Electric Fire Pumps","220517":"Plumbing Sleeves & Seals","220529":"Plumbing Hangers & Supports","261116.12":"Secondary Unit Substations","230719":"HVAC Piping Insulation","265619":"LED Exterior Lighting","223300":"Electric Water Heaters","238239":"Unit Heaters","221429":"Sump Pumps","260923":"Lighting Controls","034100":"Precast Structural Concrete","210553":"Fire-Suppression Identification","238219":"Fan Coil Units","230716":"HVAC Equipment Insulation","270536":"Cable Trays (Comms)","220553":"Plumbing Identification","263600":"Transfer Switches","262726":"Wiring Devices","221000":"Plumbing Piping","236426":"Rotary Water Chillers","262413":"Switchboards","220523":"Plumbing Valves","233400":"HVAC Fans","238233":"Convectors","232213":"Steam & Condensate Piping","231323":"Aboveground Fuel Tanks","233100":"HVAC Ducts & Casings","221353":"Facility Septic Tanks","078413":"Penetration Firestopping","238116":"Room Air Conditioners","221113":"Facility Water Distribution","260543":"Underground Ducts & Raceways","260553":"Electrical Identification","260526":"Grounding & Bonding","261329":"MV Switchgear","274100":"AV Systems","230593":"TAB (Testing & Balancing)","230548":"HVAC Vibration & Seismic","223500":"Domestic Heat Exchangers","221319":"Sanitary Specialties","221413":"Storm Drainage Piping","260513":"MV Cables","264313":"Surge Protection","230923":"Direct-Digital Controls","211119":"Fire Hydrants","262213":"LV Distribution Transformers","232116":"Hydronic Specialties","232216":"Steam Specialties","211000":"Water-Based Suppression","211200":"Fire-Suppression Standpipes","211300":"Fire-Suppression Sprinklers","213113":"Electric Fire Pumps","283105":"Fire Detection & Alarm","321813":"Synthetic Grass Surfacing","334000":"Storm Utility Drainage","142100":"Electric Traction Elevators","06410":"Custom Casework","09650":"Resilient Flooring","09210":"Gypsum Plaster","09900":"Painting","07270":"Firestopping","03542":"Concrete Topping","15510":"Hydronic Piping","15410":"Plumbing Piping","16130":"Raceways & Boxes","16231":"Engine Generators","16120":"Wires & Cables","15992":"TAB (Testing & Balancing)","16140":"Wiring Devices"
+  };
+  const CSI_DIVS = { "01":"General Requirements","03":"Concrete","06":"Millwork","07":"Thermal & Moisture","08":"Openings","09":"Finishes","14":"Conveying","18":"Commissioning","21":"Fire Suppression","22":"Plumbing","23":"HVAC","26":"Electrical","27":"Communications","28":"Fire Alarm / Security","32":"Exterior","33":"Utilities" };
+  const CSI95_DIVS = { "00":"General","01":"General","02":"Sitework","03":"Concrete","06":"Wood","07":"Thermal & Moisture","09":"Finishes","14":"Conveying","15":"Mechanical","16":"Electrical" };
+  const specTitle = k => CSI_TITLES[k] || CSI_TITLES[k.split(".")[0]]
+    || (k.length >= 6 ? CSI_DIVS[k.slice(0,2)] : CSI95_DIVS[k.slice(0,2)]) || "";
+  const specLabel = k => { const t = specTitle(k); return t ? `${k} ${t}` : k; };
   // Recency matters when picking who to ask — flag work older than ~18 months.
   const staleCut = new Date(Date.now() - 548 * 86400000).toISOString().slice(0,10);
   const lastPill = last => last ? (last < staleCut
-    ? `<span class="pill pill-gray" title="Most recent authored work is over 18 months old">last ${esc(last)}</span>`
-    : `<span class="pill pill-green" title="Recently active on this">last ${esc(last)}</span>`) : "";
+    ? `<span class="pill pill-gray" title="Date of the most recent RFI answer, submittal review or lesson they authored in the project log — over 18 months ago">last authored ${esc(last)}</span>`
+    : `<span class="pill pill-green" title="Date of the most recent RFI answer, submittal review or lesson they authored in the project log">last authored ${esc(last)}</span>`) : "";
   if (f.view === "system" || f.view === "agency") {
     // Go-to directory: group work by system/theme (or agency), then rank people
     // inside each group — answers "who do I put on X?" directly.
@@ -1600,7 +1610,7 @@ function renderGraphList() {
     const cards = Object.entries(groups).sort((a,b)=>b[1].n-a[1].n).map(([name,g2]) => {
       const ppl = Object.entries(g2.people).sort((a,b)=>b[1].n-a[1].n).slice(0,3);
       return `<div class="lesson approved">
-        <div class="lesson-summary">${f.view==="system"?"🎯":"🏛️"} ${esc(name)} <span style="font-weight:400;color:var(--dim);font-size:12px">· ${g2.n} work item${g2.n===1?"":"s"}</span></div>
+        <div class="lesson-summary">${f.view==="system"?"🎯":"🏛️"} ${esc(f.view==="system"&&isSpec(name)?specLabel(name):name)} <span style="font-weight:400;color:var(--dim);font-size:12px">· ${g2.n} work item${g2.n===1?"":"s"}</span></div>
         <div class="lesson-meta">${top(g2.discs,3).map(([k,n])=>`<span class="pill pill-purple">${esc(k)} × ${n}</span>`).join(" ")} ${lastPill(g2.last)}</div>
         <div class="lesson-sub" style="margin-top:8px">
           ${ppl.map(([pn,pp],i)=>`<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0">
@@ -1617,36 +1627,53 @@ function renderGraphList() {
   }
   const by = {};
   rows.forEach(r => {
-    const p = by[r.person] = by[r.person] || { n:0, kinds:{}, discs:{}, systems:{}, agencies:{}, projects:{}, last:"", examples:[] };
+    const p = by[r.person] = by[r.person] || { n:0, kinds:{}, agencies:{}, byProj:{}, last:"", examples:[] };
     p.n++; p.kinds[r.kind]=(p.kinds[r.kind]||0)+1;
-    if (r.discipline) p.discs[r.discipline]=(p.discs[r.discipline]||0)+1;
-    if (r.system) p.systems[r.system]=(p.systems[r.system]||0)+1;
     if (r.agency) p.agencies[r.agency]=(p.agencies[r.agency]||0)+1;
-    if (r.project_number) p.projects[r.project_number] = r.project_name || r.project_number;
+    if (r.project_number) {
+      const bp = p.byProj[r.project_number] = p.byProj[r.project_number] || { name: r.project_name || r.project_number, n:0, themes:{}, specs:{} };
+      bp.n++;
+      if (r.system) { (isSpec(r.system) ? bp.specs : bp.themes)[r.system] = ((isSpec(r.system) ? bp.specs : bp.themes)[r.system]||0)+1; }
+    }
     if (wd(r) > p.last) p.last = wd(r);
     if (p.examples.length < 2 && r.subject && !p.examples.includes(r.subject)) p.examples.push(r.subject);
   });
   const people = Object.entries(by).sort((a,b)=>b[1].n-a[1].n);
+  const tag = (label,n,cls) => `<span class="pill ${cls}" style="margin:2px 3px 2px 0">${esc(label)}${n>1?` <span style="opacity:.65">${n}</span>`:""}</span>`;
   el.innerHTML = people.map(([name,p]) => {
-    const projs = Object.entries(p.projects);
+    const projs = Object.entries(p.byProj).sort((a,b)=>b[1].n-a[1].n);
+    const kindsLine = [
+      p.kinds.rfi ? `${p.kinds.rfi} RFI answer${p.kinds.rfi===1?"":"s"}` : "",
+      p.kinds.submittal ? `${p.kinds.submittal} submittal review${p.kinds.submittal===1?"":"s"}` : "",
+      p.kinds.lesson ? `${p.kinds.lesson} lesson${p.kinds.lesson===1?"":"s"}` : "",
+    ].filter(Boolean).join(" · ");
+    // Issue tags: every theme across their work, ranked — the point is what
+    // actually came up on their projects, not the RFI/submittal bookkeeping.
+    const allThemes = {}, allSpecs = {};
+    projs.forEach(([,bp]) => {
+      Object.entries(bp.themes).forEach(([k,n])=>allThemes[k]=(allThemes[k]||0)+n);
+      Object.entries(bp.specs).forEach(([k,n])=>allSpecs[k]=(allSpecs[k]||0)+n);
+    });
+    const themeTags = Object.entries(allThemes).sort((a,b)=>b[1]-a[1]);
+    const specTags = Object.entries(allSpecs).sort((a,b)=>b[1]-a[1]).slice(0,8);
     return `
     <div class="lesson approved">
       <div class="lesson-top"><div style="flex:1">
         <div class="lesson-summary">👤 ${esc(name)} <span style="font-weight:400;color:var(--dim);font-size:12px">· ${p.n} work item${p.n===1?"":"s"} · ${projs.length} project${projs.length===1?"":"s"}</span></div>
         <div class="lesson-meta">
-          ${(state.graph.emails||{})[name]?`<span class="pill pill-blue" title="Team member ID from the PMS user registry">${esc(state.graph.emails[name])}</span>`:(name==="Setty team"?"":`<span class="pill pill-gray" title="No matching entry in pms_user_roles — likely departed staff or never signed into PMS">not in staff registry</span>`)}
+          ${(state.graph.emails||{})[name]?`<span class="pill pill-blue" title="Team member ID from the PMS user registry">${esc(state.graph.emails[name])}</span>`:`<span class="pill pill-gray" title="No matching entry in pms_user_roles — likely never signed into PMS">not in staff registry</span>`}
           ${lastPill(p.last)}
-          ${top(p.kinds,3).map(([k,n])=>`<span class="pill pill-blue">${esc(k)} × ${n}</span>`).join(" ")}
-          ${top(p.discs,3).map(([k,n])=>`<span class="pill pill-purple">${esc(k)} × ${n}</span>`).join(" ")}
           ${top(p.agencies,3).map(([k,n])=>`<span class="pill pill-gray">${esc(k)} × ${n}</span>`).join(" ")}
         </div>
-        ${(()=>{ // themes and CSI spec sections read as noise together — two lines
-          const themes = Object.fromEntries(Object.entries(p.systems).filter(([k])=>!isSpec(k)));
-          const specs  = Object.fromEntries(Object.entries(p.systems).filter(([k])=> isSpec(k)));
-          return (top(themes,6).length?`<div class="lesson-sub"><b>Systems / themes:</b> ${top(themes,6).map(([k,n])=>`${esc(k)} (${n})`).join(" · ")}</div>`:"")
-               + (top(specs,6).length?`<div class="lesson-sub"><b>Spec sections:</b> ${top(specs,6).map(([k,n])=>`${esc(k)} (${n})`).join(" · ")}</div>`:"");
-        })()}
-        ${projs.length?`<div class="lesson-sub"><b>Projects:</b> ${projs.slice(0,4).map(([num,nm])=>`<span class="pill pill-gray" style="margin:2px 2px 0 0" title="${esc(num)}">${esc(nm.length>28?nm.slice(0,27)+"…":nm)}</span>`).join("")}${projs.length>4?` <span style="color:var(--muted);font-size:11px">+${projs.length-4} more</span>`:""}</div>`:""}
+        ${kindsLine?`<div class="lesson-sub" style="color:var(--muted)">${kindsLine}</div>`:""}
+        ${themeTags.length?`<div class="lesson-sub" style="line-height:2"><b>Issues handled:</b> ${themeTags.map(([k,n])=>tag(k,n,"pill-purple")).join("")}</div>`:""}
+        ${specTags.length?`<div class="lesson-sub" style="line-height:2"><b>Spec sections:</b> ${specTags.map(([k,n])=>tag(specLabel(k),n,"pill-blue")).join("")}${Object.keys(allSpecs).length>8?` <span style="color:var(--muted);font-size:11px">+${Object.keys(allSpecs).length-8} more</span>`:""}</div>`:""}
+        ${projs.slice(0,5).map(([num,bp])=>{
+          const issues = [...Object.entries(bp.themes).sort((a,b)=>b[1]-a[1]).map(([k])=>k),
+                          ...Object.entries(bp.specs).sort((a,b)=>b[1]-a[1]).map(([k])=>specTitle(k)||k)].filter(Boolean);
+          const uniq = [...new Set(issues)].slice(0,6);
+          return `<div class="lesson-sub" style="margin-top:4px"><b title="${esc(num)}">${esc(bp.name.length>34?bp.name.slice(0,33)+"…":bp.name)}</b> <span style="color:var(--dim);font-size:11px">(${bp.n})</span>${uniq.length?`<span style="color:var(--muted)"> — ${uniq.map(esc).join(" · ")}</span>`:""}</div>`;
+        }).join("")}${projs.length>5?`<div class="lesson-sub" style="color:var(--muted);font-size:11px">+${projs.length-5} more project${projs.length-5===1?"":"s"}</div>`:""}
         ${p.examples.length?`<div class="lesson-sub" style="color:var(--muted)">e.g. ${p.examples.map(esc).join(" · ")}</div>`:""}
       </div></div>
     </div>`; }).join("");
