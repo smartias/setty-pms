@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-08-10-intel-v30-graph-cleanup";
+    window.__appVersion = "2026-08-10-intel-v31-graph-inactive-staff";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1511,12 +1511,16 @@ async function loadGraph() {
       all.push(...page);
       if (page.length < 1000) break;
     }
-    state.graph.rows = all;
-    // Team-member identity: canonical person → staff email (pms_user_roles ID).
+    // Team-member identity: canonical person → staff email (pms_user_roles ID),
+    // plus the active flag — departed staff keep their history in the matview
+    // but are excluded from the graph and go-to rankings entirely.
+    let inactive = new Set();
     try {
-      const aliases = (await sb("GET", "/rest/v1/pms_person_aliases?select=canonical,email&email=not.is.null")) || [];
-      state.graph.emails = Object.fromEntries(aliases.map(a => [a.canonical, a.email]));
+      const aliases = (await sb("GET", "/rest/v1/pms_person_aliases?select=canonical,email,active")) || [];
+      state.graph.emails = Object.fromEntries(aliases.filter(a => a.email).map(a => [a.canonical, a.email]));
+      inactive = new Set(aliases.filter(a => a.active === false).map(a => a.canonical));
     } catch (_) { state.graph.emails = {}; }
+    state.graph.rows = all.filter(r => !inactive.has(r.person));
   } catch (e) { toast("Graph load failed: " + e.message, "error"); state.graph.rows = []; }
   state.graph.loaded = true; state.graph.loading = false;
   render();
