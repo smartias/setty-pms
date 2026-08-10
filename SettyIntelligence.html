@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-07-28-intel-v29-register-as-of";
+    window.__appVersion = "2026-08-10-intel-v30-graph-cleanup";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1512,6 +1512,11 @@ async function loadGraph() {
       if (page.length < 1000) break;
     }
     state.graph.rows = all;
+    // Team-member identity: canonical person → staff email (pms_user_roles ID).
+    try {
+      const aliases = (await sb("GET", "/rest/v1/pms_person_aliases?select=canonical,email&email=not.is.null")) || [];
+      state.graph.emails = Object.fromEntries(aliases.map(a => [a.canonical, a.email]));
+    } catch (_) { state.graph.emails = {}; }
   } catch (e) { toast("Graph load failed: " + e.message, "error"); state.graph.rows = []; }
   state.graph.loaded = true; state.graph.loading = false;
   render();
@@ -1561,6 +1566,12 @@ function renderGraphList() {
     (!q || [r.system, r.subject, r.person, r.project_name, r.discipline].join(" ").toLowerCase().includes(q)));
   if (!rows.length) { el.innerHTML = '<div class="empty">No authored work matches these filters.</div>'; return; }
   const top = (obj, n) => Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,n);
+  // Some RFI rows carry status text ("Sent and Closed") in work_date — only a
+  // real ISO date may drive the recency logic.
+  const wd = r => /^\d{4}-\d{2}-\d{2}/.test(r.work_date || "") ? r.work_date.slice(0,10) : "";
+  // Submittal "systems" are raw CSI spec sections (232113, 15510) — split them
+  // out from the prose themes so neither list drowns the other.
+  const isSpec = k => /^\d{5,6}(\.\d+)?$/.test(k);
   // Recency matters when picking who to ask — flag work older than ~18 months.
   const staleCut = new Date(Date.now() - 548 * 86400000).toISOString().slice(0,10);
   const lastPill = last => last ? (last < staleCut
@@ -1576,11 +1587,11 @@ function renderGraphList() {
       const g2 = groups[k] = groups[k] || { n:0, people:{}, discs:{}, last:"", examples:[] };
       g2.n++;
       const pp = g2.people[r.person] = g2.people[r.person] || { n:0, last:"", projects:new Set() };
-      pp.n++; if ((r.work_date||"") > pp.last) pp.last = r.work_date;
+      pp.n++; if (wd(r) > pp.last) pp.last = wd(r);
       if (r.project_number) pp.projects.add(r.project_number);
       if (r.discipline) g2.discs[r.discipline]=(g2.discs[r.discipline]||0)+1;
-      if ((r.work_date||"") > g2.last) g2.last = r.work_date;
-      if (g2.examples.length < 2 && r.subject) g2.examples.push(r.subject);
+      if (wd(r) > g2.last) g2.last = wd(r);
+      if (g2.examples.length < 2 && r.subject && !g2.examples.includes(r.subject)) g2.examples.push(r.subject);
     });
     const cards = Object.entries(groups).sort((a,b)=>b[1].n-a[1].n).map(([name,g2]) => {
       const ppl = Object.entries(g2.people).sort((a,b)=>b[1].n-a[1].n).slice(0,3);
@@ -1608,8 +1619,8 @@ function renderGraphList() {
     if (r.system) p.systems[r.system]=(p.systems[r.system]||0)+1;
     if (r.agency) p.agencies[r.agency]=(p.agencies[r.agency]||0)+1;
     if (r.project_number) p.projects[r.project_number] = r.project_name || r.project_number;
-    if ((r.work_date||"") > p.last) p.last = r.work_date;
-    if (p.examples.length < 2 && r.subject) p.examples.push(r.subject);
+    if (wd(r) > p.last) p.last = wd(r);
+    if (p.examples.length < 2 && r.subject && !p.examples.includes(r.subject)) p.examples.push(r.subject);
   });
   const people = Object.entries(by).sort((a,b)=>b[1].n-a[1].n);
   el.innerHTML = people.map(([name,p]) => {
@@ -1619,12 +1630,18 @@ function renderGraphList() {
       <div class="lesson-top"><div style="flex:1">
         <div class="lesson-summary">👤 ${esc(name)} <span style="font-weight:400;color:var(--dim);font-size:12px">· ${p.n} work item${p.n===1?"":"s"} · ${projs.length} project${projs.length===1?"":"s"}</span></div>
         <div class="lesson-meta">
+          ${(state.graph.emails||{})[name]?`<span class="pill pill-blue" title="Team member ID from the PMS user registry">${esc(state.graph.emails[name])}</span>`:(name==="Setty team"?"":`<span class="pill pill-gray" title="No matching entry in pms_user_roles — likely departed staff or never signed into PMS">not in staff registry</span>`)}
           ${lastPill(p.last)}
           ${top(p.kinds,3).map(([k,n])=>`<span class="pill pill-blue">${esc(k)} × ${n}</span>`).join(" ")}
           ${top(p.discs,3).map(([k,n])=>`<span class="pill pill-purple">${esc(k)} × ${n}</span>`).join(" ")}
           ${top(p.agencies,3).map(([k,n])=>`<span class="pill pill-gray">${esc(k)} × ${n}</span>`).join(" ")}
         </div>
-        ${top(p.systems,6).length?`<div class="lesson-sub"><b>Systems / themes:</b> ${top(p.systems,6).map(([k,n])=>`${esc(k)} (${n})`).join(" · ")}</div>`:""}
+        ${(()=>{ // themes and CSI spec sections read as noise together — two lines
+          const themes = Object.fromEntries(Object.entries(p.systems).filter(([k])=>!isSpec(k)));
+          const specs  = Object.fromEntries(Object.entries(p.systems).filter(([k])=> isSpec(k)));
+          return (top(themes,6).length?`<div class="lesson-sub"><b>Systems / themes:</b> ${top(themes,6).map(([k,n])=>`${esc(k)} (${n})`).join(" · ")}</div>`:"")
+               + (top(specs,6).length?`<div class="lesson-sub"><b>Spec sections:</b> ${top(specs,6).map(([k,n])=>`${esc(k)} (${n})`).join(" · ")}</div>`:"");
+        })()}
         ${projs.length?`<div class="lesson-sub"><b>Projects:</b> ${projs.slice(0,4).map(([num,nm])=>`<span class="pill pill-gray" style="margin:2px 2px 0 0" title="${esc(num)}">${esc(nm.length>28?nm.slice(0,27)+"…":nm)}</span>`).join("")}${projs.length>4?` <span style="color:var(--muted);font-size:11px">+${projs.length-4} more</span>`:""}</div>`:""}
         ${p.examples.length?`<div class="lesson-sub" style="color:var(--muted)">e.g. ${p.examples.map(esc).join(" · ")}</div>`:""}
       </div></div>
