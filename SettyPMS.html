@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-11-pms-v103-proposal-phase1";
+    window.__appVersion = "2026-08-11-pms-v104-proposal-phase2-import";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22578,6 +22578,13 @@ function ScopeView({ project, onChange, clients = [] }) {
   const [clauseLib, setClauseLib] = React.useState(null);   // null = not yet fetched
   const [clauseSel, setClauseSel] = React.useState({});      // clause_key -> true
   const [clauseParams, setClauseParams] = React.useState({}); // clause_key -> {TOKEN: value}
+  // AI draft import (proposal-draft JSON v1, produced by the drafting skill).
+  // Textarea is uncontrolled (ref) so pasting a large draft doesn't re-render
+  // the whole ScopeView per keystroke (CommitInput lesson).
+  const importTextRef = React.useRef(null);
+  const [showImport, setShowImport] = React.useState(false);
+  const [importParsed, setImportParsed] = React.useState(null); // {html, report}
+  const [importError, setImportError] = React.useState("");
   // Proposal-button feedback. Message + kind ("info" / "success" / "error").
   // Auto-clears after a few seconds so the banner doesn't linger between sessions.
   const [proposalMsg, setProposalMsg] = React.useState("");
@@ -22666,25 +22673,154 @@ function ScopeView({ project, onChange, clients = [] }) {
     ["approach", "Project Approach"],
     ["other", "Other"],
   ];
+  async function ensureClauseLib() {
+    if (clauseLib) return clauseLib;
+    const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,block,title,body_html,params,sort&order=sort.asc");
+    setClauseLib(rows || []);
+    return rows || [];
+  }
   async function toggleClausePanel() {
     if (clauseLib) { setShowClauses(v => !v); return; }
     try {
-      const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,block,title,body_html,params,sort&order=sort.asc");
-      setClauseLib(rows || []);
+      await ensureClauseLib();
       setShowClauses(true);
     } catch (e) {
       setProposalMsg("✗ Couldn't load the clause library: " + (e.message || e));
       setProposalKind("error");
     }
   }
-  // {{TOKEN}} substitution: user-entered value, else the clause's declared default.
-  function fillClauseParams(clause) {
-    const values = clauseParams[clause.clause_key] || {};
+  // {{TOKEN}} substitution: supplied value, else the clause's declared default.
+  function substituteClauseTokens(clause, values) {
     return String(clause.body_html || "").replace(/\{\{(\w+)\}\}/g, (m, tok) => {
-      if (values[tok] != null && values[tok] !== "") return values[tok];
+      if (values && values[tok] != null && values[tok] !== "") return String(values[tok]);
       const decl = (clause.params || {})[tok];
       return (decl && decl.default != null) ? decl.default : m;
     });
+  }
+  function fillClauseParams(clause) {
+    return substituteClauseTokens(clause, clauseParams[clause.clause_key] || {});
+  }
+
+  // ── AI draft import (proposal-draft JSON v1) ───────────────────────────────
+  // Validates the pasted JSON against the LIVE approved library, sanitizes all
+  // HTML, and assembles the standard-heading scope document. Nothing lands in
+  // scopeContent until the PM reviews the preview and clicks apply.
+  function buildDraftImport(text, lib) {
+    let d;
+    try { d = JSON.parse(text); } catch (e) { throw new Error("That isn't valid JSON (" + e.message + "). Paste the full JSON object from the drafting skill, including the outer braces."); }
+    if (!d || d.kind !== "proposal-draft") throw new Error('Not a proposal draft: expected "kind": "proposal-draft".');
+    if (d.schemaVersion !== 1) throw new Error("Unsupported schemaVersion " + d.schemaVersion + " (this PMS build understands version 1).");
+    const clean = (h) => { try { return sanitizePastedHtml(String(h || "")); } catch (_) { return ""; } };
+    const byKey = {};
+    lib.forEach(c => { byKey[c.clause_key] = c; });
+    const unknownKeys = [];
+    const resolve = (sel) => {
+      const key = typeof sel === "string" ? sel : (sel && sel.key);
+      if (!key) return null;
+      const clause = byKey[key];
+      if (!clause) { unknownKeys.push(key); return null; }
+      return { clause, params: (typeof sel === "object" && sel.params) || {} };
+    };
+    const clauseSels = (Array.isArray(d.clauses) ? d.clauses : []).map(resolve).filter(Boolean);
+    const asmSels = (((d.assumptions || {}).clauseKeys) || []).map(resolve).filter(Boolean);
+    const excSels = (((d.exclusions || {}).clauseKeys) || []).map(resolve).filter(Boolean);
+    const asmCustom = (((d.assumptions || {}).custom) || []).map(clean).filter(Boolean);
+    const excCustom = (((d.exclusions || {}).custom) || []).map(clean).filter(Boolean);
+    const authored = (Array.isArray(d.authoredScope) ? d.authoredScope : [])
+      .map(s => ({ title: String((s && s.title) || "").slice(0, 200), html: clean(s && s.html) }))
+      .filter(s => s.title || s.html);
+    const openItems = (Array.isArray(d.openItems) ? d.openItems : []).map(s => String(s || "").trim()).filter(Boolean);
+
+    const pickBlock = (sels, block) => sels.filter(s => s.clause.block === block);
+    let html = "";
+    const understanding = clean(d.understanding);
+    const approach = clean(d.approach);
+    if (understanding) html += "<h2>PROJECT UNDERSTANDING</h2>" + understanding;
+    if (approach) html += "<h2>PROJECT APPROACH</h2>" + approach;
+    const included = pickBlock(clauseSels, "included");
+    if (included.length || authored.length) {
+      html += "<h2>SCOPE OF SERVICES</h2>";
+      let n = 0;
+      included.forEach(s => { n += 1; html += "<h3>" + n + ". " + s.clause.title + "</h3>" + substituteClauseTokens(s.clause, s.params); });
+      authored.forEach(s => { n += 1; html += "<h3>" + n + ". " + s.title + "</h3>" + s.html; });
+    }
+    const additional = pickBlock(clauseSels, "additional");
+    if (additional.length) {
+      html += "<h2>ADDITIONAL SERVICES</h2>";
+      additional.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+    }
+    const excluded = pickBlock(clauseSels, "excluded").concat(excSels);
+    if (excluded.length || excCustom.length) {
+      html += "<h2>EXCLUDED SERVICES</h2>";
+      excluded.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+      if (excCustom.length) html += "<ul>" + excCustom.join("") + "</ul>";
+    }
+    if (asmSels.length || asmCustom.length) {
+      html += "<h2>ASSUMPTIONS</h2>";
+      asmSels.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+      asmCustom.forEach(h => { html += h; });
+    }
+    const provisions = pickBlock(clauseSels, "provisions");
+    if (provisions.length) {
+      html += "<h2>PROPOSAL PROVISIONS</h2>";
+      provisions.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+    }
+    if (openItems.length) {
+      html += "<h2>OPEN ITEMS REQUIRING OWNER DIRECTION</h2><ul>" + openItems.map(s => "<li>" + s.replace(/</g, "&lt;") + "</li>").join("") + "</ul>";
+    }
+    if (!html) throw new Error("The draft produced no content. Check that it has understanding, approach, or clauses.");
+
+    const phases = (Array.isArray(d.suggestedPhases) ? d.suggestedPhases : [])
+      .map(p => ({ name: String((p && p.name) || ""), pct: Number(p && p.pct) || 0 })).filter(p => p.name);
+    const report = {
+      projectName: String(((d.project || {}).name) || ""),
+      client: String(((d.project || {}).client) || ""),
+      rfpReference: String(((d.project || {}).rfpReference) || ""),
+      hasUnderstanding: !!understanding, hasApproach: !!approach,
+      clauseCount: clauseSels.length + asmSels.length + excSels.length,
+      authoredCount: authored.length,
+      customCount: asmCustom.length + excCustom.length,
+      openItemCount: openItems.length,
+      unknownKeys,
+      flagged: (Array.isArray(d.flaggedForReview) ? d.flaggedForReview : [])
+        .map(f => ({ rfpDemand: String((f && f.rfpDemand) || ""), why: String((f && f.why) || "") }))
+        .filter(f => f.rfpDemand || f.why),
+      suggestedPhases: phases,
+      phasePctTotal: phases.reduce((a, p) => a + p.pct, 0),
+      basisOfFeeNote: String(d.basisOfFeeNote || ""),
+    };
+    return { html, report };
+  }
+  async function validateImport() {
+    setImportError("");
+    setImportParsed(null);
+    const text = importTextRef.current ? importTextRef.current.value : "";
+    if (!text.trim()) { setImportError("Paste the draft JSON first."); return; }
+    try {
+      const lib = await ensureClauseLib();
+      setImportParsed(buildDraftImport(text, lib));
+    } catch (e) { setImportError(e.message || String(e)); }
+  }
+  function applyImport(mode) {
+    if (scopeLocked || !importParsed || !editorRef.current) return;
+    if (mode === "replace" && (project.scopeContent || "").trim()
+        && !window.confirm("Replace the current scope content with the imported draft?\n\nThe existing scope text will be overwritten (the audit log records the import, but the old text is not kept).")) return;
+    const next = mode === "replace" ? importParsed.html : (project.scopeContent || "") + importParsed.html;
+    editorRef.current.innerHTML = next;
+    const r = importParsed.report;
+    const entry = {
+      id: uid(), action: "ai-import", user: getCurrentUser(), date: new Date().toISOString(),
+      note: (mode === "replace" ? "Replaced scope" : "Appended to scope") + " from AI draft"
+        + (r.projectName ? " · " + r.projectName : "") + " · " + r.clauseCount + " clauses"
+        + (r.flagged.length ? " · " + r.flagged.length + " flagged" : ""),
+    };
+    onChange({ ...project, scopeContent: next, scopeAuditLog: [...auditLog, entry] });
+    const text = editorRef.current.innerText || "";
+    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
+    setShowImport(false); setImportParsed(null);
+    if (importTextRef.current) importTextRef.current.value = "";
+    setProposalMsg("✓ AI draft " + (mode === "replace" ? "imported" : "appended") + ". Review the scope below" + (r.flagged.length ? ", and resolve the " + r.flagged.length + " flagged item" + (r.flagged.length > 1 ? "s" : "") + " noted in the import preview before sending." : "."));
+    setProposalKind("success");
   }
   function insertSelectedClauses() {
     if (scopeLocked || !editorRef.current) return;
@@ -23085,6 +23221,9 @@ function ScopeView({ project, onChange, clients = [] }) {
           <Btn variant="ghost" onClick={toggleClausePanel} disabled={scopeLocked} title="Insert firm-standard clauses (scope, exclusions, assumptions, provisions) from the governed library. Managed in the Admin Console.">
             📚 Clause Library
           </Btn>
+          <Btn variant="ghost" onClick={() => { setShowImport(v => !v); setImportError(""); }} disabled={scopeLocked} title="Paste the proposal-draft JSON produced by the Claude drafting skill. Validates against the live clause library and previews before anything is applied.">
+            🤖 Import AI Draft
+          </Btn>
           <Btn variant="ghost" onClick={handleSendForReview} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
             👀 Send for Review
           </Btn>
@@ -23192,6 +23331,59 @@ function ScopeView({ project, onChange, clients = [] }) {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* AI draft import panel — paste, validate, preview, then apply. */}
+      {showImport && (
+        <div style={{ border: "1px solid " + P.accent, borderRadius: 8, padding: "14px 16px", marginBottom: 16, background: P.card }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>🤖 Import AI Draft</div>
+          <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 8 }}>
+            Paste the <b>proposal-draft JSON</b> from the Claude drafting skill (ProposalDraft_Skill.md). It is validated against the live clause library and previewed here: nothing touches the scope until you apply. Boilerplate always comes from the library, never from the pasted text.
+          </div>
+          <textarea ref={importTextRef} rows={7} placeholder='{"schemaVersion": 1, "kind": "proposal-draft", …}'
+            style={{ width: "100%", fontFamily: "monospace", fontSize: 12, padding: 8, border: "1px solid " + P.border, borderRadius: 6, background: P.bg, color: P.text }} />
+          <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn variant="primary" small onClick={validateImport}>🔍 Validate & Preview</Btn>
+            <Btn variant="ghost" small onClick={() => { setShowImport(false); setImportParsed(null); setImportError(""); }}>Close</Btn>
+            {importError && <span style={{ color: P.red, fontSize: 12.5 }}>✗ {importError}</span>}
+          </div>
+          {importParsed && (() => {
+            const r = importParsed.report;
+            return (
+              <div style={{ marginTop: 12, borderTop: "1px solid " + P.border, paddingTop: 10, fontSize: 12.5 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                  Preview: {r.projectName || "(no project name)"}{r.client ? " · " + r.client : ""}{r.rfpReference ? " · " + r.rfpReference : ""}
+                </div>
+                <ul style={{ margin: "0 0 8px 18px", lineHeight: 1.7 }}>
+                  <li>{r.hasUnderstanding ? "✓" : "✗"} Project understanding · {r.hasApproach ? "✓" : "✗"} Approach</li>
+                  <li>{r.clauseCount} library clauses · {r.authoredCount} authored scope sections · {r.customCount} custom assumptions/exclusions · {r.openItemCount} open items</li>
+                  {r.unknownKeys.length > 0 && (
+                    <li style={{ color: P.yellow }}>⚠ Unknown clause keys skipped (retired or misspelled, check these): {r.unknownKeys.join(", ")}</li>
+                  )}
+                  {r.suggestedPhases.length > 0 && (
+                    <li>Suggested fee phase split ({r.phasePctTotal}%{r.phasePctTotal !== 100 ? ", does not sum to 100" : ""}): {r.suggestedPhases.map(p => p.name + " " + p.pct + "%").join(", ")} <span style={{ color: P.textDim }}>(apply manually in the Fee Calculator)</span></li>
+                  )}
+                  {r.basisOfFeeNote && <li>Basis-of-fee note: <em>{r.basisOfFeeNote}</em> <span style={{ color: P.textDim }}>(for the fee page, not inserted into the scope)</span></li>}
+                </ul>
+                {r.flagged.length > 0 && (
+                  <div style={{ background: P.redDim, border: "1px solid " + P.red, borderRadius: 6, padding: "8px 12px", marginBottom: 8 }}>
+                    <div style={{ fontWeight: 700, color: P.red, marginBottom: 4 }}>🚩 Flagged for review: resolve before sending</div>
+                    <ul style={{ margin: "0 0 0 18px", lineHeight: 1.6 }}>
+                      {r.flagged.map((f, i) => <li key={i}><b>{f.rfpDemand}</b>{f.why ? ": " + f.why : ""}</li>)}
+                    </ul>
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn variant="primary" small onClick={() => applyImport("replace")} disabled={scopeLocked}
+                    title={project.scopeContent ? "Replaces the current scope content (asks for confirmation first)" : "Sets the scope content"}>
+                    {project.scopeContent ? "⟳ Replace Scope" : "⤵ Set Scope"}
+                  </Btn>
+                  {project.scopeContent ? <Btn variant="ghost" small onClick={() => applyImport("append")} disabled={scopeLocked}>＋ Append to Scope</Btn> : null}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -23323,8 +23515,8 @@ function ScopeView({ project, onChange, clients = [] }) {
                 {[...auditLog].reverse().map(e => (
                   <tr key={e.id}>
                     <td>
-                      <span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : P.yellow }}>
-                        {e.action === "locked" ? "🔒 Locked" : "🔓 Unlocked"}
+                      <span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : e.action === "ai-import" ? P.accent : P.yellow }}>
+                        {e.action === "locked" ? "🔒 Locked" : e.action === "ai-import" ? "🤖 AI Import" : "🔓 Unlocked"}
                       </span>
                     </td>
                     <td style={{ color: P.textMuted }}>{e.user || "—"}</td>
