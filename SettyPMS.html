@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-06-pms-v102-explorer-docs";
+    window.__appVersion = "2026-08-11-pms-v103-proposal-phase1";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2643,6 +2643,13 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
       return;
     }
     if (dupMatches.length && !confirmedDup) { setConfirmedDup(true); setError(""); return; }
+    // Seed the project's hourly rates from the client's negotiated schedule
+    // (client.rateSchedule, managed in the Admin Console) when one exists for
+    // the prime or client name. Falls back to the firm default otherwise.
+    const rateNames = [prime, clientName].map(s => (s || "").trim().toLowerCase()).filter(Boolean);
+    const rateClient = rateNames.length ? clients.find(cl =>
+      cl && cl.name && rateNames.includes(String(cl.name).trim().toLowerCase())
+      && Array.isArray(cl.rateSchedule) && cl.rateSchedule.length) : null;
     onCreate({
       name: name.trim(),
       status,
@@ -2650,6 +2657,7 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
       prime: prime.trim(),
       clientName: clientName.trim(),
       proposalDueDate: isProposal ? proposalDueDate : "",
+      ...(rateClient ? { hourlyRates: rateClient.rateSchedule.map(r => ({ ...r })) } : {}),
     });
   }
 
@@ -5742,7 +5750,278 @@ async function createOutlookDraft({ subject, bodyHtml, bodyText, metadata = null
 // ─── FEE CALCULATOR ──────────────────────────────────────────────────────────
 
 
+// ── PROPOSAL ENTITIES + CLASSIC (TRADITIONAL) PRINT THEME ────────────────────
+// Two legal entities sign Setty proposals; the letterhead, address, FPID and
+// default signer differ. project.proposalEntity picks one (default sa-ny).
+const PROPOSAL_ENTITIES = {
+  "sa-ny": {
+    legalName: "Setty & Associates, Ltd. PC",
+    legalNameCaps: "SETTY & ASSOCIATES, LTD. PC",
+    addressLines: ["535 8th Avenue, 21st Floor", "New York, NY 10018"],
+    phone: "646-253-9000",
+    fpid: "ANY10233R00",
+    signerName: "Boggarm S. Setty, P.E., ASHRAE Fellow, AEE Fellow",
+    signerTitle: "CEO & Founder",
+  },
+  "sa-va": {
+    legalName: "Setty & Associates, Ltd. PC",
+    legalNameCaps: "SETTY & ASSOCIATES, LTD. PC",
+    addressLines: ["3040 Williams Drive, Suite 600", "Fairfax, VA 22031"],
+    phone: "703-691-2115",
+    fpid: "",
+    signerName: "Boggarm S. Setty, P.E., ASHRAE Fellow, AEE Fellow",
+    signerTitle: "CEO & Founder",
+  },
+  "sai-dc": {
+    legalName: "Setty & Associates International, PLLC",
+    legalNameCaps: "SETTY & ASSOCIATES INTERNATIONAL, PLLC",
+    addressLines: ["1415 Elliot Place, NW", "Washington, DC 20007"],
+    phone: "202-393-1523",
+    fpid: "",
+    signerName: "Boggarm S. Setty, P.E., ASHRAE Fellow, AEE Fellow",
+    signerTitle: "CEO & Founder",
+  },
+};
+function proposalEntity(project) {
+  return PROPOSAL_ENTITIES[project.proposalEntity] || PROPOSAL_ENTITIES["sa-ny"];
+}
+// Classic is the client-facing default: it matches the traditional Word
+// proposals the firm actually sends. "modern" keeps the newer styled bundle.
+function proposalThemeIsClassic(project) {
+  return (project.proposalTheme || "classic") === "classic";
+}
+
+// Dollar amount in contract words: 40800 -> "FORTY THOUSAND EIGHT HUNDRED
+// DOLLARS AND NO CENTS". Used by the Classic fee page's Basic Fee sentence.
+function amountToWordsUSD(amount) {
+  const n = Math.max(0, Number(amount) || 0);
+  const dollars = Math.floor(n);
+  const cents = Math.round((n - dollars) * 100);
+  const ones = ["", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN",
+    "ELEVEN", "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN", "SIXTEEN", "SEVENTEEN", "EIGHTEEN", "NINETEEN"];
+  const tens = ["", "", "TWENTY", "THIRTY", "FORTY", "FIFTY", "SIXTY", "SEVENTY", "EIGHTY", "NINETY"];
+  function below1000(x) {
+    let out = "";
+    if (x >= 100) { out += ones[Math.floor(x / 100)] + " HUNDRED"; x = x % 100; if (x) out += " "; }
+    if (x >= 20) { out += tens[Math.floor(x / 10)]; if (x % 10) out += "-" + ones[x % 10]; }
+    else if (x > 0) { out += ones[x]; }
+    return out;
+  }
+  function whole(x) {
+    if (x === 0) return "ZERO";
+    const parts = [];
+    const scales = [[1e9, "BILLION"], [1e6, "MILLION"], [1e3, "THOUSAND"]];
+    let rest = x;
+    scales.forEach(([mag, label]) => {
+      if (rest >= mag) { parts.push(below1000(Math.floor(rest / mag)) + " " + label); rest = rest % mag; }
+    });
+    if (rest > 0) parts.push(below1000(rest));
+    return parts.join(" ");
+  }
+  const centsPart = cents > 0 ? below1000(cents) + " CENTS" : "NO CENTS";
+  return whole(dollars) + " DOLLARS AND " + centsPart;
+}
+
+// Shared Classic (traditional letterhead) shell. Serif, black text, plain
+// rules — matches the long-standing Word proposal format rather than the
+// modern styled bundle. bodyHtml is one or more <div class="classic-section">
+// blocks; sections after the first get page-break-before.
+function classicOpenPrintWindow(project, title, bodyHtml) {
+  const ent = proposalEntity(project);
+  const win = window.open("", "_blank", "width=900,height=700");
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${title} — ${project.name || "Project"}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    @page { size: 8.5in 11in; margin: 1in; }
+    body { font-family: 'Times New Roman', Times, Georgia, serif; font-size: 11pt; color: #000; background: #fff; }
+    .page { width: 8.5in; margin: 0 auto; padding: 0.6in 0.9in; background: #fff; }
+    .lh-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+    .lh-logo img { height: 30px; display: block; }
+    .lh-firm { font-size: 9pt; letter-spacing: 1px; margin-top: 3px; }
+    .lh-addr { text-align: right; font-size: 9pt; line-height: 1.5; }
+    .lh-services { text-align: center; font-weight: bold; font-size: 10.5pt; letter-spacing: 0.5px; border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; padding: 4px 0; margin: 10px 0 16px; }
+    .to-grid { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 11pt; }
+    .to-grid td { vertical-align: top; padding: 1px 0; }
+    .to-grid .lbl { font-weight: bold; width: 0.9in; }
+    .to-grid .lbl2 { font-weight: bold; width: 0.9in; padding-left: 24px; }
+    .doc-title { text-align: center; font-weight: bold; font-size: 12pt; letter-spacing: 1px; text-decoration: underline; margin: 6px 0 16px; }
+    .classic-body p { margin: 0 0 8px; line-height: 1.45; text-align: justify; }
+    .classic-body h1, .classic-body h2 { font-size: 11.5pt; font-weight: bold; text-transform: uppercase; margin: 14px 0 6px; }
+    .classic-body h3 { font-size: 11pt; font-weight: bold; margin: 10px 0 4px; }
+    .classic-body ul, .classic-body ol { margin: 4px 0 8px 26px; }
+    .classic-body li { margin-bottom: 3px; line-height: 1.4; }
+    .classic-body * { color: #000 !important; background-color: transparent !important; font-family: inherit !important; }
+    .fee-tbl { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 11pt; }
+    .fee-tbl td { padding: 4px 8px; border: 1px solid #000; }
+    .fee-tbl td.amt { text-align: right; width: 1.6in; }
+    .fee-tbl tr.total td { font-weight: bold; }
+    .rates-tbl { width: 100%; border-collapse: collapse; font-size: 10.5pt; margin: 8px 0 6px; }
+    .rates-tbl td { padding: 3px 8px; }
+    .rates-tbl td.amt { text-align: right; padding-right: 30px; white-space: nowrap; }
+    .sig-tbl { width: 100%; border-collapse: collapse; margin-top: 30px; font-size: 10.5pt; page-break-inside: avoid; }
+    .sig-tbl td { width: 50%; vertical-align: top; padding: 0 18px 0 0; }
+    .sig-line { border-bottom: 1px solid #000; height: 26px; margin-bottom: 3px; }
+    .sig-cap { font-size: 9pt; }
+    .lh-foot { margin-top: 28px; border-top: 1px solid #000; padding-top: 6px; text-align: center; font-size: 8pt; line-height: 1.5; }
+    .classic-section + .classic-section { page-break-before: always; padding-top: 0.2in; }
+    .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; font-family: 'Segoe UI', sans-serif; }
+    @media print { .print-btn { display: none; } .page { padding: 0; width: 100%; } }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+  <div class="page">
+    <div class="lh-top">
+      <div class="lh-logo">
+        <img src="https://smartias.github.io/setty-pms/setty-logo.png" alt="SETTY" />
+        <div class="lh-firm">${ent.legalNameCaps}</div>
+      </div>
+      <div class="lh-addr">
+        ${ent.addressLines.join("<br>")}<br>
+        P: ${ent.phone}${ent.fpid ? "<br>FPID: " + ent.fpid : ""}<br>
+        www.SETTY.com
+      </div>
+    </div>
+    <div class="lh-services">MECHANICAL AND ELECTRICAL DESIGN ENGINEERING SERVICES</div>
+    ${bodyHtml}
+    <div class="lh-foot">
+      Mechanical | Electrical | Plumbing | Fire Protection Engineering | Commissioning | Sustainable Design<br>
+      ${ent.legalName} &middot; www.SETTY.com
+    </div>
+  </div>
+</body>
+</html>`);
+  win.document.close();
+}
+
+// The traditional To/Date/Project/Location/Project # header block, shared by
+// every Classic document (mirrors the connector letterhead template).
+function classicHeaderBlock(project, docTitle) {
+  const e = (s) => String(s == null ? "" : s);
+  const pocs = ((project.projectContacts || {}).proposal || []).filter(p => p && p.name);
+  const poc = pocs[0] || {};
+  const dateStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const loc = [project.projectCity, project.projectState].filter(Boolean).join(", ") || project.projectAddress || "";
+  return `
+    <table class="to-grid">
+      <tr>
+        <td class="lbl">To:</td><td>${e(poc.name) || e(project.prime || project.clientName) || "&mdash;"}</td>
+        <td class="lbl2">Date:</td><td>${dateStr}</td>
+      </tr>
+      <tr>
+        <td class="lbl"></td><td>${e(poc.title || "")}</td>
+        <td class="lbl2">Project:</td><td>${e(project.name) || "&mdash;"}</td>
+      </tr>
+      <tr>
+        <td class="lbl"></td><td>${e(project.prime || project.clientName || "")}</td>
+        <td class="lbl2">Location:</td><td>${e(loc)}</td>
+      </tr>
+      <tr>
+        <td class="lbl">Email:</td><td>${e(poc.email || "")}</td>
+        <td class="lbl2">Project #:</td><td>${e(project.projectNumber || "TBD")}</td>
+      </tr>
+    </table>
+    <div class="doc-title">${docTitle}</div>`;
+}
+
+// Dual Presented By / Accepted By signature block (contract boilerplate).
+function classicSignatureBlock(project) {
+  const ent = proposalEntity(project);
+  const clientCaps = String(project.prime || project.clientName || "CLIENT").toUpperCase();
+  return `
+    <table class="sig-tbl">
+      <tr><td><strong>Presented By:</strong></td><td><strong>Accepted By:</strong></td></tr>
+      <tr><td style="padding-top:8px;">${ent.legalNameCaps}</td><td style="padding-top:8px;">${clientCaps}</td></tr>
+      <tr>
+        <td style="padding-top:16px;"><div class="sig-line"></div><div class="sig-cap">(Signature)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Date)</div></td>
+        <td style="padding-top:16px;"><div class="sig-line"></div><div class="sig-cap">(Signature)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Date)</div></td>
+      </tr>
+      <tr>
+        <td style="padding-top:10px;">${proposalEntity(project).signerName}<div class="sig-cap">(Printed Name)</div></td>
+        <td style="padding-top:10px;"><div class="sig-line"></div><div class="sig-cap">(Printed Name)</div></td>
+      </tr>
+      <tr>
+        <td style="padding-top:10px;">${proposalEntity(project).signerTitle}<div class="sig-cap">(Title)</div></td>
+        <td style="padding-top:10px;"><div class="sig-line"></div><div class="sig-cap">(Title)</div></td>
+      </tr>
+    </table>`;
+}
+
+// Classic fee section body — words-then-numerals Basic Fee sentence, plain
+// bordered phase table, deemed-acceptance boilerplate, validity, signatures.
+function classicFeeSectionHtml(project, withSignatures) {
+  const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
+  const calced = calcSettyFee(constructionCost, project);
+  const baseFee = project.manualSettyFee > 0 ? project.manualSettyFee : calced;
+  const phasedFees = buildPhaseFees(baseFee, project.phases || []);
+  const billable = phasedFees.filter(p => p.billable && p.fee > 0);
+  const changeOrders = (project.changeOrders || []).filter(c => c.approved);
+  const coTotal = changeOrders.reduce((a, c) => a + (c.fee || 0), 0);
+  const total = baseFee + coTotal;
+  const money = (v) => "$" + (Math.round(v * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const rows = billable.map(ph => `<tr><td>${ph.name}</td><td class="amt">${money(ph.fee)}</td></tr>`).join("")
+    + changeOrders.map(co => `<tr><td>Change Order: ${co.name || co.number}</td><td class="amt">${money(co.fee || 0)}</td></tr>`).join("")
+    + `<tr class="total"><td>Total</td><td class="amt">${money(total)}</td></tr>`;
+  const validityDays = Number(project.proposalValidityDays) > 0 ? Number(project.proposalValidityDays) : 60;
+  const feeTypeLabel = (project.feeType || "Lump Sum").toLowerCase();
+  return `
+    <h2>Fees</h2>
+    <p><strong>Basic Fee:</strong> The fee for services will be ${amountToWordsUSD(total)} (${money(total)}). This project is to be invoiced ${feeTypeLabel}, plus expenses, based on the stages of completion listed below.</p>
+    <table class="fee-tbl">${rows}</table>
+    <p>This Agreement is in accordance with communication and design direction from your firm. All of the terms and conditions of this proposal will be deemed accepted, whether or not the proposal is executed and returned, in the event that we receive working drawings or verbal instructions to proceed. This proposal with its attachments represents the entire and integrated agreement between the Engineer and Client and supersedes all prior negotiations, representations or agreements, either written or oral. This proposal may be amended only by written instrument signed by both Engineer and Client. If required, work will commence to meet project deadlines and this contract will be considered accepted within ten (10) days from the date shown on this Agreement, unless otherwise advised by you.</p>
+    <p>This proposal is valid for ${validityDays} days from the date shown above.</p>
+    ${withSignatures ? classicSignatureBlock(project) : ""}`;
+}
+
+function classicRatesSectionHtml(project) {
+  const rates = (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT;
+  const half = Math.ceil(rates.length / 2);
+  let rows = "";
+  for (let i = 0; i < half; i++) {
+    const l = rates[i]; const r = rates[i + half];
+    rows += `<tr><td>${l ? l.role + ":" : ""}</td><td class="amt">${l ? "$" + Number(l.rate).toFixed(2) + "/hr." : ""}</td><td>${r ? r.role + ":" : ""}</td><td class="amt">${r ? "$" + Number(r.rate).toFixed(2) + "/hr." : ""}</td></tr>`;
+  }
+  return `
+    <h2>Schedule of Hourly Rates</h2>
+    <table class="rates-tbl">${rows}</table>
+    <p>These rates are subject to 3% yearly escalation.</p>`;
+}
+
+function printFeeProposalClassic(project) {
+  const body = `<div class="classic-section">${classicHeaderBlock(project, "FEE PROPOSAL")}<div class="classic-body">${classicFeeSectionHtml(project, true)}</div></div>`;
+  classicOpenPrintWindow(project, "Fee Proposal", body);
+}
+function printScopeOfServicesClassic(project) {
+  const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
+  const body = `<div class="classic-section">${classicHeaderBlock(project, "SCOPE OF SERVICES")}<div class="classic-body">${scopeHtml}</div></div>`;
+  classicOpenPrintWindow(project, "Scope of Services", body);
+}
+function printTermsAndConditionsClassic(project) {
+  const termsHtml = project.termsContent || TERMS_DEFAULT_HTML;
+  const body = `<div class="classic-section">${classicHeaderBlock(project, "ATTACHMENT A &mdash; TERMS AND CONDITIONS")}<div class="classic-body">${termsHtml}</div></div>`;
+  classicOpenPrintWindow(project, "Terms and Conditions", body);
+}
+function printHourlyRatesClassic(project) {
+  const body = `<div class="classic-section">${classicHeaderBlock(project, "ATTACHMENT B &mdash; SCHEDULE OF HOURLY RATES")}<div class="classic-body">${classicRatesSectionHtml(project)}</div></div>`;
+  classicOpenPrintWindow(project, "Schedule of Hourly Rates", body);
+}
+function printProposalBundleClassic(project) {
+  const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
+  const termsHtml = project.termsContent || TERMS_DEFAULT_HTML;
+  const body =
+    `<div class="classic-section">${classicHeaderBlock(project, "PROFESSIONAL SERVICES PROPOSAL")}<div class="classic-body">${scopeHtml}</div></div>` +
+    `<div class="classic-section"><div class="doc-title">FEE PROPOSAL</div><div class="classic-body">${classicFeeSectionHtml(project, true)}</div></div>` +
+    `<div class="classic-section"><div class="doc-title">ATTACHMENT A &mdash; TERMS AND CONDITIONS</div><div class="classic-body">${termsHtml}</div></div>` +
+    `<div class="classic-section"><div class="doc-title">ATTACHMENT B &mdash; SCHEDULE OF HOURLY RATES</div><div class="classic-body">${classicRatesSectionHtml(project)}</div></div>`;
+  classicOpenPrintWindow(project, "Proposal", body);
+}
+
 function printFeeProposal(project) {
+  if (proposalThemeIsClassic(project)) return printFeeProposalClassic(project);
   const constructionCostFP = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const calcedFee = calcSettyFee(constructionCostFP, project);
   const baseFee = project.manualSettyFee > 0 ? project.manualSettyFee : calcedFee;
@@ -17806,7 +18085,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} clients={clients} />}
         {tab === "Checklists" && <ProjectChecklistsView project={project} onChange={onUpdate} />}
-        {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} />}
+        {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} clients={clients} />}
         {tab === "Gantt" && <GanttView project={project} />}
         {tab === "Timeline" && <TimelineView project={project} />}
         {tab === "Notes" && <NotesView project={project} onChange={onUpdate} />}
@@ -21220,6 +21499,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
 // easier to attach to a proposal email than four separate files. Each section
 // keeps its own letterhead so the visual hierarchy mirrors the standalone PDFs.
 function printProposalBundle(project) {
+  if (proposalThemeIsClassic(project)) return printProposalBundleClassic(project);
   // ===== Fee data (mirrors printFeeProposal) =====
   const constructionCostFP = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const calcedFee = calcSettyFee(constructionCostFP, project);
@@ -21567,6 +21847,7 @@ async function sendProposal(project) {
 }
 
 function printScopeOfServices(project) {
+  if (proposalThemeIsClassic(project)) return printScopeOfServicesClassic(project);
   const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
   const win = window.open("", "_blank", "width=900,height=700");
   win.document.write(`<!DOCTYPE html>
@@ -21865,6 +22146,7 @@ const TERMS_DEFAULT_HTML = `
 `.trim();
 
 function printTermsAndConditions(project) {
+  if (proposalThemeIsClassic(project)) return printTermsAndConditionsClassic(project);
   const termsHtml = project.termsContent || TERMS_DEFAULT_HTML;
   const win = window.open("", "_blank", "width=900,height=700");
   win.document.write(`<!DOCTYPE html>
@@ -22193,6 +22475,7 @@ const HOURLY_RATES_DEFAULT = [
 ];
 
 function printHourlyRates(project) {
+  if (proposalThemeIsClassic(project)) return printHourlyRatesClassic(project);
   const rates = (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT;
   // Two-column layout for the printed table — pairs roles side-by-side so the
   // schedule fits on a single page even with 12+ entries.
@@ -22280,7 +22563,7 @@ function printHourlyRates(project) {
   win.document.close();
 }
 
-function ScopeView({ project, onChange }) {
+function ScopeView({ project, onChange, clients = [] }) {
   const editorRef = React.useRef(null);
   const termsEditorRef = React.useRef(null);
   const [wc, setWc] = React.useState(0);
@@ -22289,6 +22572,12 @@ function ScopeView({ project, onChange }) {
   const [showAudit, setShowAudit] = React.useState(false);
   const [showTerms, setShowTerms] = React.useState(false);
   const [showRates, setShowRates] = React.useState(false);
+  // Clause library — firm-governed building blocks (pms_proposal_clauses).
+  // Loaded on demand; PMs assemble from approved clauses, params filled inline.
+  const [showClauses, setShowClauses] = React.useState(false);
+  const [clauseLib, setClauseLib] = React.useState(null);   // null = not yet fetched
+  const [clauseSel, setClauseSel] = React.useState({});      // clause_key -> true
+  const [clauseParams, setClauseParams] = React.useState({}); // clause_key -> {TOKEN: value}
   // Proposal-button feedback. Message + kind ("info" / "success" / "error").
   // Auto-clears after a few seconds so the banner doesn't linger between sessions.
   const [proposalMsg, setProposalMsg] = React.useState("");
@@ -22343,6 +22632,83 @@ function ScopeView({ project, onChange }) {
     if (scopeLocked) return;
     if (!window.confirm("Reset hourly rates to the firm-standard defaults?\n\nAny project-specific rate edits will be discarded.")) return;
     onChange({ ...project, hourlyRates: HOURLY_RATES_DEFAULT.map(r => ({ ...r })) });
+  }
+
+  // Client-negotiated rate schedule (client.rateSchedule, managed in the Admin
+  // Console). Matched by prime/client name; loads into project.hourlyRates.
+  function findClientWithRates() {
+    const names = [project.prime, project.clientName]
+      .filter(Boolean).map(s => String(s).trim().toLowerCase());
+    if (!names.length) return null;
+    return (clients || []).find(cl =>
+      cl && cl.name && names.includes(String(cl.name).trim().toLowerCase())
+      && Array.isArray(cl.rateSchedule) && cl.rateSchedule.length) || null;
+  }
+  function loadClientRates() {
+    if (scopeLocked) return;
+    const cl = findClientWithRates();
+    if (!cl) {
+      window.alert("No stored rate schedule found for “" + (project.prime || project.clientName || "this client") + "”.\n\nClient rate schedules are managed in the Admin Console (Proposal Library). Until one is stored there, this project uses the firm-standard rates.");
+      return;
+    }
+    if (!window.confirm("Load the stored rate schedule for " + cl.name + "?\n\nThis replaces the current project rates" + (cl.rateScheduleNote ? "\n\nNote: " + cl.rateScheduleNote : "") + ".")) return;
+    onChange({ ...project, hourlyRates: cl.rateSchedule.map(r => ({ ...r })) });
+  }
+
+  // ── Clause library (pms_proposal_clauses) ──────────────────────────────────
+  const CLAUSE_BLOCKS = [
+    ["included", "Included Services"],
+    ["additional", "Additional Services"],
+    ["excluded", "Excluded Services"],
+    ["assumptions", "Assumptions"],
+    ["provisions", "Proposal Provisions"],
+    ["understanding", "Project Understanding"],
+    ["approach", "Project Approach"],
+    ["other", "Other"],
+  ];
+  async function toggleClausePanel() {
+    if (clauseLib) { setShowClauses(v => !v); return; }
+    try {
+      const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,block,title,body_html,params,sort&order=sort.asc");
+      setClauseLib(rows || []);
+      setShowClauses(true);
+    } catch (e) {
+      setProposalMsg("✗ Couldn't load the clause library: " + (e.message || e));
+      setProposalKind("error");
+    }
+  }
+  // {{TOKEN}} substitution: user-entered value, else the clause's declared default.
+  function fillClauseParams(clause) {
+    const values = clauseParams[clause.clause_key] || {};
+    return String(clause.body_html || "").replace(/\{\{(\w+)\}\}/g, (m, tok) => {
+      if (values[tok] != null && values[tok] !== "") return values[tok];
+      const decl = (clause.params || {})[tok];
+      return (decl && decl.default != null) ? decl.default : m;
+    });
+  }
+  function insertSelectedClauses() {
+    if (scopeLocked || !editorRef.current) return;
+    const lib = clauseLib || [];
+    let html = "";
+    CLAUSE_BLOCKS.forEach(([block, label]) => {
+      const picked = lib.filter(c => c.block === block && clauseSel[c.clause_key]);
+      if (!picked.length) return;
+      html += "<h2>" + label.toUpperCase() + "</h2>";
+      let n = 0;
+      picked.forEach(c => {
+        // Included clauses get numbered titles (matches the canonical template);
+        // menu/preamble blocks flow as plain paragraphs and lists.
+        if (block === "included") { n += 1; html += "<h3>" + n + ". " + c.title + "</h3>"; }
+        html += fillClauseParams(c);
+      });
+    });
+    if (!html) return;
+    editorRef.current.innerHTML += html;
+    saveContent();
+    const text = editorRef.current.innerText || "";
+    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
+    setClauseSel({});
+    setShowClauses(false);
   }
 
   // Paste handler — intercepts copy-paste from Word/Outlook/Gmail/etc. and
@@ -22698,7 +23064,27 @@ function ScopeView({ project, onChange }) {
               : " · auto-saves as you type"}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <select
+            value={project.proposalTheme || "classic"}
+            onChange={e => onChange({ ...project, proposalTheme: e.target.value })}
+            title="Print format for all proposal documents. Classic = the traditional letterhead look sent to clients; Modern = the newer styled bundle."
+            style={{ fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: "pointer" }}>
+            <option value="classic">Classic format</option>
+            <option value="modern">Modern format</option>
+          </select>
+          <select
+            value={project.proposalEntity || "sa-ny"}
+            onChange={e => onChange({ ...project, proposalEntity: e.target.value })}
+            title="Setty legal entity on the letterhead and signature block"
+            style={{ fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1px solid " + P.border, background: P.bg, color: P.text, cursor: "pointer" }}>
+            <option value="sa-ny">SA · New York</option>
+            <option value="sa-va">SA · Fairfax</option>
+            <option value="sai-dc">SAI · Washington DC</option>
+          </select>
+          <Btn variant="ghost" onClick={toggleClausePanel} disabled={scopeLocked} title="Insert firm-standard clauses (scope, exclusions, assumptions, provisions) from the governed library. Managed in the Admin Console.">
+            📚 Clause Library
+          </Btn>
           <Btn variant="ghost" onClick={handleSendForReview} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
             👀 Send for Review
           </Btn>
@@ -22748,6 +23134,64 @@ function ScopeView({ project, onChange }) {
             style={{ background: "none", border: "none", color: "inherit", opacity: 0.6, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0 }}>
             ×
           </button>
+        </div>
+      )}
+
+      {/* Clause library panel — assemble from approved firm-standard blocks.
+          Selected clauses append to the scope editor with standard headings. */}
+      {showClauses && clauseLib && (
+        <div style={{ border: "1px solid " + P.accent, borderRadius: 8, padding: "14px 16px", marginBottom: 16, background: P.card }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>📚 Firm Clause Library</div>
+              <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 2 }}>
+                Approved building blocks. Tick what applies, adjust the fill-ins, then insert — the text lands in the scope editor below where you can still edit it. Library wording is managed in the Admin Console.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <Btn variant="primary" small onClick={insertSelectedClauses} disabled={scopeLocked || !Object.values(clauseSel).some(Boolean)}>⤵ Insert Selected</Btn>
+              <Btn variant="ghost" small onClick={() => setShowClauses(false)}>Close</Btn>
+            </div>
+          </div>
+          <div style={{ maxHeight: 340, overflowY: "auto", paddingRight: 6 }}>
+            {CLAUSE_BLOCKS.map(([block, label]) => {
+              const group = (clauseLib || []).filter(c => c.block === block);
+              if (!group.length) return null;
+              return (
+                <div key={block} style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", margin: "6px 0 4px" }}>{label}</div>
+                  {group.map(c => {
+                    const tokens = Object.keys(c.params || {});
+                    const checked = !!clauseSel[c.clause_key];
+                    return (
+                      <div key={c.clause_key} style={{ padding: "4px 6px", borderRadius: 6, background: checked ? P.accentDim : "transparent", marginBottom: 2 }}>
+                        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                          <input type="checkbox" checked={checked}
+                            onChange={e => setClauseSel({ ...clauseSel, [c.clause_key]: e.target.checked })}
+                            style={{ marginTop: 3 }} />
+                          <span>{c.title}</span>
+                        </label>
+                        {checked && tokens.length > 0 && (
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "4px 0 2px 26px" }}>
+                            {tokens.map(tok => (
+                              <label key={tok} style={{ fontSize: 11.5, color: P.textDim, display: "flex", alignItems: "center", gap: 5 }}>
+                                {((c.params || {})[tok] || {}).label || tok}:
+                                <input
+                                  value={(clauseParams[c.clause_key] || {})[tok] ?? (((c.params || {})[tok] || {}).default || "")}
+                                  onChange={e => setClauseParams({ ...clauseParams, [c.clause_key]: { ...(clauseParams[c.clause_key] || {}), [tok]: e.target.value } })}
+                                  style={{ fontSize: 12, padding: "2px 6px", width: 120 }}
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -22968,6 +23412,7 @@ function ScopeView({ project, onChange }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
+            {showRates && <Btn variant="ghost" small onClick={loadClientRates} disabled={scopeLocked} title="Load this client's negotiated rate schedule (stored on the client record, managed in the Admin Console)">⇩ Client Schedule</Btn>}
             {showRates && <Btn variant="ghost" small onClick={resetRatesToDefault} disabled={scopeLocked}>↻ Reset to Default</Btn>}
             <Btn onClick={() => printHourlyRates(project)}>🖨 Print Rates</Btn>
           </div>

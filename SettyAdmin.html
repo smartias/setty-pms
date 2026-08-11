@@ -195,6 +195,7 @@ const TABS = [
   { key: "backups", label: "🗄️ Backups" },
   { key: "filing",  label: "📨 Filing Log" },
   { key: "integration", label: "🔗 Integration" },
+  { key: "library", label: "📚 Proposal Library" },
   { key: "guide", label: "📖 System Guide" },
   { key: "mcp",   label: "🤖 Claude / MCP" },
 ];
@@ -202,6 +203,7 @@ const state = { tab: "signins", roster: null, staffCount: null, roles: null, bac
                 integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null,
                 sovOpen: null, sovMaps: null, sovMilestones: {},
                 permCatalog: null, permMatrix: null, permOverrides: null,
+                lib: null, libEditKey: null, libNew: false, libClients: null, libClientQ: "", libClientSel: null,
                 myRole: undefined };   // undefined = not checked · "pending" · "none" · or a ROLES value
 
 // Phase 5 role taxonomy. 'staff' is the baseline for signed-in people without
@@ -382,7 +384,7 @@ function render() {
   $("tabs").innerHTML = TABS.map(t =>
     `<button type="button" class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</button>`).join("");
   ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration,
-     guide: renderGuide, mcp: renderMcp })[state.tab]();
+     library: renderLibrary, guide: renderGuide, mcp: renderMcp })[state.tab]();
   // Restore focus/caret if the focused element was rebuilt (cached renderers
   // set #view synchronously, so the replacement element exists by now).
   if (_focusId) {
@@ -910,6 +912,212 @@ async function testFeed() {
 }
 
 // ── System Guide (static explainer — how the whole suite works) ──────────────
+// ── Proposal Library (pms_proposal_clauses + client rate schedules) ──────────
+// The governed building blocks the PMS clause picker assembles from. Writes
+// are RLS-gated on the proposal.library capability (admins pass implicitly).
+const LIB_BLOCKS = ["included", "additional", "excluded", "assumptions", "provisions", "understanding", "approach", "other"];
+const LIB_STATUS_PILL = { approved: "ok", draft: "warn", retired: "bad" };
+
+async function libLoad() {
+  state.lib = await sb("GET", "/rest/v1/pms_proposal_clauses?select=*&order=block.asc,sort.asc&limit=1000");
+}
+async function libLoadClients() {
+  // Only the fields the rates editor needs — id/version for the optimistic
+  // write, name + rateSchedule/notes read out of the client jsonb.
+  state.libClients = await sb("GET", "/rest/v1/pms_clients?select=id,version,client&order=id.asc&limit=1000");
+}
+function libClauseByKey(key) { return (state.lib || []).find(c => c.clause_key === key) || null; }
+
+async function libSaveClause(existingKey) {
+  const val = (id) => ($(id) ? $(id).value : "");
+  let params;
+  try { params = val("lib-params").trim() ? JSON.parse(val("lib-params")) : {}; }
+  catch (e) { toast("Params must be valid JSON: " + e.message, "error"); return; }
+  const row = {
+    clause_key: val("lib-key").trim(),
+    block: val("lib-block"),
+    title: val("lib-title").trim(),
+    body_html: val("lib-body"),
+    params,
+    sort: Number(val("lib-sort")) || 100,
+    status: val("lib-status"),
+  };
+  if (!row.clause_key || !row.title) { toast("Key and title are required.", "error"); return; }
+  try {
+    if (existingKey) {
+      const cur = libClauseByKey(existingKey);
+      await sb("PATCH", "/rest/v1/pms_proposal_clauses?id=eq." + cur.id, row);
+      toast("Clause updated (v" + (cur.version + 1) + ").", "success");
+    } else {
+      await sb("POST", "/rest/v1/pms_proposal_clauses", row);
+      toast("Clause created.", "success");
+    }
+    state.lib = null; state.libEditKey = null; state.libNew = false; render();
+  } catch (e) { toast("Save failed: " + e.message, "error"); }
+}
+async function libSetStatus(key, status) {
+  const cur = libClauseByKey(key);
+  if (!cur) return;
+  try {
+    await sb("PATCH", "/rest/v1/pms_proposal_clauses?id=eq." + cur.id, { status });
+    state.lib = null; render();
+  } catch (e) { toast("Status change failed: " + e.message, "error"); }
+}
+function libEditForm(clause) {
+  const c = clause || { clause_key: "", block: "included", title: "", body_html: "", params: {}, sort: 100, status: "draft" };
+  return `
+    <div class="card" style="border:1px solid var(--accent,#4a7)">
+      <h3 style="margin:0 0 10px">${clause ? "Edit clause" : "New clause"}</h3>
+      <div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <label>Key <input id="lib-key" value="${esc(c.clause_key)}" ${clause ? "readonly" : ""} placeholder="e.g. exc-bim-ca" style="width:180px"></label>
+        <label>Block <select id="lib-block">${LIB_BLOCKS.map(b => `<option ${b === c.block ? "selected" : ""}>${b}</option>`).join("")}</select></label>
+        <label>Sort <input id="lib-sort" type="number" value="${c.sort}" style="width:70px"></label>
+        <label>Status <select id="lib-status">${["draft", "approved", "retired"].map(s => `<option ${s === c.status ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+      </div>
+      <label style="display:block;margin-bottom:8px">Title <input id="lib-title" value="${esc(c.title)}" style="width:100%"></label>
+      <label style="display:block;margin-bottom:8px">Body HTML
+        <textarea id="lib-body" rows="8" style="width:100%;font-family:monospace;font-size:12px">${esc(c.body_html)}</textarea>
+      </label>
+      <label style="display:block;margin-bottom:8px">Params (JSON: {"TOKEN":{"label":"…","default":"…"}} — tokens appear in the body as {{TOKEN}})
+        <textarea id="lib-params" rows="3" style="width:100%;font-family:monospace;font-size:12px">${esc(JSON.stringify(c.params || {}, null, 1))}</textarea>
+      </label>
+      <div class="row">
+        <button class="btn btn-primary" onclick="libSaveClause(${clause ? `'${esc(c.clause_key)}'` : "null"})">💾 Save</button>
+        <button class="btn" onclick="state.libEditKey=null;state.libNew=false;render()">Cancel</button>
+      </div>
+    </div>`;
+}
+
+// Client rate schedules — stored INSIDE the client jsonb (client.rateSchedule)
+// so they ride the PMS's existing versioned save path. Seeds project.hourlyRates.
+function libClientMatches() {
+  const q = (state.libClientQ || "").trim().toLowerCase();
+  if (!q) return [];
+  return (state.libClients || [])
+    .filter(r => r.client && r.client.name && r.client.name.toLowerCase().includes(q))
+    .slice(0, 8);
+}
+async function libSaveClientRates(rowId) {
+  const rows = Array.from(document.querySelectorAll("[data-rate-row]"));
+  const schedule = rows.map(el => ({
+    role: el.querySelector("[data-role]").value.trim(),
+    rate: Number(el.querySelector("[data-rate]").value) || 0,
+  })).filter(r => r.role);
+  const note = $("lib-rate-note") ? $("lib-rate-note").value.trim() : "";
+  try {
+    // Re-read for a fresh version, then optimistic-locked PATCH (same contract
+    // as the PMS saveClientV2 path) so we never clobber a concurrent edit.
+    const fresh = (await sb("GET", "/rest/v1/pms_clients?id=eq." + encodeURIComponent(rowId) + "&select=id,version,client"))[0];
+    if (!fresh) throw new Error("client row not found");
+    const client = { ...fresh.client, rateSchedule: schedule.length ? schedule : undefined, rateScheduleNote: note || undefined };
+    if (!schedule.length) delete client.rateSchedule;
+    if (!note) delete client.rateScheduleNote;
+    const res = await sb("PATCH", "/rest/v1/pms_clients?id=eq." + encodeURIComponent(rowId) + "&version=eq." + fresh.version,
+      { client, version: fresh.version + 1, updated_at: new Date().toISOString() });
+    if (!res || !res.length) throw new Error("version conflict — someone else saved this client; reload and retry");
+    toast(schedule.length ? "Rate schedule saved (" + schedule.length + " roles)." : "Rate schedule cleared — projects fall back to firm-standard rates.", "success");
+    state.libClients = null; state.libClientSel = rowId; render();
+  } catch (e) { toast("Save failed: " + e.message, "error"); }
+}
+function libAddRateRow() {
+  const tbody = $("lib-rate-rows");
+  if (!tbody) return;
+  const tr = document.createElement("tr");
+  tr.setAttribute("data-rate-row", "");
+  tr.innerHTML = `<td><input data-role placeholder="Role" style="width:100%"></td><td><input data-rate type="number" value="0" style="width:90px;text-align:right"></td><td><button class="btn" onclick="this.closest('tr').remove()">×</button></td>`;
+  tbody.appendChild(tr);
+}
+
+async function renderLibrary() {
+  const v = $("view");
+  if (!state.lib || !state.libClients) {
+    v.innerHTML = '<div class="empty">Loading proposal library…</div>';
+    try { await Promise.all([state.lib ? null : libLoad(), state.libClients ? null : libLoadClients()]); }
+    catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}<br><br>If this is a 42P01 the pms_proposal_clauses migration hasn't been applied.</div>`; return; }
+  }
+  const lib = state.lib || [];
+  const drafts = lib.filter(c => c.status === "draft").length;
+  const selClient = state.libClientSel ? (state.libClients || []).find(r => r.id === state.libClientSel) : null;
+  const selSchedule = selClient && Array.isArray(selClient.client.rateSchedule) ? selClient.client.rateSchedule : [];
+  const clientsWithRates = (state.libClients || []).filter(r => r.client && Array.isArray(r.client.rateSchedule) && r.client.rateSchedule.length);
+
+  const clauseRows = LIB_BLOCKS.map(block => {
+    const group = lib.filter(c => c.block === block);
+    if (!group.length) return "";
+    return `<tr><td colspan="5" style="background:var(--card2,#f4f6f8);font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.05em">${block}</td></tr>` +
+      group.map(c => `
+        <tr>
+          <td><b>${esc(c.title)}</b><br><span style="color:var(--muted);font-size:11px">${esc(c.clause_key)} · v${c.version} · sort ${c.sort}</span></td>
+          <td><span class="pill ${LIB_STATUS_PILL[c.status] || "info"}">${esc(c.status)}</span></td>
+          <td style="max-width:340px"><div style="max-height:54px;overflow:hidden;font-size:11.5px;color:var(--dim)">${esc(String(c.body_html).replace(/<[^>]+>/g, " ").slice(0, 180))}</div></td>
+          <td style="white-space:nowrap;font-size:11px;color:var(--muted)">${rel(c.updated_at)}${c.updated_by ? "<br>" + esc(c.updated_by) : ""}</td>
+          <td style="white-space:nowrap">
+            <button class="btn" onclick="state.libEditKey='${esc(c.clause_key)}';state.libNew=false;render()">✎</button>
+            ${c.status !== "approved" ? `<button class="btn" title="Approve" onclick="libSetStatus('${esc(c.clause_key)}','approved')">✔</button>` : ""}
+            ${c.status !== "retired" ? `<button class="btn" title="Retire" onclick="libSetStatus('${esc(c.clause_key)}','retired')">🗑</button>` : ""}
+          </td>
+        </tr>`).join("");
+  }).join("");
+
+  v.innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div>
+          <b>📚 Clause library</b> — the firm-standard building blocks the PMS Scope tab assembles from.
+          Only <b>approved</b> clauses appear in the PM-facing picker; drafts are the review queue (future: mined suggestions land here).
+          ${drafts ? `<span class="pill warn">${drafts} draft${drafts > 1 ? "s" : ""} awaiting review</span>` : ""}
+        </div>
+        <div class="row">
+          <button class="btn" onclick="state.lib=null;render()">↻ Refresh</button>
+          <button class="btn btn-primary" onclick="state.libNew=true;state.libEditKey=null;render()">＋ New Clause</button>
+        </div>
+      </div>
+    </div>
+    ${state.libNew ? libEditForm(null) : ""}
+    ${state.libEditKey ? libEditForm(libClauseByKey(state.libEditKey)) : ""}
+    <div class="card">
+      <table>
+        <thead><tr><th>Clause</th><th>Status</th><th>Preview</th><th>Updated</th><th></th></tr></thead>
+        <tbody>${clauseRows || '<tr><td colspan="5" class="empty">No clauses yet — the seed migration may not have run.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <b>💲 Client rate schedules</b> — negotiated hourly rates stored on the client record. New projects for that
+      client seed from this schedule; the Scope tab's “⇩ Client Schedule” button loads it on demand. No schedule = firm-standard rates.
+      ${clientsWithRates.length ? `<div style="margin-top:6px;font-size:12px;color:var(--dim)">Clients with stored schedules: ${clientsWithRates.map(r => `<a href="#" onclick="state.libClientSel='${esc(r.id)}';state.libClientQ='';render();return false">${esc(r.client.name)}</a>`).join(" · ")}</div>` : ""}
+      <div class="row" style="margin-top:10px">
+        <input id="lib-client-q" placeholder="Find a client by name…" value="${esc(state.libClientQ)}"
+          oninput="state.libClientQ=this.value;state.libClientSel=null;render()" style="width:300px">
+      </div>
+      ${libClientMatches().map(r => `<div style="margin-top:4px"><a href="#" onclick="state.libClientSel='${esc(r.id)}';render();return false">${esc(r.client.name)}</a>${Array.isArray(r.client.rateSchedule) && r.client.rateSchedule.length ? ' <span class="pill ok">has schedule</span>' : ""}</div>`).join("")}
+      ${selClient ? `
+        <div style="margin-top:14px;border-top:1px solid var(--border,#ddd);padding-top:12px">
+          <b>${esc(selClient.client.name)}</b>
+          <table style="margin-top:8px;max-width:520px">
+            <thead><tr><th>Role</th><th style="text-align:right">Rate ($/hr)</th><th></th></tr></thead>
+            <tbody id="lib-rate-rows">
+              ${(selSchedule.length ? selSchedule : []).map(r => `
+                <tr data-rate-row>
+                  <td><input data-role value="${esc(r.role)}" style="width:100%"></td>
+                  <td><input data-rate type="number" value="${r.rate}" style="width:90px;text-align:right"></td>
+                  <td><button class="btn" onclick="this.closest('tr').remove()">×</button></td>
+                </tr>`).join("")}
+            </tbody>
+          </table>
+          <div class="row" style="margin-top:8px">
+            <button class="btn" onclick="libAddRateRow()">＋ Add role</button>
+          </div>
+          <label style="display:block;margin-top:10px;max-width:520px">Note (contract/source, shown to PMs on load)
+            <input id="lib-rate-note" value="${esc(selClient.client.rateScheduleNote || "")}" style="width:100%" placeholder="e.g. SCA term contract rates, eff. 2026">
+          </label>
+          <div class="row" style="margin-top:10px">
+            <button class="btn btn-primary" onclick="libSaveClientRates('${esc(selClient.id)}')">💾 Save schedule</button>
+            <span style="color:var(--muted);font-size:12px">Delete every row and save to clear the schedule.</span>
+          </div>
+        </div>` : ""}
+    </div>`;
+}
+
 function renderGuide() {
   $("view").innerHTML = `
     <div class="card doc">
