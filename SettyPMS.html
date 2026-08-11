@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-11-pms-v104-proposal-phase2-import";
+    window.__appVersion = "2026-08-11-pms-v105-proposal-phase3-generate-finalize";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -540,6 +540,7 @@ function newProject(overrides = {}) {
     scopeContent: "",
     scopeLocked: false,
     scopeAuditLog: [],
+    proposalFinalized: null,
     notes: [],
     oneNoteUrl: "",
     oneNoteNotebookUrl: "",
@@ -22585,6 +22586,17 @@ function ScopeView({ project, onChange, clients = [] }) {
   const [showImport, setShowImport] = React.useState(false);
   const [importParsed, setImportParsed] = React.useState(null); // {html, report}
   const [importError, setImportError] = React.useState("");
+  // In-app generation (proposal-draft Edge Function, Phase 3). Dark-launched:
+  // the function reports configured:false until the firm ANTHROPIC_API_KEY
+  // secret is set, and the panel shows a pending-setup note instead of the
+  // Generate button. Successful generations feed the SAME import
+  // preview/apply pipeline as paste-import: one contract, one validator.
+  const genRfpRef = React.useRef(null);
+  const genFromAIRef = React.useRef(false); // marks the next apply as ai-generate in the audit log
+  const [showGenerate, setShowGenerate] = React.useState(false);
+  const [genConfigured, setGenConfigured] = React.useState(null); // null = not yet checked
+  const [genBusy, setGenBusy] = React.useState(false);
+  const [genError, setGenError] = React.useState("");
   // Proposal-button feedback. Message + kind ("info" / "success" / "error").
   // Auto-clears after a few seconds so the banner doesn't linger between sessions.
   const [proposalMsg, setProposalMsg] = React.useState("");
@@ -22675,7 +22687,7 @@ function ScopeView({ project, onChange, clients = [] }) {
   ];
   async function ensureClauseLib() {
     if (clauseLib) return clauseLib;
-    const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,block,title,body_html,params,sort&order=sort.asc");
+    const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,block,title,body_html,params,sort,version&order=sort.asc");
     setClauseLib(rows || []);
     return rows || [];
   }
@@ -22699,6 +22711,13 @@ function ScopeView({ project, onChange, clients = [] }) {
   }
   function fillClauseParams(clause) {
     return substituteClauseTokens(clause, clauseParams[clause.clause_key] || {});
+  }
+  // Wraps a filled clause in a div stamped with its key + library version, so
+  // the finalize snapshot can enumerate exactly which governed clauses (at
+  // which version) are in the document. contenteditable keeps the attributes.
+  function stampClause(clause, values) {
+    return '<div data-clause="' + clause.clause_key + '" data-clause-v="' + (clause.version || 1) + '">'
+      + substituteClauseTokens(clause, values) + "</div>";
   }
 
   // ── AI draft import (proposal-draft JSON v1) ───────────────────────────────
@@ -22741,29 +22760,29 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (included.length || authored.length) {
       html += "<h2>SCOPE OF SERVICES</h2>";
       let n = 0;
-      included.forEach(s => { n += 1; html += "<h3>" + n + ". " + s.clause.title + "</h3>" + substituteClauseTokens(s.clause, s.params); });
+      included.forEach(s => { n += 1; html += "<h3>" + n + ". " + s.clause.title + "</h3>" + stampClause(s.clause, s.params); });
       authored.forEach(s => { n += 1; html += "<h3>" + n + ". " + s.title + "</h3>" + s.html; });
     }
     const additional = pickBlock(clauseSels, "additional");
     if (additional.length) {
       html += "<h2>ADDITIONAL SERVICES</h2>";
-      additional.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+      additional.forEach(s => { html += stampClause(s.clause, s.params); });
     }
     const excluded = pickBlock(clauseSels, "excluded").concat(excSels);
     if (excluded.length || excCustom.length) {
       html += "<h2>EXCLUDED SERVICES</h2>";
-      excluded.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+      excluded.forEach(s => { html += stampClause(s.clause, s.params); });
       if (excCustom.length) html += "<ul>" + excCustom.join("") + "</ul>";
     }
     if (asmSels.length || asmCustom.length) {
       html += "<h2>ASSUMPTIONS</h2>";
-      asmSels.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+      asmSels.forEach(s => { html += stampClause(s.clause, s.params); });
       asmCustom.forEach(h => { html += h; });
     }
     const provisions = pickBlock(clauseSels, "provisions");
     if (provisions.length) {
       html += "<h2>PROPOSAL PROVISIONS</h2>";
-      provisions.forEach(s => { html += substituteClauseTokens(s.clause, s.params); });
+      provisions.forEach(s => { html += stampClause(s.clause, s.params); });
     }
     if (openItems.length) {
       html += "<h2>OPEN ITEMS REQUIRING OWNER DIRECTION</h2><ul>" + openItems.map(s => "<li>" + s.replace(/</g, "&lt;") + "</li>").join("") + "</ul>";
@@ -22801,6 +22820,61 @@ function ScopeView({ project, onChange, clients = [] }) {
       setImportParsed(buildDraftImport(text, lib));
     } catch (e) { setImportError(e.message || String(e)); }
   }
+
+  // ── In-app generation (proposal-draft Edge Function) ──────────────────────
+  async function genFetch(payload) {
+    const res = await fetch(SUPABASE_URL + "/functions/v1/proposal-draft", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + settyAuth.token(),
+      },
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  }
+  async function toggleGeneratePanel() {
+    setShowGenerate(v => !v);
+    setGenError("");
+    if (genConfigured === null) {
+      try {
+        const d = await genFetch({ action: "status" });
+        setGenConfigured(!!(d && d.configured));
+      } catch (_) { setGenConfigured(false); }
+    }
+  }
+  async function runGenerate() {
+    const rfp = genRfpRef.current ? genRfpRef.current.value.trim() : "";
+    if (!rfp) { setGenError("Paste the RFP text first."); return; }
+    setGenBusy(true);
+    setGenError("");
+    try {
+      const context = [
+        project.name ? "Project: " + project.name : "",
+        project.clientName ? "Client: " + project.clientName : "",
+        project.prime ? "Prime: " + project.prime : "",
+        project.num ? "Project #: " + project.num : "",
+      ].filter(Boolean).join("\n");
+      const d = await genFetch({ rfpText: rfp, projectContext: context });
+      if (d && d.status === "not_configured") { setGenConfigured(false); return; }
+      if (!d || !d.ok) throw new Error((d && d.error) || "Generation failed");
+      // Hand the draft to the shared import pipeline: validate against the
+      // live library, preview with flagged items, then Set/Replace/Append.
+      const jsonText = JSON.stringify(d.draft, null, 2);
+      if (importTextRef.current) importTextRef.current.value = jsonText;
+      genFromAIRef.current = true;
+      const lib = await ensureClauseLib();
+      setImportError("");
+      setImportParsed(buildDraftImport(jsonText, lib));
+      setShowGenerate(false);
+      setShowImport(true);
+    } catch (e) {
+      setGenError(e.message || String(e));
+    } finally {
+      setGenBusy(false);
+    }
+  }
   function applyImport(mode) {
     if (scopeLocked || !importParsed || !editorRef.current) return;
     if (mode === "replace" && (project.scopeContent || "").trim()
@@ -22809,7 +22883,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     editorRef.current.innerHTML = next;
     const r = importParsed.report;
     const entry = {
-      id: uid(), action: "ai-import", user: getCurrentUser(), date: new Date().toISOString(),
+      id: uid(), action: genFromAIRef.current ? "ai-generate" : "ai-import", user: getCurrentUser(), date: new Date().toISOString(),
       note: (mode === "replace" ? "Replaced scope" : "Appended to scope") + " from AI draft"
         + (r.projectName ? " · " + r.projectName : "") + " · " + r.clauseCount + " clauses"
         + (r.flagged.length ? " · " + r.flagged.length + " flagged" : ""),
@@ -22818,6 +22892,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     const text = editorRef.current.innerText || "";
     setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
     setShowImport(false); setImportParsed(null);
+    genFromAIRef.current = false;
     if (importTextRef.current) importTextRef.current.value = "";
     setProposalMsg("✓ AI draft " + (mode === "replace" ? "imported" : "appended") + ". Review the scope below" + (r.flagged.length ? ", and resolve the " + r.flagged.length + " flagged item" + (r.flagged.length > 1 ? "s" : "") + " noted in the import preview before sending." : "."));
     setProposalKind("success");
@@ -22835,7 +22910,7 @@ function ScopeView({ project, onChange, clients = [] }) {
         // Included clauses get numbered titles (matches the canonical template);
         // menu/preamble blocks flow as plain paragraphs and lists.
         if (block === "included") { n += 1; html += "<h3>" + n + ". " + c.title + "</h3>"; }
-        html += fillClauseParams(c);
+        html += stampClause(c, clauseParams[c.clause_key] || {});
       });
     });
     if (!html) return;
@@ -22906,6 +22981,8 @@ function ScopeView({ project, onChange, clients = [] }) {
 
   const scopeLocked = project.scopeLocked || false;
   const auditLog = project.scopeAuditLog || [];
+  const finalized = project.proposalFinalized || null;
+  const canFinalize = pmsCan("proposal.finalize");
 
   React.useEffect(() => {
     if (editorRef.current) {
@@ -23151,8 +23228,56 @@ function ScopeView({ project, onChange, clients = [] }) {
   }
 
   function doUnlock() {
+    if (finalized) return; // finalized proposals reopen via Unfinalize (proposal.finalize capability), not the everyday unlock
     const entry = { id: uid(), action: "unlocked", user: getCurrentUser(), date: new Date().toISOString(), note: lockNote.trim() };
     onChange({ ...project, scopeLocked: false, scopeAuditLog: [...auditLog, entry] });
+    setShowLockModal(false);
+    setLockNote("");
+  }
+
+  // ── Finalize (proposal.finalize capability) ────────────────────────────────
+  // Finalizing is the signer-level action above the everyday scope lock: it
+  // snapshots exactly what was approved (scope + terms HTML, rate schedule,
+  // stamped clause keys/versions, theme, entity, approver, timestamp) into
+  // project.proposalFinalized and locks the scope. Mirrors the
+  // contractRateSchedule award-lock pattern. Unfinalizing keeps the prior
+  // snapshot inside the audit entry, so approval history is never lost.
+  function listStampedClauses(html) {
+    const out = [];
+    try {
+      const doc = new DOMParser().parseFromString(html || "", "text/html");
+      doc.querySelectorAll("[data-clause]").forEach(el => {
+        out.push({ key: el.getAttribute("data-clause"), v: Number(el.getAttribute("data-clause-v")) || 1 });
+      });
+    } catch (_) {}
+    return out;
+  }
+  function doFinalize() {
+    if (!canFinalize) return;
+    const now = new Date().toISOString();
+    const snapshot = {
+      at: now,
+      by: getCurrentUser(),
+      note: lockNote.trim(),
+      theme: project.proposalTheme || "classic",
+      entity: project.proposalEntity || "sa-ny",
+      scopeContent: project.scopeContent || "",
+      termsContent: project.termsContent || "",
+      hourlyRates: rates.map(r => ({ ...r })),
+      clauses: listStampedClauses(project.scopeContent),
+    };
+    const entry = { id: uid(), action: "finalized", user: getCurrentUser(), date: now, note: lockNote.trim() };
+    onChange({ ...project, proposalFinalized: snapshot, scopeLocked: true, scopeAuditLog: [...auditLog, entry] });
+    setShowLockModal(false);
+    setLockNote("");
+  }
+  function doUnfinalize() {
+    if (!canFinalize) return;
+    const entry = {
+      id: uid(), action: "unfinalized", user: getCurrentUser(), date: new Date().toISOString(),
+      note: lockNote.trim(), priorSnapshot: finalized,
+    };
+    onChange({ ...project, proposalFinalized: null, scopeLocked: false, scopeAuditLog: [...auditLog, entry] });
     setShowLockModal(false);
     setLockNote("");
   }
@@ -23224,22 +23349,46 @@ function ScopeView({ project, onChange, clients = [] }) {
           <Btn variant="ghost" onClick={() => { setShowImport(v => !v); setImportError(""); }} disabled={scopeLocked} title="Paste the proposal-draft JSON produced by the Claude drafting skill. Validates against the live clause library and previews before anything is applied.">
             🤖 Import AI Draft
           </Btn>
+          <Btn variant="ghost" onClick={toggleGeneratePanel} disabled={scopeLocked} title="Generate a proposal draft in-app from RFP text. Runs on the firm's Claude API through the proposal-draft function, reads the live clause library (no skill-doc snapshot), and feeds the same validate-and-preview pipeline as paste-import.">
+            🪄 Generate Draft
+          </Btn>
           <Btn variant="ghost" onClick={handleSendForReview} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
             👀 Send for Review
           </Btn>
           <Btn variant="primary" onClick={handleSendProposal} title="Open the bound proposal PDF (SOW + Fee + T&C + Rates) plus an Outlook draft with subject and body prefilled">
             📨 Send Proposal
           </Btn>
-          {scopeLocked
-            ? <Btn variant="warning" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}><span aria-hidden="true">🔓</span> Unlock Scope</Btn>
-            : <Btn variant="success" onClick={() => { setShowLockModal("lock"); setLockNote(""); }}>🔒 Lock Scope</Btn>
+          {finalized
+            ? (canFinalize
+                ? <Btn variant="warning" onClick={() => { setShowLockModal("unfinalize"); setLockNote(""); }} title="Reopen the proposal for editing. The approval snapshot is preserved in the audit log."><span aria-hidden="true">↩️</span> Unfinalize</Btn>
+                : null)
+            : scopeLocked
+              ? <Btn variant="warning" onClick={() => { setShowLockModal("unlock"); setLockNote(""); }}><span aria-hidden="true">🔓</span> Unlock Scope</Btn>
+              : <Btn variant="success" onClick={() => { setShowLockModal("lock"); setLockNote(""); }}>🔒 Lock Scope</Btn>
           }
+          {!finalized && canFinalize && (
+            <Btn variant="success" onClick={() => { setShowLockModal("finalize"); setLockNote(""); }} title="Approve and lock this proposal for sending. Snapshots the scope, terms, rates and clause versions as the audit record.">
+              ✅ Finalize
+            </Btn>
+          )}
           <Btn onClick={() => printScopeOfServices(project)}>🖨 Print</Btn>
         </div>
       </div>
 
+      {/* Finalized banner — the signer-level state, shown above the plain lock */}
+      {finalized && (
+        <div style={{ background: P.greenDim, border: "1px solid " + P.green, borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 12 }}>
+          <span style={{ color: P.green, fontWeight: 700 }}>✅ Proposal finalized</span>
+          <span style={{ color: P.textMuted, marginLeft: 8 }}>
+            by {finalized.by} on {fmtDate(String(finalized.at || "").slice(0, 10))}
+            {finalized.note ? " · " + finalized.note : ""}
+            {" · snapshot: " + ((finalized.clauses || []).length) + " library clause" + ((finalized.clauses || []).length === 1 ? "" : "s") + ", " + ((finalized.hourlyRates || []).length) + " rate roles, " + (finalized.theme === "classic" ? "Classic" : "Modern") + " format"}
+          </span>
+        </div>
+      )}
+
       {/* Lock status banner */}
-      {scopeLocked && lastLocked && (
+      {!finalized && scopeLocked && lastLocked && (
         <div style={{ background: P.greenDim, border: "1px solid " + P.green, borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 12 }}>
           <span style={{ color: P.green, fontWeight: 600 }}>🔒 Scope locked</span>
           <span style={{ color: P.textMuted, marginLeft: 8 }}>
@@ -23331,6 +23480,35 @@ function ScopeView({ project, onChange, clients = [] }) {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* In-app generation panel — RFP text in, proposal-draft JSON out, then
+          the shared import preview takes over. Dark-launched behind the firm
+          API key: unconfigured deployments show the pending-setup note. */}
+      {showGenerate && (
+        <div style={{ border: "1px solid " + P.accent, borderRadius: 8, padding: "14px 16px", marginBottom: 16, background: P.card }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>🪄 Generate Draft</div>
+          {genConfigured === false ? (
+            <div style={{ fontSize: 12.5, color: P.textMuted, lineHeight: 1.6 }}>
+              ⏳ <b>Pending firm API setup.</b> In-app generation needs the firm Anthropic API key configured on the server (an admin sets the <code>ANTHROPIC_API_KEY</code> secret on the <code>proposal-draft</code> function). Until then, use <b>🤖 Import AI Draft</b> with the Claude drafting skill: same result, generated on your own Claude account.
+            </div>
+          ) : (
+            <React.Fragment>
+              <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 8 }}>
+                Paste the <b>RFP text</b> (copy from the PDF or document). Claude reads the live clause library, selects and parameterizes clauses, writes only the project-specific sections, and returns a draft that is validated and previewed below before anything touches the scope. Generation can take a minute or two on long RFPs.
+              </div>
+              <textarea ref={genRfpRef} rows={7} placeholder="Paste the RFP text here…"
+                style={{ width: "100%", fontFamily: "inherit", fontSize: 12.5, padding: 8, border: "1px solid " + P.border, borderRadius: 6, background: P.bg, color: P.text }} />
+              <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <Btn variant="primary" small onClick={runGenerate} disabled={genBusy || genConfigured === null}>
+                  {genBusy ? "⏳ Generating… (up to a couple of minutes)" : genConfigured === null ? "Checking availability…" : "🪄 Generate"}
+                </Btn>
+                <Btn variant="ghost" small onClick={() => { setShowGenerate(false); setGenError(""); }} disabled={genBusy}>Close</Btn>
+                {genError && <span style={{ color: P.red, fontSize: 12.5 }}>✗ {genError}</span>}
+              </div>
+            </React.Fragment>
+          )}
         </div>
       )}
 
@@ -23515,8 +23693,13 @@ function ScopeView({ project, onChange, clients = [] }) {
                 {[...auditLog].reverse().map(e => (
                   <tr key={e.id}>
                     <td>
-                      <span style={{ fontWeight: 600, color: e.action === "locked" ? P.green : e.action === "ai-import" ? P.accent : P.yellow }}>
-                        {e.action === "locked" ? "🔒 Locked" : e.action === "ai-import" ? "🤖 AI Import" : "🔓 Unlocked"}
+                      <span style={{ fontWeight: 600, color: e.action === "locked" || e.action === "finalized" ? P.green : e.action === "ai-import" || e.action === "ai-generate" ? P.accent : P.yellow }}>
+                        {e.action === "locked" ? "🔒 Locked"
+                          : e.action === "finalized" ? "✅ Finalized"
+                          : e.action === "unfinalized" ? "↩️ Unfinalized"
+                          : e.action === "ai-import" ? "🤖 AI Import"
+                          : e.action === "ai-generate" ? "🪄 AI Generate"
+                          : "🔓 Unlocked"}
                       </span>
                     </td>
                     <td style={{ color: P.textMuted }}>{e.user || "—"}</td>
@@ -23657,13 +23840,19 @@ function ScopeView({ project, onChange, clients = [] }) {
         )}
       </div>
 
-      {/* Lock/Unlock modal */}
-      {showLockModal && (
-        <Modal title={showLockModal === "lock" ? "🔒 Lock Scope of Services" : "🔓 Unlock Scope of Services"} onClose={() => setShowLockModal(false)}>
+      {/* Lock/Unlock + Finalize/Unfinalize modal */}
+      {showLockModal && (() => {
+        const MODAL_COPY = {
+          lock: { title: "🔒 Lock Scope of Services", body: "Locking the scope prevents further edits. You can unlock it at any time. Add an optional note for the audit log.", btn: "Lock Scope", color: P.green, run: doLock, ph: "e.g. Approved by PM, issued to client..." },
+          unlock: { title: "🔓 Unlock Scope of Services", body: "Unlocking allows the scope to be edited again. Add an optional note explaining why.", btn: "Unlock Scope", color: P.red, run: doUnlock, ph: "e.g. Revising scope per amendment #2..." },
+          finalize: { title: "✅ Finalize Proposal", body: "Finalizing approves this proposal for sending. It locks the scope and records a snapshot of exactly what was approved: scope and terms text, the rate schedule, which library clauses (and versions) are in the document, the print format, entity, your name, and the time. The snapshot is the audit record of what went to the client.", btn: "Finalize & Snapshot", color: P.green, run: doFinalize, ph: "e.g. Approved for issue to DASNY, fee $148,500..." },
+          unfinalize: { title: "↩️ Unfinalize Proposal", body: "Unfinalizing reopens the proposal for editing. The prior approval snapshot is preserved in the audit log, so the record of what was approved is never lost. Finalize again after revising.", btn: "Unfinalize", color: P.red, run: doUnfinalize, ph: "e.g. Client requested revised CA visit count..." },
+        };
+        const mc = MODAL_COPY[showLockModal] || MODAL_COPY.lock;
+        return (
+        <Modal title={mc.title} onClose={() => setShowLockModal(false)}>
           <div style={{ fontSize: 13, color: P.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
-            {showLockModal === "lock"
-              ? "Locking the scope prevents further edits. You can unlock it at any time. Add an optional note for the audit log."
-              : "Unlocking allows the scope to be edited again. Add an optional note explaining why."}
+            {mc.body}
           </div>
           <Field label="Note (optional)">
             <textarea
@@ -23671,19 +23860,20 @@ function ScopeView({ project, onChange, clients = [] }) {
               onChange={e => setLockNote(e.target.value)}
               rows={3}
               style={{ width: "100%", resize: "vertical" }}
-              placeholder={showLockModal === "lock" ? "e.g. Approved by PM, issued to client..." : "e.g. Revising scope per amendment #2..."}
+              placeholder={mc.ph}
             />
           </Field>
           <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
             <button
-              onClick={showLockModal === "lock" ? doLock : doUnlock}
-              style={{ background: showLockModal === "lock" ? P.green : P.red, border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontWeight: 700, padding: "8px 20px", fontSize: 13 }}>
-              {showLockModal === "lock" ? "Lock Scope" : "Unlock Scope"}
+              onClick={mc.run}
+              style={{ background: mc.color, border: "none", borderRadius: 8, color: "#fff", cursor: "pointer", fontWeight: 700, padding: "8px 20px", fontSize: 13 }}>
+              {mc.btn}
             </button>
             <Btn variant="ghost" onClick={() => setShowLockModal(false)}>Cancel</Btn>
           </div>
         </Modal>
-      )}
+        );
+      })()}
     </div>
   );
 }
