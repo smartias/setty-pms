@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v110-proposal-salutation-fix";
+    window.__appVersion = "2026-08-16-pms-v111-proposal-scope-insert";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22022,8 +22022,10 @@ function exportProposalDocx(project) {
     status.textContent = "Building…";
     try {
       const source = file ? await file.arrayBuffer() : templateBytes;
-      const { bytes, unfilled } = await window.SettyDocx.buildDocx(source, {
+      const { bytes, unfilled, scopeBlocks } = await window.SettyDocx.buildDocx(source, {
         omit, fields: proposalDocxFields(project),
+        // The scope replaces the template's boilerplate INCLUDED SERVICES.
+        scopeHtml: project.scopeContent || "",
       });
       const base = (project.projectNumber ? project.projectNumber + " - " : "") +
                    (project.name || "Proposal");
@@ -22037,9 +22039,12 @@ function exportProposalDocx(project) {
       a.download = safe + " Proposal.docx";
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
-      status.textContent = omit.length
+      status.textContent = (omit.length
         ? "Done — left out " + omit.length + " section" + (omit.length > 1 ? "s" : "") + "."
-        : "Done — full document.";
+        : "Done — full document.") +
+        (scopeBlocks
+          ? " Scope inserted as " + scopeBlocks + " paragraph" + (scopeBlocks > 1 ? "s" : "") + "."
+          : " No scope on this project, so the services section is empty.");
       if (unfilled.length) {
         status.textContent += " " + unfilled.length + " placeholder(s) still to fill in Word.";
       }
