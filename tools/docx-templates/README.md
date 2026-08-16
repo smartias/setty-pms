@@ -136,3 +136,7 @@ cached results, which is why the template tells the user to press Ctrl-A+F9 thre
   `get_template` — clients cache tool schemas at connect and silently strip unknown params,
   so stale sessions would quietly keep using the text path. Connector tools also cache at
   add, so rollout needs a remove-and-re-add.
+
+  **The handoff design is specced** in `supabase/functions/pms-mcp/RENDER-HANDOFF.md`:
+  connector appends a row to a drafts table (a database write, needing no Graph permission
+  at all), the PMS renders and saves with the signed-in person's delegated token.
