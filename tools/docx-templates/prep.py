@@ -165,8 +165,11 @@ def build(cfg):
             xml = blank(xml, set(cfg["blank_paragraphs"]))
         for l in cfg.get("lists", []):
             xml = collapse(xml, l["first"], l["last"], l["token"])
-        if cfg.get("block_range"):
-            xml = collapse_to_prototypes(xml, cfg["block_range"])
+        # Applied LAST-FIRST: each collapse removes children, so doing the
+        # later sections first keeps the earlier anchors where the text
+        # scan expects them.
+        for br in reversed(cfg.get("block_ranges", [])):
+            xml = collapse_to_prototypes(xml, br)
         if cfg.get("auto"):
             xml, _ = replace_all(xml, cfg["auto"])
         return xml

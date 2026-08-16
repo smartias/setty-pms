@@ -483,7 +483,8 @@ export function expandBlocks(xml, headingToken, bodyToken, blocks) {
  * through byte-for-byte, which is what preserves the letterhead.
  */
 export async function buildDocx(
-  arrayBuffer, { omit = [], fields = {}, listTokens = [], scopeHtml = "" } = {},
+  arrayBuffer,
+  { omit = [], fields = {}, listTokens = [], scopeHtml = "", scopeSections = {} } = {},
 ) {
   const parts = await unzip(arrayBuffer);
   const dec = new TextDecoder(), enc = new TextEncoder();
@@ -502,18 +503,41 @@ export async function buildDocx(
       if (omit.length) xml = dropParts(xml, omit);
       // Scope BEFORE token substitution: the prototypes carry the tokens, and
       // filling them first would leave nothing to clone.
-      const blocks = htmlToBlocks(scopeHtml);
-      if (!scopeHtml) {
-        scopeNote = "no scope content on this project";
-      } else if (!blocks.length) {
-        scopeNote = "scope is " + scopeHtml.length +
-                    " chars but no readable paragraphs were found in it";
-      } else {
-        const r = expandBlocks(xml, "{{SCOPE_HEADING}}", "{{SCOPE_BODY}}", blocks);
-        if (r.found) { xml = r.xml; scopeBlocks = blocks.length; }
-        else scopeNote = "template has no {{SCOPE_HEADING}}/{{SCOPE_BODY}} anchors " +
-                         "(old copy cached?) — " + blocks.length + " scope paragraphs not placed";
+      // Three independent sections, each with its own prototype pair. Keeping
+      // them apart is what removes the heading guesswork: an Included box IS
+      // the included list, so nothing has to be inferred from bold prefixes.
+      // scopeHtml (single blob) still maps to Included, so a client that has
+      // not been updated keeps working.
+      const sections = {
+        included: scopeSections.included || scopeHtml || "",
+        additional: scopeSections.additional || "",
+        excluded: scopeSections.excluded || "",
+      };
+      const anchors = {
+        included: ["{{SCOPE_HEADING}}", "{{SCOPE_BODY}}"],
+        additional: ["{{ADDITIONAL_HEADING}}", "{{ADDITIONAL_BODY}}"],
+        excluded: ["{{EXCLUDED_HEADING}}", "{{EXCLUDED_BODY}}"],
+      };
+      const notes = [];
+      for (const [key, html] of Object.entries(sections)) {
+        const [h, b] = anchors[key];
+        const blocks = htmlToBlocks(html);
+        if (!html) {
+          // An untouched section leaves its prototypes behind, which would
+          // print as {{TOKENS}}. Blank them instead.
+          xml = expandBlocks(xml, h, b, []).xml;
+          continue;
+        }
+        if (!blocks.length) {
+          notes.push(key + " is " + html.length + " chars but had no readable paragraphs");
+          xml = expandBlocks(xml, h, b, []).xml;
+          continue;
+        }
+        const r = expandBlocks(xml, h, b, blocks);
+        if (r.found) { xml = r.xml; scopeBlocks += blocks.length; }
+        else notes.push(key + ": template is missing " + h + " (old copy cached?)");
       }
+      scopeNote = notes.join("; ");
     }
     const r = renderDocumentXml(xml, fields, { listTokens });
     if (name === "word/document.xml") unfilled = r.unfilled;

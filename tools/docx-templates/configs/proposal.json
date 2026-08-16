@@ -59,12 +59,26 @@
     "This project consists of the renovation of the entire 3rd floor and the lobby portion of the 1st floor of Heritage Hall.  Our proposal is based a scope of work as outlined in the RFP dated February 10, 2023 with a construction budget of $1.8M.": "{{PROJECT_DESCRIPTION}}"
   },
 
-  "block_range": {
-    "after": "INCLUDED SERVICES:",
-    "before": "ADDITIONAL SERVICES:",
-    "heading_token": "{{SCOPE_HEADING}}",
-    "body_token": "{{SCOPE_BODY}}"
-  },
+  "block_ranges": [
+    {
+      "after": "INCLUDED SERVICES:",
+      "before": "ADDITIONAL SERVICES:",
+      "heading_token": "{{SCOPE_HEADING}}",
+      "body_token": "{{SCOPE_BODY}}"
+    },
+    {
+      "after": "ADDITIONAL SERVICES:",
+      "before": "EXCLUDED SERVICES:",
+      "heading_token": "{{ADDITIONAL_HEADING}}",
+      "body_token": "{{ADDITIONAL_BODY}}"
+    },
+    {
+      "after": "EXCLUDED SERVICES:",
+      "before": "PROPOSAL PROVISIONS",
+      "heading_token": "{{EXCLUDED_HEADING}}",
+      "body_token": "{{EXCLUDED_BODY}}"
+    }
+  ],
 
   "forbid_in_output": [
     "212 Architects", "SUNY Maritime", "Jane Architect", "KARCH@",
