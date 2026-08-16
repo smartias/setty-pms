@@ -105,7 +105,7 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v12 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v13 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
@@ -167,6 +167,8 @@
 // 12/12 replaced while having silently destroyed 6 tokens. Also corrects
 // the Knowledge-layer bullet that implied dropping a file in the templates
 // folder was sufficient on its own.
+// v13 (16 Aug 2026) marks Drawing Intelligence phase 2 (search_drawings,
+// PR #144) LIVE in the phase table and notes phase 3 is mostly answered by it.
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -1695,11 +1697,11 @@ function renderMcp() {
             <td><b>The transmittal register.</b> Know which sheet went out at which revision, when, and to whom. The transmittal app already parses sheet number, title, revision and discipline from filenames; this persists them to <code>pms_filing_log</code>. The SharePoint "Transmittals Sent" list was dropped, having never worked.</td>
             <td><span class="pill info">PR #74 OPEN</span><br><span style="font-size:11.5px;color:var(--muted)">then blocked on adoption — the register only fills as the app gets used</span></td></tr>
         <tr><td><b>2</b></td>
-            <td><b>Drawing text index + <code>search_drawings</code>.</b> Extract text per sheet per revision into a table, indexed <i>lazily on demand and cached</i> rather than by bulk sweep. Then an MCP tool returning sheet, revision and matching snippet. <b>This alone answers "which sheets show the perchloric fume hood," which is most of the value.</b></td>
-            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span></td></tr>
+            <td><b>Drawing text index + <code>search_drawings</code>.</b> Extract text per sheet per revision into a table, indexed <i>lazily on demand and cached</i> rather than by bulk sweep. Then an MCP tool returning sheet, revision and matching snippet. <b>This alone answers "which sheets show the perchloric fume hood," which is most of the value.</b> <b>Shipped as built:</b> <code>pms_drawing_text</code> (one row per file page, with sheet number, revision and revision date read from the title block) fills a few PDFs per call under the project's Outgoing folder, newest set first, and <code>search_drawings</code> searches it in SQL. Every result carries a <code>coverage</code> block, so a miss while <code>filesPending</code> is above zero means "not indexed yet", not "not on the drawings". Combined books over 20MB are skipped and named, by design.</td>
+            <td><span class="pill ok">LIVE 16 Aug</span><br><span style="font-size:11.5px;color:var(--muted)">PR #144, build 2026-08-16-search-drawings; first full Tabler run still to do from a fresh session</span></td></tr>
         <tr><td><b>3</b></td>
             <td><b>History across revisions.</b> Group the index by sheet and term to derive "first appeared on M-601 Rev 2, issued with Bulletin #3, still present at Rev 4." <b>Easier than expected:</b> phase 0 found that each sheet's revision block is itself in the text layer, so per-sheet history can be read straight off the drawing rather than reconstructed. The transmittal register still adds who received it and in which package, but this is no longer hard-blocked on register depth or on transmittal adoption.</td>
-            <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span><br><span style="font-size:11.5px;color:var(--muted)">unblocked by phase 0</span></td></tr>
+            <td><span class="pill info">MOSTLY IN PHASE 2</span><br><span style="font-size:11.5px;color:var(--muted)"><code>search_drawings</code> already groups hits by sheet, lists every indexed revision newest first and reports <code>earliestSeen</code>; the register still adds who received it and in which package</span></td></tr>
         <tr><td><b>4</b></td>
             <td><b><code>view_drawing</code> — visual read.</b> Render a specific sheet, or a region of one, so Claude can read what the text layer cannot show. Server-side rendering was proven working on 18 Jun 2026 and never built.</td>
             <td><span class="pill" style="background:var(--card2);color:var(--muted)">PLANNED</span><br><span style="font-size:11.5px;color:var(--muted)">raises token usage — see note</span></td></tr>
