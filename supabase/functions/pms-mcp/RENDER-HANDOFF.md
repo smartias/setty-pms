@@ -94,15 +94,15 @@ create policy pms_document_drafts_select on pms_document_drafts
   using (lower(requested_by) = lower(coalesce(auth.jwt() ->> 'email', ''))
          or is_pms_admin());
 
--- Acting on a draft (generate / discard) needs the capability AND ownership.
+-- Acting on a draft (generate / discard). NOT capability-gated: admin staff
+-- routinely help assemble these documents, and gating generation would block
+-- exactly the people who do the work. Sara, 2026-08-16.
 create policy pms_document_drafts_write on pms_document_drafts
   for update to authenticated
-  using (pms_has_cap('documents.generate', project_number)
-         and (lower(requested_by) = lower(coalesce(auth.jwt() ->> 'email', ''))
-              or is_pms_admin()))
-  with check (pms_has_cap('documents.generate', project_number)
-              and (lower(requested_by) = lower(coalesce(auth.jwt() ->> 'email', ''))
-                   or is_pms_admin()));
+  using (lower(requested_by) = lower(coalesce(auth.jwt() ->> 'email', ''))
+         or is_pms_admin())
+  with check (lower(requested_by) = lower(coalesce(auth.jwt() ->> 'email', ''))
+              or is_pms_admin());
 
 create policy pms_document_drafts_delete on pms_document_drafts
   for delete to authenticated
@@ -112,15 +112,19 @@ create policy pms_document_drafts_delete on pms_document_drafts
 
 No INSERT policy for `authenticated`: drafts come from the connector only.
 
-**New capability `documents.generate`**, seeded from the `contracts.edit` role
-set. Seeding rather than reusing `contracts.edit` matters because the template
-set spans contract documents (add service, subagreement) and operational ones
-(CAD release, ESI, substantial completion), and you will want to tune those
-audiences separately. The existing matrix UI in SettyAdmin edits it with no
-further code.
+**No capability gate, deliberately.** An earlier draft of this spec proposed a
+`documents.generate` capability. That was wrong: admin staff often help put
+these documents together, and gating generation would block exactly the people
+doing the work. Anyone signed in can act on a draft addressed to them.
 
-Note `pms_has_cap` takes the project scope, so a project locked to its team
-also locks who can generate its documents. That falls out for free.
+The real protection is downstream and does not need a capability: the file is
+written with the person's **own delegated Graph token**, so if SharePoint would
+not let them write to that project folder, the save fails. Per-project locks
+still apply, they are just enforced by SharePoint rather than duplicated here.
+
+Drafts remain scoped to the requester so people are not wading through each
+other's queues; that is routing, not permission. `is_pms_admin()` sees all,
+which is how the other tables behave.
 
 ## 3. Connector changes
 
@@ -228,9 +232,7 @@ together when this ships.
 
 ## 6. Open decisions
 
-1. **Capability audience.** Seed `documents.generate` from `contracts.edit`
-   (4 roles) or something wider? Engineers raise ESIs and CAD releases, so the
-   contract-document audience may be too narrow.
+1. ~~Capability audience.~~ **Settled: no gate.** See RLS above.
 2. **Notify or not.** A draft could be silent (badge only) or send the Monday
    digest a line. Silent is the safer default given the digest's history.
 3. **zip layer in the browser:** hand-rolled on the pako already present, or add

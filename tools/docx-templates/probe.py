@@ -40,7 +40,9 @@ def list_templates():
 
 
 def probe(name):
-    path = name if os.path.isabs(name) else os.path.join(TEMPLATE_DIR, name)
+    # An existing path wins over the templates folder, so a file anywhere on
+    # disk can be probed without spelling out an absolute path.
+    path = name if os.path.exists(name) else os.path.join(TEMPLATE_DIR, name)
     ext = os.path.splitext(path)[1].lower()
     print(f"### {os.path.basename(path)}")
     print(f"    {os.path.getsize(path):,} bytes")
