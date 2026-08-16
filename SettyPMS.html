@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v112-scope-headings-revisions";
+    window.__appVersion = "2026-08-16-pms-v113-clause-insert-at-cursor";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -23108,6 +23108,24 @@ function ScopeView({ project, onChange, clients = [] }) {
     setProposalMsg("✓ AI draft " + (mode === "replace" ? "imported" : "appended") + ". Review the scope below" + (r.flagged.length ? ", and resolve the " + r.flagged.length + " flagged item" + (r.flagged.length > 1 ? "s" : "") + " noted in the import preview before sending." : "."));
     setProposalKind("success");
   }
+  // Remember where the caret was. Clicking a clause button moves focus out of
+  // the editor and destroys the selection, so it has to be captured beforehand.
+  // Stashed on the DOM node rather than in a ref: this component is large and
+  // adding a hook is a needless risk for what is really per-element state.
+  function rememberCaret() {
+    const el = editorRef.current;
+    if (!el) return;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const r = sel.getRangeAt(0);
+    if (el.contains(r.commonAncestorContainer)) el._pmsCaret = r.cloneRange();
+  }
+
+  /**
+   * Insert the ticked clauses AT THE CARET, so boilerplate can be dropped
+   * between paragraphs you have just written rather than always landing at the
+   * bottom. Falls back to appending when there is no caret in the editor yet.
+   */
   function insertSelectedClauses() {
     if (scopeLocked || !editorRef.current) return;
     const lib = clauseLib || [];
@@ -23125,9 +23143,28 @@ function ScopeView({ project, onChange, clients = [] }) {
       });
     });
     if (!html) return;
-    editorRef.current.innerHTML += html;
+
+    const el = editorRef.current;
+    const caret = el._pmsCaret;
+    let placed = false;
+    // The caret is only usable if its node is still in the document; editing
+    // after the caret was stored can detach it.
+    if (caret && el.contains(caret.commonAncestorContainer)) {
+      try {
+        el.focus();
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(caret);
+        // execCommand is deprecated but is what the paste handler already uses
+        // here, and it is the only thing that keeps contenteditable undo working.
+        placed = document.execCommand("insertHTML", false, html);
+      } catch (_) { placed = false; }
+    }
+    if (!placed) el.innerHTML += html;
+    el._pmsCaret = null;
+
     saveContent();
-    const text = editorRef.current.innerText || "";
+    const text = el.innerText || "";
     setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
     setClauseSel({});
     setShowClauses(false);
@@ -23659,7 +23696,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       )}
 
       {/* Clause library panel — assemble from approved firm-standard blocks.
-          Selected clauses append to the scope editor with standard headings. */}
+          Selected clauses insert at the cursor with standard headings. */}
       {showClauses && clauseLib && (
         <div style={{ border: "1px solid " + P.accent, borderRadius: 8, padding: "14px 16px", marginBottom: 16, background: P.card }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -23889,6 +23926,9 @@ function ScopeView({ project, onChange, clients = [] }) {
           suppressContentEditableWarning={true}
           onInput={saveContent}
           onPaste={handlePaste}
+          onKeyUp={rememberCaret}
+          onMouseUp={rememberCaret}
+          onBlur={rememberCaret}
           style={{
             flex: 1,
             overflowY: "auto",
