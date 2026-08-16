@@ -409,7 +409,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-06-directory-tools-2";
+const BUILD = "2026-08-16-search-drawings";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3986,6 +3986,356 @@ mcp.tool("extract_sheet_index", {
         : {}),
       note: "Revision comes from each sheet's own revision block; an empty block means base issue, revision 0. " +
         "Rows are NOT written anywhere — this is a read-only extraction for review.",
+    });
+  },
+});
+
+// ─── DRAWING INTELLIGENCE PHASE 2: per-page text index + search_drawings ─────
+// "Which sheets show the perchloric fume hood?" is a text question: phase 0
+// proved the sheets are Revit vector exports whose text layer carries tags,
+// keynotes, schedules and the revision block. Answering it by reading sheets
+// through read_document is ~500k characters of drawing text per set through the
+// conversation, so the text goes into Postgres ONCE per file and the question
+// becomes one indexed query.
+//
+// The index fills LAZILY: every search_drawings call indexes a few not-yet-read
+// PDFs in the project's Outgoing folder (newest sets first, time-boxed) and then
+// searches whatever is indexed. It never bulk-sweeps — edge workers are
+// short-lived, and the 2026-06-24 outage was write contention from a sweep. The
+// call reports coverage so the caller knows when a "not found" is really "not
+// indexed yet" and can call again to keep filling.
+//
+// Rows are per SharePoint item + page, so a sheet re-issued at a later revision
+// keeps its earlier text; grouping the hits by sheet number is the revision
+// history phase 3 asked for.
+const DRAWING_INDEX_DEADLINE_MS = 28_000;   // stop opening NEW files after this; the search still runs
+const DRAWING_INDEX_MAX_FILES = 6;           // per call, unless the caller asks for fewer
+const DRAWING_INDEX_MAX_ATTEMPTS = 3;        // a file that dies mid-request 3 times is left alone
+const DRAWING_INDEX_MAX_BYTES = MAX_DOC_BYTES; // the 42MB combined book times out on download; skip, say so
+
+// Query → POSIX regexes for Postgres `~*`. Every whitespace-separated term must
+// match (AND); a double-quoted phrase is one term. Everything is escaped so user
+// text is never regex; the ONE liberty taken is that a hyphen or space INSIDE a
+// term matches "-", " " or nothing, because tags read "FCU-11", "FCU 11" and
+// "FCU11" on the same project depending on who typed the label.
+function drawingQueryPatterns(query: string): string[] {
+  const terms: string[] = [];
+  const re = /"([^"]+)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(String(query || ""))) !== null) terms.push((m[1] ?? m[2]).trim());
+  return terms
+    .filter(Boolean)
+    .map((t) =>
+      t.split(/[-\s]+/).filter(Boolean)
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("[-\\s]?"))
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+// The set a file belongs to, read off its path: "Outgoing/2025-04-10_Bulletin #1/…"
+// → "2025-04-10_Bulletin #1". Anything not under a set folder reports its top
+// folder instead.
+function drawingSetOf(folderPath: string): string {
+  const parts = String(folderPath || "").split("/").filter(Boolean);
+  const i = parts.findIndex((p) => p.toLowerCase().includes("outgoing"));
+  if (i >= 0 && parts[i + 1]) return parts[i + 1];
+  return parts[0] || "/";
+}
+
+async function drawingIndexWrite(path: string, body: unknown, prefer: string): Promise<void> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: prefer,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`drawing index write ${res.status}: ${(await res.text()).slice(0, 200)}`);
+}
+
+// Files eligible for the index under one project. Default scope is the Outgoing
+// folder (what we issued); its name carries numbering and emoji prefixes on most
+// projects ("99 📤 Outgoing"), so it is found by CONTAINS under the project root
+// and then crawled by its exact name. A caller can point anywhere else with
+// `subfolder`, passed exactly as list_project_documents prints it.
+async function drawingScopeFiles(numPrefix: string, subfolder?: string): Promise<{
+  files: TreeFile[]; scopePath: string; truncated: boolean; resolved: boolean;
+}> {
+  let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
+  if (!rel) {
+    const drives = await siteDrives();
+    const docLib = drives.find((d) => d.name === DOC_LIBRARY) || drives[0];
+    const root = docLib ? await findProjectFolderInDrive(docLib.id, numPrefix) : null;
+    if (root) {
+      const top = await graphGet(`/drives/${docLib.id}/items/${root.id}/children?$select=id,name,folder&$top=200`);
+      const outgoing = (top.value || []).find((it: any) => it.folder && String(it.name).toLowerCase().includes("outgoing"));
+      if (outgoing) rel = String(outgoing.name);
+    }
+    if (!rel) return { files: [], scopePath: "Outgoing", truncated: false, resolved: false };
+  }
+  const sub = await subtreeFiles(numPrefix, rel);
+  const files = sub.files.filter((f) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath));
+  return { files, scopePath: rel, truncated: sub.truncated, resolved: sub.resolvedIn.length > 0 };
+}
+
+mcp.tool("search_drawings", {
+  description:
+    "Search the TEXT ON THE DRAWINGS of a project: equipment tags (FCU-11, CHWP-2), keynotes, room names, " +
+    "schedule entries, general notes, specification callouts. Answers 'which sheets show the perchloric fume " +
+    "hood', 'where is UH-4', 'which sheets mention the 350KW generator', and because every revision of a " +
+    "sheet is indexed separately, 'when did X first appear' — results are GROUPED BY SHEET with each " +
+    "revision (and the set it was issued in) listed newest first. Each hit carries a text snippet around " +
+    "the match, the page inside the file, and the file's webUrl. " +
+    "HOW THE INDEX WORKS, READ THIS: drawing text is indexed LAZILY. Each call first reads a few not-yet-" +
+    "indexed PDFs from the project's Outgoing folder (newest sets first), then searches everything indexed " +
+    "so far. Check `coverage`: if `filesPending` > 0 the index is INCOMPLETE and a miss may only mean 'not " +
+    "indexed yet' — call again (same query) to index more, until filesPending is 0. On a large project the " +
+    "first full pass takes several calls; results already indexed are returned every time. Pass " +
+    "indexOnly:true to fill the index without searching. " +
+    "Query semantics: all words must appear on the same page (AND); quote a phrase to keep it together; " +
+    "hyphens and spaces inside a tag are interchangeable (FCU-11 finds 'FCU 11' and 'FCU11'). Case-insensitive. " +
+    "This reads text layers only: a scanned or image-only sheet indexes as empty and is reported under " +
+    "coverage.textlessFiles. Nothing here writes to the transmittal register.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    query: z.string().optional().describe("What to look for on the sheets, e.g. 'perchloric fume hood', 'FCU-11', '\"emergency generator\" 208V'. Required unless indexOnly is true."),
+    subfolder: z.string().optional().describe("Restrict to one folder, exactly as list_project_documents prints it (e.g. 'Outgoing/2026-04-17_Bulletin #13'). Default is the whole Outgoing folder."),
+    maxFilesToIndex: z.number().optional().describe("How many not-yet-indexed PDFs to read this call (default 6, max 12). Pass 0 to search only what is already indexed."),
+    indexOnly: z.boolean().optional().describe("Only fill the index, do not search. Use it to pre-load a project before a run of questions."),
+  }),
+  handler: async ({ projectNumber, query, subfolder, maxFilesToIndex, indexOnly }) => {
+    const t0 = Date.now();
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const numPrefix = String(project).toLowerCase().trim();
+    const patterns = drawingQueryPatterns(query || "");
+    if (!indexOnly && !patterns.length) {
+      return asText({ error: "Pass a query (what to look for on the drawings), or indexOnly:true to just fill the index." });
+    }
+    const fileBudget = Math.min(Math.max(maxFilesToIndex ?? DRAWING_INDEX_MAX_FILES, 0), 12);
+
+    // ── 1. What SHOULD be indexed: the PDFs in scope ─────────────────────────
+    let scope: { files: TreeFile[]; scopePath: string; truncated: boolean; resolved: boolean };
+    try {
+      scope = await drawingScopeFiles(numPrefix, subfolder);
+    } catch (e) {
+      return asText({ project, error: `Could not read SharePoint folders: ${String((e as any)?.message ?? e)}` });
+    }
+    if (!scope.resolved) {
+      return asText({
+        project, query, count: 0, sheets: [],
+        reason: subfolder
+          ? `No folder "${subfolder}" exists under this project.`
+          : "No Outgoing folder was found under this project, so there are no issued drawings to index.",
+        nextStep: "Confirm the path with list_project_documents and pass it as subfolder, exactly as printed.",
+      });
+    }
+
+    // ── 2. What IS indexed already ────────────────────────────────────────────
+    const known: any[] = await sbGetAll(
+      "pms_drawing_index_files?select=item_id,status,attempts,pages,text_pages,file_name,folder_path,error" +
+      "&project_prefix=eq." + encodeURIComponent(numPrefix) + "&order=item_id",
+    );
+    const knownById = new Map(known.map((k) => [k.item_id, k]));
+
+    // Newest set first: set folders are date-prefixed, so a descending path sort
+    // puts the current bulletins ahead of the 2019 baseline. Stable, so repeat
+    // calls walk the same order and never skip a file.
+    const ordered = [...scope.files].sort((a, b) =>
+      String(b.folderPath).localeCompare(String(a.folderPath)) || String(a.name).localeCompare(String(b.name)));
+    const pending = ordered.filter((f) => {
+      const k = knownById.get(f.itemId);
+      if (!k) return true;
+      if (k.status === "done" || k.status === "skipped") return false;
+      return Number(k.attempts) < DRAWING_INDEX_MAX_ATTEMPTS;
+    });
+    const givenUp = ordered.filter((f) => {
+      const k = knownById.get(f.itemId);
+      return k && k.status !== "done" && k.status !== "skipped" && Number(k.attempts) >= DRAWING_INDEX_MAX_ATTEMPTS;
+    });
+
+    // ── 3. Index a few, time-boxed ────────────────────────────────────────────
+    const indexedNow: any[] = [];
+    const skippedNow: any[] = [];
+    const failedNow: any[] = [];
+    let opened = 0;
+    for (const f of pending) {
+      if (opened >= fileBudget) break;
+      if (Date.now() - t0 > DRAWING_INDEX_DEADLINE_MS) break;
+      const prev = knownById.get(f.itemId);
+      const attempts = Number(prev?.attempts || 0) + 1;
+      const base = {
+        item_id: f.itemId, project_prefix: numPrefix, file_name: f.name, folder_path: f.folderPath,
+        web_url: f.webUrl, size_bytes: Number(f.size) || null, updated_at: new Date().toISOString(),
+      };
+      if (Number(f.size) > DRAWING_INDEX_MAX_BYTES) {
+        const sizeMB = Math.round(Number(f.size) / 104857.6) / 10;
+        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+          { ...base, status: "skipped", attempts, error: `${sizeMB}MB is over the ${DRAWING_INDEX_MAX_BYTES / 1048576}MB indexing cap` },
+          "resolution=merge-duplicates,return=minimal");
+        skippedNow.push({ file: f.name, folderPath: f.folderPath, sizeMB, webUrl: f.webUrl });
+        continue;
+      }
+      // Mark the attempt BEFORE downloading. If the request dies mid-file there
+      // is no later chance to write, and without this a file that always times
+      // out would be retried on every call forever, starving the rest.
+      try {
+        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+          { ...base, status: "pending", attempts }, "resolution=merge-duplicates,return=minimal");
+      } catch (e) {
+        return asText({ project, error: `Could not write to the drawing index: ${String((e as any)?.message ?? e)}` });
+      }
+      opened++;
+      const bar = f.itemId.indexOf("|");
+      const drive = f.itemId.slice(0, bar);
+      const realId = f.itemId.slice(bar + 1);
+      let buf: ArrayBuffer;
+      try {
+        const res = await fetch(
+          `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+          { headers: { Authorization: "Bearer " + (await graphToken()) } },
+        );
+        if (!res.ok) throw new Error(`Graph content ${res.status}`);
+        buf = await res.arrayBuffer();
+      } catch (e) {
+        const msg = String((e as any)?.message ?? e);
+        failedNow.push({ file: f.name, reason: msg });
+        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+          { ...base, status: "failed", attempts, error: msg }, "resolution=merge-duplicates,return=minimal").catch(() => {});
+        continue;
+      }
+      try {
+        const { getDocumentProxy } = await import("unpdf");
+        const pdf: any = await getDocumentProxy(new Uint8Array(buf));
+        const total: number = pdf.numPages;
+        const rows: any[] = [];
+        let textPages = 0;
+        for (let i = 1; i <= total; i++) {
+          const pg = await pdf.getPage(i);
+          const tc = await pg.getTextContent();
+          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+          if (text.length >= 50) textPages++;
+          const tb = text.length >= 50 ? parseTitleBlock(text) : null;
+          rows.push({
+            project_prefix: numPrefix, item_id: f.itemId, page: i,
+            file_name: f.name, folder_path: f.folderPath, web_url: f.webUrl,
+            sheet_no: tb?.sheetNo ?? null, sheet_title: tb?.sheetTitle ?? null,
+            revision: tb?.revision ?? null, revision_date: tb?.revisionDate ?? null,
+            revision_description: tb?.revisionDescription ?? null, title_block_layout: tb?.titleBlockLayout ?? null,
+            text, text_len: text.length, indexed_at: new Date().toISOString(),
+          });
+        }
+        if (rows.length) {
+          await drawingIndexWrite("pms_drawing_text?on_conflict=item_id,page", rows, "resolution=merge-duplicates,return=minimal");
+        }
+        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+          { ...base, status: "done", attempts, pages: total, text_pages: textPages, error: null, indexed_at: new Date().toISOString() },
+          "resolution=merge-duplicates,return=minimal");
+        indexedNow.push({
+          file: f.name, folderPath: f.folderPath, pages: total, textPages,
+          sheets: [...new Set(rows.map((r) => r.sheet_no).filter(Boolean))],
+        });
+      } catch (e) {
+        const msg = `PDF parse failed: ${String((e as any)?.message ?? e)}`;
+        failedNow.push({ file: f.name, reason: msg });
+        await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+          { ...base, status: "failed", attempts, error: msg }, "resolution=merge-duplicates,return=minimal").catch(() => {});
+      }
+    }
+
+    // ── 4. Coverage, from the scope list and the (now updated) file table ────
+    const doneIds = new Set(known.filter((k) => k.status === "done").map((k) => k.item_id));
+    for (const r of indexedNow) doneIds.add(ordered.find((f) => f.name === r.file && f.folderPath === r.folderPath)?.itemId);
+    const filesIndexed = ordered.filter((f) => doneIds.has(f.itemId)).length;
+    const skippedAll = ordered.filter((f) => knownById.get(f.itemId)?.status === "skipped").length + skippedNow.length;
+    const filesPending = Math.max(0, ordered.length - filesIndexed - skippedAll - givenUp.length);
+    const textless = known.filter((k) => k.status === "done" && Number(k.pages) > 0 && Number(k.text_pages) === 0)
+      .map((k) => ({ file: k.file_name, folderPath: k.folder_path }));
+    const coverage = {
+      scope: scope.scopePath,
+      filesInScope: ordered.length,
+      filesIndexed,
+      filesPending,
+      ...(skippedAll ? { filesSkippedForSize: skippedAll } : {}),
+      ...(givenUp.length ? { filesGivenUp: givenUp.map((f) => ({ file: f.name, folderPath: f.folderPath, lastError: knownById.get(f.itemId)?.error })) } : {}),
+      ...(textless.length ? { textlessFiles: textless } : {}),
+      indexedThisCall: indexedNow,
+      ...(skippedNow.length ? { skippedThisCall: skippedNow } : {}),
+      ...(failedNow.length ? { failedThisCall: failedNow } : {}),
+      ...(scope.truncated ? { crawlWarning: "The SharePoint folder crawl hit its request cap, so some files under this path were not seen and filesInScope is an undercount." } : {}),
+      complete: filesPending === 0 && !scope.truncated,
+      ...(filesPending > 0
+        ? { nextStep: `${filesPending} PDF(s) are not indexed yet — a miss below may only mean 'not read yet'. Call search_drawings again with the same query to index more.` }
+        : {}),
+    };
+    if (indexOnly) return asText({ project, coverage, elapsedMs: Date.now() - t0 });
+
+    // ── 5. Search ─────────────────────────────────────────────────────────────
+    let hits: any[];
+    try {
+      hits = await sbRpc("pms_drawing_search", {
+        p_prefix: numPrefix, p_patterns: patterns,
+        p_folder: subfolder ? String(subfolder).replace(/^\/+|\/+$/g, "") : null, p_limit: 120,
+      });
+    } catch (e) {
+      return asText({ project, query, coverage, error: `Search failed: ${String((e as any)?.message ?? e)}` });
+    }
+
+    // Group by sheet, newest revision first, one entry per (revision, set). A set
+    // that ships the same sheet twice (combined book + individual PDF) collapses
+    // to the first copy seen; the duplicate would only repeat the same snippet.
+    const bySheet = new Map<string, any>();
+    for (const h of hits || []) {
+      const key = h.sheet_no || `(no title block) ${h.file_name} p.${h.page}`;
+      const set = drawingSetOf(h.folder_path);
+      const entry = bySheet.get(key) || { sheetNo: h.sheet_no, sheetTitle: h.sheet_title, occurrences: [] };
+      if (!entry.sheetTitle && h.sheet_title) entry.sheetTitle = h.sheet_title;
+      const dupe = entry.occurrences.find((o: any) => o.revision === h.revision && o.set === set);
+      if (dupe) continue;
+      entry.occurrences.push({
+        revision: h.revision, revisionDate: h.revision_date, set,
+        file: h.file_name, page: h.page, folderPath: h.folder_path, webUrl: h.web_url,
+        matches: h.matches, snippet: h.snippet,
+      });
+      bySheet.set(key, entry);
+    }
+    // Sort occurrences by revisionDate descending (labels are unsortable: the
+    // scheme changes mid-project, see extract_sheet_index), then set name.
+    const dateKey = (d: string | null) => {
+      if (!d) return 0;
+      const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(d) || null;
+      if (m) return Number((m[3].length === 2 ? "20" + m[3] : m[3]) + m[1].padStart(2, "0") + m[2].padStart(2, "0"));
+      const m2 = /^(\d{4})\.(\d{2})\.(\d{2})$/.exec(d);
+      return m2 ? Number(m2[1] + m2[2] + m2[3]) : 0;
+    };
+    const sheets = [...bySheet.values()].map((s) => {
+      s.occurrences.sort((a: any, b: any) => dateKey(b.revisionDate) - dateKey(a.revisionDate) || String(b.set).localeCompare(String(a.set)));
+      const first = s.occurrences[s.occurrences.length - 1];
+      return {
+        ...s,
+        revisionsMatched: s.occurrences.length,
+        earliestSeen: first ? { revision: first.revision, revisionDate: first.revisionDate, set: first.set } : null,
+      };
+    });
+    sheets.sort((a, b) => String(a.sheetNo || "~").localeCompare(String(b.sheetNo || "~")));
+
+    return asText({
+      project, query, patterns,
+      count: sheets.length,
+      coverage,
+      sheets,
+      elapsedMs: Date.now() - t0,
+      note: sheets.length
+        ? "Each sheet lists every indexed revision on which the term appears, newest first; earliestSeen is the " +
+          "oldest INDEXED occurrence, which is only 'first appeared' once coverage.complete is true. Absence at an " +
+          "older revision that IS indexed means the term was not on the sheet then."
+        : coverage.complete
+        ? "No indexed sheet carries this text. The index covers every PDF in scope, so this is a real miss on the text layer (graphics-only content, or a scanned sheet, would not be found)."
+        : "No hit YET — the index is incomplete, see coverage.nextStep.",
     });
   },
 });
