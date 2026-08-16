@@ -20,7 +20,13 @@ from engine import expand_list, replace_all, transform, xml_escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.join(HERE, "configs")
-BUILD_DIR = os.path.join(HERE, "build")
+
+# Where the tokenized templates live. Locally that is build/. In production the
+# edge function reads them from the SharePoint 'Tokenized' folder via Graph;
+# point SETTY_TOKENIZED_DIR at the synced folder to exercise that same path.
+# SharePoint appends inert [trash]/*.dat metadata parts on upload but leaves
+# document.xml byte-identical, so tokens survive the round trip.
+BUILD_DIR = os.environ.get("SETTY_TOKENIZED_DIR", os.path.join(HERE, "build"))
 TOKEN_RE = re.compile(r"\{\{[A-Z_0-9]+\}\}")
 
 # What to do with a token the caller never supplied:
