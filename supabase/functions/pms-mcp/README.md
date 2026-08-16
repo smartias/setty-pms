@@ -173,6 +173,47 @@ direct-resolve call or the per-discipline test is removed from `index.ts`:
 node supabase/functions/pms-mcp/sheetIndex.test.mjs
 ```
 
+## `search_drawings`, the drawing text index (Drawing Intelligence phase 2)
+
+"Which sheets show the perchloric fume hood?" is answered from the TEXT LAYER of the
+drawings: phase 0 proved the sheets are Revit vector exports carrying tags, keynotes,
+schedules and the revision block as extractable text. Reading sheets through
+`read_document` to answer it costs ~500k characters per set through the conversation,
+so `search_drawings` puts the text in Postgres once per file and turns the question into
+one indexed query.
+
+- **Tables** (migration `20260816000000_drawing_text_index.sql`): `pms_drawing_text`, one
+  row per SharePoint item + page, with the title-block fields the sheet parser already
+  reads (sheet number, revision, revision date, layout) and a `pg_trgm` GIN index on the
+  text; `pms_drawing_index_files`, one row per PDF with `status`/`attempts`, so a file that
+  fails or is oversized is not retried forever. Both are connector-written CACHES, same
+  posture as `pms_mcp_tree_cache`: not a business record, safe to truncate and rebuild.
+  Nothing here touches the transmittal register.
+- **Lazy fill, never a sweep.** Each call indexes up to `maxFilesToIndex` (default 6,
+  time-boxed at ~28s) not-yet-indexed PDFs under the project's Outgoing folder, newest
+  set first, then searches everything indexed. The result's `coverage` block says how many
+  files are in scope, indexed, pending, skipped for size (>20MB, the combined books that
+  time out on download) or given up after 3 attempts, and `complete` is true only when
+  nothing is pending. A miss with `filesPending > 0` means "not read yet", and the
+  description tells the model to call again. `indexOnly:true` pre-loads a project.
+- **The attempt is recorded BEFORE the download.** If the request dies mid-file there
+  is no later chance to write; without the early mark a file that always times out would
+  be retried on every call and starve the rest.
+- **Search runs in SQL** (`pms_drawing_search`, service_role only). Query words are AND
+  terms, a quoted phrase is one term, and a hyphen or space inside a term matches "-",
+  " " or nothing, so `FCU-11` finds `FCU 11` and `FCU11`. User text is escaped, never regex.
+  Snippet (360 chars around the first hit) and match count are computed with
+  `regexp_instr`/`regexp_count` so a 12k-character page never leaves the database.
+- **Results are grouped by sheet with every indexed revision listed newest first**, each
+  with the set it was issued in (read off the folder path), page, snippet and webUrl.
+  `earliestSeen` is phase 3's "first appeared on Rev N with Bulletin #M", honest only when
+  `coverage.complete` is true. Revisions are ordered by `revisionDate`, never the label,
+  because the label scheme changes mid-project (A/B/C, then 2, 3, 6...).
+
+```bash
+node supabase/functions/pms-mcp/searchDrawings.test.mjs
+```
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.

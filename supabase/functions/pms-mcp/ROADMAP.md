@@ -520,6 +520,16 @@ Owner: unassigned. Raised by Sara 2026-08-06.
 - **P3.12 telemetry** — `pms_mcp_telemetry`, one row per tool call. Found the
   latency problem below within minutes of going live.
 
+### Drawing Intelligence phase 2 (2026-08-16)
+
+- **`search_drawings`** — per-page drawing text index (`pms_drawing_text`,
+  `pms_drawing_index_files`) filled lazily by the tool itself, newest sets
+  first, plus SQL search (`pms_drawing_search`) grouped by sheet with every
+  indexed revision. Answers "which sheets show X" and, once a project's index
+  is complete, "when did X first appear". Phase 3 (history) is largely a
+  view over this table; phase 4 (`view_drawing`) is now targetable because
+  the index names the file and page. See README.
+
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
 Raised by Sara: "there should be a company retrieval tool... I need a WBE
