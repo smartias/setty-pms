@@ -1,0 +1,44 @@
+{
+  "id": "addservice",
+  "title": "Additional Services Agreement",
+  "source": "Setty - Additional Services Agreement TEMPLATE.docx",
+  "output": "addservice.tokenized.docx",
+  "notes": [
+    "This 'template' is really a FILLED Homeport II / McLaren example, so tokenizing means replacing live client values rather than placeholders. Verification below asserts none of them survive.",
+    "The To/Date header block is built on TAB STOPS, not a table. A long {{PROJECT_NAME}} + add-service number overflows the column and the wrap returns to the left margin. 'MADE Bush Terminal Task 1 Add Service 3' (39 chars) breaks; 'Homeport II CA Add Service 7' (28) fits. Real fix is converting that block to a 2-column table.",
+    "Four values were split across XML runs and are NOT literal strings in document.xml: the date, the project/add-service line, the scope title, and the first fee. Only the run-tolerant engine finds them.",
+    "STORAGE_PATH clears the leftover \\\\hq.setty.com marketing path pointing at the old Homeport job."
+  ],
+  "auto": {
+    "Ms. Virginia Westervelt": "{{CONTACT_NAME}}",
+    "Project Manager / Marine Division": "{{CONTACT_TITLE}}",
+    "McLaren Engineering Group (McLaren)": "{{CLIENT_FIRM}}",
+    "MCLAREN ENGINEERING GROUP (MCLAREN)": "{{CLIENT_FIRM_CAPS}}",
+    "vwestervelt@MGMcLaren.com": "{{CONTACT_EMAIL}}",
+    "October 20, 2025": "{{DATE}}",
+    "Homeport II CA Add Service 7": "{{PROJECT_NAME}} Add Service {{ADD_SERVICE_NO}}",
+    "SAPX206004.00": "{{PROJECT_NUMBER}}",
+    "New York": "{{LOCATION}}",
+    "Design Engineering Services": "{{ORIGINAL_CONTRACT_DESCRIPTION}}",
+    "3/26/2020": "{{ORIGINAL_CONTRACT_DATE}}",
+    "MEP/FP/FUELING CA": "{{SCOPE_TITLE}}",
+    "\\\\hq.setty.com\\public\\SA_Marketing\\Marketing Submissions\\Aviation &amp; Transportation\\2024\\11840 (c)(g)(ny) Homeport II Sprinkler Upgrade- Add 1": "{{STORAGE_PATH}}"
+  },
+  "ops": [],
+  "lists": [
+    {"first": "Extension of CA duration from 12 months to approximately 30 months for Homeport Site.",
+     "last":  "Additional (11) site visits for Warehouse CA.",
+     "token": "{{SCOPE_ITEMS}}"},
+    {"first": "The fee for the Homeport Site CA: $96,280.00",
+     "last":  "The fee for the Homeport Warehouse CA: $95,350.00",
+     "token": "{{FEE_LINES}}"},
+    {"first": "Any design revisions from the 100% CD submission",
+     "last":  "Additional reports outside of those already defined in base contract",
+     "token": "{{EXCLUSION_ITEMS}}"}
+  ],
+  "render_lists": ["{{SCOPE_ITEMS}}", "{{FEE_LINES}}", "{{EXCLUSION_ITEMS}}"],
+  "forbid_in_output": [
+    "Westervelt", "McLaren", "MGMcLaren", "Homeport", "SAPX206004",
+    "October 20, 2025", "3/26/2020", "96,280", "95,350", "hq.setty.com"
+  ]
+}

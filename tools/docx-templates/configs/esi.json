@@ -1,0 +1,34 @@
+{
+  "id": "esi",
+  "title": "Engineer's Supplemental Instructions",
+  "source": "Engineer's Supplemental Instructions SA Template.dotx",
+  "output": "esi.tokenized.docx",
+  "notes": [
+    "'[Address]' and '[Name]' are reused for both the owner and the contractor, so the header block is paragraph-scoped.",
+    "Paragraphs 13-15 are the empty body under 'Description:'. Paragraph 13 becomes the {{DESCRIPTION_ITEMS}} anchor, which the RENDERER expands into one styled paragraph per item. 14 and 15 stay as spacing.",
+    "'Copies:' at paragraph 27 takes a single comma-joined {{COPY_RECIPIENTS}} string; the two spare '[Name]' continuation lines at 28-29 are blanked so they cannot render as stray placeholders.",
+    "'Click here to enter text.' at paragraph 21 is a Word content control for wet signing. Left alone deliberately."
+  ],
+  "auto": {},
+  "ops": [
+    {"para": 2,  "find": "[Insert Name]",  "nth": 1, "token": "{{PROJECT_NAME}}"},
+    {"para": 2,  "find": "[###]",          "nth": 1, "token": "{{SI_NUMBER}}"},
+    {"para": 3,  "find": "[Client Name]",  "nth": 1, "token": "{{OWNER_NAME}}"},
+    {"para": 3,  "find": "[Insert Date]",  "nth": 1, "token": "{{DATE_ISSUED}}"},
+    {"para": 4,  "find": "[Address]",      "nth": 1, "token": "{{OWNER_ADDRESS}}"},
+    {"para": 5,  "find": "[Insert ###]",   "nth": 1, "token": "{{PROJECT_NUMBER}}"},
+    {"para": 6,  "find": "[Name]",         "nth": 1, "token": "{{CONTRACTOR_NAME}}"},
+    {"para": 6,  "find": "[Insert Description]", "nth": 1, "token": "{{CONTRACT_FOR}}"},
+    {"para": 7,  "find": "[Address]",      "nth": 1, "token": "{{CONTRACTOR_ADDRESS}}"},
+    {"para": 8,  "find": "[NAME]",         "nth": 1, "token": "{{CONTRACTOR_ATTN}}"},
+
+    {"para": 13, "set": true, "token": "{{DESCRIPTION_ITEMS}}"},
+
+    {"para": 16, "find": "[Insert listing of documents that support description]", "nth": 1, "token": "{{ATTACHMENTS}}"},
+
+    {"para": 27, "find": "[Name]", "nth": 1, "token": "{{COPY_RECIPIENTS}}"}
+  ],
+  "blank_paragraphs": [28, 29],
+  "lists": [],
+  "render_lists": ["{{DESCRIPTION_ITEMS}}"]
+}

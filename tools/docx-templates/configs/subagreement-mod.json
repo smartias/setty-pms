@@ -1,0 +1,27 @@
+{
+  "id": "subagreement-mod",
+  "title": "Sub Agreement Modification",
+  "source": "Sub Agreement Mod_SA.dotx",
+  "output": "subagreement-mod.tokenized.docx",
+  "notes": [
+    "'[Insert Date]' is a SUBSTRING of '[Insert Date in format October 7, 2021]' at paragraph 0, so it is never auto-mapped. Both attachment dates are paragraph-scoped instead.",
+    "Paragraph 62 has a live subconsultant name ('ATI') hard-coded into the boilerplate from whatever job this template was cut from. Tokenized to {{SUB_COMPANY}} so it cannot leak into the next client's document."
+  ],
+  "auto": {
+    "[Insert Date in format October 7, 2021]": "{{DATE}}",
+    "[Name, Title]": "{{RECIPIENT_NAME_TITLE}}",
+    "[Insert Email]": "{{RECIPIENT_EMAIL}}",
+    "[Position]": "{{RECIPIENT_POSITION}}",
+    "[Company Name]": "{{RECIPIENT_COMPANY}}",
+    "[Building Number/Street, Floor]": "{{RECIPIENT_STREET}}",
+    "[City, State Zip Code]": "{{RECIPIENT_CITY_STATE_ZIP}}",
+    "[Insert Name]": "{{SALUTATION_NAME}}",
+    "[Insert File Location]": "{{STORAGE_PATH}}"
+  },
+  "ops": [
+    {"para": 60, "find": "[Insert Date]", "nth": 1, "token": "{{SUB_PROPOSAL_DATE}}"},
+    {"para": 62, "find": "[Insert Date]", "nth": 1, "token": "{{SUB_AGREEMENT_DATE}}"},
+    {"para": 62, "find": "ATI",           "nth": 1, "token": "{{SUB_COMPANY}}"}
+  ],
+  "lists": []
+}
