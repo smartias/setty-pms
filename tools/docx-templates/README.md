@@ -26,6 +26,7 @@ rather than by effort.
 ## Layout
 
     engine.py     substitution engine. stdlib only, ports 1:1 to Deno.
+    sections.py   map and DROP whole Word sections (optional cover page etc).
     probe.py      dump a template's paragraphs/bookmarks to author a config against.
     prep.py       canonical template -> tokenized template, with verification.
     render.py     tokenized template + fields -> finished document. The shippable core.
@@ -60,6 +61,41 @@ xlsx engine for it would solve a problem nobody has.
 `SubagreementTemplate.dotx` — byte-identical `document.xml` (237,380 bytes), differing only
 in SharePoint metadata. **Archived 2026-08-16** to `Templates for MCP Connector/Archive/`,
 which `get_template` does not see, so "sub agreement" now resolves to exactly one file.
+
+## Optional proposal sections
+
+Not every job wants a cover page, a cover letter, or Attachment A. Deleting them by
+hand afterwards was the annoyance. `Template Proposal.docx` already models each as a
+Word **section**, so they drop cleanly:
+
+    python sections.py map  "Template Proposal.docx"
+    python sections.py drop "Template Proposal.docx" out.docx cover_letter
+    python sections.py drop "Template Proposal.docx" out.docx cover_page,terms,firm_info
+
+| Part | Sections | Pages removed |
+|---|---|---|
+| `cover_page` | 0-3 | 1 |
+| `cover_letter` | 4 | 1 |
+| `terms` (Attachment A) | 7 | 4 |
+| `firm_info` (blurb + client list) | 8-11 | 3 |
+
+Sections 5-6 are the proposal body and are never optional. All combinations were
+opened in Word and exported: 13 pages full, 12 without either cover part, 9 without
+terms, 6 body-only, with the correct content first in each.
+
+**Parser trap.** `<w:p .../>` self-closes. An attribute pattern of `[^>]*` greedily
+eats the trailing slash, so a `(/?)` capture group comes back empty and the element
+reads as unclosed. That one mistake made the walker run to the end of the body and
+report the entire 397-child proposal as a single 517 KB "paragraph". Detect
+self-closing by testing that the matched tag ends with `/>`. The body here has 413
+`<w:p>` opens against 411 closes, so this is not hypothetical.
+
+Section indices are positional and verified against the 2026-08-16 template. Re-run
+`sections.py map` after any restructuring; `PROPOSAL_PARTS` is the one place to update.
+
+**Both New York addresses in that template are wrong**: the cover page says
+`139 West 36th Street` (should be 149) and `footer1.xml` / `footer3.xml` still say
+`535 8th Avenue, 21st Floor`, the old office. Correct is `149 W 36th Street, 8th Floor`.
 
 ## The Deno port
 
