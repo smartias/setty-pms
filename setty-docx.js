@@ -376,6 +376,97 @@ export const isEditablePart = (name) =>
 const TEMPLATE_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml";
 const DOCUMENT_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 
+// ── scope HTML -> Word blocks ───────────────────────────────────────────────
+
+const ENTITIES = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“",
+  ndash: "–", mdash: "—", hellip: "…", bull: "•",
+};
+
+function decodeEntities(s) {
+  return s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+    .replace(/&([a-z]+);/gi, (m, n) => (n.toLowerCase() in ENTITIES ? ENTITIES[n.toLowerCase()] : m));
+}
+
+/**
+ * Turn the PMS scope field into ordered blocks for the proposal.
+ *
+ * scopeContent is HTML PASTED OUT OF WORD, so it arrives wrapped in Office
+ * conditional comments, <xml> settings islands and <style> blocks -- the Q226
+ * scope is 75 KB of which most is that. All of it has to go before any text is
+ * read, or the settings leak into the document as prose.
+ *
+ * Returns [{kind: "h"|"p", text}]. A paragraph whose entire content is bold is
+ * treated as a heading, which is how these scopes are actually written.
+ */
+export function htmlToBlocks(html) {
+  if (!html) return [];
+  let s = String(html)
+    // Downlevel-hidden blocks: "<!--[if gte mso 9]> ... <![endif]-->". The
+    // condition is followed by "]>", which is what separates these from the
+    // inline list markers below. Requiring "]>" matters: Word uses BOTH
+    // terminator spellings, and a regex that accepts either will run from a
+    // list marker all the way to the next style block, eating real scope text.
+    .replace(/<!--\[if[^\]]*\]>[\s\S]*?<!\[endif\]-->/gi, "")
+    .replace(/<xml[\s\S]*?<\/xml>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    // "<!--[if !supportLists]-->a.&nbsp;<!--[endif]-->" — the leading "a." is
+    // the visible list letter and is kept; only the comments go.
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<br\s*\/?>/gi, " ");
+
+  // Split on block BOUNDARIES rather than matching <tag>...</tag> pairs.
+  // The Q226 scope wraps everything in a single <h2>, so pair matching would
+  // return the entire 75 KB as one heading.
+  const tags = [...s.matchAll(/<(\/?)(p|div|h[1-6]|li|tr)\b[^>]*>/gi)];
+  const blocks = [];
+  for (let i = 0; i < tags.length; i++) {
+    const t = tags[i];
+    if (t[1] === "/") continue;                       // closing tag
+    const name = t[2].toLowerCase();
+    const from = t.index + t[0].length;
+    const to = i + 1 < tags.length ? tags[i + 1].index : s.length;
+    const raw = s.slice(from, to);
+    const text = decodeEntities(raw.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+    if (!text) continue;                              // wrapper with no own text
+    const inner = raw.replace(/<\/?(span|font|o:p|a)\b[^>]*>/gi, "").trim();
+    const allBold = /^<(b|strong)\b[^>]*>[\s\S]*<\/(b|strong)>\s*$/i.test(inner);
+    blocks.push({ kind: /^h[1-6]$/.test(name) || allBold ? "h" : "p", text });
+  }
+  return blocks;
+}
+
+/**
+ * Replace the {{SCOPE_HEADING}} / {{SCOPE_BODY}} prototype pair with one
+ * cloned paragraph per block.
+ *
+ * The prototypes are real paragraphs lifted from the template, so the cloned
+ * output keeps the section's numbering, indents and fonts exactly. Building
+ * paragraphs from scratch would lose all of it.
+ */
+export function expandBlocks(xml, headingToken, bodyToken, blocks) {
+  const paras = matchAll(PARA_RE, xml);
+  const find = (tok) => paras.find((p) =>
+    matchAll(RUN_RE, p[0]).map((r) => runText(r[0])).join("").includes(tok));
+  const ph = find(headingToken);
+  const pb = find(bodyToken);
+  if (!ph || !pb) return { xml, found: false };
+
+  const out = blocks.map((b) => {
+    const proto = b.kind === "h" ? ph[0] : pb[0];
+    const tok = b.kind === "h" ? headingToken : bodyToken;
+    return replaceInParagraph(proto, tok, xmlEscape(b.text));
+  }).join("");
+
+  const start = Math.min(ph.index, pb.index);
+  const end = Math.max(ph.index + ph[0].length, pb.index + pb[0].length);
+  return { xml: xml.slice(0, start) + out + xml.slice(end), found: true };
+}
+
 // ── the one call the PMS makes ──────────────────────────────────────────────
 
 /**
@@ -385,10 +476,13 @@ const DOCUMENT_CT = "application/vnd.openxmlformats-officedocument.wordprocessin
  * firm_info); `fields` fills {{TOKENS}}. Every part not touched is copied
  * through byte-for-byte, which is what preserves the letterhead.
  */
-export async function buildDocx(arrayBuffer, { omit = [], fields = {}, listTokens = [] } = {}) {
+export async function buildDocx(
+  arrayBuffer, { omit = [], fields = {}, listTokens = [], scopeHtml = "" } = {},
+) {
   const parts = await unzip(arrayBuffer);
   const dec = new TextDecoder(), enc = new TextEncoder();
   let unfilled = [];
+  let scopeBlocks = 0;
 
   for (const [name, bytes] of parts) {
     if (!isEditablePart(name)) continue;
@@ -397,10 +491,19 @@ export async function buildDocx(arrayBuffer, { omit = [], fields = {}, listToken
       parts.set(name, enc.encode(xml.split(TEMPLATE_CT).join(DOCUMENT_CT)));
       continue;
     }
-    if (name === "word/document.xml" && omit.length) xml = dropParts(xml, omit);
+    if (name === "word/document.xml") {
+      if (omit.length) xml = dropParts(xml, omit);
+      // Scope BEFORE token substitution: the prototypes carry the tokens, and
+      // filling them first would leave nothing to clone.
+      const blocks = htmlToBlocks(scopeHtml);
+      if (blocks.length) {
+        const r = expandBlocks(xml, "{{SCOPE_HEADING}}", "{{SCOPE_BODY}}", blocks);
+        if (r.found) { xml = r.xml; scopeBlocks = blocks.length; }
+      }
+    }
     const r = renderDocumentXml(xml, fields, { listTokens });
     if (name === "word/document.xml") unfilled = r.unfilled;
     parts.set(name, enc.encode(r.xml));
   }
-  return { bytes: await zip(parts), unfilled };
+  return { bytes: await zip(parts), unfilled, scopeBlocks };
 }

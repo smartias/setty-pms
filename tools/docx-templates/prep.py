@@ -56,6 +56,43 @@ def collapse(xml, first_text, last_text, token):
     return xml[: spans[i].start()] + proto + xml[spans[j].end():]
 
 
+def collapse_to_prototypes(xml, cfg):
+    """
+    Replace a whole run of body paragraphs with TWO prototype paragraphs, one
+    for a heading and one for body text, each carrying a token.
+
+    Cloning real paragraphs is the only way to keep house formatting here:
+    every paragraph in INCLUDED SERVICES is Heading1 with numbering, and the
+    heading and body differ by indent level, not by style name. Writing new
+    paragraphs from scratch would lose the numbering and the indents.
+
+    The renderer then clones whichever prototype each scope block needs.
+    """
+    import sections as S
+    kids = S.top_level_children(xml)
+    texts = [S.child_text(xml, k).strip() for k in kids]
+    try:
+        lo = next(i for i, t in enumerate(texts) if t.startswith(cfg["after"]))
+        hi = next(i for i, t in enumerate(texts) if t.startswith(cfg["before"]))
+    except StopIteration:
+        raise SystemExit(f"  block_range anchors not found: "
+                         f"{cfg['after']!r} .. {cfg['before']!r}")
+
+    # First two non-empty children after the anchor are the heading and body
+    # examples; use them as the prototypes.
+    body_idx = [i for i in range(lo + 1, hi) if texts[i]]
+    if len(body_idx) < 2:
+        raise SystemExit("  block_range: need at least two non-empty paragraphs")
+    proto_h = set_paragraph_text(kids[body_idx[0]][1] and
+                                 xml[kids[body_idx[0]][1]:kids[body_idx[0]][2]],
+                                 cfg["heading_token"])
+    proto_b = set_paragraph_text(xml[kids[body_idx[1]][1]:kids[body_idx[1]][2]],
+                                 cfg["body_token"])
+    start = kids[lo + 1][1]
+    end = kids[hi - 1][2]
+    return xml[:start] + proto_h + proto_b + xml[end:]
+
+
 def blank(xml, indices):
     spans = list(PARA_RE.finditer(xml))
     out, cursor = [], 0
@@ -123,6 +160,8 @@ def build(cfg):
             xml = blank(xml, set(cfg["blank_paragraphs"]))
         for l in cfg.get("lists", []):
             xml = collapse(xml, l["first"], l["last"], l["token"])
+        if cfg.get("block_range"):
+            xml = collapse_to_prototypes(xml, cfg["block_range"])
         if cfg.get("auto"):
             xml, _ = replace_all(xml, cfg["auto"])
         return xml
