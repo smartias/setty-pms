@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v109-word-proposal-sharepoint";
+    window.__appVersion = "2026-08-16-pms-v110-proposal-salutation-fix";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -21920,6 +21920,10 @@ function proposalDocxFields(project) {
     CLIENT_FIRM: project.clientName || project.prime || "",
     CLIENT_ADDRESS: "",
     CONTACT_NAME: poc.name || "",
+    // "Dear <honorific> <surname>:" -- last whitespace-separated token. Wrong
+    // for a suffix ("Jr.") or a two-word surname, but the alternative was the
+    // EXAMPLE's surname leaking into a real letter, which is what shipped.
+    CONTACT_LAST_NAME: String(poc.name || "").trim().split(/\s+/).pop() || "",
     CONTACT_POSITION: poc.title || "",
     CONTACT_EMAIL: poc.email || "",
     PROJECT_NAME: project.name || "",
