@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-11-pms-v105-proposal-phase3-generate-finalize";
+    window.__appVersion = "2026-08-16-pms-v106-proposal-house-typography";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5754,13 +5754,15 @@ async function createOutlookDraft({ subject, bodyHtml, bodyText, metadata = null
 // ── PROPOSAL ENTITIES + CLASSIC (TRADITIONAL) PRINT THEME ────────────────────
 // Two legal entities sign Setty proposals; the letterhead, address, FPID and
 // default signer differ. project.proposalEntity picks one (default sa-ny).
+// Addresses verified against actually-sent June 2026 proposals (Marketing
+// Submissions samples): NY is 149 W 36th, not the old 535 8th Ave.
 const PROPOSAL_ENTITIES = {
   "sa-ny": {
     legalName: "Setty & Associates, Ltd. PC",
     legalNameCaps: "SETTY & ASSOCIATES, LTD. PC",
-    addressLines: ["535 8th Avenue, 21st Floor", "New York, NY 10018"],
+    addressLines: ["149 W 36th Street, 8th Floor", "New York, NY 10018"],
     phone: "646-253-9000",
-    fpid: "ANY10233R00",
+    fax: "646-224-8497",
     signerName: "Boggarm S. Setty, P.E., ASHRAE Fellow, AEE Fellow",
     signerTitle: "CEO & Founder",
   },
@@ -5769,7 +5771,7 @@ const PROPOSAL_ENTITIES = {
     legalNameCaps: "SETTY & ASSOCIATES, LTD. PC",
     addressLines: ["3040 Williams Drive, Suite 600", "Fairfax, VA 22031"],
     phone: "703-691-2115",
-    fpid: "",
+    fax: "703-691-8084",
     signerName: "Boggarm S. Setty, P.E., ASHRAE Fellow, AEE Fellow",
     signerTitle: "CEO & Founder",
   },
@@ -5778,11 +5780,18 @@ const PROPOSAL_ENTITIES = {
     legalNameCaps: "SETTY & ASSOCIATES INTERNATIONAL, PLLC",
     addressLines: ["1415 Elliot Place, NW", "Washington, DC 20007"],
     phone: "202-393-1523",
-    fpid: "",
+    fax: "",
     signerName: "Boggarm S. Setty, P.E., ASHRAE Fellow, AEE Fellow",
     signerTitle: "CEO & Founder",
   },
 };
+// Office list + disciplines strip, verbatim from the sent-proposal template.
+const PROPOSAL_OFFICE_CITIES = ["New York, NY", "Atlanta, GA", "Baltimore, MD", "Charlottesville, VA", "Fairfax, VA", "Philadelphia, PA", "Washington, DC", "Los Angeles, CA", "Tampa, FL", "Mysore, India", "New Delhi, India"];
+const PROPOSAL_DISCIPLINES_STRIP = "Mechanical | Electrical | Plumbing | Fire Protection Engineering | LEED Modeling | Commissioning | Master Controls Integration | Sustainable Design | Forensic Engineering | Project Management | Building Sciences | Design-Build";
+// Per-project FPID (e.g. ANY12525R00C01, from the marketing submission number).
+function proposalFpid(project) {
+  return String(project.fpid || "").trim();
+}
 function proposalEntity(project) {
   return PROPOSAL_ENTITIES[project.proposalEntity] || PROPOSAL_ENTITIES["sa-ny"];
 }
@@ -5838,7 +5847,10 @@ function classicOpenPrintWindow(project, title, bodyHtml) {
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     @page { size: 8.5in 11in; margin: 1in; }
-    body { font-family: 'Times New Roman', Times, Georgia, serif; font-size: 11pt; color: #000; background: #fff; }
+    /* House style: Calibri 10-12pt, black. Grey and bold are the only emphasis.
+       No Times New Roman, no blue. This theme is the DEFAULT (proposalThemeIsClassic
+       falls back to "classic"), so it is the one most proposals actually use. */
+    body { font-family: Calibri, 'Segoe UI', system-ui, sans-serif; font-size: 11pt; color: #000; background: #fff; }
     .page { width: 8.5in; margin: 0 auto; padding: 0.6in 0.9in; background: #fff; }
     .lh-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
     .lh-logo img { height: 30px; display: block; }
@@ -6058,45 +6070,49 @@ function printFeeProposal(project) {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
     @page :first { margin-top: 0.5in; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
+    /* House style: Calibri 10-12pt, black body text. Grey and bold are the ONLY
+       emphasis. No Times New Roman, no blue, no giant display type.
+       The navy (#1F3864) / blue (#2F5496) / blue-grey (#44546A) palette this
+       theme used to carry is gone; headings are black, secondary text is a
+       neutral grey, and rules are neutral. Do not reintroduce an accent colour. */
+    body { font-family: Calibri, 'Segoe UI', system-ui, sans-serif; font-size: 11pt; color: #000; background: #fff; }
     .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
-    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
-    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
-    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
-    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #CBD5E1; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #000; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 12pt; font-weight: 700; color: #000; text-transform: uppercase; letter-spacing: .04em; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #595959; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #D9D9D9; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
     .meta-block { padding: 12px 16px; }
-    .meta-block:first-child { border-right: 1px solid #CBD5E1; }
-    .meta-label { font-size: 7.5pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
-    .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
-    .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
-    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+    .meta-block:first-child { border-right: 1px solid #D9D9D9; }
+    .meta-label { font-size: 8pt; font-weight: 700; color: #595959; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+    .meta-value { font-size: 11pt; font-weight: 700; color: #000; }
+    .meta-sub { font-size: 9pt; color: #595959; margin-top: 2px; line-height: 1.4; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #000; text-transform: uppercase; letter-spacing: .06em; border-bottom: 1.5px solid #000; padding-bottom: 5px; margin: 24px 0 14px; }
 
-    /* Fee table — understated. No solid navy fill on the header; just an
-       underline. Tabular numerals align the dollar amounts cleanly without
-       resorting to monospace. */
-    .fee-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10pt; }
-    .fee-table thead th { text-align: left; font-size: 8pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px; border-bottom: 1.5px solid #1F3864; background: transparent; }
+    /* Fee table — understated. No fill on the header, just an underline.
+       Tabular numerals align the dollar amounts without resorting to monospace. */
+    .fee-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10.5pt; }
+    .fee-table thead th { text-align: left; font-size: 8.5pt; font-weight: 700; color: #595959; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px; border-bottom: 1.5px solid #000; background: transparent; }
     .fee-table thead th.right { text-align: right; }
     .fee-table tbody td { padding: 9px 12px; border-bottom: 1px solid #E7E6E6; }
-    .fee-table tbody td.right { text-align: right; font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; }
-    .fee-table tr.total td { font-weight: 700; font-size: 10.5pt; border-top: 1.5px solid #1F3864; border-bottom: 2px solid #1F3864; padding: 12px 12px; }
+    .fee-table tbody td.right { text-align: right; font-weight: 700; color: #000; font-variant-numeric: tabular-nums; }
+    .fee-table tr.total td { font-weight: 700; font-size: 11pt; border-top: 1.5px solid #000; border-bottom: 2px solid #000; padding: 12px 12px; }
 
-    /* Total fee callout — replaces the giant solid-blue $X box. Subtle bordered
-       light-gray block with right-sized type. Reads as a summary line, not a banner. */
-    .total-callout { margin: 24px 0 18px; padding: 14px 18px; background: #f8f9fb; border: 1px solid #CBD5E1; border-radius: 4px; display: flex; justify-content: space-between; align-items: baseline; }
-    .total-callout .label { font-size: 9pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .08em; }
-    .total-callout .value { font-size: 16pt; font-weight: 700; color: #1F3864; font-variant-numeric: tabular-nums; }
+    /* Total fee callout — a summary line, not a banner. Neutral grey block,
+       bold black figure at body size rather than display size. */
+    .total-callout { margin: 24px 0 18px; padding: 14px 18px; background: #F2F2F2; border: 1px solid #D9D9D9; border-radius: 4px; display: flex; justify-content: space-between; align-items: baseline; }
+    .total-callout .label { font-size: 9pt; font-weight: 700; color: #595959; text-transform: uppercase; letter-spacing: .08em; }
+    .total-callout .value { font-size: 12pt; font-weight: 700; color: #000; font-variant-numeric: tabular-nums; }
 
-    .notes-block { margin-top: 24px; padding: 12px 16px; background: #f8f9fb; border-left: 3px solid #2F5496; border-radius: 0 4px 4px 0; font-size: 9.5pt; line-height: 1.7; color: #44546A; }
-    .notes-block strong { color: #1F3864; font-weight: 700; font-size: 10pt; }
+    .notes-block { margin-top: 24px; padding: 12px 16px; background: #F2F2F2; border-left: 3px solid #595959; border-radius: 0 4px 4px 0; font-size: 10pt; line-height: 1.7; color: #595959; }
+    .notes-block strong { color: #000; font-weight: 700; font-size: 10pt; }
 
     .sig-grid { margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 36px; page-break-inside: avoid; }
-    .sig-block { border-top: 1.5px solid #1F3864; padding-top: 8px; }
-    .sig-name { font-size: 9pt; color: #1F3864; font-weight: 600; }
-    .sig-role { font-size: 8.5pt; color: #44546A; margin-top: 2px; }
-    .sig-date { margin-top: 18px; font-size: 8.5pt; color: #44546A; }
+    .sig-block { border-top: 1.5px solid #000; padding-top: 8px; }
+    .sig-name { font-size: 10pt; color: #000; font-weight: 700; }
+    .sig-role { font-size: 9pt; color: #595959; margin-top: 2px; }
+    .sig-date { margin-top: 18px; font-size: 9pt; color: #595959; }
 
-    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #D9D9D9; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8.5pt; color: #595959; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
     @media print {
       body { background: #fff; }
@@ -21590,28 +21606,28 @@ function printProposalBundle(project) {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
     @page :first { margin-top: 0.5in; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
+    body { font-family: Calibri, 'Segoe UI', system-ui, sans-serif; font-size: 11pt; color: #000; background: #fff; }
     .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
     .page-break { page-break-before: always; }
 
     /* Header (shared across sections) */
-    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
-    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
-    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #000000; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 12pt; font-weight: 700; color: #000000; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #595959; text-align: right; margin-top: 4px; line-height: 1.5; }
 
     /* Meta grid */
-    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #CBD5E1; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #D9D9D9; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
     .meta-block { padding: 12px 16px; }
-    .meta-block:first-child { border-right: 1px solid #CBD5E1; }
-    .meta-label { font-size: 7.5pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
-    .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
-    .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
-    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+    .meta-block:first-child { border-right: 1px solid #D9D9D9; }
+    .meta-label { font-size: 8.5pt; font-weight: 700; color: #595959; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+    .meta-value { font-size: 10.5pt; font-weight: 600; color: #000000; }
+    .meta-sub { font-size: 8.5pt; color: #595959; margin-top: 2px; line-height: 1.4; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #000000; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #000000; padding-bottom: 5px; margin: 24px 0 14px; }
 
     /* Scope body */
-    .scope-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
-    .scope-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
-    .scope-body h3 { font-size: 10.5pt; font-weight: 700; color: #44546A; margin: 14px 0 6px; }
+    .scope-body h1 { font-size: 12pt; font-weight: 700; color: #000000; margin: 18px 0 8px; }
+    .scope-body h2 { font-size: 11pt; font-weight: 700; color: #000000; margin: 16px 0 7px; }
+    .scope-body h3 { font-size: 10.5pt; font-weight: 700; color: #595959; margin: 14px 0 6px; }
     .scope-body p { margin-bottom: 9px; line-height: 1.65; }
     .scope-body ul, .scope-body ol { margin: 6px 0 10px 22px; }
     .scope-body li { margin-bottom: 4px; line-height: 1.6; }
@@ -21619,37 +21635,37 @@ function printProposalBundle(project) {
 
     /* Fee table */
     .fee-table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 10pt; }
-    .fee-table thead th { text-align: left; font-size: 8pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px; border-bottom: 1.5px solid #1F3864; background: transparent; }
+    .fee-table thead th { text-align: left; font-size: 8pt; font-weight: 700; color: #595959; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px; border-bottom: 1.5px solid #000000; background: transparent; }
     .fee-table thead th.right { text-align: right; }
     .fee-table tbody td { padding: 9px 12px; border-bottom: 1px solid #E7E6E6; }
-    .fee-table tbody td.right { text-align: right; font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; }
-    .fee-table tr.total td { font-weight: 700; font-size: 10.5pt; border-top: 1.5px solid #1F3864; border-bottom: 2px solid #1F3864; padding: 12px 12px; }
-    .total-callout { margin: 24px 0 18px; padding: 14px 18px; background: #f8f9fb; border: 1px solid #CBD5E1; border-radius: 4px; display: flex; justify-content: space-between; align-items: baseline; }
-    .total-callout .label { font-size: 9pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .08em; }
-    .total-callout .value { font-size: 16pt; font-weight: 700; color: #1F3864; font-variant-numeric: tabular-nums; }
-    .notes-block { margin-top: 24px; padding: 12px 16px; background: #f8f9fb; border-left: 3px solid #2F5496; border-radius: 0 4px 4px 0; font-size: 9.5pt; line-height: 1.7; color: #44546A; }
-    .notes-block strong { color: #1F3864; font-weight: 700; font-size: 10pt; }
+    .fee-table tbody td.right { text-align: right; font-weight: 600; color: #000000; font-variant-numeric: tabular-nums; }
+    .fee-table tr.total td { font-weight: 700; font-size: 10.5pt; border-top: 1.5px solid #000000; border-bottom: 2px solid #000000; padding: 12px 12px; }
+    .total-callout { margin: 24px 0 18px; padding: 14px 18px; background: #F2F2F2; border: 1px solid #D9D9D9; border-radius: 4px; display: flex; justify-content: space-between; align-items: baseline; }
+    .total-callout .label { font-size: 9pt; font-weight: 700; color: #595959; text-transform: uppercase; letter-spacing: .08em; }
+    .total-callout .value { font-size: 12pt; font-weight: 700; color: #000000; font-variant-numeric: tabular-nums; }
+    .notes-block { margin-top: 24px; padding: 12px 16px; background: #F2F2F2; border-left: 3px solid #000000; border-radius: 0 4px 4px 0; font-size: 9.5pt; line-height: 1.7; color: #595959; }
+    .notes-block strong { color: #000000; font-weight: 700; font-size: 10pt; }
     .sig-grid { margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 36px; page-break-inside: avoid; }
-    .sig-block { border-top: 1.5px solid #1F3864; padding-top: 8px; }
-    .sig-name { font-size: 9pt; color: #1F3864; font-weight: 600; }
-    .sig-role { font-size: 8.5pt; color: #44546A; margin-top: 2px; }
-    .sig-date { margin-top: 18px; font-size: 8.5pt; color: #44546A; }
+    .sig-block { border-top: 1.5px solid #000000; padding-top: 8px; }
+    .sig-name { font-size: 9pt; color: #000000; font-weight: 600; }
+    .sig-role { font-size: 8.5pt; color: #595959; margin-top: 2px; }
+    .sig-date { margin-top: 18px; font-size: 8.5pt; color: #595959; }
 
     /* Terms body */
-    .terms-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
+    .terms-body h1 { font-size: 12pt; font-weight: 700; color: #000000; margin: 18px 0 8px; }
     .terms-body h1:first-child { margin-top: 0; }
-    .terms-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
+    .terms-body h2 { font-size: 11pt; font-weight: 700; color: #000000; margin: 16px 0 7px; }
     .terms-body p { margin-bottom: 9px; line-height: 1.65; }
     .terms-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
 
     /* Rates table */
-    .rates-intro { font-size: 10pt; color: #44546A; line-height: 1.6; margin-bottom: 24px; }
+    .rates-intro { font-size: 10pt; color: #595959; line-height: 1.6; margin-bottom: 24px; }
     .rates-table { width: 100%; border-collapse: collapse; font-size: 10.5pt; }
     .rates-table td { padding: 10px 12px; border-bottom: 1px solid #E7E6E6; vertical-align: top; }
     .rates-table td.role { font-weight: 500; color: #1a1a1a; width: 32%; }
-    .rates-table td.rate { font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; width: 18%; text-align: right; padding-right: 24px; }
+    .rates-table td.rate { font-weight: 600; color: #000000; font-variant-numeric: tabular-nums; width: 18%; text-align: right; padding-right: 24px; }
 
-    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #D9D9D9; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #595959; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
     @media print {
       body { background: #fff; }
@@ -21866,9 +21882,9 @@ function printScopeOfServices(project) {
       margin-top: 0.5in;
     }
     body {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      font-size: 10.5pt;
-      color: #1a1a1a;
+      font-family: Calibri, 'Segoe UI', system-ui, sans-serif;
+      font-size: 11pt;
+      color: #000;
       background: #fff;
     }
     .page {
@@ -21882,25 +21898,25 @@ function printScopeOfServices(project) {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
-      border-bottom: 3px solid #1F3864;
+      border-bottom: 3px solid #000000;
       padding-bottom: 16px;
       margin-bottom: 28px;
     }
     .logo-text { font-size: 28pt; font-weight: 900; color: #C00000; letter-spacing: 2px; line-height: 1; }
-    .logo-sub { font-size: 7.5pt; color: #44546A; margin-top: 4px; letter-spacing: 1px; }
-    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
-    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
-    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #CBD5E1; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
+    .logo-sub { font-size: 8.5pt; color: #595959; margin-top: 4px; letter-spacing: 1px; }
+    .doc-title { font-size: 12pt; font-weight: 700; color: #000000; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #595959; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid #D9D9D9; border-radius: 4px; margin-bottom: 28px; overflow: hidden; }
     .meta-block { padding: 12px 16px; }
-    .meta-block:first-child { border-right: 1px solid #CBD5E1; }
-    .meta-label { font-size: 7.5pt; font-weight: 700; color: #44546A; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
-    .meta-value { font-size: 10.5pt; font-weight: 600; color: #1F3864; }
-    .meta-sub { font-size: 8.5pt; color: #44546A; margin-top: 2px; line-height: 1.4; }
-    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+    .meta-block:first-child { border-right: 1px solid #D9D9D9; }
+    .meta-label { font-size: 8.5pt; font-weight: 700; color: #595959; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+    .meta-value { font-size: 10.5pt; font-weight: 600; color: #000000; }
+    .meta-sub { font-size: 8.5pt; color: #595959; margin-top: 2px; line-height: 1.4; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #000000; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #000000; padding-bottom: 5px; margin: 24px 0 14px; }
     /* Rich text content styles */
-    .scope-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
-    .scope-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
-    .scope-body h3 { font-size: 10.5pt; font-weight: 700; color: #44546A; margin: 14px 0 6px; }
+    .scope-body h1 { font-size: 12pt; font-weight: 700; color: #000000; margin: 18px 0 8px; }
+    .scope-body h2 { font-size: 11pt; font-weight: 700; color: #000000; margin: 16px 0 7px; }
+    .scope-body h3 { font-size: 10.5pt; font-weight: 700; color: #595959; margin: 14px 0 6px; }
     .scope-body p { margin-bottom: 9px; line-height: 1.65; }
     .scope-body ul { margin: 6px 0 10px 22px; }
     .scope-body ol { margin: 6px 0 10px 22px; }
@@ -21912,7 +21928,7 @@ function printScopeOfServices(project) {
        font-family, and background on every span. !important wins over inline
        styles so legacy scopes also render cleanly without re-typing. */
     .scope-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
-    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #D9D9D9; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #595959; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
     @media print {
       body { background: #fff; }
@@ -22159,20 +22175,20 @@ function printTermsAndConditions(project) {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
     @page :first { margin-top: 0.5in; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
+    body { font-family: Calibri, 'Segoe UI', system-ui, sans-serif; font-size: 11pt; color: #000; background: #fff; }
     .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
-    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
-    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
-    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #000000; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 12pt; font-weight: 700; color: #000000; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #595959; text-align: right; margin-top: 4px; line-height: 1.5; }
     /* Body — matches SOW h1/h2/p sizes so the two documents read as siblings. */
-    .terms-body h1 { font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
+    .terms-body h1 { font-size: 12pt; font-weight: 700; color: #000000; margin: 18px 0 8px; }
     .terms-body h1:first-child { margin-top: 0; }
-    .terms-body h2 { font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
+    .terms-body h2 { font-size: 11pt; font-weight: 700; color: #000000; margin: 16px 0 7px; }
     .terms-body p { margin-bottom: 9px; line-height: 1.65; }
     /* Strip rogue inline styles from project-specific edits so legacy paste
        artifacts don't break the look. */
     .terms-body * { color: inherit !important; background-color: transparent !important; font-family: inherit !important; }
-    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #D9D9D9; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #595959; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
     @media print {
       body { background: #fff; }
@@ -22506,19 +22522,19 @@ function printHourlyRates(project) {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     @page { size: 8.5in 11in; margin: 1.25in 1in 1.25in 1in; }
     @page :first { margin-top: 0.5in; }
-    body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 10.5pt; color: #1a1a1a; background: #fff; }
+    body { font-family: Calibri, 'Segoe UI', system-ui, sans-serif; font-size: 11pt; color: #000; background: #fff; }
     .page { width: 8.5in; min-height: 11in; margin: 0 auto; padding: 0.5in 1in 1.25in 1in; background: #fff; }
-    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1F3864; padding-bottom: 16px; margin-bottom: 28px; }
-    .doc-title { font-size: 18pt; font-weight: 700; color: #2F5496; text-align: right; }
-    .doc-sub { font-size: 9pt; color: #44546A; text-align: right; margin-top: 4px; line-height: 1.5; }
-    .intro { font-size: 10pt; color: #44546A; line-height: 1.6; margin-bottom: 24px; }
-    .intro strong { color: #1F3864; }
-    .section-heading { font-size: 11pt; font-weight: 700; color: #1F3864; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #1F3864; padding-bottom: 5px; margin: 24px 0 14px; }
+    .doc-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #000000; padding-bottom: 16px; margin-bottom: 28px; }
+    .doc-title { font-size: 12pt; font-weight: 700; color: #000000; text-align: right; }
+    .doc-sub { font-size: 9pt; color: #595959; text-align: right; margin-top: 4px; line-height: 1.5; }
+    .intro { font-size: 10pt; color: #595959; line-height: 1.6; margin-bottom: 24px; }
+    .intro strong { color: #000000; }
+    .section-heading { font-size: 11pt; font-weight: 700; color: #000000; text-transform: uppercase; letter-spacing: .06em; border-bottom: 2px solid #000000; padding-bottom: 5px; margin: 24px 0 14px; }
     .rates-table { width: 100%; border-collapse: collapse; font-size: 10.5pt; }
     .rates-table td { padding: 10px 12px; border-bottom: 1px solid #E7E6E6; vertical-align: top; }
     .rates-table td.role { font-weight: 500; color: #1a1a1a; width: 32%; }
-    .rates-table td.rate { font-weight: 600; color: #1F3864; font-variant-numeric: tabular-nums; width: 18%; text-align: right; padding-right: 24px; }
-    .doc-footer { margin-top: 40px; border-top: 1px solid #CBD5E1; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #44546A; }
+    .rates-table td.rate { font-weight: 600; color: #000000; font-variant-numeric: tabular-nums; width: 18%; text-align: right; padding-right: 24px; }
+    .doc-footer { margin-top: 40px; border-top: 1px solid #D9D9D9; padding-top: 10px; display: flex; justify-content: space-between; font-size: 8pt; color: #595959; }
     .print-btn { position: fixed; bottom: 20px; right: 20px; background: #C00000; color: #fff; border: none; padding: 10px 22px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,.2); z-index: 999; }
     @media print {
       body { background: #fff; }
@@ -23742,8 +23758,8 @@ function ScopeView({ project, onChange, clients = [] }) {
                  instead of picking up the dark-theme inherited color. */
               .terms-editor { font-family: 'Calibri', 'Trebuchet MS', sans-serif; font-size: 10pt; line-height: 1.65; }
               .terms-editor p  { font-family: inherit; font-size: 10pt; line-height: 1.65; margin: 0 0 9px; }
-              .terms-editor h1 { font-family: inherit; font-size: 13pt; font-weight: 700; color: #1F3864; margin: 18px 0 8px; }
-              .terms-editor h2 { font-family: inherit; font-size: 11.5pt; font-weight: 700; color: #2F5496; margin: 16px 0 7px; }
+              .terms-editor h1 { font-family: inherit; font-size: 12pt; font-weight: 700; color: #000000; margin: 18px 0 8px; }
+              .terms-editor h2 { font-family: inherit; font-size: 11pt; font-weight: 700; color: #000000; margin: 16px 0 7px; }
             `}</style>
             <div
               ref={termsEditorRef}
