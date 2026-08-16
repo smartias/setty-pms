@@ -1,0 +1,66 @@
+{
+  "id": "proposal",
+  "title": "Fee Proposal",
+  "source": "Template Proposal.docx",
+  "source_path": "build/proposal/TemplateProposal.docx",
+  "output": "proposal.tokenized.docx",
+  "notes": [
+    "Like the add service template, this is a FILLED example (212 Architects / SUNY Maritime Heritage Hall Renovation, March 2023), not a blank. Tokenizing means replacing live client values, so `forbid_in_output` asserts none survive.",
+    "HYBRID on purpose. This template carries 52 named bookmarks from an older Word automation, which are the best inventory of what the fields ARE and disambiguate a value appearing in several places. But their spans are NOT always the whole value, so short/ambiguous fields go through bookmarks and truncated ones through value matching.",
+    "THE TEMPLATE TRUNCATES THE PROJECT NAME, differently in three places: the cover reads 'SUNY Maritime Heritage Hall Renovation', the letter subject stops at '...Heritage Hal' and the body header at '...Hall Reno'. That is a live defect visible on every proposal. All three map to {{PROJECT_NAME}}, so tokenizing repairs it. Longest-first ordering matters or the short variants match inside the long one.",
+    "Eight bookmarks are collapsed to zero length and cannot be written into: txtClientCityLetter, txtClientStateLetter, txtClientZipLetter, txtProjectZip, txtClientCity, txtClientState, txtClientZip. The example never filled them. They need re-creating in Word before those fields can be used.",
+    "CoverCity1-8 are the office list, static branding rather than per-project, so they are left alone.",
+    "FEES ARE NOT TOKENIZED in this pass. txtDDFee holds 'Design Manual$12,240.00' -- label and amount in one bookmark -- and the fee table depends on the unresolved rate-table conflict. Separate job.",
+    "The example uses two different contact emails (KARCH@ on the letter, KSchmitt@ in the body). Both map to {{CONTACT_EMAIL}}.",
+    "Three different dates in the example (cover 3/31, letter 3/21, body 3/16) all map to {{DATE}}."
+  ],
+
+  "bookmarks": {
+    "txtClientNameCover": "{{CLIENT_FIRM}}",
+    "txtClientNameLetter": "{{CLIENT_FIRM}}",
+    "txtClientName": "{{CLIENT_FIRM}}",
+
+    "txtProjectCityCover": "{{PROJECT_CITY}}",
+    "txtProjectCityLetter": "{{PROJECT_CITY}}",
+    "txtProjectCity": "{{PROJECT_CITY}}",
+    "txtProjectStateCover": "{{PROJECT_STATE}}",
+    "txtProjectStateLetter": "{{PROJECT_STATE}}",
+    "txtProjectState": "{{PROJECT_STATE}}",
+    "txtProjectAddress": "{{PROJECT_LOCATION}}",
+
+    "txtPOCTitleLett1": "{{CONTACT_HONORIFIC}}",
+    "txtPOCTitleLett2": "{{CONTACT_HONORIFIC}}",
+    "txtPOCTitle3": "{{CONTACT_HONORIFIC}}",
+    "txtPOCPositionLetter": "{{CONTACT_POSITION}}",
+    "txtClientPOCPosition": "{{CONTACT_POSITION}}",
+    "txtPOCEmailLetter": "{{CONTACT_EMAIL}}",
+    "txtClientPOCEmail": "{{CONTACT_EMAIL}}",
+    "txtClientAddressLetter": "{{CLIENT_ADDRESS}}",
+
+    "txtCompanyCover": "{{SETTY_ENTITY}}",
+    "TxtCompany_Letter": "{{SETTY_ENTITY}}",
+    "txtCityStateZipCover": "{{SETTY_CITY_STATE_ZIP}}",
+    "txtPhoneCover": "{{SETTY_PHONE}}",
+    "txtFaxCover": "{{SETTY_FAX}}",
+    "TxtSettyPres_Letter": "{{SETTY_SIGNER}}",
+    "txtSettyPres_Letter_Position": "{{SETTY_SIGNER_TITLE}}"
+  },
+
+  "auto": {
+    "SUNY Maritime Heritage Hall Renovation": "{{PROJECT_NAME}}",
+    "SUNY Maritime Heritage Hall Reno": "{{PROJECT_NAME}}",
+    "SUNY Maritime Heritage Hal": "{{PROJECT_NAME}}",
+    "Jane Architect": "{{CONTACT_NAME}}",
+    "March 31, 2023": "{{DATE}}",
+    "March 21, 2023": "{{DATE}}",
+    "March 16, 2023": "{{DATE}}",
+    "190 Glen Street": "{{CLIENT_ADDRESS}}",
+    "This project consists of the renovation of the entire 3rd floor and the lobby portion of the 1st floor of Heritage Hall.  Our proposal is based a scope of work as outlined in the RFP dated February 10, 2023 with a construction budget of $1.8M.": "{{PROJECT_DESCRIPTION}}"
+  },
+
+  "forbid_in_output": [
+    "212 Architects", "SUNY Maritime", "Jane Architect", "KARCH@",
+    "KSchmitt@", "212architects.com", "March 31, 2023", "March 21, 2023",
+    "March 16, 2023", "190 Glen Street", "Heritage Hall", "February 10, 2023", "$1.8M"
+  ]
+}
