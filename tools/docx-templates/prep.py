@@ -27,6 +27,7 @@ from engine import (CONTENT_TYPES, INSTRUCTION_MARKERS, PARA_RE, RUN_RE,
                     mark_fields_dirty, replace_all, run_text,
                     set_paragraph_text, strip_instruction_textboxes,
                     template_to_document, transform)
+import bookmarks
 from probe import TEMPLATE_DIR
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +71,8 @@ def expected_tokens(cfg):
     toks = set()
     for v in cfg.get("auto", {}).values():
         toks.update(TOKEN_RE.findall(v))
+    for v in cfg.get("bookmarks", {}).values():
+        toks.update(TOKEN_RE.findall(v))
     for o in cfg.get("ops", []):
         toks.update(TOKEN_RE.findall(o["token"]))
     for l in cfg.get("lists", []):
@@ -78,12 +81,16 @@ def expected_tokens(cfg):
 
 
 def build(cfg):
-    src = os.path.join(TEMPLATE_DIR, cfg["source"])
+    # source_path overrides the SharePoint templates folder, for a template that
+    # is not filed there yet (the proposal).
+    src = (os.path.join(HERE, cfg["source_path"]) if cfg.get("source_path")
+           else os.path.join(TEMPLATE_DIR, cfg["source"]))
     dst = os.path.join(BUILD_DIR, cfg["output"])
     if not os.path.exists(src):
         raise SystemExit(f"  source not found: {src}")
 
     stripped = {"boxes": 0, "fields": 0}
+    report = {}
 
     def fn(name, xml):
         if name == CONTENT_TYPES:
@@ -102,6 +109,14 @@ def build(cfg):
         if name != "word/document.xml":
             return xml
 
+        # Bookmarks BEFORE value matching: their spans are exact, and doing
+        # them first means the value pass cannot chew through a field that a
+        # bookmark already owns. Value matching then catches the cases where a
+        # bookmark covers only PART of its value -- this template truncates the
+        # project name mid-word in two of three places.
+        if cfg.get("bookmarks"):
+            xml, bm_filled, bm_missing, bm_empty = bookmarks.apply(xml, cfg["bookmarks"])
+            report["bookmarks"] = (len(bm_filled), bm_missing, bm_empty)
         if cfg.get("ops"):
             xml, _ = apply_ops(xml, cfg["ops"])
         if cfg.get("blank_paragraphs"):
@@ -156,7 +171,15 @@ def build(cfg):
           f"parts {len(parts_out)}/{len(parts_in)}   "
           f"look {len(look) - len(changed)}/{len(look)}   "
           f"ct:{'docx' if ct_ok else 'TEMPLATE'}   "
-          f"stripped {stripped['boxes']} boxes, refreshed {stripped['fields']} fields")
+          f"stripped {stripped['boxes']} boxes, refreshed {stripped['fields']} fields"
+          + (f"   bookmarks {report['bookmarks'][0]}" if report.get("bookmarks") else ""))
+    if report.get("bookmarks"):
+        _, bm_missing, bm_empty = report["bookmarks"]
+        if bm_missing:
+            print(f"        BOOKMARKS NOT FOUND: {', '.join(bm_missing)}")
+        if bm_empty:
+            print(f"        bookmarks collapsed to zero length, cannot fill: "
+                  f"{', '.join(bm_empty)}")
     if survived:
         print(f"        INSTRUCTION TEXT SURVIVED: {', '.join(survived)}")
     if lost:

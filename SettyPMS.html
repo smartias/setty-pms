@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v107-word-proposal-sections";
+    window.__appVersion = "2026-08-16-pms-v108-word-proposal-scope-help";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -23504,6 +23504,27 @@ function ScopeView({ project, onChange, clients = [] }) {
           )}
           <Btn onClick={() => printScopeOfServices(project)}>🖨 Print</Btn>
           <Btn onClick={() => exportProposalDocx(project)} title="Build a Word proposal, choosing which sections to include.">📄 Word</Btn>
+        </div>
+      </div>
+
+      {/* What the two output buttons actually do. Worth spelling out: they
+          produce different artefacts from the same scope, and the section
+          picker is not discoverable from the button label alone. */}
+      <div style={{ border: "1px solid " + P.border, borderRadius: 8, padding: "10px 14px",
+                    marginBottom: 16, fontSize: 12, color: P.textMuted, lineHeight: 1.6 }}>
+        <div style={{ fontWeight: 700, color: P.text, marginBottom: 4 }}>Getting this out the door</div>
+        <div>
+          <b>🖨 Print</b> gives you the scope on letterhead as a PDF, straight from what is on this screen.
+        </div>
+        <div>
+          <b>📄 Word</b> builds the full proposal as an editable <code>.docx</code> and lets you
+          tick which parts to include, so you are not deleting a cover letter by hand afterwards.
+          Cover page, cover letter, Attachment A and the firm info sheet are each optional.
+        </div>
+        <div style={{ marginTop: 6 }}>
+          Everything you write above flows into both, so get the scope right here first. Any field
+          the app cannot fill is left visible in the document as <code>{"{{LIKE_THIS}}"}</code> rather
+          than blanked, so it is obvious what still needs your attention in Word.
         </div>
       </div>
 
