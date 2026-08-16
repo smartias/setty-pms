@@ -1,0 +1,40 @@
+{
+  "id": "substantial-completion",
+  "title": "Certificate of Substantial Completion",
+  "source": "Certificate of Substantial Completion Template SA Template.dotx",
+  "output": "substantial-completion.tokenized.docx",
+  "notes": [
+    "Every fill-in is a GENERIC placeholder reused for different fields, so all mappings are paragraph-scoped. '[Insert Date]' means ISSUE DATE at paragraph 1 occurrence 1 and CONTRACT DATE at occurrence 2.",
+    "Bracketed and unbracketed forms coexist: the header block uses '[Insert Name]', the signature block uses bare 'Insert Name'. Paragraph scoping keeps them apart.",
+    "The five numbered Owner responsibilities are fixed boilerplate and are not tokenized."
+  ],
+  "auto": {},
+  "ops": [
+    {"para": 1,  "find": "[Insert Date]", "nth": 1, "token": "{{ISSUE_DATE}}"},
+    {"para": 1,  "find": "[Insert Date]", "nth": 2, "token": "{{CONTRACT_DATE}}"},
+
+    {"para": 3,  "find": "[Insert Name]",   "nth": 1, "token": "{{PROJECT_NAME}}"},
+    {"para": 3,  "find": "[Insert Number]", "nth": 1, "token": "{{PROJECT_NUMBER}}"},
+
+    {"para": 5,  "find": "[Insert Address]", "nth": 1, "token": "{{PROJECT_ADDRESS}}"},
+    {"para": 5,  "find": "[Insert Name]",    "nth": 1, "token": "{{CONTRACTOR_NAME}}"},
+
+    {"para": 7,  "find": "[Insert Name]",    "nth": 1, "token": "{{OWNER_NAME}}"},
+    {"para": 7,  "find": "[Insert Address]", "nth": 1, "token": "{{OWNER_ADDRESS}}"},
+    {"para": 9,  "find": "[Insert Address]", "nth": 1, "token": "{{OWNER_ADDRESS_LINE_2}}"},
+
+    {"para": 11, "find": "[Insert description here]", "nth": 1, "token": "{{PORTION_DESCRIPTION}}"},
+    {"para": 13, "find": "[Insert date here]",        "nth": 1, "token": "{{SUBSTANTIAL_COMPLETION_DATE}}"},
+
+    {"para": 20, "find": "Insert Name", "nth": 1, "token": "{{DESIGN_FIRM_NAME}}"},
+    {"para": 20, "find": "Insert Date", "nth": 1, "token": "{{DESIGN_FIRM_DATE}}"},
+    {"para": 24, "find": "Insert Name", "nth": 1, "token": "{{CONTRACTOR_SIGN_NAME}}"},
+    {"para": 24, "find": "Insert Date", "nth": 1, "token": "{{CONTRACTOR_SIGN_DATE}}"},
+    {"para": 26, "find": "Insert Date", "nth": 1, "token": "{{POSSESSION_DATE}}"},
+    {"para": 27, "find": "Insert Name", "nth": 1, "token": "{{OWNER_SIGN_NAME}}"},
+    {"para": 27, "find": "Insert Date", "nth": 1, "token": "{{OWNER_SIGN_DATE}}"},
+
+    {"para": 36, "find": "[List of items to be completed or corrected]", "nth": 1, "token": "{{ATTACHMENT_DESCRIPTION}}"}
+  ],
+  "lists": []
+}

@@ -105,7 +105,7 @@
 <script src="setty-auth.js"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
-// Setty Admin Console v11 (v2 added System Guide + Claude/MCP runbook tabs;
+// Setty Admin Console v12 (v2 added System Guide + Claude/MCP runbook tabs;
 // v3 made the whole console ADMIN-ONLY — first Phase 5 slice;
 // v4 adds the Phase 5 backbone: 7-role taxonomy, the role×capability
 // permission matrix (pms_role_permissions) and per-project overrides
@@ -155,6 +155,18 @@
 // user-side with no admin involved, so AADSTS65001 is a possible state,
 // not the expected one. Adds the no-tools troubleshooting entry, the
 // enumerate-at-add rule, and the wrangler-tail debugging method.
+// v12 (16 Aug 2026) adds System Guide section 7, Document templates, which
+// explains why generated documents used to come out with the wrong fonts
+// and no letterhead: get_template returns TEXT, and the letterhead lives in
+// .docx parts (the 471 KB logo, header1.xml, styles.xml, numbering.xml)
+// that never travel in a text payload, so the model was redrawing the
+// document from a skeleton every time. Documents the fix (substitute inside
+// a copy of the real .docx), where the canonical vs tokenized copies live,
+// how to regenerate after editing a template, and the traps — chiefly that
+// counting replacements is NOT verification, since an early build reported
+// 12/12 replaced while having silently destroyed 6 tokens. Also corrects
+// the Knowledge-layer bullet that implied dropping a file in the templates
+// folder was sufficient on its own.
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -1131,7 +1143,8 @@ function renderGuide() {
         <a class="jump" href="#g-security">↓ Security &amp; progress</a> ·
         <a class="jump" href="#g-arch">↓ Architecture</a> ·
         <a class="jump" href="#g-apps">↓ Applications</a> ·
-        <a class="jump" href="#g-knowledge">↓ Knowledge layer</a>
+        <a class="jump" href="#g-knowledge">↓ Knowledge layer</a> ·
+        <a class="jump" href="#g-templates">↓ Document templates</a>
       </div>
     </div>
 
@@ -1298,7 +1311,7 @@ function renderGuide() {
         <li><b>Email archive</b> (<code>pms_project_emails</code>): every filed email, globally de-duplicated, full bodies preserved — ~15k+ messages and growing, including back-filed mailboxes of departed staff.</li>
         <li><b>Institutional intelligence tables:</b> lessons learned, best practices, <b>agency preferences</b> (61 mined per-agency process rules; approved ones feed the project brief), engineering standards, expertise graph (<code>pms_person_work</code>).</li>
         <li><b>Live analytics in the database:</b> project brief, portfolio heat map, payment flags and email sentiment run as SQL functions next to the data — fast and always current.</li>
-        <li><b>Microsoft 365 stores:</b> SharePoint project folders (documents, photos, metadata sidecars), per-project OneNote notebooks, and the <b>"Templates for MCP Connector"</b> folder — drop a Word/Excel file in and Claude can immediately use it as a template, no redeploy.</li>
+        <li><b>Microsoft 365 stores:</b> SharePoint project folders (documents, photos, metadata sidecars), per-project OneNote notebooks, and the <b>"Templates for MCP Connector"</b> folder. Dropping a Word file in makes Claude aware of it immediately with no redeploy — but that path gives Claude the template's <i>text only</i>, which is what caused the formatting drift. For a document that comes out on real letterhead the template also needs a tokenized copy; see <a class="jump" href="#g-templates">§7 Document templates</a>.</li>
       </ul>
       <p><b>How knowledge gets in:</b> the add-in files it (emails, notes, action items), the field apps capture it (photos, site reports), the sync tools parse it (RFIs/submittals), and mining passes distill it (agency preferences, lessons).<br>
          <b>How it gets out:</b> the PMS and Intelligence apps display it; the MCP connector lets anyone ask Claude about it in plain English.</p>
@@ -1313,6 +1326,84 @@ function renderGuide() {
         <li><b>Auditability:</b> the setup file and handler are plain readable text in the repo's <code>explorer-bridge/</code> folder — no bundled binaries, nothing obfuscated. The setup file's header includes the two-line uninstall.</li>
         <li><b>Security shape:</b> the handler does exactly one thing — open <code>explorer.exe</code> at a single folder name under the user-chosen root. Path separators are stripped, <code>..</code> is rejected, and a missing folder falls back to opening the root (the "add your OneDrive shortcut" cue). No network calls, nothing executed, nothing leaves the machine.</li>
         <li><b>Troubleshooting:</b> Explorer opens the root instead of the project → that project isn't synced on this machine. Wrong location everywhere → delete <code>explorer-root.txt</code> and the next click asks again. Nothing happens at all → look for the browser's blocked "open SettyPMS?" prompt.</li>
+      </ul>
+    </div>
+
+    <div class="card doc" id="g-templates">
+      <div class="sechead">7 · Document templates — how generated documents stay consistent</div>
+      <p><b>The problem this solves.</b> Asking Claude for an add service or a subagreement used to
+         produce a document with the wrong fonts, no letterhead and a shuffled layout, differently
+         every time. That was never the model paraphrasing. The connector's
+         <code>get_template</code> returns a template as <b>plain text</b>, and the letterhead is not
+         in that text and never was.</p>
+      <p>A Word file is a zip of parts. The add service template is 524&nbsp;KB across 38 parts, and
+         <code>word/media/image1.png</code> — the SETTY logo — is 471&nbsp;KB of it on its own. The
+         tagline lives in <code>word/header1.xml</code>, the fonts in <code>styles.xml</code> and
+         <code>theme1.xml</code>, the numbered clauses in <code>numbering.xml</code>, the office
+         addresses in the footers. <b>None of that travels in a text payload.</b> So the model was
+         redrawing the document from a skeleton and inventing the look each run. A second cause: the
+         To/Date and signature blocks are built on <b>tab stops</b>, which flatten to padding in text
+         and only line up in a monospace font.</p>
+
+      <p><b>The fix: never generate the document.</b> Copy the real <code>.docx</code> and substitute
+         inside it. Every part nobody touches is copied through byte-for-byte, so the letterhead is
+         preserved by construction rather than by effort. Verified on all six: package parts, logo,
+         headers, footers, styles, theme and numbering come out byte-identical; only
+         <code>word/document.xml</code> changes.</p>
+
+      <p style="margin-top:12px"><b>Where things live.</b></p>
+      <table style="margin:6px 0"><thead><tr><th>Thing</th><th>Where</th><th>Notes</th></tr></thead><tbody>
+        <tr><td><b>Canonical templates</b></td>
+            <td>SharePoint → <code>Templates for MCP Connector/</code></td>
+            <td>The firm's real templates. Edit these when wording or letterhead changes. What <code>get_template</code> lists.</td></tr>
+        <tr><td><b>Tokenized copies</b></td>
+            <td>…<code>/Tokenized/</code> subfolder</td>
+            <td><b>Generated — never hand-edit.</b> Same documents with fill-ins replaced by <code>{{TOKENS}}</code>. In a subfolder on purpose: <code>get_template</code> does not recurse, so these cannot pollute its name matching.</td></tr>
+        <tr><td><b>The tooling</b></td>
+            <td>repo → <code>tools/docx-templates/</code></td>
+            <td><code>probe.py</code> (inspect), <code>prep.py</code> (build + verify), <code>render.py</code> (fill), <code>configs/*.json</code> (what to tokenize).</td></tr>
+      </tbody></table>
+
+      <p style="margin-top:12px"><b>Coverage today.</b> All six WordprocessingML templates build and
+         verify: 85 tokens, every package part preserved, zero untokenized placeholders left.</p>
+      <table style="margin:6px 0"><thead><tr><th>Template</th><th>Tokens</th><th>Notes</th></tr></thead><tbody>
+        <tr><td>Additional Services Agreement</td><td>17</td><td>Scope, fees and exclusions are repeating lists</td></tr>
+        <tr><td>Subconsultant Agreement</td><td>21</td><td>Largest; 5 author call-outs stripped, 13 stale fields refreshed</td></tr>
+        <tr><td>Certificate of Substantial Completion</td><td>19</td><td>Generic placeholders reused, so all mappings are position-scoped</td></tr>
+        <tr><td>Engineer's Supplemental Instructions</td><td>13</td><td>Description body is a repeating list</td></tr>
+        <tr><td>Sub Agreement Modification</td><td>12</td><td>Had a live subconsultant name baked into the boilerplate; now a token</td></tr>
+        <tr><td>CAD Release Form</td><td>3</td><td>18 numbered clauses are auto-numbered and never touched</td></tr>
+        <tr><td style="color:var(--muted)">Building Report Cards</td><td style="color:var(--muted)">n/a</td><td><b>Deliberately out of scope</b> — and not because it is a spreadsheet. It is a 40-sheet workbook of real survey data for one building, with no fill-in convention to tokenize. An engineer fills it in from a walkthrough, so downloading it as a starting workbook (what <code>get_template</code> already does) is the right handling.</td></tr>
+      </tbody></table>
+
+      <p style="margin-top:12px"><b>Changing a template.</b> Edit the canonical file in SharePoint as
+         normal, then regenerate and re-upload the tokenized copy:</p>
+      <pre style="margin:6px 0"><code>cd tools/docx-templates
+python prep.py                 # rebuild + verify every template
+python prep.py subagreement    # or just one</code></pre>
+      <p>Regenerating <b>re-verifies that every token survived</b>. That check is the important part:
+         a hand-edit can silently destroy a token, and a destroyed token means a contract goes out
+         with a missing fee. If <code>prep.py</code> reports FAIL, the tokenized copy is not safe to
+         use — fix it before re-uploading. Adding a brand-new template needs a config; run
+         <code>python probe.py "&lt;file&gt;"</code> first to see its structure.</p>
+
+      <p style="margin-top:12px"><b>Things that bite, all of them found the hard way.</b></p>
+      <ul>
+        <li><b>Counting replacements is not verification.</b> An early build reported "12 of 12 replaced" while having silently destroyed 6 of them. The tooling now reads the finished file back and asserts each token is physically present. Never trust a success count.</li>
+        <li><b>Word splits values across runs.</b> In the add service template 4 of 11 target values — including the date and the first fee — are not literal strings inside the file at all. A plain find-and-replace fails on exactly the highest-stakes fields and quietly succeeds everywhere else.</li>
+        <li><b>Author call-outs must go first.</b> The subagreement carried 5 red "press Ctrl-A then F9" instruction boxes, one of which says to delete the others. They also broke text parsing around them, hiding two placeholders that then escaped substitution while the build still looked clean.</li>
+        <li><b>Stale mirrored fields.</b> The subagreement mirrors values through 9 Word REF fields that ship with cached results. They are now flagged to refresh when the document opens, so nobody has to press Ctrl-A+F9.</li>
+        <li><b>SharePoint rewrites .docx files on upload</b>, adding a few KB of its own metadata. Harmless — content comes back identical — but it means <b>a file-size change in SharePoint is not evidence the document was edited</b>.</li>
+        <li><b>.dotx vs .docx.</b> Six of the templates are Word <i>template</i> files. Saved under a <code>.docx</code> name without converting the internal type, Word refuses to open them as corrupt. The tooling converts it.</li>
+      </ul>
+
+      <p style="margin-top:12px"><b>Known gaps.</b></p>
+      <ul>
+        <li><b>Not wired into Claude yet.</b> The renderer runs from the repo today. Exposing it to the connector is a pending piece of work, and it must ship as a <b>new</b> tool rather than a new option on <code>get_template</code> — Claude caches tool definitions when a connector is added, so old sessions would silently keep using the text path.</li>
+        <li><b>Long project names overflow the add service header.</b> Its To/Date block is tab stops, so about 30 characters fit; past that the line wraps back to the left margin and pushes the client name down. The real fix is rebuilding that block as a table.</li>
+        <li><b>Missing values are left visible</b> as <code>{{LIKE_THIS}}</code> with a warning, rather than blanked, so nobody files a document with a silently empty fee. Deliberate, and changeable.</li>
+        <li><b>Honorifics are never guessed.</b> "Ms./Mr." has to be supplied; inferring it from a name is not something the tooling will do.</li>
+        <li><b>Duplicate template.</b> <code>SubagreementTemplate-Sara-Samsung-PC-2022-11-23.dotx</code> is byte-identical in content to <code>SubagreementTemplate.dotx</code>. Until it is archived, asking for "the sub agreement" can match either one.</li>
       </ul>
     </div>
 

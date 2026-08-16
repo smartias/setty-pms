@@ -1,0 +1,18 @@
+{
+  "id": "cad-release",
+  "title": "CAD Release Form",
+  "source": "CAD RELEASE FORM.dotx",
+  "output": "cad-release.tokenized.docx",
+  "notes": [
+    "18 numbered clauses are auto-numbered via numbering.xml and are never touched.",
+    "The 'INCLUDEPICTURE ... MERGEFORMATINET' garbage that appears in get_template is an artifact of naive text extraction. It is NOT in the document.",
+    "DRAWINGS REQUESTED is a real table, left empty for manual entry. Repeating table rows are not yet supported."
+  ],
+  "auto": {
+    "[Insert Date]": "{{DATE}}",
+    "[Insert Name]": "{{PROJECT_NAME}}",
+    "[Insert Number]": "{{PROJECT_NUMBER}}"
+  },
+  "ops": [],
+  "lists": []
+}
