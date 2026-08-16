@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v106-proposal-house-typography";
+    window.__appVersion = "2026-08-16-pms-v107-word-proposal-sections";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -58,6 +58,13 @@
   <!-- pako: zlib in JS — used to compress email HTML bodies before storing in Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
   <script src="setty-auth.js"></script>
+<!-- Browser .docx pipeline: zip + Word section drops + {{TOKEN}} fill.
+     Loaded as a module and hung on window because the app's own code is
+     compiled by Babel from text/x-pms-jsx blocks, which cannot use import. -->
+<script type="module">
+  import * as SettyDocx from "./setty-docx.js";
+  window.SettyDocx = SettyDocx;
+</script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     body{background:#0d0f1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
@@ -21863,6 +21870,114 @@ async function sendProposal(project) {
   await createOutlookDraft({ subject, bodyHtml });
 }
 
+// ── Word proposal export ────────────────────────────────────────────────────
+// Pick which sections to include and get a .docx, instead of generating the
+// whole thing and deleting the cover letter by hand afterwards.
+//
+// Built with plain DOM rather than React on purpose: this hangs off a button in
+// a component whose state we do not otherwise touch, and a modal built from
+// hooks would mean threading state through it for no benefit.
+//
+// The heavy lifting is in setty-docx.js (window.SettyDocx). Nothing here parses
+// a .docx.
+const PROPOSAL_DOCX_PARTS = [
+  { key: "cover_page",   label: "Cover page" },
+  { key: "cover_letter", label: "Cover letter" },
+  { key: "terms",        label: "Attachment A — Terms & Conditions" },
+  { key: "firm_info",    label: "Firm info sheet & client list" },
+];
+
+function exportProposalDocx(project) {
+  if (!window.SettyDocx) {
+    alert("The document engine has not loaded yet. Reload the page and try again.");
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99999;" +
+    "display:flex;align-items:center;justify-content:center;" +
+    "font-family:Calibri,'Segoe UI',system-ui,sans-serif;";
+
+  const card = document.createElement("div");
+  card.style.cssText =
+    "background:#fff;color:#000;border-radius:8px;padding:22px 24px;width:460px;" +
+    "max-width:92vw;box-shadow:0 8px 32px rgba(0,0,0,.3);font-size:11pt;";
+  wrap.appendChild(card);
+
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  card.innerHTML =
+    '<div style="font-weight:700;font-size:12pt;margin-bottom:2px;">Word proposal</div>' +
+    '<div style="color:#595959;margin-bottom:16px;">' + esc(project.name || "Project") + "</div>" +
+    '<div style="font-weight:700;margin-bottom:6px;">Include</div>' +
+    '<div id="sdx-parts" style="margin-bottom:16px;"></div>' +
+    '<div style="font-weight:700;margin-bottom:6px;">Template</div>' +
+    '<input id="sdx-file" type="file" accept=".docx,.dotx" style="width:100%;margin-bottom:6px;font-size:10pt;"/>' +
+    '<div style="color:#595959;font-size:9.5pt;margin-bottom:16px;">' +
+      "The proposal template is not in the SharePoint templates folder yet, so pick it here. " +
+      "Once it is filed, this step goes away." +
+    "</div>" +
+    '<div id="sdx-status" style="min-height:20px;color:#595959;margin-bottom:12px;"></div>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+      '<button id="sdx-cancel" style="padding:7px 14px;border:1px solid #D9D9D9;background:#fff;' +
+        'border-radius:5px;cursor:pointer;font:inherit;">Cancel</button>' +
+      '<button id="sdx-go" style="padding:7px 14px;border:none;background:#C00000;color:#fff;' +
+        'border-radius:5px;cursor:pointer;font:inherit;font-weight:600;">Generate</button>' +
+    "</div>";
+
+  const partsBox = card.querySelector("#sdx-parts");
+  PROPOSAL_DOCX_PARTS.forEach((p) => {
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;                 // default to the full document
+    cb.dataset.part = p.key;
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(p.label));
+    partsBox.appendChild(row);
+  });
+
+  const status = card.querySelector("#sdx-status");
+  const close = () => wrap.remove();
+  card.querySelector("#sdx-cancel").onclick = close;
+  wrap.onclick = (e) => { if (e.target === wrap) close(); };
+
+  card.querySelector("#sdx-go").onclick = async () => {
+    const file = card.querySelector("#sdx-file").files[0];
+    if (!file) { status.textContent = "Choose the proposal template first."; return; }
+    const omit = [...partsBox.querySelectorAll("input")]
+      .filter((cb) => !cb.checked).map((cb) => cb.dataset.part);
+    status.textContent = "Building…";
+    try {
+      const { bytes, unfilled } = await window.SettyDocx.buildDocx(await file.arrayBuffer(), { omit });
+      const base = (project.projectNumber ? project.projectNumber + " - " : "") +
+                   (project.name || "Proposal");
+      // Graph rejects these characters in a file name, and so does Windows.
+      const safe = base.replace(/[\\/:*?"<>|]/g, "").trim();
+      const url = URL.createObjectURL(new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = safe + " Proposal.docx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      status.textContent = omit.length
+        ? "Done — left out " + omit.length + " section" + (omit.length > 1 ? "s" : "") + "."
+        : "Done — full document.";
+      if (unfilled.length) {
+        status.textContent += " " + unfilled.length + " placeholder(s) still to fill in Word.";
+      }
+    } catch (err) {
+      status.textContent = "Failed: " + (err && err.message ? err.message : String(err));
+    }
+  };
+
+  document.body.appendChild(wrap);
+}
+
 function printScopeOfServices(project) {
   if (proposalThemeIsClassic(project)) return printScopeOfServicesClassic(project);
   const scopeHtml = project.scopeContent || "<p><em>No scope content entered.</em></p>";
@@ -23388,6 +23503,7 @@ function ScopeView({ project, onChange, clients = [] }) {
             </Btn>
           )}
           <Btn onClick={() => printScopeOfServices(project)}>🖨 Print</Btn>
+          <Btn onClick={() => exportProposalDocx(project)} title="Build a Word proposal, choosing which sections to include.">📄 Word</Btn>
         </div>
       </div>
 
