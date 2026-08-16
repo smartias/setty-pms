@@ -48,13 +48,28 @@ rather than by effort.
 All six WordprocessingML templates build and verify: 84 tokens, every package part
 preserved, every look-carrying part unchanged, zero untokenized placeholders remaining.
 
-`Building Report Cards - MEP.xltx` is a **spreadsheet**, not a Word package. The engine
-does not apply. It needs separate handling.
+`Building Report Cards - MEP.xltx` is **deliberately out of scope**, and not merely because
+it is a spreadsheet. It is a 40-worksheet workbook holding 922 strings of real survey data
+for one building (Laffin Hall — "126.3 Ton Chiller", "General Electric (1200A)
+Switchboard"), with only 2 strings that even resemble placeholders. There is no fill-in
+convention to tokenize: an engineer fills it in from a walkthrough. Downloading it as a
+starting workbook, which `get_template` already does, is the correct handling. Building an
+xlsx engine for it would solve a problem nobody has.
 
-`SubagreementTemplate-Sara-Samsung-PC-2022-11-23.dotx` has a byte-identical
-`document.xml` (237,380 bytes) to `SubagreementTemplate.dotx` and differs only in
-SharePoint metadata. It is a duplicate; archive it rather than tokenizing it. Leaving both
-in place makes fuzzy `name` matching in `get_template` nondeterministic.
+`SubagreementTemplate-Sara-Samsung-PC-2022-11-23.dotx` was a duplicate of
+`SubagreementTemplate.dotx` — byte-identical `document.xml` (237,380 bytes), differing only
+in SharePoint metadata. **Archived 2026-08-16** to `Templates for MCP Connector/Archive/`,
+which `get_template` does not see, so "sub agreement" now resolves to exactly one file.
+
+## The Deno port
+
+`supabase/functions/pms-mcp/docxRender.ts` is a faithful port of `engine.py`, verified
+byte-for-byte against it on the real add service template
+(sha256 `fa7720d5fc02c99b47715c38cc8b3935e13151b9bea28c757744d49be808c8fb` from both).
+Run its tests with `node supabase/functions/pms-mcp/docxRender.test.mjs`.
+
+It has **no imports**, so the same code runs in the Edge Function and in the browser. That
+is deliberate, because where it should run is an open question — see below.
 
 ## Traps, all of them hit for real during the build
 
@@ -102,8 +117,22 @@ cached results, which is why the template tells the user to press Ctrl-A+F9 thre
   is the same class of error as guessing pronouns. Keep it a supplied field.
 - **Missing-field policy** is `ON_MISSING=leave|blank|fail`, default `leave`, which keeps
   `{{TOKEN}}` visible as a to-do. Decision pending.
-- **Port `render.py` to Deno** for `supabase/functions/pms-mcp`, and expose it as a **new**
-  `render_document` tool. Never as a new parameter on `get_template`: clients cache tool
-  schemas at connect and silently strip unknown params, so stale sessions would quietly
-  get the old text path. Connector tools also cache at add, so rollout needs a
-  remove-and-re-add.
+- **DECISION NEEDED — where does rendering run?** The port is done and tested; wiring it is
+  blocked on a question that is not ours to answer unilaterally.
+
+  `pms-mcp` is **strictly read-only**. It has no upload path anywhere, its Graph credentials
+  are app-only, and the admin console's System Guide advertises "neither can write PMS data"
+  as a security property. A `render_document` tool that saves to SharePoint would reverse
+  that, and would likely need a new app-only Graph permission — which IT gatekeeps.
+
+  The alternative avoids all of it: the connector returns the **field values** as JSON
+  (which is judgement, and exactly what a model is good at), and the **PMS app or the Word
+  add-in** does the render and the save using the signed-in user's own delegated token. No
+  new scopes, the read-only guarantee holds, and the file is written by the person rather
+  than by a service principal, so the audit trail is honest. This is why `docxRender.ts` was
+  written import-free: it runs unchanged in either place.
+
+  Whichever way it goes, expose it as a **new tool name**, never a new parameter on
+  `get_template` — clients cache tool schemas at connect and silently strip unknown params,
+  so stale sessions would quietly keep using the text path. Connector tools also cache at
+  add, so rollout needs a remove-and-re-add.
