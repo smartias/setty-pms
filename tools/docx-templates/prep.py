@@ -23,7 +23,7 @@ import sys
 import zipfile
 
 from engine import (CONTENT_TYPES, INSTRUCTION_MARKERS, PARA_RE, RUN_RE,
-                    TEMPLATE_CT, apply_ops,
+                    TEMPLATE_CT, accept_revisions, apply_ops,
                     mark_fields_dirty, replace_all, run_text,
                     set_paragraph_text, strip_instruction_textboxes,
                     template_to_document, transform)
@@ -141,8 +141,13 @@ def build(cfg):
         # against a template with no call-outs, or re-probed after stripping.
         xml, b = strip_instruction_textboxes(xml)
         xml, f = mark_fields_dirty(xml)
+        # Accept tracked changes before anything else reads the text: a value
+        # split across an <w:ins> boundary is invisible to run-level matching,
+        # and editing marks must never reach a client either way.
+        xml, rev = accept_revisions(xml)
         stripped["boxes"] += b
         stripped["fields"] += f
+        stripped["revisions"] = stripped.get("revisions", 0) + rev
         if name != "word/document.xml":
             return xml
 
@@ -210,7 +215,8 @@ def build(cfg):
           f"parts {len(parts_out)}/{len(parts_in)}   "
           f"look {len(look) - len(changed)}/{len(look)}   "
           f"ct:{'docx' if ct_ok else 'TEMPLATE'}   "
-          f"stripped {stripped['boxes']} boxes, refreshed {stripped['fields']} fields"
+          f"stripped {stripped['boxes']} boxes, refreshed {stripped['fields']} fields, "
+          f"accepted {stripped.get('revisions', 0)} revisions"
           + (f"   bookmarks {report['bookmarks'][0]}" if report.get("bookmarks") else ""))
     if report.get("bookmarks"):
         _, bm_missing, bm_empty = report["bookmarks"]

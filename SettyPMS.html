@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v111-proposal-scope-insert";
+    window.__appVersion = "2026-08-16-pms-v112-scope-headings-revisions";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -21917,8 +21917,10 @@ function proposalDocxFields(project) {
   const contacts = (project.projectContacts || {});
   const poc = ((contacts.proposal || []).concat(contacts.pm || []))[0] || {};
   const f = {
+    // No CLIENT_ADDRESS: architects' street addresses are not something we
+    // normally hold, and an empty line in the letter's address block reads
+    // worse than no line at all. Removed from the template too.
     CLIENT_FIRM: project.clientName || project.prime || "",
-    CLIENT_ADDRESS: "",
     CONTACT_NAME: poc.name || "",
     // "Dear <honorific> <surname>:" -- last whitespace-separated token. Wrong
     // for a suffix ("Jr.") or a two-word surname, but the alternative was the
@@ -22022,7 +22024,7 @@ function exportProposalDocx(project) {
     status.textContent = "Building…";
     try {
       const source = file ? await file.arrayBuffer() : templateBytes;
-      const { bytes, unfilled, scopeBlocks } = await window.SettyDocx.buildDocx(source, {
+      const { bytes, unfilled, scopeBlocks, scopeNote } = await window.SettyDocx.buildDocx(source, {
         omit, fields: proposalDocxFields(project),
         // The scope replaces the template's boilerplate INCLUDED SERVICES.
         scopeHtml: project.scopeContent || "",
@@ -22044,7 +22046,7 @@ function exportProposalDocx(project) {
         : "Done — full document.") +
         (scopeBlocks
           ? " Scope inserted as " + scopeBlocks + " paragraph" + (scopeBlocks > 1 ? "s" : "") + "."
-          : " No scope on this project, so the services section is empty.");
+          : " Scope NOT inserted: " + (scopeNote || "unknown reason") + ".");
       if (unfilled.length) {
         status.textContent += " " + unfilled.length + " placeholder(s) still to fill in Word.";
       }

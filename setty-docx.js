@@ -434,8 +434,14 @@ export function htmlToBlocks(html) {
     const text = decodeEntities(raw.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
     if (!text) continue;                              // wrapper with no own text
     const inner = raw.replace(/<\/?(span|font|o:p|a)\b[^>]*>/gi, "").trim();
-    const allBold = /^<(b|strong)\b[^>]*>[\s\S]*<\/(b|strong)>\s*$/i.test(inner);
-    blocks.push({ kind: /^h[1-6]$/.test(name) || allBold ? "h" : "p", text });
+    // A paragraph that STARTS bold is a heading. Requiring the whole thing to
+    // be bold was wrong on real scopes: they bold only the list marker, so
+    // "<b>A. </b>SCOPE OF ENGINEERING SERVICES" came through as body text
+    // while "<b>B. </b><b>Expectations:</b>" became a heading -- inconsistent
+    // within one document. Sub-items ("a.", "b.") carry no bold at all, so
+    // leading-bold cleanly separates the two levels.
+    const startsBold = /^<(b|strong)\b[^>]*>/i.test(inner);
+    blocks.push({ kind: /^h[1-6]$/.test(name) || startsBold ? "h" : "p", text });
   }
   return blocks;
 }
@@ -483,6 +489,7 @@ export async function buildDocx(
   const dec = new TextDecoder(), enc = new TextEncoder();
   let unfilled = [];
   let scopeBlocks = 0;
+  let scopeNote = "";
 
   for (const [name, bytes] of parts) {
     if (!isEditablePart(name)) continue;
@@ -496,14 +503,21 @@ export async function buildDocx(
       // Scope BEFORE token substitution: the prototypes carry the tokens, and
       // filling them first would leave nothing to clone.
       const blocks = htmlToBlocks(scopeHtml);
-      if (blocks.length) {
+      if (!scopeHtml) {
+        scopeNote = "no scope content on this project";
+      } else if (!blocks.length) {
+        scopeNote = "scope is " + scopeHtml.length +
+                    " chars but no readable paragraphs were found in it";
+      } else {
         const r = expandBlocks(xml, "{{SCOPE_HEADING}}", "{{SCOPE_BODY}}", blocks);
         if (r.found) { xml = r.xml; scopeBlocks = blocks.length; }
+        else scopeNote = "template has no {{SCOPE_HEADING}}/{{SCOPE_BODY}} anchors " +
+                         "(old copy cached?) — " + blocks.length + " scope paragraphs not placed";
       }
     }
     const r = renderDocumentXml(xml, fields, { listTokens });
     if (name === "word/document.xml") unfilled = r.unfilled;
     parts.set(name, enc.encode(r.xml));
   }
-  return { bytes: await zip(parts), unfilled, scopeBlocks };
+  return { bytes: await zip(parts), unfilled, scopeBlocks, scopeNote };
 }

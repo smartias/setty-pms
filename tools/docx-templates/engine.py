@@ -287,6 +287,48 @@ def strip_instruction_textboxes(xml, markers=INSTRUCTION_MARKERS):
     return xml, removed
 
 
+def accept_revisions(xml):
+    """
+    Accept all tracked changes, so editing marks never reach a client.
+
+    The proposal template still carries 1 insertion and 6 deletions from
+    whoever last edited it. Word shows them as markup, and they print.
+
+    Accepting means: keep what <w:ins> wraps, drop <w:del> and its content
+    entirely (<w:delText> lives inside it), and discard the *Change elements
+    that record prior formatting. Returns (xml, n_accepted).
+    """
+    n = 0
+
+    # <w:del>...</w:del> -- remove the element and everything inside.
+    while True:
+        m = re.search(r"<w:del\b[^>]*>", xml)
+        if not m:
+            break
+        end = xml.find("</w:del>", m.end())
+        if end == -1:
+            break
+        xml = xml[: m.start()] + xml[end + len("</w:del>"):]
+        n += 1
+    n += len(re.findall(r"<w:del\b[^>]*/>", xml))
+    xml = re.sub(r"<w:del\b[^>]*/>", "", xml)
+
+    # <w:ins> -- unwrap, keeping the inserted content.
+    n += len(re.findall(r"<w:ins\b[^>]*>", xml))
+    xml = re.sub(r"<w:ins\b[^>]*>", "", xml)
+    xml = xml.replace("</w:ins>", "")
+    xml = re.sub(r"<w:ins\b[^>]*/>", "", xml)
+
+    # Formatting-change records: keep the current formatting, drop the history.
+    for tag in ("w:rPrChange", "w:pPrChange", "w:sectPrChange", "w:tblPrChange",
+                "w:trPrChange", "w:tcPrChange"):
+        pat = re.compile(r"<%s\b[^>]*>[\s\S]*?</%s>|<%s\b[^>]*/>" % (tag, tag, tag))
+        n += len(pat.findall(xml))
+        xml = pat.sub("", xml)
+
+    return xml, n
+
+
 def mark_fields_dirty(xml):
     """
     Flag every Word field for re-evaluation on open.
