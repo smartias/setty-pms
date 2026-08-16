@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v108-word-proposal-scope-help";
+    window.__appVersion = "2026-08-16-pms-v109-word-proposal-sharepoint";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -21887,6 +21887,59 @@ const PROPOSAL_DOCX_PARTS = [
   { key: "firm_info",    label: "Firm info sheet & client list" },
 ];
 
+// The tokenized proposal in SharePoint. Each segment is encoded separately:
+// the folder names contain spaces and an emoji, and Graph wants them escaped
+// on the way IN. (The recurring bug is the opposite direction, decoding a
+// path twice when a folder is named like "100% CD".)
+const PROPOSAL_TEMPLATE_PATH = [
+  "SAPX26XXX - NY 2026 Templates and Standards",
+  "01 📋 Project Management",
+  "Templates for MCP Connector",
+  "Tokenized",
+  "proposal.tokenized.docx",
+].map(encodeURIComponent).join("/");
+
+async function fetchProposalTemplate() {
+  const token = await getToken();
+  const url = "https://graph.microsoft.com/v1.0/drives/" + SP_DRIVE_ID_HARDCODED +
+              "/root:/" + PROPOSAL_TEMPLATE_PATH + ":/content";
+  const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+  if (!res.ok) throw new Error("Graph " + res.status);
+  return res.arrayBuffer();
+}
+
+// What the app can fill without guessing. Deliberately absent:
+//   CONTACT_HONORIFIC   — inferring Ms/Mr from a name is not something to guess
+//   PROJECT_DESCRIPTION — the scope is HTML here and needs real conversion
+// Both stay visible as {{TOKENS}} in the document so they are obvious in Word.
+function proposalDocxFields(project) {
+  const ent = proposalEntity(project) || {};
+  const contacts = (project.projectContacts || {});
+  const poc = ((contacts.proposal || []).concat(contacts.pm || []))[0] || {};
+  const f = {
+    CLIENT_FIRM: project.clientName || project.prime || "",
+    CLIENT_ADDRESS: "",
+    CONTACT_NAME: poc.name || "",
+    CONTACT_POSITION: poc.title || "",
+    CONTACT_EMAIL: poc.email || "",
+    PROJECT_NAME: project.name || "",
+    PROJECT_CITY: project.projectCity || "",
+    PROJECT_STATE: project.projectState || "",
+    PROJECT_LOCATION: project.projectAddress || project.projectCity || "",
+    DATE: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+    SETTY_ENTITY: ent.legalName || "",
+    SETTY_CITY_STATE_ZIP: (ent.addressLines || [])[1] || "",
+    SETTY_PHONE: ent.phone || "",
+    SETTY_FAX: ent.fax || "",
+    SETTY_SIGNER: ent.signerName || "",
+    SETTY_SIGNER_TITLE: ent.signerTitle || "",
+  };
+  // An empty string would silently blank the field; leaving the key out keeps
+  // the token visible instead, which is the safer failure for a fee document.
+  Object.keys(f).forEach((k) => { if (!f[k]) delete f[k]; });
+  return f;
+}
+
 function exportProposalDocx(project) {
   if (!window.SettyDocx) {
     alert("The document engine has not loaded yet. Reload the page and try again.");
@@ -21913,11 +21966,9 @@ function exportProposalDocx(project) {
     '<div style="font-weight:700;margin-bottom:6px;">Include</div>' +
     '<div id="sdx-parts" style="margin-bottom:16px;"></div>' +
     '<div style="font-weight:700;margin-bottom:6px;">Template</div>' +
-    '<input id="sdx-file" type="file" accept=".docx,.dotx" style="width:100%;margin-bottom:6px;font-size:10pt;"/>' +
-    '<div style="color:#595959;font-size:9.5pt;margin-bottom:16px;">' +
-      "The proposal template is not in the SharePoint templates folder yet, so pick it here. " +
-      "Once it is filed, this step goes away." +
-    "</div>" +
+    '<div id="sdx-src" style="color:#595959;margin-bottom:6px;">Loading from SharePoint…</div>' +
+    '<input id="sdx-file" type="file" accept=".docx,.dotx" ' +
+      'style="width:100%;margin-bottom:16px;font-size:10pt;display:none;"/>' +
     '<div id="sdx-status" style="min-height:20px;color:#595959;margin-bottom:12px;"></div>' +
     '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
       '<button id="sdx-cancel" style="padding:7px 14px;border:1px solid #D9D9D9;background:#fff;' +
@@ -21940,18 +21991,36 @@ function exportProposalDocx(project) {
   });
 
   const status = card.querySelector("#sdx-status");
+  const srcLine = card.querySelector("#sdx-src");
+  const fileInput = card.querySelector("#sdx-file");
   const close = () => wrap.remove();
   card.querySelector("#sdx-cancel").onclick = close;
   wrap.onclick = (e) => { if (e.target === wrap) close(); };
 
+  // Pull the template from SharePoint up front. If that fails for any reason
+  // (not signed in, moved, offline) fall back to picking a file rather than
+  // dead-ending, and say which happened.
+  let templateBytes = null;
+  fetchProposalTemplate().then((ab) => {
+    templateBytes = ab;
+    srcLine.textContent = "SharePoint · Tokenized/proposal.tokenized.docx";
+  }).catch((err) => {
+    srcLine.textContent = "Could not reach SharePoint (" +
+      (err && err.message ? err.message : "error") + "). Pick the template instead:";
+    fileInput.style.display = "";
+  });
+
   card.querySelector("#sdx-go").onclick = async () => {
-    const file = card.querySelector("#sdx-file").files[0];
-    if (!file) { status.textContent = "Choose the proposal template first."; return; }
+    const file = fileInput.files[0];
+    if (!templateBytes && !file) { status.textContent = "Still loading the template…"; return; }
     const omit = [...partsBox.querySelectorAll("input")]
       .filter((cb) => !cb.checked).map((cb) => cb.dataset.part);
     status.textContent = "Building…";
     try {
-      const { bytes, unfilled } = await window.SettyDocx.buildDocx(await file.arrayBuffer(), { omit });
+      const source = file ? await file.arrayBuffer() : templateBytes;
+      const { bytes, unfilled } = await window.SettyDocx.buildDocx(source, {
+        omit, fields: proposalDocxFields(project),
+      });
       const base = (project.projectNumber ? project.projectNumber + " - " : "") +
                    (project.name || "Proposal");
       // Graph rejects these characters in a file name, and so does Windows.
