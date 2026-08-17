@@ -552,6 +552,26 @@ export function expandParagraph(xml, token, blocks) {
  * empty body clone follows each body block; headings get none, which is the
  * pattern the original section used.
  */
+/**
+ * PROPOSAL PROVISIONS. Library provisions are run-in paragraphs,
+ * "<p><strong>Fee Structure.</strong> This proposal is based…</p>", while the
+ * template lays each provision out as a bold title LINE (Heading2) over an
+ * indented body. Split the run-in: the leading bold phrase becomes the
+ * heading block (trailing period dropped), the rest the body block. A
+ * paragraph without a bold lead (the preamble) is body only. One empty body
+ * clone closes the section so the hard-coded rate list that follows in the
+ * template does not butt against the last provision.
+ */
+export function provisionsHtmlToBlocks(html) {
+  if (!html) return [];
+  const split = String(html).replace(
+    /<p\b[^>]*>\s*<(strong|b)\b[^>]*>([\s\S]*?)<\/\1>\s*/gi,
+    (_m, _t, title) => "<h3>" + title.replace(/[.:]\s*$/, "") + "</h3><p>",
+  );
+  const blocks = htmlToBlocks(split);
+  return blocks.length ? blocks.concat([{ kind: "p", text: "" }]) : blocks;
+}
+
 export function termsHtmlToBlocks(html) {
   const s = String(html || "").replace(/^\s*<h1>[\s\S]*?<\/h1>/i, "");
   const out = [];
@@ -593,16 +613,20 @@ export async function buildDocx(
         included: scopeSections.included || scopeHtml || "",
         additional: scopeSections.additional || "",
         excluded: scopeSections.excluded || "",
+        assumptions: scopeSections.assumptions || "",
+        provisions: scopeSections.provisions || "",
       };
       const anchors = {
         included: ["{{SCOPE_HEADING}}", "{{SCOPE_BODY}}"],
         additional: ["{{ADDITIONAL_HEADING}}", "{{ADDITIONAL_BODY}}"],
         excluded: ["{{EXCLUDED_HEADING}}", "{{EXCLUDED_BODY}}"],
+        assumptions: ["{{ASSUMPTIONS_HEADING}}", "{{ASSUMPTIONS_BODY}}"],
+        provisions: ["{{PROVISIONS_HEADING}}", "{{PROVISIONS_BODY}}"],
       };
       const notes = [];
       for (const [key, html] of Object.entries(sections)) {
         const [h, b] = anchors[key];
-        const blocks = htmlToBlocks(html);
+        const blocks = key === "provisions" ? provisionsHtmlToBlocks(html) : htmlToBlocks(html);
         if (!html) {
           // An untouched section leaves its prototypes behind, which would
           // print as {{TOKENS}}. Blank them instead.

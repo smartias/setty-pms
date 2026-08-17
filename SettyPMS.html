@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v121-word-attachment-a-from-library";
+    window.__appVersion = "2026-08-17-pms-v122-assumptions-provisions-boxes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22208,7 +22208,7 @@ function exportProposalDocx(project) {
       const termsHtml = project.termsContent || termsDefaultHtml();
       const { bytes, unfilled, scopeBlocks, scopeNote } = await window.SettyDocx.buildDocx(source, {
         omit, fields, blank,
-        scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded },
+        scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded, assumptions: secs.assumptions, provisions: secs.provisions },
         // The description keeps its paragraphs (and bullets, one per line).
         paragraphs: { PROJECT_DESCRIPTION: secs.description },
         termsHtml,
@@ -23015,6 +23015,11 @@ const SCOPE_SECTIONS = [
     hint: "Available on request at the hourly rates. Bullets are fine here.", minHeight: 120 },
   { key: "excluded",    field: "scopeExcluded",    label: "Excluded Services",   heading: "EXCLUDED SERVICES",
     hint: "Specifically not in this proposal. Bullets are fine here.", minHeight: 120 },
+  { key: "assumptions", field: "scopeAssumptions", label: "Assumptions",         heading: "ASSUMPTIONS",
+    hint: "What the fee relies on (access, record drawings, owner direction). One per line; open items for the owner go here too.", minHeight: 110 },
+  { key: "provisions",  field: "scopeProvisions",  label: "Proposal Provisions", heading: "PROPOSAL PROVISIONS",
+    hint: "Firm boilerplate. Load from library fills it with every approved provision using this proposal's Standard/Alternate choices.", minHeight: 140,
+    libraryFill: "provisions" },
 ];
 const SCOPE_SECTION_BY_KEY = Object.fromEntries(SCOPE_SECTIONS.map(s => [s.key, s]));
 
@@ -23260,7 +23265,9 @@ function ScopeView({ project, onChange, clients = [] }) {
   const includedRef = React.useRef(null);
   const additionalRef = React.useRef(null);
   const excludedRef = React.useRef(null);
-  const sectionRefs = { description: descriptionRef, included: includedRef, additional: additionalRef, excluded: excludedRef };
+  const assumptionsRef = React.useRef(null);
+  const provisionsRef = React.useRef(null);
+  const sectionRefs = { description: descriptionRef, included: includedRef, additional: additionalRef, excluded: excludedRef, assumptions: assumptionsRef, provisions: provisionsRef };
   const activeKeyRef = React.useRef("included");
   const [activeKey, setActiveKey] = React.useState("included");
   const editorRef = { get current() { return sectionRefs[activeKeyRef.current].current; } };
@@ -23523,7 +23530,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     // description; assumptions, provisions and open items have no box of their
     // own and trail the exclusions, which is where they sat in the old
     // single-document order.
-    const sections = { description: "", included: "", additional: "", excluded: "" };
+    const sections = { description: "", included: "", additional: "", excluded: "", assumptions: "", provisions: "" };
     const understanding = clean(d.understanding);
     const approach = clean(d.approach);
     if (understanding && approach) {
@@ -23542,19 +23549,15 @@ function ScopeView({ project, onChange, clients = [] }) {
     const excluded = pickBlock(clauseSels, "excluded").concat(excSels);
     excluded.forEach(s => { sections.excluded += stampClause(s.clause, s.params); });
     if (excCustom.length) sections.excluded += "<ul>" + excCustom.join("") + "</ul>";
-    if (asmSels.length || asmCustom.length) {
-      sections.excluded += "<h2>ASSUMPTIONS</h2>";
-      asmSels.forEach(s => { sections.excluded += stampClause(s.clause, s.params); });
-      asmCustom.forEach(h => { sections.excluded += h; });
+    // Assumptions and provisions now have boxes of their own (headings are
+    // generated), and open items ride with the assumptions.
+    asmSels.forEach(s => { sections.assumptions += stampClause(s.clause, s.params); });
+    asmCustom.forEach(h => { sections.assumptions += h; });
+    if (openItems.length) {
+      sections.assumptions += "<h3>Open items requiring owner direction</h3><ul>" + openItems.map(s => "<li>" + s.replace(/</g, "&lt;") + "</li>").join("") + "</ul>";
     }
     const provisions = pickBlock(clauseSels, "provisions");
-    if (provisions.length) {
-      sections.excluded += "<h2>PROPOSAL PROVISIONS</h2>";
-      provisions.forEach(s => { sections.excluded += stampClause(s.clause, s.params); });
-    }
-    if (openItems.length) {
-      sections.excluded += "<h2>OPEN ITEMS REQUIRING OWNER DIRECTION</h2><ul>" + openItems.map(s => "<li>" + s.replace(/</g, "&lt;") + "</li>").join("") + "</ul>";
-    }
+    provisions.forEach(s => { sections.provisions += stampClause(s.clause, s.params); });
     const html = composeScopeHtml(sections);
     if (!html) throw new Error("The draft produced no content. Check that it has understanding, approach, or clauses.");
 
@@ -23691,8 +23694,33 @@ function ScopeView({ project, onChange, clients = [] }) {
   // the box you were working in, under its own heading, as before.
   const CLAUSE_TARGET_BOX = {
     included: "included", additional: "additional", excluded: "excluded",
+    assumptions: "assumptions", provisions: "provisions",
     understanding: "description", approach: "description",
   };
+
+  // Fill the Provisions box from the library: every approved provision that
+  // applies (disciplines, Standard/Alternate choices), in library order,
+  // stamped like any inserted clause. Provisions are boilerplate, so this is
+  // the normal way to populate the box; hand edits after are still allowed.
+  async function loadProvisionsFromLibrary() {
+    if (scopeLocked) return;
+    const el = sectionRefs.provisions.current;
+    if (!el) return;
+    let lib;
+    try { lib = await ensureClauseLib(); }
+    catch (e) { setProposalMsg("✗ Couldn't load the clause library: " + (e.message || e)); setProposalKind("error"); return; }
+    const picks = (lib || []).filter(c => c.block === "provisions" && clauseApplies(c))
+      .sort((a, b) => (a.sort || 0) - (b.sort || 0));
+    if (!picks.length) { setProposalMsg("The library has no provisions that apply to this proposal."); setProposalKind("info"); return; }
+    if ((el.innerText || "").trim()
+        && !window.confirm("Replace the Proposal Provisions box with the " + picks.length + " library provisions that apply to this proposal?\n\nText currently in the box will be overwritten.")) return;
+    el.innerHTML = picks.map(c => stampClause(c, clauseParams[c.clause_key] || {})).join("");
+    activateSection("provisions");
+    saveContent();
+    setProposalMsg("✓ Proposal Provisions loaded from the library: " + picks.length + " provisions" +
+      (Object.keys(proposalVariants).length ? " (" + Object.keys(proposalVariants).length + " alternate" + (Object.keys(proposalVariants).length > 1 ? "s" : "") + " in force)" : "") + ".");
+    setProposalKind("success");
+  }
 
   /**
    * Insert the ticked clauses. Clauses that belong to a box are routed to it;
@@ -24192,7 +24220,7 @@ function ScopeView({ project, onChange, clients = [] }) {
   // Sits BESIDE the boxes, not above them: clauses insert at the caret, so you
   // need to see the box and the list at the same time. Same height as the
   // editor frame, scrolls on its own. Groups auto-open for the box you are in.
-  const BLOCKS_FOR_BOX = { included: ["included"], additional: ["additional"], excluded: ["excluded"], description: ["understanding", "approach"] };
+  const BLOCKS_FOR_BOX = { included: ["included"], additional: ["additional"], excluded: ["excluded"], assumptions: ["assumptions"], provisions: ["provisions"], description: ["understanding", "approach"] };
   const q = clauseQuery.trim().toLowerCase();
   function clauseMatches(c) {
     if (!q) return true;
@@ -24371,7 +24399,7 @@ function ScopeView({ project, onChange, clients = [] }) {
           is the same Terms &amp; Conditions you see below (the firm library, or this project's edited copy).
         </div>
         <div style={{ marginTop: 6 }}>
-          The four boxes below flow into both: Included, Additional and Excluded each land in
+          The six boxes below flow into both: Included, Additional, Excluded, Assumptions and Proposal Provisions each land in
           their own section of the Word proposal, and Project Description fills the cover letter.
           Any field the app cannot fill is left visible in the document as <code>{"{{LIKE_THIS}}"}</code>
           rather than blanked, so it is obvious what still needs your attention in Word.
@@ -24633,11 +24661,11 @@ function ScopeView({ project, onChange, clients = [] }) {
       `}</style>
 
       {/* Editor frame + (optional) clause panel side by side, same height. */}
-      <div style={{ display: "flex", gap: 12, alignItems: "stretch", height: 760 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "stretch", height: 820 }}>
       {/* Sticky toolbar + scrollable editor — outer div is the fixed-height frame */}
       <div style={{
         display: "flex", flexDirection: "column", flex: 1, minWidth: 0,
-        height: 760,
+        height: 820,
         border: "1px solid " + (scopeLocked ? P.green : P.border),
         borderRadius: 8,
         overflow: "hidden",
@@ -24719,9 +24747,16 @@ function ScopeView({ project, onChange, clients = [] }) {
                   <div style={{ fontFamily: "Calibri, 'Trebuchet MS', sans-serif", fontSize: "11pt", fontWeight: 700, color: "#000000", letterSpacing: "0.02em" }}>
                     {s.heading}
                   </div>
-                  <div style={{ fontSize: 11, color: "#595959" }}>
+                  <div style={{ fontSize: 11, color: "#595959", flex: 1 }}>
                     {s.hint}
                   </div>
+                  {s.libraryFill === "provisions" && (
+                    <button type="button" onMouseDown={e => e.preventDefault()} onClick={loadProvisionsFromLibrary} disabled={scopeLocked}
+                      title="Fill this box with every approved provision that applies to this proposal (disciplines and Standard/Alternate choices respected), in library order. Replaces what is in the box."
+                      style={{ fontSize: 11, fontWeight: 600, padding: "2px 10px", borderRadius: 10, border: "1px solid #C00000", background: "#fff", color: "#C00000", cursor: scopeLocked ? "not-allowed" : "pointer", fontFamily: "inherit", flexShrink: 0, opacity: scopeLocked ? 0.5 : 1 }}>
+                      ⟳ Load from library
+                    </button>
+                  )}
                 </div>
                 <div
                   ref={sectionRefs[s.key]}
@@ -24760,7 +24795,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
         💡 The toolbar works on the box you clicked into last (red border). Headings are generated for you, so type only the list under each one. Paste directly from Word, Outlook, or email — formatting is cleaned to Calibri 10pt automatically. Select paragraph(s) first to change <strong style={{ color: P.text }}>↕ Line</strong> or <strong style={{ color: P.text }}>¶ Space</strong>; use <strong style={{ color: P.text }}>Aa 10pt</strong> to snap text back to the firm standard. Lists: <strong style={{ color: P.text }}>•</strong> bullet, <strong style={{ color: P.text }}>1.</strong> numbered, <strong style={{ color: P.text }}>a.</strong> / <strong style={{ color: P.text }}>A.</strong> lettered — click the same one again (or <strong style={{ color: P.text }}>✕ List</strong>) to remove.
         {!hasScopeSections(project) && (project.scopeContent || "").trim() ? (
-          <span> <strong style={{ color: P.text }}>This project predates the boxes:</strong> its whole scope has been placed in Included Services, unsplit. Move the exclusions and additional services into their boxes when you next edit it.</span>
+          <span> <strong style={{ color: P.text }}>This project predates the boxes:</strong> its whole scope has been placed in Included Services, unsplit. Move the exclusions, additional services, assumptions and provisions into their boxes when you next edit it (Proposal Provisions has a Load from library button).</span>
         ) : null}
       </div>
 

@@ -81,6 +81,15 @@
       "body_token": "{{EXCLUDED_BODY}}"
     },
     {
+      "_note": "PROPOSAL PROVISIONS. The template shipped BOTH the Standard and Alternate text of every pair plus a YYY/MM/DD placeholder; the section is now assembled from the library's provisions block (prov-preamble first). Title/body pair: bold Heading2 title line + indented Heading2 body, which is how the run-in <strong>Title.</strong> bodies are split by the app. Range ends at the hard-coded hourly-rate list, which stays as-is for now.",
+      "after": "PROPOSAL PROVISIONS",
+      "before": "Principal:",
+      "heading_match": "Fee Structure",
+      "body_match": "Standard (Lump Sum):",
+      "heading_token": "{{PROVISIONS_HEADING}}",
+      "body_token": "{{PROVISIONS_BODY}}"
+    },
+    {
       "_note": "Attachment A. The template carried an OLDER unnumbered T&C; the firm standard now lives in pms_proposal_clauses block 'terms' and the app renders it into these prototypes. Heading1 auto-numbers via its style, so heading text is the bare title. Second occurrence of the anchor: the first is in the proposal body.",
       "after": "TERMS AND CONDITIONS",
       "after_occurrence": 2,
@@ -89,6 +98,19 @@
       "body_match": "The risks have been allocated",
       "heading_token": "{{TERMS_HEADING}}",
       "body_token": "{{TERMS_BODY}}"
+    }
+  ],
+
+  "insert_sections": [
+    {
+      "_note": "The template had no ASSUMPTIONS section; the library and the PMS do. Heading cloned from PROPOSAL PROVISIONS (Heading1, unnumbered), prototypes cloned from the Excluded pair (numbered Heading1 + ListParagraph) so assumptions list like exclusions. Sits between EXCLUDED SERVICES and PROPOSAL PROVISIONS, matching the app's box order.",
+      "before": "PROPOSAL PROVISIONS",
+      "heading_from": "PROPOSAL PROVISIONS",
+      "heading_text": "ASSUMPTIONS",
+      "clone_heading_from": "{{EXCLUDED_HEADING}}",
+      "clone_body_from": "{{EXCLUDED_BODY}}",
+      "heading_token": "{{ASSUMPTIONS_HEADING}}",
+      "body_token": "{{ASSUMPTIONS_BODY}}"
     }
   ],
 
