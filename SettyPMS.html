@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v118-fee-variant-follows-feetype";
+    window.__appVersion = "2026-08-17-pms-v119-outlook-keep-pms-date-persists";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -344,12 +344,15 @@ function projectWithSyncedDueDate(project, milestoneId, newDueDate) {
   // the pin but nothing else moves.
   const pairedPhase = target.type === "billable"
     ? (project.phases || []).find(p => p.code === target.phase) : null;
+  // A due-date move also clears outlookDateAck (the Outlook date a user chose
+  // "Keep PMS Date" against): the answer was tied to the OLD PMS date, so the
+  // next Outlook check should ask again if the two still disagree.
   const newMilestones = milestones.map(m => {
     if (m.id === milestoneId)
-      return { ...m, dueDate: newDueDate, ...(m.type === "billable" ? { dueDateManual: true } : {}) };
+      return { ...m, dueDate: newDueDate, outlookDateAck: null, ...(m.type === "billable" ? { dueDateManual: true } : {}) };
     // Sibling billables in the same phase sit on the phase end date too — none may lag.
     if (pairedPhase && m.type === "billable" && m.phase === target.phase)
-      return { ...m, dueDate: newDueDate, dueDateManual: true };
+      return { ...m, dueDate: newDueDate, dueDateManual: true, outlookDateAck: null };
     return m;
   });
   const newPhases = pairedPhase
@@ -366,7 +369,7 @@ function projectWithSyncedPhaseEnd(project, phaseId, newEndDate) {
   );
   const newMilestones = (project.milestones || []).map(m =>
     m.type === "billable" && m.phase === target.code
-      ? { ...m, dueDate: newEndDate, dueDateManual: true } : m
+      ? { ...m, dueDate: newEndDate, dueDateManual: true, outlookDateAck: null } : m
   );
   return { ...project, phases: newPhases, milestones: newMilestones };
 }
@@ -7418,11 +7421,16 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     (project.milestones || []).filter(m => m.calendarEventId).map(m => [m.id, m.calendarEventId])
   );
 
-  function saveCalMap(map) {
-    // Write eventIds back into the milestone objects and save via onChange
+  function saveCalMap(map, pushedIds = []) {
+    // Write eventIds back into the milestone objects and save via onChange.
+    // pushedIds = milestones just written TO Outlook: PMS and Outlook now
+    // agree, so any "Keep PMS Date" acknowledgement is spent — clear it so a
+    // later calendar drag back to that date prompts again.
+    const pushed = new Set(pushedIds);
     const newMilestones = (project.milestones || []).map(m => ({
       ...m,
       calendarEventId: map[m.id] || m.calendarEventId || null,
+      ...(pushed.has(m.id) ? { outlookDateAck: null } : {}),
     }));
     onChange({ ...project, milestones: newMilestones });
   }
@@ -7447,7 +7455,10 @@ function ScheduleView({ project, onChange, onEagerSave }) {
         const r = await fetchCalendarEventDate(m.calendarEventId);
         if (!r) return null; // fetch failed — unknown state, don't prompt
         if (!r.found) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: null, deleted: true };
-        if (r.date && r.date !== m.dueDate) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
+        // outlookDateAck = the Outlook date the user already chose "Keep PMS
+        // Date" against. Suppress the prompt until Outlook moves AGAIN; a
+        // dismiss that isn't persisted re-asks on every tab open.
+        if (r.date && r.date !== m.dueDate && r.date !== m.outlookDateAck) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
         return null;
       }));
       if (alive) setOutlookConflicts(results.filter(Boolean));
@@ -7470,17 +7481,17 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     setOutlookConflicts(list => list.filter(x => x.id !== c.id));
     const m = milestones.find(x => x.id === c.id);
     if (!m) return;
-    // TODO(you): You kept the PMS date, so the Outlook event now disagrees
-    // with PMS. Decide the calendar-side follow-up. Two reasonable choices:
-    //   A) Auto-push:  syncOne(m)
-    //      Immediately rewrites the Outlook event back to the PMS date.
-    //      Decisive — calendars never stay wrong — but it silently undoes
-    //      the calendar edit a colleague just made, with no trace for them.
-    //   B) Mark stale: setCalState(s => ({ ...s, [m.id]: "stale" }))
-    //      Shows the ⚠ icon on the row so a human pushes ↑ when ready; the
-    //      two systems knowingly disagree until then.
-    // B is in place as the starter. Replace with A (or your own hybrid) if
-    // you'd rather PMS always win immediately.
+    // Persist the decision: remember WHICH Outlook date was declined so the
+    // sweep stays quiet until Outlook moves again. Without this the prompt
+    // came back on every tab open (St Nicholas of Tolentine, 3x on 8/16).
+    // The two systems knowingly disagree; the ⚠ stale icon on the row is the
+    // cue to push ↑ when ready. (Alternative: syncOne(m) to auto-push PMS
+    // back to Outlook immediately, at the cost of silently undoing a
+    // colleague's calendar edit.)
+    onChange({
+      ...project,
+      milestones: (project.milestones || []).map(x => x.id === c.id ? { ...x, outlookDateAck: c.outlookDate } : x),
+    }, { notifyTeams: false });
     setCalState(s => ({ ...s, [m.id]: "stale" }));
   }
 
@@ -7496,7 +7507,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     const newMap = { ...calMap };
     if (result.success) {
       newMap[m.id] = result.eventId;
-      saveCalMap(newMap);
+      saveCalMap(newMap, [m.id]);
       setCalState(s => ({ ...s, [m.id]: "synced" }));
       setSyncMsg(result.warning
         ? `⚠ "${m.name}" — ${result.warning}`
@@ -7512,6 +7523,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     const syncable = milestones.filter(m => m.dueDate);
     const newMap = { ...calMap };
     let ok = 0;
+    const pushedIds = [];
     for (let i = 0; i < syncable.length; i++) {
       const m = syncable[i];
       setSyncMsg(`Syncing ${i+1}/${syncable.length}…`);
@@ -7519,13 +7531,14 @@ function ScheduleView({ project, onChange, onEagerSave }) {
       const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, newMap[m.id], project.projectManager);
       if (result.success) {
         newMap[m.id] = result.eventId;
+        pushedIds.push(m.id);
         setCalState(s => ({ ...s, [m.id]: "synced" }));
         ok++;
       } else {
         setCalState(s => ({ ...s, [m.id]: "error", [`${m.id}_err`]: result.error }));
       }
     }
-    saveCalMap(newMap);
+    saveCalMap(newMap, pushedIds);
     setSyncingAll(false);
     const warnings = syncable.filter((_, i) => {
       // detect if any synced with warning (posted to personal)
@@ -20443,8 +20456,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     const result = await createOrUpdateCalendarEvent(m, proj?.name || "Project", proj?.projectNumber, existingEventId, proj?.projectManager);
     if (result.success) {
       if (result.eventId && proj) {
+        // Pushed to Outlook → PMS and Outlook agree; spend any "Keep PMS Date" ack.
         const newMilestones = (proj.milestones || []).map(ms =>
-          ms.id === m.id ? { ...ms, calendarEventId: result.eventId } : ms
+          ms.id === m.id ? { ...ms, calendarEventId: result.eventId, outlookDateAck: null } : ms
         );
         onUpdateProject({ ...proj, milestones: newMilestones });
       }
@@ -20494,7 +20508,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
         const r = await fetchCalendarEventDate(m.calendarEventId);
         if (!r) return null; // fetch failed — unknown state, don't prompt
         if (!r.found) return { projectId: p.id, projectName: p.name, projectNumber: p.projectNumber, milestoneId: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: null, deleted: true };
-        if (r.date && r.date !== m.dueDate) return { projectId: p.id, projectName: p.name, projectNumber: p.projectNumber, milestoneId: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
+        // Skip an Outlook date the user already answered "Keep PMS Date" to
+        // (m.outlookDateAck) — same rule as the Schedule tab.
+        if (r.date && r.date !== m.dueDate && r.date !== m.outlookDateAck) return { projectId: p.id, projectName: p.name, projectNumber: p.projectNumber, milestoneId: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
         return null;
       }));
       found.push(...part.filter(Boolean));
@@ -20511,6 +20527,20 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     setDashOutlookConflicts(list => list.filter(x => x.milestoneId !== c.milestoneId));
   }
 
+  // "Keep PMS Date": persist the declined Outlook date on the milestone so
+  // the next sweep (this dashboard AND the project's Schedule tab) stays
+  // quiet until Outlook moves again. A dismiss-only was re-asking every time.
+  function keepDashPmsDate(c) {
+    const proj = projects.find(p => p.id === c.projectId);
+    if (proj) {
+      onUpdateProject({
+        ...proj,
+        milestones: (proj.milestones || []).map(x => x.id === c.milestoneId ? { ...x, outlookDateAck: c.outlookDate } : x),
+      });
+    }
+    removeDashConflict(c);
+  }
+
   function acceptDashOutlookDate(c) {
     const proj = projects.find(p => p.id === c.projectId);
     if (!proj) return;
@@ -20524,7 +20554,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     onUpdateProject({
       ...proj,
       phases,
-      milestones: (proj.milestones || []).map(x => x.id === c.milestoneId ? { ...x, dueDate: c.outlookDate } : x),
+      milestones: (proj.milestones || []).map(x => x.id === c.milestoneId ? { ...x, dueDate: c.outlookDate, outlookDateAck: null } : x),
     });
     removeDashConflict(c);
     setDashSyncMsg(`✓ "${c.name}" updated to ${fmtDate(c.outlookDate)} from Outlook`);
@@ -20704,7 +20734,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
                     <span style={{ color: P.textDim }}> · PMS: {fmtDate(c.pmsDate)}</span>
                   </span>
                   <Btn small variant="primary" onClick={() => acceptDashOutlookDate(c)}>✓ Use Outlook Date</Btn>
-                  <Btn small variant="ghost" onClick={() => removeDashConflict(c)} title="Keep the PMS date — dismisses this prompt; use the row's ↑ sync to push PMS back to Outlook">Keep PMS Date</Btn>
+                  <Btn small variant="ghost" onClick={() => keepDashPmsDate(c)} title="Keep the PMS date — you won't be asked again unless Outlook changes; use the row's ↑ sync to push PMS back to Outlook">Keep PMS Date</Btn>
                 </>
               )}
             </div>
