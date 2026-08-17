@@ -310,6 +310,23 @@ def accept_revisions(xml):
             break
         xml = xml[: m.start()] + xml[end + len("</w:del>"):]
         n += 1
+    # A self-closing <w:del/> inside <w:trPr> is a tracked ROW deletion: the
+    # whole row goes, not just the marker. Stripping only the marker is what
+    # left an empty 2x2 grid printing on every proposal. A table with no rows
+    # left is removed too (Word will not open one).
+    tr_pat = re.compile(r"<w:tr\b[^>]*>.*?</w:tr>", re.S)
+    def _drop_deleted_row(m):
+        nonlocal n
+        row = m.group(0)
+        trpr = re.search(r"<w:trPr>.*?</w:trPr>", row, re.S)
+        if trpr and re.search(r"<w:del\b[^>]*/>", trpr.group(0)):
+            n += 1
+            return ""
+        return row
+    xml = tr_pat.sub(_drop_deleted_row, xml)
+    tbl_pat = re.compile(r"<w:tbl>.*?</w:tbl>", re.S)
+    xml = tbl_pat.sub(lambda m: "" if "<w:tr" not in m.group(0) else m.group(0), xml)
+
     n += len(re.findall(r"<w:del\b[^>]*/>", xml))
     xml = re.sub(r"<w:del\b[^>]*/>", "", xml)
 
@@ -321,7 +338,7 @@ def accept_revisions(xml):
 
     # Formatting-change records: keep the current formatting, drop the history.
     for tag in ("w:rPrChange", "w:pPrChange", "w:sectPrChange", "w:tblPrChange",
-                "w:trPrChange", "w:tcPrChange"):
+                "w:trPrChange", "w:tcPrChange", "w:tblGridChange"):
         pat = re.compile(r"<%s\b[^>]*>[\s\S]*?</%s>|<%s\b[^>]*/>" % (tag, tag, tag))
         n += len(pat.findall(xml))
         xml = pat.sub("", xml)
