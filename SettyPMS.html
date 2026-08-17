@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v116-scope-feedback";
+    window.__appVersion = "2026-08-17-pms-v117-scope-variants";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22955,6 +22955,72 @@ function clauseDisciplineTag(clause, active) {
   if (hit.length) return "not used when " + hit.map(label).join("/") + " is on";
   return "";
 }
+// ── Provision variants ───────────────────────────────────────────────────────
+// Some provisions come in a Standard / Alternate pair (lump sum vs T&M,
+// reimbursables at 1.1x vs at cost, liability capped at the fee vs a
+// negotiated floor, standard vs fast-track CA turnaround). Linked in
+// pms_proposal_clauses.params: the alternate carries variant:"alternate",
+// variantOf:<standard key>, variantLabel; the standard carries
+// variant:"standard". Standard is the default; the choice is stored PER
+// PROJECT in project.proposalVariants as {standardKey: chosenKey}. "Standard"
+// and "(Alternate)" appear only in titles and must never reach a document.
+function variantPairs(lib) {
+  const byKey = {};
+  (lib || []).forEach(c => { byKey[c.clause_key] = c; });
+  const pairs = {};
+  (lib || []).forEach(c => {
+    const p = c.params || {};
+    if (p.variant === "alternate" && p.variantOf && byKey[p.variantOf]) {
+      pairs[p.variantOf] = pairs[p.variantOf] || { standard: byKey[p.variantOf], alternates: [] };
+      pairs[p.variantOf].alternates.push(c);
+    }
+  });
+  return Object.values(pairs).map(pair => ({
+    key: pair.standard.clause_key,
+    label: variantPairLabel(pair.standard),
+    standard: pair.standard,
+    alternates: pair.alternates,
+    block: pair.standard.block,
+  }));
+}
+// "Fee Structure: Lump Sum (Standard)" -> pair label "Fee Structure", option
+// label "Lump Sum". Alternates prefer params.variantLabel.
+function variantPairLabel(clause) {
+  const t = String((clause && clause.title) || "");
+  return (t.includes(":") ? t.split(":")[0] : t).replace(/\s*\((Standard|Alternate)\)\s*$/i, "").trim();
+}
+function variantOptionLabel(clause) {
+  const p = (clause && clause.params) || {};
+  if (p.variantLabel) return String(p.variantLabel);
+  const t = String((clause && clause.title) || "");
+  return (t.includes(":") ? t.slice(t.indexOf(":") + 1) : t).replace(/\s*\((Standard|Alternate)\)\s*$/i, "").trim() || t;
+}
+// Which key is in force for a pair: the stored choice, else the standard.
+function chosenVariantKey(standardKey, variants) {
+  return (variants && variants[standardKey]) || standardKey;
+}
+// The standard key of the pair this clause belongs to, or null.
+function variantStandardKeyOf(clause) {
+  const p = (clause && clause.params) || {};
+  if (p.variant === "alternate" && p.variantOf) return p.variantOf;
+  if (p.variant === "standard") return clause.clause_key;
+  return null;
+}
+function clauseAppliesToVariants(clause, variants) {
+  const sk = variantStandardKeyOf(clause);
+  if (!sk) return true;
+  return chosenVariantKey(sk, variants) === clause.clause_key;
+}
+// Human tag for a variant that is not the one in force.
+function clauseVariantTag(clause, lib, variants) {
+  const sk = variantStandardKeyOf(clause);
+  if (!sk) return "";
+  const chosenKey = chosenVariantKey(sk, variants);
+  if (chosenKey === clause.clause_key) return "";
+  const chosen = (lib || []).find(c => c.clause_key === chosenKey);
+  return "this proposal uses " + (chosen ? variantOptionLabel(chosen) : "the other option");
+}
+
 // Drop the line items that do not apply, and any list left empty by that.
 function filterClauseHtmlByDiscipline(html, active) {
   const s = String(html || "");
@@ -23135,6 +23201,25 @@ function ScopeView({ project, onChange, clients = [] }) {
   // line-item filtering and the reserved DISCIPLINE_* tokens.
   const activeDisc = scopeDisciplinesOf(project);
   const discTokens = disciplineTokens(activeDisc);
+  // Standard/Alternate provision choices, per project (see variantPairs).
+  const proposalVariants = project.proposalVariants || {};
+  function setVariant(standardKey, chosenKey) {
+    if (scopeLocked) return;
+    const next = { ...proposalVariants };
+    if (!chosenKey || chosenKey === standardKey) delete next[standardKey]; else next[standardKey] = chosenKey;
+    onChange({ ...project, proposalVariants: next });
+  }
+  // The pairs need the library; load it quietly on mount so the options row
+  // can show without a click. Failure is silent here: the Clause Library
+  // button reports it when actually used.
+  React.useEffect(() => { ensureClauseLib().catch(() => {}); }, []);
+  // One gate for "should this clause be offered / inserted right now".
+  function clauseApplies(c) {
+    return clauseAppliesToDisciplines(c, activeDisc) && clauseAppliesToVariants(c, proposalVariants);
+  }
+  function clauseHiddenTag(c) {
+    return clauseDisciplineTag(c, activeDisc) || clauseVariantTag(c, clauseLib, proposalVariants);
+  }
   function setDiscipline(key, on) {
     if (scopeLocked) return;
     onChange({ ...project, scopeDisciplines: { ...activeDisc, [key]: !!on } });
@@ -23183,14 +23268,25 @@ function ScopeView({ project, onChange, clients = [] }) {
     lib.forEach(c => { byKey[c.clause_key] = c; });
     const unknownKeys = [];
     const disciplineDropped = [];
+    const variantSwapped = [];
     const resolve = (sel) => {
       const key = typeof sel === "string" ? sel : (sel && sel.key);
       if (!key) return null;
-      const clause = byKey[key];
+      let clause = byKey[key];
       if (!clause) { unknownKeys.push(key); return null; }
       // The draft may pick a clause for a discipline this proposal does not
       // cover (fire suppression on an M/E-only job). Drop it and say so.
       if (!clauseAppliesToDisciplines(clause, activeDisc)) { disciplineDropped.push(key); return null; }
+      // A draft may pick the wrong side of a Standard/Alternate pair. The
+      // project's choice wins: swap to the one in force and say so.
+      const sk = variantStandardKeyOf(clause);
+      if (sk) {
+        const chosenKey = chosenVariantKey(sk, proposalVariants);
+        if (chosenKey !== clause.clause_key && byKey[chosenKey]) {
+          variantSwapped.push(key + " → " + chosenKey);
+          clause = byKey[chosenKey];
+        }
+      }
       return { clause, params: (typeof sel === "object" && sel.params) || {} };
     };
     const clauseSels = (Array.isArray(d.clauses) ? d.clauses : []).map(resolve).filter(Boolean);
@@ -23257,6 +23353,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       openItemCount: openItems.length,
       unknownKeys,
       disciplineDropped,
+      variantSwapped,
       flagged: (Array.isArray(d.flaggedForReview) ? d.flaggedForReview : [])
         .map(f => ({ rfpDemand: String((f && f.rfpDemand) || ""), why: String((f && f.why) || "") }))
         .filter(f => f.rfpDemand || f.why),
@@ -23390,7 +23487,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     const lib = clauseLib || [];
     const perBox = {}; // box key -> html
     CLAUSE_BLOCKS.forEach(([block, label]) => {
-      const picked = lib.filter(c => c.block === block && clauseSel[c.clause_key] && clauseAppliesToDisciplines(c, activeDisc));
+      const picked = lib.filter(c => c.block === block && clauseSel[c.clause_key] && clauseApplies(c));
       if (!picked.length) return;
       const target = CLAUSE_TARGET_BOX[block] || activeKeyRef.current;
       let html = "";
@@ -23829,6 +23926,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       scopeContent: project.scopeContent || "",
       scopeSections: scopeSectionsOf(project),
       scopeDisciplines: scopeDisciplinesOf(project),
+      proposalVariants: { ...proposalVariants },
       termsContent: project.termsContent || "",
       hourlyRates: rates.map(r => ({ ...r })),
       clauses: listStampedClauses(project.scopeContent),
@@ -23928,19 +24026,19 @@ function ScopeView({ project, onChange, clients = [] }) {
               </button>
               {open && group.map(c => {
                 const tokens = clauseTokenNames(c);
-                const applies = clauseAppliesToDisciplines(c, activeDisc);
+                const applies = clauseApplies(c);
                 const checked = applies && !!clauseSel[c.clause_key];
                 return (
                   <div key={c.clause_key} style={{ padding: "3px 6px", borderRadius: 6, background: checked ? P.accentDim : "transparent", marginBottom: 1, opacity: applies ? 1 : 0.45 }}>
                     <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: applies ? "pointer" : "not-allowed", fontSize: 12.5, lineHeight: 1.35 }}
-                      title={applies ? String(c.body_html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) : "Hidden by the discipline settings: " + clauseDisciplineTag(c, activeDisc)}>
+                      title={applies ? String(c.body_html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) : "Not offered on this proposal: " + clauseHiddenTag(c)}>
                       <input type="checkbox" checked={checked} disabled={!applies}
                         onChange={e => setClauseSel({ ...clauseSel, [c.clause_key]: e.target.checked })}
                         style={{ marginTop: 2, flexShrink: 0 }} />
                       <span style={{ flex: 1 }}>{c.title}</span>
                       {!applies && (
                         <span style={{ fontSize: 10, color: P.textDim, border: "1px solid " + P.border, borderRadius: 8, padding: "0 5px", whiteSpace: "nowrap", flexShrink: 0 }}>
-                          {clauseDisciplineTag(c, activeDisc)}
+                          {clauseHiddenTag(c)}
                         </span>
                       )}
                     </label>
@@ -24170,6 +24268,9 @@ function ScopeView({ project, onChange, clients = [] }) {
                   {(r.disciplineDropped || []).length > 0 && (
                     <li style={{ color: P.yellow }}>⚠ Skipped for disciplines this proposal does not cover: {r.disciplineDropped.join(", ")} <span style={{ color: P.textDim }}>(switch the discipline on above and validate again if that is wrong)</span></li>
                   )}
+                  {(r.variantSwapped || []).length > 0 && (
+                    <li>↔ Swapped to this proposal's Standard/Alternate choice: {r.variantSwapped.join(", ")} <span style={{ color: P.textDim }}>(change the choice above and validate again if the draft had it right)</span></li>
+                  )}
                   {r.suggestedPhases.length > 0 && (
                     <li>Suggested fee phase split ({r.phasePctTotal}%{r.phasePctTotal !== 100 ? ", does not sum to 100" : ""}): {r.suggestedPhases.map(p => p.name + " " + p.pct + "%").join(", ")} <span style={{ color: P.textDim }}>(apply manually in the Fee Calculator)</span></li>
                   )}
@@ -24235,6 +24336,52 @@ function ScopeView({ project, onChange, clients = [] }) {
           Text already in the boxes is not changed.
         </div>
       </div>
+
+      {/* Provision options — Standard / Alternate pairs from the library. One
+          radio group per pair; Standard is the default; stored per project.
+          The Clause Library then offers only the option in force, and an AI
+          draft that picked the other side is swapped to this one. */}
+      {(() => {
+        const pairs = variantPairs(clauseLib);
+        return (
+          <div style={{ border: "1px solid " + P.border, borderRadius: 8, padding: "10px 14px", marginBottom: 12, background: P.card, opacity: scopeLocked ? 0.6 : 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: P.text }}>Provision options</div>
+              {clauseLib === null && <span style={{ fontSize: 11.5, color: P.textDim }}>Loading from the clause library…</span>}
+              {clauseLib && !pairs.length && <span style={{ fontSize: 11.5, color: P.textDim }}>No Standard/Alternate pairs are defined in the library yet.</span>}
+              {pairs.map(pair => {
+                const chosen = chosenVariantKey(pair.key, proposalVariants);
+                const options = [pair.standard].concat(pair.alternates);
+                const isStd = chosen === pair.key;
+                return (
+                  <div key={pair.key} role="radiogroup" aria-label={pair.label}
+                    style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 8px", borderRadius: 14, border: "1px solid " + (isStd ? P.border : P.yellow), background: isStd ? "transparent" : P.yellowDim }}>
+                    <span style={{ color: P.textMuted, fontWeight: 600, marginRight: 2 }}>{pair.label}:</span>
+                    {options.map(opt => {
+                      const on = chosen === opt.clause_key;
+                      const isStandardOpt = opt.clause_key === pair.key;
+                      return (
+                        <label key={opt.clause_key} title={String(opt.body_html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300)}
+                          style={{ display: "flex", alignItems: "center", gap: 4, cursor: scopeLocked ? "not-allowed" : "pointer", color: on ? P.text : P.textDim, fontWeight: on ? 600 : 400 }}>
+                          <input type="radio" name={"variant-" + pair.key} checked={on} disabled={scopeLocked}
+                            onChange={() => setVariant(pair.key, opt.clause_key)} />
+                          {variantOptionLabel(opt)}{isStandardOpt ? <span style={{ color: P.textDim, fontWeight: 400 }}> (standard)</span> : null}
+                        </label>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+            {pairs.length > 0 && (
+              <div style={{ fontSize: 11, color: P.textDim, marginTop: 6, lineHeight: 1.5 }}>
+                Standard is the firm default. Pick the alternate only where it was negotiated; the Clause Library then offers just that option and an AI draft that chose the other side is swapped to it. Neither word appears in the document.
+                {Object.keys(proposalVariants).length ? <span> <b style={{ color: P.yellow }}>{Object.keys(proposalVariants).length} alternate{Object.keys(proposalVariants).length > 1 ? "s" : ""} in force.</b></span> : null}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Scoped typography for the scope editor */}
       <style>{`
