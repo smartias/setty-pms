@@ -540,10 +540,32 @@ export function expandParagraph(xml, token, blocks) {
  * be wrong. Every part not touched is copied through byte-for-byte, which is
  * what preserves the letterhead.
  */
+/**
+ * Attachment A from the PMS terms HTML (library assembly or the project's own
+ * edited copy): "<h1>STANDARD TERMS AND CONDITIONS</h1><h2>1. Title</h2><p>…"
+ * -> blocks for the {{TERMS_HEADING}} / {{TERMS_BODY}} prototypes.
+ *
+ * The template keeps its own "TERMS AND CONDITIONS" title, so the h1 is
+ * dropped. Heading1 in this template AUTO-NUMBERS through its style, so the
+ * "12. " the PMS generated for print is stripped or Word would show "1. 12.".
+ * The template separates body paragraphs with an empty paragraph, so an
+ * empty body clone follows each body block; headings get none, which is the
+ * pattern the original section used.
+ */
+export function termsHtmlToBlocks(html) {
+  const s = String(html || "").replace(/^\s*<h1>[\s\S]*?<\/h1>/i, "");
+  const out = [];
+  for (const b of htmlToBlocks(s)) {
+    if (b.kind === "h") out.push({ kind: "h", text: b.text.replace(/^\d+\.\s+/, "") });
+    else { out.push(b); out.push({ kind: "p", text: "" }); }
+  }
+  return out;
+}
+
 export async function buildDocx(
   arrayBuffer,
   { omit = [], fields = {}, listTokens = [], scopeHtml = "", scopeSections = {},
-    paragraphs = {}, blank = [] } = {},
+    paragraphs = {}, blank = [], termsHtml = "" } = {},
 ) {
   const parts = await unzip(arrayBuffer);
   const dec = new TextDecoder(), enc = new TextEncoder();
@@ -595,6 +617,19 @@ export async function buildDocx(
         const r = expandBlocks(xml, h, b, blocks);
         if (r.found) { xml = r.xml; scopeBlocks += blocks.length; }
         else notes.push(key + ": template is missing " + h + " (old copy cached?)");
+      }
+      // Attachment A. If the terms part was omitted the prototypes left with
+      // it and there is nothing to do; if no terms were supplied, blank the
+      // prototypes so no {{TERMS_*}} prints.
+      if (!omit.includes("terms")) {
+        const tb = termsHtml ? termsHtmlToBlocks(termsHtml) : [];
+        const tr = expandBlocks(xml, "{{TERMS_HEADING}}", "{{TERMS_BODY}}", tb);
+        if (tr.found) {
+          xml = tr.xml;
+          if (tb.length) scopeBlocks += tb.length;
+        } else if (termsHtml) {
+          notes.push("terms: template is missing {{TERMS_HEADING}} (old copy cached?)");
+        }
       }
       scopeNote = notes.join("; ");
       // Multi-paragraph fields, also before token substitution.
