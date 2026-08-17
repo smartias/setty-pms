@@ -572,6 +572,38 @@ export function provisionsHtmlToBlocks(html) {
   return blocks.length ? blocks.concat([{ kind: "p", text: "" }]) : blocks;
 }
 
+/**
+ * The hourly-rate list in the proposal body: one paragraph per PAIR of
+ * roles, laid out with tab stops (role, rate, role, rate). The template keeps
+ * a single prototype paragraph carrying {{RATE_ROLE_A}} {{RATE_A}}
+ * {{RATE_ROLE_B}} {{RATE_B}}; it is cloned once per two rates from
+ * project.hourlyRates, and an odd last row leaves the right column blank
+ * (the tab runs stay, invisibly). Rates format as "$295.00/hr." to match the
+ * template. An empty list blanks the prototype so no token prints.
+ */
+export function expandRatePairs(xml, rates) {
+  const T = ["{{RATE_ROLE_A}}", "{{RATE_A}}", "{{RATE_ROLE_B}}", "{{RATE_B}}"];
+  const paras = matchAll(PARA_RE, xml);
+  const pm = paras.find((p) =>
+    matchAll(RUN_RE, p[0]).map((r) => runText(r[0])).join("").includes(T[0]));
+  if (!pm) return { xml, found: false };
+  const para = pm[0];
+  const fmt = (r) => "$" + Number(r || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "/hr.";
+  const list = (rates || []).filter((r) => r && String(r.role || "").trim());
+  const rows = [];
+  for (let i = 0; i < list.length; i += 2) rows.push([list[i], list[i + 1] || null]);
+  const fill = (a, b) => {
+    let p = para;
+    p = replaceInParagraph(p, T[0], a ? xmlEscape(String(a.role).trim() + ":") : "");
+    p = replaceInParagraph(p, T[1], a ? fmt(a.rate) : "");
+    p = replaceInParagraph(p, T[2], b ? xmlEscape(String(b.role).trim() + ":") : "");
+    p = replaceInParagraph(p, T[3], b ? fmt(b.rate) : "");
+    return p;
+  };
+  const out = rows.length ? rows.map(([a, b]) => fill(a, b)).join("") : fill(null, null);
+  return { xml: xml.slice(0, pm.index) + out + xml.slice(pm.index + para.length), found: true };
+}
+
 export function termsHtmlToBlocks(html) {
   const s = String(html || "").replace(/^\s*<h1>[\s\S]*?<\/h1>/i, "");
   const out = [];
@@ -585,7 +617,7 @@ export function termsHtmlToBlocks(html) {
 export async function buildDocx(
   arrayBuffer,
   { omit = [], fields = {}, listTokens = [], scopeHtml = "", scopeSections = {},
-    paragraphs = {}, blank = [], termsHtml = "" } = {},
+    paragraphs = {}, blank = [], termsHtml = "", rates = null } = {},
 ) {
   const parts = await unzip(arrayBuffer);
   const dec = new TextDecoder(), enc = new TextEncoder();
@@ -656,6 +688,8 @@ export async function buildDocx(
         }
       }
       scopeNote = notes.join("; ");
+      // Hourly-rate list: one two-column paragraph per pair, from project rates.
+      if (rates) xml = expandRatePairs(xml, rates).xml;
       // Multi-paragraph fields, also before token substitution.
       for (const [tok, html] of Object.entries(paragraphs)) {
         const blocks = htmlToBlocks(html);
