@@ -473,18 +473,77 @@ export function expandBlocks(xml, headingToken, bodyToken, blocks) {
   return { xml: xml.slice(0, start) + out + xml.slice(end), found: true };
 }
 
+/**
+ * Expand ONE token paragraph into as many paragraphs as the HTML has blocks,
+ * for a field like "Project Description: {{PROJECT_DESCRIPTION}}" whose value
+ * is a few paragraphs, not a phrase. Filling it as a field flattened every
+ * paragraph break into one run, which is what "the description formatting
+ * didn't survive" looked like.
+ *
+ * The first block replaces the token in place, so the label and its bold run
+ * survive. Each further block is a clone of the paragraph with every text run
+ * blanked except the token's, which keeps the token run's own formatting (not
+ * the bold label's) and the paragraph's spacing and justification. Heading
+ * blocks get <w:b/> on that run.
+ */
+export function expandParagraph(xml, token, blocks) {
+  if (!blocks.length) return { xml, found: false };
+  const paras = matchAll(PARA_RE, xml);
+  const pm = paras.find((p) =>
+    matchAll(RUN_RE, p[0]).map((r) => runText(r[0])).join("").includes(token));
+  if (!pm) return { xml, found: false };
+  const para = pm[0];
+
+  const first = replaceInParagraph(para, token, xmlEscape(blocks[0].text));
+  const rest = blocks.slice(1).map((b) => {
+    let tokenRunSeen = false;
+    const runs = matchAll(RUN_RE, para);
+    let out = "", cursor = 0;
+    for (const r of runs) {
+      out += para.slice(cursor, r.index);
+      cursor = r.index + r[0].length;
+      if (!new RegExp(TEXT_RE.source).test(r[0])) { out += r[0]; continue; }
+      if (!tokenRunSeen && runText(r[0]).includes(token)) {
+        tokenRunSeen = true;
+        let run = setRunText(r[0], xmlEscape(b.text));
+        if (b.kind === "h") {
+          run = run.includes("<w:rPr>")
+            ? run.replace("<w:rPr>", "<w:rPr><w:b/>")
+            : run.replace(/^(<w:r(?:\s[^>]*)?>)/, "$1<w:rPr><w:b/></w:rPr>");
+        }
+        out += run;
+      } else {
+        out += setRunText(r[0], "");
+      }
+    }
+    out += para.slice(cursor);
+    // Token split across runs: fall back to writing the whole thing into the
+    // paragraph text, formatting of the first run and all.
+    return tokenRunSeen ? out : replaceInParagraph(para, token, xmlEscape(b.text));
+  });
+  return {
+    xml: xml.slice(0, pm.index) + first + rest.join("") + xml.slice(pm.index + para.length),
+    found: true,
+  };
+}
+
 // ── the one call the PMS makes ──────────────────────────────────────────────
 
 /**
  * template bytes + choices -> finished .docx bytes.
  *
  * `omit` names parts to leave out (cover_page, cover_letter, terms,
- * firm_info); `fields` fills {{TOKENS}}. Every part not touched is copied
- * through byte-for-byte, which is what preserves the letterhead.
+ * firm_info); `fields` fills {{TOKENS}}; `paragraphs` maps a token to HTML
+ * that expands into one paragraph per block (see expandParagraph); `blank`
+ * lists tokens to REMOVE together with one following space, for an optional
+ * word like the honorific where a leftover token or a double space would both
+ * be wrong. Every part not touched is copied through byte-for-byte, which is
+ * what preserves the letterhead.
  */
 export async function buildDocx(
   arrayBuffer,
-  { omit = [], fields = {}, listTokens = [], scopeHtml = "", scopeSections = {} } = {},
+  { omit = [], fields = {}, listTokens = [], scopeHtml = "", scopeSections = {},
+    paragraphs = {}, blank = [] } = {},
 ) {
   const parts = await unzip(arrayBuffer);
   const dec = new TextDecoder(), enc = new TextEncoder();
@@ -538,6 +597,16 @@ export async function buildDocx(
         else notes.push(key + ": template is missing " + h + " (old copy cached?)");
       }
       scopeNote = notes.join("; ");
+      // Multi-paragraph fields, also before token substitution.
+      for (const [tok, html] of Object.entries(paragraphs)) {
+        const blocks = htmlToBlocks(html);
+        if (blocks.length) xml = expandParagraph(xml, "{{" + tok + "}}", blocks).xml;
+      }
+    }
+    if (blank.length) {
+      const gone = {};
+      for (const tok of blank) { gone["{{" + tok + "}} "] = ""; gone["{{" + tok + "}}"] = ""; }
+      xml = replaceAll(xml, gone);
     }
     const r = renderDocumentXml(xml, fields, { listTokens });
     if (name === "word/document.xml") unfilled = r.unfilled;

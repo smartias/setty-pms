@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v115-scope-disciplines";
+    window.__appVersion = "2026-08-16-pms-v116-scope-feedback";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -21909,16 +21909,16 @@ async function fetchProposalTemplate() {
 }
 
 // What the app can fill without guessing. Deliberately absent:
-//   CONTACT_HONORIFIC   — inferring Ms/Mr from a name is not something to guess
-// It stays visible as a {{TOKEN}} in the document so it is obvious in Word.
-// PROJECT_DESCRIPTION is filled ONLY from the Project Description box, which
-// the PM wrote for exactly this purpose; it is never derived from the scope.
+//   CONTACT_HONORIFIC   — inferring Ms/Mr from a name is not something to guess.
+//                         The Word dialog asks; blank drops the token and its
+//                         space, and the salutation falls back to the full name.
+//   PROJECT_DESCRIPTION — multi-paragraph, so it goes through buildDocx's
+//                         `paragraphs`, not a field, or the breaks flatten.
 function proposalDocxFields(project) {
   const ent = proposalEntity(project) || {};
   const contacts = (project.projectContacts || {});
   const poc = ((contacts.proposal || []).concat(contacts.pm || []))[0] || {};
   const f = {
-    PROJECT_DESCRIPTION: scopeHtmlToText(scopeSectionHtml(project, "description")),
     // No CLIENT_ADDRESS: architects' street addresses are not something we
     // normally hold, and an empty line in the letter's address block reads
     // worse than no line at all. Removed from the template too.
@@ -21973,6 +21973,15 @@ function exportProposalDocx(project) {
     '<div style="color:#595959;margin-bottom:16px;">' + esc(project.name || "Project") + "</div>" +
     '<div style="font-weight:700;margin-bottom:6px;">Include</div>' +
     '<div id="sdx-parts" style="margin-bottom:16px;"></div>' +
+    '<div style="font-weight:700;margin-bottom:6px;">Addressee</div>' +
+    '<label style="display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:10.5pt;">' +
+      '<span>Honorific</span>' +
+      '<select id="sdx-hon" style="font:inherit;padding:3px 6px;">' +
+        '<option value="">(none: uses the full name)</option>' +
+        '<option>Ms.</option><option>Mr.</option><option>Mx.</option><option>Dr.</option>' +
+      '</select>' +
+      '<span id="sdx-hon-who" style="color:#595959;"></span>' +
+    "</label>" +
     '<div style="font-weight:700;margin-bottom:6px;">Template</div>' +
     '<div id="sdx-src" style="color:#595959;margin-bottom:6px;">Loading from SharePoint…</div>' +
     '<input id="sdx-file" type="file" accept=".docx,.dotx" ' +
@@ -22001,6 +22010,15 @@ function exportProposalDocx(project) {
   const status = card.querySelector("#sdx-status");
   const srcLine = card.querySelector("#sdx-src");
   const fileInput = card.querySelector("#sdx-file");
+  const honSel = card.querySelector("#sdx-hon");
+  {
+    // Show who is being addressed, and preselect an honorific if the contact
+    // record carries one. Never inferred from the name.
+    const contacts = (project.projectContacts || {});
+    const poc = ((contacts.proposal || []).concat(contacts.pm || []))[0] || {};
+    card.querySelector("#sdx-hon-who").textContent = poc.name ? "for " + poc.name : "(no proposal contact on this project)";
+    if (poc.honorific && [...honSel.options].some((o) => o.value === poc.honorific)) honSel.value = poc.honorific;
+  }
   const close = () => wrap.remove();
   card.querySelector("#sdx-cancel").onclick = close;
   wrap.onclick = (e) => { if (e.target === wrap) close(); };
@@ -22030,9 +22048,21 @@ function exportProposalDocx(project) {
       // (Included, Additional, Excluded). A legacy single-blob project arrives
       // with everything in `included` via the scopeSectionHtml fallback.
       const secs = scopeSectionsOf(project);
+      const fields = proposalDocxFields(project);
+      const hon = honSel.value;
+      const blank = [];
+      if (hon) fields.CONTACT_HONORIFIC = hon;
+      else {
+        // No honorific: drop the token and its space everywhere, and greet by
+        // full name so the letter never opens "Dear Doe:".
+        blank.push("CONTACT_HONORIFIC");
+        if (fields.CONTACT_NAME) fields.CONTACT_LAST_NAME = fields.CONTACT_NAME;
+      }
       const { bytes, unfilled, scopeBlocks, scopeNote } = await window.SettyDocx.buildDocx(source, {
-        omit, fields: proposalDocxFields(project),
+        omit, fields, blank,
         scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded },
+        // The description keeps its paragraphs (and bullets, one per line).
+        paragraphs: { PROJECT_DESCRIPTION: secs.description },
       });
       const base = (project.projectNumber ? project.projectNumber + " - " : "") +
                    (project.name || "Proposal");
@@ -22974,6 +23004,11 @@ function ScopeView({ project, onChange, clients = [] }) {
   const [clauseLib, setClauseLib] = React.useState(null);   // null = not yet fetched
   const [clauseSel, setClauseSel] = React.useState({});      // clause_key -> true
   const [clauseParams, setClauseParams] = React.useState({}); // clause_key -> {TOKEN: value}
+  // The library will be several times its current size, so: a search box, and
+  // groups that collapse. null = automatic (open the group that feeds the box
+  // you are in); a click pins a group open or closed for this session.
+  const [clauseQuery, setClauseQuery] = React.useState("");
+  const [clauseOpen, setClauseOpen] = React.useState({});
   // AI draft import (proposal-draft JSON v1, produced by the drafting skill).
   // Textarea is uncontrolled (ref) so pasting a large draft doesn't re-render
   // the whole ScopeView per keystroke (CommitInput lesson).
@@ -23516,26 +23551,45 @@ function ScopeView({ project, onChange, clients = [] }) {
     saveContent();
   }
 
-  // execCommand('indent') only works on list items in modern browsers.
-  // For paragraphs and headings we walk up to the nearest block-level
-  // child of the editor and nudge its margin-left by 30 px.
+  // Indent / outdent what is SELECTED, not the whole block it sits in.
+  //   Inside a list: the native command nests or un-nests exactly the selected
+  //   items (sub-items under the item above). Walking up to the box's direct
+  //   child, as this used to, always found the whole <ul> and shifted the
+  //   entire list, which is the "indents the entire text block" complaint.
+  //   Paragraphs and headings: execCommand('indent') would wrap them in a
+  //   <blockquote>, so nudge margin-left 30 px on EVERY selected block, not
+  //   only the one under the caret. Bare text typed straight into an empty
+  //   box has no block yet; wrap it in <p> first so it can be moved at all.
   function customIndentOutdent(isIndent) {
     const editor = editorRef.current;
     if (!editor) return;
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) return;
-    // Walk up from the anchor node until we find a direct child of the editor.
     let node = sel.anchorNode;
-    while (node && node.parentNode !== editor) node = node.parentNode;
-    if (!node || node === editor) {
-      // Fallback: native command still handles lists correctly.
+    let inList = false;
+    for (let n = node; n && n !== editor; n = n.parentNode) {
+      if (n.nodeType === 1 && n.tagName === "LI") { inList = true; break; }
+    }
+    if (inList) {
       document.execCommand(isIndent ? "indent" : "outdent", false, null);
       editor.focus();
       saveContent();
       return;
     }
-    const current = parseInt(node.style.marginLeft || "0", 10) || 0;
-    node.style.marginLeft = Math.max(0, current + (isIndent ? 30 : -30)) + "px";
+    // Wrap stray top-level text nodes so they are addressable blocks.
+    Array.from(editor.childNodes).forEach(n => {
+      if (n.nodeType === 3 && n.textContent.trim()) {
+        const p = document.createElement("p");
+        editor.insertBefore(p, n);
+        p.appendChild(n);
+      }
+    });
+    const blocks = selectedBlocks().filter(b => b.nodeType === 1);
+    if (!blocks.length) { editor.focus(); return; }
+    blocks.forEach(b => {
+      const current = parseInt(b.style.marginLeft || "0", 10) || 0;
+      b.style.marginLeft = Math.max(0, current + (isIndent ? 30 : -30)) + "px";
+    });
     editor.focus();
     saveContent();
   }
@@ -23818,6 +23872,102 @@ function ScopeView({ project, onChange, clients = [] }) {
 
   const lastLocked = [...auditLog].reverse().find(e => e.action === "locked");
 
+  // ── Clause library panel ───────────────────────────────────────────────────
+  // Sits BESIDE the boxes, not above them: clauses insert at the caret, so you
+  // need to see the box and the list at the same time. Same height as the
+  // editor frame, scrolls on its own. Groups auto-open for the box you are in.
+  const BLOCKS_FOR_BOX = { included: ["included"], additional: ["additional"], excluded: ["excluded"], description: ["understanding", "approach"] };
+  const q = clauseQuery.trim().toLowerCase();
+  function clauseMatches(c) {
+    if (!q) return true;
+    const hay = (c.title + " " + c.clause_key + " " + String(c.body_html || "").replace(/<[^>]+>/g, " ")).toLowerCase();
+    return q.split(/\s+/).every(w => hay.includes(w));
+  }
+  function groupIsOpen(block) {
+    if (q) return true;
+    if (clauseOpen[block] != null) return clauseOpen[block];
+    return (BLOCKS_FOR_BOX[activeKey] || []).includes(block);
+  }
+  const selectedCount = Object.keys(clauseSel).filter(k => clauseSel[k]).length;
+  const clausePanel = showClauses && clauseLib ? (
+    <div style={{ width: 380, flexShrink: 0, display: "flex", flexDirection: "column", border: "1px solid " + P.accent, borderRadius: 8, background: P.card, overflow: "hidden" }}>
+      <div style={{ padding: "10px 12px 8px", borderBottom: "1px solid " + P.border, flexShrink: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>📚 Clause Library</div>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <Btn variant="primary" small onClick={insertSelectedClauses} disabled={scopeLocked || !selectedCount}
+              title="Inserts at the caret in the box you were typing in; clauses that belong to another box go to the end of that box.">
+              ⤵ Insert{selectedCount ? " " + selectedCount : ""}
+            </Btn>
+            <Btn variant="ghost" small onClick={() => setShowClauses(false)}>Close</Btn>
+          </div>
+        </div>
+        <input value={clauseQuery} onChange={e => setClauseQuery(e.target.value)} placeholder="Search clauses (title or wording)…"
+          style={{ width: "100%", marginTop: 8, fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1px solid " + P.border, background: P.bg, color: P.text }} />
+        <div style={{ fontSize: 11, color: P.textDim, marginTop: 6, lineHeight: 1.45 }}>
+          Click into a box, put the caret where the text should go, tick clauses, Insert. Greyed = a discipline switched off. Wording is managed in the Admin Console.
+        </div>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "6px 8px 10px" }}>
+        {CLAUSE_BLOCKS.map(([block, label]) => {
+          const all = (clauseLib || []).filter(c => c.block === block);
+          if (!all.length) return null;
+          const group = all.filter(clauseMatches);
+          if (q && !group.length) return null;
+          const open = groupIsOpen(block);
+          const nSel = all.filter(c => clauseSel[c.clause_key]).length;
+          const feeds = (BLOCKS_FOR_BOX[activeKey] || []).includes(block);
+          return (
+            <div key={block} style={{ marginBottom: 4 }}>
+              <button type="button" onClick={() => setClauseOpen({ ...clauseOpen, [block]: !open })}
+                style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: "6px 4px", display: "flex", alignItems: "center", gap: 6,
+                         fontSize: 11, fontWeight: 700, color: feeds ? P.accentLight : P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "inherit" }}>
+                <span style={{ width: 12, display: "inline-block" }}>{open ? "▾" : "▸"}</span>
+                <span style={{ flex: 1 }}>{label}</span>
+                <span style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0, color: P.textDim }}>{nSel ? nSel + " ticked · " : ""}{group.length}</span>
+              </button>
+              {open && group.map(c => {
+                const tokens = clauseTokenNames(c);
+                const applies = clauseAppliesToDisciplines(c, activeDisc);
+                const checked = applies && !!clauseSel[c.clause_key];
+                return (
+                  <div key={c.clause_key} style={{ padding: "3px 6px", borderRadius: 6, background: checked ? P.accentDim : "transparent", marginBottom: 1, opacity: applies ? 1 : 0.45 }}>
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: applies ? "pointer" : "not-allowed", fontSize: 12.5, lineHeight: 1.35 }}
+                      title={applies ? String(c.body_html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) : "Hidden by the discipline settings: " + clauseDisciplineTag(c, activeDisc)}>
+                      <input type="checkbox" checked={checked} disabled={!applies}
+                        onChange={e => setClauseSel({ ...clauseSel, [c.clause_key]: e.target.checked })}
+                        style={{ marginTop: 2, flexShrink: 0 }} />
+                      <span style={{ flex: 1 }}>{c.title}</span>
+                      {!applies && (
+                        <span style={{ fontSize: 10, color: P.textDim, border: "1px solid " + P.border, borderRadius: 8, padding: "0 5px", whiteSpace: "nowrap", flexShrink: 0 }}>
+                          {clauseDisciplineTag(c, activeDisc)}
+                        </span>
+                      )}
+                    </label>
+                    {checked && tokens.length > 0 && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "3px 0 2px 24px" }}>
+                        {tokens.map(tok => (
+                          <label key={tok} style={{ fontSize: 11, color: P.textDim, display: "flex", alignItems: "center", gap: 4 }}>
+                            {((c.params || {})[tok] || {}).label || tok}:
+                            <input
+                              value={(clauseParams[c.clause_key] || {})[tok] ?? (((c.params || {})[tok] || {}).default || "")}
+                              onChange={e => setClauseParams({ ...clauseParams, [c.clause_key]: { ...(clauseParams[c.clause_key] || {}), [tok]: e.target.value } })}
+                              style={{ fontSize: 11.5, padding: "2px 6px", width: 110 }}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div style={{ paddingBottom: 40 }}>
       {/* Header row */}
@@ -23961,71 +24111,6 @@ function ScopeView({ project, onChange, clients = [] }) {
         </div>
       )}
 
-      {/* Clause library panel — assemble from approved firm-standard blocks.
-          Selected clauses insert at the cursor with standard headings. */}
-      {showClauses && clauseLib && (
-        <div style={{ border: "1px solid " + P.accent, borderRadius: 8, padding: "14px 16px", marginBottom: 16, background: P.card }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>📚 Firm Clause Library</div>
-              <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 2 }}>
-                Approved building blocks. Tick what applies, adjust the fill-ins, then insert — each clause lands in its own box below where you can still edit it. Clauses and line items for disciplines switched off above are greyed out. Library wording is managed in the Admin Console.
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-              <Btn variant="primary" small onClick={insertSelectedClauses} disabled={scopeLocked || !Object.values(clauseSel).some(Boolean)}>⤵ Insert Selected</Btn>
-              <Btn variant="ghost" small onClick={() => setShowClauses(false)}>Close</Btn>
-            </div>
-          </div>
-          <div style={{ maxHeight: 340, overflowY: "auto", paddingRight: 6 }}>
-            {CLAUSE_BLOCKS.map(([block, label]) => {
-              const group = (clauseLib || []).filter(c => c.block === block);
-              if (!group.length) return null;
-              return (
-                <div key={block} style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", margin: "6px 0 4px" }}>{label}</div>
-                  {group.map(c => {
-                    const tokens = clauseTokenNames(c);
-                    const applies = clauseAppliesToDisciplines(c, activeDisc);
-                    const checked = applies && !!clauseSel[c.clause_key];
-                    return (
-                      <div key={c.clause_key} style={{ padding: "4px 6px", borderRadius: 6, background: checked ? P.accentDim : "transparent", marginBottom: 2, opacity: applies ? 1 : 0.45 }}>
-                        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: applies ? "pointer" : "not-allowed", fontSize: 13 }}
-                          title={applies ? "" : "Hidden by the discipline settings above: " + clauseDisciplineTag(c, activeDisc)}>
-                          <input type="checkbox" checked={checked} disabled={!applies}
-                            onChange={e => setClauseSel({ ...clauseSel, [c.clause_key]: e.target.checked })}
-                            style={{ marginTop: 3 }} />
-                          <span>{c.title}</span>
-                          {!applies && (
-                            <span style={{ fontSize: 10.5, color: P.textDim, border: "1px solid " + P.border, borderRadius: 8, padding: "0 6px", whiteSpace: "nowrap", marginTop: 1 }}>
-                              {clauseDisciplineTag(c, activeDisc)}
-                            </span>
-                          )}
-                        </label>
-                        {checked && tokens.length > 0 && (
-                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "4px 0 2px 26px" }}>
-                            {tokens.map(tok => (
-                              <label key={tok} style={{ fontSize: 11.5, color: P.textDim, display: "flex", alignItems: "center", gap: 5 }}>
-                                {((c.params || {})[tok] || {}).label || tok}:
-                                <input
-                                  value={(clauseParams[c.clause_key] || {})[tok] ?? (((c.params || {})[tok] || {}).default || "")}
-                                  onChange={e => setClauseParams({ ...clauseParams, [c.clause_key]: { ...(clauseParams[c.clause_key] || {}), [tok]: e.target.value } })}
-                                  style={{ fontSize: 12, padding: "2px 6px", width: 120 }}
-                                />
-                              </label>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* In-app generation panel — RFP text in, proposal-draft JSON out, then
           the shared import preview takes over. Dark-launched behind the firm
           API key: unconfigured deployments show the pending-setup note. */}
@@ -24163,9 +24248,11 @@ function ScopeView({ project, onChange, clients = [] }) {
         .scope-editor li::marker { font-family: 'Calibri', Calibri, 'Trebuchet MS', sans-serif; font-size: 10pt; }
       `}</style>
 
+      {/* Editor frame + (optional) clause panel side by side, same height. */}
+      <div style={{ display: "flex", gap: 12, alignItems: "stretch", height: 760 }}>
       {/* Sticky toolbar + scrollable editor — outer div is the fixed-height frame */}
       <div style={{
-        display: "flex", flexDirection: "column",
+        display: "flex", flexDirection: "column", flex: 1, minWidth: 0,
         height: 760,
         border: "1px solid " + (scopeLocked ? P.green : P.border),
         borderRadius: 8,
@@ -24282,6 +24369,8 @@ function ScopeView({ project, onChange, clients = [] }) {
             );
           })}
         </div>
+      </div>
+      {clausePanel}
       </div>
 
       <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
