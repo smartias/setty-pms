@@ -57,8 +57,17 @@
     "March 16, 2023": "{{DATE}}",
     "190 Glen Street": "",
     "This project consists of the renovation of the entire 3rd floor and the lobby portion of the 1st floor of Heritage Hall.  Our proposal is based a scope of work as outlined in the RFP dated February 10, 2023 with a construction budget of $1.8M.": "{{PROJECT_DESCRIPTION}}",
-    "{{CONTACT_HONORIFIC}}. {{CONTACT_NAME}}": "{{CONTACT_HONORIFIC}} {{CONTACT_NAME}}"
+    "{{CONTACT_HONORIFIC}}. {{CONTACT_NAME}}": "{{CONTACT_HONORIFIC}} {{CONTACT_NAME}}",
+    "Principal:": "{{RATE_ROLE_A}}",
+    "$295.00/hr.": "{{RATE_A}}",
+    "Project Manager:": "{{RATE_ROLE_B}}",
+    "$191.00/hr.": "{{RATE_B}}"
   },
+  "notes_rates": "The hourly-rate list after PROPOSAL PROVISIONS was six hard-coded two-column lines (2023 rates, and lines 2-6 even lacked the $ on the left column). Line 1 is kept as a FOUR-token prototype (role/rate, tab, role/rate) and the app clones one paragraph per pair from project.hourlyRates; lines 2-6 are deleted. The '3% yearly escalation' sentence is policy text and stays.",
+  "delete_ranges": [
+    { "first": "Sr. Mechanical Engineer:185.00/hr.Mechanical Engineer:160.00/hr.",
+      "last":  "Commissioning Agent:162.00/hr.Administrative/Clerical:93.00/hr." }
+  ],
   "notes_honorific": "The body header read 'Ms. Jane' with the period OUTSIDE the txtPOCTitle3 bookmark while the letter reads '{{CONTACT_HONORIFIC}} {{CONTACT_NAME}}' with no period. Normalised so the app supplies the honorific WITH its period (Ms.) or drops the token and its trailing space entirely. Must run last in auto: it matches tokens that only exist after the bookmark pass.",
 
   "block_ranges": [
@@ -118,6 +127,7 @@
     "212 Architects", "SUNY Maritime", "Jane Architect", "KARCH@",
     "KSchmitt@", "212architects.com", "March 31, 2023", "March 21, 2023",
     "March 16, 2023", "190 Glen Street", "Heritage Hall", "February 10, 2023", "$1.8M",
-    "Dear {{CONTACT_HONORIFIC}} Architect", "Architect:"
+    "Dear {{CONTACT_HONORIFIC}} Architect", "Architect:",
+    "$295.00/hr.", "185.00/hr.", "Commissioning Agent:162.00"
   ]
 }

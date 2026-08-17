@@ -134,6 +134,18 @@ def insert_prototype_section(xml, cfg):
     return xml[:pos] + heading + proto_h + proto_b + xml[pos:]
 
 
+def delete_range(xml, first_text, last_text):
+    """Remove the paragraph span [first_text .. last_text] entirely (exact
+    text match, like collapse). For example rows a prototype now stands for."""
+    spans = list(PARA_RE.finditer(xml))
+    i = next((k for k, m in enumerate(spans) if ptext(m.group(0)).strip() == first_text), None)
+    j = next((k for k, m in enumerate(spans) if ptext(m.group(0)).strip() == last_text), None)
+    if i is None or j is None or j < i:
+        raise SystemExit(f"  delete_range failed: first={'ok' if i is not None else 'MISSING'} "
+                         f"last={'ok' if j is not None else 'MISSING'}")
+    return xml[: spans[i].start()] + xml[spans[j].end():]
+
+
 def blank(xml, indices):
     spans = list(PARA_RE.finditer(xml))
     out, cursor = [], 0
@@ -206,6 +218,8 @@ def build(cfg):
             xml = blank(xml, set(cfg["blank_paragraphs"]))
         for l in cfg.get("lists", []):
             xml = collapse(xml, l["first"], l["last"], l["token"])
+        for r in cfg.get("delete_ranges", []):
+            xml = delete_range(xml, r["first"], r["last"])
         # Applied LAST-FIRST: each collapse removes children, so doing the
         # later sections first keeps the earlier anchors where the text
         # scan expects them.

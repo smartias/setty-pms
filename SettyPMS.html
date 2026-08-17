@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v122-assumptions-provisions-boxes";
+    window.__appVersion = "2026-08-17-pms-v123-word-rate-list";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22212,6 +22212,9 @@ function exportProposalDocx(project) {
         // The description keeps its paragraphs (and bullets, one per line).
         paragraphs: { PROJECT_DESCRIPTION: secs.description },
         termsHtml,
+        // The body's hourly-rate list: the project's schedule (client
+        // schedule if loaded, else firm standard), same source as Attachment B.
+        rates: (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT,
       });
       const base = (project.projectNumber ? project.projectNumber + " - " : "") +
                    (project.name || "Proposal");
