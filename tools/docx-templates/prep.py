@@ -72,22 +72,33 @@ def collapse_to_prototypes(xml, cfg):
     kids = S.top_level_children(xml)
     texts = [S.child_text(xml, k).strip() for k in kids]
     try:
-        lo = next(i for i, t in enumerate(texts) if t.startswith(cfg["after"]))
-        hi = next(i for i, t in enumerate(texts) if t.startswith(cfg["before"]))
-    except StopIteration:
+        # "after" may occur more than once (Attachment A's title also appears
+        # in the body); after_occurrence picks which one, 1-based.
+        after_hits = [i for i, t in enumerate(texts) if t.startswith(cfg["after"])]
+        lo = after_hits[int(cfg.get("after_occurrence", 1)) - 1]
+        hi = next(i for i, t in enumerate(texts) if i > lo and t.startswith(cfg["before"]))
+    except (StopIteration, IndexError):
         raise SystemExit(f"  block_range anchors not found: "
                          f"{cfg['after']!r} .. {cfg['before']!r}")
 
     # First two non-empty children after the anchor are the heading and body
-    # examples; use them as the prototypes.
+    # examples by default; heading_match / body_match (text prefixes) choose
+    # explicitly when the first paragraphs are not representative (Attachment
+    # A opens with a bold-lead body paragraph, not a Heading1).
     body_idx = [i for i in range(lo + 1, hi) if texts[i]]
     if len(body_idx) < 2:
         raise SystemExit("  block_range: need at least two non-empty paragraphs")
-    proto_h = set_paragraph_text(kids[body_idx[0]][1] and
-                                 xml[kids[body_idx[0]][1]:kids[body_idx[0]][2]],
-                                 cfg["heading_token"])
-    proto_b = set_paragraph_text(xml[kids[body_idx[1]][1]:kids[body_idx[1]][2]],
-                                 cfg["body_token"])
+    def pick(key, default_i):
+        if not cfg.get(key):
+            return default_i
+        try:
+            return next(i for i in body_idx if texts[i].startswith(cfg[key]))
+        except StopIteration:
+            raise SystemExit(f"  block_range {key} not found: {cfg[key]!r}")
+    h_i = pick("heading_match", body_idx[0])
+    b_i = pick("body_match", body_idx[1])
+    proto_h = set_paragraph_text(xml[kids[h_i][1]:kids[h_i][2]], cfg["heading_token"])
+    proto_b = set_paragraph_text(xml[kids[b_i][1]:kids[b_i][2]], cfg["body_token"])
     start = kids[lo + 1][1]
     end = kids[hi - 1][2]
     return xml[:start] + proto_h + proto_b + xml[end:]

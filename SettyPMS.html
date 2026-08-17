@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v120-nyc-calendar-owner-path";
+    window.__appVersion = "2026-08-17-pms-v121-word-attachment-a-from-library";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22200,11 +22200,18 @@ function exportProposalDocx(project) {
         blank.push("CONTACT_HONORIFIC");
         if (fields.CONTACT_NAME) fields.CONTACT_LAST_NAME = fields.CONTACT_NAME;
       }
+      // Attachment A comes from the same place Print and the Terms editor
+      // read: the project's edited copy if it has one, else the library
+      // terms. Warm the library first so a fresh session cannot fall back to
+      // the compiled-in constant.
+      await ensureTermsDefault();
+      const termsHtml = project.termsContent || termsDefaultHtml();
       const { bytes, unfilled, scopeBlocks, scopeNote } = await window.SettyDocx.buildDocx(source, {
         omit, fields, blank,
         scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded },
         // The description keeps its paragraphs (and bullets, one per line).
         paragraphs: { PROJECT_DESCRIPTION: secs.description },
+        termsHtml,
       });
       const base = (project.projectNumber ? project.projectNumber + " - " : "") +
                    (project.name || "Proposal");
@@ -24360,7 +24367,8 @@ function ScopeView({ project, onChange, clients = [] }) {
         <div>
           <b>📄 Word</b> builds the full proposal as an editable <code>.docx</code> and lets you
           tick which parts to include, so you are not deleting a cover letter by hand afterwards.
-          Cover page, cover letter, Attachment A and the firm info sheet are each optional.
+          Cover page, cover letter, Attachment A and the firm info sheet are each optional. Attachment A
+          is the same Terms &amp; Conditions you see below (the firm library, or this project's edited copy).
         </div>
         <div style={{ marginTop: 6 }}>
           The four boxes below flow into both: Included, Additional and Excluded each land in
