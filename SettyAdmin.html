@@ -929,7 +929,12 @@ async function testFeed() {
 // ── Proposal Library (pms_proposal_clauses + client rate schedules) ──────────
 // The governed building blocks the PMS clause picker assembles from. Writes
 // are RLS-gated on the proposal.library capability (admins pass implicitly).
-const LIB_BLOCKS = ["included", "additional", "excluded", "assumptions", "provisions", "understanding", "approach", "other"];
+// "terms" = the Standard Terms and Conditions (Attachment A), one row per
+// numbered section. The NUMBER and heading are generated from sort order when
+// the PMS assembles the document, so a row's title is just "Termination", never
+// "12. Termination"; params {"noHeading":true} renders body only (the preamble).
+const LIB_BLOCKS = ["included", "additional", "excluded", "assumptions", "provisions", "understanding", "approach", "other", "terms"];
+const LIB_BLOCK_LABEL = { terms: "terms (Standard Terms & Conditions, Attachment A: numbered from sort order)" };
 const LIB_STATUS_PILL = { approved: "ok", draft: "warn", retired: "bad" };
 
 async function libLoad() {
@@ -1058,10 +1063,19 @@ async function renderLibrary() {
   const clauseRows = LIB_BLOCKS.map(block => {
     const group = lib.filter(c => c.block === block);
     if (!group.length) return "";
-    return `<tr><td colspan="5" style="background:var(--card2,#f4f6f8);font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.05em">${block}</td></tr>` +
-      group.map(c => `
+    // Terms show the number they will print with (approved, headed rows in
+    // sort order), so a reorder is visible here before it reaches a client.
+    let termNo = 0;
+    return `<tr><td colspan="5" style="background:var(--card2,#f4f6f8);font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.05em">${esc(LIB_BLOCK_LABEL[block] || block)}</td></tr>` +
+      group.map(c => {
+        let prefix = "";
+        if (block === "terms" && !(c.params && c.params.noHeading)) {
+          if (c.status === "approved") { termNo += 1; prefix = termNo + ". "; }
+          else prefix = "(unnumbered until approved) ";
+        }
+        return `
         <tr>
-          <td><b>${esc(c.title)}</b><br><span style="color:var(--muted);font-size:11px">${esc(c.clause_key)} · v${c.version} · sort ${c.sort}</span></td>
+          <td><b>${esc(prefix)}${esc(c.title)}</b><br><span style="color:var(--muted);font-size:11px">${esc(c.clause_key)} · v${c.version} · sort ${c.sort}</span></td>
           <td><span class="pill ${LIB_STATUS_PILL[c.status] || "info"}">${esc(c.status)}</span></td>
           <td style="max-width:340px"><div style="max-height:54px;overflow:hidden;font-size:11.5px;color:var(--dim)">${esc(String(c.body_html).replace(/<[^>]+>/g, " ").slice(0, 180))}</div></td>
           <td style="white-space:nowrap;font-size:11px;color:var(--muted)">${rel(c.updated_at)}${c.updated_by ? "<br>" + esc(c.updated_by) : ""}</td>
@@ -1070,7 +1084,8 @@ async function renderLibrary() {
             ${c.status !== "approved" ? `<button class="btn" title="Approve" onclick="libSetStatus('${esc(c.clause_key)}','approved')">✔</button>` : ""}
             ${c.status !== "retired" ? `<button class="btn" title="Retire" onclick="libSetStatus('${esc(c.clause_key)}','retired')">🗑</button>` : ""}
           </td>
-        </tr>`).join("");
+        </tr>`;
+      }).join("");
   }).join("");
 
   v.innerHTML = `
@@ -1079,6 +1094,7 @@ async function renderLibrary() {
         <div>
           <b>📚 Clause library</b> — the firm-standard building blocks the PMS Scope tab assembles from.
           Only <b>approved</b> clauses appear in the PM-facing picker; drafts are the review queue (future: mined suggestions land here).
+          The <b>terms</b> block is the Standard Terms &amp; Conditions (Attachment A): one row per section, numbered from sort order when the PMS assembles it, so edit the wording here and every new proposal picks it up. Projects that already customised their terms keep their copy until someone clicks Reset to Default on the Scope tab.
           ${drafts ? `<span class="pill warn">${drafts} draft${drafts > 1 ? "s" : ""} awaiting review</span>` : ""}
         </div>
         <div class="row">

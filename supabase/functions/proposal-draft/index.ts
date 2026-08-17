@@ -82,6 +82,9 @@ async function loadCatalog(): Promise<string> {
     .from("pms_proposal_clauses")
     .select("clause_key, block, title, body_html, params")
     .eq("status", "approved")
+    // The Standard Terms and Conditions live in the same table (block
+    // "terms") but are Attachment A boilerplate, not selectable clauses.
+    .neq("block", "terms")
     .order("block")
     .order("sort");
   if (error) throw new Error("clause library read failed: " + error.message);
