@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v117-scope-variants";
+    window.__appVersion = "2026-08-17-pms-v118-fee-variant-follows-feetype";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22995,6 +22995,33 @@ function variantOptionLabel(clause) {
   const t = String((clause && clause.title) || "");
   return (t.includes(":") ? t.slice(t.indexOf(":") + 1) : t).replace(/\s*\((Standard|Alternate)\)\s*$/i, "").trim() || t;
 }
+// A pair can be DRIVEN by a project field instead of chosen by hand: an
+// alternate carrying params.drivenBy ("feeType") and params.drivenValues
+// (["Hourly","Hourly Not-to-Exceed"]) is in force whenever the project's
+// field holds one of those values, otherwise the standard is. Fee Structure
+// works this way, so the provision can never disagree with the Fee Type on
+// the Overview/Contract tab (Hourly IS time and materials). Returns
+// {key, field, value, alternate} or null when the pair is free to choose.
+function drivenVariantChoice(pair, project) {
+  const alts = (pair && pair.alternates) || [];
+  const driven = alts.find(a => a.params && a.params.drivenBy);
+  if (!driven) return null;
+  const field = String(driven.params.drivenBy);
+  const value = project ? project[field] : undefined;
+  const hits = alts.filter(a => a.params && a.params.drivenBy === field
+    && (Array.isArray(a.params.drivenValues) ? a.params.drivenValues : [a.params.drivenValues]).map(String).includes(String(value == null ? "" : value)));
+  return { key: hits.length ? hits[0].clause_key : pair.key, field, value: value == null ? "" : String(value), alternate: hits[0] || null };
+}
+// Stored choices overlaid with the driven pairs: what is actually in force.
+function effectiveVariants(project, lib) {
+  const out = { ...((project && project.proposalVariants) || {}) };
+  variantPairs(lib).forEach(pair => {
+    const d = drivenVariantChoice(pair, project);
+    if (!d) return;
+    if (d.key === pair.key) delete out[pair.key]; else out[pair.key] = d.key;
+  });
+  return out;
+}
 // Which key is in force for a pair: the stored choice, else the standard.
 function chosenVariantKey(standardKey, variants) {
   return (variants && variants[standardKey]) || standardKey;
@@ -23202,10 +23229,13 @@ function ScopeView({ project, onChange, clients = [] }) {
   const activeDisc = scopeDisciplinesOf(project);
   const discTokens = disciplineTokens(activeDisc);
   // Standard/Alternate provision choices, per project (see variantPairs).
-  const proposalVariants = project.proposalVariants || {};
+  // What is in force: hand choices, with driven pairs (Fee Structure follows
+  // feeType) laid over the top. Everything downstream reads THIS, never the
+  // raw stored map, so a stale stored value can never win over the field.
+  const proposalVariants = effectiveVariants(project, clauseLib);
   function setVariant(standardKey, chosenKey) {
     if (scopeLocked) return;
-    const next = { ...proposalVariants };
+    const next = { ...(project.proposalVariants || {}) }; // the stored map, not the overlay
     if (!chosenKey || chosenKey === standardKey) delete next[standardKey]; else next[standardKey] = chosenKey;
     onChange({ ...project, proposalVariants: next });
   }
@@ -24353,6 +24383,24 @@ function ScopeView({ project, onChange, clients = [] }) {
                 const chosen = chosenVariantKey(pair.key, proposalVariants);
                 const options = [pair.standard].concat(pair.alternates);
                 const isStd = chosen === pair.key;
+                const driven = drivenVariantChoice(pair, project);
+                if (driven) {
+                  // Set by a project field, not by hand: show what is in force
+                  // and where it comes from. Fee Type lives on Overview/Contract.
+                  const inForce = options.find(o => o.clause_key === driven.key) || pair.standard;
+                  const fieldLabel = driven.field === "feeType" ? "Fee Type" : driven.field;
+                  return (
+                    <div key={pair.key} aria-label={pair.label}
+                      title={"Follows " + fieldLabel + " on the Overview / Contract tab. Change it there and this updates."}
+                      style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 8px", borderRadius: 14, border: "1px solid " + (isStd ? P.border : P.yellow), background: isStd ? "transparent" : P.yellowDim }}>
+                      <span style={{ color: P.textMuted, fontWeight: 600, marginRight: 2 }}>{pair.label}:</span>
+                      <span style={{ color: P.text, fontWeight: 600 }}>{variantOptionLabel(inForce)}</span>
+                      <span style={{ color: P.textDim }}>
+                        · follows {fieldLabel}{driven.value ? " “" + driven.value + "”" : " (unset, so standard)"} on Overview
+                      </span>
+                    </div>
+                  );
+                }
                 return (
                   <div key={pair.key} role="radiogroup" aria-label={pair.label}
                     style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 8px", borderRadius: 14, border: "1px solid " + (isStd ? P.border : P.yellow), background: isStd ? "transparent" : P.yellowDim }}>
@@ -24375,7 +24423,7 @@ function ScopeView({ project, onChange, clients = [] }) {
             </div>
             {pairs.length > 0 && (
               <div style={{ fontSize: 11, color: P.textDim, marginTop: 6, lineHeight: 1.5 }}>
-                Standard is the firm default. Pick the alternate only where it was negotiated; the Clause Library then offers just that option and an AI draft that chose the other side is swapped to it. Neither word appears in the document.
+                Standard is the firm default. Pick the alternate only where it was negotiated; the Clause Library then offers just that option and an AI draft that chose the other side is swapped to it. Fee Structure is not a choice here: it follows the Fee Type on the Overview / Contract tab (Hourly is time and materials). Neither word appears in the document.
                 {Object.keys(proposalVariants).length ? <span> <b style={{ color: P.yellow }}>{Object.keys(proposalVariants).length} alternate{Object.keys(proposalVariants).length > 1 ? "s" : ""} in force.</b></span> : null}
               </div>
             )}
