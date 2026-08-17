@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v113-clause-insert-at-cursor";
+    window.__appVersion = "2026-08-16-pms-v114-scope-boxes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -21910,13 +21910,15 @@ async function fetchProposalTemplate() {
 
 // What the app can fill without guessing. Deliberately absent:
 //   CONTACT_HONORIFIC   — inferring Ms/Mr from a name is not something to guess
-//   PROJECT_DESCRIPTION — the scope is HTML here and needs real conversion
-// Both stay visible as {{TOKENS}} in the document so they are obvious in Word.
+// It stays visible as a {{TOKEN}} in the document so it is obvious in Word.
+// PROJECT_DESCRIPTION is filled ONLY from the Project Description box, which
+// the PM wrote for exactly this purpose; it is never derived from the scope.
 function proposalDocxFields(project) {
   const ent = proposalEntity(project) || {};
   const contacts = (project.projectContacts || {});
   const poc = ((contacts.proposal || []).concat(contacts.pm || []))[0] || {};
   const f = {
+    PROJECT_DESCRIPTION: scopeHtmlToText(scopeSectionHtml(project, "description")),
     // No CLIENT_ADDRESS: architects' street addresses are not something we
     // normally hold, and an empty line in the letter's address block reads
     // worse than no line at all. Removed from the template too.
@@ -22024,10 +22026,13 @@ function exportProposalDocx(project) {
     status.textContent = "Building…";
     try {
       const source = file ? await file.arrayBuffer() : templateBytes;
+      // The three service boxes each replace their own section of the template
+      // (Included, Additional, Excluded). A legacy single-blob project arrives
+      // with everything in `included` via the scopeSectionHtml fallback.
+      const secs = scopeSectionsOf(project);
       const { bytes, unfilled, scopeBlocks, scopeNote } = await window.SettyDocx.buildDocx(source, {
         omit, fields: proposalDocxFields(project),
-        // The scope replaces the template's boilerplate INCLUDED SERVICES.
-        scopeHtml: project.scopeContent || "",
+        scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded },
       });
       const base = (project.projectNumber ? project.projectNumber + " - " : "") +
                    (project.name || "Proposal");
@@ -22775,8 +22780,97 @@ function printHourlyRates(project) {
   win.document.close();
 }
 
+// ── Scope boxes ──────────────────────────────────────────────────────────────
+// The scope is FOUR boxes, not one document. Each box holds only its list; the
+// section heading is generated, so nobody types "EXCLUDED SERVICES" by hand and
+// nothing downstream has to guess which bold line was a heading. Order here is
+// document order (it matches the Word template: Included, Additional, Excluded).
+//
+// Storage: the four fields are the source of truth. project.scopeContent is
+// kept as a DERIVED combined document (headings + boxes) so every existing
+// reader (Print, previews, Send for Review, the MCP connector) keeps working
+// unchanged. Legacy projects have only scopeContent: it loads whole into the
+// Included box, unparsed, by design. Nothing tries to split it.
+const SCOPE_SECTIONS = [
+  { key: "description", field: "scopeDescription", label: "Project Description", heading: "PROJECT DESCRIPTION",
+    hint: "One or two paragraphs on what the project is. Fills the cover letter's project description in Word.", minHeight: 90 },
+  { key: "included",    field: "scopeIncluded",    label: "Included Services",   heading: "INCLUDED SERVICES",
+    hint: "The services in the fee. Number them 1. 2. 3. with the list buttons; the heading is added for you.", minHeight: 220 },
+  { key: "additional",  field: "scopeAdditional",  label: "Additional Services", heading: "ADDITIONAL SERVICES",
+    hint: "Available on request at the hourly rates. Bullets are fine here.", minHeight: 120 },
+  { key: "excluded",    field: "scopeExcluded",    label: "Excluded Services",   heading: "EXCLUDED SERVICES",
+    hint: "Specifically not in this proposal. Bullets are fine here.", minHeight: 120 },
+];
+const SCOPE_SECTION_BY_KEY = Object.fromEntries(SCOPE_SECTIONS.map(s => [s.key, s]));
+
+// Has this project ever been saved with the four boxes? Absent (not empty)
+// fields mean a legacy single-blob project.
+function hasScopeSections(project) {
+  return SCOPE_SECTIONS.some(s => project && project[s.field] != null);
+}
+
+// HTML for one box, with the legacy fallback: a project that predates the
+// boxes shows ALL of scopeContent in Included.
+function scopeSectionHtml(project, key) {
+  if (!project) return "";
+  const sec = SCOPE_SECTION_BY_KEY[key];
+  if (!sec) return "";
+  if (hasScopeSections(project)) return project[sec.field] || "";
+  return key === "included" ? (project.scopeContent || "") : "";
+}
+
+// All four boxes as {key: html}. What the Word export consumes.
+function scopeSectionsOf(project) {
+  const out = {};
+  SCOPE_SECTIONS.forEach(s => { out[s.key] = scopeSectionHtml(project, s.key); });
+  return out;
+}
+
+// Boxes -> one combined HTML document with generated headings. Empty boxes are
+// skipped entirely (no orphan heading). This is what scopeContent holds.
+function composeScopeHtml(sections) {
+  let html = "";
+  SCOPE_SECTIONS.forEach(s => {
+    const body = String((sections || {})[s.key] || "");
+    if (!body.replace(/<[^>]+>|&nbsp;|\s/g, "")) return;
+    html += "<h2>" + s.heading + "</h2>" + body;
+  });
+  return html;
+}
+
+// Box HTML -> plain text, paragraphs joined by a space. For single-paragraph
+// tokens like {{PROJECT_DESCRIPTION}}, which live inside ONE run in Word.
+function scopeHtmlToText(html) {
+  if (!html) return "";
+  // A DOMParser document has no layout, so innerText degrades to textContent
+  // and "</p><p>" runs two paragraphs together. Seed a space at every block
+  // boundary first.
+  const spaced = String(html).replace(/<br\s*\/?>|<\/(p|div|h[1-6]|li|tr|td|th)\s*>/gi, "$& ");
+  try {
+    const doc = new DOMParser().parseFromString(spaced, "text/html");
+    return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+  } catch (_) {
+    return spaced.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+}
+
 function ScopeView({ project, onChange, clients = [] }) {
-  const editorRef = React.useRef(null);
+  // One ref per box. `editorRef` is kept as a name for the dozens of toolbar
+  // helpers below: it resolves to whichever box was focused last, so bold,
+  // lists, indent and paste all act on the box you are actually in.
+  const descriptionRef = React.useRef(null);
+  const includedRef = React.useRef(null);
+  const additionalRef = React.useRef(null);
+  const excludedRef = React.useRef(null);
+  const sectionRefs = { description: descriptionRef, included: includedRef, additional: additionalRef, excluded: excludedRef };
+  const activeKeyRef = React.useRef("included");
+  const [activeKey, setActiveKey] = React.useState("included");
+  const editorRef = { get current() { return sectionRefs[activeKeyRef.current].current; } };
+  function activateSection(key) {
+    if (activeKeyRef.current === key) return;
+    activeKeyRef.current = key;
+    setActiveKey(key);
+  }
   const termsEditorRef = React.useRef(null);
   const [wc, setWc] = React.useState(0);
   const [showLockModal, setShowLockModal] = React.useState(false); // "lock" | "unlock" | false
@@ -22962,42 +23056,44 @@ function ScopeView({ project, onChange, clients = [] }) {
     const openItems = (Array.isArray(d.openItems) ? d.openItems : []).map(s => String(s || "").trim()).filter(Boolean);
 
     const pickBlock = (sels, block) => sels.filter(s => s.clause.block === block);
-    let html = "";
+    // Routed straight into the four boxes. Section headings are NOT emitted
+    // here: the boxes generate them. Understanding + approach are the project
+    // description; assumptions, provisions and open items have no box of their
+    // own and trail the exclusions, which is where they sat in the old
+    // single-document order.
+    const sections = { description: "", included: "", additional: "", excluded: "" };
     const understanding = clean(d.understanding);
     const approach = clean(d.approach);
-    if (understanding) html += "<h2>PROJECT UNDERSTANDING</h2>" + understanding;
-    if (approach) html += "<h2>PROJECT APPROACH</h2>" + approach;
+    if (understanding && approach) {
+      sections.description = "<h3>Project Understanding</h3>" + understanding + "<h3>Project Approach</h3>" + approach;
+    } else {
+      sections.description = understanding || approach;
+    }
     const included = pickBlock(clauseSels, "included");
     if (included.length || authored.length) {
-      html += "<h2>SCOPE OF SERVICES</h2>";
       let n = 0;
-      included.forEach(s => { n += 1; html += "<h3>" + n + ". " + s.clause.title + "</h3>" + stampClause(s.clause, s.params); });
-      authored.forEach(s => { n += 1; html += "<h3>" + n + ". " + s.title + "</h3>" + s.html; });
+      included.forEach(s => { n += 1; sections.included += "<h3>" + n + ". " + s.clause.title + "</h3>" + stampClause(s.clause, s.params); });
+      authored.forEach(s => { n += 1; sections.included += "<h3>" + n + ". " + s.title + "</h3>" + s.html; });
     }
     const additional = pickBlock(clauseSels, "additional");
-    if (additional.length) {
-      html += "<h2>ADDITIONAL SERVICES</h2>";
-      additional.forEach(s => { html += stampClause(s.clause, s.params); });
-    }
+    additional.forEach(s => { sections.additional += stampClause(s.clause, s.params); });
     const excluded = pickBlock(clauseSels, "excluded").concat(excSels);
-    if (excluded.length || excCustom.length) {
-      html += "<h2>EXCLUDED SERVICES</h2>";
-      excluded.forEach(s => { html += stampClause(s.clause, s.params); });
-      if (excCustom.length) html += "<ul>" + excCustom.join("") + "</ul>";
-    }
+    excluded.forEach(s => { sections.excluded += stampClause(s.clause, s.params); });
+    if (excCustom.length) sections.excluded += "<ul>" + excCustom.join("") + "</ul>";
     if (asmSels.length || asmCustom.length) {
-      html += "<h2>ASSUMPTIONS</h2>";
-      asmSels.forEach(s => { html += stampClause(s.clause, s.params); });
-      asmCustom.forEach(h => { html += h; });
+      sections.excluded += "<h2>ASSUMPTIONS</h2>";
+      asmSels.forEach(s => { sections.excluded += stampClause(s.clause, s.params); });
+      asmCustom.forEach(h => { sections.excluded += h; });
     }
     const provisions = pickBlock(clauseSels, "provisions");
     if (provisions.length) {
-      html += "<h2>PROPOSAL PROVISIONS</h2>";
-      provisions.forEach(s => { html += stampClause(s.clause, s.params); });
+      sections.excluded += "<h2>PROPOSAL PROVISIONS</h2>";
+      provisions.forEach(s => { sections.excluded += stampClause(s.clause, s.params); });
     }
     if (openItems.length) {
-      html += "<h2>OPEN ITEMS REQUIRING OWNER DIRECTION</h2><ul>" + openItems.map(s => "<li>" + s.replace(/</g, "&lt;") + "</li>").join("") + "</ul>";
+      sections.excluded += "<h2>OPEN ITEMS REQUIRING OWNER DIRECTION</h2><ul>" + openItems.map(s => "<li>" + s.replace(/</g, "&lt;") + "</li>").join("") + "</ul>";
     }
+    const html = composeScopeHtml(sections);
     if (!html) throw new Error("The draft produced no content. Check that it has understanding, approach, or clauses.");
 
     const phases = (Array.isArray(d.suggestedPhases) ? d.suggestedPhases : [])
@@ -23019,7 +23115,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       phasePctTotal: phases.reduce((a, p) => a + p.pct, 0),
       basisOfFeeNote: String(d.basisOfFeeNote || ""),
     };
-    return { html, report };
+    return { html, sections, report };
   }
   async function validateImport() {
     setImportError("");
@@ -23087,11 +23183,17 @@ function ScopeView({ project, onChange, clients = [] }) {
     }
   }
   function applyImport(mode) {
-    if (scopeLocked || !importParsed || !editorRef.current) return;
-    if (mode === "replace" && (project.scopeContent || "").trim()
-        && !window.confirm("Replace the current scope content with the imported draft?\n\nThe existing scope text will be overwritten (the audit log records the import, but the old text is not kept).")) return;
-    const next = mode === "replace" ? importParsed.html : (project.scopeContent || "") + importParsed.html;
-    editorRef.current.innerHTML = next;
+    if (scopeLocked || !importParsed) return;
+    if (mode === "replace" && hasAnyScopeText()
+        && !window.confirm("Replace the current scope content with the imported draft?\n\nAll four boxes will be overwritten (the audit log records the import, but the old text is not kept).")) return;
+    const secs = importParsed.sections || { included: importParsed.html || "" };
+    SCOPE_SECTIONS.forEach(s => {
+      const el = sectionRefs[s.key].current;
+      if (!el) return;
+      const add = secs[s.key] || "";
+      if (mode === "replace") el.innerHTML = add;
+      else if (add) el.innerHTML += add;
+    });
     const r = importParsed.report;
     const entry = {
       id: uid(), action: genFromAIRef.current ? "ai-generate" : "ai-import", user: getCurrentUser(), date: new Date().toISOString(),
@@ -23099,9 +23201,8 @@ function ScopeView({ project, onChange, clients = [] }) {
         + (r.projectName ? " · " + r.projectName : "") + " · " + r.clauseCount + " clauses"
         + (r.flagged.length ? " · " + r.flagged.length + " flagged" : ""),
     };
-    onChange({ ...project, scopeContent: next, scopeAuditLog: [...auditLog, entry] });
-    const text = editorRef.current.innerText || "";
-    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
+    onChange({ ...project, ...snapshotSections(), scopeAuditLog: [...auditLog, entry] });
+    setWc(countScopeWords());
     setShowImport(false); setImportParsed(null);
     genFromAIRef.current = false;
     if (importTextRef.current) importTextRef.current.value = "";
@@ -23121,19 +23222,30 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (el.contains(r.commonAncestorContainer)) el._pmsCaret = r.cloneRange();
   }
 
+  // Which box a clause block belongs in. Blocks with a box of their own go
+  // there without a heading (the box generates it); everything else lands in
+  // the box you were working in, under its own heading, as before.
+  const CLAUSE_TARGET_BOX = {
+    included: "included", additional: "additional", excluded: "excluded",
+    understanding: "description", approach: "description",
+  };
+
   /**
-   * Insert the ticked clauses AT THE CARET, so boilerplate can be dropped
-   * between paragraphs you have just written rather than always landing at the
-   * bottom. Falls back to appending when there is no caret in the editor yet.
+   * Insert the ticked clauses. Clauses that belong to a box are routed to it;
+   * when that box is the one you were typing in they go AT THE CARET, so
+   * boilerplate can be dropped between paragraphs you have just written rather
+   * than always landing at the bottom. Otherwise they append to their box.
    */
   function insertSelectedClauses() {
-    if (scopeLocked || !editorRef.current) return;
+    if (scopeLocked) return;
     const lib = clauseLib || [];
-    let html = "";
+    const perBox = {}; // box key -> html
     CLAUSE_BLOCKS.forEach(([block, label]) => {
       const picked = lib.filter(c => c.block === block && clauseSel[c.clause_key]);
       if (!picked.length) return;
-      html += "<h2>" + label.toUpperCase() + "</h2>";
+      const target = CLAUSE_TARGET_BOX[block] || activeKeyRef.current;
+      let html = "";
+      if (!CLAUSE_TARGET_BOX[block]) html += "<h2>" + label.toUpperCase() + "</h2>";
       let n = 0;
       picked.forEach(c => {
         // Included clauses get numbered titles (matches the canonical template);
@@ -23141,31 +23253,34 @@ function ScopeView({ project, onChange, clients = [] }) {
         if (block === "included") { n += 1; html += "<h3>" + n + ". " + c.title + "</h3>"; }
         html += stampClause(c, clauseParams[c.clause_key] || {});
       });
+      perBox[target] = (perBox[target] || "") + html;
     });
-    if (!html) return;
+    if (!Object.keys(perBox).length) return;
 
-    const el = editorRef.current;
-    const caret = el._pmsCaret;
-    let placed = false;
-    // The caret is only usable if its node is still in the document; editing
-    // after the caret was stored can detach it.
-    if (caret && el.contains(caret.commonAncestorContainer)) {
-      try {
-        el.focus();
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(caret);
-        // execCommand is deprecated but is what the paste handler already uses
-        // here, and it is the only thing that keeps contenteditable undo working.
-        placed = document.execCommand("insertHTML", false, html);
-      } catch (_) { placed = false; }
-    }
-    if (!placed) el.innerHTML += html;
-    el._pmsCaret = null;
+    Object.keys(perBox).forEach(key => {
+      const el = sectionRefs[key].current;
+      if (!el) return;
+      const html = perBox[key];
+      const caret = el._pmsCaret;
+      let placed = false;
+      // The caret is only usable in the box you were in, and only if its node
+      // is still in the document; editing after it was stored can detach it.
+      if (key === activeKeyRef.current && caret && el.contains(caret.commonAncestorContainer)) {
+        try {
+          el.focus();
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(caret);
+          // execCommand is deprecated but is what the paste handler already uses
+          // here, and it is the only thing that keeps contenteditable undo working.
+          placed = document.execCommand("insertHTML", false, html);
+        } catch (_) { placed = false; }
+      }
+      if (!placed) el.innerHTML += html;
+      el._pmsCaret = null;
+    });
 
     saveContent();
-    const text = el.innerText || "";
-    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
     setClauseSel({});
     setShowClauses(false);
   }
@@ -23232,13 +23347,49 @@ function ScopeView({ project, onChange, clients = [] }) {
   const finalized = project.proposalFinalized || null;
   const canFinalize = pmsCan("proposal.finalize");
 
+  // Load the four boxes once. Legacy projects (no box fields yet) put ALL of
+  // scopeContent into Included, unparsed: scopeSectionHtml handles that.
   React.useEffect(() => {
-    if (editorRef.current) {
-      editorRef.current.innerHTML = project.scopeContent || "";
-      const text = editorRef.current.innerText || "";
-      setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
-    }
+    SCOPE_SECTIONS.forEach(s => {
+      const el = sectionRefs[s.key].current;
+      if (el) el.innerHTML = scopeSectionHtml(project, s.key);
+    });
+    setWc(countScopeWords());
   }, []);
+
+  // Words across all four boxes.
+  function countScopeWords() {
+    let n = 0;
+    SCOPE_SECTIONS.forEach(s => {
+      const el = sectionRefs[s.key].current;
+      const text = el ? (el.innerText || "") : "";
+      if (text.trim()) n += text.trim().split(/\s+/).length;
+    });
+    return n;
+  }
+  // Every save writes ALL FOUR fields from the DOM plus the derived combined
+  // scopeContent. Writing all four (not just the edited one) is what retires
+  // the legacy fallback the moment a legacy project is touched; otherwise the
+  // Included fallback would re-read the freshly composed scopeContent and
+  // duplicate itself on the next save.
+  function snapshotSections() {
+    const patch = {};
+    const secs = {};
+    SCOPE_SECTIONS.forEach(s => {
+      const el = sectionRefs[s.key].current;
+      const html = el ? el.innerHTML : scopeSectionHtml(project, s.key);
+      patch[s.field] = html;
+      secs[s.key] = html;
+    });
+    patch.scopeContent = composeScopeHtml(secs);
+    return patch;
+  }
+  function hasAnyScopeText() {
+    return SCOPE_SECTIONS.some(s => {
+      const el = sectionRefs[s.key].current;
+      return el ? !!(el.innerText || "").trim() : !!scopeSectionHtml(project, s.key).trim();
+    });
+  }
 
   function exec(cmd, val) {
     if (scopeLocked) return;
@@ -23462,10 +23613,8 @@ function ScopeView({ project, onChange, clients = [] }) {
 
   function saveContent() {
     if (scopeLocked) return;
-    const html = editorRef.current ? editorRef.current.innerHTML : "";
-    const text = editorRef.current ? editorRef.current.innerText : "";
-    onChange({ ...project, scopeContent: html });
-    setWc(text.trim() ? text.trim().split(/\s+/).length : 0);
+    onChange({ ...project, ...snapshotSections() });
+    setWc(countScopeWords());
   }
 
   function doLock() {
@@ -23510,6 +23659,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       theme: project.proposalTheme || "classic",
       entity: project.proposalEntity || "sa-ny",
       scopeContent: project.scopeContent || "",
+      scopeSections: scopeSectionsOf(project),
       termsContent: project.termsContent || "",
       hourlyRates: rates.map(r => ({ ...r })),
       clauses: listStampedClauses(project.scopeContent),
@@ -23639,9 +23789,10 @@ function ScopeView({ project, onChange, clients = [] }) {
           Cover page, cover letter, Attachment A and the firm info sheet are each optional.
         </div>
         <div style={{ marginTop: 6 }}>
-          Everything you write above flows into both, so get the scope right here first. Any field
-          the app cannot fill is left visible in the document as <code>{"{{LIKE_THIS}}"}</code> rather
-          than blanked, so it is obvious what still needs your attention in Word.
+          The four boxes below flow into both: Included, Additional and Excluded each land in
+          their own section of the Word proposal, and Project Description fills the cover letter.
+          Any field the app cannot fill is left visible in the document as <code>{"{{LIKE_THIS}}"}</code>
+          rather than blanked, so it is obvious what still needs your attention in Word.
         </div>
       </div>
 
@@ -23850,7 +24001,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       {/* Sticky toolbar + scrollable editor — outer div is the fixed-height frame */}
       <div style={{
         display: "flex", flexDirection: "column",
-        height: 620,
+        height: 760,
         border: "1px solid " + (scopeLocked ? P.green : P.border),
         borderRadius: 8,
         overflow: "hidden",
@@ -23918,31 +24069,61 @@ function ScopeView({ project, onChange, clients = [] }) {
           <TB label="✕ Clear" cmd="removeFormat" title="Clear formatting" />
         </div>
 
-        {/* Editor — fills remaining height, scrolls independently */}
-        <div
-          ref={editorRef}
-          className="scope-editor"
-          contentEditable={scopeLocked ? "false" : "true"}
-          suppressContentEditableWarning={true}
-          onInput={saveContent}
-          onPaste={handlePaste}
-          onKeyUp={rememberCaret}
-          onMouseUp={rememberCaret}
-          onBlur={rememberCaret}
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: "20px 24px",
-            background: "#ffffff",
-            lineHeight: 1.6,
-            color: "#1a1a1a",
-            cursor: scopeLocked ? "default" : "text",
-          }}
-        />
+        {/* The four boxes — fill remaining height, scroll together. The toolbar
+            above acts on whichever box was focused last (accent border). Each
+            box holds only its list: the section heading is generated on output,
+            so nobody types "EXCLUDED SERVICES" by hand and nothing downstream
+            has to guess which bold line was a heading. */}
+        <div style={{ flex: 1, overflowY: "auto", background: "#ffffff", padding: "14px 24px 24px" }}>
+          {SCOPE_SECTIONS.map(s => {
+            const isActive = activeKey === s.key;
+            return (
+              <div key={s.key} style={{ marginBottom: 18 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 }}>
+                  <div style={{ fontFamily: "Calibri, 'Trebuchet MS', sans-serif", fontSize: "11pt", fontWeight: 700, color: "#000000", letterSpacing: "0.02em" }}>
+                    {s.heading}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#595959" }}>
+                    {s.hint}
+                  </div>
+                </div>
+                <div
+                  ref={sectionRefs[s.key]}
+                  className="scope-editor"
+                  data-scope-box={s.key}
+                  contentEditable={scopeLocked ? "false" : "true"}
+                  suppressContentEditableWarning={true}
+                  onFocus={() => activateSection(s.key)}
+                  onMouseDown={() => activateSection(s.key)}
+                  onInput={() => { activateSection(s.key); saveContent(); }}
+                  onPaste={handlePaste}
+                  onKeyUp={rememberCaret}
+                  onMouseUp={rememberCaret}
+                  onBlur={rememberCaret}
+                  title={scopeLocked ? "Scope is locked" : s.label + ": the heading above is added for you, enter only the content"}
+                  style={{
+                    minHeight: s.minHeight,
+                    padding: "10px 14px",
+                    border: "1px solid " + (isActive && !scopeLocked ? "#C00000" : "#D9D9D9"),
+                    borderRadius: 4,
+                    background: "#ffffff",
+                    lineHeight: 1.6,
+                    color: "#1a1a1a",
+                    cursor: scopeLocked ? "default" : "text",
+                    outline: "none",
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div style={{ marginTop: 10, fontSize: 11, color: P.textDim }}>
-        💡 Paste directly from Word, Outlook, or email — formatting is cleaned to Calibri 10pt automatically. Select paragraph(s) first to change <strong style={{ color: P.text }}>↕ Line</strong> or <strong style={{ color: P.text }}>¶ Space</strong>; use <strong style={{ color: P.text }}>Aa 10pt</strong> to snap text back to the firm standard. Lists: <strong style={{ color: P.text }}>•</strong> bullet, <strong style={{ color: P.text }}>1.</strong> numbered, <strong style={{ color: P.text }}>a.</strong> / <strong style={{ color: P.text }}>A.</strong> lettered — click the same one again (or <strong style={{ color: P.text }}>✕ List</strong>) to remove. Heading 1 = discipline sections, Heading 2 = subsections.
+        💡 The toolbar works on the box you clicked into last (red border). Headings are generated for you, so type only the list under each one. Paste directly from Word, Outlook, or email — formatting is cleaned to Calibri 10pt automatically. Select paragraph(s) first to change <strong style={{ color: P.text }}>↕ Line</strong> or <strong style={{ color: P.text }}>¶ Space</strong>; use <strong style={{ color: P.text }}>Aa 10pt</strong> to snap text back to the firm standard. Lists: <strong style={{ color: P.text }}>•</strong> bullet, <strong style={{ color: P.text }}>1.</strong> numbered, <strong style={{ color: P.text }}>a.</strong> / <strong style={{ color: P.text }}>A.</strong> lettered — click the same one again (or <strong style={{ color: P.text }}>✕ List</strong>) to remove.
+        {!hasScopeSections(project) && (project.scopeContent || "").trim() ? (
+          <span> <strong style={{ color: P.text }}>This project predates the boxes:</strong> its whole scope has been placed in Included Services, unsplit. Move the exclusions and additional services into their boxes when you next edit it.</span>
+        ) : null}
       </div>
 
       {/* Audit log */}
