@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-16-pms-v114-scope-boxes";
+    window.__appVersion = "2026-08-16-pms-v115-scope-disciplines";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -22854,6 +22854,96 @@ function scopeHtmlToText(html) {
   }
 }
 
+// ── Disciplines ──────────────────────────────────────────────────────────────
+// Which disciplines this proposal covers. Purpose: stop people hand-editing
+// the same line items on every proposal. The four core disciplines default ON
+// and are switched off when not required or done by others; Lighting is the
+// "Setty does the FULL lighting design" option (off = coordinate a lighting
+// designer's work); Low Voltage / IT is the occasional add-on.
+//
+// The set FILTERS the clause library, three ways, all declared in
+// pms_proposal_clauses (managed in the Admin Console):
+//   params.discipline / params.disciplines[]  clause needs ANY of these ON
+//   params.disciplineNot                      clause is hidden when this is ON
+//   <li data-discipline="electrical lowVoltage">   line item needs ANY ON
+//   <li data-discipline-not="lowVoltage">          line item hidden when ON
+// and fills three reserved tokens from the active set:
+//   {{DISCIPLINE_LIST}}  "mechanical, electrical, plumbing, and fire protection"
+//   {{DISCIPLINE_ABBR}}  "M/E/P/FP"
+//   {{DISCIPLINE_MEP}}   "MEP/FP"
+// Lighting and Low Voltage are sub-scopes of electrical and never appear in
+// the token lists. Stored per project in project.scopeDisciplines; absent
+// keys take the default, so an old project reads as the standard M/E/P/FP.
+const SCOPE_DISCIPLINES = [
+  { key: "mechanical",     label: "Mechanical",      word: "mechanical",      abbr: "M",  mep: "M",  core: true,  def: true },
+  { key: "electrical",     label: "Electrical",      word: "electrical",      abbr: "E",  mep: "E",  core: true,  def: true },
+  { key: "plumbing",       label: "Plumbing",        word: "plumbing",        abbr: "P",  mep: "P",  core: true,  def: true },
+  { key: "fireProtection", label: "Fire Protection", word: "fire protection", abbr: "FP", mep: "FP", core: true,  def: true },
+  { key: "lighting",       label: "Lighting design by Setty (full scope)", core: false, def: false,
+    hint: "Ticked: Setty performs the full lighting design (photometrics, luminaire specs). Unticked: a lighting designer is on board and Setty coordinates." },
+  { key: "lowVoltage",     label: "Low Voltage / IT",                     core: false, def: false,
+    hint: "Occasional add-on: telecom, AV, security infrastructure beyond rough-in." },
+];
+function scopeDisciplinesOf(project) {
+  const stored = (project && project.scopeDisciplines) || {};
+  const out = {};
+  SCOPE_DISCIPLINES.forEach(d => { out[d.key] = stored[d.key] == null ? d.def : !!stored[d.key]; });
+  return out;
+}
+// "a, b, and c" / "a and b" / "a".
+function disciplineTokens(active) {
+  const on = SCOPE_DISCIPLINES.filter(d => d.core && active[d.key]);
+  const words = on.map(d => d.word);
+  const list = words.length <= 1 ? (words[0] || "")
+    : words.length === 2 ? words[0] + " and " + words[1]
+    : words.slice(0, -1).join(", ") + ", and " + words[words.length - 1];
+  const mepLetters = on.filter(d => d.key !== "fireProtection").map(d => d.mep).join("");
+  const mep = mepLetters + (active.fireProtection ? (mepLetters ? "/FP" : "FP") : "");
+  return {
+    DISCIPLINE_LIST: list,
+    DISCIPLINE_ABBR: on.map(d => d.abbr).join("/"),
+    DISCIPLINE_MEP: mep,
+  };
+}
+// Does this library clause apply under the active set? Undeclared = always.
+function clauseAppliesToDisciplines(clause, active) {
+  const p = (clause && clause.params) || {};
+  const req = Array.isArray(p.disciplines) ? p.disciplines : (p.discipline ? [p.discipline] : null);
+  if (req && req.length && !req.some(k => active[k])) return false;
+  const not = p.disciplineNot ? [].concat(p.disciplineNot) : [];
+  if (not.some(k => active[k])) return false;
+  return true;
+}
+// Human tag for a hidden clause: "needs Fire Protection" / "hidden when Lighting is on".
+function clauseDisciplineTag(clause, active) {
+  const p = (clause && clause.params) || {};
+  const label = k => ((SCOPE_DISCIPLINES.find(d => d.key === k) || {}).label || k).replace(/ \(.*\)$/, "").replace(/ design by Setty$/, "");
+  const req = Array.isArray(p.disciplines) ? p.disciplines : (p.discipline ? [p.discipline] : []);
+  if (req.length && !req.some(k => active[k])) return "needs " + req.map(label).join(" or ");
+  const not = p.disciplineNot ? [].concat(p.disciplineNot) : [];
+  const hit = not.filter(k => active[k]);
+  if (hit.length) return "not used when " + hit.map(label).join("/") + " is on";
+  return "";
+}
+// Drop the line items that do not apply, and any list left empty by that.
+function filterClauseHtmlByDiscipline(html, active) {
+  const s = String(html || "");
+  if (!/data-discipline/.test(s)) return s;
+  try {
+    const doc = new DOMParser().parseFromString(s, "text/html");
+    doc.body.querySelectorAll("[data-discipline],[data-discipline-not]").forEach(el => {
+      const need = (el.getAttribute("data-discipline") || "").split(/[\s,]+/).filter(Boolean);
+      const not = (el.getAttribute("data-discipline-not") || "").split(/[\s,]+/).filter(Boolean);
+      const keep = (!need.length || need.some(k => active[k])) && !not.some(k => active[k]);
+      if (!keep) el.remove();
+    });
+    doc.body.querySelectorAll("ul,ol").forEach(l => { if (!l.children.length) l.remove(); });
+    return doc.body.innerHTML;
+  } catch (_) {
+    return s;
+  }
+}
+
 function ScopeView({ project, onChange, clients = [] }) {
   // One ref per box. `editorRef` is kept as a name for the dozens of toolbar
   // helpers below: it resolves to whichever box was focused last, so bold,
@@ -23006,13 +23096,32 @@ function ScopeView({ project, onChange, clients = [] }) {
       setProposalKind("error");
     }
   }
-  // {{TOKEN}} substitution: supplied value, else the clause's declared default.
+  // Disciplines in this proposal (see SCOPE_DISCIPLINES). Drives clause and
+  // line-item filtering and the reserved DISCIPLINE_* tokens.
+  const activeDisc = scopeDisciplinesOf(project);
+  const discTokens = disciplineTokens(activeDisc);
+  function setDiscipline(key, on) {
+    if (scopeLocked) return;
+    onChange({ ...project, scopeDisciplines: { ...activeDisc, [key]: !!on } });
+  }
+  // The token inputs in the clause panel: only object-valued params are
+  // fill-ins. Strings (variant, discipline, variantOf...) are metadata.
+  function clauseTokenNames(clause) {
+    const p = (clause && clause.params) || {};
+    return Object.keys(p).filter(k => p[k] && typeof p[k] === "object");
+  }
+  // {{TOKEN}} substitution: reserved discipline tokens first (the project's
+  // discipline set is the truth, not whatever a draft guessed), then the
+  // supplied value, else the clause's declared default. Then the line items
+  // that do not apply to the active disciplines are dropped.
   function substituteClauseTokens(clause, values) {
-    return String(clause.body_html || "").replace(/\{\{(\w+)\}\}/g, (m, tok) => {
+    const filled = String(clause.body_html || "").replace(/\{\{(\w+)\}\}/g, (m, tok) => {
+      if (discTokens[tok] != null) return discTokens[tok];
       if (values && values[tok] != null && values[tok] !== "") return String(values[tok]);
       const decl = (clause.params || {})[tok];
       return (decl && decl.default != null) ? decl.default : m;
     });
+    return filterClauseHtmlByDiscipline(filled, activeDisc);
   }
   function fillClauseParams(clause) {
     return substituteClauseTokens(clause, clauseParams[clause.clause_key] || {});
@@ -23038,11 +23147,15 @@ function ScopeView({ project, onChange, clients = [] }) {
     const byKey = {};
     lib.forEach(c => { byKey[c.clause_key] = c; });
     const unknownKeys = [];
+    const disciplineDropped = [];
     const resolve = (sel) => {
       const key = typeof sel === "string" ? sel : (sel && sel.key);
       if (!key) return null;
       const clause = byKey[key];
       if (!clause) { unknownKeys.push(key); return null; }
+      // The draft may pick a clause for a discipline this proposal does not
+      // cover (fire suppression on an M/E-only job). Drop it and say so.
+      if (!clauseAppliesToDisciplines(clause, activeDisc)) { disciplineDropped.push(key); return null; }
       return { clause, params: (typeof sel === "object" && sel.params) || {} };
     };
     const clauseSels = (Array.isArray(d.clauses) ? d.clauses : []).map(resolve).filter(Boolean);
@@ -23108,6 +23221,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       customCount: asmCustom.length + excCustom.length,
       openItemCount: openItems.length,
       unknownKeys,
+      disciplineDropped,
       flagged: (Array.isArray(d.flaggedForReview) ? d.flaggedForReview : [])
         .map(f => ({ rfpDemand: String((f && f.rfpDemand) || ""), why: String((f && f.why) || "") }))
         .filter(f => f.rfpDemand || f.why),
@@ -23241,7 +23355,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     const lib = clauseLib || [];
     const perBox = {}; // box key -> html
     CLAUSE_BLOCKS.forEach(([block, label]) => {
-      const picked = lib.filter(c => c.block === block && clauseSel[c.clause_key]);
+      const picked = lib.filter(c => c.block === block && clauseSel[c.clause_key] && clauseAppliesToDisciplines(c, activeDisc));
       if (!picked.length) return;
       const target = CLAUSE_TARGET_BOX[block] || activeKeyRef.current;
       let html = "";
@@ -23660,6 +23774,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       entity: project.proposalEntity || "sa-ny",
       scopeContent: project.scopeContent || "",
       scopeSections: scopeSectionsOf(project),
+      scopeDisciplines: scopeDisciplinesOf(project),
       termsContent: project.termsContent || "",
       hourlyRates: rates.map(r => ({ ...r })),
       clauses: listStampedClauses(project.scopeContent),
@@ -23854,7 +23969,7 @@ function ScopeView({ project, onChange, clients = [] }) {
             <div>
               <div style={{ fontWeight: 700, fontSize: 14 }}>📚 Firm Clause Library</div>
               <div style={{ fontSize: 11.5, color: P.textDim, marginTop: 2 }}>
-                Approved building blocks. Tick what applies, adjust the fill-ins, then insert — the text lands in the scope editor below where you can still edit it. Library wording is managed in the Admin Console.
+                Approved building blocks. Tick what applies, adjust the fill-ins, then insert — each clause lands in its own box below where you can still edit it. Clauses and line items for disciplines switched off above are greyed out. Library wording is managed in the Admin Console.
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
@@ -23870,15 +23985,22 @@ function ScopeView({ project, onChange, clients = [] }) {
                 <div key={block} style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", margin: "6px 0 4px" }}>{label}</div>
                   {group.map(c => {
-                    const tokens = Object.keys(c.params || {});
-                    const checked = !!clauseSel[c.clause_key];
+                    const tokens = clauseTokenNames(c);
+                    const applies = clauseAppliesToDisciplines(c, activeDisc);
+                    const checked = applies && !!clauseSel[c.clause_key];
                     return (
-                      <div key={c.clause_key} style={{ padding: "4px 6px", borderRadius: 6, background: checked ? P.accentDim : "transparent", marginBottom: 2 }}>
-                        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", fontSize: 13 }}>
-                          <input type="checkbox" checked={checked}
+                      <div key={c.clause_key} style={{ padding: "4px 6px", borderRadius: 6, background: checked ? P.accentDim : "transparent", marginBottom: 2, opacity: applies ? 1 : 0.45 }}>
+                        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: applies ? "pointer" : "not-allowed", fontSize: 13 }}
+                          title={applies ? "" : "Hidden by the discipline settings above: " + clauseDisciplineTag(c, activeDisc)}>
+                          <input type="checkbox" checked={checked} disabled={!applies}
                             onChange={e => setClauseSel({ ...clauseSel, [c.clause_key]: e.target.checked })}
                             style={{ marginTop: 3 }} />
                           <span>{c.title}</span>
+                          {!applies && (
+                            <span style={{ fontSize: 10.5, color: P.textDim, border: "1px solid " + P.border, borderRadius: 8, padding: "0 6px", whiteSpace: "nowrap", marginTop: 1 }}>
+                              {clauseDisciplineTag(c, activeDisc)}
+                            </span>
+                          )}
                         </label>
                         {checked && tokens.length > 0 && (
                           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "4px 0 2px 26px" }}>
@@ -23960,6 +24082,9 @@ function ScopeView({ project, onChange, clients = [] }) {
                   {r.unknownKeys.length > 0 && (
                     <li style={{ color: P.yellow }}>⚠ Unknown clause keys skipped (retired or misspelled, check these): {r.unknownKeys.join(", ")}</li>
                   )}
+                  {(r.disciplineDropped || []).length > 0 && (
+                    <li style={{ color: P.yellow }}>⚠ Skipped for disciplines this proposal does not cover: {r.disciplineDropped.join(", ")} <span style={{ color: P.textDim }}>(switch the discipline on above and validate again if that is wrong)</span></li>
+                  )}
                   {r.suggestedPhases.length > 0 && (
                     <li>Suggested fee phase split ({r.phasePctTotal}%{r.phasePctTotal !== 100 ? ", does not sum to 100" : ""}): {r.suggestedPhases.map(p => p.name + " " + p.pct + "%").join(", ")} <span style={{ color: P.textDim }}>(apply manually in the Fee Calculator)</span></li>
                   )}
@@ -23985,6 +24110,46 @@ function ScopeView({ project, onChange, clients = [] }) {
           })()}
         </div>
       )}
+
+      {/* Disciplines — which trades this proposal covers. Filters the clause
+          library and its line items and fills the DISCIPLINE_* tokens; text
+          already in the boxes is left alone. */}
+      <div style={{ border: "1px solid " + P.border, borderRadius: 8, padding: "10px 14px", marginBottom: 12, background: P.card, opacity: scopeLocked ? 0.6 : 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: P.text, marginRight: 4 }}>Disciplines in this proposal</div>
+          {SCOPE_DISCIPLINES.filter(d => d.core).map(d => {
+            const on = !!activeDisc[d.key];
+            return (
+              <button key={d.key} type="button" disabled={scopeLocked}
+                onClick={() => setDiscipline(d.key, !on)}
+                aria-pressed={on}
+                title={on ? d.label + " is included. Click to switch it off (not required, or by others)." : d.label + " is off. Click to include it."}
+                style={{
+                  fontSize: 12, fontWeight: 600, padding: "4px 12px", borderRadius: 14, cursor: scopeLocked ? "not-allowed" : "pointer", fontFamily: "inherit",
+                  border: "1px solid " + (on ? P.accent : P.border),
+                  background: on ? P.accentDim : "transparent",
+                  color: on ? P.accentLight : P.textDim,
+                  textDecoration: on ? "none" : "line-through",
+                }}>
+                {on ? "✓ " : ""}{d.label}
+              </button>
+            );
+          })}
+          <span style={{ width: 1, height: 20, background: P.border, margin: "0 4px" }} />
+          {SCOPE_DISCIPLINES.filter(d => !d.core).map(d => (
+            <label key={d.key} title={d.hint} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: P.text, cursor: scopeLocked ? "not-allowed" : "pointer" }}>
+              <input type="checkbox" checked={!!activeDisc[d.key]} disabled={scopeLocked}
+                onChange={e => setDiscipline(d.key, e.target.checked)} />
+              {d.label}
+            </label>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: P.textDim, marginTop: 6, lineHeight: 1.5 }}>
+          Switch off any discipline that is not required or is by others. This filters the <b>📚 Clause Library</b> (whole clauses and individual line items) and fills the discipline wording in library text
+          {discTokens.DISCIPLINE_LIST ? <span> (currently “{discTokens.DISCIPLINE_LIST}”, {discTokens.DISCIPLINE_ABBR})</span> : <span> (currently <b style={{ color: P.yellow }}>none selected</b>)</span>}.
+          Text already in the boxes is not changed.
+        </div>
+      </div>
 
       {/* Scoped typography for the scope editor */}
       <style>{`
