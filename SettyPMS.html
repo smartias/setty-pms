@@ -2024,6 +2024,20 @@ async function debugMyCalendars() {
 
 const odataQuote = s => String(s).replace(/'/g, "''");
 
+// Many "not found" results in ONE sweep is a visibility problem (stale local
+// copy, wrong calendar), not a batch of real deletions. A wall of "Event was
+// deleted in Outlook" rows just looks broken — that is what Rafi saw. Collapse
+// them into a single notice; genuine one-off deletions still list normally.
+const NYC_MASS_MISSING_MIN = 3;
+function splitMassMissing(conflicts, checkedCount) {
+  const missing = conflicts.filter(c => c.deleted);
+  if (missing.length >= NYC_MASS_MISSING_MIN && missing.length * 2 >= checkedCount) {
+    return { conflicts: conflicts.filter(c => !c.deleted), massMissing: missing.length };
+  }
+  return { conflicts, massMissing: 0 };
+}
+const NYC_MASS_MISSING_MSG = n => `⚠ ${n} synced milestones couldn't be found on the NYC Shared Calendar. That many at once usually means calendar access, not deletions: use "Check my calendar access" on the Team Dashboard, or ask Sara.`;
+
 // Locate an event on the resolved calendar: by the id we stored, then by
 // iCalUId, then by exact subject. Returns the Graph event (with id) or null.
 // Throws on transport/permission errors so callers can tell "gone" from "can't see".
@@ -7512,6 +7526,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
   // ── Two-way sync (pull direction): on tab open, read each synced event back
   // from Outlook and prompt when the calendar date no longer matches PMS ──
   const [outlookConflicts, setOutlookConflicts] = useState([]); // [{id, name, pmsDate, outlookDate, deleted}]
+  const [outlookMassMissing, setOutlookMassMissing] = useState(0); // see splitMassMissing
 
   // Which milestones get checked against Outlook. Completed and cancelled
   // milestones are skipped — their dates are historical record; a calendar
@@ -7537,7 +7552,10 @@ function ScheduleView({ project, onChange, onEagerSave }) {
         if (r.date && r.date !== m.dueDate && r.date !== m.outlookDateAck) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
         return null;
       }));
-      if (alive) setOutlookConflicts(results.filter(Boolean));
+      if (!alive) return;
+      const split = splitMassMissing(results.filter(Boolean), toCheck.length);
+      setOutlookConflicts(split.conflicts);
+      setOutlookMassMissing(split.massMissing);
     })();
     return () => { alive = false; };
   }, []); // runs once per Schedule tab open — ScheduleView remounts on tab switch
@@ -8135,14 +8153,19 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       )}
 
       {/* Outlook → PMS conflict prompts (two-way sync, pull direction) */}
-      {outlookConflicts.length > 0 && (
+      {(outlookConflicts.length > 0 || outlookMassMissing > 0) && (
         <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: 14, marginBottom: 14 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: P.yellow, marginBottom: 4 }}>
-            📅 Outlook calendar changes detected
+            📅 {outlookConflicts.length > 0 ? "Outlook calendar changes detected" : "Outlook calendar check"}
           </div>
-          <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
-            These synced milestones were moved or removed in Outlook. Choose which date wins.
-          </div>
+          {outlookConflicts.length > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
+              These synced milestones were moved or removed in Outlook. Choose which date wins.
+            </div>
+          )}
+          {outlookMassMissing > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>{NYC_MASS_MISSING_MSG(outlookMassMissing)}</div>
+          )}
           {outlookConflicts.map(c => (
             <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "7px 0", borderTop: `1px solid ${P.border}` }}>
               <span style={{ fontWeight: 600, fontSize: 13, minWidth: 160 }}>{c.name}</span>
@@ -20556,6 +20579,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   const [dashOutlookConflicts, setDashOutlookConflicts] = useState(() =>
     Date.now() - _dashCalPullCache.at < DASH_CAL_PULL_TTL_MS ? _dashCalPullCache.conflicts : []);
   const [dashOutlookChecking, setDashOutlookChecking] = useState(false);
+  const [dashOutlookMassMissing, setDashOutlookMassMissing] = useState(0); // see splitMassMissing
   // Calendar-access diagnostic — see debugMyCalendars(). Kept: it's how we
   // tell "not shared", "view only" and "not added in Outlook" apart remotely.
   const [dashCalDebug, setDashCalDebug] = useState(null);
@@ -20594,8 +20618,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
       }));
       found.push(...part.filter(Boolean));
     }
-    _dashCalPullCache = { at: Date.now(), conflicts: found };
-    setDashOutlookConflicts(found);
+    const split = splitMassMissing(found, targets.length);
+    _dashCalPullCache = { at: Date.now(), conflicts: split.conflicts };
+    setDashOutlookConflicts(split.conflicts);
+    setDashOutlookMassMissing(split.massMissing);
     setDashOutlookChecking(false);
   }
 
@@ -20747,11 +20773,11 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
 
       {/* Outlook → PMS conflict prompts — dashboard-wide (two-way calendar sync).
           Same panel as the project Schedule tab, but sweeps every active project. */}
-      {dashOutlookConflicts.length > 0 && (
+      {(dashOutlookConflicts.length > 0 || dashOutlookMassMissing > 0) && (
         <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: 14, marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: P.yellow }}>
-              📅 Outlook calendar changes detected ({dashOutlookConflicts.length})
+              📅 {dashOutlookConflicts.length > 0 ? `Outlook calendar changes detected (${dashOutlookConflicts.length})` : "Outlook calendar check"}
             </div>
             <button onClick={() => sweepOutlookDates(true)} disabled={dashOutlookChecking}
               title="Re-check all synced milestones against Outlook"
@@ -20759,9 +20785,14 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
               {dashOutlookChecking ? "⏳" : "↻"}
             </button>
           </div>
-          <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
-            These synced milestones were moved or removed in Outlook. Choose which date wins.
-          </div>
+          {dashOutlookConflicts.length > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
+              These synced milestones were moved or removed in Outlook. Choose which date wins.
+            </div>
+          )}
+          {dashOutlookMassMissing > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>{NYC_MASS_MISSING_MSG(dashOutlookMassMissing)}</div>
+          )}
           {/* Calendar-access diagnostic — shows HOW this sign-in reaches the NYC
               Shared Calendar (owner path vs local copy), whether it can edit,
               and what was tried when it can't be reached. Send a screenshot of
