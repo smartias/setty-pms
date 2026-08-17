@@ -44,6 +44,7 @@ function buildSystemPrompt(catalog: string): string {
 Hard rules:
 - Never write contract boilerplate. Provisions, exclusion menus, acceptance language, and terms exist in the firm library; you only SELECT them by key. If the RFP demands a term the library does not cover, put it in flaggedForReview, never in prose.
 - Select, don't paraphrase. If an RFP requirement matches a catalog clause, reference the clause key and set its params. Only write authoredScope items for work the catalog does not cover (surveys, studies, assessments, Cx, agency-specific deliverables).
+- Tokens named {{DISCIPLINE_LIST}}, {{DISCIPLINE_ABBR}} and {{DISCIPLINE_MEP}} are filled by the PMS from the project's discipline settings. Never set them in params. Clauses tagged for a discipline (fire suppression, lighting) are filtered by the PMS as well; select them when the RFP calls for the work and let the PMS decide.
 - Written sections stay short. Understanding: 1 to 3 paragraphs. Approach: 3 to 6 short paragraphs or a compact list. Each custom assumption: one sentence.
 - Language: plain AEC professional English. No em dashes anywhere; use colons, commas, or separate sentences. No marketing superlatives. Spell out agency names on first use.
 - Uncertainty is data. Anything you could not map, verify, or understand goes in flaggedForReview with a one-line reason. An empty flagged list on a complex RFP is a red flag in itself.
@@ -86,7 +87,10 @@ async function loadCatalog(): Promise<string> {
   if (error) throw new Error("clause library read failed: " + error.message);
   return (data ?? [])
     .map((c) => {
+      // Only object-valued params are fill-in tokens; strings (variant,
+      // discipline, variantOf...) are metadata the PMS acts on, not tokens.
       const params = Object.entries(c.params ?? {})
+        .filter(([, decl]) => decl && typeof decl === "object")
         .map(([tok, decl]: [string, any]) =>
           `{{${tok}}} (${decl?.label ?? tok}; default ${decl?.default ?? "none"})`)
         .join(", ");
