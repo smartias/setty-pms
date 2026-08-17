@@ -104,6 +104,36 @@ def collapse_to_prototypes(xml, cfg):
     return xml[:start] + proto_h + proto_b + xml[end:]
 
 
+def insert_prototype_section(xml, cfg):
+    """
+    Add a section the template never had, built from parts it does have: a
+    heading paragraph cloned from `heading_from` with `heading_text`, then a
+    heading/body prototype pair cloned from two existing token paragraphs
+    (`clone_heading_from` / `clone_body_from`, matched by text) re-tokenized to
+    `heading_token` / `body_token`. Inserted immediately before the child whose
+    text starts with `before`. Runs AFTER block_ranges, so the source
+    prototypes exist. Used for ASSUMPTIONS, which the proposal template lacked.
+    """
+    import sections as S
+    kids = S.top_level_children(xml)
+    texts = [S.child_text(xml, k).strip() for k in kids]
+    def find(prefix, what):
+        try:
+            return next(i for i, t in enumerate(texts) if t.startswith(prefix))
+        except StopIteration:
+            raise SystemExit(f"  insert_section {what} not found: {prefix!r}")
+    at = find(cfg["before"], "before")
+    h_src = find(cfg["heading_from"], "heading_from")
+    ph_src = find(cfg["clone_heading_from"], "clone_heading_from")
+    pb_src = find(cfg["clone_body_from"], "clone_body_from")
+    para = lambda i: xml[kids[i][1]:kids[i][2]]
+    heading = set_paragraph_text(para(h_src), cfg["heading_text"])
+    proto_h = set_paragraph_text(para(ph_src), cfg["heading_token"])
+    proto_b = set_paragraph_text(para(pb_src), cfg["body_token"])
+    pos = kids[at][1]
+    return xml[:pos] + heading + proto_h + proto_b + xml[pos:]
+
+
 def blank(xml, indices):
     spans = list(PARA_RE.finditer(xml))
     out, cursor = [], 0
@@ -181,6 +211,8 @@ def build(cfg):
         # scan expects them.
         for br in reversed(cfg.get("block_ranges", [])):
             xml = collapse_to_prototypes(xml, br)
+        for ins in cfg.get("insert_sections", []):
+            xml = insert_prototype_section(xml, ins)
         if cfg.get("auto"):
             xml, _ = replace_all(xml, cfg["auto"])
         return xml
