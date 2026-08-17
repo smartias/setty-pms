@@ -529,6 +529,13 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   is complete, "when did X first appear". Phase 3 (history) is largely a
   view over this table; phase 4 (`view_drawing`) is now targetable because
   the index names the file and page. See README.
+- **First live run 2026-08-17** (Tabler): correct, but 3 files per 28s call
+  against 745 PDFs, ~20s of every call spent re-crawling the scope. Fixed
+  the same day: scope crawl cached, current sets (last full submission +
+  everything after) indexed first, combined-book duplicates dropped, and a
+  per-sheet `history` block (indexed revisions, `absentAt`,
+  `stillPresentAtLatest`, revision-block description) that is phase 3 made
+  explicit. What phase 3 still lacks is the register's "who received it".
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 

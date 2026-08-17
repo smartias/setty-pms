@@ -189,13 +189,30 @@ one indexed query.
   fails or is oversized is not retried forever. Both are connector-written CACHES, same
   posture as `pms_mcp_tree_cache`: not a business record, safe to truncate and rebuild.
   Nothing here touches the transmittal register.
-- **Lazy fill, never a sweep.** Each call indexes up to `maxFilesToIndex` (default 6,
-  time-boxed at ~28s) not-yet-indexed PDFs under the project's Outgoing folder, newest
-  set first, then searches everything indexed. The result's `coverage` block says how many
-  files are in scope, indexed, pending, skipped for size (>20MB, the combined books that
-  time out on download) or given up after 3 attempts, and `complete` is true only when
+- **Lazy fill, never a sweep.** Each call indexes up to `maxFilesToIndex` (default 10,
+  cap 20, time-boxed at ~28s) not-yet-indexed PDFs under the project's Outgoing folder,
+  then searches everything indexed. The result's `coverage` block says how many files
+  are in scope, indexed, pending, skipped for size (>20MB, the combined books that time
+  out on download) or given up after 3 attempts, and `complete` is true only when
   nothing is pending. A miss with `filesPending > 0` means "not read yet", and the
   description tells the model to call again. `indexOnly:true` pre-loads a project.
+- **Current sets first, duplicates never** (`planDrawingScope`, 2026-08-17). Tabler has
+  745 PDFs under Outgoing; most are the superseded 2019 CD sets or the combined-book copy
+  of sheets that also ship individually. So the scope is planned: the newest date-prefixed
+  set whose name reads like a full submission ("100% CD", "Final CD", "100 DD"...) and not
+  like a partial (bulletin, addendum, RFI, resub) is the **baseline**; it and every set
+  after it are the `currentSets` tier and index first, newest set first; older sets follow
+  as `supersededSets`. Combined-PDF books in a set that also has an INDIVIDUAL folder are
+  dropped from scope and counted as `duplicateBooksSkipped` (pass the combined folder as
+  `subfolder` to read one anyway). `coverage.currentSets.complete` means "the drawings as
+  issued today are fully indexed"; plain `complete` still means all of Outgoing, which
+  only "when did it FIRST appear" needs. No baseline recognised = one tier = old behaviour.
+- **The scope crawl is cached** (`drawingScopeFiles`, 15 min, in-memory + a row in
+  `pms_mcp_tree_cache` under key `<prefix>#drawings:<subfolder>`). Measured 2026-08-17: the
+  crawl alone (find the project folder across ~37 libraries, resolve Outgoing, walk 745
+  files) took ~20 of the 28-second box on EVERY call, leaving ~8s to index, hence 3 files
+  per call. Warm calls now spend the whole box indexing. A new bulletin folder is invisible
+  for up to 15 minutes; a cache failure falls through to the walk.
 - **The attempt is recorded BEFORE the download.** If the request dies mid-file there
   is no later chance to write; without the early mark a file that always times out would
   be retried on every call and starve the rest.
@@ -209,6 +226,15 @@ one indexed query.
   `earliestSeen` is phase 3's "first appeared on Rev N with Bulletin #M", honest only when
   `coverage.complete` is true. Revisions are ordered by `revisionDate`, never the label,
   because the label scheme changes mid-project (A/B/C, then 2, 3, 6...).
+- **`history` per sheet** (`drawingSheetHistory`, 2026-08-17) makes absence explicit. One
+  extra query fetches EVERY indexed revision of each matched sheet, hit or not, and the
+  result carries `indexedRevisions`, `absentAt` (indexed revisions WITHOUT the term),
+  `latestSeen` / `latestIndexed` / `stillPresentAtLatest` ("still there at Rev 13?"),
+  `earliestIndexed` / `presentSinceEarliestIndexed` (if the term is already on the oldest
+  indexed revision, "first appeared" may be earlier still), and `revisionDescription`, the
+  revision block's own label (`BULLETIN #13`), so the answer can say "issued with Bulletin
+  #13" off the sheet rather than the folder name. Revisions not yet indexed are unknown, not
+  absent; the model is told so in the `note`.
 
 ```bash
 node supabase/functions/pms-mcp/searchDrawings.test.mjs

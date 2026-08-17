@@ -409,7 +409,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-16-search-drawings";
+const BUILD = "2026-08-17-search-drawings-throughput-history";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4009,7 +4009,8 @@ mcp.tool("extract_sheet_index", {
 // keeps its earlier text; grouping the hits by sheet number is the revision
 // history phase 3 asked for.
 const DRAWING_INDEX_DEADLINE_MS = 28_000;   // stop opening NEW files after this; the search still runs
-const DRAWING_INDEX_MAX_FILES = 6;           // per call, unless the caller asks for fewer
+const DRAWING_INDEX_MAX_FILES = 10;          // per call, unless the caller asks otherwise; the deadline governs anyway
+const DRAWING_INDEX_MAX_FILES_CAP = 20;      // ceiling a caller can ask for
 const DRAWING_INDEX_MAX_ATTEMPTS = 3;        // a file that dies mid-request 3 times is left alone
 const DRAWING_INDEX_MAX_BYTES = MAX_DOC_BYTES; // the 42MB combined book times out on download; skip, say so
 
@@ -4043,6 +4044,138 @@ function drawingSetOf(folderPath: string): string {
   return parts[0] || "/";
 }
 
+// ── Scope planning: which files to index FIRST, and which not at all ─────────
+//
+// Measured on Tabler 2026-08-17: 745 PDFs under Outgoing at 3 files per call is
+// ~250 calls, and most of those files are either the superseded 2019 CD sets or
+// the combined-book copy of sheets that also ship individually. Two rules:
+//
+// 1. Tiers. The last FULL submission (the baseline) and every set issued after
+//    it are indexed first, newest set first; older sets follow. That is the
+//    composite Sara actually asks about ("what is on the drawings NOW"), while
+//    the older sets still get read eventually for "when did it first appear".
+// 2. Duplicate books. A set that ships both an INDIVIDUAL PDF folder and a
+//    COMBINED PDF folder holds every sheet twice; the combined book is dropped
+//    from scope (it is usually the 42MB file that times out anyway) and counted
+//    under coverage.duplicateBooksSkipped. Pointing `subfolder` at the combined
+//    folder itself still reads it.
+//
+// The baseline is recognised by NAME, not by contents: the newest date-prefixed
+// set whose name reads like a full submission and not like a partial. When no
+// set qualifies everything is one tier, which is just today's behaviour.
+const DRAWING_FULL_SET_RE = /(100\s*%|\b\d{2,3}\s*%?\s*(cd|dd|sd)s?\b|\b(cds?|dd|sd)\b|construction\s+doc|\bbid\b|\bfinal\b|\bifc\b|conformed|issued\s+for\s+construction|\bpermit\b|design\s+development|schematic)/i;
+const DRAWING_PARTIAL_SET_RE = /(bulletin|addend|\brfi\b|\basi\b|\bsk-?\s?\d|sketch|resub|\bccd\b|\bpco\b|\bsupplement)/i;
+const DRAWING_INDIVIDUAL_FOLDER_RE = /individual/i;
+const DRAWING_COMBINED_FOLDER_RE = /combined/i;
+
+// "2024-10-24_Revised 100% CD Submission" → "2024-10-24"; undated names → null.
+function drawingSetDate(setName: string): string | null {
+  const m = /^(\d{4})[-._](\d{2})[-._](\d{2})/.exec(String(setName || "").trim());
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
+function drawingBaselineSet(setNames: string[]): string | null {
+  const dated = setNames
+    .filter((s) => drawingSetDate(s) && DRAWING_FULL_SET_RE.test(s) && !DRAWING_PARTIAL_SET_RE.test(s))
+    .sort((a, b) => String(drawingSetDate(b)).localeCompare(String(drawingSetDate(a))) || b.localeCompare(a));
+  return dated[0] || null;
+}
+
+// The path segments BELOW the set folder, e.g. "INDIVIDUAL PDF's/E".
+function drawingPathBelowSet(folderPath: string, set: string): string {
+  const parts = String(folderPath || "").split("/").filter(Boolean);
+  const i = parts.indexOf(set);
+  return i >= 0 ? parts.slice(i + 1).join("/") : "";
+}
+
+type DrawingTier = "current" | "superseded";
+function planDrawingScope<T extends { folderPath: string; name: string }>(files: T[]): {
+  files: Array<T & { set: string; tier: DrawingTier }>;
+  baselineSet: string | null;
+  duplicateBooks: T[];
+} {
+  const withSet = files.map((f) => ({ f, set: drawingSetOf(f.folderPath) }));
+  const sets = [...new Set(withSet.map((x) => x.set))];
+  const baselineSet = drawingBaselineSet(sets);
+  const baselineDate = baselineSet ? drawingSetDate(baselineSet) : null;
+
+  const setsWithIndividual = new Set(
+    withSet.filter((x) => DRAWING_INDIVIDUAL_FOLDER_RE.test(drawingPathBelowSet(x.f.folderPath, x.set))).map((x) => x.set));
+  const duplicateBooks: T[] = [];
+  const kept: Array<T & { set: string; tier: DrawingTier }> = [];
+  for (const { f, set } of withSet) {
+    if (setsWithIndividual.has(set) && DRAWING_COMBINED_FOLDER_RE.test(drawingPathBelowSet(f.folderPath, set))) {
+      duplicateBooks.push(f);
+      continue;
+    }
+    const d = drawingSetDate(set);
+    const tier: DrawingTier = !baselineDate || !d || d >= baselineDate ? "current" : "superseded";
+    kept.push({ ...f, set, tier });
+  }
+  // Current tier first, then within a tier newest set first; folderPath then
+  // name make the order TOTAL and stable, so repeat calls never skip a file.
+  kept.sort((a, b) =>
+    (a.tier === b.tier ? 0 : a.tier === "current" ? -1 : 1) ||
+    String(b.folderPath).localeCompare(String(a.folderPath)) ||
+    String(a.name).localeCompare(String(b.name)));
+  return { files: kept, baselineSet, duplicateBooks };
+}
+
+// ── History per sheet ────────────────────────────────────────────────────────
+//
+// Revision labels are unsortable (A, B, C, then 2, 3, 6...), so everything is
+// ordered by revisionDate. Both date shapes seen on real title blocks are read:
+// 04/17/2026 (Tabler/Page) and 2023.08.11 (CHCR/think!).
+function drawingDateKey(d: string | null | undefined): number {
+  if (!d) return 0;
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(d);
+  if (m) return Number((m[3].length === 2 ? "20" + m[3] : m[3]) + m[1].padStart(2, "0") + m[2].padStart(2, "0"));
+  const m2 = /^(\d{4})\.(\d{2})\.(\d{2})$/.exec(d);
+  return m2 ? Number(m2[1] + m2[2] + m2[3]) : 0;
+}
+
+type DrawingRev = { revision: string | null; revisionDate: string | null; revisionDescription?: string | null; set: string };
+const drawingRevKey = (r: { revision: string | null; set: string }) => `${r.revision ?? ""}|${r.set}`;
+const drawingRevSort = (a: DrawingRev, b: DrawingRev) =>
+  drawingDateKey(b.revisionDate) - drawingDateKey(a.revisionDate) || String(b.set).localeCompare(String(a.set));
+
+// `present` = the indexed revisions of ONE sheet on which the term was found;
+// `indexed` = every indexed revision of that sheet, found or not. The
+// difference is the history: where it appeared, where it was absent, whether
+// it is still on the sheet at the newest indexed revision. All of it is only
+// as complete as the index; the caller reports coverage alongside.
+function drawingSheetHistory(present: DrawingRev[], indexed: DrawingRev[]) {
+  const seen = new Set<string>();
+  const indexedRevisions = indexed
+    .filter((r) => { const k = drawingRevKey(r); if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort(drawingRevSort);
+  const presentKeys = new Set(present.map(drawingRevKey));
+  const absentAt = indexedRevisions.filter((r) => !presentKeys.has(drawingRevKey(r)));
+  // The hit rows come from the search RPC without the description; borrow it
+  // from the indexed row for the same (revision, set).
+  const descOf = new Map(indexedRevisions.map((r) => [drawingRevKey(r), r.revisionDescription ?? null]));
+  const sortedPresent = present
+    .map((r) => ({ ...r, revisionDescription: r.revisionDescription ?? descOf.get(drawingRevKey(r)) ?? null }))
+    .sort(drawingRevSort);
+  const pick = (r: DrawingRev | undefined) =>
+    r ? { revision: r.revision, revisionDate: r.revisionDate, revisionDescription: r.revisionDescription ?? null, set: r.set } : null;
+  const latestSeen = pick(sortedPresent[0]);
+  const earliestSeen = pick(sortedPresent[sortedPresent.length - 1]);
+  const latestIndexed = pick(indexedRevisions[0]);
+  const earliestIndexed = pick(indexedRevisions[indexedRevisions.length - 1]);
+  const stillPresentAtLatest = !!(latestSeen && latestIndexed && drawingRevKey(latestSeen) === drawingRevKey(latestIndexed));
+  // If the term is on the OLDEST indexed revision of the sheet, "first appeared"
+  // may be earlier still on a revision not yet indexed (or the sheet's base
+  // issue): honest answer is "present since at least ...".
+  const presentSinceEarliestIndexed = !!(earliestSeen && earliestIndexed && drawingRevKey(earliestSeen) === drawingRevKey(earliestIndexed));
+  return {
+    indexedRevisions: indexedRevisions.map(pick),
+    absentAt: absentAt.map(pick),
+    latestSeen, earliestSeen, latestIndexed, earliestIndexed,
+    stillPresentAtLatest, presentSinceEarliestIndexed,
+  };
+}
+
 async function drawingIndexWrite(path: string, body: unknown, prefer: string): Promise<void> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: "POST",
@@ -4060,9 +4193,50 @@ async function drawingIndexWrite(path: string, body: unknown, prefer: string): P
 // projects ("99 📤 Outgoing"), so it is found by CONTAINS under the project root
 // and then crawled by its exact name. A caller can point anywhere else with
 // `subfolder`, passed exactly as list_project_documents prints it.
-async function drawingScopeFiles(numPrefix: string, subfolder?: string): Promise<{
-  files: TreeFile[]; scopePath: string; truncated: boolean; resolved: boolean;
-}> {
+//
+// CACHED. Measured 2026-08-17: the crawl alone (find the project folder in ~37
+// libraries, resolve Outgoing, walk 745 files) cost ~20 of the 28-second box on
+// EVERY call, leaving ~8s to index. So the scope is cached the same way
+// projectTree is: in-memory for the isolate, and in `pms_mcp_tree_cache` for the
+// next one, under a key that cannot collide with the project-tree row. A cache
+// failure falls through to the walk; it can never be why an answer is wrong.
+const DRAWING_SCOPE_TTL = 15 * 60_000;
+type DrawingScope = { files: TreeFile[]; scopePath: string; truncated: boolean; resolved: boolean };
+const _drawingScopeCache = new Map<string, { at: number; scope: DrawingScope }>();
+const drawingScopeKey = (numPrefix: string, subfolder?: string) =>
+  `${numPrefix}#drawings:${String(subfolder || "").replace(/^\/+|\/+$/g, "").toLowerCase()}`;
+
+async function drawingScopeFiles(numPrefix: string, subfolder?: string): Promise<DrawingScope> {
+  const key = drawingScopeKey(numPrefix, subfolder);
+  const hit = _drawingScopeCache.get(key);
+  if (hit && Date.now() - hit.at < DRAWING_SCOPE_TTL) return hit.scope;
+  try {
+    const rows = await sbGet(
+      "pms_mcp_tree_cache?select=cached_at,truncated,libraries,files&project_prefix=eq." + encodeURIComponent(key) + "&limit=1");
+    const row = Array.isArray(rows) ? rows[0] : null;
+    const at = row ? Date.parse(row.cached_at) : NaN;
+    if (row && Number.isFinite(at) && Date.now() - at < DRAWING_SCOPE_TTL && Array.isArray(row.files)) {
+      const scope: DrawingScope = {
+        files: row.files, truncated: !!row.truncated, resolved: true,
+        scopePath: Array.isArray(row.libraries) && row.libraries[0] ? String(row.libraries[0]) : "Outgoing",
+      };
+      _drawingScopeCache.set(key, { at, scope });
+      return scope;
+    }
+  } catch (e) {
+    console.warn("[drawing-scope] cache read failed:", String((e as any)?.message ?? e));
+  }
+  const scope = await drawingScopeWalk(numPrefix, subfolder);
+  if (scope.resolved) {
+    _drawingScopeCache.set(key, { at: Date.now(), scope });
+    // `libraries` carries the resolved scope path; the row is a cache, so the
+    // column's name mattering less than its shape is acceptable here.
+    await treeToDb(key, { files: scope.files, libraries: [scope.scopePath], truncated: scope.truncated });
+  }
+  return scope;
+}
+
+async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<DrawingScope> {
   let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
   if (!rel) {
     const drives = await siteDrives();
@@ -4089,11 +4263,15 @@ mcp.tool("search_drawings", {
     "revision (and the set it was issued in) listed newest first. Each hit carries a text snippet around " +
     "the match, the page inside the file, and the file's webUrl. " +
     "HOW THE INDEX WORKS, READ THIS: drawing text is indexed LAZILY. Each call first reads a few not-yet-" +
-    "indexed PDFs from the project's Outgoing folder (newest sets first), then searches everything indexed " +
-    "so far. Check `coverage`: if `filesPending` > 0 the index is INCOMPLETE and a miss may only mean 'not " +
-    "indexed yet' — call again (same query) to index more, until filesPending is 0. On a large project the " +
-    "first full pass takes several calls; results already indexed are returned every time. Pass " +
-    "indexOnly:true to fill the index without searching. " +
+    "indexed PDFs from the project's Outgoing folder, then searches everything indexed so far. Order: the " +
+    "CURRENT sets first (the last full submission, e.g. '100% CD', plus every bulletin/addendum after it, " +
+    "newest first), then older superseded sets. Check `coverage`: `currentSets.complete` means the drawings " +
+    "as issued today are fully indexed; `complete` means ALL of Outgoing is, which is what 'when did X FIRST " +
+    "appear' needs. If `filesPending` > 0 a miss may only mean 'not indexed yet' — call again (same query) " +
+    "to index more. Results already indexed are returned every time. Pass indexOnly:true to fill the index " +
+    "without searching. Each sheet in the results carries `history`: every indexed revision of that sheet, " +
+    "which ones LACK the term (absentAt), whether it is still there at the newest indexed revision, and the " +
+    "revision block's own description (BULLETIN #13). " +
     "Query semantics: all words must appear on the same page (AND); quote a phrase to keep it together; " +
     "hyphens and spaces inside a tag are interchangeable (FCU-11 finds 'FCU 11' and 'FCU11'). Case-insensitive. " +
     "This reads text layers only: a scanned or image-only sheet indexes as empty and is reported under " +
@@ -4102,7 +4280,7 @@ mcp.tool("search_drawings", {
     projectNumber: z.string().describe("Project number OR project name."),
     query: z.string().optional().describe("What to look for on the sheets, e.g. 'perchloric fume hood', 'FCU-11', '\"emergency generator\" 208V'. Required unless indexOnly is true."),
     subfolder: z.string().optional().describe("Restrict to one folder, exactly as list_project_documents prints it (e.g. 'Outgoing/2026-04-17_Bulletin #13'). Default is the whole Outgoing folder."),
-    maxFilesToIndex: z.number().optional().describe("How many not-yet-indexed PDFs to read this call (default 6, max 12). Pass 0 to search only what is already indexed."),
+    maxFilesToIndex: z.number().optional().describe("How many not-yet-indexed PDFs to read this call (default 10, max 20; a ~28s time box applies regardless). Pass 0 to search only what is already indexed."),
     indexOnly: z.boolean().optional().describe("Only fill the index, do not search. Use it to pre-load a project before a run of questions."),
   }),
   handler: async ({ projectNumber, query, subfolder, maxFilesToIndex, indexOnly }) => {
@@ -4116,10 +4294,10 @@ mcp.tool("search_drawings", {
     if (!indexOnly && !patterns.length) {
       return asText({ error: "Pass a query (what to look for on the drawings), or indexOnly:true to just fill the index." });
     }
-    const fileBudget = Math.min(Math.max(maxFilesToIndex ?? DRAWING_INDEX_MAX_FILES, 0), 12);
+    const fileBudget = Math.min(Math.max(maxFilesToIndex ?? DRAWING_INDEX_MAX_FILES, 0), DRAWING_INDEX_MAX_FILES_CAP);
 
     // ── 1. What SHOULD be indexed: the PDFs in scope ─────────────────────────
-    let scope: { files: TreeFile[]; scopePath: string; truncated: boolean; resolved: boolean };
+    let scope: DrawingScope;
     try {
       scope = await drawingScopeFiles(numPrefix, subfolder);
     } catch (e) {
@@ -4142,11 +4320,12 @@ mcp.tool("search_drawings", {
     );
     const knownById = new Map(known.map((k) => [k.item_id, k]));
 
-    // Newest set first: set folders are date-prefixed, so a descending path sort
-    // puts the current bulletins ahead of the 2019 baseline. Stable, so repeat
-    // calls walk the same order and never skip a file.
-    const ordered = [...scope.files].sort((a, b) =>
-      String(b.folderPath).localeCompare(String(a.folderPath)) || String(a.name).localeCompare(String(b.name)));
+    // Current sets (baseline + everything after it) first, newest set first,
+    // then the superseded sets; combined books that duplicate individual sheets
+    // are out of scope entirely. See planDrawingScope. Order is total and
+    // stable, so repeat calls walk the same sequence and never skip a file.
+    const plan = planDrawingScope(scope.files);
+    const ordered = plan.files;
     const pending = ordered.filter((f) => {
       const k = knownById.get(f.itemId);
       if (!k) return true;
@@ -4177,7 +4356,7 @@ mcp.tool("search_drawings", {
         await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
           { ...base, status: "skipped", attempts, error: `${sizeMB}MB is over the ${DRAWING_INDEX_MAX_BYTES / 1048576}MB indexing cap` },
           "resolution=merge-duplicates,return=minimal");
-        skippedNow.push({ file: f.name, folderPath: f.folderPath, sizeMB, webUrl: f.webUrl });
+        skippedNow.push({ itemId: f.itemId, file: f.name, folderPath: f.folderPath, sizeMB, webUrl: f.webUrl });
         continue;
       }
       // Mark the attempt BEFORE downloading. If the request dies mid-file there
@@ -4250,9 +4429,21 @@ mcp.tool("search_drawings", {
     // ── 4. Coverage, from the scope list and the (now updated) file table ────
     const doneIds = new Set(known.filter((k) => k.status === "done").map((k) => k.item_id));
     for (const r of indexedNow) doneIds.add(ordered.find((f) => f.name === r.file && f.folderPath === r.folderPath)?.itemId);
-    const filesIndexed = ordered.filter((f) => doneIds.has(f.itemId)).length;
-    const skippedAll = ordered.filter((f) => knownById.get(f.itemId)?.status === "skipped").length + skippedNow.length;
-    const filesPending = Math.max(0, ordered.length - filesIndexed - skippedAll - givenUp.length);
+    const skippedNowIds = new Set(skippedNow.map((s) => s.itemId));
+    const givenUpIds = new Set(givenUp.map((f) => f.itemId));
+    const tally = (list: typeof ordered) => {
+      const indexed = list.filter((f) => doneIds.has(f.itemId)).length;
+      const skipped = list.filter((f) => knownById.get(f.itemId)?.status === "skipped" || skippedNowIds.has(f.itemId)).length;
+      const gaveUp = list.filter((f) => givenUpIds.has(f.itemId)).length;
+      const pending = Math.max(0, list.length - indexed - skipped - gaveUp);
+      return { filesInScope: list.length, filesIndexed: indexed, filesPending: pending, skipped, sets: new Set(list.map((f) => f.set)).size };
+    };
+    const all = tally(ordered);
+    const cur = tally(ordered.filter((f) => f.tier === "current"));
+    const old = tally(ordered.filter((f) => f.tier === "superseded"));
+    const filesIndexed = all.filesIndexed;
+    const skippedAll = all.skipped;
+    const filesPending = all.filesPending;
     const textless = known.filter((k) => k.status === "done" && Number(k.pages) > 0 && Number(k.text_pages) === 0)
       .map((k) => ({ file: k.file_name, folderPath: k.folder_path }));
     const coverage = {
@@ -4260,16 +4451,27 @@ mcp.tool("search_drawings", {
       filesInScope: ordered.length,
       filesIndexed,
       filesPending,
+      // The composite: last full submission + every set after it. Indexed first,
+      // so "what is on the drawings now" is answerable long before the whole
+      // Outgoing history is read.
+      baselineSet: plan.baselineSet,
+      currentSets: { sets: cur.sets, filesInScope: cur.filesInScope, filesIndexed: cur.filesIndexed, filesPending: cur.filesPending, complete: cur.filesPending === 0 && !scope.truncated },
+      ...(old.filesInScope ? { supersededSets: { sets: old.sets, filesInScope: old.filesInScope, filesIndexed: old.filesIndexed, filesPending: old.filesPending, note: "Sets older than the baseline; indexed after the current sets. Needed only for 'when did it FIRST appear'." } } : {}),
+      ...(plan.duplicateBooks.length ? { duplicateBooksSkipped: plan.duplicateBooks.length, duplicateBooksNote: "Combined-PDF books in sets that also ship INDIVIDUAL PDFs hold the same sheets twice and are not indexed. Pass the combined folder as `subfolder` to read one anyway." } : {}),
       ...(skippedAll ? { filesSkippedForSize: skippedAll } : {}),
       ...(givenUp.length ? { filesGivenUp: givenUp.map((f) => ({ file: f.name, folderPath: f.folderPath, lastError: knownById.get(f.itemId)?.error })) } : {}),
       ...(textless.length ? { textlessFiles: textless } : {}),
       indexedThisCall: indexedNow,
-      ...(skippedNow.length ? { skippedThisCall: skippedNow } : {}),
+      ...(skippedNow.length ? { skippedThisCall: skippedNow.map(({ itemId: _i, ...s }) => s) } : {}),
       ...(failedNow.length ? { failedThisCall: failedNow } : {}),
       ...(scope.truncated ? { crawlWarning: "The SharePoint folder crawl hit its request cap, so some files under this path were not seen and filesInScope is an undercount." } : {}),
       complete: filesPending === 0 && !scope.truncated,
       ...(filesPending > 0
-        ? { nextStep: `${filesPending} PDF(s) are not indexed yet — a miss below may only mean 'not read yet'. Call search_drawings again with the same query to index more.` }
+        ? {
+          nextStep: cur.filesPending > 0
+            ? `${cur.filesPending} PDF(s) in the CURRENT sets are not indexed yet (${old.filesPending} more in older sets) — a miss below may only mean 'not read yet'. Call search_drawings again with the same query to index more.`
+            : `The current sets are fully indexed; ${old.filesPending} PDF(s) in older sets are still pending, which only matters for 'when did it first appear'. Call again to keep reading them, or stop here if the question is about the drawings as issued today.`,
+        }
         : {}),
     };
     if (indexOnly) return asText({ project, coverage, elapsedMs: Date.now() - t0 });
@@ -4303,22 +4505,52 @@ mcp.tool("search_drawings", {
       });
       bySheet.set(key, entry);
     }
-    // Sort occurrences by revisionDate descending (labels are unsortable: the
-    // scheme changes mid-project, see extract_sheet_index), then set name.
-    const dateKey = (d: string | null) => {
-      if (!d) return 0;
-      const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(d) || null;
-      if (m) return Number((m[3].length === 2 ? "20" + m[3] : m[3]) + m[1].padStart(2, "0") + m[2].padStart(2, "0"));
-      const m2 = /^(\d{4})\.(\d{2})\.(\d{2})$/.exec(d);
-      return m2 ? Number(m2[1] + m2[2] + m2[3]) : 0;
-    };
+    // ── 6. History: every indexed revision of each matched sheet, hit or not ──
+    // One query for all matched sheet numbers; per (revision, set) it yields the
+    // revision block's own description ("BULLETIN #13"), which is what lets the
+    // answer say "issued with Bulletin #13" off the sheet rather than the folder.
+    const sheetNos = [...bySheet.values()].map((s) => s.sheetNo).filter(Boolean) as string[];
+    const indexedBySheet = new Map<string, DrawingRev[]>();
+    if (sheetNos.length) {
+      try {
+        const inList = sheetNos.slice(0, 80).map((s) => `"${String(s).replace(/"/g, "")}"`).join(",");
+        const rows: any[] = await sbGetAll(
+          "pms_drawing_text?select=sheet_no,revision,revision_date,revision_description,folder_path" +
+          "&project_prefix=eq." + encodeURIComponent(numPrefix) +
+          "&sheet_no=in.(" + encodeURIComponent(inList) + ")" +
+          (subfolder ? "&folder_path=like." + encodeURIComponent(String(subfolder).replace(/^\/+|\/+$/g, "") + "*") : "") +
+          "&order=item_id,page",
+        );
+        for (const r of rows) {
+          const list = indexedBySheet.get(r.sheet_no) || [];
+          list.push({ revision: r.revision, revisionDate: r.revision_date, revisionDescription: r.revision_description, set: drawingSetOf(r.folder_path) });
+          indexedBySheet.set(r.sheet_no, list);
+        }
+      } catch (e) {
+        console.warn("[search_drawings] history lookup failed:", String((e as any)?.message ?? e));
+      }
+    }
+
     const sheets = [...bySheet.values()].map((s) => {
-      s.occurrences.sort((a: any, b: any) => dateKey(b.revisionDate) - dateKey(a.revisionDate) || String(b.set).localeCompare(String(a.set)));
-      const first = s.occurrences[s.occurrences.length - 1];
+      s.occurrences.sort(drawingRevSort);
+      const indexed = s.sheetNo ? (indexedBySheet.get(s.sheetNo) || []) : [];
+      const descOf = new Map(indexed.map((r) => [drawingRevKey(r), r.revisionDescription ?? null]));
+      for (const o of s.occurrences) o.revisionDescription = descOf.get(drawingRevKey(o)) ?? null;
+      const h = drawingSheetHistory(s.occurrences, indexed);
       return {
-        ...s,
+        sheetNo: s.sheetNo, sheetTitle: s.sheetTitle,
+        occurrences: s.occurrences,
         revisionsMatched: s.occurrences.length,
-        earliestSeen: first ? { revision: first.revision, revisionDate: first.revisionDate, set: first.set } : null,
+        earliestSeen: h.earliestSeen,
+        history: {
+          latestSeen: h.latestSeen,
+          latestIndexed: h.latestIndexed,
+          stillPresentAtLatest: h.stillPresentAtLatest,
+          earliestIndexed: h.earliestIndexed,
+          presentSinceEarliestIndexed: h.presentSinceEarliestIndexed,
+          indexedRevisions: h.indexedRevisions,
+          absentAt: h.absentAt,
+        },
       };
     });
     sheets.sort((a, b) => String(a.sheetNo || "~").localeCompare(String(b.sheetNo || "~")));
@@ -4330,9 +4562,12 @@ mcp.tool("search_drawings", {
       sheets,
       elapsedMs: Date.now() - t0,
       note: sheets.length
-        ? "Each sheet lists every indexed revision on which the term appears, newest first; earliestSeen is the " +
-          "oldest INDEXED occurrence, which is only 'first appeared' once coverage.complete is true. Absence at an " +
-          "older revision that IS indexed means the term was not on the sheet then."
+        ? "Each sheet lists every indexed revision on which the term appears, newest first (occurrences), and " +
+          "under `history` every indexed revision of that sheet whether or not the term is on it: `absentAt` are " +
+          "indexed revisions WITHOUT the term, `stillPresentAtLatest` says whether it is on the newest indexed " +
+          "revision, `revisionDescription` is the revision block's own label (e.g. BULLETIN #13). `earliestSeen` is " +
+          "'first appeared' only when coverage.complete is true; if `presentSinceEarliestIndexed` is true it may " +
+          "have been there from the base issue. Revisions not yet indexed are simply unknown, not absent."
         : coverage.complete
         ? "No indexed sheet carries this text. The index covers every PDF in scope, so this is a real miss on the text layer (graphics-only content, or a scanned sheet, would not be found)."
         : "No hit YET — the index is incomplete, see coverage.nextStep.",
