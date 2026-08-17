@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v119-terms-from-library";
+    window.__appVersion = "2026-08-17-pms-v120-nyc-calendar-owner-path";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1914,54 +1914,147 @@ async function eagerSaveProjectV2(project, versions, lastSavedRef) {
 
 
 // ── Calendar helpers ──
-// Cache the NYC Shared Calendar ID so we only look it up once per session
-let _nycCalendarId = null;
+// The NYC Shared Calendar is a CUSTOM calendar that lives in Sara's mailbox
+// (\\sara.arias@setty.com\Calendar) and is shared to the team with "Can edit".
+// Graph exposes it two ways, and the IDs are NOT interchangeable — Microsoft:
+// calendar and event IDs "correspond to only the owner's mailbox":
+//   owner path  /users/{owner}/calendars/{ownerCalId}  — one ID set for everyone
+//   local path  /me/calendars/{localCopyId}            — the sharee's local copy,
+//               which only exists once they accepted/added the share in Outlook
+// We try owner first (verified with a cheap read), then the local copy.
+//
+// Because a milestone's stored calendarEventId may have been minted by ANOTHER
+// user (a different mailbox), every read/update locates the event by stored id,
+// then by iCalUId (mailbox-independent), then by exact subject. Before this,
+// a colleague opening a project Sara had synced got a 404 on her ID and the
+// app reported "Event was deleted in Outlook".
+//
+// Nothing here writes to a personal calendar any more. If the shared calendar
+// can't be reached we say so, in words, and stop — the old silent fallback is
+// what made "it synced" mean different things for different people.
+const NYC_CAL_OWNER = "sara.arias@setty.com";
+const NYC_CAL_NAME  = "NYC Shared Calendar";
+const NYC_CAL_NOT_FOUND = "The NYC Shared Calendar isn't visible to your Microsoft account. Ask Sara to share it with you (\"Can edit\") and accept the invitation in Outlook, then reload the PMS.";
+const NYC_CAL_NO_EDIT = "You're not on the NYC Shared Calendar's permission list with \"Can edit\". Ask Sara to add you (calendar Properties → Permissions), then try again.";
 
-async function getNYCCalendarId() {
-  if (_nycCalendarId) return _nycCalendarId;
-  // Check localStorage cache first
-  const cached = localStorage.getItem("setty_pms_cal_id");
-  if (cached) { _nycCalendarId = cached; return _nycCalendarId; }
-  // Fetch all calendars for the signed-in user
-  try {
-    const data = await graphFetch("GET", "/me/calendars?$top=50");
-    const cals = data?.value || [];
+let _nycCal = null;          // { base, id, via: "owner"|"local", canEdit, name }
+let _nycCalPromise = null;   // de-dupes concurrent resolves (dashboard sweep fires many at once)
+let _nycCalAttempts = [];    // what was tried on the last failed resolve — surfaced by the debug button
 
-    // Find NYC Shared Calendar by name (case-insensitive partial match)
-    const nyc = cals.find(c => c.name.toLowerCase().includes("nyc") || c.name.toLowerCase().includes("shared"));
-    if (nyc) {
-      _nycCalendarId = nyc.id;
-      localStorage.setItem("setty_pms_cal_id", nyc.id);
-
-      return _nycCalendarId;
-    }
-
-    return null;
-  } catch(e) {
-
-    return null;
-  }
+function nycEventSubject(projectName, projectNumber, milestoneName) {
+  return (projectNumber ? "[" + projectNumber + "] " : "") + (projectName || "Project") + " - " + milestoneName;
 }
 
-// ── TEMP DEBUG (2026-07-30) — remove once the Rafi calendar-access
-// investigation is done. Surfaces exactly what /me/calendars returns for the
-// SIGNED-IN user, so we can tell whether a shared calendar that's visible in
-// their Outlook client is actually visible to Graph under their own account —
-// those are two different things, and this settles it without guesswork.
+function nycCalendarMatch(cals) {
+  const want = NYC_CAL_NAME.toLowerCase();
+  const exact = cals.find(c => (c.name || "").trim().toLowerCase() === want);
+  if (exact) return exact;
+  // Sharees can rename their local copy (docs: name is the one property a
+  // sharee may change). Fall back to "owned by Sara, says NYC" — never the
+  // old any-calendar-containing-"shared" match, which pinned wrong calendars.
+  return cals.find(c => (c.owner?.address || "").toLowerCase() === NYC_CAL_OWNER && /nyc/i.test(c.name || "")) || null;
+}
+
+function nycCalendarErrorMessage(e) {
+  const msg = (e && e.message) || String(e);
+  if (/Graph 403|ErrorAccessDenied|Access is denied/i.test(msg)) return NYC_CAL_NO_EDIT;
+  return msg;
+}
+
+async function resolveNycCalendar(force = false) {
+  if (_nycCal && !force) return _nycCal;
+  if (_nycCalPromise && !force) return _nycCalPromise;
+  // The pre-8/17 code pinned a per-user calendar id in localStorage forever;
+  // it could hold a wrong calendar. Clear it — resolution is per session now.
+  try { localStorage.removeItem("setty_pms_cal_id"); } catch (_) {}
+  _nycCalPromise = (async () => {
+    const attempts = [];
+    // 1. Owner path — one set of IDs for the whole team.
+    try {
+      const data = await graphFetch("GET", "/users/" + NYC_CAL_OWNER + "/calendars?$top=50");
+      const cals = data?.value || [];
+      const cal = nycCalendarMatch(cals);
+      if (cal) {
+        const base = "/users/" + NYC_CAL_OWNER + "/calendars/" + cal.id;
+        // Listing can succeed where event access doesn't (custom shared
+        // calendars are documented via the local copy). Prove it with a read.
+        await graphFetch("GET", base + "/events?$top=1&$select=id");
+        _nycCal = { base, id: cal.id, via: "owner", canEdit: cal.canEdit !== false, name: cal.name };
+        return _nycCal;
+      }
+      attempts.push("owner path: " + cals.length + " calendars listed, none named " + NYC_CAL_NAME);
+    } catch (e) { attempts.push("owner path: " + String(e.message || e).slice(0, 100)); }
+    // 2. Local copy in the signed-in user's own calendar list.
+    try {
+      const data = await graphFetch("GET", "/me/calendars?$top=50");
+      const cals = data?.value || [];
+      const cal = nycCalendarMatch(cals);
+      if (cal) {
+        _nycCal = { base: "/me/calendars/" + cal.id, id: cal.id, via: "local", canEdit: cal.canEdit !== false, name: cal.name };
+        return _nycCal;
+      }
+      attempts.push("my calendars: " + (cals.map(c => c.name).join(", ") || "(none)"));
+    } catch (e) { attempts.push("my calendars: " + String(e.message || e).slice(0, 100)); }
+    _nycCal = null;
+    _nycCalAttempts = attempts;
+    return null;
+  })();
+  try { return await _nycCalPromise; } finally { _nycCalPromise = null; }
+}
+
+// Diagnostic behind the dashboard's "Check my calendar access" button.
 async function debugMyCalendars() {
+  const email = settyAuth.email();
+  const cal = await resolveNycCalendar(true);
+  let mine = [];
   try {
-    const data = await graphFetch("GET", "/me/calendars?$top=50");
-    const cals = data?.value || [];
-    const nyc = cals.find(c => c.name.toLowerCase().includes("nyc") || c.name.toLowerCase().includes("shared"));
-    return {
-      email: settyAuth.email(),
-      count: cals.length,
-      names: cals.map(c => c.name),
-      matched: nyc ? nyc.name : null,
-    };
-  } catch (e) {
-    return { email: settyAuth.email(), error: e.message };
+    const data = await graphFetch("GET", "/me/calendars?$top=50&$select=name,canEdit,owner,isSharedWithMe");
+    mine = (data?.value || []).map(c => c.name + (c.owner?.address && c.owner.address.toLowerCase() !== (email || "").toLowerCase() ? " (owner: " + c.owner.address + ")" : "") + (c.canEdit === false ? " [view only]" : ""));
+  } catch (e) { mine = ["error: " + e.message]; }
+  return {
+    email,
+    resolved: !!cal,
+    via: cal?.via || null,
+    name: cal?.name || null,
+    canEdit: cal ? cal.canEdit : null,
+    attempts: cal ? [] : _nycCalAttempts,
+    myCalendars: mine,
+  };
+}
+
+const odataQuote = s => String(s).replace(/'/g, "''");
+
+// Many "not found" results in ONE sweep is a visibility problem (stale local
+// copy, wrong calendar), not a batch of real deletions. A wall of "Event was
+// deleted in Outlook" rows just looks broken — that is what Rafi saw. Collapse
+// them into a single notice; genuine one-off deletions still list normally.
+const NYC_MASS_MISSING_MIN = 3;
+function splitMassMissing(conflicts, checkedCount) {
+  const missing = conflicts.filter(c => c.deleted);
+  if (missing.length >= NYC_MASS_MISSING_MIN && missing.length * 2 >= checkedCount) {
+    return { conflicts: conflicts.filter(c => !c.deleted), massMissing: missing.length };
   }
+  return { conflicts, massMissing: 0 };
+}
+const NYC_MASS_MISSING_MSG = n => `⚠ ${n} synced milestones couldn't be found on the NYC Shared Calendar. That many at once usually means calendar access, not deletions: use "Check my calendar access" on the Team Dashboard, or ask Sara.`;
+
+// Locate an event on the resolved calendar: by the id we stored, then by
+// iCalUId, then by exact subject. Returns the Graph event (with id) or null.
+// Throws on transport/permission errors so callers can tell "gone" from "can't see".
+async function locateNycEvent(base, { eventId, uid, subject }, select = "id,start,isAllDay,iCalUId") {
+  if (eventId) {
+    const ev = await graphFetch("GET", base + "/events/" + eventId + "?$select=" + select);
+    if (ev) return ev;
+  }
+  if (uid) {
+    const r = await graphFetch("GET", base + "/events?$top=2&$select=" + select + "&$filter=" + encodeURIComponent("iCalUId eq '" + odataQuote(uid) + "'"));
+    if (r?.value?.length) return r.value[0];
+  }
+  if (subject) {
+    const r = await graphFetch("GET", base + "/events?$top=5&$select=" + select + "&$filter=" + encodeURIComponent("subject eq '" + odataQuote(subject) + "'"));
+    if (r?.value?.length) return r.value[0];
+  }
+  return null;
 }
 
 async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber, existingEventId, pmName) {
@@ -1972,8 +2065,7 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
   endDateObj.setDate(endDateObj.getDate() + 1);
   const endDate = endDateObj.toISOString().slice(0, 10);
 
-  const prefix = projectNumber ? "[" + projectNumber + "] " : "";
-  const subject = prefix + projectName + " - " + milestone.name;
+  const subject = nycEventSubject(projectName, projectNumber, milestone.name);
   const pm = (pmName || "").trim();
 
   const eventBody = {
@@ -1986,56 +2078,48 @@ async function createOrUpdateCalendarEvent(milestone, projectName, projectNumber
     ...(pm ? { location: { displayName: "PM: " + pm } } : {}),
   };
 
-
-
-  // Build the correct calendar path
-  async function calPath(eventId) {
-    const calId = await getNYCCalendarId();
-    const base = calId ? "/me/calendars/" + calId : "/me";
-    if (eventId) return base + "/events/" + eventId;
-    return base + "/events";
-  }
-
-  const calId = await getNYCCalendarId();
-  const postedToShared = !!calId;
+  const cal = await resolveNycCalendar();
+  if (!cal) return { success: false, error: NYC_CAL_NOT_FOUND };
 
   try {
-    let result;
-    if (existingEventId) {
-      const patchPath = await calPath(existingEventId);
-      result = await graphFetch("PATCH", patchPath, eventBody);
-      if (!result) result = await graphFetch("POST", await calPath(null), eventBody);
-    } else {
-      result = await graphFetch("POST", await calPath(null), eventBody);
+    let targetId = null;
+    // Only hunt for an existing event when this milestone WAS synced before
+    // (an id or uid is on record) — a first sync must never adopt some other
+    // event that happens to share the subject.
+    if (existingEventId || milestone.calendarEventUid) {
+      const found = await locateNycEvent(cal.base, { eventId: existingEventId, uid: milestone.calendarEventUid, subject }, "id,iCalUId");
+      if (found) targetId = found.id;
     }
-    return {
-      success: true,
-      eventId: result?.id,
-      warning: postedToShared ? null : "Added to your personal calendar — NYC Shared Calendar was not found in your account. Ask Sara to check sharing permissions.",
-    };
+    let result = null;
+    if (targetId) result = await graphFetch("PATCH", cal.base + "/events/" + targetId, eventBody);
+    if (!result) result = await graphFetch("POST", cal.base + "/events", eventBody);
+    return { success: true, eventId: result?.id, eventUid: result?.iCalUId || null, via: cal.via };
   } catch(e) {
-    return { success: false, error: e.message };
+    return { success: false, error: nycCalendarErrorMessage(e) };
   }
 }
 
-// Read back a synced milestone's event from Outlook so the Schedule tab can
-// detect dates that were moved calendar-side (two-way sync, pull direction).
+// Read back a synced milestone's event from Outlook so the Schedule tab and
+// dashboard can detect dates moved calendar-side (two-way sync, pull direction).
+// `hints` = { uid, subject } lets us find the event even when `eventId` was
+// minted in another user's mailbox.
 // Returns:
-//   { found: true, date: "YYYY-MM-DD" } — event exists
-//   { found: false }                    — event was deleted in Outlook
-//   null                                — fetch failed (auth/network); unknown, don't prompt
-async function fetchCalendarEventDate(eventId) {
-  const calId = await getNYCCalendarId();
+//   { found: true, date: "YYYY-MM-DD", id }  — event exists
+//   { found: false }                         — event is gone from the shared calendar
+//   null                                     — can't tell (calendar not visible, auth/network); don't prompt
+async function fetchCalendarEventDate(eventId, hints = {}) {
+  const cal = await resolveNycCalendar();
   try {
-    let ev = calId ? await graphFetch("GET", "/me/calendars/" + calId + "/events/" + eventId + "?$select=start,isAllDay") : null;
-    // Event may live on the personal calendar — createOrUpdateCalendarEvent
-    // falls back there when the shared calendar isn't visible to the account
-    if (!ev) ev = await graphFetch("GET", "/me/events/" + eventId + "?$select=start,isAllDay");
-    if (!ev) return { found: false };
+    let ev = null;
+    if (cal) ev = await locateNycEvent(cal.base, { eventId, uid: hints.uid, subject: hints.subject });
+    // Legacy: before 8/17 the app fell back to the user's PERSONAL calendar
+    // when the shared one wasn't visible; those events still live there.
+    if (!ev && eventId) ev = await graphFetch("GET", "/me/events/" + eventId + "?$select=id,start,isAllDay");
+    if (!ev) return cal ? { found: false } : null;
     // All-day events carry the calendar date in the dateTime string itself,
     // so the first 10 chars are the date regardless of timezone representation
     const date = (ev.start?.dateTime || "").slice(0, 10);
-    return { found: true, date: date || null };
+    return { found: true, date: date || null, id: ev.id };
   } catch (e) {
     return null;
   }
@@ -2064,13 +2148,13 @@ async function createNoteCalendarEvent(note, project) {
     categories: ["Project Note"],
   };
 
+  const cal = await resolveNycCalendar();
+  if (!cal) return { success: false, error: NYC_CAL_NOT_FOUND };
   try {
-    const calId = await getNYCCalendarId();
-    const path = calId ? "/me/calendars/" + calId + "/events" : "/me/events";
-    const result = await graphFetch("POST", path, eventBody);
+    const result = await graphFetch("POST", cal.base + "/events", eventBody);
     return { success: true, eventId: result?.id };
   } catch(e) {
-    return { success: false, error: e.message };
+    return { success: false, error: nycCalendarErrorMessage(e) };
   }
 }
 
@@ -7421,15 +7505,19 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     (project.milestones || []).filter(m => m.calendarEventId).map(m => [m.id, m.calendarEventId])
   );
 
-  function saveCalMap(map, pushedIds = []) {
+  function saveCalMap(map, pushedIds = [], uidMap = {}) {
     // Write eventIds back into the milestone objects and save via onChange.
     // pushedIds = milestones just written TO Outlook: PMS and Outlook now
     // agree, so any "Keep PMS Date" acknowledgement is spent — clear it so a
     // later calendar drag back to that date prompts again.
+    // uidMap = milestone id → iCalUId from the push; mailbox-independent, so a
+    // colleague's PMS can find this event even though Graph gives THEIR mailbox
+    // a different event id.
     const pushed = new Set(pushedIds);
     const newMilestones = (project.milestones || []).map(m => ({
       ...m,
       calendarEventId: map[m.id] || m.calendarEventId || null,
+      ...(uidMap[m.id] ? { calendarEventUid: uidMap[m.id] } : {}),
       ...(pushed.has(m.id) ? { outlookDateAck: null } : {}),
     }));
     onChange({ ...project, milestones: newMilestones });
@@ -7438,6 +7526,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
   // ── Two-way sync (pull direction): on tab open, read each synced event back
   // from Outlook and prompt when the calendar date no longer matches PMS ──
   const [outlookConflicts, setOutlookConflicts] = useState([]); // [{id, name, pmsDate, outlookDate, deleted}]
+  const [outlookMassMissing, setOutlookMassMissing] = useState(0); // see splitMassMissing
 
   // Which milestones get checked against Outlook. Completed and cancelled
   // milestones are skipped — their dates are historical record; a calendar
@@ -7452,7 +7541,9 @@ function ScheduleView({ project, onChange, onEagerSave }) {
       const toCheck = (project.milestones || []).filter(shouldCheckOutlookDate);
       if (!toCheck.length) return;
       const results = await Promise.all(toCheck.map(async m => {
-        const r = await fetchCalendarEventDate(m.calendarEventId);
+        // uid/subject hints let the lookup succeed when calendarEventId was
+        // minted in a colleague's mailbox (Graph event ids are per-mailbox).
+        const r = await fetchCalendarEventDate(m.calendarEventId, { uid: m.calendarEventUid, subject: nycEventSubject(project.name, project.projectNumber, m.name) });
         if (!r) return null; // fetch failed — unknown state, don't prompt
         if (!r.found) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: null, deleted: true };
         // outlookDateAck = the Outlook date the user already chose "Keep PMS
@@ -7461,7 +7552,10 @@ function ScheduleView({ project, onChange, onEagerSave }) {
         if (r.date && r.date !== m.dueDate && r.date !== m.outlookDateAck) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: r.date, deleted: false };
         return null;
       }));
-      if (alive) setOutlookConflicts(results.filter(Boolean));
+      if (!alive) return;
+      const split = splitMassMissing(results.filter(Boolean), toCheck.length);
+      setOutlookConflicts(split.conflicts);
+      setOutlookMassMissing(split.massMissing);
     })();
     return () => { alive = false; };
   }, []); // runs once per Schedule tab open — ScheduleView remounts on tab switch
@@ -7507,7 +7601,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     const newMap = { ...calMap };
     if (result.success) {
       newMap[m.id] = result.eventId;
-      saveCalMap(newMap, [m.id]);
+      saveCalMap(newMap, [m.id], result.eventUid ? { [m.id]: result.eventUid } : {});
       setCalState(s => ({ ...s, [m.id]: "synced" }));
       setSyncMsg(result.warning
         ? `⚠ "${m.name}" — ${result.warning}`
@@ -7524,6 +7618,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     const newMap = { ...calMap };
     let ok = 0;
     const pushedIds = [];
+    const uidMap = {};
     for (let i = 0; i < syncable.length; i++) {
       const m = syncable[i];
       setSyncMsg(`Syncing ${i+1}/${syncable.length}…`);
@@ -7531,6 +7626,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
       const result = await createOrUpdateCalendarEvent(m, project.name || "Project", project.projectNumber, newMap[m.id], project.projectManager);
       if (result.success) {
         newMap[m.id] = result.eventId;
+        if (result.eventUid) uidMap[m.id] = result.eventUid;
         pushedIds.push(m.id);
         setCalState(s => ({ ...s, [m.id]: "synced" }));
         ok++;
@@ -7538,7 +7634,7 @@ function ScheduleView({ project, onChange, onEagerSave }) {
         setCalState(s => ({ ...s, [m.id]: "error", [`${m.id}_err`]: result.error }));
       }
     }
-    saveCalMap(newMap, pushedIds);
+    saveCalMap(newMap, pushedIds, uidMap);
     setSyncingAll(false);
     const warnings = syncable.filter((_, i) => {
       // detect if any synced with warning (posted to personal)
@@ -8057,14 +8153,19 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
       )}
 
       {/* Outlook → PMS conflict prompts (two-way sync, pull direction) */}
-      {outlookConflicts.length > 0 && (
+      {(outlookConflicts.length > 0 || outlookMassMissing > 0) && (
         <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: 14, marginBottom: 14 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: P.yellow, marginBottom: 4 }}>
-            📅 Outlook calendar changes detected
+            📅 {outlookConflicts.length > 0 ? "Outlook calendar changes detected" : "Outlook calendar check"}
           </div>
-          <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
-            These synced milestones were moved or removed in Outlook. Choose which date wins.
-          </div>
+          {outlookConflicts.length > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
+              These synced milestones were moved or removed in Outlook. Choose which date wins.
+            </div>
+          )}
+          {outlookMassMissing > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>{NYC_MASS_MISSING_MSG(outlookMassMissing)}</div>
+          )}
           {outlookConflicts.map(c => (
             <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "7px 0", borderTop: `1px solid ${P.border}` }}>
               <span style={{ fontWeight: 600, fontSize: 13, minWidth: 160 }}>{c.name}</span>
@@ -20458,7 +20559,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
       if (result.eventId && proj) {
         // Pushed to Outlook → PMS and Outlook agree; spend any "Keep PMS Date" ack.
         const newMilestones = (proj.milestones || []).map(ms =>
-          ms.id === m.id ? { ...ms, calendarEventId: result.eventId, outlookDateAck: null } : ms
+          ms.id === m.id ? { ...ms, calendarEventId: result.eventId, ...(result.eventUid ? { calendarEventUid: result.eventUid } : {}), outlookDateAck: null } : ms
         );
         onUpdateProject({ ...proj, milestones: newMilestones });
       }
@@ -20478,7 +20579,9 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
   const [dashOutlookConflicts, setDashOutlookConflicts] = useState(() =>
     Date.now() - _dashCalPullCache.at < DASH_CAL_PULL_TTL_MS ? _dashCalPullCache.conflicts : []);
   const [dashOutlookChecking, setDashOutlookChecking] = useState(false);
-  // TEMP DEBUG (2026-07-30) — see debugMyCalendars(); remove with it.
+  const [dashOutlookMassMissing, setDashOutlookMassMissing] = useState(0); // see splitMassMissing
+  // Calendar-access diagnostic — see debugMyCalendars(). Kept: it's how we
+  // tell "not shared", "view only" and "not added in Outlook" apart remotely.
   const [dashCalDebug, setDashCalDebug] = useState(null);
   const [dashCalDebugLoading, setDashCalDebugLoading] = useState(false);
   async function runDashCalDebug() {
@@ -20505,7 +20608,7 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
     const CHUNK = 6; // polite to Graph throttling — a firm-wide sweep can be dozens of events
     for (let i = 0; i < targets.length; i += CHUNK) {
       const part = await Promise.all(targets.slice(i, i + CHUNK).map(async ({ p, m }) => {
-        const r = await fetchCalendarEventDate(m.calendarEventId);
+        const r = await fetchCalendarEventDate(m.calendarEventId, { uid: m.calendarEventUid, subject: nycEventSubject(p.name, p.projectNumber, m.name) });
         if (!r) return null; // fetch failed — unknown state, don't prompt
         if (!r.found) return { projectId: p.id, projectName: p.name, projectNumber: p.projectNumber, milestoneId: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: null, deleted: true };
         // Skip an Outlook date the user already answered "Keep PMS Date" to
@@ -20515,8 +20618,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
       }));
       found.push(...part.filter(Boolean));
     }
-    _dashCalPullCache = { at: Date.now(), conflicts: found };
-    setDashOutlookConflicts(found);
+    const split = splitMassMissing(found, targets.length);
+    _dashCalPullCache = { at: Date.now(), conflicts: split.conflicts };
+    setDashOutlookConflicts(split.conflicts);
+    setDashOutlookMassMissing(split.massMissing);
     setDashOutlookChecking(false);
   }
 
@@ -20668,11 +20773,11 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
 
       {/* Outlook → PMS conflict prompts — dashboard-wide (two-way calendar sync).
           Same panel as the project Schedule tab, but sweeps every active project. */}
-      {dashOutlookConflicts.length > 0 && (
+      {(dashOutlookConflicts.length > 0 || dashOutlookMassMissing > 0) && (
         <div style={{ background: P.yellowDim, border: `1px solid ${P.yellow}`, borderRadius: 8, padding: 14, marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: P.yellow }}>
-              📅 Outlook calendar changes detected ({dashOutlookConflicts.length})
+              📅 {dashOutlookConflicts.length > 0 ? `Outlook calendar changes detected (${dashOutlookConflicts.length})` : "Outlook calendar check"}
             </div>
             <button onClick={() => sweepOutlookDates(true)} disabled={dashOutlookChecking}
               title="Re-check all synced milestones against Outlook"
@@ -20680,12 +20785,18 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
               {dashOutlookChecking ? "⏳" : "↻"}
             </button>
           </div>
-          <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
-            These synced milestones were moved or removed in Outlook. Choose which date wins.
-          </div>
-          {/* TEMP DEBUG (2026-07-30) — checks whether the NYC Shared Calendar is
-              visible to Graph under YOUR sign-in, separate from whether Outlook's
-              client shows it. Remove this block once the investigation is closed. */}
+          {dashOutlookConflicts.length > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>
+              These synced milestones were moved or removed in Outlook. Choose which date wins.
+            </div>
+          )}
+          {dashOutlookMassMissing > 0 && (
+            <div style={{ fontSize: 12, color: P.text, marginBottom: 8 }}>{NYC_MASS_MISSING_MSG(dashOutlookMassMissing)}</div>
+          )}
+          {/* Calendar-access diagnostic — shows HOW this sign-in reaches the NYC
+              Shared Calendar (owner path vs local copy), whether it can edit,
+              and what was tried when it can't be reached. Send a screenshot of
+              this to Sara when sync misbehaves. */}
           <div style={{ marginBottom: 8, padding: "6px 8px", background: "rgba(0,0,0,0.15)", borderRadius: 6 }}>
             <button onClick={runDashCalDebug} disabled={dashCalDebugLoading}
               style={{ background: "none", border: `1px solid ${P.yellow}`, borderRadius: 5, color: P.yellow, cursor: "pointer", fontSize: 11.5, padding: "3px 8px" }}>
@@ -20694,14 +20805,15 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
             {dashCalDebug && (
               <div style={{ fontSize: 11.5, color: P.textMuted, marginTop: 6, lineHeight: 1.5 }}>
                 <div>Signed in as: <b>{dashCalDebug.email}</b></div>
-                {dashCalDebug.error ? (
-                  <div>Graph error: {dashCalDebug.error}</div>
+                {dashCalDebug.resolved ? (
+                  <div>NYC Shared Calendar: <b style={{ color: P.green }}>reachable</b> via {dashCalDebug.via === "owner" ? "Sara's mailbox (owner path)" : "your local copy"} as "{dashCalDebug.name}"{dashCalDebug.canEdit === false ? <b style={{ color: P.red }}> · view only, sync will be refused</b> : " · can edit"}</div>
                 ) : (
                   <>
-                    <div>Calendars Graph sees for this account ({dashCalDebug.count}): {dashCalDebug.names.join(", ") || "(none)"}</div>
-                    <div>NYC/Shared match: <b>{dashCalDebug.matched || "NOT FOUND"}</b></div>
+                    <div>NYC Shared Calendar: <b style={{ color: P.red }}>NOT REACHABLE</b> from this account</div>
+                    {(dashCalDebug.attempts || []).map((a, i) => <div key={i}>· {a}</div>)}
                   </>
                 )}
+                <div>Calendars in your own list: {(dashCalDebug.myCalendars || []).join(", ") || "(none)"}</div>
               </div>
             )}
           </div>
