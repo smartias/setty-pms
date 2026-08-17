@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v123-word-rate-list";
+    window.__appVersion = "2026-08-17-pms-v124-proposal-pdf-from-word";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -21991,27 +21991,28 @@ async function sendProposalForReview(project) {
 // draft. PDF auto-attachment isn't done because the only browser-side path
 // (html2pdf / html2canvas) produces image-based PDFs, which lose text
 // selectability — bad for a legal proposal package.
-async function sendProposal(project) {
+// Subject and body for the proposal email. The PDF that goes with it is
+// Word's rendition of the filed .docx (see exportProposalDocx, mode "send").
+function proposalEmailDraft(project) {
   const projName = project.name || "Project";
-  const subject = `${projName} Proposal`;
-  const bodyHtml = `
-    <p>Hello,</p>
-    <p>Please find attached our proposal for <strong>${projName}</strong>${project.projectAddress ? " at " + project.projectAddress : ""}, including:</p>
-    <ul>
-      <li>Scope of Services</li>
-      <li>Fee Proposal</li>
-      <li>Attachment A — Terms &amp; Conditions</li>
-      <li>Attachment B — Schedule of Hourly Rates</li>
-    </ul>
-    <p>Please review and let us know if you have any questions or would like to discuss further.</p>
-    <p>Best regards,</p>
-  `.trim();
-  // Open the bundle print window first so the user has the PDF ready when
-  // the draft opens. They print, save as PDF, switch to Outlook, attach.
-  printProposalBundle(project);
-  await createOutlookDraft({ subject, bodyHtml });
+  const subject = projName + " Proposal";
+  const bodyHtml = [
+    "<p>Hello,</p>",
+    "<p>Please find attached our proposal for <strong>" + projName + "</strong>" + (project.projectAddress ? " at " + project.projectAddress : "") + ", including:</p>",
+    "<ul><li>Scope of Services</li><li>Fee Proposal</li><li>Attachment A: Terms &amp; Conditions</li><li>Attachment B: Schedule of Hourly Rates</li></ul>",
+    "<p>Please review and let us know if you have any questions or would like to discuss further.</p>",
+    "<p>Best regards,</p>",
+  ].join("");
+  return { subject, bodyHtml };
 }
 
+// Send Proposal: the same dialog as the Word button, in "send" mode. It builds
+// the .docx, files it, gets Word's PDF and creates the Outlook draft with the
+// PDF attached. The old path printed a hand-written HTML bundle to PDF, which
+// was a DIFFERENT template from the Word document; there is one now.
+async function sendProposal(project) {
+  exportProposalDocx(project, { mode: "send" });
+}
 // ── Word proposal export ────────────────────────────────────────────────────
 // Pick which sections to include and get a .docx, instead of generating the
 // whole thing and deleting the cover letter by hand afterwards.
@@ -22078,6 +22079,7 @@ function proposalDocxFields(project) {
     PROJECT_LOCATION: project.projectAddress || project.projectCity || "",
     DATE: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
     SETTY_ENTITY: ent.legalName || "",
+    SETTY_STREET: (ent.addressLines || [])[0] || "",
     SETTY_CITY_STATE_ZIP: (ent.addressLines || [])[1] || "",
     SETTY_PHONE: ent.phone || "",
     SETTY_FAX: ent.fax || "",
@@ -22090,7 +22092,159 @@ function proposalDocxFields(project) {
   return f;
 }
 
-function exportProposalDocx(project) {
+// Assemble the proposal .docx from the tokenized template. Shared by the Word
+// dialog (download / PDF) and Send Proposal. `source` is the template
+// ArrayBuffer; `omit` the parts to leave out; `honorific` "" or "Ms." etc.
+async function assembleProposalDocx(project, { source, omit = [], honorific = "" }) {
+  // The service boxes each replace their own section of the template. A
+  // legacy single-blob project arrives with everything in `included` via the
+  // scopeSectionHtml fallback.
+  const secs = scopeSectionsOf(project);
+  const fields = proposalDocxFields(project);
+  const blank = [];
+  if (honorific) fields.CONTACT_HONORIFIC = honorific;
+  else {
+    // No honorific: drop the token and its space everywhere, and greet by
+    // full name so the letter never opens "Dear Doe:".
+    blank.push("CONTACT_HONORIFIC");
+    if (fields.CONTACT_NAME) fields.CONTACT_LAST_NAME = fields.CONTACT_NAME;
+  }
+  // Attachment A comes from the same place Print and the Terms editor read:
+  // the project's edited copy if it has one, else the library terms. Warm the
+  // library first so a fresh session cannot fall back to the compiled-in
+  // constant.
+  await ensureTermsDefault();
+  const termsHtml = project.termsContent || termsDefaultHtml();
+  const built = await window.SettyDocx.buildDocx(source, {
+    omit, fields, blank,
+    scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded, assumptions: secs.assumptions, provisions: secs.provisions },
+    // The description keeps its paragraphs (and bullets, one per line).
+    paragraphs: { PROJECT_DESCRIPTION: secs.description },
+    termsHtml,
+    // The body's hourly-rate list: the project's schedule (client schedule if
+    // loaded, else firm standard), same source as Attachment B.
+    rates: (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT,
+  });
+  const base = (project.projectNumber ? project.projectNumber + " - " : "") + (project.name || "Proposal");
+  // Graph rejects these characters in a file name, and so does Windows.
+  const fileBase = base.replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim();
+  return { ...built, fileBase };
+}
+
+// Save the generated .docx into SharePoint and return where it went. Filing
+// the document is the point, not a side effect: the PDF the client receives
+// is Word's own rendition of THIS file, so the file should exist somewhere a
+// person can open it. Goes to <project folder>/Proposals in the PMS library;
+// pipeline projects that have no project folder yet go to the signed-in
+// user's OneDrive under "PMS Proposals/<project>". Same-day re-runs replace
+// the same file name (the date is in the name), so regenerating does not
+// litter the folder.
+async function fileProposalDocx(project, bytes, fileName) {
+  const token = await getToken();
+  const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const safeName = fileName.replace(/[\\/:*?"<>|]/g, "-").trim();
+  const put = async (contentPath, driveBase) => {
+    const res = await fetch("https://graph.microsoft.com/v1.0" + contentPath, {
+      method: "PUT",
+      headers: { Authorization: "Bearer " + token, "Content-Type": mime },
+      body: bytes,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error("SharePoint save failed (" + res.status + "): " + t.slice(0, 200));
+    }
+    const item = await res.json();
+    return { driveBase, itemId: item.id, webUrl: item.webUrl, name: item.name };
+  };
+  const folderUrl = (project.projectFolderUrl || "").trim();
+  if (folderUrl) {
+    const { driveId } = await resolveSpIds();
+    const projectFolderName = safeDecodeFolderUrl(folderUrl.replace(/\/+$/, "").split("/").pop());
+    // Ensure /Proposals exists (POST children is idempotent with replace;
+    // a 409 just means it is already there).
+    try {
+      await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodeURIComponent(projectFolderName) + ":/children",
+        { name: "Proposals", folder: {}, "@microsoft.graph.conflictBehavior": "replace" });
+    } catch (_) { /* exists */ }
+    const path = "/drives/" + driveId + "/root:/" + encodeURIComponent(projectFolderName) + "/Proposals/" + encodeURIComponent(safeName) + ":/content";
+    const r = await put(path, "/drives/" + driveId);
+    return { ...r, folderLabel: projectFolderName + "/Proposals" };
+  }
+  // No project folder yet: the user's own OneDrive, clearly labelled.
+  const sub = "PMS Proposals/" + (project.name || "Proposal").replace(/[\\/:*?"<>|]/g, "-").trim();
+  const path = "/me/drive/root:/" + sub.split("/").map(encodeURIComponent).join("/") + "/" + encodeURIComponent(safeName) + ":/content";
+  const r = await put(path, "/me/drive");
+  return { ...r, folderLabel: "your OneDrive · " + sub };
+}
+
+// Word's own PDF of a SharePoint/OneDrive item, via Graph's format conversion.
+// Graph answers 302 to a pre-authenticated download URL and fetch follows it,
+// the same mechanism fetchProposalTemplate already relies on. Byte-for-byte
+// the same document as the .docx, which is the whole point.
+async function fetchDriveItemPdf(driveBase, itemId) {
+  const token = await getToken();
+  const res = await fetch("https://graph.microsoft.com/v1.0" + driveBase + "/items/" + itemId + "/content?format=pdf", {
+    headers: { Authorization: "Bearer " + token },
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error("PDF conversion failed (" + res.status + "): " + t.slice(0, 200));
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+function downloadBytes(bytes, fileName, mime) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function bytesToBase64(bytes) {
+  let s = "";
+  const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return btoa(s);
+}
+
+// Attach a file to an existing draft. The simple attachment endpoint takes
+// files up to 3 MB; a proposal PDF is well under that. Anything larger is
+// reported rather than silently dropped.
+async function attachFileToDraft(messageId, fileName, bytes, contentType) {
+  if (bytes.length > 3 * 1024 * 1024) {
+    throw new Error("The PDF is " + (bytes.length / 1048576).toFixed(1) + " MB, over the 3 MB draft-attachment limit; attach it from SharePoint by hand.");
+  }
+  const token = await getToken();
+  const res = await fetch("https://graph.microsoft.com/v1.0/me/messages/" + encodeURIComponent(messageId) + "/attachments", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      name: fileName,
+      contentType,
+      contentBytes: bytesToBase64(bytes),
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err && err.error && err.error.message) || ("Attach failed (" + res.status + ")"));
+  }
+  return res.json();
+}
+
+// The proposal dialog: choose parts, honorific and output, then Generate.
+//   mode "download": get the PDF (Word's rendition of the filed .docx) or the
+//                    .docx itself.
+//   mode "send":     PDF, then an Outlook draft with it attached.
+// Built with plain DOM rather than React on purpose: this hangs off a button
+// in a component whose state we do not otherwise touch, and a modal built
+// from hooks would mean threading state through it for no benefit. The heavy
+// lifting is in setty-docx.js (window.SettyDocx). Nothing here parses a
+// .docx.
+function exportProposalDocx(project, opts = {}) {
+  const mode = opts.mode === "send" ? "send" : "download";
   if (!window.SettyDocx) {
     alert("The document engine has not loaded yet. Reload the page and try again.");
     return;
@@ -22103,37 +22257,47 @@ function exportProposalDocx(project) {
 
   const card = document.createElement("div");
   card.style.cssText =
-    "background:#fff;color:#000;border-radius:8px;padding:22px 24px;width:460px;" +
+    "background:#fff;color:#000;border-radius:8px;padding:22px 24px;width:500px;" +
     "max-width:92vw;box-shadow:0 8px 32px rgba(0,0,0,.3);font-size:11pt;";
   wrap.appendChild(card);
 
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+  const hasFolder = !!(project.projectFolderUrl || "").trim();
+  const whereFiled = hasFolder ? "the project folder (Proposals)" : "your OneDrive (PMS Proposals), since this project has no SharePoint folder yet";
+
   card.innerHTML =
-    '<div style="font-weight:700;font-size:12pt;margin-bottom:2px;">Word proposal</div>' +
+    '<div style="font-weight:700;font-size:12pt;margin-bottom:2px;">' + (mode === "send" ? "Send proposal" : "Proposal document") + "</div>" +
     '<div style="color:#595959;margin-bottom:16px;">' + esc(project.name || "Project") + "</div>" +
     '<div style="font-weight:700;margin-bottom:6px;">Include</div>' +
     '<div id="sdx-parts" style="margin-bottom:16px;"></div>' +
     '<div style="font-weight:700;margin-bottom:6px;">Addressee</div>' +
     '<label style="display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:10.5pt;">' +
-      '<span>Honorific</span>' +
+      "<span>Honorific</span>" +
       '<select id="sdx-hon" style="font:inherit;padding:3px 6px;">' +
         '<option value="">(none: uses the full name)</option>' +
-        '<option>Ms.</option><option>Mr.</option><option>Mx.</option><option>Dr.</option>' +
-      '</select>' +
+        "<option>Ms.</option><option>Mr.</option><option>Mx.</option><option>Dr.</option>" +
+      "</select>" +
       '<span id="sdx-hon-who" style="color:#595959;"></span>' +
     "</label>" +
-    '<div style="font-weight:700;margin-bottom:6px;">Template</div>' +
+    (mode === "download"
+      ? '<div style="font-weight:700;margin-bottom:6px;">Output</div>' +
+        '<div style="margin-bottom:6px;font-size:10.5pt;">' +
+          '<label style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;cursor:pointer;"><input type="radio" name="sdx-out" value="pdf" checked style="margin-top:3px;"><span><b>PDF</b> <span style="color:#595959;">(recommended). The .docx is saved to ' + esc(whereFiled) + ' and Word\'s own PDF of it is downloaded, so the PDF is exactly the Word document.</span></span></label>' +
+          '<label style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;cursor:pointer;"><input type="radio" name="sdx-out" value="docx" style="margin-top:3px;"><span><b>Word (.docx)</b> <span style="color:#595959;">downloaded only, to edit further before sending.</span></span></label>' +
+        "</div>"
+      : '<div style="color:#595959;font-size:10.5pt;margin-bottom:6px;">The .docx is saved to ' + esc(whereFiled) + ", Word\'s own PDF of it is attached to a new Outlook draft, and the draft opens in your Drafts folder for recipients and a final read.</div>") +
+    '<div style="font-weight:700;margin:10px 0 6px;">Template</div>' +
     '<div id="sdx-src" style="color:#595959;margin-bottom:6px;">Loading from SharePoint…</div>' +
     '<input id="sdx-file" type="file" accept=".docx,.dotx" ' +
       'style="width:100%;margin-bottom:16px;font-size:10pt;display:none;"/>' +
-    '<div id="sdx-status" style="min-height:20px;color:#595959;margin-bottom:12px;"></div>' +
+    '<div id="sdx-status" style="min-height:20px;color:#595959;margin-bottom:12px;line-height:1.5;"></div>' +
     '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
       '<button id="sdx-cancel" style="padding:7px 14px;border:1px solid #D9D9D9;background:#fff;' +
         'border-radius:5px;cursor:pointer;font:inherit;">Cancel</button>' +
       '<button id="sdx-go" style="padding:7px 14px;border:none;background:#C00000;color:#fff;' +
-        'border-radius:5px;cursor:pointer;font:inherit;font-weight:600;">Generate</button>' +
+        'border-radius:5px;cursor:pointer;font:inherit;font-weight:600;">' + (mode === "send" ? "Create draft with PDF" : "Generate") + "</button>" +
     "</div>";
 
   const partsBox = card.querySelector("#sdx-parts");
@@ -22153,6 +22317,7 @@ function exportProposalDocx(project) {
   const srcLine = card.querySelector("#sdx-src");
   const fileInput = card.querySelector("#sdx-file");
   const honSel = card.querySelector("#sdx-hon");
+  const goBtn = card.querySelector("#sdx-go");
   {
     // Show who is being addressed, and preselect an honorific if the contact
     // record carries one. Never inferred from the name.
@@ -22178,67 +22343,65 @@ function exportProposalDocx(project) {
     fileInput.style.display = "";
   });
 
-  card.querySelector("#sdx-go").onclick = async () => {
+  const link = (href, text) => '<a href="' + esc(href) + '" target="_blank" rel="noopener" style="color:#C00000;">' + esc(text) + "</a>";
+
+  goBtn.onclick = async () => {
     const file = fileInput.files[0];
     if (!templateBytes && !file) { status.textContent = "Still loading the template…"; return; }
     const omit = [...partsBox.querySelectorAll("input")]
       .filter((cb) => !cb.checked).map((cb) => cb.dataset.part);
-    status.textContent = "Building…";
+    const outSel = card.querySelector('input[name="sdx-out"]:checked');
+    const wantPdf = mode === "send" || !outSel || outSel.value === "pdf";
+    goBtn.disabled = true;
+    status.textContent = "Building the document…";
     try {
       const source = file ? await file.arrayBuffer() : templateBytes;
-      // The three service boxes each replace their own section of the template
-      // (Included, Additional, Excluded). A legacy single-blob project arrives
-      // with everything in `included` via the scopeSectionHtml fallback.
-      const secs = scopeSectionsOf(project);
-      const fields = proposalDocxFields(project);
-      const hon = honSel.value;
-      const blank = [];
-      if (hon) fields.CONTACT_HONORIFIC = hon;
-      else {
-        // No honorific: drop the token and its space everywhere, and greet by
-        // full name so the letter never opens "Dear Doe:".
-        blank.push("CONTACT_HONORIFIC");
-        if (fields.CONTACT_NAME) fields.CONTACT_LAST_NAME = fields.CONTACT_NAME;
+      const { bytes, unfilled, scopeBlocks, scopeNote, fileBase } =
+        await assembleProposalDocx(project, { source, omit, honorific: honSel.value });
+      const stamp = new Date().toISOString().slice(0, 10);
+      const docxName = fileBase + " Proposal " + stamp + ".docx";
+      const pdfName = fileBase + " Proposal " + stamp + ".pdf";
+      const summary =
+        (omit.length ? "Left out " + omit.length + " section" + (omit.length > 1 ? "s" : "") + "." : "Full document.") +
+        (scopeBlocks ? " Scope inserted as " + scopeBlocks + " paragraph" + (scopeBlocks > 1 ? "s" : "") + "."
+                     : " Scope NOT inserted: " + (scopeNote || "unknown reason") + ".") +
+        (unfilled.length ? " " + unfilled.length + " placeholder(s) still to fill: " + unfilled.map((u) => u.replace(/[{}]/g, "")).join(", ") + "." : "");
+
+      if (!wantPdf) {
+        downloadBytes(bytes, docxName, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        status.textContent = "Done. " + summary;
+        return;
       }
-      // Attachment A comes from the same place Print and the Terms editor
-      // read: the project's edited copy if it has one, else the library
-      // terms. Warm the library first so a fresh session cannot fall back to
-      // the compiled-in constant.
-      await ensureTermsDefault();
-      const termsHtml = project.termsContent || termsDefaultHtml();
-      const { bytes, unfilled, scopeBlocks, scopeNote } = await window.SettyDocx.buildDocx(source, {
-        omit, fields, blank,
-        scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded, assumptions: secs.assumptions, provisions: secs.provisions },
-        // The description keeps its paragraphs (and bullets, one per line).
-        paragraphs: { PROJECT_DESCRIPTION: secs.description },
-        termsHtml,
-        // The body's hourly-rate list: the project's schedule (client
-        // schedule if loaded, else firm standard), same source as Attachment B.
-        rates: (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT,
-      });
-      const base = (project.projectNumber ? project.projectNumber + " - " : "") +
-                   (project.name || "Proposal");
-      // Graph rejects these characters in a file name, and so does Windows.
-      const safe = base.replace(/[\\/:*?"<>|]/g, "").trim();
-      const url = URL.createObjectURL(new Blob([bytes], {
-        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = safe + " Proposal.docx";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      status.textContent = (omit.length
-        ? "Done — left out " + omit.length + " section" + (omit.length > 1 ? "s" : "") + "."
-        : "Done — full document.") +
-        (scopeBlocks
-          ? " Scope inserted as " + scopeBlocks + " paragraph" + (scopeBlocks > 1 ? "s" : "") + "."
-          : " Scope NOT inserted: " + (scopeNote || "unknown reason") + ".");
-      if (unfilled.length) {
-        status.textContent += " " + unfilled.length + " placeholder(s) still to fill in Word.";
+
+      status.textContent = "Saving the .docx to SharePoint…";
+      const filed = await fileProposalDocx(project, bytes, docxName);
+      status.textContent = "Asking Word for the PDF…";
+      const pdf = await fetchDriveItemPdf(filed.driveBase, filed.itemId);
+
+      if (mode === "download") {
+        downloadBytes(pdf, pdfName, "application/pdf");
+        status.innerHTML = "Done. PDF downloaded (" + (pdf.length / 1024).toFixed(0) + " KB). " +
+          "The .docx is filed in " + esc(filed.folderLabel) + ": " + link(filed.webUrl, filed.name) + ". " + esc(summary);
+        return;
       }
+
+      status.textContent = "Creating the Outlook draft…";
+      const draft = await createOutlookDraft(proposalEmailDraft(project));
+      let attachNote = "";
+      try {
+        await attachFileToDraft(draft.id, pdfName, pdf, "application/pdf");
+        attachNote = "PDF attached (" + (pdf.length / 1024).toFixed(0) + " KB).";
+      } catch (e) {
+        attachNote = "Could not attach the PDF (" + (e.message || e) + "); attach it from SharePoint.";
+      }
+      status.innerHTML = "Draft created in your Outlook Drafts folder. " + esc(attachNote) +
+        " Add the client recipient(s), read it once, send. The .docx is filed in " + esc(filed.folderLabel) + ": " +
+        link(filed.webUrl, filed.name) + ". " + esc(summary);
+      if (draft.webLink) status.innerHTML += " " + link(draft.webLink, "Open the draft");
     } catch (err) {
       status.textContent = "Failed: " + (err && err.message ? err.message : String(err));
+    } finally {
+      goBtn.disabled = false;
     }
   };
 
@@ -23334,18 +23497,12 @@ function ScopeView({ project, onChange, clients = [] }) {
     }
   }
 
-  async function handleSendProposal() {
-    setProposalMsg("⏳ Opening proposal bundle and creating draft…");
-    setProposalKind("info");
-    try {
-      await sendProposal(project);
-      setProposalMsg("✓ Done — proposal bundle opened in a new tab; draft is in your Outlook Drafts folder. Print the bundle to PDF, attach it to the draft, add the client recipient(s), and send.");
-      setProposalKind("success");
-      setTimeout(() => setProposalMsg(""), 12000);
-    } catch (e) {
-      setProposalMsg("✗ " + (e.message || "Failed to send proposal"));
-      setProposalKind("error");
-    }
+  // Send Proposal opens the document dialog in "send" mode: it files the
+  // .docx, gets Word's PDF and creates the Outlook draft with it attached.
+  // The dialog reports progress itself, so no banner here.
+  function handleSendProposal() {
+    setProposalMsg("");
+    sendProposal(project);
   }
 
   // Hourly rates — defaults to firm-standard, persists per-project edits.
@@ -24365,7 +24522,7 @@ function ScopeView({ project, onChange, clients = [] }) {
           <Btn variant="ghost" onClick={handleSendForReview} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
             👀 Send for Review
           </Btn>
-          <Btn variant="primary" onClick={handleSendProposal} title="Open the bound proposal PDF (SOW + Fee + T&C + Rates) plus an Outlook draft with subject and body prefilled">
+          <Btn variant="primary" onClick={handleSendProposal} title="Build the proposal from the Word template, file the .docx in SharePoint, and open an Outlook draft with Word's PDF of it attached">
             📨 Send Proposal
           </Btn>
           {finalized
@@ -24393,17 +24550,23 @@ function ScopeView({ project, onChange, clients = [] }) {
                     marginBottom: 16, fontSize: 12, color: P.textMuted, lineHeight: 1.6 }}>
         <div style={{ fontWeight: 700, color: P.text, marginBottom: 4 }}>Getting this out the door</div>
         <div>
-          <b>🖨 Print</b> gives you the scope on letterhead as a PDF, straight from what is on this screen.
+          <b>📄 Word</b> builds the full proposal from the firm's Word template and lets you tick which parts
+          to include (cover page, cover letter, Attachment A, firm info sheet). Choose <b>PDF</b> and the
+          <code>.docx</code> is filed in the project's Proposals folder and Word's own PDF of it is downloaded,
+          so the PDF is exactly the Word document; choose <b>Word</b> to download the <code>.docx</code> to edit first.
         </div>
         <div>
-          <b>📄 Word</b> builds the full proposal as an editable <code>.docx</code> and lets you
-          tick which parts to include, so you are not deleting a cover letter by hand afterwards.
-          Cover page, cover letter, Attachment A and the firm info sheet are each optional. Attachment A
-          is the same Terms &amp; Conditions you see below (the firm library, or this project's edited copy).
+          <b>📨 Send Proposal</b> is the same build, then an Outlook draft with that PDF attached: add the
+          recipients, read it once, send. There is one proposal template now; the PDF and the Word file
+          can no longer differ.
+        </div>
+        <div>
+          <b>🖨 Print</b> is an on-screen preview of the scope only, straight from these boxes, on the HTML letterhead.
         </div>
         <div style={{ marginTop: 6 }}>
-          The six boxes below flow into both: Included, Additional, Excluded, Assumptions and Proposal Provisions each land in
-          their own section of the Word proposal, and Project Description fills the cover letter.
+          The six boxes below feed the document: Included, Additional, Excluded, Assumptions and Proposal Provisions each land in
+          their own section, Project Description fills the cover letter, and Attachment A is the Terms &amp; Conditions
+          shown further down (the firm library, or this project's edited copy).
           Any field the app cannot fill is left visible in the document as <code>{"{{LIKE_THIS}}"}</code>
           rather than blanked, so it is obvious what still needs your attention in Word.
         </div>
