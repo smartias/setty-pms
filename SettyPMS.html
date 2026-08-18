@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-17-pms-v124-proposal-pdf-from-word";
+    window.__appVersion = "2026-08-18-pms-v125-generate-draft-claude-prompt";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -23478,6 +23478,13 @@ function ScopeView({ project, onChange, clients = [] }) {
   const [genConfigured, setGenConfigured] = React.useState(null); // null = not yet checked
   const [genBusy, setGenBusy] = React.useState(false);
   const [genError, setGenError] = React.useState("");
+  // Claude hand-off (the default Generate Draft path while the firm API key is
+  // unset). The prompt is built from the live library and shown in an
+  // UNCONTROLLED textarea keyed on the built text: the PM can trim it without
+  // re-rendering ScopeView per keystroke, and Open/Copy read the edited value.
+  const genPromptRef = React.useRef(null);
+  const [genPrompt, setGenPrompt] = React.useState("");
+  const [genNote, setGenNote] = React.useState("");
   // Proposal-button feedback. Message + kind ("info" / "success" / "error").
   // Auto-clears after a few seconds so the banner doesn't linger between sessions.
   const [proposalMsg, setProposalMsg] = React.useState("");
@@ -23768,9 +23775,129 @@ function ScopeView({ project, onChange, clients = [] }) {
     });
     return res.json();
   }
+  // ── Claude hand-off prompt ────────────────────────────────────────────────
+  // Same idea as the jobcard "Ask Claude" link: open the PM's own Claude seat
+  // with a connector-first prompt. Here the prompt starts the proposal, not a
+  // briefing: find the RFP in the Proposals folder, read the teaming email,
+  // iterate with the PM, then hand back proposal-draft JSON v1 for Import AI
+  // Draft. The clause catalog is the LIVE library filtered to what this
+  // proposal can actually use (discipline + Standard/Alternate choice), so the
+  // draft needs fewer swaps at import and the prompt stays short enough for
+  // a URL. Rules and contract mirror proposal-draft/index.ts.
+  function buildClaudeDraftPrompt(lib) {
+    const num = project.projectNumber ? String(project.projectNumber).trim() : "";
+    const label = (num ? num + " " : "") + (project.name || "this project");
+    const discOn = SCOPE_DISCIPLINES.filter(d => activeDisc[d.key]).map(d => d.core ? d.label : d.label.replace(/ \(.*$/, ""));
+    const facts = [];
+    facts.push("- Project: " + label);
+    if (project.clientName) facts.push("- Client (who we contract with): " + project.clientName);
+    if (project.prime && project.prime !== project.clientName) facts.push("- Prime / architect: " + project.prime);
+    if (project.owner) facts.push("- Owner / agency: " + project.owner);
+    if (project.projectAddress) facts.push("- Location: " + project.projectAddress);
+    facts.push("- Disciplines in this proposal: " + (discOn.join(", ") || "MEP/FP"));
+    if (project.feeType) facts.push("- Fee type: " + project.feeType);
+    if (project.proposalFolderUrl) facts.push("- Proposal folder: " + project.proposalFolderUrl);
+    // Catalog: only clauses this proposal can take, keys + titles + tokens.
+    // Bodies stay in the library; Claude selects, the PMS stamps.
+    const catalog = (lib || [])
+      .filter(c => c.block !== "terms" && clauseApplies(c))
+      .map(c => {
+        const toks = Object.entries(c.params || {})
+          .filter(([, decl]) => decl && typeof decl === "object")
+          .map(([tok, decl]) => "{{" + tok + "}} (" + (decl.label || tok) + "; default \"" + (decl.default || "none") + "\")");
+        return "[" + c.block + "] " + c.clause_key + ": " + c.title + (toks.length ? " | params " + toks.join(", ") : "");
+      });
+    const searchHint = num || project.name || "";
+    return [
+      "Help me draft the MEP/FP fee proposal for " + label + ". I want to work through it with you here, then take a structured draft back into our PMS.",
+      "",
+      "Use the Setty PMS connector for all of the following, and cite the emails and files you relied on.",
+      "",
+      "1. Find the RFP. Look in this project's Proposals folder (list_project_documents or find_document for \"" + searchHint + "\"; the folder may be named Proposal or Proposals and may sit in the pipeline library rather than the awarded project folder). The request is usually a PDF or Word file with RFP, RFQ, Request for Proposal or the client's solicitation number in the name. Read it end to end with read_document: scope, deliverables, schedule, submission requirements, and any owner-agency terms. If there is more than one candidate, list them and tell me which one you chose.",
+      "2. Read the teaming email. Search this project's email log (search_emails for \"" + searchHint + "\") for the message from the prime or architect asking Setty to team, and any thread that sets scope, fee expectations, due date or exclusions. Read those emails with read_email. Note anything the prime expects of us that the RFP does not say.",
+      "3. Context. Run search_agency_preferences for the owner agency, and search_projects for prior work with this client, prime or owner; project_briefing on the most relevant one.",
+      "4. Come back to me with: a one-paragraph read of the job, the scope you think we are being asked to carry, the fee risks (occupied buildings, phasing, missing drawings, hazmat, unusual terms, tight validity or turnaround), and your questions. Do not write the proposal yet. We will go back and forth until I say \"finalize\".",
+      "5. When I say \"finalize\", produce ONLY the proposal-draft JSON described below in a single code block, nothing before or after. I will paste it into the PMS (Scope tab, Import AI Draft), which validates it against the live clause library and previews it before anything is applied.",
+      "",
+      "Project facts from the PMS (a starting point; the documents and emails win if they disagree):",
+      ...facts,
+      "",
+      "Rules for the draft:",
+      "- You are drafting structured input, not the proposal document. The PMS assembles the document from the governed clause library.",
+      "- Never write contract boilerplate. Select library clauses by key. If the RFP demands a term the library does not cover, put it in flaggedForReview, never in prose.",
+      "- Select, don't paraphrase. Only write authoredScope items for work the catalog does not cover (surveys, studies, assessments, Cx, agency-specific deliverables).",
+      "- Written sections stay short: understanding 1 to 3 paragraphs, approach 3 to 6 short paragraphs or a compact list, each custom assumption one sentence.",
+      "- Plain AEC professional English. No em dashes anywhere. No marketing superlatives. Spell out agency names on first use.",
+      "- Never invent a fee total. suggestedPhases must sum to 100; basisOfFeeNote says how the fee could be benchmarked. Dollar amounts only if the RFP states them, and only inside understanding.",
+      "- Do not set {{DISCIPLINE_LIST}}, {{DISCIPLINE_ABBR}} or {{DISCIPLINE_MEP}}: the PMS fills them from the project.",
+      "- HTML fields allow only p, h3, ul, ol, li, strong, em, u, br.",
+      "- Uncertainty is data: anything you could not map, verify or understand goes in flaggedForReview with a one-line reason.",
+      "",
+      "Output contract (schemaVersion 1):",
+      "{",
+      "  \"schemaVersion\": 1,",
+      "  \"kind\": \"proposal-draft\",",
+      "  \"project\": { \"name\": \"\", \"client\": \"\", \"owner\": \"\", \"location\": \"\", \"rfpReference\": \"\", \"constructionBudget\": \"\" },",
+      "  \"understanding\": \"<p>HTML</p>\",",
+      "  \"approach\": \"<p>HTML</p>\",",
+      "  \"clauses\": [ { \"key\": \"inc-predesign-visit\", \"params\": { \"VISIT_COUNT\": \"Two (2)\" } } ],",
+      "  \"authoredScope\": [ { \"title\": \"\", \"html\": \"<p>HTML</p>\" } ],",
+      "  \"assumptions\": { \"clauseKeys\": [], \"custom\": [\"<p>HTML</p>\"] },",
+      "  \"exclusions\": { \"clauseKeys\": [], \"custom\": [\"<li>HTML list item</li>\"] },",
+      "  \"openItems\": [\"\"],",
+      "  \"suggestedPhases\": [ { \"name\": \"\", \"pct\": 0 } ],",
+      "  \"basisOfFeeNote\": \"\",",
+      "  \"flaggedForReview\": [ { \"rfpDemand\": \"\", \"why\": \"\" } ]",
+      "}",
+      "",
+      "Approved clause catalog for this proposal (use ONLY these keys; a key not listed does not exist):",
+      ...(catalog.length ? catalog : ["(the library did not load; ask me to paste the clause list before you finalize)"]),
+    ].join("\n");
+  }
+  // claude.ai/new?q= carries the prompt in the URL. A full prompt with a
+  // 30-clause catalog encodes to ~10.5K and the edge accepted 32K in an
+  // 8/18 probe; past this cap fall back to clipboard + a blank chat anyway.
+  const CLAUDE_URL_MAX = 15000;
+  function currentGenPrompt() {
+    return (genPromptRef.current && genPromptRef.current.value) || genPrompt || "";
+  }
+  function copyGenPrompt() {
+    const text = currentGenPrompt();
+    if (!text) return;
+    navigator.clipboard.writeText(text)
+      .then(() => setGenNote("✓ Prompt copied. Paste it into a new Claude chat (claude.ai/new)."))
+      .catch(() => setGenNote("Couldn't reach the clipboard: select the text above and copy it manually."));
+  }
+  function openClaudeWithPrompt() {
+    const text = currentGenPrompt();
+    if (!text) return;
+    const url = "https://claude.ai/new?q=" + encodeURIComponent(text);
+    if (url.length <= CLAUDE_URL_MAX) {
+      window.open(url, "_blank", "noopener");
+      setGenNote("Claude opened in a new tab with the prompt. When it hands back the JSON, use 🤖 Import AI Draft.");
+      return;
+    }
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        window.open("https://claude.ai/new", "_blank", "noopener");
+        setGenNote("✓ Prompt copied and Claude opened: paste it (Ctrl+V) as your first message. It was too long to hand over in the link.");
+      })
+      .catch(() => setGenNote("The prompt is too long for a link and the clipboard was blocked: use 📋 Copy prompt, then paste it into claude.ai/new."));
+  }
   async function toggleGeneratePanel() {
-    setShowGenerate(v => !v);
+    const opening = !showGenerate;
+    setShowGenerate(opening);
     setGenError("");
+    setGenNote("");
+    if (!opening) return;
+    // Build (or rebuild) the prompt from the live library each time the
+    // panel opens, so a discipline or variant change is reflected.
+    try {
+      const lib = await ensureClauseLib();
+      setGenPrompt(buildClaudeDraftPrompt(lib));
+    } catch (_) {
+      setGenPrompt(buildClaudeDraftPrompt([]));
+    }
     if (genConfigured === null) {
       try {
         const d = await genFetch({ action: "status" });
@@ -24513,10 +24640,10 @@ function ScopeView({ project, onChange, clients = [] }) {
           <Btn variant="ghost" onClick={toggleClausePanel} disabled={scopeLocked} title="Insert firm-standard clauses (scope, exclusions, assumptions, provisions) from the governed library. Managed in the Admin Console.">
             📚 Clause Library
           </Btn>
-          <Btn variant="ghost" onClick={() => { setShowImport(v => !v); setImportError(""); }} disabled={scopeLocked} title="Paste the proposal-draft JSON produced by the Claude drafting skill. Validates against the live clause library and previews before anything is applied.">
+          <Btn variant="ghost" onClick={() => { setShowImport(v => !v); setImportError(""); }} disabled={scopeLocked} title="Paste the proposal-draft JSON Claude hands back (from Generate Draft or the drafting skill). Validates against the live clause library and previews before anything is applied.">
             🤖 Import AI Draft
           </Btn>
-          <Btn variant="ghost" onClick={toggleGeneratePanel} disabled={scopeLocked} title="Generate a proposal draft in-app from RFP text. Runs on the firm's Claude API through the proposal-draft function, reads the live clause library (no skill-doc snapshot), and feeds the same validate-and-preview pipeline as paste-import.">
+          <Btn variant="ghost" onClick={toggleGeneratePanel} disabled={scopeLocked} title="Start the proposal in Claude on your own account: the prompt tells it to find the RFP in the Proposals folder, read the teaming email, work the scope through with you, then hand back the draft JSON for Import AI Draft. Uses the Setty PMS connector and the live clause library.">
             🪄 Generate Draft
           </Btn>
           <Btn variant="ghost" onClick={handleSendForReview} title="Email scope + fee inline to the internal team for informal review and approval. Includes a deep-link back to the project.">
@@ -24622,31 +24749,54 @@ function ScopeView({ project, onChange, clients = [] }) {
         </div>
       )}
 
-      {/* In-app generation panel — RFP text in, proposal-draft JSON out, then
-          the shared import preview takes over. Dark-launched behind the firm
-          API key: unconfigured deployments show the pending-setup note. */}
+      {/* Generate Draft panel. Primary path: hand a connector-first prompt to
+          the PM's own Claude seat (find the RFP, read the teaming email, iterate,
+          return proposal-draft JSON), which comes back through Import AI Draft.
+          The in-app API path stays underneath, shown only once the firm key
+          is configured on proposal-draft; until then it is invisible rather
+          than a "pending setup" note the PM cannot act on. */}
       {showGenerate && (
         <div style={{ border: "1px solid " + P.accent, borderRadius: 8, padding: "14px 16px", marginBottom: 16, background: P.card }}>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>🪄 Generate Draft</div>
-          {genConfigured === false ? (
-            <div style={{ fontSize: 12.5, color: P.textMuted, lineHeight: 1.6 }}>
-              ⏳ <b>Pending firm API setup.</b> In-app generation needs the firm Anthropic API key configured on the server (an admin sets the <code>ANTHROPIC_API_KEY</code> secret on the <code>proposal-draft</code> function). Until then, use <b>🤖 Import AI Draft</b> with the Claude drafting skill: same result, generated on your own Claude account.
-            </div>
-          ) : (
-            <React.Fragment>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>🪄 Generate Draft with Claude</div>
+          <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 8, lineHeight: 1.55 }}>
+            Opens Claude on your own account with the prompt below. Claude uses the Setty PMS connector to <b>find the RFP</b> in
+            this project's Proposals folder, <b>read the teaming email</b> from the email log, pull agency preferences and prior work,
+            then comes back with its read of the job and questions. Go back and forth until you are happy, say <b>"finalize"</b>,
+            and it returns the draft JSON. Paste that into <b>🤖 Import AI Draft</b>: it is validated against the live clause
+            library and previewed before anything touches the scope. The clause list at the bottom is already filtered to this
+            proposal's disciplines and Standard/Alternate choices. Edit the prompt first if you want to steer it.
+          </div>
+          <textarea key={genPrompt} ref={genPromptRef} defaultValue={genPrompt} rows={9} spellCheck={false}
+            placeholder={genPrompt ? "" : "Building the prompt from the live clause library…"}
+            style={{ width: "100%", fontFamily: "monospace", fontSize: 11.5, padding: 8, border: "1px solid " + P.border, borderRadius: 6, background: P.bg, color: P.text, lineHeight: 1.45 }} />
+          <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn variant="primary" small onClick={openClaudeWithPrompt} disabled={!genPrompt} title="Open claude.ai in a new tab with this prompt (your own Claude account and the Setty PMS connector)">
+              💬 Open in Claude
+            </Btn>
+            <Btn variant="ghost" small onClick={copyGenPrompt} disabled={!genPrompt} title="Copy the prompt to paste into an existing Claude chat or Project">
+              📋 Copy prompt
+            </Btn>
+            <Btn variant="ghost" small onClick={() => { setShowGenerate(false); setShowImport(true); setImportError(""); }} title="Jump to Import AI Draft to paste the JSON Claude hands back">
+              🤖 Import the result →
+            </Btn>
+            <Btn variant="ghost" small onClick={() => { setShowGenerate(false); setGenError(""); setGenNote(""); }} disabled={genBusy}>Close</Btn>
+            {genNote && <span style={{ color: P.textMuted, fontSize: 12 }}>{genNote}</span>}
+          </div>
+          {genConfigured === true && (
+            <div style={{ marginTop: 12, borderTop: "1px solid " + P.border, paddingTop: 10 }}>
+              <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 4 }}>Or generate in-app from RFP text</div>
               <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 8 }}>
-                Paste the <b>RFP text</b> (copy from the PDF or document). Claude reads the live clause library, selects and parameterizes clauses, writes only the project-specific sections, and returns a draft that is validated and previewed below before anything touches the scope. Generation can take a minute or two on long RFPs.
+                Paste the <b>RFP text</b> (copy from the PDF or document). Runs on the firm's Claude API, no back-and-forth: the draft is validated and previewed before anything touches the scope. Can take a minute or two on long RFPs.
               </div>
-              <textarea ref={genRfpRef} rows={7} placeholder="Paste the RFP text here…"
+              <textarea ref={genRfpRef} rows={5} placeholder="Paste the RFP text here…"
                 style={{ width: "100%", fontFamily: "inherit", fontSize: 12.5, padding: 8, border: "1px solid " + P.border, borderRadius: 6, background: P.bg, color: P.text }} />
               <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <Btn variant="primary" small onClick={runGenerate} disabled={genBusy || genConfigured === null}>
-                  {genBusy ? "⏳ Generating… (up to a couple of minutes)" : genConfigured === null ? "Checking availability…" : "🪄 Generate"}
+                <Btn variant="ghost" small onClick={runGenerate} disabled={genBusy}>
+                  {genBusy ? "⏳ Generating… (up to a couple of minutes)" : "🪄 Generate in-app"}
                 </Btn>
-                <Btn variant="ghost" small onClick={() => { setShowGenerate(false); setGenError(""); }} disabled={genBusy}>Close</Btn>
                 {genError && <span style={{ color: P.red, fontSize: 12.5 }}>✗ {genError}</span>}
               </div>
-            </React.Fragment>
+            </div>
           )}
         </div>
       )}
@@ -24656,7 +24806,7 @@ function ScopeView({ project, onChange, clients = [] }) {
         <div style={{ border: "1px solid " + P.accent, borderRadius: 8, padding: "14px 16px", marginBottom: 16, background: P.card }}>
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>🤖 Import AI Draft</div>
           <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 8 }}>
-            Paste the <b>proposal-draft JSON</b> from the Claude drafting skill (ProposalDraft_Skill.md). It is validated against the live clause library and previewed here: nothing touches the scope until you apply. Boilerplate always comes from the library, never from the pasted text.
+            Paste the <b>proposal-draft JSON</b> Claude hands back (from 🪄 Generate Draft, or the ProposalDraft_Skill.md skill). It is validated against the live clause library and previewed here: nothing touches the scope until you apply. Boilerplate always comes from the library, never from the pasted text.
           </div>
           <textarea ref={importTextRef} rows={7} placeholder='{"schemaVersion": 1, "kind": "proposal-draft", …}'
             style={{ width: "100%", fontFamily: "monospace", fontSize: 12, padding: 8, border: "1px solid " + P.border, borderRadius: 6, background: P.bg, color: P.text }} />
