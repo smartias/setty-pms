@@ -65,7 +65,8 @@ Output contract (schemaVersion 1) - respond with ONLY this JSON object, no comme
   "openItems": [""],
   "suggestedPhases": [ { "name": "", "pct": 0 } ],
   "basisOfFeeNote": "",
-  "flaggedForReview": [ { "rfpDemand": "", "why": "" } ]
+  "flaggedForReview": [ { "rfpDemand": "", "why": "" } ],
+  "internalNotes": "<ul><li>HTML, team-only and never sent: assumptions made and why, clauses picked or skipped and the reason, anything a colleague should know</li></ul>"
 }
 
 This is the LIVE approved clause catalog. Use ONLY these keys; a key not listed here does not exist:

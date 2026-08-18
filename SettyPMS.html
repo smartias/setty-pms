@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-18-pms-v125-generate-draft-claude-prompt";
+    window.__appVersion = "2026-08-18-pms-v126-scope-internal-notes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -23186,6 +23186,13 @@ const SCOPE_SECTIONS = [
   { key: "provisions",  field: "scopeProvisions",  label: "Proposal Provisions", heading: "PROPOSAL PROVISIONS",
     hint: "Firm boilerplate. Load from library fills it with every approved provision using this proposal's Standard/Alternate choices.", minHeight: 140,
     libraryFill: "provisions" },
+  // Internal only. Never composed into scopeContent, so Print, Word, Send
+  // Proposal, Send for Review and the connector's scope reads cannot leak it.
+  // The AI draft's internalNotes land here: what was assumed, what the PM
+  // adjusted during the back-and-forth, why a clause was picked or skipped.
+  { key: "internal",    field: "scopeInternalNotes", label: "Internal Notes",   heading: "INTERNAL NOTES (not sent)",
+    hint: "For the team only: the thinking behind this scope, what was assumed, what changed while drafting. Stays out of every document.", minHeight: 110,
+    internal: true },
 ];
 const SCOPE_SECTION_BY_KEY = Object.fromEntries(SCOPE_SECTIONS.map(s => [s.key, s]));
 
@@ -23217,6 +23224,7 @@ function scopeSectionsOf(project) {
 function composeScopeHtml(sections) {
   let html = "";
   SCOPE_SECTIONS.forEach(s => {
+    if (s.internal) return; // internal notes never enter the document
     const body = String((sections || {})[s.key] || "");
     if (!body.replace(/<[^>]+>|&nbsp;|\s/g, "")) return;
     html += "<h2>" + s.heading + "</h2>" + body;
@@ -23433,7 +23441,8 @@ function ScopeView({ project, onChange, clients = [] }) {
   const excludedRef = React.useRef(null);
   const assumptionsRef = React.useRef(null);
   const provisionsRef = React.useRef(null);
-  const sectionRefs = { description: descriptionRef, included: includedRef, additional: additionalRef, excluded: excludedRef, assumptions: assumptionsRef, provisions: provisionsRef };
+  const internalRef = React.useRef(null);
+  const sectionRefs = { description: descriptionRef, included: includedRef, additional: additionalRef, excluded: excludedRef, assumptions: assumptionsRef, provisions: provisionsRef, internal: internalRef };
   const activeKeyRef = React.useRef("included");
   const [activeKey, setActiveKey] = React.useState("included");
   const editorRef = { get current() { return sectionRefs[activeKeyRef.current].current; } };
@@ -23697,7 +23706,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     // description; assumptions, provisions and open items have no box of their
     // own and trail the exclusions, which is where they sat in the old
     // single-document order.
-    const sections = { description: "", included: "", additional: "", excluded: "", assumptions: "", provisions: "" };
+    const sections = { description: "", included: "", additional: "", excluded: "", assumptions: "", provisions: "", internal: "" };
     const understanding = clean(d.understanding);
     const approach = clean(d.approach);
     if (understanding && approach) {
@@ -23725,6 +23734,17 @@ function ScopeView({ project, onChange, clients = [] }) {
     }
     const provisions = pickBlock(clauseSels, "provisions");
     provisions.forEach(s => { sections.provisions += stampClause(s.clause, s.params); });
+    // Team-only reasoning from the draft. Accept a string or an array of
+    // strings; either way it lands in the Internal Notes box, dated, and
+    // never in scopeContent (composeScopeHtml skips the internal box).
+    const rawNotes = Array.isArray(d.internalNotes) ? d.internalNotes : (d.internalNotes ? [d.internalNotes] : []);
+    const internalNotes = rawNotes.map(n => {
+      const s = String(n || "").trim();
+      return /^\s*</.test(s) ? clean(s) : (s ? "<p>" + s.replace(/</g, "&lt;") + "</p>" : "");
+    }).filter(Boolean).join("");
+    if (internalNotes) {
+      sections.internal = "<p><strong>AI draft notes, " + new Date().toISOString().slice(0, 10) + "</strong></p>" + internalNotes;
+    }
     const html = composeScopeHtml(sections);
     if (!html) throw new Error("The draft produced no content. Check that it has understanding, approach, or clauses.");
 
@@ -23739,6 +23759,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       authoredCount: authored.length,
       customCount: asmCustom.length + excCustom.length,
       openItemCount: openItems.length,
+      hasInternalNotes: !!internalNotes,
       unknownKeys,
       disciplineDropped,
       variantSwapped,
@@ -23832,6 +23853,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Do not set {{DISCIPLINE_LIST}}, {{DISCIPLINE_ABBR}} or {{DISCIPLINE_MEP}}: the PMS fills them from the project.",
       "- HTML fields allow only p, h3, ul, ol, li, strong, em, u, br.",
       "- Uncertainty is data: anything you could not map, verify or understand goes in flaggedForReview with a one-line reason.",
+      "- internalNotes is for our team only and is never sent to the client: record the thinking behind the scope. What you assumed and why, which clauses you picked or skipped and the reason, what I adjusted during our back-and-forth (before and after), and anything a colleague picking this up later should know. Keep it a compact bulleted list.",
       "",
       "Output contract (schemaVersion 1):",
       "{",
@@ -23847,7 +23869,8 @@ function ScopeView({ project, onChange, clients = [] }) {
       "  \"openItems\": [\"\"],",
       "  \"suggestedPhases\": [ { \"name\": \"\", \"pct\": 0 } ],",
       "  \"basisOfFeeNote\": \"\",",
-      "  \"flaggedForReview\": [ { \"rfpDemand\": \"\", \"why\": \"\" } ]",
+      "  \"flaggedForReview\": [ { \"rfpDemand\": \"\", \"why\": \"\" } ],",
+      "  \"internalNotes\": \"<ul><li>HTML, team-only: assumptions, clause choices and why, what was adjusted in review</li></ul>\"",
       "}",
       "",
       "Approved clause catalog for this proposal (use ONLY these keys; a key not listed does not exist):",
@@ -24136,10 +24159,11 @@ function ScopeView({ project, onChange, clients = [] }) {
     setWc(countScopeWords());
   }, []);
 
-  // Words across all four boxes.
+  // Words across the document boxes (internal notes are not in the document).
   function countScopeWords() {
     let n = 0;
     SCOPE_SECTIONS.forEach(s => {
+      if (s.internal) return;
       const el = sectionRefs[s.key].current;
       const text = el ? (el.innerText || "") : "";
       if (text.trim()) n += text.trim().split(/\s+/).length;
@@ -24693,7 +24717,8 @@ function ScopeView({ project, onChange, clients = [] }) {
         <div style={{ marginTop: 6 }}>
           The six boxes below feed the document: Included, Additional, Excluded, Assumptions and Proposal Provisions each land in
           their own section, Project Description fills the cover letter, and Attachment A is the Terms &amp; Conditions
-          shown further down (the firm library, or this project's edited copy).
+          shown further down (the firm library, or this project's edited copy). The grey <b>Internal Notes</b> box at the
+          bottom is for the team only (the thinking behind the scope, what was assumed or adjusted) and never enters any document.
           Any field the app cannot fill is left visible in the document as <code>{"{{LIKE_THIS}}"}</code>
           rather than blanked, so it is obvious what still needs your attention in Word.
         </div>
@@ -24824,7 +24849,7 @@ function ScopeView({ project, onChange, clients = [] }) {
                 </div>
                 <ul style={{ margin: "0 0 8px 18px", lineHeight: 1.7 }}>
                   <li>{r.hasUnderstanding ? "✓" : "✗"} Project understanding · {r.hasApproach ? "✓" : "✗"} Approach</li>
-                  <li>{r.clauseCount} library clauses · {r.authoredCount} authored scope sections · {r.customCount} custom assumptions/exclusions · {r.openItemCount} open items</li>
+                  <li>{r.clauseCount} library clauses · {r.authoredCount} authored scope sections · {r.customCount} custom assumptions/exclusions · {r.openItemCount} open items{r.hasInternalNotes ? " · internal notes (team only, not sent)" : ""}</li>
                   {r.unknownKeys.length > 0 && (
                     <li style={{ color: P.yellow }}>⚠ Unknown clause keys skipped (retired or misspelled, check these): {r.unknownKeys.join(", ")}</li>
                   )}
@@ -25058,9 +25083,9 @@ function ScopeView({ project, onChange, clients = [] }) {
           {SCOPE_SECTIONS.map(s => {
             const isActive = activeKey === s.key;
             return (
-              <div key={s.key} style={{ marginBottom: 18 }}>
+              <div key={s.key} style={{ marginBottom: 18, ...(s.internal ? { marginTop: 8, paddingTop: 14, borderTop: "1px dashed #BFBFBF" } : {}) }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 }}>
-                  <div style={{ fontFamily: "Calibri, 'Trebuchet MS', sans-serif", fontSize: "11pt", fontWeight: 700, color: "#000000", letterSpacing: "0.02em" }}>
+                  <div style={{ fontFamily: "Calibri, 'Trebuchet MS', sans-serif", fontSize: "11pt", fontWeight: 700, color: s.internal ? "#595959" : "#000000", letterSpacing: "0.02em" }}>
                     {s.heading}
                   </div>
                   <div style={{ fontSize: 11, color: "#595959", flex: 1 }}>
@@ -25087,13 +25112,13 @@ function ScopeView({ project, onChange, clients = [] }) {
                   onKeyUp={rememberCaret}
                   onMouseUp={rememberCaret}
                   onBlur={rememberCaret}
-                  title={scopeLocked ? "Scope is locked" : s.label + ": the heading above is added for you, enter only the content"}
+                  title={scopeLocked ? "Scope is locked" : s.internal ? "Internal notes: kept with the project, never placed in any document" : s.label + ": the heading above is added for you, enter only the content"}
                   style={{
                     minHeight: s.minHeight,
                     padding: "10px 14px",
-                    border: "1px solid " + (isActive && !scopeLocked ? "#C00000" : "#D9D9D9"),
+                    border: (s.internal ? "1px dashed " : "1px solid ") + (isActive && !scopeLocked ? "#C00000" : (s.internal ? "#BFBFBF" : "#D9D9D9")),
                     borderRadius: 4,
-                    background: "#ffffff",
+                    background: s.internal ? "#F2F2F2" : "#ffffff",
                     lineHeight: 1.6,
                     color: "#1a1a1a",
                     cursor: scopeLocked ? "default" : "text",
