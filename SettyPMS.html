@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-20-pms-v127-portal-confirm-scroll";
+    window.__appVersion = "2026-08-20-pms-v128-askclaude-menu";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17813,44 +17813,12 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           })()}
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {/* Ask Claude about this job — opens the user's own Claude seat with a
-              connector-first prompt. Mirrors the Outlook add-in jobcard link
-              (taskpane.js buildJobcard): connector instructed FIRST, inline
-              snapshot kept as a fallback for anyone without the connector. */}
-          <a
-            href={(() => {
-              const today = new Date().toISOString().slice(0, 10);
-              const ms = (project.milestones || []).filter(m => m.dueDate && !isMilestoneDone(m)).sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
-              const nextM = ms.find(m => m.dueDate >= today) || ms[0];
-              const openAI = openActionItemCount(project);
-              const openRfis = (project.rfis || []).filter(r => r.status === "Open" || r.status === "Pending Sub Response").length;
-              // Mirrors SUB_OPEN_STATUSES in the first JSX block (same idiom as archiveBlockers above).
-              const SUB_OPEN = ["Received", "Under Review", "Pending Sub Review"];
-              const openSubs = (project.submittals || []).filter(s => SUB_OPEN.includes(s.status)).length;
-              const lines = [
-                "Brief me on " + (project.projectNumber ? project.projectNumber + " " : "") + (project.name || "this project") +
-                ". Tell me what needs my attention, what's at risk, and what to do next.",
-                "",
-                "Use the Setty PMS connector to answer. Read the recent email history for this project " +
-                "first (including anything I still owe a reply on), then the meeting notes and documents, " +
-                "and cite the specific emails or files you used.",
-                "",
-                "Snapshot from our PMS, as a starting point and a fallback if the connector is unavailable:",
-              ];
-              if (project.status) lines.push("- Status: " + project.status);
-              if (nextM) lines.push("- Next milestone: " + (nextM.name || "Milestone") + " due " + nextM.dueDate);
-              if (openAI > 0) lines.push("- Open action items: " + openAI);
-              if (openRfis > 0) lines.push("- Open RFIs: " + openRfis);
-              if (openSubs > 0) lines.push("- Submittals in review: " + openSubs);
-              return "https://claude.ai/new?q=" + encodeURIComponent(lines.join("\n"));
-            })()}
-            target="_blank" rel="noreferrer"
-            title="Open Claude with a briefing prompt for this project — uses your own Claude account and the Setty PMS connector"
-            style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
-              color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap",
-              textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
-            💬 Ask Claude
-          </a>
+          {/* Ask Claude menu — every Claude hand-off for this project in one
+              dropdown. Prompt builders live in AskClaudeMenu (defined near
+              ProjectCard); connector instructed FIRST, briefing entry keeps the
+              inline snapshot as a fallback for anyone without the connector.
+              Mirrors the Outlook add-in jobcard link (taskpane.js buildJobcard). */}
+          <AskClaudeMenu project={project} />
           <button
             title="Copy link to this project"
             onClick={() => {
@@ -20106,6 +20074,118 @@ function ReimbursablesView({ project, onChange }) {
 
 function openActionItemCount(project) {
   return (project.notes || []).filter(n => n.actionItem && (n.actionStatus || "open") !== "done").length;
+}
+
+// ─── ASK CLAUDE MENU ──────────────────────────────────────────────────────────
+// One jobcard entry point for every Claude hand-off. Same zero-backend pattern
+// as the original "Ask Claude" link: each entry is a prefilled claude.ai/new
+// URL that opens the PM's own Claude seat. Each prompt is worded in the natural
+// phrasing that triggers the matching claude.ai skill (meeting-prep,
+// proposal-draft, open-items-log) when installed, and still steers a plain
+// connector conversation well enough when it is not. The menu doubles as
+// discoverability: reading the entries teaches what Claude can be asked.
+function AskClaudeMenu({ project }) {
+  const [open, setOpen] = useState(false);
+  const label = (project.projectNumber ? project.projectNumber + " " : "") + (project.name || "this project");
+  const promptUrl = lines => "https://claude.ai/new?q=" + encodeURIComponent(lines.join("\n"));
+
+  const briefingUrl = () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const ms = (project.milestones || []).filter(m => m.dueDate && !isMilestoneDone(m)).sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
+    const nextM = ms.find(m => m.dueDate >= today) || ms[0];
+    const openAI = openActionItemCount(project);
+    const openRfis = (project.rfis || []).filter(r => r.status === "Open" || r.status === "Pending Sub Response").length;
+    // Mirrors SUB_OPEN_STATUSES in the first JSX block (same idiom as archiveBlockers).
+    const SUB_OPEN = ["Received", "Under Review", "Pending Sub Review"];
+    const openSubs = (project.submittals || []).filter(s => SUB_OPEN.includes(s.status)).length;
+    const lines = [
+      "Brief me on " + label + ". Tell me what needs my attention, what's at risk, and what to do next.",
+      "",
+      "Use the Setty PMS connector to answer. Read the recent email history for this project " +
+      "first (including anything I still owe a reply on), then the meeting notes and documents, " +
+      "and cite the specific emails or files you used.",
+      "",
+      "Snapshot from our PMS, as a starting point and a fallback if the connector is unavailable:",
+    ];
+    if (project.status) lines.push("- Status: " + project.status);
+    if (nextM) lines.push("- Next milestone: " + (nextM.name || "Milestone") + " due " + nextM.dueDate);
+    if (openAI > 0) lines.push("- Open action items: " + openAI);
+    if (openRfis > 0) lines.push("- Open RFIs: " + openRfis);
+    if (openSubs > 0) lines.push("- Submittals in review: " + openSubs);
+    return promptUrl(lines);
+  };
+
+  const meetingPrepUrl = () => promptUrl([
+    "Prep me for my next meeting on " + label + ".",
+    "",
+    "Use the Setty PMS connector. Find the most recent meeting minutes for this project " +
+    "(search by content, not folder path), read the recent email threads behind each likely " +
+    "agenda item, and check open RFIs, submittals, action items, and upcoming milestones. " +
+    "Then give me a meeting prep brief: where each item stands with sources cited, decisions " +
+    "already made, open questions to raise in the meeting, and anything carried from the last " +
+    "meeting that could get dropped. If you can't find evidence on something, say \"no record " +
+    "found\" rather than guessing.",
+  ]);
+
+  const proposalUrl = () => promptUrl([
+    "Help me draft a Setty fee proposal for " + label + ". I'll paste or attach the RFP.",
+    "",
+    "Read the RFP end to end first. Then use the Setty PMS connector: search for prior projects " +
+    "with this client or owner, and check agency preferences for the owner agency. Follow the " +
+    "Setty proposal-draft workflow (select clauses from the firm library, never write contract " +
+    "boilerplate) and return proposal-draft JSON v1, which I'll import in the PMS via Scope tab " +
+    "> Import AI Draft. If the drafting skill or clause catalog isn't available to you, say so " +
+    "and I'll use the Generate Draft button on the Scope tab instead.",
+  ]);
+
+  const openItemsUrl = () => promptUrl([
+    "Prepare the open items and design assumptions log for " + label + " ahead of our next deliverable.",
+    "",
+    "Use the Setty PMS connector: pull the open action items, open RFIs and submittals, and " +
+    "anything assumed or awaited from other disciplines in the recent emails and meeting notes. " +
+    "Produce the standard Setty two-tab Open Items & Design Assumptions Log workbook.",
+  ]);
+
+  const entries = [
+    { icon: "💬", title: "Ask about this job", desc: "Briefing: what needs attention, risks, next steps", url: briefingUrl },
+    { icon: "📅", title: "Prep my next meeting", desc: "Per-item status, decisions, open questions, sources", url: meetingPrepUrl },
+    { icon: "📄", title: "Draft a proposal from an RFP", desc: "Paste the RFP, get import-ready draft JSON", url: proposalUrl },
+    { icon: "✅", title: "Build the open items log", desc: "Assumptions and awaited items for the next deliverable", url: openItemsUrl },
+  ];
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button onClick={() => setOpen(o => !o)}
+        title="Open your own Claude seat with a prefilled prompt for this project — uses the Setty PMS connector"
+        style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+          color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap",
+          display: "inline-flex", alignItems: "center", gap: 5 }}>
+        💬 Ask Claude {open ? "▴" : "▾"}
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", right: 0,
+          background: P.card, border: `1px solid ${P.border}`, borderRadius: 6,
+          padding: 4, minWidth: 300, maxWidth: 380, zIndex: 1000,
+          boxShadow: "0 6px 20px rgba(0,0,0,0.4)",
+        }} onMouseLeave={() => setOpen(false)}>
+          {entries.map((entry, i) => (
+            <a key={i} href={entry.url()} target="_blank" rel="noreferrer"
+              onClick={() => setOpen(false)}
+              style={{ display: "block", padding: "8px 12px", borderRadius: 4,
+                fontSize: 12, color: P.text, textDecoration: "none" }}
+              onMouseOver={e => e.currentTarget.style.background = P.bg}
+              onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+              <div style={{ fontWeight: 600, color: P.accentLight, marginBottom: 2 }}>
+                {entry.icon} {entry.title}
+              </div>
+              <div style={{ fontSize: 10, color: P.textMuted }}>{entry.desc}</div>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ProjectCard({ project, onClick }) {
