@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-20-pms-v128-askclaude-menu";
+    window.__appVersion = "2026-08-20-pms-v129-share-error-webui-hint";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -27170,10 +27170,17 @@ function portalShareErrorMessage(err) {
   if (raw.indexOf("sharingFailed") === -1) return raw;
   const id   = (raw.match(/"request-id"\s*:\s*"([^"]*)"/) || [])[1] || "";
   const when = (raw.match(/"date"\s*:\s*"([^"]*)"/)       || [])[1] || "";
+  // The SharePoint web UI step is not just a diagnostic: on 8/20/2026 a share
+  // that failed every app retry for one address succeeded outright from the
+  // web Share dialog, which completed the guest account, and the next app
+  // attempt then went through. So it goes in the message as the second step.
   return "Microsoft refused this share, and it did not recover across several retries. " +
     "Most often this just means the guest account is still being set up on Microsoft's " +
     "side, so waiting a minute and adding them again is worth trying first. " +
-    "If it keeps failing, ask IT to open Entra admin center, Monitoring and health, " +
+    "If the same person keeps failing: open the folder in SharePoint in your browser, " +
+    "share it to the same email with SharePoint's own Share button, then come back and " +
+    "add them here again so they get both folders. That usually clears it. " +
+    "If even SharePoint refuses, ask IT to open Entra admin center, Monitoring and health, " +
     "Audit logs, filter activity to Invite external user, and read Status reason on the " +
     "failed entry. That names the actual cause." +
     (id ? " Request ID " + id + (when ? " at " + when : "") + "." : "");
