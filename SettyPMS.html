@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-20-pms-v129-share-error-webui-hint";
+    window.__appVersion = "2026-08-20-pms-v130-askclaude-email-entry";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -20138,6 +20138,19 @@ function AskClaudeMenu({ project }) {
     "and I'll use the Generate Draft button on the Scope tab instead.",
   ]);
 
+  const emailResponseUrl = () => promptUrl([
+    "Help me respond to an email on " + label + ".",
+    "",
+    "I'll paste the email or chain below, or give you the sender and subject so you can find " +
+    "it in the project's filed email history. Before drafting, use the Setty PMS connector to " +
+    "reconstruct the thread and the record behind the topic: earlier emails (especially the " +
+    "last one we sent), meeting minutes decisions, RFIs or submittals, and any documents it " +
+    "references. Check whether someone already replied before drafting. Then give me: what " +
+    "they're actually asking, the relevant history with sources, a recommended reply I can " +
+    "edit and send myself, and any next steps beyond the reply. Flag anything touching scope, " +
+    "fee, or schedule commitments for my judgment instead of answering it for me.",
+  ]);
+
   const openItemsUrl = () => promptUrl([
     "Prepare the open items and design assumptions log for " + label + " ahead of our next deliverable.",
     "",
@@ -20150,6 +20163,7 @@ function AskClaudeMenu({ project }) {
     { icon: "💬", title: "Ask about this job", desc: "Briefing: what needs attention, risks, next steps", url: briefingUrl },
     { icon: "📅", title: "Prep my next meeting", desc: "Per-item status, decisions, open questions, sources", url: meetingPrepUrl },
     { icon: "📄", title: "Draft a proposal from an RFP", desc: "Paste the RFP, get import-ready draft JSON", url: proposalUrl },
+    { icon: "✉️", title: "Help me respond to an email", desc: "Thread history, recommended reply, next steps", url: emailResponseUrl },
     { icon: "✅", title: "Build the open items log", desc: "Assumptions and awaited items for the next deliverable", url: openItemsUrl },
   ];
 
