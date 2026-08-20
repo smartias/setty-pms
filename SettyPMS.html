@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-18-pms-v126-scope-internal-notes";
+    window.__appVersion = "2026-08-20-pms-v127-portal-confirm-scroll";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -27116,6 +27116,15 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
   // click emailed a real client and granted them folder access with no way to
   // take it back quietly. Selection is now inert and a separate button commits.
   const [selected, setSelected]         = React.useState(null);
+  // The commit panel renders BELOW the contact list, which on short windows
+  // puts it past the modal's scroll fold — selecting a name then looks like
+  // nothing happened. Scroll it into view whenever a selection lands.
+  const confirmRef = React.useRef(null);
+  React.useEffect(() => {
+    if (selected && confirmRef.current) {
+      confirmRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [selected]);
 
   // Flatten all contacts with emails from the clients directory.
   // Contacts from the project's own client company come first.
@@ -27591,7 +27600,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                 the only thing that grants access and emails the client, and it
                 spells out both consequences before the click. */}
             {selected && (
-              <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 6,
+              <div ref={confirmRef} style={{ marginTop: 10, padding: "10px 12px", borderRadius: 6,
                 border: `1px solid ${P.accent}`, background: P.accent + "14",
                 display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <div style={{ flex: 1, minWidth: 180 }}>
