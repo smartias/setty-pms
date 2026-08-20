@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-20-pms-v131-askclaude-email-to-addin";
+    window.__appVersion = "2026-08-20-pms-v132-lost-archives-everywhere";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17350,6 +17350,8 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   const [relScMsg, setRelScMsg] = useState("");
   // Feedback line for link / rename / remove actions in the Related editor.
   const [relLinkMsg, setRelLinkMsg] = useState("");
+  // Pending "Lost" pick from the status dropdown, awaiting the reason modal.
+  const [lostConfirm, setLostConfirm] = useState(false);
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
@@ -17362,6 +17364,11 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   // Also snapshots the hourly rate schedule into contractRateSchedule so the
   // Contract tab has a read-only record of what was contracted.
   function handleStatusChange(newStatus) {
+    // "Lost" must ride the same confirm/reason dialog the pipeline board uses:
+    // it archives the project and records the loss reason. A bare status write
+    // here leaves a Lost project unarchived — and the Projects list relies on
+    // the archived flag to hide Lost work.
+    if (newStatus === "Lost" && project.status !== "Lost") { setLostConfirm(true); return; }
     const wasPipeline = isPipeline(project);
     const willBeAwarded = AWARDED_STATUSES.includes(newStatus);
     let next = { ...project, status: newStatus };
@@ -17907,6 +17914,18 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             <optgroup label="Pipeline">{PIPELINE_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
             <optgroup label="Awarded">{PROJECT_STATUSES.map(s => <option key={s}>{s}</option>)}</optgroup>
           </select>
+          {lostConfirm && (
+            <LostPursuitModal project={project} onCancel={() => setLostConfirm(false)}
+              onConfirm={(reason, note) => {
+                onUpdate({
+                  ...project, status: "Lost", archived: true,
+                  lostDate: new Date().toISOString().slice(0, 10),
+                  lostReason: reason || "",
+                  lostNote: (note || "").trim(),
+                });
+                setLostConfirm(false);
+              }} />
+          )}
           <Btn small variant={project.archived ? "success" : "ghost"} onClick={() => {
               if (project.archived) {
                 if (window.confirm("Unarchive \"" + project.name + "\"?\n\nThis will make it visible in the active projects list again.")) updateField("archived", false);
@@ -31398,6 +31417,10 @@ function renameCompanyAcrossProjects(oldName, newName) {
       if (view === "pipeline") return !p.archived && isPipeline(p);
       if (p.archived !== archived) return false;
       if (!archived && !isAwarded(p)) return false; // awarded-only in list view
+      // Lost lives in the archive / Lost Pursuits list. The archived flag is
+      // supposed to guarantee that, but guard here too in case a Lost project
+      // ever reaches the list unarchived.
+      if (!archived && p.status === "Lost") return false;
       if (search && !p.name.toLowerCase().includes(search.toLowerCase()) && !(p.projectNumber || "").toLowerCase().includes(search.toLowerCase())) return false;
       if (filterPM === NO_PM_FILTER) { if ((p.projectManager || "").trim()) return false; }
       else if (filterPM !== "All" && p.projectManager !== filterPM) return false;
