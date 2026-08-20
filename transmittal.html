@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-02-transmittal-v16-supersede-on-rereg";
+    window.__appVersion = "2026-08-19-transmittal-v17-worddocs-delivery-picker";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -539,8 +539,29 @@
           <button class="btn btn-send" id="sendToClientBtn" disabled title="Generate the transmittal first" aria-describedby="step2LockNote">2c. ✉️ Package &amp; Draft Email</button>
         </div>
         <div id="step2LockNote" class="sr-only">Disabled until the transmittal is generated in Step 1.</div>
+
+        <!-- Delivery-method picker for 2c. The person sending chooses how the
+             package reaches the client, so a broken/unavailable portal never
+             blocks a send — "Email attachment" attaches the files straight to
+             the Outlook draft with no SharePoint dependency at all. -->
+        <fieldset id="deliveryModeGroup" style="margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+          <legend style="font-size:12px;font-weight:600;color:var(--muted);padding:0 6px">How should 2c deliver the package?</legend>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="radio" name="deliveryMode" value="portal" id="dmPortal"> 🌐 Via Client Portal (link)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="radio" name="deliveryMode" value="attach" id="dmAttach" checked> 📎 Email as attachment
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="radio" name="deliveryMode" value="zip" id="dmZip"> 📦 Zip + 30-day link
+            </label>
+          </div>
+          <div id="deliveryModeHint" style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5"></div>
+        </fieldset>
+
         <div style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5">
-          <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow. Projects with a Client Portal: the checked files + cover are published to a dated folder under <strong>Setty Deliverables</strong> and the email links there (no expiry — clients use their portal access). Projects without a portal: files are zipped and shared via a 30-day anonymous link. Either way an Outlook draft opens for review — nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
+          <strong>2c. Package &amp; Draft Email</strong> is the full client-send flow; pick the delivery method above first. <strong>Via Client Portal</strong> publishes the checked files + cover to a dated folder under <strong>Setty Deliverables</strong> and links there (no expiry — clients use their portal access). <strong>Email as attachment</strong> attaches the files directly to the draft (no portal needed — use this if the portal isn't set up or isn't cooperating; best for smaller sets). <strong>Zip + 30-day link</strong> bundles everything and shares a 30-day anonymous link (good for large sets with no portal). Either way an Outlook draft opens for review — nothing is sent automatically. <strong>2a</strong> and <strong>2b</strong> are partial alternatives if you only need the cover saved or a local zip.
         </div>
 
         <div style="margin-top:16px;padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:8px;background:var(--card2)">
@@ -1550,14 +1571,14 @@ async function loadFolder() {
     );
 
     const files = (filesRes.value || []).filter(f =>
-      !f.folder && /\.(pdf|dwg|rvt|dgn|dxf)$/i.test(f.name)
+      !f.folder && /\.(pdf|docx?|dwg|rvt|dgn|dxf)$/i.test(f.name)
     );
     folderFiles = files; // keep for ZIP packaging
 
     if (files.length === 0) {
-      setStatus("loadStatus", "warn", "⚠ No drawing files found in this folder. Only PDF, DWG, RVT, DGN, and DXF files are listed. You can add rows manually.");
+      setStatus("loadStatus", "warn", "⚠ No drawing or document files found in this folder. Only PDF, Word (.doc/.docx), DWG, RVT, DGN, and DXF files are listed. You can add rows manually.");
     } else {
-      setStatus("loadStatus", "success", `✓ Found ${files.length} drawing file${files.length !== 1 ? "s" : ""}.`);
+      setStatus("loadStatus", "success", `✓ Found ${files.length} file${files.length !== 1 ? "s" : ""}.`);
     }
 
     // Parse filenames into sheet rows
@@ -1808,7 +1829,7 @@ function isoFromUsDate(v) {
 
 // ─── FILENAME PARSER ──────────────────────────────────────────────────────────
 function parseFilename(filename, modifiedDate) {
-  const base = filename.replace(/\.(pdf|dwg|rvt|dgn|dxf)$/i, "");
+  const base = filename.replace(/\.(pdf|docx?|dwg|rvt|dgn|dxf)$/i, "");
   let sheetNo = "", title = "", revision = "0", discipline = "";
 
   // Helper: clean title text
@@ -2197,7 +2218,7 @@ async function backfillTransmittal() {
 document.getElementById("backfillBtn").onclick = backfillTransmittal;
 
 // ─── PACKAGE DRAWINGS AS ZIP ──────────────────────────────────────────────────
-// Bundles every drawing file (.pdf/.dwg/.rvt/.dgn/.dxf) found in the folder into
+// Bundles every drawing/document file (.pdf/.doc/.docx/.dwg/.rvt/.dgn/.dxf) found in the folder into
 // a single .zip and triggers a browser download. No SharePoint upload — the
 // user attaches the resulting zip to email or uploads it manually.
 async function packageAsZip() {
@@ -2576,6 +2597,7 @@ async function generateDocx() {
       const el = document.getElementById(id);
       if (el) { el.disabled = false; el.removeAttribute("title"); el.removeAttribute("aria-describedby"); }
     });
+    syncDeliveryModeUI(); // default the delivery picker now that a send is possible
     setStatus("generateStatus", "success", `✓ "${generatedFileName}" downloaded. Step 2 actions are now unlocked below.`);
 
   } catch(e) {
@@ -2625,6 +2647,67 @@ async function saveToSharePoint() {
 const ANONYMOUS_LINK_EXPIRY_DAYS = 30;
 
 document.getElementById("sendToClientBtn").onclick = sendToClient;
+
+// ─── DELIVERY-MODE PICKER ─────────────────────────────────────────────────────
+// The 2c send offers three delivery modes; the person sending picks one so a
+// missing/broken portal never blocks a send. Attachment sends have a real
+// mailbox size ceiling (Exchange caps a message around 25–35 MB), so we guard
+// against oversized attachment sends and steer those to portal/zip instead.
+const ATTACH_MAX_BYTES = 22 * 1024 * 1024; // ~22 MB of files; conservative vs. the 25 MB Exchange default
+let deliveryModeTouched = false;
+
+function selectedDeliveryMode() {
+  const el = document.querySelector('input[name="deliveryMode"]:checked');
+  return el ? el.value : "attach";
+}
+
+function currentProjectPortalUrl() {
+  const projNum = (document.getElementById("projectNumber").value || "").trim();
+  const proj = (pmsProjects || []).find(p => p.projectNumber === projNum) || null;
+  return (proj && proj.settyDeliverablesFolderUrl) || null;
+}
+
+// Enable/disable the portal option based on whether this project has portal
+// folders, pick a sensible default (portal when available, else attachment)
+// until the user makes their own choice, and refresh the hint line.
+function syncDeliveryModeUI() {
+  const hasPortal = !!currentProjectPortalUrl();
+  const portalRadio = document.getElementById("dmPortal");
+  const portalLabel = portalRadio ? portalRadio.closest("label") : null;
+  if (portalRadio) {
+    portalRadio.disabled = !hasPortal;
+    if (portalLabel) {
+      portalLabel.style.opacity = hasPortal ? "1" : "0.5";
+      portalLabel.title = hasPortal ? "" : "This project has no Client Portal folders yet — set them up in PMS first.";
+    }
+  }
+  if (!deliveryModeTouched) {
+    const want = hasPortal ? "portal" : "attach";
+    const wantRadio = document.getElementById(want === "portal" ? "dmPortal" : "dmAttach");
+    if (wantRadio) wantRadio.checked = true;
+  } else if (portalRadio && portalRadio.disabled && portalRadio.checked) {
+    // A prior manual pick of portal is no longer valid for this project.
+    document.getElementById("dmAttach").checked = true;
+  }
+  updateDeliveryModeHint();
+}
+
+function updateDeliveryModeHint() {
+  const hint = document.getElementById("deliveryModeHint");
+  if (!hint) return;
+  const mode = selectedDeliveryMode();
+  if (mode === "portal") {
+    hint.textContent = "Files are copied to a dated Setty Deliverables folder; the email links there. No size limit, no expiry — clients use their portal sign-in.";
+  } else if (mode === "attach") {
+    hint.textContent = "Files are attached straight to the Outlook draft — no portal or SharePoint link needed. Keep the total under ~22 MB; larger sets should use the portal or the zip link.";
+  } else {
+    hint.textContent = "Everything is zipped, uploaded, and shared as a 30-day anonymous download link. Good for large sets when there's no portal.";
+  }
+}
+
+document.querySelectorAll('input[name="deliveryMode"]').forEach(r => {
+  r.addEventListener("change", () => { deliveryModeTouched = true; updateDeliveryModeHint(); });
+});
 
 async function sendToClient() {
   const btn = document.getElementById("sendToClientBtn");
@@ -2681,24 +2764,39 @@ async function sendToClient() {
     }
     totalBytes += generatedBlob.size;
 
-    // ── 2. Pick delivery mode: Client Portal when the project has Setty
-    //       Deliverables folders, zip + anonymous link otherwise. ─────────────
-    const projNum = (document.getElementById("projectNumber").value || "").trim();
-    const proj = (pmsProjects || []).find(p => p.projectNumber === projNum) || null;
-    const portalUrl = proj && proj.settyDeliverablesFolderUrl;
+    // ── 2. Deliver, per the delivery mode the user picked in Step 2. ──────────
+    //   portal → copy into a dated Setty Deliverables folder; email links there
+    //   attach → attach the files straight to the draft (no SharePoint at all)
+    //   zip    → bundle + upload + 30-day anonymous link
+    const deliveryMode = selectedDeliveryMode();
+    const portalUrl = currentProjectPortalUrl();
 
-    let linkUrl, linkLabel, expiryIso = null, packageName, deliveryMode;
+    let linkUrl = null, linkLabel = null, expiryIso = null, packageName, attachments = null;
 
-    if (portalUrl) {
+    if (deliveryMode === "portal") {
+      if (!portalUrl) {
+        throw new Error("This project has no Client Portal folders — pick 'Email as attachment' or 'Zip + 30-day link' instead, or set up portal folders in PMS first.");
+      }
       // PORTAL: copy files into a dated Setty Deliverables subfolder.
-      deliveryMode = "portal";
       const portal = await publishToPortal(fileBlobs, portalUrl);
       linkUrl     = portal.webUrl;
       linkLabel   = portal.folderName;
       packageName = portal.folderName;
+    } else if (deliveryMode === "attach") {
+      // ATTACHMENT: no SharePoint upload, no link — the files ride along on the
+      // Outlook draft. Guard the total size so we don't build a draft the
+      // mailbox will refuse to send.
+      if (totalBytes > ATTACH_MAX_BYTES) {
+        throw new Error(
+          `Package is ${(totalBytes / 1024 / 1024).toFixed(1)} MB — too large to email as attachments ` +
+          `(mailboxes cap a message around 25 MB). Use 'Via Client Portal' or 'Zip + 30-day link' for a set this size.`
+        );
+      }
+      // Cover doc travels with the selected files.
+      attachments = fileBlobs.concat([{ name: generatedFileName, blob: generatedBlob }]);
+      packageName = generatedFileName;
     } else {
-      // ZIP FALLBACK: bundle + anonymous 30-day link.
-      deliveryMode = "zip";
+      // ZIP: bundle + anonymous 30-day link.
       if (typeof JSZip === "undefined") throw new Error("ZIP library failed to load.");
       const zip = new JSZip();
       fileBlobs.forEach(f => zip.file(f.name, f.blob));
@@ -2731,19 +2829,26 @@ async function sendToClient() {
 
     // ── 4. Create an Outlook draft via Graph (HTML body so the share URL can
     //       hide behind a readable label) and open it for review. ─────────────
-    setStatus("sendStatus", "info", "⏳ Creating Outlook draft…");
+    setStatus("sendStatus", "info", attachments
+      ? `⏳ Attaching ${attachments.length} file${attachments.length !== 1 ? "s" : ""} to the Outlook draft…`
+      : "⏳ Creating Outlook draft…");
     const draft = await createOutlookDraft({
       recipientEmail,
       ccEmails: (ccRecipients || []).map(r => r.email).filter(Boolean),
       linkUrl,
       linkLabel,
-      expiryDate: expiryIso, // null for portal sends — no expiry line in the email
+      expiryDate: expiryIso, // null for portal/attachment sends — no expiry line in the email
+      attachments,           // non-null only for attachment mode
     });
     window.open(draft.webLink, "_blank");
 
-    setStatus("sendStatus", "success", deliveryMode === "portal"
-      ? `✓ ${fileBlobs.length + 1} file${fileBlobs.length ? "s" : ""} published to the Client Portal (${packageName}). Outlook draft open — review and click Send.`
-      : `✓ Package uploaded. Outlook draft open — review and click Send. Link expires ${new Date(expiryIso).toLocaleDateString()}.`);
+    const draftedCount = fileBlobs.length + 1; // selected files + cover doc
+    setStatus("sendStatus", "success",
+      deliveryMode === "portal"
+        ? `✓ ${draftedCount} file${draftedCount !== 1 ? "s" : ""} published to the Client Portal (${packageName}). Outlook draft open — review and click Send.`
+      : deliveryMode === "attach"
+        ? `✓ ${draftedCount} file${draftedCount !== 1 ? "s" : ""} attached to the Outlook draft (${(totalBytes / 1024 / 1024).toFixed(1)} MB). Review and click Send.`
+        : `✓ Package uploaded. Outlook draft open — review and click Send. Link expires ${new Date(expiryIso).toLocaleDateString()}.`);
     // Refresh the history panel only once the log row has actually landed,
     // otherwise the send just made would be missing from the table.
     void logTransmittalGenerated("send-email", {
@@ -3061,7 +3166,7 @@ document.getElementById("historyTableWrap")?.addEventListener("click", (ev) => {
 // fires only for client-originated drafts, so Graph-created drafts arrive
 // signature-less. You'll type/paste your signature in the draft before
 // sending. (This was an intentional choice for cleaner link display.)
-async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, linkLabel, expiryDate }) {
+async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, linkLabel, expiryDate, attachments }) {
   const projectName   = document.getElementById("projectName").value || "";
   const projectNumber = document.getElementById("projectNumber").value || "";
   const recipientName = document.getElementById("recipientName").value || "";
@@ -3081,9 +3186,12 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, linkLabel
     ? new Date(expiryDate).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
     : null;
 
+  // Attachment mode swaps the "here's your link" body for a "files attached" one.
+  const attachMode = !!(attachments && attachments.length);
+
   const { subject, html } = buildEmailBody({
     projectName, projectNumber, recipientName, issuedFor, milestone,
-    linkUrl, linkLabel, expiryDate: expiryFormatted, fileList, includedSheets,
+    linkUrl, linkLabel, expiryDate: expiryFormatted, fileList, includedSheets, attachMode,
   });
 
   const payload = {
@@ -3097,7 +3205,85 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, linkLabel
   if (cleanCcEmails.length) {
     payload.ccRecipients = cleanCcEmails.map(addr => ({ emailAddress: { address: addr } }));
   }
-  return await graphFetch("POST", "/me/messages", payload);
+  const draft = await graphFetch("POST", "/me/messages", payload);
+
+  // Attachment mode: add each file to the draft we just created. Done after the
+  // message exists (attachments hang off a message id), one at a time so a
+  // failure names the offending file.
+  if (attachMode) {
+    for (let i = 0; i < attachments.length; i++) {
+      const a = attachments[i];
+      setStatus("sendStatus", "info", `⏳ Attaching ${a.name} (${i + 1}/${attachments.length})…`);
+      await attachFileToMessage(draft.id, a.name, a.blob);
+    }
+  }
+  return draft;
+}
+
+// ─── EMAIL ATTACHMENTS ────────────────────────────────────────────────────────
+// Adds one file to an existing draft. Graph lets small files (≤3 MB) go inline
+// as base64; larger ones need an upload session, same chunking model as the
+// SharePoint upload above (320-KiB-multiple chunks).
+const SMALL_ATTACH_LIMIT = 3 * 1024 * 1024;
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read file for attachment"));
+    reader.onload = () => {
+      // readAsDataURL gives "data:<mime>;base64,<data>" — keep only the data.
+      const s = String(reader.result || "");
+      resolve(s.slice(s.indexOf(",") + 1));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function attachFileToMessage(messageId, name, blob) {
+  const token = await getToken();
+  const contentType = blob.type || "application/octet-stream";
+
+  if (blob.size <= SMALL_ATTACH_LIMIT) {
+    const contentBytes = await blobToBase64(blob);
+    const res = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/attachments`, {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        name, contentType, contentBytes,
+      }),
+    });
+    if (!res.ok) throw new Error(`Attaching ${name} failed: HTTP ${res.status} — ${(await res.text()).slice(0, 200)}`);
+    return;
+  }
+
+  // Large attachment → upload session.
+  const sessionRes = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/attachments/createUploadSession`, {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ AttachmentItem: { attachmentType: "file", name, size: blob.size, contentType } }),
+  });
+  if (!sessionRes.ok) throw new Error(`Attachment session for ${name} failed: HTTP ${sessionRes.status} — ${(await sessionRes.text()).slice(0, 200)}`);
+  const { uploadUrl } = await sessionRes.json();
+  if (!uploadUrl) throw new Error("Attachment upload session missing uploadUrl");
+
+  // Chunks must be multiples of 320 KiB except the last (same rule as drive uploads).
+  const CHUNK_SIZE = 10 * 1024 * 1024;
+  const size = blob.size;
+  for (let start = 0; start < size; start += CHUNK_SIZE) {
+    const end = Math.min(start + CHUNK_SIZE, size) - 1;
+    const chunk = blob.slice(start, end + 1);
+    // uploadUrl is pre-authed — no Authorization header on chunk PUTs.
+    const putRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Range": `bytes ${start}-${end}/${size}` },
+      body: chunk,
+    });
+    // 201/200 = final chunk accepted (attachment created, empty body); 202 = more to come.
+    if (!putRes.ok && putRes.status !== 201) {
+      throw new Error(`Uploading ${name} failed at byte ${start}: HTTP ${putRes.status}`);
+    }
+  }
 }
 
 // ─── EMAIL BODY (YOU WRITE THIS) ──────────────────────────────────────────────
@@ -3122,7 +3308,7 @@ async function createOutlookDraft({ recipientEmail, ccEmails, linkUrl, linkLabel
 //
 // Signature — leave OFF. Graph-created drafts don't auto-append your Outlook
 // signature; you'll add it in the compose window before sending.
-function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, milestone, linkUrl, linkLabel, expiryDate, fileList, includedSheets }) {
+function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, milestone, linkUrl, linkLabel, expiryDate, fileList, includedSheets, attachMode }) {
   // First name only — "Chris Hardy" → "Chris". Clients don't need the formal full name.
   const firstName = (recipientName || "").trim().split(/\s+/)[0];
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
@@ -3174,17 +3360,25 @@ function buildEmailBody({ projectName, projectNumber, recipientName, issuedFor, 
       `</table>`;
   }
 
-  // Expiring anonymous link (zip mode) vs standing portal access (portal mode).
-  const accessLine = expiryDate
-    ? `Link expires ${expiryDate}.`
-    : `The files are available in your SETTY client portal — sign in with your invited email to access them.`;
+  // Attachment mode: files ride on the email itself, no link. Otherwise it's
+  // an expiring anonymous link (zip) or standing portal access (portal).
+  const accessLine = attachMode
+    ? `The files are attached to this email.`
+    : expiryDate
+      ? `Link expires ${expiryDate}.`
+      : `The files are available in your SETTY client portal — sign in with your invited email to access them.`;
+
+  // The link line only makes sense when there's a link (portal/zip).
+  const linkBlock = attachMode
+    ? ""
+    : `<a href="${linkUrl}">${esc(packageLabel)}</a><br><br>`;
 
   return {
     subject: subjectLine,
     html:
       `${greeting}<br><br>` +
       `${issuedFor} package:<br><br>` +
-      `<a href="${linkUrl}">${esc(packageLabel)}</a><br><br>` +
+      linkBlock +
       `${accessLine}<br><br>` +
       tableHtml,
   };
