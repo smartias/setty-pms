@@ -953,6 +953,19 @@ function unnumberHeading(xml, title) {
   return xml;
 }
 
+// Remove a template heading outright — the body's "TERMS AND CONDITIONS AS
+// OUTLINED IN ATTACHMENT A." line lives in the proposal body section, so
+// omitting the attachment leaves it pointing at nothing.
+function removeHeading(xml, title) {
+  for (const pm of matchAll(PARA_RE, xml)) {
+    const para = pm[0];
+    if (!/<w:pStyle w:val="Heading1"\/>/.test(para)) continue;
+    if (matchAll(RUN_RE, para).map((r) => runText(r[0])).join("").trim() !== title) continue;
+    return xml.slice(0, pm.index) + xml.slice(pm.index + para.length);
+  }
+  return xml;
+}
+
 // Kill the 12pt gap under a section heading whose list hugs it (Excluded,
 // Assumptions, Proposal Provisions). Matches the template's own heading by
 // its exact text.
@@ -1088,6 +1101,10 @@ export async function buildDocx(
     xml = replaceAll(xml, CHROME_FIX);
     if (name === "word/document.xml") {
       if (omit.length) xml = dropParts(xml, omit);
+      // Dropping the attachment also drops the body's reference to it.
+      if (omit.includes("terms")) {
+        xml = removeHeading(xml, "TERMS AND CONDITIONS AS OUTLINED IN ATTACHMENT A.");
+      }
       // Scope BEFORE token substitution: the prototypes carry the tokens, and
       // filling them first would leave nothing to clone.
       // Three independent sections, each with its own prototype pair. Keeping

@@ -22267,7 +22267,23 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   const base = (project.projectNumber ? project.projectNumber + " - " : "") + (project.name || "Proposal");
   // Graph rejects these characters in a file name, and so does Windows.
   const fileBase = base.replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim();
-  return { ...built, fileBase };
+  // A discipline switched OFF can still be named in hand- or AI-written
+  // prose (the filter only reaches {{DISCIPLINE_*}} tokens and tagged line
+  // items). Flag every leftover mention so it gets edited, not shipped.
+  const activeDisc = scopeDisciplinesOf(project);
+  const offWords = SCOPE_DISCIPLINES.filter(d => d.core && d.word && !activeDisc[d.key]).map(d => d.word);
+  const warnings = [];
+  if (offWords.length) {
+    SCOPE_SECTIONS.forEach(s => {
+      if (s.internal) return;
+      const text = scopeHtmlToText(secs[s.key] || "").toLowerCase();
+      offWords.forEach(w => {
+        const n = text.split(w.toLowerCase()).length - 1;
+        if (n) warnings.push(s.label + " still mentions “" + w + "” " + (n > 1 ? n + " times" : "once") + " (switched off for this proposal)");
+      });
+    });
+  }
+  return { ...built, fileBase, warnings };
 }
 
 // Save the generated .docx into SharePoint and return where it went. Filing
@@ -22495,7 +22511,7 @@ function exportProposalDocx(project, opts = {}) {
     status.textContent = "Building the document…";
     try {
       const source = file ? await file.arrayBuffer() : templateBytes;
-      const { bytes, unfilled, scopeBlocks, scopeNote, fileBase } =
+      const { bytes, unfilled, scopeBlocks, scopeNote, fileBase, warnings } =
         await assembleProposalDocx(project, { source, omit, honorific: honSel.value });
       const stamp = new Date().toISOString().slice(0, 10);
       const docxName = fileBase + " Proposal " + stamp + ".docx";
@@ -22504,7 +22520,8 @@ function exportProposalDocx(project, opts = {}) {
         (omit.length ? "Left out " + omit.length + " section" + (omit.length > 1 ? "s" : "") + "." : "Full document.") +
         (scopeBlocks ? " Scope inserted as " + scopeBlocks + " paragraph" + (scopeBlocks > 1 ? "s" : "") + "."
                      : " Scope NOT inserted: " + (scopeNote || "unknown reason") + ".") +
-        (unfilled.length ? " " + unfilled.length + " placeholder(s) still to fill: " + unfilled.map((u) => u.replace(/[{}]/g, "")).join(", ") + "." : "");
+        (unfilled.length ? " " + unfilled.length + " placeholder(s) still to fill: " + unfilled.map((u) => u.replace(/[{}]/g, "")).join(", ") + "." : "") +
+        ((warnings || []).length ? " ⚠ " + warnings.join("; ") + " — edit the box and regenerate." : "");
 
       if (!wantPdf) {
         downloadBytes(bytes, docxName, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
@@ -24009,6 +24026,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Select, don't paraphrase. Only write authoredScope items for work the catalog does not cover (surveys, studies, assessments, Cx, agency-specific deliverables).",
       "- Written sections stay short: understanding 1 to 3 paragraphs, approach 3 to 6 short paragraphs or a compact list, each custom assumption one sentence.",
       "- Plain paragraphs only in understanding and approach: no bold run-in titles at the start of a paragraph (write \"Setty will attend the scope meeting…\", not \"<strong>Scope Report Phase.</strong> Setty will…\").",
+      "- Name ONLY the disciplines listed in the project facts above, everywhere in the narrative. If plumbing is not in the list, no sentence mentions plumbing (and write M/E/FP, never MEP/FP). This applies to understanding, approach, custom assumptions and open items alike.",
       "- Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].",
       "- Plain AEC professional English. No em dashes anywhere. No marketing superlatives. Spell out agency names on first use.",
       "- Never invent a fee total. suggestedPhases must sum to 100; basisOfFeeNote says how the fee could be benchmarked. Dollar amounts only if the RFP states them, and only inside understanding.",
