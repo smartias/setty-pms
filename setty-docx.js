@@ -694,6 +694,26 @@ export function renderHeaderXml(xml, projectName, withLogo) {
   return xml.slice(0, pm.index) + next + xml.slice(pm.index + para.length);
 }
 
+// ── stale template chrome ───────────────────────────────────────────────────
+//
+// Text the template carries that no proposal should: the OLD New York office
+// in the footers (two spellings — the sent-proposal footer even truncates its
+// own line at "21s"), the cover page's 139-for-149 street typo, the old NY
+// zip, and the leftover per-project FPID in the footer's fax line. The
+// current NY office is 149 W 36th Street, 8th Floor / New York, NY 10018
+// (confirmed by Sara 2026-08-16 — see tools/docx-templates/fix_ny_address.py).
+// LONGEST KEYS FIRST: "535 8th Avenue, 21s" is a prefix of the full line, and
+// matching it first would strand "t Floor".
+export const CHROME_FIX = {
+  "535 8th Avenue, 21st Floor": "149 W 36th Street, 8th Floor",
+  "535 8th Avenue, 21s": "149 W 36th Street, 8th Floor",
+  "121 West 27th Street, Suite 1100": "149 W 36th Street, 8th Floor",
+  "139 West 36th Street": "149 W 36th Street",
+  "New York, NY 10001": "New York, NY 10018",
+  " FPID: ANY10233R00": "",
+  "FPID: ANY10233R00": "",
+};
+
 const RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
 function addLogoRel(relsXml) {
   const rel = '<Relationship Id="' + SETTY_LOGO_REL_ID + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/settylogo.png"/>';
@@ -1002,6 +1022,9 @@ export async function buildDocx(
         if (headerLogo) logoHeaders.push(name);
       }
     }
+    // Old-office address and other stale chrome, wherever the template put it
+    // (the footers carry the pre-move New York street).
+    xml = replaceAll(xml, CHROME_FIX);
     if (name === "word/document.xml") {
       if (omit.length) xml = dropParts(xml, omit);
       // Scope BEFORE token substitution: the prototypes carry the tokens, and
