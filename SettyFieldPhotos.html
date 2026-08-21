@@ -397,6 +397,7 @@ header { background: var(--navy); padding: 0 20px; height: 56px; display: flex; 
         <input type="file" id="fileInput" multiple accept="image/*,video/*,.heic,.heif,.mp4,.mov,.avi,.m4v" aria-label="Select photos or videos to upload" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;" onchange="handleFiles(this.files)" />
       </div>
       <div class="file-previews" id="filePreviews"></div>
+      <div id="queueStatus" aria-live="polite" style="font-size:13px;color:var(--dim);margin-top:6px;"></div>
 
       <h2 class="section-title">Metadata</h2>
       <div class="form-grid">
@@ -740,15 +741,13 @@ function showResumeBanner(fileRows, formRow) {
 
 function resumeQueue(fileRows, formRow) {
   // Restore files straight from the IDB rows into the queue — object URLs for
-  // image previews (no second copy of the buffer in memory, unlike the
-  // FileReader/dataURL path used for freshly-picked files) and the existing
-  // thumbnail generator for videos. Rows keep their original qids and stay
-  // in the store until upload success or explicit removal, so a second
-  // refresh mid-resume is still recoverable.
+  // image previews and the existing thumbnail generator for videos. Rows keep
+  // their original qids and stay in the store until upload success or explicit
+  // removal, so a second refresh mid-resume is still recoverable.
   fileRows.forEach(row => {
     const pf = { file: row.file, previewUrl: null, status: 'pending', isVideo: !!row.isVideo, qid: row.id };
     if (pf.isVideo) {
-      generateVideoThumbnail(row.file).then(thumb => { pf.previewUrl = thumb; renderPreviews(); });
+      generateVideoThumbnail(row.file).then(thumb => { if (thumb) { pf.previewUrl = thumb; updateTile(pf); } });
     } else {
       try { pf.previewUrl = URL.createObjectURL(row.file); } catch (e) { /* preview only — upload still works */ }
     }
@@ -1108,29 +1107,42 @@ function handleFiles(files) {
     // Stable per-file id — the IndexedDB row key, so completed uploads can
     // delete just their own row.
     const qid = 'q' + Date.now() + '-' + (_qidCounter++);
+    // Object URLs, not FileReader data URLs: a data URL reads and base64-encodes
+    // the whole file on the main thread, so a big batch of phone photos froze
+    // the form for seconds. An object URL is a constant-time reference, so every
+    // file lands in the queue synchronously and the page stays interactive.
+    let previewUrl = null;
+    if (!isVideo) {
+      try { previewUrl = URL.createObjectURL(f); } catch (e) { /* preview only — upload still works */ }
+    }
+    const pf = { file: f, previewUrl, status: 'pending', isVideo, qid };
+    pendingFiles.push(pf);
+    qdbPutFile(pf);             // write-through: survive refresh/eviction
     if (isVideo) {
       generateVideoThumbnail(f).then(thumb => {
-        const pf = { file: f, previewUrl: thumb, status: 'pending', isVideo: true, qid };
-        pendingFiles.push(pf);
-        qdbPutFile(pf);           // write-through: survive refresh/eviction
-        qdbSaveFormDebounced();   // snapshot project + form alongside the file
-        renderPreviews();
+        if (thumb) { pf.previewUrl = thumb; updateTile(pf); }
       });
-    } else {
-      const reader = new FileReader();
-      reader.onload = ev => {
-        const pf = { file: f, previewUrl: ev.target.result, status: 'pending', isVideo: false, qid };
-        pendingFiles.push(pf);
-        qdbPutFile(pf);           // write-through: survive refresh/eviction
-        qdbSaveFormDebounced();   // snapshot project + form alongside the file
-        renderPreviews();
-      };
-      reader.readAsDataURL(f);
     }
   });
+  qdbSaveFormDebounced();       // snapshot project + form alongside the files
+  renderPreviews();             // one render per batch, not one per file
   // Use the first image in the batch for EXIF (videos don't have EXIF GPS/date via exifr)
   const firstImage = Array.from(files).find(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name));
   if (isFirst && firstImage) populateExifFields(firstImage);
+}
+
+function tileHTML(pf, i) {
+  const statusIcon = pf.status === 'ok'       ? '<div class="status-icon ok" title="Uploaded">&#10003;<span class="sr-only">Uploaded</span></div>' :
+                     pf.status === 'err'      ? '<div class="status-icon err" title="Upload failed — click × to remove">&#33;<span class="sr-only">Upload failed</span></div>' :
+                     pf.status === 'uploading' ? '<div class="status-icon uploading" title="Uploading…">&#8635;<span class="sr-only">Uploading</span></div>' : '';
+  return `
+      ${statusIcon}
+      ${pf.previewUrl
+        ? `<img src="${pf.previewUrl}" alt="${pf.file.name}" loading="lazy" decoding="async" />`
+        : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:28px;">&#127910;</div>`}
+      ${pf.isVideo ? `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.55);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;pointer-events:none;">&#9654;</div>` : ''}
+      <div class="fname">${pf.file.name}</div>
+      ${pf.status !== 'ok' && pf.status !== 'uploading' ? `<button class="remove-btn" onclick="removeFile(${i})" title="Remove" aria-label="Remove ${escHtml(pf.file.name)} from upload queue">&#215;</button>` : ''}`;
 }
 
 function renderPreviews() {
@@ -1139,24 +1151,44 @@ function renderPreviews() {
   pendingFiles.forEach((pf, i) => {
     const div = document.createElement('div');
     div.className = 'file-thumb';
-    const statusIcon = pf.status === 'ok'       ? '<div class="status-icon ok" title="Uploaded">&#10003;<span class="sr-only">Uploaded</span></div>' :
-                       pf.status === 'err'      ? '<div class="status-icon err" title="Upload failed — click × to remove">&#33;<span class="sr-only">Upload failed</span></div>' :
-                       pf.status === 'uploading' ? '<div class="status-icon uploading" title="Uploading…">&#8635;<span class="sr-only">Uploading</span></div>' : '';
-    div.innerHTML = `
-      ${statusIcon}
-      ${pf.previewUrl
-        ? `<img src="${pf.previewUrl}" alt="${pf.file.name}" />`
-        : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:28px;">&#127910;</div>`}
-      ${pf.isVideo ? `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.55);border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:13px;pointer-events:none;">&#9654;</div>` : ''}
-      <div class="fname">${pf.file.name}</div>
-      ${pf.status !== 'ok' && pf.status !== 'uploading' ? `<button class="remove-btn" onclick="removeFile(${i})" title="Remove" aria-label="Remove ${escHtml(pf.file.name)} from upload queue">&#215;</button>` : ''}`;
+    div.dataset.qid = pf.qid;
+    div.innerHTML = tileHTML(pf, i);
     wrap.appendChild(div);
   });
+  updateQueueStatus();
+}
+
+// Patch one tile in place. A full renderPreviews() re-creates every <img> in
+// the grid, forcing the browser to re-decode all of them — with dozens of
+// photos queued that made each per-file status flip visibly janky.
+function updateTile(pf) {
+  const div = document.querySelector(`#filePreviews .file-thumb[data-qid="${pf.qid}"]`);
+  const i = pendingFiles.indexOf(pf);
+  if (!div || i < 0) { renderPreviews(); return; }
+  div.innerHTML = tileHTML(pf, i);
+}
+
+function updateQueueStatus() {
+  const el = document.getElementById('queueStatus');
+  if (!el) return;
+  const n = pendingFiles.length;
+  const vids = pendingFiles.filter(f => f.isVideo).length;
+  el.textContent = !n ? '' :
+    `${n} file${n !== 1 ? 's' : ''} ready to upload` + (vids ? ` (${vids} video${vids !== 1 ? 's' : ''})` : '');
+}
+
+// Object URLs hold their blob alive until revoked; release when a file
+// leaves the queue. Video thumbnails are data URLs — revoke is a no-op there.
+function releasePreview(pf) {
+  if (pf && pf.previewUrl && pf.previewUrl.startsWith('blob:')) {
+    try { URL.revokeObjectURL(pf.previewUrl); } catch (e) {}
+  }
 }
 
 function removeFile(i) {
   const pf = pendingFiles[i];
   pendingFiles.splice(i, 1);
+  releasePreview(pf);
   if (pf && pf.qid) qdbDeleteFile(pf.qid);
   // User cleared the last queued file = explicit "never mind" — drop the
   // stored form snapshot too so no stale resume banner appears later.
@@ -1426,7 +1458,7 @@ async function startUpload() {
       const pf = toUpload[i];
       try {
         pf.status = 'uploading';
-        renderPreviews();
+        updateTile(pf);
 
         if (pf.isVideo) {
           // Videos: no compression, use chunked session upload
@@ -1468,7 +1500,7 @@ async function startUpload() {
         pf.status = 'err';
         console.error('Upload failed for', pf.file.name, e);
       }
-      renderPreviews();
+      updateTile(pf);
     }
 
     // Write metadata sidecar
@@ -1550,6 +1582,7 @@ async function startUpload() {
 
     // Remove successful uploads from the queue; leave failed ones so user can see/clear them
     setTimeout(() => {
+      pendingFiles.filter(f => f.status === 'ok').forEach(releasePreview);
       pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
       // Whole batch done — clear the persisted queue (incl. the form row).
       // Failed files stay: their rows are still in the store for resume.
@@ -1566,6 +1599,7 @@ async function startUpload() {
   } catch(e) {
     // Clean up any files that succeeded before the error (e.g. metadata write failed)
     // so they don't get stranded in the queue with no remove button.
+    pendingFiles.filter(f => f.status === 'ok').forEach(releasePreview);
     pendingFiles = pendingFiles.filter(f => f.status !== 'ok');
     if (!pendingFiles.length) qdbClearAll();   // per-file 'ok' rows already deleted
     renderPreviews();
