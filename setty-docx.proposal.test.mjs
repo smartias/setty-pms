@@ -130,6 +130,15 @@ const DOC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   P(`<w:ind w:left="360"/>`, R("{{TERMS_BODY}}")) +
   `<w:sectPr/></w:body></w:document>`;
 
+// The sent-proposal footer: Fairfax | New York columns, the NY street stale
+// (and truncated at "21s" in the template itself), and a leftover FPID.
+const FTR = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+  P("", `<w:r><w:t>3040 Williams Drive, Suite 600</w:t><w:tab/><w:t>535 8th Avenue, 21s</w:t></w:r>`) +
+  P("", `<w:r><w:t>Fairfax, VA 22031</w:t><w:tab/><w:t>New York, NY 10018</w:t></w:r>`) +
+  P("", `<w:r><w:t xml:space="preserve">F: [703-691-8084] FPID: ANY10233R00</w:t><w:tab/><w:t>F: [646-224-8497]</w:t></w:r>`) +
+  `</w:ftr>`;
+
 const HDR = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
   P(`<w:pStyle w:val="Header"/><w:jc w:val="center"/>`,
@@ -160,6 +169,7 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     ["word/document.xml", enc.encode(DOC)],
     ["word/numbering.xml", enc.encode(NUM)],
     ["word/header1.xml", enc.encode(HDR)],
+    ["word/footer1.xml", enc.encode(FTR)],
   ]);
   const bytes = await sd.zip(parts);
 
@@ -321,6 +331,24 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         "header: relationship written");
   check(dec.decode(out.get("[Content_Types].xml")).includes('Extension="png"'),
         "header: png content type declared");
+
+  // footer: current NY office in, old office and stale FPID out
+  const ftr = dec.decode(out.get("word/footer1.xml"));
+  check(ftr.includes("149 W 36th Street, 8th Floor"), "footer: current NY street in place");
+  check(!ftr.includes("535 8th Avenue"), "footer: old NY street removed");
+  check(!ftr.includes("FPID"), "footer: stale FPID removed");
+  check(ftr.includes("3040 Williams Drive, Suite 600") && ftr.includes("Fairfax, VA 22031"),
+        "footer: Fairfax column untouched");
+  check(ftr.includes("F: [703-691-8084]") && ftr.includes("F: [646-224-8497]"),
+        "footer: fax lines survive the FPID removal");
+
+  // the full-length old street maps as one string (prefix key must not win)
+  {
+    const para = sd.replaceAll('<w:p><w:r><w:t>535 8th Avenue, 21st Floor</w:t></w:r></w:p>', sd.CHROME_FIX);
+    check(para.includes(">149 W 36th Street, 8th Floor<"), "chrome map: full old street replaced cleanly");
+    check(!para.includes("t Floor</w:t></w:r></w:p>") || para.includes("8th Floor</w:t>"),
+          "chrome map: no stranded 't Floor'");
+  }
 }
 
 // DUMP_DIR=<dir> writes the rendered parts out for external well-formedness
