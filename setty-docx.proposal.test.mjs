@@ -371,6 +371,33 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   }
 }
 
+// ── 4. omitting Attachment A also removes the body's reference to it ────────
+{
+  const sec = (inner) => inner + `<w:p><w:pPr><w:sectPr/></w:pPr></w:p>`;
+  let body = "";
+  for (let i = 0; i < 7; i++) {
+    body += sec(i === 5
+      ? P(`<w:pStyle w:val="Heading1"/>`, R("TERMS AND CONDITIONS AS OUTLINED IN ATTACHMENT A."))
+      : P("", R("section " + i)));
+  }
+  body += sec(P("", R("attachment A terms content")));   // section 7 = terms
+  body += P("", R("tail")) + `<w:sectPr/>`;
+  const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` + body + `</w:body></w:document>`;
+  const enc = new TextEncoder();
+  const parts = new Map([["[Content_Types].xml", enc.encode(CT)], ["word/document.xml", enc.encode(doc)]]);
+  const bytes = await sd.zip(parts);
+  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+  const cut = await sd.buildDocx(ab, { omit: ["terms"] });
+  const cutDoc = new TextDecoder().decode((await sd.unzip(cut.bytes.buffer.slice(cut.bytes.byteOffset, cut.bytes.byteOffset + cut.bytes.byteLength))).get("word/document.xml"));
+  check(!cutDoc.includes("attachment A terms content"), "omit terms: attachment section dropped");
+  check(!cutDoc.includes("AS OUTLINED IN ATTACHMENT A"), "omit terms: body reference heading removed");
+
+  const full = await sd.buildDocx(ab, {});
+  const fullDoc = new TextDecoder().decode((await sd.unzip(full.bytes.buffer.slice(full.bytes.byteOffset, full.bytes.byteOffset + full.bytes.byteLength))).get("word/document.xml"));
+  check(fullDoc.includes("AS OUTLINED IN ATTACHMENT A"), "with terms: the reference heading stays");
+}
+
 // DUMP_DIR=<dir> writes the rendered parts out for external well-formedness
 // checks (see the python xml.dom.minidom pass in the PR notes).
 if (process.env.DUMP_DIR) {

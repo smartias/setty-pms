@@ -47,6 +47,7 @@ Hard rules:
 - Tokens named {{DISCIPLINE_LIST}}, {{DISCIPLINE_ABBR}} and {{DISCIPLINE_MEP}} are filled by the PMS from the project's discipline settings. Never set them in params. Clauses tagged for a discipline (fire suppression, lighting) are filtered by the PMS as well; select them when the RFP calls for the work and let the PMS decide.
 - Written sections stay short. Understanding: 1 to 3 paragraphs. Approach: 3 to 6 short paragraphs or a compact list. Each custom assumption: one sentence.
 - Plain paragraphs only in understanding and approach: no bold run-in titles at the start of a paragraph (write "Setty will attend the scope meeting…", not "<strong>Scope Report Phase.</strong> Setty will…").
+- Name ONLY the disciplines this proposal carries, everywhere in the narrative. If plumbing is not among them, no sentence mentions plumbing. This applies to understanding, approach, custom assumptions and open items alike.
 - Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].
 - Language: plain AEC professional English. No em dashes anywhere; use colons, commas, or separate sentences. No marketing superlatives. Spell out agency names on first use.
 - Uncertainty is data. Anything you could not map, verify, or understand goes in flaggedForReview with a one-line reason. An empty flagged list on a complex RFP is a red flag in itself.
