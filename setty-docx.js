@@ -434,16 +434,110 @@ export function htmlToBlocks(html) {
     const text = decodeEntities(raw.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
     if (!text) continue;                              // wrapper with no own text
     const inner = raw.replace(/<\/?(span|font|o:p|a)\b[^>]*>/gi, "").trim();
-    // A paragraph that STARTS bold is a heading. Requiring the whole thing to
-    // be bold was wrong on real scopes: they bold only the list marker, so
+    // A paragraph that STARTS bold is a heading -- but only when little or
+    // nothing follows the bold lead. Requiring the whole thing to be bold was
+    // wrong on real scopes: they bold only the list marker, so
     // "<b>A. </b>SCOPE OF ENGINEERING SERVICES" came through as body text
     // while "<b>B. </b><b>Expectations:</b>" became a heading -- inconsistent
-    // within one document. Sub-items ("a.", "b.") carry no bold at all, so
-    // leading-bold cleanly separates the two levels.
+    // within one document. Treating ANY bold start as a heading was wrong the
+    // other way: run-in paragraphs ("<b>Scope Report Phase.</b> Setty will
+    // attend…") are body text with a bold lead, and calling them headings
+    // bolded whole Project Approach paragraphs and let included-services
+    // sub-lines steal list numbers. The tail after the bold lead decides:
+    // empty or short (a heading's remainder) = heading, a sentence = body.
     const startsBold = /^<(b|strong)\b[^>]*>/i.test(inner);
-    blocks.push({ kind: /^h[1-6]$/.test(name) || startsBold ? "h" : "p", text });
+    let kind = /^h[1-6]$/.test(name) ? "h" : "p";
+    if (kind === "p" && startsBold) {
+      const afterLead = inner.replace(/^(?:\s*<(?:b|strong)\b[^>]*>[\s\S]*?<\/(?:b|strong)>)+/i, "");
+      const tail = decodeEntities(afterLead.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+      if (tail.length <= 60) kind = "h";
+    }
+    blocks.push({ kind, text });
   }
   return blocks;
+}
+
+/**
+ * A leading hand-typed enumeration ("1. ", "2) ", "a. ") doubles up when the
+ * text lands in a paragraph whose numbering auto-generates the same marker.
+ */
+export function stripEnum(text) {
+  return String(text).replace(/^(?:\d{1,2}|[a-z])[.)]\s+/, "");
+}
+
+/**
+ * Duplicate items inside one section (the same exclusion arriving once via
+ * clauses[] and again via exclusions.clauseKeys, or pasted twice) print
+ * twice. Text-identical non-empty blocks after the first are dropped; empty
+ * blocks are spacing and always kept.
+ */
+export function dedupeBlocks(blocks) {
+  const seen = new Set();
+  return blocks.filter((b) => {
+    const key = b.kind + "|" + b.text.toLowerCase().replace(/\s+/g, " ").trim();
+    if (!b.text.trim()) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Included Services: "<h3>1. Title</h3><p>body…</p>" pairs become ONE
+ * auto-numbered paragraph of the body text. The title line is dropped -- the
+ * body carries the information -- and the literal "1." goes because the
+ * heading prototype auto-numbers (keeping it printed "1. 1. Predesign Site
+ * Visit"). Further body paragraphs of the same item stay as indented
+ * continuation lines; a title with no body keeps its own text. `plain`
+ * counters the heading style's bold so items read as body text.
+ */
+export function mergeItemBlocks(blocks) {
+  // A box with no titles at all (hand-typed items, or list items flattened
+  // out of an <ol>) is already one-paragraph-per-service: number each one.
+  if (!blocks.some((b) => b.kind === "h")) {
+    return blocks
+      .filter((b) => b.text.trim())
+      .map((b) => ({ kind: "h", text: stripEnum(b.text), plain: true }));
+  }
+  const out = [];
+  let i = 0;
+  while (i < blocks.length && blocks[i].kind === "p") out.push(blocks[i++]);
+  while (i < blocks.length) {
+    const title = stripEnum(blocks[i].text);
+    i++;
+    const bodies = [];
+    while (i < blocks.length && blocks[i].kind === "p") bodies.push(blocks[i++]);
+    out.push({ kind: "h", text: stripEnum(bodies.length ? bodies[0].text : title), plain: true });
+    bodies.slice(1).forEach((b) => out.push(b));
+  }
+  return out;
+}
+
+// Insert <w:b w:val="0"/> into every text-bearing run so a bold paragraph
+// style (Heading1) renders as body weight. Schema order inside <w:rPr> puts
+// <w:b> after <w:rStyle>/<w:rFonts>, so slot it after those when present.
+function unboldRuns(para) {
+  return para.replace(new RegExp(RUN_RE.source, "g"), (run) => {
+    if (!new RegExp(TEXT_RE.source).test(run)) return run;
+    if (/<w:b(?:\s[^>]*)?\/>/.test(run)) return run.replace(/<w:b(?:\s[^>]*)?\/>/, '<w:b w:val="0"/>');
+    if (run.includes("<w:rPr>")) {
+      return run.replace(/<w:rPr>((?:<w:rStyle[^>]*\/>)?(?:<w:rFonts[^>]*\/>)?)/, '<w:rPr>$1<w:b w:val="0"/>');
+    }
+    return run.replace(/^(<w:r(?:\s[^>]*)?>)/, '$1<w:rPr><w:b w:val="0"/></w:rPr>');
+  });
+}
+
+// Point a paragraph at a numbering definition: rewrite an existing
+// <w:numPr>, else insert one (after <w:pStyle>, which schema order requires;
+// a numId of 0 turns numbering OFF, which is Word's own convention).
+function setParaNumId(para, numId) {
+  if (/<w:numPr>/.test(para)) {
+    return para.replace(/(<w:numPr>[\s\S]*?<w:numId w:val=")\d+("\/>)/, "$1" + numId + "$2");
+  }
+  const numPr = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="' + numId + '"/></w:numPr>';
+  if (/<w:pStyle[^>]*\/>/.test(para)) return para.replace(/(<w:pStyle[^>]*\/>)/, "$1" + numPr);
+  if (para.includes("<w:pPr>")) return para.replace("<w:pPr>", "<w:pPr>" + numPr);
+  return para.replace(/^(<w:p(?:\s[^>]*)?>)/, "$1<w:pPr>" + numPr + "</w:pPr>");
 }
 
 /**
@@ -453,8 +547,12 @@ export function htmlToBlocks(html) {
  * The prototypes are real paragraphs lifted from the template, so the cloned
  * output keeps the section's numbering, indents and fonts exactly. Building
  * paragraphs from scratch would lose all of it.
+ *
+ * opts.headingNumId / opts.bodyNumId repoint the clones at a different
+ * numbering definition (how Assumptions and Attachment A restart their
+ * lists); a block with `plain: true` un-bolds its clone's runs.
  */
-export function expandBlocks(xml, headingToken, bodyToken, blocks) {
+export function expandBlocks(xml, headingToken, bodyToken, blocks, opts = {}) {
   const paras = matchAll(PARA_RE, xml);
   const find = (tok) => paras.find((p) =>
     matchAll(RUN_RE, p[0]).map((r) => runText(r[0])).join("").includes(tok));
@@ -463,9 +561,14 @@ export function expandBlocks(xml, headingToken, bodyToken, blocks) {
   if (!ph || !pb) return { xml, found: false };
 
   const out = blocks.map((b) => {
-    const proto = b.kind === "h" ? ph[0] : pb[0];
-    const tok = b.kind === "h" ? headingToken : bodyToken;
-    return replaceInParagraph(proto, tok, xmlEscape(b.text));
+    const isH = b.kind === "h";
+    const proto = isH ? ph[0] : pb[0];
+    const tok = isH ? headingToken : bodyToken;
+    let para = replaceInParagraph(proto, tok, xmlEscape(b.text));
+    if (b.plain) para = unboldRuns(para);
+    const numId = isH ? opts.headingNumId : opts.bodyNumId;
+    if (numId) para = setParaNumId(para, numId);
+    return para;
   }).join("");
 
   const start = Math.min(ph.index, pb.index);
@@ -614,6 +717,79 @@ export function termsHtmlToBlocks(html) {
   return out;
 }
 
+// ── numbering repairs ───────────────────────────────────────────────────────
+//
+// Four defects live in the template's numbering.xml, visible on every
+// generated proposal, all repaired here so the SharePoint template does not
+// have to be re-tokenized first:
+//   1. The Excluded/Assumptions list indents a full inch (lvl0 left 1440)
+//      while every other section sits at half that.
+//   2. The A./B./C. section letters render 11pt (sz 22) against 10pt headings.
+//   3. Assumptions clones the Excluded prototype, so its a./b./c. CONTINUES
+//      Excluded's counter instead of restarting.
+//   4. Attachment A's headings letter through the Heading1 style, whose
+//      counter is shared with the body sections, so the attachment starts at
+//      E-or-worse instead of A.
+// 3 and 4 need fresh <w:num> definitions carrying a startOverride; the ids
+// are allocated past the template's maximum and handed back for the clones.
+
+const numIdOfParagraphWith = (docXml, needle) => {
+  const pm = matchAll(PARA_RE, docXml).find((p) =>
+    matchAll(RUN_RE, p[0]).map((r) => runText(r[0])).join("").includes(needle));
+  const m = pm && pm[0].match(/<w:numPr>[\s\S]*?<w:numId w:val="(\d+)"\/>/);
+  return m ? +m[1] : 0;
+};
+
+export function prepareProposalNumbering(numXml, docXml) {
+  if (!numXml || !docXml) return null;
+  const abstractOf = (numId) => {
+    const m = numXml.match(new RegExp('<w:num w:numId="' + numId + '"[^>]*>\\s*<w:abstractNumId w:val="(\\d+)"/>'));
+    return m ? +m[1] : -1;
+  };
+  const patchLvl0 = (aid, fn) => {
+    if (aid < 0) return;
+    numXml = numXml.replace(
+      new RegExp('(<w:abstractNum w:abstractNumId="' + aid + '"[^>]*>[\\s\\S]*?<w:lvl w:ilvl="0"[^>]*>)([\\s\\S]*?)(</w:lvl>)'),
+      (_m, open, lvl, close) => open + fn(lvl) + close);
+  };
+
+  const listNumId = numIdOfParagraphWith(docXml, "{{EXCLUDED_BODY}}");     // Excluded + Assumptions items
+  const itemNumId = numIdOfParagraphWith(docXml, "{{SCOPE_HEADING}}");     // Included Services items
+  const letterNumId = numIdOfParagraphWith(docXml, "INCLUDED SERVICES");   // A./B./C. section letters
+  const aList = abstractOf(listNumId), aItem = abstractOf(itemNumId), aLetter = abstractOf(letterNumId);
+
+  patchLvl0(aList, (lvl) => lvl.replace(/(<w:ind [^>]*w:left=")1440(")/, "$1720$2"));
+  patchLvl0(aLetter, (lvl) => lvl.replace(/<w:sz w:val="22"\/>/, '<w:sz w:val="20"/>'));
+  // Included items are now body text (mergeItemBlocks), so the number should
+  // not stay bold against a plain paragraph.
+  patchLvl0(aItem, (lvl) => lvl.replace(/<w:b\/>/, '<w:b w:val="0"/>'));
+
+  let nextId = 1 + Math.max(0, ...[...numXml.matchAll(/<w:num w:numId="(\d+)"/g)].map((m) => +m[1]));
+  const restart = (aid) => {
+    if (aid < 0) return 0;
+    const id = nextId++;
+    numXml = numXml.replace("</w:numbering>",
+      '<w:num w:numId="' + id + '"><w:abstractNumId w:val="' + aid + '"/>' +
+      '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num></w:numbering>');
+    return id;
+  };
+  const assumptionsNumId = restart(aList);
+  const termsNumId = restart(aLetter);
+  return { xml: numXml, assumptionsNumId, termsNumId };
+}
+
+// Attachment A's own title ("TERMS AND CONDITIONS") reads as a title, not as
+// lettered item one, once the items restart at A. numId 0 = numbering off.
+function unnumberHeading(xml, title) {
+  for (const pm of matchAll(PARA_RE, xml)) {
+    const para = pm[0];
+    if (!/<w:pStyle w:val="Heading1"\/>/.test(para) || /<w:numPr>/.test(para)) continue;
+    if (matchAll(RUN_RE, para).map((r) => runText(r[0])).join("").trim() !== title) continue;
+    return xml.slice(0, pm.index) + setParaNumId(para, 0) + xml.slice(pm.index + para.length);
+  }
+  return xml;
+}
+
 export async function buildDocx(
   arrayBuffer,
   { omit = [], fields = {}, listTokens = [], scopeHtml = "", scopeSections = {},
@@ -624,6 +800,16 @@ export async function buildDocx(
   let unfilled = [];
   let scopeBlocks = 0;
   let scopeNote = "";
+
+  // Numbering repairs first: the document pass needs the freshly allocated
+  // restart numIds while it clones the Assumptions and Attachment A blocks.
+  let numFix = null;
+  if (parts.has("word/numbering.xml") && parts.has("word/document.xml")) {
+    numFix = prepareProposalNumbering(
+      dec.decode(parts.get("word/numbering.xml")),
+      dec.decode(parts.get("word/document.xml")));
+    if (numFix) parts.set("word/numbering.xml", enc.encode(numFix.xml));
+  }
 
   for (const [name, bytes] of parts) {
     if (!isEditablePart(name)) continue;
@@ -658,7 +844,17 @@ export async function buildDocx(
       const notes = [];
       for (const [key, html] of Object.entries(sections)) {
         const [h, b] = anchors[key];
-        const blocks = key === "provisions" ? provisionsHtmlToBlocks(html) : htmlToBlocks(html);
+        let blocks = key === "provisions" ? provisionsHtmlToBlocks(html) : htmlToBlocks(html);
+        // Same item arriving twice (clause picked in two draft lists, or
+        // pasted twice) prints twice; drop text-identical repeats.
+        if (key !== "provisions") blocks = dedupeBlocks(blocks);
+        // Included: one numbered paragraph per service, body text only.
+        if (key === "included") blocks = mergeItemBlocks(blocks);
+        // Excluded/Assumptions items auto-letter; a typed "1. " would double.
+        if (key === "excluded" || key === "assumptions") {
+          blocks = blocks.map((x) => x.kind === "p" ? { ...x, text: stripEnum(x.text) } : x);
+        }
+        const opts = key === "assumptions" && numFix ? { bodyNumId: numFix.assumptionsNumId } : {};
         if (!html) {
           // An untouched section leaves its prototypes behind, which would
           // print as {{TOKENS}}. Blank them instead.
@@ -670,7 +866,7 @@ export async function buildDocx(
           xml = expandBlocks(xml, h, b, []).xml;
           continue;
         }
-        const r = expandBlocks(xml, h, b, blocks);
+        const r = expandBlocks(xml, h, b, blocks, opts);
         if (r.found) { xml = r.xml; scopeBlocks += blocks.length; }
         else notes.push(key + ": template is missing " + h + " (old copy cached?)");
       }
@@ -679,10 +875,14 @@ export async function buildDocx(
       // prototypes so no {{TERMS_*}} prints.
       if (!omit.includes("terms")) {
         const tb = termsHtml ? termsHtmlToBlocks(termsHtml) : [];
-        const tr = expandBlocks(xml, "{{TERMS_HEADING}}", "{{TERMS_BODY}}", tb);
+        const tOpts = numFix && numFix.termsNumId ? { headingNumId: numFix.termsNumId } : {};
+        const tr = expandBlocks(xml, "{{TERMS_HEADING}}", "{{TERMS_BODY}}", tb, tOpts);
         if (tr.found) {
           xml = tr.xml;
           if (tb.length) scopeBlocks += tb.length;
+          // With the items restarted at A, the attachment's own title should
+          // not carry a letter of its own.
+          if (tOpts.headingNumId) xml = unnumberHeading(xml, "TERMS AND CONDITIONS");
         } else if (termsHtml) {
           notes.push("terms: template is missing {{TERMS_HEADING}} (old copy cached?)");
         }
@@ -694,6 +894,17 @@ export async function buildDocx(
       for (const [tok, html] of Object.entries(paragraphs)) {
         const blocks = htmlToBlocks(html);
         if (blocks.length) xml = expandParagraph(xml, "{{" + tok + "}}", blocks).xml;
+      }
+      // The template's example client survives UNTOKENIZED in one spot: the
+      // Accepted By line says "212 ARCHITECTS" in caps, which the tokenizer
+      // config only matched in mixed case. Repair it here so proposals off
+      // the currently-published template name the real client. Swapped at
+      // the text-node level, NOT via replaceAll: that line is one run whose
+      // two <w:t> sit either side of the column tab, and a run-level rewrite
+      // would pull both firms onto the left of it.
+      if (fields.CLIENT_FIRM) {
+        const firm = xmlEscape(fields.CLIENT_FIRM);
+        xml = xml.replace(/>(?:212 ARCHITECTS|212 Architects)</g, ">" + firm + "<");
       }
     }
     if (blank.length) {

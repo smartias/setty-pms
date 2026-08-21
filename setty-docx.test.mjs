@@ -95,12 +95,20 @@ const raw = readFileSync(TEMPLATE);
   eq(kidsFull.length, 397, "buildDocx: full document keeps 397 children");
   eq(kidsCut.length, 397 - 29 - 54, "buildDocx: cover letter (29) and terms (54) removed");
 
-  // the look-carrying parts must survive untouched
+  // the look-carrying parts must survive untouched — except numbering.xml,
+  // which buildDocx now deliberately repairs (indents, letter size, and the
+  // restart definitions for Assumptions and Attachment A)
   const orig = await browser.unzip(ab);
-  for (const name of ["word/media/image1.png", "word/styles.xml", "word/theme/theme1.xml", "word/numbering.xml"]) {
+  for (const name of ["word/media/image1.png", "word/styles.xml", "word/theme/theme1.xml"]) {
     const a = orig.get(name), b = pCut.get(name);
     check(a && b && a.length === b.length && a.every((v, i) => v === b[i]),
           `buildDocx: ${name} byte-identical`);
+  }
+  {
+    const numOut = new TextDecoder().decode(pCut.get("word/numbering.xml"));
+    check((numOut.match(/<w:startOverride w:val="1"\/>/g) || []).length >=
+          (new TextDecoder().decode(orig.get("word/numbering.xml")).match(/<w:startOverride w:val="1"\/>/g) || []).length + 2,
+          "buildDocx: numbering.xml gained the two restart definitions");
   }
 
   const ct = new TextDecoder().decode(pCut.get("[Content_Types].xml"));

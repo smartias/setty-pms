@@ -240,7 +240,10 @@ def build(cfg):
 
     want = expected_tokens(cfg)
     lost = sorted(t for t in want if t not in out_doc)
-    leaked = sorted(s for s in cfg.get("forbid_in_output", []) if s in out_doc)
+    # Case-insensitively: the proposal's Accepted By line spelled the example
+    # client "212 ARCHITECTS" and slid straight past a case-sensitive check.
+    out_doc_lower = out_doc.lower()
+    leaked = sorted(s for s in cfg.get("forbid_in_output", []) if s.lower() in out_doc_lower)
 
     parts_in = {i.filename for i in zin.infolist()}
     parts_out = {i.filename for i in zout.infolist()}

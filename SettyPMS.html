@@ -23773,6 +23773,11 @@ function ScopeView({ project, onChange, clients = [] }) {
     const unknownKeys = [];
     const disciplineDropped = [];
     const variantSwapped = [];
+    const duplicatesDropped = [];
+    // A clause named in clauses[] AND again in exclusions/assumptions
+    // clauseKeys printed twice (the first generated proposal carried its
+    // whole exclusion list doubled). First mention wins.
+    const chosen = new Set();
     const resolve = (sel) => {
       const key = typeof sel === "string" ? sel : (sel && sel.key);
       if (!key) return null;
@@ -23791,13 +23796,28 @@ function ScopeView({ project, onChange, clients = [] }) {
           clause = byKey[chosenKey];
         }
       }
+      // Dedupe on the key actually in force, so both sides of a swapped pair
+      // count as the same clause.
+      if (chosen.has(clause.clause_key)) { duplicatesDropped.push(key); return null; }
+      chosen.add(clause.clause_key);
       return { clause, params: (typeof sel === "object" && sel.params) || {} };
     };
     const clauseSels = (Array.isArray(d.clauses) ? d.clauses : []).map(resolve).filter(Boolean);
     const asmSels = (((d.assumptions || {}).clauseKeys) || []).map(resolve).filter(Boolean);
     const excSels = (((d.exclusions || {}).clauseKeys) || []).map(resolve).filter(Boolean);
-    const asmCustom = (((d.assumptions || {}).custom) || []).map(clean).filter(Boolean);
-    const excCustom = (((d.exclusions || {}).custom) || []).map(clean).filter(Boolean);
+    // Custom items dedupe on visible text: a model that repeats itself, or
+    // restates a custom item it also picked as a clause, prints once.
+    const dedupeHtmlItems = (arr) => {
+      const seen = new Set();
+      return arr.filter(h => {
+        const k = String(h).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    };
+    const asmCustom = dedupeHtmlItems((((d.assumptions || {}).custom) || []).map(clean).filter(Boolean));
+    const excCustom = dedupeHtmlItems((((d.exclusions || {}).custom) || []).map(clean).filter(Boolean));
     const authored = (Array.isArray(d.authoredScope) ? d.authoredScope : [])
       .map(s => ({ title: String((s && s.title) || "").slice(0, 200), html: clean(s && s.html) }))
       .filter(s => s.title || s.html);
@@ -23866,6 +23886,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       unknownKeys,
       disciplineDropped,
       variantSwapped,
+      duplicatesDropped,
       flagged: (Array.isArray(d.flaggedForReview) ? d.flaggedForReview : [])
         .map(f => ({ rfpDemand: String((f && f.rfpDemand) || ""), why: String((f && f.why) || "") }))
         .filter(f => f.rfpDemand || f.why),
@@ -23951,6 +23972,8 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Never write contract boilerplate. Select library clauses by key. If the RFP demands a term the library does not cover, put it in flaggedForReview, never in prose.",
       "- Select, don't paraphrase. Only write authoredScope items for work the catalog does not cover (surveys, studies, assessments, Cx, agency-specific deliverables).",
       "- Written sections stay short: understanding 1 to 3 paragraphs, approach 3 to 6 short paragraphs or a compact list, each custom assumption one sentence.",
+      "- Plain paragraphs only in understanding and approach: no bold run-in titles at the start of a paragraph (write \"Setty will attend the scope meeting…\", not \"<strong>Scope Report Phase.</strong> Setty will…\").",
+      "- Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].",
       "- Plain AEC professional English. No em dashes anywhere. No marketing superlatives. Spell out agency names on first use.",
       "- Never invent a fee total. suggestedPhases must sum to 100; basisOfFeeNote says how the fee could be benchmarked. Dollar amounts only if the RFP states them, and only inside understanding.",
       "- Do not set {{DISCIPLINE_LIST}}, {{DISCIPLINE_ABBR}} or {{DISCIPLINE_MEP}}: the PMS fills them from the project.",
@@ -24961,6 +24984,9 @@ function ScopeView({ project, onChange, clients = [] }) {
                   )}
                   {(r.variantSwapped || []).length > 0 && (
                     <li>↔ Swapped to this proposal's Standard/Alternate choice: {r.variantSwapped.join(", ")} <span style={{ color: P.textDim }}>(change the choice above and validate again if the draft had it right)</span></li>
+                  )}
+                  {(r.duplicatesDropped || []).length > 0 && (
+                    <li>⧉ Listed more than once in the draft, kept once: {r.duplicatesDropped.join(", ")}</li>
                   )}
                   {r.suggestedPhases.length > 0 && (
                     <li>Suggested fee phase split ({r.phasePctTotal}%{r.phasePctTotal !== 100 ? ", does not sum to 100" : ""}): {r.suggestedPhases.map(p => p.name + " " + p.pct + "%").join(", ")} <span style={{ color: P.textDim }}>(apply manually in the Fee Calculator)</span></li>
