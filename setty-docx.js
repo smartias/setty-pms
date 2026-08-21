@@ -527,6 +527,23 @@ function unboldRuns(para) {
   });
 }
 
+// Zero a paragraph's spacing-after so the next paragraph hugs it. An explicit
+// <w:spacing> in pPr overrides the style's; schema order puts it after
+// numPr/tabs and before ind/jc.
+function setSpacingAfterZero(para) {
+  if (/<w:spacing [^>]*w:after="/.test(para)) {
+    return para.replace(/(<w:spacing [^>]*w:after=")\d+(")/, "$10$2");
+  }
+  if (/<w:spacing /.test(para)) {
+    return para.replace(/<w:spacing /, '<w:spacing w:after="0" ');
+  }
+  const sp = '<w:spacing w:after="0"/>';
+  if (/<w:ind /.test(para)) return para.replace(/<w:ind /, sp + "<w:ind ");
+  if (/<w:jc /.test(para)) return para.replace(/<w:jc /, sp + "<w:jc ");
+  if (para.includes("</w:pPr>")) return para.replace("</w:pPr>", sp + "</w:pPr>");
+  return para.replace(/^(<w:p(?:\s[^>]*)?>)/, "$1<w:pPr>" + sp + "</w:pPr>");
+}
+
 // Point a paragraph at a numbering definition: rewrite an existing
 // <w:numPr>, else insert one (after <w:pStyle>, which schema order requires;
 // a numId of 0 turns numbering OFF, which is Word's own convention).
@@ -568,6 +585,7 @@ export function expandBlocks(xml, headingToken, bodyToken, blocks, opts = {}) {
     if (b.plain) para = unboldRuns(para);
     const numId = isH ? opts.headingNumId : opts.bodyNumId;
     if (numId) para = setParaNumId(para, numId);
+    if (isH && opts.tightHeadings) para = setSpacingAfterZero(para);
     return para;
   }).join("");
 
@@ -628,6 +646,61 @@ export function expandParagraph(xml, token, blocks) {
     xml: xml.slice(0, pm.index) + first + rest.join("") + xml.slice(pm.index + para.length),
     found: true,
   };
+}
+
+// ── page header ─────────────────────────────────────────────────────────────
+//
+// The template's header is a leftover from an older job: a centered grey
+// "FPID: ANY10233R00". Replace it with the small Setty logo and the project
+// name, keeping the header's own (small, grey) run styling for the name.
+
+const SETTY_LOGO_REL_ID = "rIdSettyLogo";
+// setty-logo.png is 2716x463; 1.0" wide keeps it small. EMU: 1" = 914400.
+const LOGO_CX = 914400;
+const LOGO_CY = Math.round(914400 * 463 / 2716);
+
+function logoRunXml(cx, cy) {
+  return '<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">' +
+    '<wp:extent cx="' + cx + '" cy="' + cy + '"/><wp:effectExtent l="0" t="0" r="0" b="0"/>' +
+    '<wp:docPr id="9901" name="Setty logo"/>' +
+    '<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>' +
+    '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+    '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">' +
+    '<pic:nvPicPr><pic:cNvPr id="9901" name="Setty logo"/><pic:cNvPicPr/></pic:nvPicPr>' +
+    '<pic:blipFill><a:blip r:embed="' + SETTY_LOGO_REL_ID + '"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>' +
+    '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm>' +
+    '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>' +
+    '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>';
+}
+
+/**
+ * Rewrite the FPID header paragraph: [logo] [project name]. Keeps the
+ * paragraph's pPr (centering) and reuses the FPID run's rPr so the name
+ * matches the header's established look. Returns null when this part has no
+ * FPID paragraph.
+ */
+export function renderHeaderXml(xml, projectName, withLogo) {
+  const pm = matchAll(PARA_RE, xml).find((p) => p[0].includes("FPID"));
+  if (!pm) return null;
+  const para = pm[0];
+  const pPr = (para.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [""])[0];
+  const fpidRun = matchAll(RUN_RE, para).find((r) => runText(r[0]).includes("FPID"));
+  const rPr = fpidRun ? (fpidRun[0].match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [""])[0] : "";
+  const name = projectName
+    ? "<w:r>" + rPr + '<w:t xml:space="preserve">' + (withLogo ? "   " : "") + xmlEscape(projectName) + "</w:t></w:r>"
+    : "";
+  const next = "<w:p>" + pPr + (withLogo ? logoRunXml(LOGO_CX, LOGO_CY) : "") + name + "</w:p>";
+  return xml.slice(0, pm.index) + next + xml.slice(pm.index + para.length);
+}
+
+const RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+function addLogoRel(relsXml) {
+  const rel = '<Relationship Id="' + SETTY_LOGO_REL_ID + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/settylogo.png"/>';
+  if (relsXml) {
+    return relsXml.includes(SETTY_LOGO_REL_ID) ? relsXml : relsXml.replace("</Relationships>", rel + "</Relationships>");
+  }
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="' + RELS_NS + '">' + rel + "</Relationships>";
 }
 
 // ── the one call the PMS makes ──────────────────────────────────────────────
@@ -703,17 +776,35 @@ export function expandRatePairs(xml, rates) {
     p = replaceInParagraph(p, T[3], b ? fmt(b.rate) : "");
     return p;
   };
-  const out = rows.length ? rows.map(([a, b]) => fill(a, b)).join("") : fill(null, null);
+  // The rate list gets its OWN lettered section instead of dangling off the
+  // end of Proposal Provisions; the Heading1 style letters it in sequence.
+  const heading = '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' +
+    '<w:r><w:t>SCHEDULE OF HOURLY RATES</w:t></w:r></w:p>';
+  const out = heading + (rows.length ? rows.map(([a, b]) => fill(a, b)).join("") : fill(null, null));
   return { xml: xml.slice(0, pm.index) + out + xml.slice(pm.index + para.length), found: true };
 }
 
 export function termsHtmlToBlocks(html) {
   const s = String(html || "").replace(/^\s*<h1>[\s\S]*?<\/h1>/i, "");
+  // Each section's short sentences JOIN into one paragraph: one paragraph per
+  // heading, a single blank line between sections, nothing between a heading
+  // and its paragraph. Sentence-per-paragraph with a spacer after each was
+  // twice the length and read as "too many spaces".
   const out = [];
+  let body = [];
+  const flush = () => {
+    if (body.length) { out.push({ kind: "p", text: body.join(" ") }); body = []; }
+  };
   for (const b of htmlToBlocks(s)) {
-    if (b.kind === "h") out.push({ kind: "h", text: b.text.replace(/^\d+\.\s+/, "") });
-    else { out.push(b); out.push({ kind: "p", text: "" }); }
+    if (b.kind === "h") {
+      flush();
+      if (out.length) out.push({ kind: "p", text: "" });
+      out.push({ kind: "h", text: b.text.replace(/^\d+\.\s+/, "") });
+    } else if (b.text.trim()) {
+      body.push(b.text);
+    }
   }
+  flush();
   return out;
 }
 
@@ -790,10 +881,94 @@ function unnumberHeading(xml, title) {
   return xml;
 }
 
+// Kill the 12pt gap under a section heading whose list hugs it (Excluded,
+// Assumptions, Proposal Provisions). Matches the template's own heading by
+// its exact text.
+function tightenHeading(xml, title) {
+  for (const pm of matchAll(PARA_RE, xml)) {
+    const para = pm[0];
+    if (!/<w:pStyle w:val="Heading1"\/>/.test(para)) continue;
+    if (matchAll(RUN_RE, para).map((r) => runText(r[0])).join("").trim() !== title) continue;
+    return xml.slice(0, pm.index) + setSpacingAfterZero(para) + xml.slice(pm.index + para.length);
+  }
+  return xml;
+}
+
+/**
+ * The fee block carries the tokenizer example's HARD-CODED figures (the
+ * config's "fees are not tokenized" gap): "FORTY THOUSAND EIGHT HUNDRED …
+ * $40,800.00" and four phase rows, all from the 212 Architects sample. Fill
+ * them from the project's fee data, and set the chart to 12pt (the template
+ * had it at 11 against the Default style's 12).
+ *
+ * fees = { totalWords, totalAmount, feeType, rows: [{label, amount}] };
+ * amounts are pre-formatted WITHOUT the dollar sign — the "$" lives in its
+ * own bookmarked run in the template and stays put.
+ */
+export function expandFees(xml, fees) {
+  if (!fees || !Array.isArray(fees.rows)) return { xml, found: false };
+  const paras = matchAll(PARA_RE, xml);
+  const textOf = (p) => matchAll(RUN_RE, p).map((r) => runText(r[0])).join("");
+  const bump12 = (p) => p.replace(/(<w:szC?s? w:val=")22("\/>)/g, "$124$2");
+
+  // Fill the nth text-bearing run of a paragraph (0-based), leaving the rest.
+  const setNthRunText = (para, targets) => {
+    let n = -1;
+    return para.replace(new RegExp(RUN_RE.source, "g"), (run) => {
+      if (!new RegExp(TEXT_RE.source).test(run)) return run;
+      n++;
+      return targets[n] === undefined ? run : setRunText(run, xmlEscape(targets[n]));
+    });
+  };
+
+  const bfIdx = paras.findIndex((p) => textOf(p[0]).trim().startsWith("Basic Fee:"));
+  if (bfIdx === -1) return { xml, found: false };
+  const bf = setNthRunText(paras[bfIdx][0], [
+    undefined, // "Basic Fee:" label keeps its bold run
+    " The fee for services will be " + fees.totalWords + " (",
+    undefined, // the bookmarked "$"
+    fees.totalAmount + "). This project is to be invoiced " + fees.feeType +
+      ", plus expenses based on the stages of completion listed below.  ",
+  ]);
+
+  // Phase rows: Default-styled money lines after Basic Fee, ending at the
+  // bold "Total" line. Non-money paragraphs in the range (the rule above
+  // Total) stay where they are.
+  const isMoney = (p) => /<w:pStyle w:val="Default"\/>/.test(p) && /\$/.test(textOf(p));
+  const rowIdx = [];
+  let totalIdx = -1;
+  for (let i = bfIdx + 1; i < paras.length; i++) {
+    if (!isMoney(paras[i][0])) {
+      // At most the spacer and the rule line sit inside the block; anything
+      // further past the last row means the Total line is not where the
+      // template put it, so leave the block alone.
+      if (rowIdx.length && i - rowIdx[rowIdx.length - 1] > 3) break;
+      continue;
+    }
+    if (textOf(paras[i][0]).trim().startsWith("Total")) { totalIdx = i; break; }
+    rowIdx.push(i);
+  }
+  if (!rowIdx.length || totalIdx === -1) return { xml, found: false };
+
+  const proto = paras[rowIdx[0]][0];
+  const fillRow = (row) => bump12(setNthRunText(proto, [row.label, undefined, row.amount]));
+  const total = bump12(setNthRunText(paras[totalIdx][0], [undefined, undefined, fees.totalAmount]));
+
+  // Rebuild back-to-front so earlier indices stay valid.
+  let out = xml;
+  const splice = (pm, repl) => { out = out.slice(0, pm.index) + repl + out.slice(pm.index + pm[0].length); };
+  splice(paras[totalIdx], total);
+  for (let k = rowIdx.length - 1; k >= 1; k--) splice(paras[rowIdx[k]], "");
+  splice(paras[rowIdx[0]], fees.rows.map(fillRow).join(""));
+  splice(paras[bfIdx], bf);
+  return { xml: out, found: true };
+}
+
 export async function buildDocx(
   arrayBuffer,
   { omit = [], fields = {}, listTokens = [], scopeHtml = "", scopeSections = {},
-    paragraphs = {}, blank = [], termsHtml = "", rates = null } = {},
+    paragraphs = {}, blank = [], termsHtml = "", rates = null, fees = null,
+    headerLogo = null } = {},
 ) {
   const parts = await unzip(arrayBuffer);
   const dec = new TextDecoder(), enc = new TextEncoder();
@@ -811,12 +986,21 @@ export async function buildDocx(
     if (numFix) parts.set("word/numbering.xml", enc.encode(numFix.xml));
   }
 
+  const logoHeaders = []; // header parts that got the logo, for their .rels
   for (const [name, bytes] of parts) {
     if (!isEditablePart(name)) continue;
     let xml = dec.decode(bytes);
     if (name === "[Content_Types].xml") {
       parts.set(name, enc.encode(xml.split(TEMPLATE_CT).join(DOCUMENT_CT)));
       continue;
+    }
+    // Page header: the stale "FPID:" line becomes [logo] [project name].
+    if (/^word\/header\d*\.xml$/.test(name)) {
+      const h = renderHeaderXml(xml, fields.PROJECT_NAME || "", !!headerLogo);
+      if (h !== null) {
+        xml = h;
+        if (headerLogo) logoHeaders.push(name);
+      }
     }
     if (name === "word/document.xml") {
       if (omit.length) xml = dropParts(xml, omit);
@@ -848,8 +1032,13 @@ export async function buildDocx(
         // Same item arriving twice (clause picked in two draft lists, or
         // pasted twice) prints twice; drop text-identical repeats.
         if (key !== "provisions") blocks = dedupeBlocks(blocks);
-        // Included: one numbered paragraph per service, body text only.
-        if (key === "included") blocks = mergeItemBlocks(blocks);
+        // Included: one numbered paragraph per service, body text only. The
+        // trailing empty paragraph is the breathing room before ADDITIONAL
+        // SERVICES — Heading1's own spacing is suppressed between paragraphs
+        // of the same style (contextualSpacing via ListParagraph).
+        if (key === "included" && blocks.length) {
+          blocks = mergeItemBlocks(blocks).concat([{ kind: "p", text: "" }]);
+        }
         // Excluded/Assumptions items auto-letter; a typed "1. " would double.
         if (key === "excluded" || key === "assumptions") {
           blocks = blocks.map((x) => x.kind === "p" ? { ...x, text: stripEnum(x.text) } : x);
@@ -870,12 +1059,18 @@ export async function buildDocx(
         if (r.found) { xml = r.xml; scopeBlocks += blocks.length; }
         else notes.push(key + ": template is missing " + h + " (old copy cached?)");
       }
+      // These three section headings sit directly over their lists; the
+      // style's 12pt spacing-after read as a stray blank line.
+      for (const t of ["EXCLUDED SERVICES:", "ASSUMPTIONS", "PROPOSAL PROVISIONS"]) {
+        xml = tightenHeading(xml, t);
+      }
       // Attachment A. If the terms part was omitted the prototypes left with
       // it and there is nothing to do; if no terms were supplied, blank the
       // prototypes so no {{TERMS_*}} prints.
       if (!omit.includes("terms")) {
         const tb = termsHtml ? termsHtmlToBlocks(termsHtml) : [];
-        const tOpts = numFix && numFix.termsNumId ? { headingNumId: numFix.termsNumId } : {};
+        const tOpts = { tightHeadings: true };
+        if (numFix && numFix.termsNumId) tOpts.headingNumId = numFix.termsNumId;
         const tr = expandBlocks(xml, "{{TERMS_HEADING}}", "{{TERMS_BODY}}", tb, tOpts);
         if (tr.found) {
           xml = tr.xml;
@@ -890,9 +1085,22 @@ export async function buildDocx(
       scopeNote = notes.join("; ");
       // Hourly-rate list: one two-column paragraph per pair, from project rates.
       if (rates) xml = expandRatePairs(xml, rates).xml;
+      // Fee page: real figures over the template's hard-coded example.
+      if (fees) {
+        const fr = expandFees(xml, fees);
+        if (fr.found) xml = fr.xml;
+        else notes.push("fees: the template's Basic Fee/Total block was not found, example figures left in place");
+        scopeNote = notes.join("; ");
+      }
       // Multi-paragraph fields, also before token substitution.
       for (const [tok, html] of Object.entries(paragraphs)) {
-        const blocks = htmlToBlocks(html);
+        let blocks = htmlToBlocks(html);
+        // The first block lands inline after the field's label, so a leading
+        // heading ("Project Understanding") read as stray words there — drop
+        // it. And a blank line between paragraphs, which the boxes' HTML
+        // margins provided on screen but nothing provided in Word.
+        while (blocks.length && blocks[0].kind === "h") blocks.shift();
+        blocks = blocks.flatMap((b, i) => (i ? [{ kind: "p", text: "" }, b] : [b]));
         if (blocks.length) xml = expandParagraph(xml, "{{" + tok + "}}", blocks).xml;
       }
       // The template's example client survives UNTOKENIZED in one spot: the
@@ -915,6 +1123,22 @@ export async function buildDocx(
     const r = renderDocumentXml(xml, fields, { listTokens });
     if (name === "word/document.xml") unfilled = r.unfilled;
     parts.set(name, enc.encode(r.xml));
+  }
+  // Header logo: the image part, each logo-bearing header's relationships,
+  // and a png content-type default (the tokenized template ships no media,
+  // so none of the three can be assumed present).
+  if (headerLogo && logoHeaders.length) {
+    parts.set("word/media/settylogo.png", headerLogo instanceof Uint8Array ? headerLogo : new Uint8Array(headerLogo));
+    for (const h of logoHeaders) {
+      const relsName = h.replace(/^word\//, "word/_rels/") + ".rels";
+      const prev = parts.has(relsName) ? dec.decode(parts.get(relsName)) : "";
+      parts.set(relsName, enc.encode(addLogoRel(prev)));
+    }
+    const ctName = "[Content_Types].xml";
+    const ct = dec.decode(parts.get(ctName));
+    if (!/Extension="png"/.test(ct)) {
+      parts.set(ctName, enc.encode(ct.replace("</Types>", '<Default Extension="png" ContentType="image/png"/></Types>')));
+    }
   }
   return { bytes: await zip(parts), unfilled, scopeBlocks, scopeNote };
 }
