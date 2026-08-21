@@ -6060,7 +6060,11 @@ function classicSignatureBlock(project) {
 
 // Classic fee section body — words-then-numerals Basic Fee sentence, plain
 // bordered phase table, deemed-acceptance boilerplate, validity, signatures.
-function classicFeeSectionHtml(project, withSignatures) {
+// One fee computation for every client-facing rendition (Classic print AND
+// the Word export): phase split of the calculated-or-manual fee, plus
+// approved change orders. Keeping a single source is what stops the Word
+// document from showing different figures than the printed fee page.
+function proposalFeeData(project) {
   const constructionCost = calcConstructionCost(project.squareFootage, project.buildingCategory, project.manualConstructionCost, project.manualRSMeansCostPerSF);
   const calced = calcSettyFee(constructionCost, project);
   const baseFee = project.manualSettyFee > 0 ? project.manualSettyFee : calced;
@@ -6068,7 +6072,11 @@ function classicFeeSectionHtml(project, withSignatures) {
   const billable = phasedFees.filter(p => p.billable && p.fee > 0);
   const changeOrders = (project.changeOrders || []).filter(c => c.approved);
   const coTotal = changeOrders.reduce((a, c) => a + (c.fee || 0), 0);
-  const total = baseFee + coTotal;
+  return { billable, changeOrders, total: baseFee + coTotal };
+}
+
+function classicFeeSectionHtml(project, withSignatures) {
+  const { billable, changeOrders, total } = proposalFeeData(project);
   const money = (v) => "$" + (Math.round(v * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const rows = billable.map(ph => `<tr><td>${ph.name}</td><td class="amt">${money(ph.fee)}</td></tr>`).join("")
     + changeOrders.map(co => `<tr><td>Change Order: ${co.name || co.number}</td><td class="amt">${money(co.fee || 0)}</td></tr>`).join("")
@@ -22195,6 +22203,18 @@ function proposalDocxFields(project) {
   return f;
 }
 
+// Setty logo bytes for the .docx page header, fetched once from the app's
+// own origin (setty-logo.png ships alongside this file).
+let _settyLogoBytes = null;
+async function fetchSettyLogoBytes() {
+  if (_settyLogoBytes) return _settyLogoBytes;
+  try {
+    const res = await fetch("setty-logo.png");
+    if (res.ok) _settyLogoBytes = new Uint8Array(await res.arrayBuffer());
+  } catch (_) { /* header falls back to project name only */ }
+  return _settyLogoBytes;
+}
+
 // Assemble the proposal .docx from the tokenized template. Shared by the Word
 // dialog (download / PDF) and Send Proposal. `source` is the template
 // ArrayBuffer; `omit` the parts to leave out; `honorific` "" or "Ms." etc.
@@ -22218,6 +22238,18 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   // constant.
   await ensureTermsDefault();
   const termsHtml = project.termsContent || termsDefaultHtml();
+  // Fee page figures from the same computation as the printed fee page. The
+  // template's own fee block is the tokenizer example's hard-coded $40,800,
+  // so shipping without this substitutes SAMPLE fees into a real proposal.
+  const fd = proposalFeeData(project);
+  const amt = (v) => (Math.round(v * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fees = fd.total > 0 ? {
+    totalWords: amountToWordsUSD(fd.total),
+    totalAmount: amt(fd.total),
+    feeType: (project.feeType || "Lump Sum").toLowerCase(),
+    rows: fd.billable.map(ph => ({ label: ph.name, amount: amt(ph.fee) }))
+      .concat(fd.changeOrders.map(co => ({ label: "Change Order: " + (co.name || co.number), amount: amt(co.fee || 0) }))),
+  } : null;
   const built = await window.SettyDocx.buildDocx(source, {
     omit, fields, blank,
     scopeSections: { included: secs.included, additional: secs.additional, excluded: secs.excluded, assumptions: secs.assumptions, provisions: secs.provisions },
@@ -22227,6 +22259,10 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
     // The body's hourly-rate list: the project's schedule (client schedule if
     // loaded, else firm standard), same source as Attachment B.
     rates: (project.hourlyRates && project.hourlyRates.length) ? project.hourlyRates : HOURLY_RATES_DEFAULT,
+    fees,
+    // Small Setty logo for the page header (next to the project name).
+    // Missing logo bytes degrade to a name-only header, never a failure.
+    headerLogo: await fetchSettyLogoBytes(),
   });
   const base = (project.projectNumber ? project.projectNumber + " - " : "") + (project.name || "Proposal");
   // Graph rejects these characters in a file name, and so does Windows.

@@ -103,11 +103,38 @@ const DOC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   P(`<w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="28"/></w:numPr>`, R("{{ASSUMPTIONS_BODY}}")) +
   P(`<w:pStyle w:val="Heading2"/>`, R("{{PROVISIONS_HEADING}}")) +
   P(`<w:pStyle w:val="Heading2"/><w:ind w:left="720"/>`, R("{{PROVISIONS_BODY}}")) +
+  P(`<w:ind w:left="720"/>`, `<w:r><w:t xml:space="preserve">{{RATE_ROLE_A}}</w:t><w:tab/><w:t>{{RATE_A}}</w:t><w:tab/><w:t>{{RATE_ROLE_B}}</w:t><w:tab/><w:t>{{RATE_B}}</w:t></w:r>`) +
+  P(`<w:pStyle w:val="Heading1"/>`, R("FEES")) +
+  // Basic Fee sentence: label run, sentence-head run, bookmarked "$", tail run
+  P(`<w:ind w:left="360"/><w:jc w:val="both"/>`,
+    `<w:r><w:rPr><w:b/></w:rPr><w:t>Basic Fee:</w:t></w:r>` +
+    `<w:r><w:t xml:space="preserve"> The fee for services will be FORTY THOUSAND EIGHT HUNDRED DOLLARS AND NO CENTS (</w:t></w:r>` +
+    `<w:r><w:t>$</w:t></w:r>` +
+    `<w:r><w:t xml:space="preserve">40,800.00). This project is to be invoiced lump sum, plus expenses based on the stages of completion listed below.  </w:t></w:r>`) +
+  P(`<w:pStyle w:val="Default"/><w:ind w:left="1800"/>`,
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">Design Manual</w:t><w:tab/></w:r>` +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>$</w:t></w:r>` +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>12,240.00</w:t></w:r>`) +
+  P(`<w:pStyle w:val="Default"/><w:ind w:left="1800"/>`,
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">Construction Documents/Permit</w:t><w:tab/></w:r>` +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>$</w:t></w:r>` +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>16,320.00</w:t></w:r>`) +
+  P(`<w:pStyle w:val="Default"/><w:ind w:left="1800"/>`, "") + // the rule/spacer line
+  P(`<w:pStyle w:val="Default"/><w:ind w:left="1800"/>`,
+    `<w:r><w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">Total </w:t><w:tab/></w:r>` +
+    `<w:r><w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>$</w:t></w:r>` +
+    `<w:r><w:rPr><w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>40,800.00</w:t></w:r>`) +
   P("", `<w:r><w:t xml:space="preserve">Setty &amp; Associates, Ltd. PC</w:t><w:tab/><w:t>212 ARCHITECTS</w:t></w:r>`) +
   P(`<w:pStyle w:val="Heading1"/>`, R("TERMS AND CONDITIONS")) +
   P(`<w:pStyle w:val="Heading1"/>`, R("{{TERMS_HEADING}}")) +
   P(`<w:ind w:left="360"/>`, R("{{TERMS_BODY}}")) +
   `<w:sectPr/></w:body></w:document>`;
+
+const HDR = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+  P(`<w:pStyle w:val="Header"/><w:jc w:val="center"/>`,
+    `<w:r><w:rPr><w:color w:val="808080"/><w:sz w:val="16"/></w:rPr><w:t>FPID: ANY10233R00</w:t></w:r>`) +
+  `</w:hdr>`;
 
 const NUM = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -132,11 +159,26 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     ["[Content_Types].xml", enc.encode(CT)],
     ["word/document.xml", enc.encode(DOC)],
     ["word/numbering.xml", enc.encode(NUM)],
+    ["word/header1.xml", enc.encode(HDR)],
   ]);
   const bytes = await sd.zip(parts);
 
+  const logoBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
   const built = await sd.buildDocx(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), {
-    fields: { CLIENT_FIRM: "Zambrano Architects" },
+    fields: { CLIENT_FIRM: "Zambrano Architects", PROJECT_NAME: "Frank McCourt High School" },
+    rates: [{ role: "Principal", rate: 336 }, { role: "Project Manager", rate: 205 }],
+    fees: {
+      totalWords: "FIFTY-ONE THOUSAND DOLLARS AND NO CENTS",
+      totalAmount: "51,000.00",
+      feeType: "lump sum",
+      rows: [
+        { label: "Design Manual", amount: "15,300.00" },
+        { label: "Construction Documents/Permit", amount: "20,400.00" },
+        { label: "Bidding", amount: "2,040.00" },
+        { label: "Construction Administration", amount: "13,260.00" },
+      ],
+    },
+    headerLogo: logoBytes,
     scopeSections: {
       included:
         "<h3>1. Predesign Site Visit</h3><div><p>Two (2) predesign site observations of the existing MEP systems.</p></div>" +
@@ -151,9 +193,10 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
       provisions: "",
     },
     paragraphs: {
-      // First block fills the token in place (keeping the label's own
-      // formatting), so the h3 sits second to exercise the clone path.
+      // The leading "Project Understanding" heading must be dropped (it lands
+      // inline after the label); the h3 later exercises the clone path.
       PROJECT_DESCRIPTION:
+        "<h3>Project Understanding</h3>" +
         "<p>Zambrano Architects has requested a proposal for the library conversion.</p>" +
         "<h3>Project Approach</h3>" +
         "<p><b>Scope Report Phase.</b> Setty will attend the SCA scope meeting, prepare narratives, and support the scope report deliverable through the review cycle.</p>",
@@ -164,6 +207,7 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   });
 
   const out = await sd.unzip(built.bytes.buffer.slice(built.bytes.byteOffset, built.bytes.byteOffset + built.bytes.byteLength));
+  globalThis.__lastOut = out;
   const dec = new TextDecoder();
   const doc = dec.decode(out.get("word/document.xml"));
   const num = dec.decode(out.get("word/numbering.xml"));
@@ -222,6 +266,71 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   check(!doc.includes("212 ARCHITECTS"), "Accepted By: template example client removed");
   check(/PC<\/w:t><w:tab\/><w:t[^>]*>Zambrano Architects</.test(doc),
         "Accepted By: real client firm in place, right of the column tab");
+
+  // description: leading heading gone, blank line between paragraphs
+  check(!doc.includes("Project Understanding"), "description: leading heading dropped");
+  const introIdx = doc.indexOf("library conversion.");
+  const apprHeadIdx = doc.indexOf(">Project Approach<");
+  check(introIdx !== -1 && apprHeadIdx > introIdx &&
+        /<w:t xml:space="preserve"><\/w:t>/.test(doc.slice(introIdx, apprHeadIdx)),
+        "description: blank paragraph between blocks");
+
+  // a blank paragraph separates the included list from ADDITIONAL SERVICES
+  {
+    const lastItemEnd = doc.indexOf("</w:p>", doc.indexOf("Design Development / Design Manual"));
+    const addIdx = doc.indexOf(">ADDITIONAL SERVICES:<");
+    check(lastItemEnd !== -1 && addIdx > lastItemEnd &&
+          doc.slice(lastItemEnd, addIdx).includes('<w:t xml:space="preserve"></w:t>'),
+          "included: trailing blank before ADDITIONAL SERVICES");
+  }
+
+  // the tight section headings carry spacing-after 0
+  for (const t of ["EXCLUDED SERVICES:", "ASSUMPTIONS"]) {
+    check((paraWith(">" + t + "<") || "").includes('<w:spacing w:after="0"'),
+          `chrome heading "${t}" tightened`);
+  }
+
+  // terms: one paragraph per section, tight heading, single spacer between
+  check(basis.includes('<w:spacing w:after="0"'), "terms: heading clone tightened");
+  check(paraWith("Basis body.") !== "", "terms: section body present");
+
+  // hourly rates: own lettered section heading before the rate rows
+  const ratesHead = paraWith(">SCHEDULE OF HOURLY RATES<");
+  check(ratesHead.includes('<w:pStyle w:val="Heading1"/>'), "rates: SCHEDULE OF HOURLY RATES heading added");
+  check(paraWith("Principal:").includes("$336.00/hr."), "rates: rows filled");
+
+  // fee block: real figures over the template example, at 12pt
+  check(!doc.includes("FORTY THOUSAND EIGHT HUNDRED"), "fees: example sentence replaced");
+  check(doc.includes("FIFTY-ONE THOUSAND DOLLARS AND NO CENTS ("), "fees: real total in words");
+  check(!doc.includes("40,800.00") && !doc.includes("16,320.00") && !doc.includes("12,240.00"),
+        "fees: example amounts gone");
+  eq((doc.match(/51,000\.00/g) || []).length, 2, "fees: real total in sentence and Total row");
+  const ddRow = paraWith("Design Manual</w:t>");
+  check(ddRow.includes("15,300.00"), "fees: phase row amount filled");
+  check(ddRow.includes('<w:sz w:val="24"/>') && !ddRow.includes('<w:sz w:val="22"/>'),
+        "fees: chart bumped to 12pt");
+  check(paraWith("Bidding").includes("2,040.00"), "fees: all four phase rows present");
+
+  // header: FPID gone, project name + logo in, package parts added
+  const hdr = dec.decode(out.get("word/header1.xml"));
+  check(!hdr.includes("FPID"), "header: FPID line removed");
+  check(hdr.includes("Frank McCourt High School"), "header: project name present");
+  check(hdr.includes('r:embed="rIdSettyLogo"'), "header: logo drawing embedded");
+  check(!!out.get("word/media/settylogo.png"), "header: logo media part added");
+  check(dec.decode(out.get("word/_rels/header1.xml.rels")).includes("media/settylogo.png"),
+        "header: relationship written");
+  check(dec.decode(out.get("[Content_Types].xml")).includes('Extension="png"'),
+        "header: png content type declared");
+}
+
+// DUMP_DIR=<dir> writes the rendered parts out for external well-formedness
+// checks (see the python xml.dom.minidom pass in the PR notes).
+if (process.env.DUMP_DIR) {
+  const { writeFileSync } = await import("node:fs");
+  const dec2 = new TextDecoder();
+  for (const n of ["word/document.xml", "word/numbering.xml", "word/header1.xml", "word/_rels/header1.xml.rels", "[Content_Types].xml"]) {
+    writeFileSync(process.env.DUMP_DIR + "/" + n.replace(/[\/\[\]]/g, "_"), dec2.decode(globalThis.__lastOut.get(n)));
+  }
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : "\nall setty-docx proposal tests passed");
