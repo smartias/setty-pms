@@ -508,7 +508,7 @@ export function mergeItemBlocks(blocks) {
     const bodies = [];
     while (i < blocks.length && blocks[i].kind === "p") bodies.push(blocks[i++]);
     out.push({ kind: "h", text: stripEnum(bodies.length ? bodies[0].text : title), plain: true });
-    bodies.slice(1).forEach((b) => out.push(b));
+    bodies.slice(1).forEach((b) => out.push({ ...b, bullet: true }));
   }
   return out;
 }
@@ -527,21 +527,48 @@ function unboldRuns(para) {
   });
 }
 
-// Zero a paragraph's spacing-after so the next paragraph hugs it. An explicit
-// <w:spacing> in pPr overrides the style's; schema order puts it after
-// numPr/tabs and before ind/jc.
-function setSpacingAfterZero(para) {
-  if (/<w:spacing [^>]*w:after="/.test(para)) {
-    return para.replace(/(<w:spacing [^>]*w:after=")\d+(")/, "$10$2");
-  }
-  if (/<w:spacing /.test(para)) {
-    return para.replace(/<w:spacing /, '<w:spacing w:after="0" ');
-  }
-  const sp = '<w:spacing w:after="0"/>';
-  if (/<w:ind /.test(para)) return para.replace(/<w:ind /, sp + "<w:ind ");
-  if (/<w:jc /.test(para)) return para.replace(/<w:jc /, sp + "<w:jc ");
-  if (para.includes("</w:pPr>")) return para.replace("</w:pPr>", sp + "</w:pPr>");
-  return para.replace(/^(<w:p(?:\s[^>]*)?>)/, "$1<w:pPr>" + sp + "</w:pPr>");
+// Apply fn to the paragraph's pPr CONTENT, creating the pPr when missing.
+// Everything that edits paragraph properties goes through here: inserting at
+// the paragraph level risks landing after the pPr's trailing <w:rPr>
+// (paragraph-mark properties, schema-final), where Word silently ignores the
+// element — which is exactly how the first spacing fix failed to take.
+function withPPr(para, fn) {
+  const m = para.match(/<w:pPr>([\s\S]*?)<\/w:pPr>/);
+  if (m) return para.replace(m[0], "<w:pPr>" + fn(m[1]) + "</w:pPr>");
+  return para.replace(/^(<w:p(?:\s[^>]*)?>)/, "$1<w:pPr>" + fn("") + "</w:pPr>");
+}
+
+// Insert an element into pPr content before the first later-in-schema sibling.
+function pPrInsert(inner, el, laterRe) {
+  const m = inner.match(laterRe);
+  return m ? inner.slice(0, m.index) + el + inner.slice(m.index) : inner + el;
+}
+
+// Set spacing attributes (e.g. {after: 0}, {before: 0}) with an explicit
+// <w:spacing> in pPr, which overrides the style's.
+function patchSpacing(para, attrs) {
+  return withPPr(para, (inner) => {
+    if (/<w:spacing\b/.test(inner)) {
+      return inner.replace(/<w:spacing\b[^>]*\/>/, (sp) => {
+        for (const [k, v] of Object.entries(attrs)) {
+          sp = new RegExp('w:' + k + '="').test(sp)
+            ? sp.replace(new RegExp('(w:' + k + '=")[^"]*(")'), "$1" + v + "$2")
+            : sp.replace("<w:spacing", '<w:spacing w:' + k + '="' + v + '"');
+        }
+        return sp;
+      });
+    }
+    const el = "<w:spacing" + Object.entries(attrs).map(([k, v]) => ' w:' + k + '="' + v + '"').join("") + "/>";
+    return pPrInsert(inner, el, /<w:ind\b|<w:jc\b|<w:rPr>/);
+  });
+}
+
+// Replace (or add) the paragraph's own indent, e.g. 'w:left="360"'.
+function setIndent(para, attrsStr) {
+  return withPPr(para, (inner) => {
+    if (/<w:ind\b/.test(inner)) return inner.replace(/<w:ind\b[^>]*\/>/, "<w:ind " + attrsStr + "/>");
+    return pPrInsert(inner, "<w:ind " + attrsStr + "/>", /<w:jc\b|<w:rPr>/);
+  });
 }
 
 // Point a paragraph at a numbering definition: rewrite an existing
@@ -585,7 +612,14 @@ export function expandBlocks(xml, headingToken, bodyToken, blocks, opts = {}) {
     if (b.plain) para = unboldRuns(para);
     const numId = isH ? opts.headingNumId : opts.bodyNumId;
     if (numId) para = setParaNumId(para, numId);
-    if (isH && opts.tightHeadings) para = setSpacingAfterZero(para);
+    if (isH && opts.tightHeadings) para = patchSpacing(para, { after: 0 });
+    // Sub-lines inside an included item render as indented bullets.
+    if (b.bullet && opts.bulletNumId) {
+      para = setParaNumId(para, opts.bulletNumId);
+      para = setIndent(para, 'w:left="1440" w:hanging="360"');
+    }
+    if (b.indLeft) para = setIndent(para, 'w:left="' + b.indLeft + '"');
+    if (b.zeroBefore) para = patchSpacing(para, { before: 0 });
     return para;
   }).join("");
 
@@ -798,7 +832,7 @@ export function expandRatePairs(xml, rates) {
   };
   // The rate list gets its OWN lettered section instead of dangling off the
   // end of Proposal Provisions; the Heading1 style letters it in sequence.
-  const heading = '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' +
+  const heading = '<w:p><w:pPr><w:pStyle w:val="Heading1"/><w:spacing w:after="0"/></w:pPr>' +
     '<w:r><w:t>SCHEDULE OF HOURLY RATES</w:t></w:r></w:p>';
   const out = heading + (rows.length ? rows.map(([a, b]) => fill(a, b)).join("") : fill(null, null));
   return { xml: xml.slice(0, pm.index) + out + xml.slice(pm.index + para.length), found: true };
@@ -886,7 +920,25 @@ export function prepareProposalNumbering(numXml, docXml) {
   };
   const assumptionsNumId = restart(aList);
   const termsNumId = restart(aLetter);
-  return { xml: numXml, assumptionsNumId, termsNumId };
+  // Bullets for the sub-lines inside an included item (deliverables lists).
+  // The abstractNum must precede every <w:num>, so it goes in front of the
+  // first one; the <w:num> itself appends like the restarts above.
+  let bulletNumId = 0;
+  {
+    const nextAbstract = 1 + Math.max(0, ...[...numXml.matchAll(/<w:abstractNum w:abstractNumId="(\d+)"/g)].map((m) => +m[1]));
+    const abs = '<w:abstractNum w:abstractNumId="' + nextAbstract + '"><w:multiLevelType w:val="singleLevel"/>' +
+      '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="\uF0B7"/><w:lvlJc w:val="left"/>' +
+      '<w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>' +
+      '<w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr></w:lvl></w:abstractNum>';
+    const firstNum = numXml.search(/<w:num /);
+    numXml = firstNum === -1
+      ? numXml.replace("</w:numbering>", abs + "</w:numbering>")
+      : numXml.slice(0, firstNum) + abs + numXml.slice(firstNum);
+    bulletNumId = nextId++;
+    numXml = numXml.replace("</w:numbering>",
+      '<w:num w:numId="' + bulletNumId + '"><w:abstractNumId w:val="' + nextAbstract + '"/></w:num></w:numbering>');
+  }
+  return { xml: numXml, assumptionsNumId, termsNumId, bulletNumId };
 }
 
 // Attachment A's own title ("TERMS AND CONDITIONS") reads as a title, not as
@@ -909,7 +961,7 @@ function tightenHeading(xml, title) {
     const para = pm[0];
     if (!/<w:pStyle w:val="Heading1"\/>/.test(para)) continue;
     if (matchAll(RUN_RE, para).map((r) => runText(r[0])).join("").trim() !== title) continue;
-    return xml.slice(0, pm.index) + setSpacingAfterZero(para) + xml.slice(pm.index + para.length);
+    return xml.slice(0, pm.index) + patchSpacing(para, { after: 0 }) + xml.slice(pm.index + para.length);
   }
   return xml;
 }
@@ -918,8 +970,8 @@ function tightenHeading(xml, title) {
  * The fee block carries the tokenizer example's HARD-CODED figures (the
  * config's "fees are not tokenized" gap): "FORTY THOUSAND EIGHT HUNDRED …
  * $40,800.00" and four phase rows, all from the 212 Architects sample. Fill
- * them from the project's fee data, and set the chart to 12pt (the template
- * had it at 11 against the Default style's 12).
+ * them from the project's fee data, and set the chart to 10pt, the body size
+ * (the template had it at 11).
  *
  * fees = { totalWords, totalAmount, feeType, rows: [{label, amount}] };
  * amounts are pre-formatted WITHOUT the dollar sign — the "$" lives in its
@@ -929,7 +981,7 @@ export function expandFees(xml, fees) {
   if (!fees || !Array.isArray(fees.rows)) return { xml, found: false };
   const paras = matchAll(PARA_RE, xml);
   const textOf = (p) => matchAll(RUN_RE, p).map((r) => runText(r[0])).join("");
-  const bump12 = (p) => p.replace(/(<w:szC?s? w:val=")22("\/>)/g, "$124$2");
+  const body10 = (p) => p.replace(/(<w:szC?s? w:val=")22("\/>)/g, "$120$2");
 
   // Fill the nth text-bearing run of a paragraph (0-based), leaving the rest.
   const setNthRunText = (para, targets) => {
@@ -971,8 +1023,8 @@ export function expandFees(xml, fees) {
   if (!rowIdx.length || totalIdx === -1) return { xml, found: false };
 
   const proto = paras[rowIdx[0]][0];
-  const fillRow = (row) => bump12(setNthRunText(proto, [row.label, undefined, row.amount]));
-  const total = bump12(setNthRunText(paras[totalIdx][0], [undefined, undefined, fees.totalAmount]));
+  const fillRow = (row) => body10(setNthRunText(proto, [row.label, undefined, row.amount]));
+  const total = body10(setNthRunText(paras[totalIdx][0], [undefined, undefined, fees.totalAmount]));
 
   // Rebuild back-to-front so earlier indices stay valid.
   let out = xml;
@@ -1004,6 +1056,15 @@ export async function buildDocx(
       dec.decode(parts.get("word/numbering.xml")),
       dec.decode(parts.get("word/document.xml")));
     if (numFix) parts.set("word/numbering.xml", enc.encode(numFix.xml));
+  }
+  // Left-aligned body text is set per-paragraph below, but Heading2 (the
+  // provisions layout) justifies at the STYLE level, so the style sheet
+  // needs the same correction.
+  if (parts.has("word/styles.xml")) {
+    const st = dec.decode(parts.get("word/styles.xml"));
+    if (st.includes('<w:jc w:val="both"/>')) {
+      parts.set("word/styles.xml", enc.encode(st.split('<w:jc w:val="both"/>').join('<w:jc w:val="left"/>')));
+    }
   }
 
   const logoHeaders = []; // header parts that got the logo, for their .rels
@@ -1066,7 +1127,16 @@ export async function buildDocx(
         if (key === "excluded" || key === "assumptions") {
           blocks = blocks.map((x) => x.kind === "p" ? { ...x, text: stripEnum(x.text) } : x);
         }
-        const opts = key === "assumptions" && numFix ? { bodyNumId: numFix.assumptionsNumId } : {};
+        const opts = {};
+        if (key === "assumptions" && numFix) opts.bodyNumId = numFix.assumptionsNumId;
+        if (key === "included" && numFix) opts.bulletNumId = numFix.bulletNumId;
+        // The provisions preamble reads as intro text: pull it back to the
+        // section margin and close the gap the first Heading2's
+        // spacing-before opens under the E heading.
+        if (key === "provisions" && blocks.length) {
+          for (const bl of blocks) { if (bl.kind === "h") break; bl.indLeft = 360; }
+          blocks[0].zeroBefore = true;
+        }
         if (!html) {
           // An untouched section leaves its prototypes behind, which would
           // print as {{TOKENS}}. Blank them instead.
@@ -1082,11 +1152,15 @@ export async function buildDocx(
         if (r.found) { xml = r.xml; scopeBlocks += blocks.length; }
         else notes.push(key + ": template is missing " + h + " (old copy cached?)");
       }
-      // These three section headings sit directly over their lists; the
-      // style's 12pt spacing-after read as a stray blank line.
-      for (const t of ["EXCLUDED SERVICES:", "ASSUMPTIONS", "PROPOSAL PROVISIONS"]) {
+      // The section headings sit directly over their content; the style's
+      // 12pt spacing-after read as a stray blank line under each.
+      for (const t of ["ADDITIONAL SERVICES:", "EXCLUDED SERVICES:", "ASSUMPTIONS",
+                       "PROPOSAL PROVISIONS", "FEES",
+                       "TERMS AND CONDITIONS AS OUTLINED IN ATTACHMENT A."]) {
         xml = tightenHeading(xml, t);
       }
+      // House preference: body text left-aligned, not justified.
+      xml = xml.split('<w:jc w:val="both"/>').join('<w:jc w:val="left"/>');
       // Attachment A. If the terms part was omitted the prototypes left with
       // it and there is nothing to do; if no terms were supplied, blank the
       // prototypes so no {{TERMS_*}} prints.

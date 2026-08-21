@@ -69,8 +69,8 @@ const eq = (a, b, msg) => check(
      "item 1: body text becomes the numbered paragraph, title and literal number dropped");
   eq(merged[1], { kind: "h", text: "Setty will prepare deliverables.", plain: true },
      "item 2: first body paragraph numbered");
-  eq(merged[2], { kind: "p", text: "Design Development: One (1) submission." },
-     "item 2: further body paragraphs stay continuation lines");
+  eq(merged[2], { kind: "p", text: "Design Development: One (1) submission.", bullet: true },
+     "item 2: further body paragraphs become bulleted continuation lines");
   eq(merged[3], { kind: "h", text: "Heading-only item", plain: true },
      "a title with no body keeps its own text");
 
@@ -98,7 +98,7 @@ const DOC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   P(H1(6), R("EXCLUDED SERVICES:")) +
   P(H1(0), R("{{EXCLUDED_HEADING}}")) +
   P(`<w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="28"/></w:numPr>`, R("{{EXCLUDED_BODY}}")) +
-  P(`<w:pStyle w:val="Heading1"/>`, R("ASSUMPTIONS")) +
+  P(`<w:pStyle w:val="Heading1"/><w:rPr><w:szCs w:val="20"/></w:rPr>`, R("ASSUMPTIONS")) +
   P(H1(0) + `<w:ind w:left="360"/>`, R("{{ASSUMPTIONS_HEADING}}")) +
   P(`<w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="28"/></w:numPr>`, R("{{ASSUMPTIONS_BODY}}")) +
   P(`<w:pStyle w:val="Heading2"/>`, R("{{PROVISIONS_HEADING}}")) +
@@ -200,7 +200,9 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         "<div><p>MEP/FP system testing (e.g., TAB).</p></div>" +
         "<div><p>Electrical testing services (load testing).</p></div>",
       assumptions: "<p>Access to all areas will be provided.</p><p>Architectural backgrounds will be furnished in CAD.</p>",
-      provisions: "",
+      provisions:
+        "<p>This proposal, including the associated fee, is based on the following provisions.</p>" +
+        "<p><strong>Fee Structure.</strong> This proposal is based on the assumption of a lump sum contract.</p>",
     },
     paragraphs: {
       // The leading "Project Understanding" heading must be dropped (it lands
@@ -237,7 +239,12 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   check(item1.includes('<w:numId w:val="21"/>'), "included: item is auto-numbered");
   check(item1.includes('<w:b w:val="0"/>'), "included: item text unbolded against Heading1");
   const sub = paraWith("Design Development / Design Manual");
-  check(sub && !sub.includes('<w:numId w:val="21"/>'), "included: run-in sub-line is a continuation, not a numbered item");
+  check(sub && !sub.includes('<w:numId w:val="21"/>'), "included: run-in sub-line is not a numbered item");
+  check(sub.includes('<w:numId w:val="31"/>') && sub.includes('<w:ind w:left="1440" w:hanging="360"/>'),
+        "included: sub-line is an indented bullet");
+  check(num.includes('<w:numFmt w:val="bullet"/>') &&
+        num.includes('<w:num w:numId="31">'),
+        "numbering: bullet list defined for included sub-lines");
 
   // excluded: deduped, indent repaired
   eq((doc.match(/Electrical testing services/g) || []).length, 1, "excluded: duplicate item printed once");
@@ -295,10 +302,23 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   }
 
   // the tight section headings carry spacing-after 0
-  for (const t of ["EXCLUDED SERVICES:", "ASSUMPTIONS"]) {
+  for (const t of ["ADDITIONAL SERVICES:", "EXCLUDED SERVICES:", "ASSUMPTIONS", "FEES"]) {
     check((paraWith(">" + t + "<") || "").includes('<w:spacing w:after="0"'),
           `chrome heading "${t}" tightened`);
   }
+  // the ASSUMPTIONS heading has a paragraph-mark rPr: the spacing must land
+  // BEFORE it (schema order), where Word honors it — the first fix did not
+  check(/<w:spacing w:after="0"\/><w:rPr><w:szCs w:val="20"\/><\/w:rPr><\/w:pPr>[^]*?>ASSUMPTIONS</.test(paraWith(">ASSUMPTIONS<")),
+        "chrome heading: spacing precedes the paragraph-mark rPr");
+
+  // provisions: intro paragraph pulled back to the section margin, no gap
+  const provIntro = paraWith("based on the following provisions");
+  check(provIntro.includes('<w:ind w:left="360"/>'), "provisions: intro indent decreased to 360");
+  check(provIntro.includes('w:before="0"'), "provisions: no gap under the E heading");
+
+  // body text left-aligned, not justified
+  check(!doc.includes('<w:jc w:val="both"/>'), "body: no justified paragraphs remain");
+  check(doc.includes('<w:jc w:val="left"/>'), "body: justification flipped to left");
 
   // terms: one paragraph per section, tight heading, single spacer between
   check(basis.includes('<w:spacing w:after="0"'), "terms: heading clone tightened");
@@ -317,8 +337,8 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   eq((doc.match(/51,000\.00/g) || []).length, 2, "fees: real total in sentence and Total row");
   const ddRow = paraWith("Design Manual</w:t>");
   check(ddRow.includes("15,300.00"), "fees: phase row amount filled");
-  check(ddRow.includes('<w:sz w:val="24"/>') && !ddRow.includes('<w:sz w:val="22"/>'),
-        "fees: chart bumped to 12pt");
+  check(ddRow.includes('<w:sz w:val="20"/>') && !ddRow.includes('<w:sz w:val="22"/>'),
+        "fees: chart set to 10pt body size");
   check(paraWith("Bidding").includes("2,040.00"), "fees: all four phase rows present");
 
   // header: FPID gone, project name + logo in, package parts added
