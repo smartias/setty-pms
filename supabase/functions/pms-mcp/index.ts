@@ -577,7 +577,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-22-trace-references-stage0";
+const BUILD = "2026-08-22-strip-null-bytes";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4254,7 +4254,11 @@ mcp.tool("extract_sheet_index", {
           pagesParsed++;
           const pg = await pdf.getPage(i);
           const tc = await pg.getTextContent();
-          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+          // Null bytes appear in some PDFs' text layers (seen: a ProjNet
+          // comment export) and Postgres rejects them ("\u0000 cannot be
+          // converted to text", 22P05), leaving the file permanently
+          // unindexable. Strip them before anything downstream sees the text.
+          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
           // A cover sheet names the whole set in one table, whatever the
           // architect. Harvest it even when this page's own title block parses.
           for (const row of parseDrawingList(text)) {
@@ -4777,7 +4781,11 @@ mcp.tool("search_drawings", {
         for (let i = 1; i <= total; i++) {
           const pg = await pdf.getPage(i);
           const tc = await pg.getTextContent();
-          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+          // Null bytes appear in some PDFs' text layers (seen: a ProjNet
+          // comment export) and Postgres rejects them ("\u0000 cannot be
+          // converted to text", 22P05), leaving the file permanently
+          // unindexable. Strip them before anything downstream sees the text.
+          const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
           if (text.length >= 50) textPages++;
           const tb = text.length >= 50 ? parseTitleBlock(text) : null;
           rows.push({
