@@ -577,7 +577,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-22-team-scoping-phase-c";
+const BUILD = "2026-08-22-trace-references-stage0";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2620,6 +2620,180 @@ mcp.tool("get_current_set", {
         nextStep: "This is a lookup failure, not proof that nothing was issued.",
       });
     }
+  },
+});
+
+// ─── RFI/SUBMITTAL → SHEET REFERENCES (trace_references) ────────────────────
+// Stage 0 of the linking plan (Sara, 2026-08-22): sheet references are DERIVED
+// from item text on every call and validated against the transmittal register
+// and the drawing text index. Nothing is written. The point of this stage is to
+// measure the matcher's precision on real RFI text BEFORE any link is ever
+// materialized into project data for the app to render.
+//
+// Precision strategy: equipment tags share the letters+digits shape (AHU-101,
+// VAV-1204), so a token that validates against nothing real counts only when
+// its prefix is a known discipline code, and a space-separated unvalidated
+// token ("option E 2021") never counts at all. An invented link is worse than
+// a missed one. Two-digit tags (FCU-11, CHWP-2) never tokenize: real sheet
+// numbers are 3-4 digits.
+const PROSE_SHEET_RE = /\b([A-Za-z]{1,3})([-\s]?)(\d{3,4}[A-Za-z]?)\b/g;
+
+function sheetTokensInText(text) {
+  const out = [];
+  if (!text) return out;
+  PROSE_SHEET_RE.lastIndex = 0;
+  let m;
+  while ((m = PROSE_SHEET_RE.exec(text))) {
+    out.push({
+      sheet: (m[1] + m[3]).toUpperCase(),
+      discipline: m[1].toUpperCase(),
+      spaceSeparated: m[2] === " ",
+      at: m.index,
+      token: m[0],
+    });
+  }
+  return out;
+}
+
+function refSnippet(text, at, len) {
+  const start = Math.max(0, at - 60);
+  const end = Math.min(text.length, at + len + 60);
+  const clip = text.slice(start, end).replace(/\s+/g, " ").trim();
+  return (start > 0 ? "…" : "") + clip + (end < text.length ? "…" : "");
+}
+
+const REF_CONFIDENCE_RANK: Record<string, number> = { register: 3, "drawing-index": 2, unvalidated: 1 };
+
+mcp.tool("trace_references", {
+  description:
+    "Which drawing sheets does an RFI or submittal talk about? Scans each item's text (subject, " +
+    "question, response, comments) for sheet-number references and validates every candidate against " +
+    "the transmittal register and the drawing text index, so an equipment tag that merely looks like " +
+    "a sheet number does not count. Confidence per reference: 'register' = the sheet exists in the " +
+    "transmittal register (high confidence; the result also carries that sheet's CURRENT revision and " +
+    "the set it was issued in, so you can see at once whether the referenced sheet has since moved); " +
+    "'drawing-index' = the sheet appears in indexed drawing text but on no logged transmittal; " +
+    "'unvalidated' = shaped like a sheet number of a known discipline but matching no known sheet, " +
+    "treat as a lead to verify, not a fact. References are derived fresh on every call and nothing is " +
+    "stored. Human-recorded links between items are separate: read_rfi_submittal shows those. On a " +
+    "project with no register rows and no indexed drawings everything lands in 'unvalidated'; run " +
+    "search_drawings with indexOnly:true first to give validation something to check against.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
+    type: z.enum(["rfi", "submittal"]).optional().describe("Limit to RFIs or submittals"),
+    number: z.string().optional().describe("Trace one specific item by its number, e.g. '004'"),
+    limit: z.number().optional().describe("Max items returned (default 30, max 100)"),
+  }),
+  handler: async ({ projectNumber, type, number, limit }) => {
+    const lim = Math.min(Math.max(limit ?? 30, 1), 100);
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}"` });
+    const p = await getProjectById(pid);
+    if (!p) return asText({ error: `No project matching "${projectNumber}"` });
+
+    // Validation universe 1: the transmittal register. ALL rows, not only the
+    // current set, because an old RFI legitimately references a sheet that a
+    // later set superseded; the reference was true when written.
+    const rows = await transmittalRows(pid);
+    const registerKeys = new Set<string>();
+    for (const row of rows) {
+      for (const s of sheetsOf(row)) {
+        const c = canonicalSheet(s);
+        if (c) registerKeys.add(c.sheetNo);
+      }
+    }
+    // Current-set context for register-confirmed hits. transmittalRows() is
+    // already issue-date ordered, which is the supersession mechanism.
+    const currentBySheet = new Map<string, any>();
+    for (const d of composeCurrentSet(rows).disciplines) {
+      for (const s of d.sheets) currentBySheet.set(s.sheetNo, s);
+    }
+
+    // Validation universe 2: sheets the drawing text index has seen. Cheap
+    // (sheet_no column only; sbGetAll pages past the PostgREST 1000-row cap)
+    // and it covers projects whose register is thin.
+    const indexKeys = new Set<string>();
+    const numPrefix = String(p.projectNumber || "").toLowerCase().trim();
+    if (numPrefix) {
+      try {
+        const idxRows = await sbGetAll(
+          "pms_drawing_text?select=sheet_no&project_prefix=eq." + encodeURIComponent(numPrefix) +
+          "&sheet_no=not.is.null&order=sheet_no.asc");
+        for (const r of (idxRows ?? [])) {
+          const c = canonicalSheet({ sheetNo: r?.sheet_no });
+          if (c) indexKeys.add(c.sheetNo);
+        }
+      } catch (e) {
+        console.warn("[trace_references] drawing-index lookup failed:", String((e as any)?.message ?? e));
+      }
+    }
+
+    const scanned = { rfis: 0, submittals: 0 };
+    const items: any[] = [];
+    const wantNumber = number ? String(number) : null;
+    const scanItem = (item: any, kind: string) => {
+      if (!item) return;
+      if (wantNumber && String(item.number) !== wantNumber && String(item.id) !== wantNumber) return;
+      if (kind === "rfi") scanned.rfis++; else scanned.submittals++;
+      const fields: Array<[string, string]> = [
+        ["subject", String(item.title || "")],
+        [kind === "rfi" ? "question" : "description", htmlToText(item.description || "")],
+        ["response", htmlToText(item.response || "")],
+        ["comments", htmlToText(item.comments || "")],
+        ["notes", String(item.notes || "")],
+      ];
+      const best = new Map<string, any>();
+      for (const [field, text] of fields) {
+        for (const t of sheetTokensInText(text)) {
+          let confidence: string | null = null;
+          if (registerKeys.has(t.sheet)) confidence = "register";
+          else if (indexKeys.has(t.sheet)) confidence = "drawing-index";
+          else if (!t.spaceSeparated && DISCIPLINE_NAME[t.discipline]) confidence = "unvalidated";
+          if (!confidence) continue;
+          const prev = best.get(t.sheet);
+          if (prev && REF_CONFIDENCE_RANK[prev.confidence] >= REF_CONFIDENCE_RANK[confidence]) continue;
+          const cur = currentBySheet.get(t.sheet);
+          best.set(t.sheet, {
+            sheet: t.sheet,
+            discipline: DISCIPLINE_NAME[t.discipline] ?? t.discipline,
+            confidence, field,
+            snippet: refSnippet(text, t.at, t.token.length),
+            ...(cur ? {
+              currentRevision: cur.revision ?? null, revisionDate: cur.revisionDate ?? null,
+              issuedIn: cur.issuedIn ?? null, folderUrl: cur.folderUrl ?? null,
+            } : {}),
+          });
+        }
+      }
+      if (!best.size) return;
+      items.push({
+        type: kind, number: item.number ?? item.id ?? null,
+        subject: item.title || (item.description ? htmlToText(String(item.description)).slice(0, 80) : null),
+        status: item.status || null, received: item.dateReceived || null,
+        sheets: [...best.values()].sort((a, b) =>
+          REF_CONFIDENCE_RANK[b.confidence] - REF_CONFIDENCE_RANK[a.confidence] ||
+          String(a.sheet).localeCompare(String(b.sheet))),
+        ...((item.links ?? []).length ? { manualLinkCount: item.links.length, manualLinkNote: "Human-recorded links exist too: read_rfi_submittal shows them." } : {}),
+      });
+    };
+    if (type !== "submittal") for (const r of (p.rfis ?? [])) scanItem(r, "rfi");
+    if (type !== "rfi") for (const s of (p.submittals ?? [])) scanItem(s, "submittal");
+    items.sort((a, b) => String(b.received ?? "").localeCompare(String(a.received ?? "")));
+
+    return asText({
+      project: p.projectNumber || projectNumber,
+      scanned, itemsWithReferences: items.length,
+      returned: Math.min(items.length, lim),
+      items: items.slice(0, lim),
+      validation: {
+        registerSheets: registerKeys.size,
+        drawingIndexSheets: indexKeys.size,
+        ...(registerKeys.size || indexKeys.size ? {} : {
+          note: "No transmittal register rows and no indexed drawings on this project, so nothing could be validated: every reference is 'unvalidated'. search_drawings with indexOnly:true fills the drawing index.",
+        }),
+      },
+      guidance: "References are derived from item text on every call and validated against the transmittal register and the drawing index; nothing is stored. Treat 'unvalidated' as a lead, not a fact.",
+    });
   },
 });
 
