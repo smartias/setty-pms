@@ -35,6 +35,93 @@ const SERVICE_CALLER: Caller = { kind: "service", email: null, name: "shared-sec
 const callerStore = new AsyncLocalStorage<Caller>();
 const currentCaller = (): Caller => callerStore.getStore() ?? UNKNOWN_CALLER;
 
+// ── Capability enforcement (Phase B) ─────────────────────────────────────────
+// The caller's caps come from ONE rpc, pms_caps_for(email): role, firm-level
+// verdict per capability, and a per-project verdict map for projects that carry
+// override rows relevant to this caller. Precedence (admin > project-user >
+// project-role > project-everyone > global-user > matrix > deny) lives ONLY in
+// SQL, shared with the app's RLS via pms_has_cap_for; capFor() below just picks
+// the project verdict over the firm verdict and never re-ranks rows.
+//
+// Two enforcement rules, per Sara 2026-08-22:
+//   HIDE — a project the caller lacks projects.view for behaves as NOT FOUND
+//   everywhere; hiding must never confirm existence.
+//   REDACT — fee/billing FIELDS are replaced with a marker for callers without
+//   fees.view, so the model says why instead of hallucinating around a gap.
+type ResolvedCaps = {
+  email: string | null; role: string; isAdmin: boolean;
+  caps: Record<string, boolean>;
+  projects: Record<string, Record<string, boolean>>;
+};
+const SERVICE_CAPS: ResolvedCaps = { email: null, role: "service", isAdmin: true, caps: {}, projects: {} };
+// If the resolver itself fails, degrade to "new-hire" behavior (visible but
+// fee-redacted) rather than a blank session or a silent full-access pass.
+const FALLBACK_CAPS: ResolvedCaps = { email: null, role: "staff", isAdmin: false, caps: { "projects.view": true }, projects: {} };
+const CAPS_TTL_MS = 60_000;
+const _capsCache = new Map<string, { at: number; res: ResolvedCaps }>();
+async function resolveCaps(): Promise<ResolvedCaps> {
+  const caller = currentCaller();
+  if (caller.kind === "service") return SERVICE_CAPS;
+  const key = caller.email ?? "";
+  const hit = _capsCache.get(key);
+  if (hit && Date.now() - hit.at < CAPS_TTL_MS) return hit.res;
+  try {
+    const res = await sbRpc("pms_caps_for", { p_email: key });
+    if (res && typeof res === "object" && res.caps) {
+      _capsCache.set(key, { at: Date.now(), res });
+      return res as ResolvedCaps;
+    }
+  } catch (e) {
+    console.warn("[caps] resolver failed, using staff fallback:", String((e as any)?.message ?? e));
+  }
+  return FALLBACK_CAPS;
+}
+function capFor(res: ResolvedCaps, cap: string, projectNumber?: string | null): boolean {
+  if (res.isAdmin) return true;
+  const pn = (projectNumber ?? "").trim();
+  const proj = pn ? res.projects?.[pn] : undefined;
+  if (proj && typeof proj[cap] === "boolean") return proj[cap];
+  return res.caps?.[cap] === true;
+}
+
+// Fee/billing field detection. The exact set is the live inventory of fee-ish
+// keys across pms_projects blobs + tool outputs (2026-08-22); the pattern nets
+// future fields. Boundaries matter: "feedback" and "coffee" must never match,
+// hence the capital/underscore requirement after the prefix and before the
+// suffix.
+const FEE_KEY_EXACT = new Set([
+  "fee", "fees", "feetype", "feestructure", "feeschedulefinalized", "feeauditlog",
+  "feecalculatorsubs", "phasesubfees", "lockedsettyfee", "manualsettyfee",
+  "manualconstructioncost", "manualrsmeanscostpersf", "reimbursablebudget",
+  "invoices", "invoiced", "billingmethod", "hourlyrates",
+  "contractrateschedule", "contractrateschedulelockedat", "ceilingvalue", "contractvalue",
+]);
+const FEE_KEY_PATTERN = /^fee[A-Z_]|[a-z0-9](Fee|Fees)$/;
+const isFeeKey = (k: string): boolean => FEE_KEY_EXACT.has(k.toLowerCase()) || FEE_KEY_PATTERN.test(k);
+const FEE_REDACTED = "[redacted: requires fees.view]";
+function redactFees(v: any): any {
+  if (Array.isArray(v)) return v.map(redactFees);
+  if (v && typeof v === "object") {
+    const out: Record<string, any> = {};
+    for (const [k, val] of Object.entries(v)) out[k] = isFeeKey(k) ? FEE_REDACTED : redactFees(val);
+    return out;
+  }
+  return v;
+}
+
+// Is the project this ref names visible to the caller? Fast path: firm-level
+// view allowed and no per-project view denial exists — true without any lookup,
+// which is every request today (overrides table is near-empty). Slow path only
+// when a denial could apply: resolveProjectId is itself visibility-filtered, so
+// a hidden project resolves to null exactly like a ref that never existed.
+async function projectRefVisible(ref: string): Promise<boolean> {
+  const caps = await resolveCaps();
+  if (caps.isAdmin) return true;
+  const anyViewDeny = Object.values(caps.projects ?? {}).some((p) => p["projects.view"] === false);
+  if (capFor(caps, "projects.view") && !anyViewDeny) return true;
+  return !!(await resolveProjectId(ref));
+}
+
 async function sbGet(path: string): Promise<any> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
@@ -65,8 +152,19 @@ async function sbGetAll(path: string): Promise<any[]> {
   return out;
 }
 
-let _projCache: { at: number; data: any[] } | null = null;
+// Every portfolio-wide tool flows through here, so projects.view hiding lives
+// here once instead of in 20 handlers. The cache holds the UNFILTERED list
+// (it is shared across callers with different caps); filtering happens per
+// request, after the cache read.
 async function getProjects(): Promise<any[]> {
+  const all = await getProjectsUnfiltered();
+  const caps = await resolveCaps();
+  if (caps.isAdmin) return all;
+  return all.filter((p) => capFor(caps, "projects.view", p?.projectNumber));
+}
+
+let _projCache: { at: number; data: any[] } | null = null;
+async function getProjectsUnfiltered(): Promise<any[]> {
   const now = Date.now();
   if (_projCache && (now - _projCache.at) < 300000) return _projCache.data;
   // Reads EVERYTHING (active + archived). Archived state is the `archived` boolean
@@ -205,13 +303,22 @@ const staffOf = (m: any): any[] => Array.isArray(m?.staff) ? m.staff : [];
 
 async function getProjectById(pid: string): Promise<any | null> {
   const rows = await sbGet("pms_projects?select=project&project->>id=eq." + encodeURIComponent(pid));
-  return rows?.[0]?.project ?? null;
+  const p = rows?.[0]?.project ?? null;
+  if (!p) return null;
+  // A project the caller cannot view does not exist for them — same shape as a
+  // genuine miss, so hiding never confirms existence.
+  const caps = await resolveCaps();
+  if (!caps.isAdmin && !capFor(caps, "projects.view", p?.projectNumber)) return null;
+  return p;
 }
 
 async function resolveProjectId(identifier: string): Promise<string | null> {
   const id = identifier.toLowerCase().trim();
   const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name&order=id.asc");
-  const hit = (rows || []).find((r: any) =>
+  const caps = await resolveCaps();
+  const visible = caps.isAdmin ? (rows || [])
+    : (rows || []).filter((r: any) => capFor(caps, "projects.view", r?.pn));
+  const hit = visible.find((r: any) =>
     [r.pid, r.pn, r.nm].filter(Boolean).some((f: string) => String(f).toLowerCase() === id));
   return hit?.pid ?? null;
 }
@@ -433,7 +540,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-22-caller-identity-phase-a";
+const BUILD = "2026-08-22-caps-enforcement-phase-b";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -550,10 +657,45 @@ const _rawTool = mcp.tool.bind(mcp);
       const t0 = Date.now();
       let cls: ReturnType<typeof classifyResult> = { outcome: "hit", resultCount: null, detail: null };
       try {
-        const res = await inner(args);
+        // Phase B enforcement, applied here so every tool — including any added
+        // later — is covered by construction, same reasoning as the telemetry.
+        // HIDE first: a project-scoped call against a project the caller cannot
+        // view returns the same not-found shape a nonsense ref would, without
+        // running the tool at all.
+        const ref = firstString(args?.projectNumber, args?.identifier, args?.project);
+        let res;
+        if (ref && !(await projectRefVisible(ref))) {
+          res = asText({
+            error: `No project matching "${ref}".`,
+            nextStep: "search_projects finds projects by number or name.",
+          });
+        } else {
+          res = await inner(args);
+        }
         try {
           cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
         } catch { /* not JSON: treat as a hit, the tool answered something */ }
+        // REDACT second: fee/billing fields for callers without fees.view.
+        // Known limit: when the ref is a project NAME, a per-project fees
+        // override cannot match (overrides key on number), so the firm-level
+        // verdict applies — over-redacts for a project-level allow, which is
+        // the safe direction. Overrides are near-empty today; revisit in
+        // Phase C when project numbers ride the resolution path anyway.
+        try {
+          const caps = await resolveCaps();
+          if (!caps.isAdmin && !capFor(caps, "fees.view", ref)) {
+            const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
+            if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+              const red = redactFees(payload);
+              red.redactionNote =
+                "Fee and billing fields are hidden: your PMS role does not carry the fees.view " +
+                "capability. Tell the user that, not that the data is missing; a PMS admin can grant access.";
+              res = asText(red);
+            }
+          }
+        } catch (e) {
+          console.warn("[caps] redaction pass failed:", String((e as any)?.message ?? e));
+        }
         return res;
       } catch (e) {
         cls = { outcome: "error", resultCount: null, detail: String((e as any)?.message ?? e).slice(0, 300) };
