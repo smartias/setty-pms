@@ -40,6 +40,12 @@ function refSnippet(text, at, len) {
   return (start > 0 ? "…" : "") + clip + (end < text.length ? "…" : "");
 }
 
+function sheetTextPattern(sheet) {
+  const m = /^([A-Z]{1,3})(\d{3,4}[A-Z]?)$/.exec(sheet);
+  if (!m) return sheet;
+  return "\\y" + m[1] + "[-\\s]?" + m[2] + "\\y";
+}
+
 // ── matcher behavior ────────────────────────────────────────────────────────
 
 const sheets = (t) => sheetTokensInText(t).map((x) => x.sheet);
@@ -79,6 +85,12 @@ const snip = refSnippet(long, tok.at, tok.token.length);
 check(snip.startsWith("…") && snip.endsWith("…") && snip.includes("M406"), "snippet clips both ends around the match");
 check(refSnippet("see M406", 4, 4) === "see M406", "short text needs no ellipses");
 
+// Text-fallback probe pattern: bounded, separator-tolerant, same ARE dialect
+// as drawingQueryPatterns.
+check(sheetTextPattern("E001") === "\\yE[-\\s]?001\\y", "probe pattern splits prefix and digits");
+check(sheetTextPattern("FP301A") === "\\yFP[-\\s]?301A\\y", "probe pattern keeps trailing letter");
+check(sheetTextPattern("weird") === "weird", "non-sheet key passes through untouched");
+
 // ── drift detection against index.ts ────────────────────────────────────────
 
 import { readFileSync } from "node:fs";
@@ -101,7 +113,7 @@ const normalise = (body) => body
 
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const here = readFileSync(new URL(import.meta.url), "utf8");
-for (const fn of ["sheetTokensInText", "refSnippet"]) {
+for (const fn of ["sheetTokensInText", "refSnippet", "sheetTextPattern"]) {
   const a = extractBody(shipped, fn);
   const b = extractBody(here, fn);
   check(a !== null, `could not find ${fn} in index.ts — extractor needs updating`);
@@ -115,7 +127,9 @@ for (const anchor of [
   "/\\b([A-Za-z]{1,3})([-\\s]?)(\\d{3,4}[A-Za-z]?)\\b/g",
   'if (registerKeys.has(t.sheet)) confidence = "register";',
   'else if (indexKeys.has(t.sheet)) confidence = "drawing-index";',
+  'else if (textKeys.has(t.sheet)) confidence = "drawing-text";',
   'else if (!t.spaceSeparated && DISCIPLINE_NAME[t.discipline]) confidence = "unvalidated";',
+  '{ register: 4, "drawing-index": 3, "drawing-text": 2, unvalidated: 1 }',
 ]) {
   check(shipped.includes(anchor), "trace_references anchor missing from index.ts (drift): " + anchor);
 }
