@@ -49,14 +49,16 @@ const currentCaller = (): Caller => callerStore.getStore() ?? UNKNOWN_CALLER;
 //   REDACT — fee/billing FIELDS are replaced with a marker for callers without
 //   fees.view, so the model says why instead of hallucinating around a gap.
 type ResolvedCaps = {
-  email: string | null; role: string; isAdmin: boolean;
+  email: string | null; role: string; team: string | null; isAdmin: boolean;
   caps: Record<string, boolean>;
   projects: Record<string, Record<string, boolean>>;
 };
-const SERVICE_CAPS: ResolvedCaps = { email: null, role: "service", isAdmin: true, caps: {}, projects: {} };
+const SERVICE_CAPS: ResolvedCaps = { email: null, role: "service", team: null, isAdmin: true, caps: {}, projects: {} };
 // If the resolver itself fails, degrade to "new-hire" behavior (visible but
 // fee-redacted) rather than a blank session or a silent full-access pass.
-const FALLBACK_CAPS: ResolvedCaps = { email: null, role: "staff", isAdmin: false, caps: { "projects.view": true }, projects: {} };
+// team null on the fallback errs toward the untagged pool, never toward a
+// team the caller might not be on.
+const FALLBACK_CAPS: ResolvedCaps = { email: null, role: "staff", team: null, isAdmin: false, caps: { "projects.view": true }, projects: {} };
 const CAPS_TTL_MS = 60_000;
 const _capsCache = new Map<string, { at: number; res: ResolvedCaps }>();
 async function resolveCaps(): Promise<ResolvedCaps> {
@@ -82,6 +84,29 @@ function capFor(res: ResolvedCaps, cap: string, projectNumber?: string | null): 
   const proj = pn ? res.projects?.[pn] : undefined;
   if (proj && typeof proj[cap] === "boolean") return proj[cap];
   return res.caps?.[cap] === true;
+}
+
+// Phase C team scoping (Sara 2026-08-22). Whether a project EXISTS for the
+// caller. Order matters:
+//   1. admin sees everything;
+//   2. an explicit per-project projects.view override wins in EITHER direction
+//      — it is the cross-team collaboration escape hatch (a DMV engineer
+//      granted onto one NY job) and the per-project lock, and it must beat the
+//      team rule to be either;
+//   3. a caller WITH a team sees only projects tagged with that exact team,
+//      NOT the untagged pool, so a new team's user is not drowned in 147
+//      legacy projects;
+//   4. a caller with NO team is today's world: the firm-level verdict over
+//      everything, tagged or not — team-less means HQ/legacy staff, and
+//      hiding new-team work from them was not part of the decision. To scope
+//      someone, put them on a team; tagging projects alone scopes nobody.
+function projectVisible(caps: ResolvedCaps, projectNumber?: string | null, team?: string | null): boolean {
+  if (caps.isAdmin) return true;
+  const pn = (projectNumber ?? "").trim();
+  const o = pn ? caps.projects?.[pn]?.["projects.view"] : undefined;
+  if (typeof o === "boolean") return o;
+  if (caps.team && (team ?? null) !== caps.team) return false;
+  return caps.caps?.["projects.view"] === true;
 }
 
 // Fee/billing field detection. The exact set is the live inventory of fee-ish
@@ -117,8 +142,10 @@ function redactFees(v: any): any {
 async function projectRefVisible(ref: string): Promise<boolean> {
   const caps = await resolveCaps();
   if (caps.isAdmin) return true;
+  // Fast path only for team-less callers: a teamed caller could be denied any
+  // project, so every ref must resolve (resolveProjectId is team-filtered).
   const anyViewDeny = Object.values(caps.projects ?? {}).some((p) => p["projects.view"] === false);
-  if (capFor(caps, "projects.view") && !anyViewDeny) return true;
+  if (!caps.team && capFor(caps, "projects.view") && !anyViewDeny) return true;
   return !!(await resolveProjectId(ref));
 }
 
@@ -160,7 +187,7 @@ async function getProjects(): Promise<any[]> {
   const all = await getProjectsUnfiltered();
   const caps = await resolveCaps();
   if (caps.isAdmin) return all;
-  return all.filter((p) => capFor(caps, "projects.view", p?.projectNumber));
+  return all.filter((p) => projectVisible(caps, p?.projectNumber, p?.team));
 }
 
 let _projCache: { at: number; data: any[] } | null = null;
@@ -190,6 +217,9 @@ async function getProjectsUnfiltered(): Promise<any[]> {
     // Related Projects grouping (sibling phases / sister buildings). Without
     // these, relatedGroup can never be resolved into actual sibling projects.
     "relatedGroup:project->>relatedGroup,relatedRole:project->>relatedRole," +
+    // team is a REAL COLUMN (not a blob key — app blob saves would drop an
+    // unknown key); it drives Phase C visibility scoping.
+    "team," +
     // changeOrders ride along for the link graph (incomingLinks scans them);
     // they are small next to rfis/submittals and nothing like emails[].
     "milestones:project->milestones,rfis:project->rfis,submittals:project->submittals,notes:project->notes," +
@@ -204,6 +234,7 @@ async function getProjectsUnfiltered(): Promise<any[]> {
     primeProjectNumber: r.primeProjectNumber,
     isTaskOrder: r.isTaskOrder === true, taskOrderTermContractId: r.taskOrderTermContractId,
     relatedGroup: r.relatedGroup, relatedRole: r.relatedRole,
+    team: r.team ?? null,
     milestones: r.milestones ?? [], rfis: r.rfis ?? [], submittals: r.submittals ?? [], notes: r.notes ?? [],
     changeOrders: r.changeOrders ?? [],
   })).filter((p: any) => p.id || p.projectNumber || p.name);
@@ -302,22 +333,25 @@ const termContractsOf = (m: any): any[] => Array.isArray(m?.termContracts) ? m.t
 const staffOf = (m: any): any[] => Array.isArray(m?.staff) ? m.staff : [];
 
 async function getProjectById(pid: string): Promise<any | null> {
-  const rows = await sbGet("pms_projects?select=project&project->>id=eq." + encodeURIComponent(pid));
+  const rows = await sbGet("pms_projects?select=project,team&project->>id=eq." + encodeURIComponent(pid));
   const p = rows?.[0]?.project ?? null;
   if (!p) return null;
   // A project the caller cannot view does not exist for them — same shape as a
   // genuine miss, so hiding never confirms existence.
   const caps = await resolveCaps();
-  if (!caps.isAdmin && !capFor(caps, "projects.view", p?.projectNumber)) return null;
+  if (!caps.isAdmin && !projectVisible(caps, p?.projectNumber, rows?.[0]?.team ?? null)) return null;
+  // Surface the team on the record (the column is outside the blob on purpose;
+  // see getProjectsUnfiltered).
+  p.team = rows?.[0]?.team ?? null;
   return p;
 }
 
 async function resolveProjectId(identifier: string): Promise<string | null> {
   const id = identifier.toLowerCase().trim();
-  const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name&order=id.asc");
+  const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc");
   const caps = await resolveCaps();
   const visible = caps.isAdmin ? (rows || [])
-    : (rows || []).filter((r: any) => capFor(caps, "projects.view", r?.pn));
+    : (rows || []).filter((r: any) => projectVisible(caps, r?.pn, r?.team));
   const hit = visible.find((r: any) =>
     [r.pid, r.pn, r.nm].filter(Boolean).some((f: string) => String(f).toLowerCase() === id));
   return hit?.pid ?? null;
@@ -535,12 +569,15 @@ function summarizeProject(p: any): Record<string, unknown> {
     nextMilestone: next ? { name: next.name, due: next.dueDate } : null,
     overdueCount: overdue.length, openActionItems: openActionItems(p).length,
     archived: !!p.archived,
+    // Only present once a project is tagged; keeps team scoping debuggable
+    // without cluttering the untagged portfolio.
+    ...(p.team ? { team: p.team } : {}),
   };
 }
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-22-caps-enforcement-phase-b";
+const BUILD = "2026-08-22-team-scoping-phase-c";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
