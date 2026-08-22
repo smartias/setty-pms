@@ -88,9 +88,32 @@ eq(c.revisionDate, null, "...with no revision date");
 // The two layouts must not poach each other's sheets, or one architect's
 // drawings would silently parse with another's field order.
 check(parseTitleBlock(E221).sheetNo === "E221", "the CHCR pattern does not steal a Tabler sheet");
-eq(TITLE_BLOCK_PATTERNS.length, 2, "two layouts are registered");
+eq(TITLE_BLOCK_PATTERNS.length, 3, "three layouts are registered");
 check(!TITLE_BLOCK_PATTERNS[1].re.test(E221), "sheet-number-last does not match a sheet-number-first block");
 check(!TITLE_BLOCK_PATTERNS[0].re.test(CHCR), "sheet-number-first does not match a sheet-number-last block");
+
+// ── Third layout: DOB-NOW filing stamp (Setty in-house, e.g. Q126 Reso A) ──
+// Verbatim extracted text from a Q126 IS126 PAA Filing book page: sheet number
+// first, the DOB-set position, the title, then the fixed "DOB NOW Job#" tail. The
+// "1 PD101.00 SCALE:" / "2 PD101.00" tokens are detail callouts that must NOT be
+// mistaken for the title-block sheet number — only the one followed by "NN of MM".
+const DOBNOW = `EMOVALS PLAN - PLUMBING 1/4" = 1'-0" 1 PD101.00 SCALE: ROOM 201 REMOVALS PLAN - PLUMBING 1/4" = 1'-0" 2 PD101.00 02 of 05 PLUMBING DEMOLITION FLOOR PLANS 19 of DOB NOW Job# Q0120856-S2 1`;
+const d = parseTitleBlock(DOBNOW);
+check(!!d, "a DOB-NOW filing sheet parses (it did not before pattern 3)");
+eq(d.sheetNo, "PD101.00", "DOB-NOW sheet number keeps its .NN decimal suffix");
+eq(d.title, "PLUMBING DEMOLITION FLOOR PLANS", "DOB-NOW title, not the detail-callout noise");
+eq(d.revision, "0", "a DOB-NOW sheet with no revision block is revision 0");
+// A second DOB-NOW variant: no "of" junk between title and the tail.
+const DOBNOW2 = `2 P101.00 03 of 07 PLUMBING FLOOR PLANS DOB NOW Job# Q0120856-S2 20 of 26 Block 553 Lot 1`;
+eq(parseTitleBlock(DOBNOW2).sheetNo, "P101.00", "DOB-NOW variant with no page-count junk parses");
+eq(parseTitleBlock(DOBNOW2).title, "PLUMBING FLOOR PLANS", "...with the right title");
+// Isolation: the three layouts must not poach each other.
+check(parseTitleBlock(E221).sheetNo === "E221", "DOB-NOW pattern does not steal a Tabler sheet");
+check(parseTitleBlock(CHCR).sheetNo === "P-001", "DOB-NOW pattern does not steal a CHCR sheet");
+check(!TITLE_BLOCK_PATTERNS[2].re.test(E221), "the DOB-NOW regex does not match a sheet-first block");
+check(!TITLE_BLOCK_PATTERNS[2].re.test(CHCR), "the DOB-NOW regex does not match a sheet-last block");
+check(!TITLE_BLOCK_PATTERNS[0].re.test(DOBNOW), "sheet-first does not match a DOB-NOW block");
+check(!TITLE_BLOCK_PATTERNS[1].re.test(DOBNOW), "sheet-last does not match a DOB-NOW block");
 
 // CHCR writes revision dates as 2023.08.11, not 08/11/2023.
 eq(tbRevision("NO. REVISIONS DATE 1 ADDENDUM 1 2024.03.05").revision, "1",
@@ -120,7 +143,7 @@ const grab = (src2, name) => {
   const m = new RegExp("const " + name + " =\\s*(/[^\\n]*/);").exec(src2);
   return m ? m[1].trim() : "";
 };
-for (const name of ["TITLE_BLOCK_SHEET_FIRST", "TITLE_BLOCK_SHEET_LAST"]) {
+for (const name of ["TITLE_BLOCK_SHEET_FIRST", "TITLE_BLOCK_SHEET_LAST", "TITLE_BLOCK_DOB_NOW"]) {
   const htmlRe = grab(html, name), mcpRe = grab(mcp, name);
   check(htmlRe !== "", `found ${name} in transmittal.html`);
   check(mcpRe !== "", `found ${name} in the connector`);
