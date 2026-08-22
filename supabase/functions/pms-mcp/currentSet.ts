@@ -127,6 +127,9 @@ export function composeCurrentSet(rows: any[]) {
         // auditing where a sheet's current revision came from.
         backfilled: row?.files?.backfilled === true,
         folderUrl: row?.sp_folder_url || null,
+        // Phase 2: the file's own Graph webUrl when the register captured it
+        // (new sends and backfilled rows). Null falls back to the set folder.
+        webUrl: s?.webUrl ?? null,
       });
       const key = `${issueDate}|${setName ?? ""}`;
       let ss = sourceSets.get(key);

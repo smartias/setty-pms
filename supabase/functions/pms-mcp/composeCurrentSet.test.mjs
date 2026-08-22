@@ -53,7 +53,7 @@ const T023 = row("T-023", "2025-07-08_Bulletin #2_Resubmission", "2025-07-08", [
 // the newer row must win.
 const T014 = row("T-014", "2025-01-21_Addendum #1", "2025-01-21", [
   { title: "GENERAL NOTES, SYMBOLS & ABBREVIATIONS", sheetNo: "E-001", filename: "E001 - GENERAL NOTES, SYMBOLS & ABBREVIATIONS.pdf", revision: "0", discipline: "Electrical" },
-  { title: "GROUND FLOOR PLAN EAST WING ELECTRICAL POWER", sheetNo: "E-211", filename: "E211 - GROUND FLOOR PLAN - EAST WING - ELECTRICAL POWER.pdf", revision: "0", discipline: "Electrical" },
+  { title: "GROUND FLOOR PLAN EAST WING ELECTRICAL POWER", sheetNo: "E-211", filename: "E211 - GROUND FLOOR PLAN - EAST WING - ELECTRICAL POWER.pdf", revision: "0", discipline: "Electrical", webUrl: "https://setty.sharepoint.com/x/E211.pdf" },
 ]);
 // The 2019 baseline: same sheets, no titles, written "E-001" / "E-111".
 const T009 = row("T-009", "2019-11-22_Final CD Submission", "2019-11-22", [
@@ -134,6 +134,13 @@ check(flat.get("E211").backfilled === true, "a backfilled origin is carried thro
 check(flat.get("E211").transmittalNumber === "T-014", "each sheet names the transmittal it came in on");
 check(out.disciplines.every((d) => d.sheets.every((s) => s.discipline === undefined)),
   "discipline is not repeated on every sheet — the group already states it");
+
+// ── 6c. Phase 2: per-file webUrl carried through, folder is the fallback ────
+check(flat.get("E211").webUrl === "https://setty.sharepoint.com/x/E211.pdf",
+  "a sheet's captured file webUrl is carried into the current set");
+check(flat.get("E001").webUrl === null, "a sheet with no captured webUrl reports null (panel falls back to folder)");
+check(flat.get("E211").folderUrl === "https://setty.sharepoint.com/sites/NYCProjects/x/Outgoing/2025-01-21_Addendum%20%231",
+  "the set folderUrl is still present alongside the file webUrl");
 
 // ── 7. Degenerate input ────────────────────────────────────────────────────
 const empty = composeCurrentSet([]);
