@@ -177,6 +177,13 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v15 (22 Aug 2026) — with the whole portfolio tagged, the Teams card's flat
+// list became unusable: now one collapsed <details> group per team with
+// counts (untagged, if any, opens first as the attention group; open state
+// survives a save). Guidance text updated: blank team = the all-offices
+// setting for firm-wide roles (accounting/operations/principals), overrides =
+// the odd outside job; new projects inherit their creator's team (DB trigger
+// stamp_team_on_project_insert).
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -530,7 +537,7 @@ async function renderRoles() {
               <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span>${feesHiddenPill(x.role)}</td>
             <td><input list="teamOpts" value="${esc(x.team || "")}" placeholder="—" style="width:90px"
                   aria-label="Team for ${esc(x.email)}"
-                  title="Blank = HQ/legacy pool: sees the untagged portfolio (today's world). Set a team and the Claude connector shows them ONLY that team's tagged projects — per-project overrides below are the cross-team grants."
+                  title="Blank = sees EVERY office (the right setting for accounting, operations, principals). Set a team and the Claude connector shows them ONLY that team's tagged projects — per-project overrides below are the cross-team grants."
                   onchange="setUserTeam('${esc(x.email)}', this.value)"></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
             <td style="white-space:nowrap">
@@ -543,9 +550,12 @@ async function renderRoles() {
       <div class="sechead">Teams — which projects belong to which team</div>
       <div style="color:var(--muted);font-size:12px;margin-bottom:8px">
         Teams scope the <b>Claude connector</b> (Phase C, 22 Aug): a person <b>with</b> a team sees only projects tagged with that
-        same team; a person with <b>no</b> team keeps today's world (the whole portfolio, tagged or not). An explicit per-project
-        override below beats the team rule in either direction — that is how you grant one outside person onto one job, or lock one
-        job down. Tagging projects alone scopes nobody: scoping starts when a <i>person</i> gets a team.
+        same team; a person with <b>no</b> team sees <b>every office</b> (the whole portfolio, tagged or not). So firm-wide roles —
+        accounting, operations, principals — should simply <b>stay team-less</b>: blank is not "unassigned", it is the all-offices
+        setting. For someone who <i>does</i> belong to one office but works the odd job elsewhere, keep their team set and add a
+        per-project override below (person · projects.view · allow) for each outside job — that override beats the team rule in
+        either direction, so it is also how you lock one job down. Tagging projects alone scopes nobody: scoping starts when a
+        <i>person</i> gets a team. New projects inherit their creator's team automatically.
         The PMS web app itself is not team-filtered yet; this governs MCP reads.</div>
       <div class="row">
         <label class="sr-only" for="teamProjQ">Find project</label>
@@ -761,30 +771,51 @@ async function setProjectTeam(id, team) {
     renderTeamProjRows();
   } catch (e) { toast(e.message, "error"); }
 }
-// Rows for the Teams card. No filter → the tagged projects (the interesting
-// ones); with a filter → matches, capped. Rebuilt in place so typing in the
-// filter never re-renders (and never loses focus on) the whole tab.
+// Rows for the Teams card. With the whole portfolio tagged (22 Aug) a flat
+// list is unusable, so: no filter → one COLLAPSED group per team with counts
+// (untagged, if any, opens first — it is the group needing attention); with a
+// filter → flat matches, capped. Open/closed state survives a rebuild so
+// saving a team does not slam the group shut under the cursor. Rebuilt in
+// place so typing in the filter never re-renders the whole tab.
 function renderTeamProjRows() {
   const box = $("teamProjRows");
   if (!box) return;
   const q = ($("teamProjQ") ? $("teamProjQ").value : "").trim().toLowerCase();
   const all = (state.teamProjects || []).filter(p => p.projectNumber || p.name);
-  const CAP = 25;
-  const list = q
-    ? all.filter(p => (String(p.projectNumber || "") + " " + String(p.name || "")).toLowerCase().includes(q))
-    : all.filter(p => p.team);
-  const shown = list.slice(0, CAP);
   const teamInput = (p) => `<input list="teamOpts" value="${esc(p.team || "")}" placeholder="—" style="width:90px"
       aria-label="Team for ${esc(p.projectNumber || p.name)}"
       onchange="setProjectTeam(${p.id}, this.value)">`;
-  box.innerHTML = !list.length
-    ? `<div class="empty">${q ? "No project matches “" + esc(q) + "”." :
-        "No projects are tagged yet — type above to find one and give it a team. Everything untagged stays visible to everyone, exactly as today."}</div>`
-    : `<table><thead><tr><th>Project #</th><th>Name</th><th>Team</th></tr></thead>
-       <tbody>${shown.map(p => `
+  const rowsTable = (rows) => `<table><thead><tr><th>Project #</th><th>Name</th><th>Team</th></tr></thead>
+       <tbody>${rows.map(p => `
          <tr><td>${esc(p.projectNumber || "—")}${p.archived === true ? ' <span class="pill info">archived</span>' : ""}</td>
-             <td>${esc(p.name || "")}</td><td>${teamInput(p)}</td></tr>`).join("")}</tbody></table>` +
-      (list.length > CAP ? `<div style="color:var(--muted);font-size:12px;margin-top:6px">Showing ${CAP} of ${list.length} — narrow the filter.</div>` : "");
+             <td>${esc(p.name || "")}</td><td>${teamInput(p)}</td></tr>`).join("")}</tbody></table>`;
+  if (q) {
+    const CAP = 40;
+    const list = all.filter(p => (String(p.projectNumber || "") + " " + String(p.name || "")).toLowerCase().includes(q));
+    box.innerHTML = !list.length
+      ? `<div class="empty">No project matches “${esc(q)}”.</div>`
+      : rowsTable(list.slice(0, CAP)) +
+        (list.length > CAP ? `<div style="color:var(--muted);font-size:12px;margin-top:6px">Showing ${CAP} of ${list.length} — narrow the filter.</div>` : "");
+    return;
+  }
+  const openNow = new Set([...box.querySelectorAll("details[open]")].map(d => d.dataset.team));
+  const groups = new Map();
+  for (const p of all) {
+    const k = p.team || "(untagged)";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  }
+  const keys = [...groups.keys()].sort((a, b) =>
+    (a === "(untagged)" ? -1 : b === "(untagged)" ? 1 : a.localeCompare(b)));
+  box.innerHTML = keys.map(k => {
+    const rows = groups.get(k);
+    const open = openNow.size ? openNow.has(k) : k === "(untagged)";
+    return `<details data-team="${esc(k)}" ${open ? "open" : ""}>
+      <summary style="cursor:pointer;font-weight:600;padding:5px 0">${k === "(untagged)"
+        ? `⚠ untagged · ${rows.length} — invisible to every teamed user; tag or leave deliberately`
+        : `${esc(k)} · ${rows.length} project${rows.length === 1 ? "" : "s"}`}</summary>
+      ${rowsTable(rows)}</details>`;
+  }).join("");
 }
 
 // ── Backups ──────────────────────────────────────────────────────────────────
