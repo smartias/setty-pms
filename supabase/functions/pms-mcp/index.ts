@@ -577,7 +577,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-22-strip-null-bytes";
+const BUILD = "2026-08-22-trace-text-fallback";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2662,7 +2662,17 @@ function refSnippet(text, at, len) {
   return (start > 0 ? "…" : "") + clip + (end < text.length ? "…" : "");
 }
 
-const REF_CONFIDENCE_RANK: Record<string, number> = { register: 3, "drawing-index": 2, unvalidated: 1 };
+// Builds the drawing-text probe pattern for one canonical sheet key ("E001"):
+// the discipline letters, an optional hyphen/space, the digits, bounded so
+// "E001" cannot match inside "SE0012". Postgres ARE syntax, same dialect as
+// drawingQueryPatterns().
+function sheetTextPattern(sheet) {
+  const m = /^([A-Z]{1,3})(\d{3,4}[A-Z]?)$/.exec(sheet);
+  if (!m) return sheet;
+  return "\\y" + m[1] + "[-\\s]?" + m[2] + "\\y";
+}
+
+const REF_CONFIDENCE_RANK: Record<string, number> = { register: 4, "drawing-index": 3, "drawing-text": 2, unvalidated: 1 };
 
 mcp.tool("trace_references", {
   description:
@@ -2673,6 +2683,8 @@ mcp.tool("trace_references", {
     "transmittal register (high confidence; the result also carries that sheet's CURRENT revision and " +
     "the set it was issued in, so you can see at once whether the referenced sheet has since moved); " +
     "'drawing-index' = the sheet appears in indexed drawing text but on no logged transmittal; " +
+    "'drawing-text' = the sheet NUMBER itself occurs in the indexed drawing text (used when title " +
+    "blocks did not parse, so the index holds the text but not the sheet inventory); " +
     "'unvalidated' = shaped like a sheet number of a known discipline but matching no known sheet, " +
     "treat as a lead to verify, not a fact. References are derived fresh on every call and nothing is " +
     "stored. Human-recorded links between items are separate: read_rfi_submittal shows those. On a " +
@@ -2729,8 +2741,8 @@ mcp.tool("trace_references", {
     }
 
     const scanned = { rfis: 0, submittals: 0 };
-    const items: any[] = [];
     const wantNumber = number ? String(number) : null;
+    const candidates: Array<{ item: any; kind: string; found: Array<{ field: string; text: string; t: any }> }> = [];
     const scanItem = (item: any, kind: string) => {
       if (!item) return;
       if (wantNumber && String(item.number) !== wantNumber && String(item.id) !== wantNumber) return;
@@ -2742,42 +2754,83 @@ mcp.tool("trace_references", {
         ["comments", htmlToText(item.comments || "")],
         ["notes", String(item.notes || "")],
       ];
-      const best = new Map<string, any>();
+      const found: Array<{ field: string; text: string; t: any }> = [];
       for (const [field, text] of fields) {
-        for (const t of sheetTokensInText(text)) {
-          let confidence: string | null = null;
-          if (registerKeys.has(t.sheet)) confidence = "register";
-          else if (indexKeys.has(t.sheet)) confidence = "drawing-index";
-          else if (!t.spaceSeparated && DISCIPLINE_NAME[t.discipline]) confidence = "unvalidated";
-          if (!confidence) continue;
-          const prev = best.get(t.sheet);
-          if (prev && REF_CONFIDENCE_RANK[prev.confidence] >= REF_CONFIDENCE_RANK[confidence]) continue;
-          const cur = currentBySheet.get(t.sheet);
-          best.set(t.sheet, {
-            sheet: t.sheet,
-            discipline: DISCIPLINE_NAME[t.discipline] ?? t.discipline,
-            confidence, field,
-            snippet: refSnippet(text, t.at, t.token.length),
-            ...(cur ? {
-              currentRevision: cur.revision ?? null, revisionDate: cur.revisionDate ?? null,
-              issuedIn: cur.issuedIn ?? null, folderUrl: cur.folderUrl ?? null,
-            } : {}),
-          });
-        }
+        for (const t of sheetTokensInText(text)) found.push({ field, text, t });
       }
-      if (!best.size) return;
-      items.push({
-        type: kind, number: item.number ?? item.id ?? null,
-        subject: item.title || (item.description ? htmlToText(String(item.description)).slice(0, 80) : null),
-        status: item.status || null, received: item.dateReceived || null,
-        sheets: [...best.values()].sort((a, b) =>
-          REF_CONFIDENCE_RANK[b.confidence] - REF_CONFIDENCE_RANK[a.confidence] ||
-          String(a.sheet).localeCompare(String(b.sheet))),
-        ...((item.links ?? []).length ? { manualLinkCount: item.links.length, manualLinkNote: "Human-recorded links exist too: read_rfi_submittal shows them." } : {}),
-      });
+      if (found.length) candidates.push({ item, kind, found });
     };
     if (type !== "submittal") for (const r of (p.rfis ?? [])) scanItem(r, "rfi");
     if (type !== "rfi") for (const s of (p.submittals ?? [])) scanItem(s, "submittal");
+
+    // Validation universe 3, the fallback: the sheet NUMBER occurs in the
+    // indexed drawing text itself. This is what saves projects whose title
+    // blocks do not parse (combined discipline books): sheet_no is null on
+    // every indexed page there, so universe 2 is empty even with a warm
+    // index, yet the text plainly contains "E-001". Probed one candidate at a
+    // time against the same RPC search_drawings uses, capped so a pathological
+    // item cannot fan out into dozens of regex scans.
+    const textKeys = new Set<string>();
+    const unknown = new Set<string>();
+    for (const c of candidates) {
+      for (const f of c.found) {
+        const t = f.t;
+        if (registerKeys.has(t.sheet) || indexKeys.has(t.sheet)) continue;
+        if (t.spaceSeparated || !DISCIPLINE_NAME[t.discipline]) continue;
+        unknown.add(t.sheet);
+      }
+    }
+    const TEXT_FALLBACK_CAP = 15;
+    if (numPrefix && unknown.size) {
+      for (const sheet of [...unknown].slice(0, TEXT_FALLBACK_CAP)) {
+        try {
+          const hits = await sbRpc("pms_drawing_search", {
+            p_prefix: numPrefix, p_patterns: [sheetTextPattern(sheet)], p_folder: null, p_limit: 1,
+          });
+          if (Array.isArray(hits) && hits.length) textKeys.add(sheet);
+        } catch (e) {
+          console.warn("[trace_references] text fallback failed:", String((e as any)?.message ?? e));
+          break;
+        }
+      }
+    }
+
+    const items: any[] = [];
+    for (const c of candidates) {
+      const best = new Map<string, any>();
+      for (const f of c.found) {
+        const t = f.t;
+        let confidence: string | null = null;
+        if (registerKeys.has(t.sheet)) confidence = "register";
+        else if (indexKeys.has(t.sheet)) confidence = "drawing-index";
+        else if (textKeys.has(t.sheet)) confidence = "drawing-text";
+        else if (!t.spaceSeparated && DISCIPLINE_NAME[t.discipline]) confidence = "unvalidated";
+        if (!confidence) continue;
+        const prev = best.get(t.sheet);
+        if (prev && REF_CONFIDENCE_RANK[prev.confidence] >= REF_CONFIDENCE_RANK[confidence]) continue;
+        const cur = currentBySheet.get(t.sheet);
+        best.set(t.sheet, {
+          sheet: t.sheet,
+          discipline: DISCIPLINE_NAME[t.discipline] ?? t.discipline,
+          confidence, field: f.field,
+          snippet: refSnippet(f.text, t.at, t.token.length),
+          ...(cur ? {
+            currentRevision: cur.revision ?? null, revisionDate: cur.revisionDate ?? null,
+            issuedIn: cur.issuedIn ?? null, folderUrl: cur.folderUrl ?? null,
+          } : {}),
+        });
+      }
+      if (!best.size) continue;
+      items.push({
+        type: c.kind, number: c.item.number ?? c.item.id ?? null,
+        subject: c.item.title || (c.item.description ? htmlToText(String(c.item.description)).slice(0, 80) : null),
+        status: c.item.status || null, received: c.item.dateReceived || null,
+        sheets: [...best.values()].sort((a, b) =>
+          REF_CONFIDENCE_RANK[b.confidence] - REF_CONFIDENCE_RANK[a.confidence] ||
+          String(a.sheet).localeCompare(String(b.sheet))),
+        ...((c.item.links ?? []).length ? { manualLinkCount: c.item.links.length, manualLinkNote: "Human-recorded links exist too: read_rfi_submittal shows them." } : {}),
+      });
+    }
     items.sort((a, b) => String(b.received ?? "").localeCompare(String(a.received ?? "")));
 
     return asText({
@@ -2788,11 +2841,31 @@ mcp.tool("trace_references", {
       validation: {
         registerSheets: registerKeys.size,
         drawingIndexSheets: indexKeys.size,
-        ...(registerKeys.size || indexKeys.size ? {} : {
-          note: "No transmittal register rows and no indexed drawings on this project, so nothing could be validated: every reference is 'unvalidated'. search_drawings with indexOnly:true fills the drawing index.",
-        }),
+        textValidatedSheets: textKeys.size,
+        ...(unknown.size > TEXT_FALLBACK_CAP ? {
+          textFallbackNote: `Only the first ${TEXT_FALLBACK_CAP} of ${unknown.size} unknown candidates were probed against drawing text; the rest report 'unvalidated'.`,
+        } : {}),
+        ...(await (async () => {
+          if (registerKeys.size || indexKeys.size) return {};
+          // Distinguish "nothing indexed" (indexing fixes it) from "indexed
+          // but title blocks did not parse" (only the text fallback applies):
+          // the two need different advice and the first wording was shown for
+          // both, which sent people to re-run indexing that changes nothing.
+          let hasIndexedText = textKeys.size > 0;
+          if (!hasIndexedText && numPrefix) {
+            try {
+              const probe = await sbGet("pms_drawing_text?select=item_id&project_prefix=eq." + encodeURIComponent(numPrefix) + "&limit=1");
+              hasIndexedText = Array.isArray(probe) && probe.length > 0;
+            } catch { /* leave false; the stricter note is the safe one */ }
+          }
+          return {
+            note: hasIndexedText
+              ? "No transmittal register rows, and the indexed drawings carry no parsed sheet numbers (title blocks did not parse), so references validate only by occurrence in the drawing text ('drawing-text')."
+              : "No transmittal register rows and no indexed drawings on this project, so nothing could be validated: every reference is 'unvalidated'. search_drawings with indexOnly:true fills the drawing index.",
+          };
+        })()),
       },
-      guidance: "References are derived from item text on every call and validated against the transmittal register and the drawing index; nothing is stored. Treat 'unvalidated' as a lead, not a fact.",
+      guidance: "References are derived from item text on every call and validated against the transmittal register, the drawing index, and occurrence in drawing text; nothing is stored. Treat 'unvalidated' as a lead, not a fact.",
     });
   },
 });
