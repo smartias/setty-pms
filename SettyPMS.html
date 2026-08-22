@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-22-pms-v133-current-set-panel";
+    window.__appVersion = "2026-08-22-pms-v134-current-set-file-links";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17165,9 +17165,11 @@ function CurrentSetPanel({ project }) {
                       <td style={{ padding: "4px 8px", color: P.textDim, whiteSpace: "nowrap", verticalAlign: "top" }}>{s.revision != null && s.revision !== "" ? "Rev " + s.revision : "—"}</td>
                       <td style={{ padding: "4px 8px", color: P.textDim, whiteSpace: "nowrap", verticalAlign: "top" }} title={s.issuedIn ? "Issued in " + s.issuedIn : ""}>{s.issueDate}</td>
                       <td style={{ padding: "4px 0 4px 8px", textAlign: "right", whiteSpace: "nowrap", verticalAlign: "top" }}>
-                        {s.folderUrl
-                          ? <a href={s.folderUrl} target="_blank" rel="noreferrer" style={{ color: P.accent, textDecoration: "none", fontSize: 12 }}>Set folder ↗</a>
-                          : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}
+                        {s.webUrl
+                          ? <a href={s.webUrl} target="_blank" rel="noreferrer" style={{ color: P.accent, textDecoration: "none", fontSize: 12 }}>Open ↗</a>
+                          : s.folderUrl
+                            ? <a href={s.folderUrl} target="_blank" rel="noreferrer" style={{ color: P.textMuted, textDecoration: "none", fontSize: 12 }} title="Direct file link not captured for this sheet — opens the set folder">Set folder ↗</a>
+                            : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}
                       </td>
                     </tr>
                   ))}
@@ -17189,7 +17191,7 @@ function CurrentSetPanel({ project }) {
               )}
             </div>
           )}
-          <div style={{ fontSize: 11, color: P.textDim, marginTop: 8 }}>Links open the issuing set's SharePoint folder; per-sheet direct links are coming in a later update.</div>
+          <div style={{ fontSize: 11, color: P.textDim, marginTop: 8 }}>"Open" goes straight to the file; where a direct link wasn't captured, "Set folder" opens the issuing set's SharePoint folder.</div>
         </div>
       )}
     </div>

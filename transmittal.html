@@ -600,6 +600,10 @@
     </h2>
     <div class="status" id="historyStatus" role="status"></div>
     <div id="historyTableWrap" style="overflow-x:auto"></div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-ghost" id="backfillWebUrlsBtn" title="One-time maintenance: fill direct file links (Graph webUrl) on past transmittal rows that lack them, by matching each sheet's filename in its SharePoint folder. Only fills blanks; safe to re-run.">&#128279; Backfill file links</button>
+      <span class="status" id="backfillWebUrlsStatus" role="status" style="margin:0"></span>
+    </div>
   </div>
 
 </main>
@@ -753,6 +757,11 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
           revision:   sh.revision   || "",
           discipline: sh.discipline || "",
           filename:   sh.filename,
+          // Phase 2: the file's own Graph webUrl, matched from the folder listing
+          // (folderFiles) by exact name, so the Current Set panel and get_current_set
+          // can link straight to the sheet. Null when unknown (manual row, or a build
+          // with no folder loaded); the reader falls back to the set folder.
+          webUrl:     (folderFiles.find(f => f.name === sh.filename)?.webUrl) || null,
           // Dropping these was why NO register row on any project carried a
           // revisionDate, even after its title blocks had been read: the reader
           // did the work and the write threw it away.
@@ -1566,7 +1575,7 @@ async function loadFolder() {
     setStatus("loadStatus", "info", "⏳ Reading files in folder…");
 
     const filesRes = await graphFetch("GET",
-      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=id,name,lastModifiedDateTime,size,file,folder,@microsoft.graph.downloadUrl`,
+      `/drives/${resolvedDriveId}/root:/${encodeURIComponent(folderPath)}:/children?$top=200&$select=id,name,lastModifiedDateTime,size,file,folder,webUrl,@microsoft.graph.downloadUrl`,
       null, token
     );
 
@@ -3005,6 +3014,104 @@ async function createAnonymousLink(itemId) {
 // Writes one row per send to the "Transmittals Sent" SharePoint list on the
 // NYC Projects site. Schema must match the column names exactly (see CLAUDE
 // conversation for the column list).
+
+// ─── ADMIN: BACKFILL PER-FILE webUrls (Phase 2, one-time / maintenance) ───
+// Past transmittal-generated rows recorded sp_folder_url + filename but no
+// per-file link. This fills each sheet's Graph webUrl by listing the row's
+// SharePoint folder and matching filenames, so the Current Set panel (and
+// get_current_set) can link straight to the sheet. It only fills blanks and
+// never touches issuedAt/created_at/superseded, so it is safe to re-run. Rows
+// whose folder or file cannot be resolved (off-site, moved, renamed, or in a
+// subfolder of sp_folder_url) are left as-is and keep the folder fallback.
+async function backfillWebUrls() {
+  const btn = document.getElementById("backfillWebUrlsBtn");
+  const S = "backfillWebUrlsStatus";
+  if (!settyAuth || !settyAuth.token()) { setStatus(S, "error", "Sign in first."); return; }
+  if (!window.confirm("Backfill direct file links on past transmittal rows across all projects?\n\nThis lists each set's SharePoint folder and fills in missing per-file links. It only fills blanks and changes no dates. Safe to re-run.")) return;
+  btn.disabled = true;
+  setStatus(S, "info", "⏳ Loading register…");
+  const headers = {
+    "apikey": SUPABASE_ANON,
+    "Authorization": "Bearer " + settyAuth.token(),
+    "Content-Type": "application/json",
+  };
+  try {
+    // 1. Every transmittal-generated row (paged past the 1000-row cap).
+    const rows = [];
+    for (let offset = 0; ; offset += 1000) {
+      const res = await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log"
+        + "?operation=eq.transmittal-generated&select=id,sp_folder_url,files"
+        + "&order=id.asc&limit=1000&offset=" + offset, { headers });
+      if (!res.ok) throw new Error("register lookup " + res.status);
+      const page = await res.json();
+      rows.push(...page);
+      if (page.length < 1000) break;
+    }
+
+    // 2. Resolve the NYCProjects / Project Document Library drive once, exactly
+    //    as loadFolder() does. Rows on any other site won't path-parse (below)
+    //    and are counted as unresolved rather than guessed at.
+    const token = await getToken();
+    const siteRes = await graphFetch("GET", "/sites/setty.sharepoint.com:/sites/NYCProjects:", null, token);
+    const drivesRes = await graphFetch("GET", "/sites/" + siteRes.id + "/drives", null, token);
+    const drive = (drivesRes.value || []).find(d => d.name === "Project Document Library");
+    if (!drive) throw new Error("Project Document Library drive not found");
+    const driveId = drive.id;
+
+    // Cache listings so several rows in one folder list it only once.
+    const folderCache = new Map(); // folderPath -> Map(name -> webUrl)
+    async function listFolder(folderPath) {
+      if (folderCache.has(folderPath)) return folderCache.get(folderPath);
+      const map = new Map();
+      let path = "/drives/" + driveId + "/root:/" + encodeURIComponent(folderPath)
+        + ":/children?$top=200&$select=id,name,webUrl,folder";
+      while (path) {
+        const r = await graphFetch("GET", path, null, token);
+        for (const it of (r.value || [])) {
+          if (it.name && it.webUrl && !it.folder) map.set(it.name, it.webUrl);
+        }
+        const next = r["@odata.nextLink"];
+        path = next ? next.replace("https://graph.microsoft.com/v1.0", "") : null;
+      }
+      folderCache.set(folderPath, map);
+      return map;
+    }
+
+    let processed = 0, rowsPatched = 0, sheetsFilled = 0, unresolved = 0, alreadyDone = 0;
+    for (const r of rows) {
+      processed++;
+      setStatus(S, "info", "⏳ " + processed + "/" + rows.length + "… (" + sheetsFilled + " links filled)");
+      const files = r.files || {};
+      const sheets = Array.isArray(files.sheets) ? files.sheets : [];
+      const needing = sheets.filter(s => s && s.filename && !s.webUrl);
+      if (!needing.length) { if (sheets.length) alreadyDone++; continue; }
+      const decoded = safeDecodeFolderUrl(r.sp_folder_url || "");
+      const libIdx = decoded.indexOf("Project Document Library/");
+      if (libIdx === -1) { unresolved++; continue; }
+      const folderPath = decoded.slice(libIdx + "Project Document Library/".length);
+      let map;
+      try { map = await listFolder(folderPath); }
+      catch (e) { unresolved++; continue; }
+      let changed = 0;
+      for (const s of needing) { const u = map.get(s.filename); if (u) { s.webUrl = u; changed++; } }
+      if (!changed) { unresolved++; continue; }
+      // PATCH only `files`; every other key (issuedAt, superseded, backfilled, ...)
+      // survives because we mutated the fetched object in place and write it back.
+      const patch = await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log?id=eq." + encodeURIComponent(r.id),
+        { method: "PATCH", headers: Object.assign({ "Prefer": "return=minimal" }, headers), body: JSON.stringify({ files }) });
+      if (!patch.ok) { unresolved++; continue; }
+      rowsPatched++; sheetsFilled += changed;
+    }
+    setStatus(S, "success",
+      "✓ Done. " + sheetsFilled + " file link" + (sheetsFilled === 1 ? "" : "s")
+      + " filled across " + rowsPatched + " row" + (rowsPatched === 1 ? "" : "s")
+      + ". " + alreadyDone + " already complete, " + unresolved + " unresolved (folder/file not found or off-site).");
+  } catch (e) {
+    setStatus(S, "error", "✗ " + e.message);
+  }
+  btn.disabled = false;
+}
+document.getElementById("backfillWebUrlsBtn").onclick = backfillWebUrls;
 
 // ─── TRANSMITTAL HISTORY ──────────────────────────────────────────────────────
 // Reads past sends from pms_filing_log (operation = "transmittal-generated").
