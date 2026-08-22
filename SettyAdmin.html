@@ -169,6 +169,14 @@
 // folder was sufficient on its own.
 // v13 (16 Aug 2026) marks Drawing Intelligence phase 2 (search_drawings,
 // PR #144) LIVE in the phase table and notes phase 3 is mostly answered by it.
+// v14 (22 Aug 2026) — identity-scoped MCP (Phases A-C, PRs #180-#182) reaches
+// the console: Users & Roles gains a Team column (pms_user_roles.team) plus a
+// "fees hidden" pill derived from the matrix, a Teams card assigns projects to
+// teams (pms_projects.team — a real column, never a blob key), and the
+// Claude/MCP tab gains a live Usage & audit card over pms_mcp_telemetry
+// (caller_email lands per call since Phase A). Also corrects the tab's stale
+// "any authorized caller sees all PMS data" claims and the Phase-5 rollout
+// banners that predated slice 5 landing.
 // The gate is enforced server-side, not just cosmetically: the admin_* RPCs
 // raise 'Admin role required' unless the caller's JWT email has role='admin'
 // in pms_user_roles, and that table + pms_settyfy_map carry admin-only RLS
@@ -217,6 +225,7 @@ const state = { tab: "signins", roster: null, staffCount: null, roles: null, bac
                 integ: null, integProjects: null, integMaps: null, integFilter: "", tokenShown: false, feedTest: null,
                 sovOpen: null, sovMaps: null, sovMilestones: {},
                 permCatalog: null, permMatrix: null, permOverrides: null,
+                teamProjects: null, mcpAudit: null,
                 lib: null, libEditKey: null, libNew: false, libClients: null, libClientQ: "", libClientSel: null,
                 myRole: undefined };   // undefined = not checked · "pending" · "none" · or a ROLES value
 
@@ -452,23 +461,38 @@ async function renderSignins() {
 // ── Users & Roles + Phase 5 permissions ──────────────────────────────────────
 async function renderRoles() {
   const v = $("view");
-  if (!state.roles || !state.permCatalog || !state.permMatrix || !state.permOverrides) {
+  if (!state.roles || !state.permCatalog || !state.permMatrix || !state.permOverrides || !state.teamProjects) {
     v.innerHTML = '<div class="empty">Loading roles &amp; permissions…</div>';
     try {
-      const [roles, cat, matrix, overrides] = await Promise.all([
+      const [roles, cat, matrix, overrides, teamProjects] = await Promise.all([
         sb("GET", "/rest/v1/pms_user_roles?select=*&order=email.asc"),
         sb("GET", "/rest/v1/pms_capability_catalog?select=*&order=sort.asc"),
         sb("GET", "/rest/v1/pms_role_permissions?select=role,capability,allowed"),
         sb("GET", "/rest/v1/pms_project_permissions?select=*&order=project_number.asc.nullsfirst,id.asc"),
+        // team is a real column on pms_projects (never a blob key — app blob
+        // saves would drop it); name/number are projected out of the blob.
+        sb("GET", "/rest/v1/pms_projects?select=id,team,projectNumber:project->>projectNumber,name:project->>name,archived:project->archived&order=id.asc&limit=1000"),
       ]);
       state.roles = roles || []; state.permCatalog = cat || [];
       state.permMatrix = matrix || []; state.permOverrides = overrides || [];
+      state.teamProjects = teamProjects || [];
     } catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
   }
   const cellAllowed = (role, cap) => {
     const c = state.permMatrix.find(x => x.role === role && x.capability === cap);
     return !!(c && c.allowed);
   };
+  // Known team labels for the datalists: whatever is already in use on either
+  // table. Free text creates a new team — no registry needed yet.
+  const knownTeams = [...new Set([
+    ...state.roles.map(x => x.team), ...state.teamProjects.map(p => p.team),
+  ].filter(Boolean))].sort();
+  const teamDatalist = `<datalist id="teamOpts">${knownTeams.map(t => `<option value="${esc(t)}"></option>`).join("")}</datalist>`;
+  // MCP redaction state, derived from the same matrix the connector enforces:
+  // a role without fees.view gets fee/billing fields replaced by a marker.
+  const feesHiddenPill = (role) => role !== "admin" && !cellAllowed(role, "fees.view")
+    ? ' <span class="pill warn" title="This role lacks fees.view, so the Claude connector redacts fee and billing fields for them (Phase B). Grant fees.view in the matrix below to lift it.">💰 fees hidden</span>'
+    : "";
   v.innerHTML = `
     <div class="card">
       <div class="row">
@@ -486,9 +510,9 @@ async function renderRoles() {
       <div style="color:var(--muted);font-size:12px;margin-top:8px">
         This console — and this list — are <b>admin-only</b>, enforced in the database (guarded RPCs + RLS).
         Roles feed the <b>permission matrix</b> below; signed-in people without a row here get the <b>staff</b> baseline.
-        The Phase 4 RLS flip is live (7/24) — all PMS data is signed-in-only. Matrix enforcement on data <i>writes</i>
-        attaches per-table <code>pms_has_cap()</code> policy terms; three capability slices are enforced and
-        <code>projects.edit</code> is the last one outstanding. Until a table is enforced, the matrix drives app UI only.
+        The Phase 4 RLS flip is live (7/24) — all PMS data is signed-in-only — and Phase 5 write enforcement is complete
+        (all five capability slices attach per-table <code>pms_has_cap()</code> policy terms; slice 5 landed 5 Aug).
+        Since 22 Aug the matrix also scopes what the <b>Claude connector</b> returns (fees redaction, project visibility, teams).
         <b>Adding someone onboards them:</b> a <b>welcome email</b> goes out (via <code>pms-user-emails</code> + Resend)
         and <b>SharePoint access</b> to the NYCProjects libraries (Projects / Proposals / Contracts) is granted via a
         Graph sharing invitation — silently if this browser has a Microsoft session from the PMS, otherwise click
@@ -498,24 +522,47 @@ async function renderRoles() {
         (recovery = re-insert a row via the Supabase SQL editor).</div>
     </div>
     <div class="card">
-      <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Updated</th><th></th></tr></thead>
+      ${teamDatalist}
+      <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Team</th><th>Updated</th><th></th></tr></thead>
       <tbody>${state.roles.map(x => `
         <tr><td>${esc(x.email)}</td><td>${esc(x.display_name || "")}</td>
             <td><select aria-label="Role for ${esc(x.email)}" onchange="setRole('${esc(x.email)}', this.value)">${roleOpts(x.role)}</select>
-              <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span></td>
+              <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span>${feesHiddenPill(x.role)}</td>
+            <td><input list="teamOpts" value="${esc(x.team || "")}" placeholder="—" style="width:90px"
+                  aria-label="Team for ${esc(x.email)}"
+                  title="Blank = HQ/legacy pool: sees the untagged portfolio (today's world). Set a team and the Claude connector shows them ONLY that team's tagged projects — per-project overrides below are the cross-team grants."
+                  onchange="setUserTeam('${esc(x.email)}', this.value)"></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
             <td style="white-space:nowrap">
               <button class="btn" title="Send (or re-send) the welcome email — useful after a failed send or for re-onboarding" onclick="sendWelcomeForRow(this, '${esc(x.email)}', '${esc(x.role)}', '${esc(x.display_name || "")}')">✉ Welcome</button>
               <button class="btn" title="Grant access to the NYCProjects SharePoint libraries (Projects, Proposals, Contracts) via a Graph sharing invitation" onclick="grantSpForRow(this, '${esc(x.email)}')">📁 SP access</button>
               <button class="btn btn-danger" onclick="dropRole('${esc(x.email)}')">Remove</button></td></tr>`).join("") ||
-        '<tr><td colspan="5" class="empty">No users yet.</td></tr>'}</tbody></table>
+        '<tr><td colspan="6" class="empty">No users yet.</td></tr>'}</tbody></table>
+    </div>
+    <div class="card">
+      <div class="sechead">Teams — which projects belong to which team</div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">
+        Teams scope the <b>Claude connector</b> (Phase C, 22 Aug): a person <b>with</b> a team sees only projects tagged with that
+        same team; a person with <b>no</b> team keeps today's world (the whole portfolio, tagged or not). An explicit per-project
+        override below beats the team rule in either direction — that is how you grant one outside person onto one job, or lock one
+        job down. Tagging projects alone scopes nobody: scoping starts when a <i>person</i> gets a team.
+        The PMS web app itself is not team-filtered yet; this governs MCP reads.</div>
+      <div class="row">
+        <label class="sr-only" for="teamProjQ">Find project</label>
+        <input id="teamProjQ" placeholder="Filter by number or name (e.g. RFK, SIPX262012)" style="flex:1;min-width:240px"
+          oninput="renderTeamProjRows()">
+        <span style="font-size:12px;color:var(--muted)">${state.teamProjects.filter(p => p.team).length} tagged ·
+          ${knownTeams.length ? "teams: " + knownTeams.map(esc).join(", ") : "no teams yet"}</span>
+      </div>
+      <div id="teamProjRows" style="margin-top:8px"></div>
     </div>
     <div class="card">
       <div class="sechead">Permission matrix — what each role can do</div>
       <div style="background:var(--amberDim);border:1px solid var(--amber);color:var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;font-weight:600">
-        ⚠ Phase 5 rollout: since the 7/24 flip all data is signed-in-only. Database <b>write</b> enforcement from this matrix
-        is now attached for <code>emails.file</code>, <code>field.report</code> and <code>pipeline.edit</code> (15 policies / 7 tables).
-        <code>projects.edit</code> is the last slice — for that one this matrix still drives app UI only.</div>
+        ⚠ Phase 5 write enforcement is <b>complete</b> (slice 5, <code>projects.edit</code>, live 5 Aug): every capability slice is
+        attached to database write policies via <code>pms_has_cap()</code>. Since 22 Aug the same matrix also scopes the
+        <b>Claude connector's reads</b>: roles without <code>fees.view</code> get fee/billing fields redacted, and per-project
+        <code>projects.view</code> rules plus teams (above) decide which projects exist for a caller at all.</div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th scope="col" style="min-width:170px">Capability</th>
           ${ROLES.map(r => `<th scope="col" title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
@@ -570,6 +617,7 @@ async function renderRoles() {
             <td><button class="btn btn-danger" onclick="dropOverride(${o.id})">Remove</button></td></tr>`).join("") ||
         '<tr><td colspan="7" class="empty">No overrides — every project follows the matrix above.</td></tr>'}</tbody></table>
     </div>`;
+  renderTeamProjRows();
 }
 async function toggleCap(role, cap, allowed) {
   try {
@@ -691,6 +739,52 @@ async function dropRole(email) {
     await sb("DELETE", "/rest/v1/pms_user_roles?email=eq." + encodeURIComponent(email));
     state.roles = null; toast("Removed " + email, "success"); render();
   } catch (e) { toast(e.message, "error"); }
+}
+
+async function setUserTeam(email, team) {
+  team = (team || "").trim() || null;
+  try {
+    await sb("PATCH", "/rest/v1/pms_user_roles?email=eq." + encodeURIComponent(email),
+      { team, updated_at: new Date().toISOString() });
+    const row = (state.roles || []).find(x => x.email === email);
+    if (row) row.team = team;
+    toast(email + " → team " + (team || "none (sees the untagged portfolio)"), "success");
+  } catch (e) { toast(e.message, "error"); state.roles = null; render(); }
+}
+async function setProjectTeam(id, team) {
+  team = (team || "").trim() || null;
+  const p = (state.teamProjects || []).find(x => x.id === id);
+  try {
+    await sb("PATCH", "/rest/v1/pms_projects?id=eq." + id, { team });
+    if (p) p.team = team;
+    toast((p ? (p.projectNumber || p.name) : "project") + " → team " + (team || "untagged"), "success");
+    renderTeamProjRows();
+  } catch (e) { toast(e.message, "error"); }
+}
+// Rows for the Teams card. No filter → the tagged projects (the interesting
+// ones); with a filter → matches, capped. Rebuilt in place so typing in the
+// filter never re-renders (and never loses focus on) the whole tab.
+function renderTeamProjRows() {
+  const box = $("teamProjRows");
+  if (!box) return;
+  const q = ($("teamProjQ") ? $("teamProjQ").value : "").trim().toLowerCase();
+  const all = (state.teamProjects || []).filter(p => p.projectNumber || p.name);
+  const CAP = 25;
+  const list = q
+    ? all.filter(p => (String(p.projectNumber || "") + " " + String(p.name || "")).toLowerCase().includes(q))
+    : all.filter(p => p.team);
+  const shown = list.slice(0, CAP);
+  const teamInput = (p) => `<input list="teamOpts" value="${esc(p.team || "")}" placeholder="—" style="width:90px"
+      aria-label="Team for ${esc(p.projectNumber || p.name)}"
+      onchange="setProjectTeam(${p.id}, this.value)">`;
+  box.innerHTML = !list.length
+    ? `<div class="empty">${q ? "No project matches “" + esc(q) + "”." :
+        "No projects are tagged yet — type above to find one and give it a team. Everything untagged stays visible to everyone, exactly as today."}</div>`
+    : `<table><thead><tr><th>Project #</th><th>Name</th><th>Team</th></tr></thead>
+       <tbody>${shown.map(p => `
+         <tr><td>${esc(p.projectNumber || "—")}${p.archived === true ? ' <span class="pill info">archived</span>' : ""}</td>
+             <td>${esc(p.name || "")}</td><td>${teamInput(p)}</td></tr>`).join("")}</tbody></table>` +
+      (list.length > CAP ? `<div style="color:var(--muted);font-size:12px;margin-top:6px">Showing ${CAP} of ${list.length} — narrow the filter.</div>` : "");
 }
 
 // ── Backups ──────────────────────────────────────────────────────────────────
@@ -1526,6 +1620,15 @@ function renderMcp() {
     </div>
 
     <div class="card doc">
+      <div class="sechead">📊 Usage &amp; audit — who asked what (Phase D)</div>
+      <p style="font-size:12.5px;color:var(--muted);margin-top:2px">Every tool call is logged to <code>pms_mcp_telemetry</code>
+        (admin-only RLS) with the signed-in caller's email since 22 Aug (identity Phase A). Empty <i>caller</i> means the
+        service lane (Claude Code / scripts via the shared secret) or a call from before identity landed. An <b>empty</b>
+        outcome is the number to watch: it is a person who asked and got nothing, and it sends them back to the N: drive.</p>
+      <div id="mcpAuditBox"><div class="empty">Loading usage…</div></div>
+    </div>
+
+    <div class="card doc">
       <div class="sechead">Current status: 5 Aug 2026</div>
       <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
         <tr><td>Discovery proxy (<code>mcp-proxy/</code>)</td><td><b>Live, and it is the URL to give Claude.</b> Verified end to end on 5 Aug: 14/14 checks on the full discovery chain, plus passthrough to the Edge Function confirmed. This is what unblocked org-wide sign-in after weeks of <code>{"error":"requested path is invalid"}</code>. A rate limiter is live on the proxied path (25 requests/10s per client, 429 + Retry-After, fail-open), added after a real client was observed retrying a dozen times in half a minute during an auth failure. Still on a <code>workers.dev</code> subdomain, so move it to a custom domain before firm-wide rollout (see the note above).</td></tr>
@@ -1543,13 +1646,20 @@ function renderMcp() {
             <code>MCP.Access</code> consents <b>user-side</b> with no admin grant (the blank "Granted for Setty" status on the API permissions
             page is cosmetic). <b>Invariant: the manifest must keep <code>api.requestedAccessTokenVersion = 2</code></b> (set 5 Aug 2026;
             the default <code>null</code> means v1 tokens, which the server rejects; full story in the Authentication card below).</td></tr>
+        <tr><td>Identity &amp; scoping (Phases A–C, 22 Aug 2026)</td><td><b>Live.</b> The verified Microsoft sign-in now carries
+            the caller's identity into every request (PR #180): telemetry records who asked what. The Phase 5 matrix scopes
+            connector <b>reads</b> (PR #181): roles without <code>fees.view</code> get fee/billing fields replaced by a
+            <code>[redacted]</code> marker, and per-project <code>projects.view</code> rules hide projects entirely (a hidden
+            project answers as not-found, never confirming it exists). Teams are first-class (PR #182):
+            tag people and projects in Users &amp; Roles and a teamed caller sees only their team's projects — the multi-team
+            pilot needs no deploy, just the two tags. Admins and the shared-secret lane bypass scoping.</td></tr>
         <tr><td>Local Python bridge (per-device)</td><td><b>Deprecated — being retired.</b> Pilot-era install; see the warning under the admin steps below. Note the server still accepts the pilot shared secret, so any surviving install keeps working until <code>MCP_SHARED_SECRET</code> is rotated — rotation is what actually decommissions it.</td></tr>
       </tbody></table>
-      <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector is read-only and returns the same
-        firm-wide project view the PMS apps already show every member of staff. Role permissions in PMS govern what a person can
-        <i>do</i> (file email, edit pipeline, edit projects), not which projects they can read — so enabling this org-wide does not
-        widen anyone's access to data they cannot already open in PMS. It does not expose the billing feed, admin console, or any
-        write path.</p>
+      <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector is read-only, and since 22 Aug its
+        reads are <b>scoped per caller</b>: fee and billing fields are redacted for roles without <code>fees.view</code>, per-project
+        <code>projects.view</code> rules hide projects outright, and teamed users see only their team's tagged projects. So enabling
+        it org-wide gives each person at most the view their PMS role allows — in the fee columns, slightly <i>less</i> than the web
+        app shows today. It does not expose the billing feed, admin console, or any write path.</p>
     </div>
 
     <div class="card doc">
@@ -1558,7 +1668,10 @@ function renderMcp() {
         <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. Currently <b>deploy 45</b>, build <code>2026-08-02-issue-date</code>. The deploy number is just Supabase's counter; the <b>build string is the meaningful version</b> — it is set in the source and echoed by <code>/health</code>.</li>
         <li><b>Data path:</b> the function holds the service-role key server-side and reads <code>pms_projects</code>, <code>pms_project_emails</code> and the analytics SQL functions. A 5-minute in-memory cache plus a slim field projection keeps broad questions fast.</li>
         <li><b>Documents &amp; templates:</b> project documents and the live "Templates for MCP Connector" SharePoint folder are read through a separate app-only Microsoft Graph app (client credentials, read-only Sites permission — the one admin-consented piece).</li>
-        <li><b>Permission model:</b> shared service view — any authorized caller sees all PMS data (same as the PMS itself today). Read-only: there are no write tools.</li>
+        <li><b>Permission model (since 22 Aug):</b> identity-scoped. The verified sign-in's email resolves against the Phase 5
+            matrix (<code>pms_caps_for</code>) on every request: fee fields redact without <code>fees.view</code>, hidden projects
+            answer as not-found, teams scope the portfolio. Reads still execute with the service-role key — the Edge Function is the
+            enforcer, RLS is not in that path. Read-only: there are no write tools.</li>
         <li><b>Source of truth — changed since v31:</b> the function source is now <b>committed to the repo</b> at <code>supabase/functions/pms-mcp/</code>. It used to live only on the deployed function, so the old rule here was "pull the live source before editing." <b>That rule is retired for <code>pms-mcp</code>:</b> edit the repo copy and deploy from disk. (It still applies to <code>pms-user-emails</code> and <code>weekly-digest</code>, which have not been reconciled yet.)</li>
         <li><b>Deploys:</b> from the repo root via <code>supabase functions deploy --no-verify-jwt pms-mcp</code> (always pass the deno.json import map). Bump the <code>BUILD</code> constant in <code>index.ts</code> in the same change, then confirm the new string comes back from the health link above — that is the deploy check.</li>
       </ul>
@@ -1751,14 +1864,97 @@ function renderMcp() {
         <li><b>Rotating the shared secret:</b> set a new <code>MCP_SHARED_SECRET</code> in Supabase function secrets — old callers cut off instantly. The OAuth path is unaffected by rotation, so once the deprecated local bridges are decommissioned this can be rotated freely with nothing else to update. Until then it is also embedded in any remaining bridge install.</li>
         <li><b>New permissions need lead time:</b> any new Entra scope or Graph permission requires an IT admin-consent click (tenant policy) — plan it into the schedule rather than discovering it at rollout.</li>
         <li><b>Watch, don't guess:</b> Supabase dashboard → Edge Functions → pms-mcp → Logs shows every request with timing; the server has been measured healthy at ~1–2s warm, so persistent slowness reports usually point at the client bridge or a cold start, not the server.</li>
-        <li><b>Data caveat everyone should know:</b> shared service view — any connected user can ask about <i>any</i> project (same as the PMS itself). If per-user or per-role visibility is ever needed, the Entra sign-in already identifies the user; scoping would build on the Phase 5 roles registry.</li>
+        <li><b>Data caveat, updated 22 Aug:</b> reads are now scoped per caller — the Entra sign-in's identity resolves against the
+            Phase 5 matrix on every request (fees redaction, project hiding, teams). What used to be true ("any connected user can
+            ask about any project") now only holds for team-less callers with default view rights, which is deliberate: the
+            untagged portfolio is the legacy pool.</li>
       </ul>
     </div>`;
+  fillMcpAudit();
+}
+
+// ── Claude / MCP usage & audit (Phase D) ─────────────────────────────────────
+// Reads pms_mcp_telemetry (admin-only RLS) and renders a 7-day rollup plus the
+// most recent calls. caller_email exists on rows written since identity
+// Phase A (22 Aug); older rows and shared-secret (service-lane) calls have it
+// null. All aggregation is client-side over at most 1000 rows — PostgREST caps
+// responses there anyway, and a busier week than that is a milestone worth a
+// real report.
+async function fillMcpAudit() {
+  const box = $("mcpAuditBox");
+  if (!box) return;
+  let rows = state.mcpAudit;
+  if (!rows) {
+    try {
+      const since = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
+      rows = await sb("GET", "/rest/v1/pms_mcp_telemetry?select=created_at,tool,project_number,outcome,result_count,latency_ms,caller_email,detail" +
+        "&created_at=gte." + encodeURIComponent(since) + "&order=id.desc&limit=1000");
+      state.mcpAudit = rows = rows || [];
+    } catch (e) {
+      box.innerHTML = `<div class="empty">Could not load telemetry: ${esc(e.message)}</div>`;
+      return;
+    }
+  }
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty">No connector calls in the last 7 days.</div>';
+    return;
+  }
+  const by = (key) => {
+    const m = new Map();
+    for (const r of rows) {
+      const k = key(r) || "—";
+      const e = m.get(k) || { n: 0, empty: 0, error: 0 };
+      e.n++; if (r.outcome === "empty") e.empty++; if (r.outcome === "error") e.error++;
+      m.set(k, e);
+    }
+    return [...m.entries()].sort((a, b) => b[1].n - a[1].n);
+  };
+  const callers = by(r => r.caller_email);
+  const tools = by(r => r.tool).slice(0, 10);
+  const empties = rows.filter(r => r.outcome === "empty").length;
+  const errors = rows.filter(r => r.outcome === "error").length;
+  const statPill = (e) => (e.empty ? ` <span class="pill warn">${e.empty} empty</span>` : "") +
+                          (e.error ? ` <span class="pill bad">${e.error} err</span>` : "");
+  const recent = rows.slice(0, 30);
+  box.innerHTML = `
+    <div class="row" style="gap:18px;flex-wrap:wrap;margin-bottom:10px">
+      <div><b>${rows.length}</b> calls · 7 days${rows.length >= 1000 ? " <span class='pill info'>capped at 1000</span>" : ""}</div>
+      <div><b>${callers.filter(([k]) => k !== "—").length}</b> signed-in callers</div>
+      <div>${empties ? `<span class="pill warn">${empties} empty</span>` : '<span class="pill ok">0 empty</span>'}
+           ${errors ? ` <span class="pill bad">${errors} errors</span>` : ' <span class="pill ok">0 errors</span>'}</div>
+      <button class="btn" onclick="state.mcpAudit = null; fillMcpAudit()">↻ Refresh</button>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:260px">
+        <div class="sechead" style="font-size:13px">By caller</div>
+        <table><thead><tr><th>Caller</th><th>Calls</th></tr></thead><tbody>
+          ${callers.map(([k, e]) => `<tr><td>${k === "—" ? '<span style="color:var(--muted)">service lane / pre-identity</span>' : esc(k)}</td>
+            <td>${e.n}${statPill(e)}</td></tr>`).join("")}</tbody></table>
+      </div>
+      <div style="flex:1;min-width:260px">
+        <div class="sechead" style="font-size:13px">Top tools</div>
+        <table><thead><tr><th>Tool</th><th>Calls</th></tr></thead><tbody>
+          ${tools.map(([k, e]) => `<tr><td><code>${esc(k)}</code></td><td>${e.n}${statPill(e)}</td></tr>`).join("")}</tbody></table>
+      </div>
+    </div>
+    <div class="sechead" style="font-size:13px;margin-top:10px">Recent calls</div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>When</th><th>Caller</th><th>Tool</th><th>Project</th><th>Outcome</th><th>ms</th></tr></thead>
+      <tbody>${recent.map(r => `
+        <tr><td title="${esc(r.created_at || "")}">${rel(r.created_at)}</td>
+            <td>${r.caller_email ? esc(r.caller_email.split("@")[0]) : '<span style="color:var(--muted)">service</span>'}</td>
+            <td><code>${esc(r.tool)}</code></td>
+            <td>${esc(r.project_number || "")}</td>
+            <td><span class="pill ${r.outcome === "hit" ? "ok" : r.outcome === "empty" ? "warn" : "bad"}"
+                 title="${esc(r.detail || "")}">${esc(r.outcome)}${r.result_count != null ? " · " + r.result_count : ""}</span></td>
+            <td style="color:var(--muted)">${r.latency_ms ?? ""}</td></tr>`).join("")}</tbody>
+    </table></div>`;
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 settyAuth.onChange(() => { state.roster = state.roles = state.backups = state.filing = null;
-  state.permCatalog = state.permMatrix = state.permOverrides = null; state.myRole = undefined; render(); });
+  state.permCatalog = state.permMatrix = state.permOverrides = null;
+  state.teamProjects = state.mcpAudit = null; state.myRole = undefined; render(); });
 settyAuth.init().catch(e => toast("Sign-in: " + e.message, "error")).then(render);
 </script>
 </body>
