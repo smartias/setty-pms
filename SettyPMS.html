@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-22-pms-v134-current-set-file-links";
+    window.__appVersion = "2026-08-22-pms-v135-current-set-fixes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17127,6 +17127,11 @@ function CurrentSetPanel({ project }) {
 
   const { loading, error, set } = state;
   const wrap = { marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 14 };
+  // Register folder URLs are stored DECODED, so a set named "Addendum #2" carries a
+  // literal '#' that the browser reads as a URL fragment and truncates the path (404).
+  // Encode the '#' and spaces. Graph webUrls arrive already-encoded, so this is a
+  // no-op on them (no literal spaces or raw '#').
+  const spHref = u => String(u || "").replace(/ /g, "%20").replace(/#/g, "%23");
   return (
     <div style={wrap}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: open ? 10 : 0, flexWrap: "wrap" }}>
@@ -17151,32 +17156,41 @@ function CurrentSetPanel({ project }) {
             {set.sourceSets[0] && <> · newest set <span style={{ color: P.text }}>{set.sourceSets[0].setName || "—"}</span> ({set.sourceSets[0].issueDate})</>}
             {set.supersededCount > 0 && <> · {set.supersededCount} older sighting{set.supersededCount === 1 ? "" : "s"} superseded</>}
           </div>
-          {set.disciplines.map(d => (
-            <div key={d.discipline} style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: P.accentLight, marginBottom: 4 }}>
-                {d.name} <span style={{ color: P.textDim, fontWeight: 400 }}>· {d.sheetCount}</span>
-              </div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                <tbody>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: 92 }} />
+              <col />
+              <col style={{ width: 72 }} />
+              <col style={{ width: 104 }} />
+              <col style={{ width: 92 }} />
+            </colgroup>
+            <tbody>
+              {set.disciplines.map(d => (
+                <React.Fragment key={d.discipline}>
+                  <tr>
+                    <td colSpan={5} style={{ padding: "12px 0 4px", fontSize: 13, fontWeight: 700, color: P.accentLight, borderBottom: `1px solid ${P.border}` }}>
+                      {d.name} <span style={{ color: P.textDim, fontWeight: 400 }}>· {d.sheetCount}</span>
+                    </td>
+                  </tr>
                   {d.sheets.map(s => (
                     <tr key={s.sheetNo} style={{ borderBottom: `1px solid ${P.border}` }}>
                       <td style={{ padding: "4px 8px 4px 0", fontFamily: "'JetBrains Mono',monospace", color: P.text, whiteSpace: "nowrap", verticalAlign: "top" }}>{s.sheetNo}</td>
-                      <td style={{ padding: "4px 8px", color: P.textMuted }}>{s.title || "—"}</td>
+                      <td style={{ padding: "4px 8px", color: P.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={s.title || ""}>{s.title || "—"}</td>
                       <td style={{ padding: "4px 8px", color: P.textDim, whiteSpace: "nowrap", verticalAlign: "top" }}>{s.revision != null && s.revision !== "" ? "Rev " + s.revision : "—"}</td>
                       <td style={{ padding: "4px 8px", color: P.textDim, whiteSpace: "nowrap", verticalAlign: "top" }} title={s.issuedIn ? "Issued in " + s.issuedIn : ""}>{s.issueDate}</td>
                       <td style={{ padding: "4px 0 4px 8px", textAlign: "right", whiteSpace: "nowrap", verticalAlign: "top" }}>
                         {s.webUrl
-                          ? <a href={s.webUrl} target="_blank" rel="noreferrer" style={{ color: P.accent, textDecoration: "none", fontSize: 12 }}>Open ↗</a>
+                          ? <a href={spHref(s.webUrl)} target="_blank" rel="noreferrer" style={{ color: P.accent, textDecoration: "none", fontSize: 12 }}>Open ↗</a>
                           : s.folderUrl
-                            ? <a href={s.folderUrl} target="_blank" rel="noreferrer" style={{ color: P.textMuted, textDecoration: "none", fontSize: 12 }} title="Direct file link not captured for this sheet — opens the set folder">Set folder ↗</a>
+                            ? <a href={spHref(s.folderUrl)} target="_blank" rel="noreferrer" style={{ color: P.textMuted, textDecoration: "none", fontSize: 12 }} title="Direct file link not captured for this sheet — opens the set folder">Set folder ↗</a>
                             : <span style={{ color: P.textDim, fontSize: 12 }}>—</span>}
                       </td>
                     </tr>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
           {set.unusable.length > 0 && (
             <div style={{ marginTop: 6 }}>
               <span onClick={() => setShowUnusable(v => !v)} style={{ cursor: "pointer", fontSize: 12, color: P.textMuted, userSelect: "none" }}>
