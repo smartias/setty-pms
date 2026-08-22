@@ -6,10 +6,34 @@ import { McpServer, StreamableHttpTransport } from "mcp-lite";
 import { Hono } from "hono";
 import { z } from "zod";
 import pako from "pako";
-import { jwtVerify, createRemoteJWKSet } from "jose";
+import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+// ── Caller identity (Phase A of identity-scoped MCP) ─────────────────────────
+// Every request already arrives with a fully verified Entra token; until now the
+// verified payload was discarded and every caller was interchangeable. This
+// stores WHO is asking, request-scoped via AsyncLocalStorage because mcp-lite
+// tool handlers receive only their args: the Hono middleware cannot hand them
+// anything directly, and a module-level variable would cross-contaminate
+// concurrent requests in the same isolate.
+//
+// Phase A records identity (telemetry + logs) and changes NO tool behavior.
+// Later phases resolve caps from it, so the default matters: a missing store is
+// a plumbing bug and must resolve to "unknown", which future enforcement treats
+// as the LEAST privileged caller, never as service.
+type Caller = {
+  kind: "user" | "service" | "unknown";
+  email: string | null;   // preferred_username/upn, lowercased: the join key to pms_user_roles
+  name: string | null;
+  oid: string | null;
+};
+const UNKNOWN_CALLER: Caller = { kind: "unknown", email: null, name: null, oid: null };
+const SERVICE_CALLER: Caller = { kind: "service", email: null, name: "shared-secret", oid: null };
+const callerStore = new AsyncLocalStorage<Caller>();
+const currentCaller = (): Caller => callerStore.getStore() ?? UNKNOWN_CALLER;
 
 async function sbGet(path: string): Promise<any> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -409,7 +433,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-17-search-drawings-throughput-history";
+const BUILD = "2026-08-22-caller-identity-phase-a";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -547,6 +571,10 @@ const _rawTool = mcp.tool.bind(mcp);
           result_count: cls.resultCount,
           latency_ms: Date.now() - t0,
           build: BUILD,
+          // Requires the caller_email column to exist BEFORE this deploys:
+          // PostgREST 400s inserts with unknown columns, and logTelemetry
+          // swallows that, which would silently kill ALL telemetry.
+          caller_email: currentCaller().email,
           query: args?.query ? String(args.query).slice(0, TELEMETRY_QUERY_MAX) : null,
           detail: cls.detail,
         });
@@ -5010,16 +5038,33 @@ const ENTRA_JWKS = ENTRA_TENANT_ID
   ? createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${ENTRA_TENANT_ID}/discovery/v2.0/keys`))
   : null;
 
-async function verifyEntraToken(token: string): Promise<boolean> {
-  if (!ENTRA_JWKS || !ENTRA_CLIENT_ID) return false;
+// Returns the verified payload (null = reject) instead of a boolean: the payload
+// carries the caller's identity, and dropping it here is what made the sign-in a
+// boolean gate in the first place.
+async function verifyEntraToken(token: string): Promise<JWTPayload | null> {
+  if (!ENTRA_JWKS || !ENTRA_CLIENT_ID) return null;
   try {
     const { payload } = await jwtVerify(token, ENTRA_JWKS, {
       issuer: `https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0`,
       audience: [ENTRA_CLIENT_ID, `api://${ENTRA_CLIENT_ID}`],
     });
-    if (payload.tid && payload.tid !== ENTRA_TENANT_ID) return false;
-    return true;
-  } catch { return false; }
+    if (payload.tid && payload.tid !== ENTRA_TENANT_ID) return null;
+    return payload;
+  } catch { return null; }
+}
+
+function callerFromPayload(payload: JWTPayload): Caller {
+  // preferred_username is the UPN for member accounts and matches the emails in
+  // pms_user_roles; upn/email are fallbacks for token shapes that omit it.
+  const email = firstString(
+    (payload as any).preferred_username, (payload as any).upn, (payload as any).email,
+  );
+  return {
+    kind: "user",
+    email: email ? email.toLowerCase() : null,
+    name: firstString((payload as any).name),
+    oid: firstString((payload as any).oid),
+  };
 }
 
 app.get("/pms-mcp/.well-known/oauth-protected-resource", (c) =>
@@ -5035,8 +5080,21 @@ app.get("/pms-mcp/.well-known/oauth-protected-resource", (c) =>
 
 app.use("/pms-mcp/mcp", async (c, next) => {
   const auth = c.req.header("Authorization") || "";
-  if (SHARED_SECRET && auth === `Bearer ${SHARED_SECRET}`) { await next(); return; }
-  if (auth.startsWith("Bearer ") && await verifyEntraToken(auth.slice(7))) { await next(); return; }
+  // callerStore.run wraps next() so the whole downstream chain, including the
+  // MCP transport and every tool handler it awaits, sees this request's caller.
+  if (SHARED_SECRET && auth === `Bearer ${SHARED_SECRET}`) {
+    await callerStore.run(SERVICE_CALLER, () => next());
+    return;
+  }
+  if (auth.startsWith("Bearer ")) {
+    const payload = await verifyEntraToken(auth.slice(7));
+    if (payload) {
+      const caller = callerFromPayload(payload);
+      console.log("[caller]", caller.email ?? "(no email claim)", caller.oid ?? "");
+      await callerStore.run(caller, () => next());
+      return;
+    }
+  }
   c.header("WWW-Authenticate", `Bearer resource_metadata=\"${RESOURCE_META_URL}\"`);
   return c.json({ error: "Unauthorized" }, 401);
 });
