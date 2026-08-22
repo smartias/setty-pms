@@ -55,7 +55,8 @@ export function prepareRegisterRows(rows: any[]): any[] {
 // E and the M sheet of a bulletin land on that one key. Folding those in would
 // collapse two disciplines onto one row and overstate coverage, so they are
 // counted out separately where the caller can see them.
-export const SHEET_NO_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)$/;
+// The optional `.NN` tail is a DOB-NOW filing suffix (e.g. P101.00, PD101.01).
+export const SHEET_NO_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?(?:\.\d{1,2})?)$/;
 
 export function canonicalSheet(sheet: any): { sheetNo: string; discipline: string } | null {
   const raw = String(sheet?.sheetNo || "").toUpperCase().replace(/\s+/g, "");

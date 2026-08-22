@@ -40,7 +40,8 @@ export function prepareRegisterRows(rows) {
 // A real sheet number is a discipline prefix and a number. A building SERIES
 // ("STTQ-01") names no single sheet and is rejected, so two disciplines never
 // collapse onto one row.
-export const SHEET_NO_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)$/;
+// The optional `.NN` tail is a DOB-NOW filing suffix (e.g. P101.00, PD101.01).
+export const SHEET_NO_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?(?:\.\d{1,2})?)$/;
 
 export function canonicalSheet(sheet) {
   const raw = String(sheet?.sheetNo || "").toUpperCase().replace(/\s+/g, "");

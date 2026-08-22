@@ -3567,6 +3567,13 @@ const TITLE_BLOCK_SHEET_FIRST =
   /\b([A-Z]{1,3}\d{2,4}[A-Z]?)\s+([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Z]{2,4})\s+([A-Z]{2,4})\s+(\d[\d.]*)\b/;
 const TITLE_BLOCK_SHEET_LAST =
   /([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+([A-Za-z][\w.]{1,14})\s+([A-Za-z][\w.]{1,14})\s+(\d[\d.]*)\s+([A-Z]{1,3})\s*-\s*(\d{2,4}[A-Z]?)\s+[A-Z]{1,3}\s+(\d{1,3})\s+(\d{1,3})\b/;
+// 3. DOB-NOW filing stamp (Setty in-house template, e.g. Q126 Reso A Science Lab):
+//      … 2 PD101.00 02 of 05 PLUMBING DEMOLITION FLOOR PLANS 19 of DOB NOW Job# Q0120856-S2 …
+//    Sheet number FIRST, then the DOB-set position "NN of MM", then the title, then
+//    (optionally the contract-set position) and the fixed "DOB NOW Job#" tail, which is
+//    what makes the match safe. Sheet numbers carry a .NN filing suffix (PD101.00).
+const TITLE_BLOCK_DOB_NOW =
+  /\b([A-Z]{1,3}\d{2,4}(?:\.\d{1,2})?)\s+(\d{1,3})\s+of\s+(\d{1,3})\s+([A-Z][A-Z0-9 \-,&/'".()]{3,80}?)\s+(?:[\d\s]+(?:of[\d\s]+)?)?DOB\s+NOW\s+Job#/;
 
 const TITLE_BLOCK_PATTERNS: Array<{ layout: string; re: RegExp; map: (m: RegExpExecArray) => any }> = [
   {
@@ -3586,6 +3593,17 @@ const TITLE_BLOCK_PATTERNS: Array<{ layout: string; re: RegExp; map: (m: RegExpE
       sheetNo: m[6] + "-" + m[7], sheetTitle: m[1], sheetDate: m[2],
       drawnBy: m[3], checkedBy: m[4], projectNo: m[5],
       pageOfSet: Number(m[8]), setTotal: Number(m[9]),
+    }),
+  },
+  {
+    layout: "dob-now",
+    re: TITLE_BLOCK_DOB_NOW,
+    // No drawn-by/checked-by/date in this stamp; the revision block still carries
+    // the revision + date, read separately below. pageOfSet/setTotal are the DOB-set
+    // position ("02 of 05").
+    map: (m) => ({
+      sheetNo: m[1], sheetTitle: m[4], sheetDate: null,
+      pageOfSet: Number(m[2]), setTotal: Number(m[3]),
     }),
   },
 ];

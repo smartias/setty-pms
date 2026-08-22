@@ -88,6 +88,9 @@ check(out.supersededCount === 2, `2 older sightings were superseded (got ${out.s
 check(canonicalSheet({ sheetNo: "E-211" }).sheetNo === "E211", "a hyphenated sheet number normalises");
 check(canonicalSheet({ sheetNo: "E211" }).sheetNo === "E211", "an unhyphenated one lands on the same key");
 check(canonicalSheet({ sheetNo: "fp 301a" }).sheetNo === "FP301A", "case, spaces and a revision suffix are handled");
+check(canonicalSheet({ sheetNo: "PD101.00" }).sheetNo === "PD101.00", "a DOB-NOW decimal filing sheet number is accepted");
+check(canonicalSheet({ sheetNo: "P101.01" }).discipline === "P", "...with discipline read from the prefix");
+check(sheetRank("P101.00") === 101, "a .NN filing suffix does not break the numeric sort");
 check([...flat.keys()].filter((k) => k === "E211").length === 1, "E211 appears exactly once in the output");
 
 // ── 3. Discipline comes from the PREFIX, never the stored field ────────────
@@ -177,8 +180,8 @@ for (const s of ["E-211", "fp 301a", "STTQ-01", "E1", ""]) {
   check(JSON.stringify(browser.canonicalSheet({ sheetNo: s })) === JSON.stringify(canonicalSheet({ sheetNo: s })),
     `canonicalSheet agrees across edge/browser for "${s}"`);
 }
-check(browser.SHEET_NO_RE.source === "^([A-Z]{1,3})[-_ ]?(\\d{2,4}[A-Z]?)$",
-  "the mirror's SHEET_NO_RE is the shared pattern");
+check(browser.SHEET_NO_RE.source === "^([A-Z]{1,3})[-_ ]?(\\d{2,4}[A-Z]?(?:\\.\\d{1,2})?)$",
+  "the mirror's SHEET_NO_RE is the shared pattern (incl. the .NN filing suffix)");
 check(browser.DISCIPLINE_ORDER.join(",") === DISCIPLINE_ORDER.join(","), "DISCIPLINE_ORDER matches across edge/browser");
 check(JSON.stringify(browser.prepareRegisterRows(raw)) === JSON.stringify(prepped),
   "prepareRegisterRows agrees across edge/browser");
