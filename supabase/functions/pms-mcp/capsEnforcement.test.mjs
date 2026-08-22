@@ -40,6 +40,14 @@ function capFor(res, cap, projectNumber) {
   if (proj && typeof proj[cap] === "boolean") return proj[cap];
   return res.caps?.[cap] === true;
 }
+function projectVisible(caps, projectNumber, team) {
+  if (caps.isAdmin) return true;
+  const pn = (projectNumber ?? "").trim();
+  const o = pn ? caps.projects?.[pn]?.["projects.view"] : undefined;
+  if (typeof o === "boolean") return o;
+  if (caps.team && (team ?? null) !== caps.team) return false;
+  return caps.caps?.["projects.view"] === true;
+}
 
 // ── capFor: verdict picking (precedence itself lives in SQL) ────────────────
 
@@ -63,6 +71,33 @@ const denied = {
 };
 check(capFor(denied, "projects.view", "ZZTEST-000") === false, "per-project view deny beats firm-level allow");
 check(capFor(denied, "projects.view", "SAPX196006.00") === true, "deny on one project does not leak onto others");
+
+// ── projectVisible: team scoping (Phase C) ──────────────────────────────────
+
+const dmvEngineer = {
+  email: "dmv@setty.com", role: "engineer", team: "DMV", isAdmin: false,
+  caps: { "projects.view": true },
+  projects: {
+    "SAPX111111.00": { "projects.view": true },   // cross-team grant (NY job)
+    "SAPX222222.00": { "projects.view": false },  // per-project lock on own team's job
+  },
+};
+check(projectVisible(dmvEngineer, "SAPX300000.00", "DMV") === true, "teamed caller sees own-team project");
+check(projectVisible(dmvEngineer, "SAPX196006.00", null) === false, "teamed caller does NOT see the untagged pool");
+check(projectVisible(dmvEngineer, "SAPX400000.00", "NY") === false, "teamed caller does not see another team's project");
+check(projectVisible(dmvEngineer, "SAPX111111.00", "NY") === true, "explicit per-project allow beats team mismatch (cross-team grant)");
+check(projectVisible(dmvEngineer, "SAPX222222.00", "DMV") === false, "explicit per-project deny beats team match (lock)");
+check(projectVisible(dmvEngineer, null, null) === false, "teamed caller: numberless untagged pipeline project is hidden");
+
+const hqStaff = {
+  email: "hq@setty.com", role: "staff", team: null, isAdmin: false,
+  caps: { "projects.view": true }, projects: {},
+};
+check(projectVisible(hqStaff, "SAPX196006.00", null) === true, "team-less caller keeps today's world on untagged projects");
+check(projectVisible(hqStaff, "SAPX300000.00", "DMV") === true, "team-less caller also sees tagged projects (scope users, not just projects)");
+check(projectVisible({ ...hqStaff, caps: { "projects.view": false } }, "SAPX196006.00", null) === false,
+  "firm-level view deny still hides everything for a team-less caller");
+check(projectVisible({ isAdmin: true, team: "DMV", caps: {}, projects: {} }, "X", "NY") === true, "admin bypasses team scoping");
 
 // ── isFeeKey: boundaries ────────────────────────────────────────────────────
 
@@ -122,7 +157,7 @@ const normalise = (body) => body
 
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const here = readFileSync(new URL(import.meta.url), "utf8");
-for (const fn of ["redactFees", "capFor"]) {
+for (const fn of ["redactFees", "capFor", "projectVisible"]) {
   const a = extractBody(shipped, fn);
   const b = extractBody(here, fn);
   check(a !== null, `could not find ${fn} in index.ts — extractor needs updating`);
