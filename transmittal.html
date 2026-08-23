@@ -1718,6 +1718,33 @@ function tbRow(f, pageText) {
   };
 }
 
+// ─── DRAWING LIST ─────────────────────────────────────────────────────────────
+// Title blocks do not generalise (every architect lays one out differently), but
+// the cover-sheet DRAWING LIST does: one page yields the whole set, architect-
+// independent. A PORT of parseDrawingList in supabase/functions/pms-mcp/index.ts;
+// titleBlock.test.mjs drift-checks the three regex literals against the connector.
+const DRAWING_LIST_ANCHOR = /DRAWING LIST\s+SHEET\s+DRAWING TITLE/;
+const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?)(?=\s)/g;
+const DRAWING_LIST_TAIL =
+  /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS|No\.\s+Date\s+Revision|Revisions\s+Rev\s+Description|NO\.\s+REVISIONS\s+DATE)\b/;
+const DRAWING_LIST_MAX_TITLE = 80;
+function parseDrawingList(pageText) {
+  const at = pageText.search(DRAWING_LIST_ANCHOR);
+  if (at < 0) return [];
+  const tail = pageText.slice(at);
+  const rows = [...tail.matchAll(DRAWING_LIST_ROW)];
+  if (rows.length < 2) return [];
+  return rows.map((m, i) => {
+    const from = m.index + m[0].length;
+    const to = i + 1 < rows.length ? rows[i + 1].index : tail.length;
+    let title = tail.slice(from, to).trim();
+    const cut = DRAWING_LIST_TAIL.exec(title);
+    if (cut) title = title.slice(0, cut.index).trim();
+    if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
+    return { sheetNo: m[2], sheetTitle: title.replace(/\s+/g, " ") };
+  }).filter(r => r.sheetTitle.length > 0);
+}
+
 // pdf.js is ~1MB and most sessions never read a title block, so it is fetched
 // on first use rather than on every page load.
 const PDFJS_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js";
@@ -1774,6 +1801,7 @@ async function readTitleBlocks() {
   }
 
   const rows = [];
+  const listed = new Map();   // sheetNo -> {sheetNo,title,discipline,filename,date}: the cover-sheet drawing list, harvested across every file
   const unreadable = [];
   for (let n = 0; n < pdfs.length; n++) {
     const f = pdfs[n];
@@ -1785,14 +1813,29 @@ async function readTitleBlocks() {
       );
       if (!res.ok) throw new Error("download " + res.status);
       const doc = await lib.getDocument({ data: new Uint8Array(await res.arrayBuffer()) }).promise;
-      let found = 0;
+      let fileTb = 0, fileList = 0;
       for (let p = 1; p <= doc.numPages; p++) {
         const page = await doc.getPage(p);
         const tc = await page.getTextContent();
         const text = tc.items.map(it => it.str || "").join(" ").replace(/ +/g, " ").trim();
+        // A cover sheet names the WHOLE set in one drawing-list table, whatever the
+        // architect's title block looks like. Harvest it even when this page's own
+        // title block parses. Mirrors extract_sheet_index in pms-mcp.
+        for (const r of parseDrawingList(text)) {
+          if (!listed.has(r.sheetNo)) {
+            listed.set(r.sheetNo, {
+              sheetNo: r.sheetNo,
+              title: r.sheetTitle,
+              discipline: mapDiscipline((/^([A-Z]{1,3})/.exec(r.sheetNo) || [, ""])[1]),
+              filename: f.name,
+              date: f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 10) : new Date().toISOString().slice(0, 10),
+            });
+            fileList++;
+          }
+        }
         const tb = parseTitleBlock(text);
         if (!tb) continue;
-        found++;
+        fileTb++;
         rows.push({
           id: uid(),
           include: true,
@@ -1800,23 +1843,18 @@ async function readTitleBlocks() {
           sheetNo: tb.sheetNo,
           title: tb.title,
           revision: tb.revision || "0",
-          // Prefer the revision date: it is when this sheet last changed. The
-          // title block's own date is the BASE issue date and never moves.
           date: isoFromUsDate(tb.revisionDate) || isoFromUsDate(tb.sheetDate) ||
                 (f.lastModifiedDateTime ? f.lastModifiedDateTime.slice(0, 10) : new Date().toISOString().slice(0, 10)),
-          // Keep both dates SEPARATELY as well. `date` above is a best-effort
-          // single value with two fallbacks, so it cannot answer "did this
-          // sheet actually change?" — only a real revisionDate can, and that is
-          // what supersession between sets is decided on.
           sheetDate: isoFromUsDate(tb.sheetDate) || null,
           revisionDate: isoFromUsDate(tb.revisionDate) || null,
           source: "title-block",
           filename: f.name,
         });
       }
-      // A PDF with no readable title block keeps its filename-derived row, so
-      // reading can only ever add information, never lose a file.
-      if (!found) {
+      // A file that yielded NEITHER a title block NOR any drawing-list rows keeps its
+      // filename-derived row, so reading can only add information, never lose a file.
+      // A booked set whose cover fed the drawing list is represented by those sheets.
+      if (fileTb === 0 && fileList === 0) {
         unreadable.push(f.name);
         rows.push(parseFilename(f.name, f.lastModifiedDateTime));
       }
@@ -1826,15 +1864,39 @@ async function readTitleBlocks() {
     }
   }
 
+  // Merge in drawing-list sheets no title block already covered. A parsed title
+  // block wins (it carries a real revision); a listed-only sheet's revision is
+  // unknown, so it is left blank rather than asserting a base issue at rev 0.
+  const parsedNos = new Set(rows.map(r => r.sheetNo));
+  let fromList = 0;
+  for (const [no, r] of listed) {
+    if (parsedNos.has(no)) continue;
+    fromList++;
+    rows.push({
+      id: uid(),
+      include: true,
+      discipline: r.discipline,
+      sheetNo: r.sheetNo,
+      title: r.title,
+      revision: "",
+      date: r.date,
+      sheetDate: null,
+      revisionDate: null,
+      source: "drawing-list",
+      filename: r.filename,
+    });
+  }
+
   sheets = rows.filter(Boolean);
   renderTable();
-  const sheetsFound = rows.length - unreadable.length;
+  const fromTb = rows.length - fromList - unreadable.length;
   setStatus("loadStatus", "success",
     "✓ Read " + pdfs.length + " PDF" + (pdfs.length === 1 ? "" : "s") + " — " +
-    sheetsFound + " sheet" + (sheetsFound === 1 ? "" : "s") + " from title blocks" +
+    fromTb + " sheet" + (fromTb === 1 ? "" : "s") + " from title blocks" +
+    (fromList ? ", " + fromList + " from drawing lists" : "") +
     (unreadable.length
       ? ". " + unreadable.length + " file" + (unreadable.length === 1 ? "" : "s") +
-        " had no readable title block and kept the filename reading: " + unreadable.slice(0, 3).join(", ") +
+        " had no readable title block or drawing list and kept the filename reading: " + unreadable.slice(0, 3).join(", ") +
         (unreadable.length > 3 ? ", …" : "")
       : "."));
   titleBlockRunning = false;
