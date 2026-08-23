@@ -420,6 +420,23 @@ import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (n, l) => check(shipped.includes(n), `${l} has DRIFTED from this test's copy`);
 has("const REVISION_HEADERS =", "revision-header list");
+// This suite's parser copy models layouts 1 and 2 plus the DRAWING LIST cover
+// reader. The shipped parser ALSO carries TITLE_BLOCK_DOB_NOW and the DRAWING
+// INDEX fallback, which this copy does NOT model — their literals are pinned
+// character-identical across transmittal.html and index.ts by
+// titleBlock.test.mjs (repo root). What the checks below guarantee (added
+// after the 2026-08-23 review found this suite green against a parser it no
+// longer matched): the two literals this copy DOES model are byte-identical to
+// the shipped ones, the patterns it does not model still exist, and the
+// shipped layout count is pinned — a 4th layout fails here until someone
+// decides what this suite should assert about it.
+has(TITLE_BLOCK_SHEET_FIRST.source, "layout-1 regex literal (byte-identical)");
+has(TITLE_BLOCK_SHEET_LAST.source, "layout-2 regex literal (byte-identical)");
+has("const TITLE_BLOCK_DOB_NOW", "the DOB-NOW pattern (modeled by titleBlock.test.mjs, not here)");
+has("function parseDrawingIndex", "the DRAWING INDEX cover fallback");
+const shippedLayoutCount = (shipped.match(/\n\s*layout: "/g) || []).length;
+check(shippedLayoutCount === 3,
+  `shipped TITLE_BLOCK_PATTERNS has ${shippedLayoutCount} layouts — this suite models 2 of the expected 3; a new layout needs triage here`);
 has("if (at > i) { i = at; header = h; }", "the LAST-matching-header rule");
 has("const TITLE_BLOCK_PATTERNS", "the title-block pattern list");
 has('if (!dates.length) return { revision: "0", description: "", date: null };', "base-issue fallback");

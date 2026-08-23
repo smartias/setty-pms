@@ -12,8 +12,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // "Current Set" panel in SettyPMS.html (which mirrors it in currentSetFold.js)
 // cannot answer "what is the current set?" differently. See currentSet.ts.
 import {
-  registerIssueDate, registerIssueDateSource, sheetsOf,
-  SHEET_NO_RE, canonicalSheet, DISCIPLINE_ORDER, DISCIPLINE_NAME,
+  registerIssueDate, registerIssueDateSource, sheetsOf, prepareRegisterRows,
+  SHEET_NO_RE, canonicalSheet, encodeSpUrl, DISCIPLINE_ORDER, DISCIPLINE_NAME,
   disciplineRank, sheetRank, composeCurrentSet,
 } from "./currentSet.ts";
 
@@ -585,7 +585,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-22-trace-text-fallback";
+const BUILD = "2026-08-23-current-set-review-fixes";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -1995,20 +1995,16 @@ mcp.tool("read_rfi_submittal", {
 // SharePoint status column does.
 async function transmittalRows(pid: string): Promise<any[]> {
   const rows = await sbGetAll(
-    "pms_filing_log?select=created_at,sp_folder_url,files,email_subject" +
+    "pms_filing_log?select=id,created_at,sp_folder_url,files,email_subject" +
     "&project_id=eq." + encodeURIComponent(pid) +
-    "&operation=eq.transmittal-generated&order=created_at.desc",
-    // Ordered by created_at here only so the fetch is deterministic. The real
-    // ordering happens in JS on registerIssueDate() below, because created_at
-    // is a FILING timestamp and is not always the issue date.
+    "&operation=eq.transmittal-generated&order=created_at.desc,id.desc",
+    // Ordered here only so the fetch is deterministic; the real ordering (and
+    // the superseded-trail filter) is prepareRegisterRows, the SAME prepare the
+    // browser panel runs — a third inline copy here drifted outside the
+    // ts/js drift guard, which is exactly how the two surfaces would end up
+    // folding different registers.
   );
-  return (Array.isArray(rows) ? rows : [])
-    // A corrected set leaves its old record behind, marked rather than deleted,
-    // so the register keeps a trail of what was filed and when. Those rows must
-    // not reach the reader: a superseded filename-derived row sitting beside its
-    // re-read replacement would put two conflicting answers in the same set.
-    .filter((r: any) => r?.files?.superseded !== true)
-    .sort((a, b) => registerIssueDate(b).localeCompare(registerIssueDate(a)));
+  return prepareRegisterRows(Array.isArray(rows) ? rows : []);
 }
 
 // registerIssueDate() / registerIssueDateSource() — the 3-tier issue-date
@@ -2092,6 +2088,9 @@ type SheetStatus = {
 
 type Registration = {
   sheetNo: string;
+  // Identity key (DOB-NOW .NN suffix stripped): P101, P101.00 and P101.01 are
+  // one sheet, and keying on the display form made re-filings never supersede.
+  key: string;
   setName: string | null;
   issueDate: string;
   transmittalNumber: string | null;
@@ -2099,8 +2098,8 @@ type Registration = {
 };
 
 function buildSupersessionIndex(rows: any[]) {
-  // sheetNo -> the sheet's CURRENT issuance (first sighting wins: rows arrive
-  // newest-issue-first).
+  // sheet identity KEY -> the sheet's CURRENT issuance (first sighting wins:
+  // rows arrive newest-issue-first).
   const bySheet = new Map<string, SheetStatus>();
   // filename (lowercased) -> EVERY set that filename was registered in.
   //
@@ -2120,8 +2119,8 @@ function buildSupersessionIndex(rows: any[]) {
     for (const s of sheetsOf(row)) {
       const fn = String(s?.filename || "").trim().toLowerCase();
       const c = canonicalSheet(s);
-      if (c && !bySheet.has(c.sheetNo)) {
-        bySheet.set(c.sheetNo, {
+      if (c && !bySheet.has(c.key)) {
+        bySheet.set(c.key, {
           status: "current",
           sheetNo: c.sheetNo,
           discipline: c.discipline,
@@ -2140,6 +2139,7 @@ function buildSupersessionIndex(rows: any[]) {
         // "registered but unkeyable" stays distinguishable from "never seen".
         list.push({
           sheetNo: c ? c.sheetNo : "",
+          key: c ? c.key : "",
           setName, issueDate, transmittalNumber,
           revision: s?.revision ?? null,
         });
@@ -2168,21 +2168,23 @@ function fileSupersessionStatus(
   const pathLower = String(folderPath || "").toLowerCase();
 
   const regs = idx.byFilename.get(nameLower);
-  let sheetNo = "";
+  let sheetKey = "";
   let mine: Registration | null = null;
 
   if (regs && regs.length) {
-    const keys = new Set(regs.map((r) => r.sheetNo).filter(Boolean));
+    // Compared on the identity KEY, not the display number: "P101.00" and
+    // "P101.01" are re-filings of one sheet, not the STTQ-style collision.
+    const keys = new Set(regs.map((r) => r.key).filter(Boolean));
     if (keys.size > 1) {
       // One filename, two different sheet numbers: the STTQ-01 series collision.
       return {
         status: "ambiguous",
         basis: "this filename is registered against more than one sheet number, so no single revision status applies",
-        sheetNumbers: [...keys].sort(),
+        sheetNumbers: [...new Set(regs.map((r) => r.sheetNo).filter(Boolean))].sort(),
       };
     }
     if (keys.size === 0) return null; // registered, but never with a usable sheet number
-    sheetNo = [...keys][0];
+    sheetKey = [...keys][0];
     // Which copy is this? The set folder name appears in the path
     // ("Outgoing/2025-01-21_Addendum #1/Drawings"), so match on it.
     mine = regs.find((r) => r.setName && pathLower.includes(String(r.setName).toLowerCase())) ?? null;
@@ -2202,11 +2204,11 @@ function fileSupersessionStatus(
     // "2026-05-19 BOYLAN HALL.pdf" does not. Guards the FP601/STTQ-01-P trap.
     const stem = nameLower.replace(/\.[a-z0-9]+$/i, "").toUpperCase().replace(/\s+/g, "");
     const c = canonicalSheet({ sheetNo: stem });
-    if (!c || !idx.bySheet.has(c.sheetNo)) return null;
-    sheetNo = c.sheetNo;
+    if (!c || !idx.bySheet.has(c.key)) return null;
+    sheetKey = c.key;
   }
 
-  const currentRec = idx.bySheet.get(sheetNo);
+  const currentRec = idx.bySheet.get(sheetKey);
   if (!currentRec) return null;
 
   // No registration of its own (route 2): all that can be said is what the
@@ -2222,7 +2224,7 @@ function fileSupersessionStatus(
   }
   return {
     status: "superseded",
-    sheetNo,
+    sheetNo: mine.sheetNo || currentRec.sheetNo,
     discipline: currentRec.discipline,
     revision: mine.revision,
     issuedIn: mine.setName,
@@ -2388,7 +2390,9 @@ mcp.tool("get_current_set", {
           filedAt: latest.created_at,
           issuedTo: f.recipientEmail || null,
           deliveryKind: f.distributionKind || null,
-          webUrl: latest.sp_folder_url || null,
+          // Stored decoded; encoded here or a set named "Addendum #2" renders
+          // a link that truncates at the '#'. Same helper the fold uses.
+          webUrl: encodeSpUrl(latest.sp_folder_url),
           // A backfilled row is a set reconstructed after the fact. Authoritative,
           // but not a live send, and the difference matters if anyone audits it.
           backfilled: f.backfilled === true,
@@ -2569,18 +2573,23 @@ mcp.tool("trace_references", {
     // current set, because an old RFI legitimately references a sheet that a
     // later set superseded; the reference was true when written.
     const rows = await transmittalRows(pid);
+    // Keyed on the identity KEY (DOB-NOW suffix stripped): a prose mention
+    // "Sheet P101" must confirm against a register entry filed as "P101.00".
     const registerKeys = new Set<string>();
     for (const row of rows) {
       for (const s of sheetsOf(row)) {
         const c = canonicalSheet(s);
-        if (c) registerKeys.add(c.sheetNo);
+        if (c) registerKeys.add(c.key);
       }
     }
     // Current-set context for register-confirmed hits. transmittalRows() is
     // already issue-date ordered, which is the supersession mechanism.
     const currentBySheet = new Map<string, any>();
     for (const d of composeCurrentSet(rows).disciplines) {
-      for (const s of d.sheets) currentBySheet.set(s.sheetNo, s);
+      for (const s of d.sheets) {
+        const c = canonicalSheet({ sheetNo: s.sheetNo });
+        currentBySheet.set(c ? c.key : s.sheetNo, s);
+      }
     }
 
     // Validation universe 2: sheets the drawing text index has seen. Cheap
@@ -2595,7 +2604,7 @@ mcp.tool("trace_references", {
           "&sheet_no=not.is.null&order=sheet_no.asc");
         for (const r of (idxRows ?? [])) {
           const c = canonicalSheet({ sheetNo: r?.sheet_no });
-          if (c) indexKeys.add(c.sheetNo);
+          if (c) indexKeys.add(c.key);
         }
       } catch (e) {
         console.warn("[trace_references] drawing-index lookup failed:", String((e as any)?.message ?? e));

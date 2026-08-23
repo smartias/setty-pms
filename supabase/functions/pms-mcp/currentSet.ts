@@ -8,9 +8,9 @@
 // SettyPMS.html (browser). This module is the single source for the connector.
 //
 // The browser cannot import a Deno .ts, so a mirror lives in ../../../currentSetFold.js
-// and currentSetFold.test.mjs imports BOTH and asserts identical output on the real
+// and composeCurrentSet.test.mjs imports BOTH and asserts identical output on the real
 // register fixtures — the same drift guard setty-docx.js uses. Any change here must
-// be mirrored there or the build fails.
+// be mirrored there or that test fails (run it by hand; there is no CI).
 
 // When was this set ISSUED, as opposed to when the record was filed?
 //
@@ -28,6 +28,11 @@ export function registerIssueDate(row: any): string {
   if (explicit) return String(explicit).slice(0, 10);
   const named = /^\s*(\d{4})[-_](\d{2})[-_](\d{2})/.exec(String(row?.files?.milestoneName || ""));
   if (named) return `${named[1]}-${named[2]}-${named[3]}`;
+  // created_at is UTC; slicing it directly stamps an evening-ET filing with the
+  // NEXT day's date, which can outrank a genuinely newer same-day set. The firm
+  // operates in Eastern time, so the filing DAY is the ET calendar day.
+  const d = new Date(String(row?.created_at || ""));
+  if (!isNaN(d.getTime())) return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   return String(row?.created_at || "").slice(0, 10);
 }
 // Which of the three it used, so a caller can judge the answer.
@@ -46,7 +51,14 @@ export const sheetsOf = (row: any): any[] => Array.isArray(row?.files?.sheets) ?
 export function prepareRegisterRows(rows: any[]): any[] {
   return (Array.isArray(rows) ? rows : [])
     .filter((r: any) => r?.files?.superseded !== true)
-    .sort((a: any, b: any) => registerIssueDate(b).localeCompare(registerIssueDate(a)));
+    // Same-issue-date rows tiebreak on created_at then id, so the fold is
+    // deterministic regardless of the fetch order a caller happened to use —
+    // first-sighting-wins makes ordering outcome-affecting, and the connector
+    // and the panel previously fetched with different orderings.
+    .sort((a: any, b: any) =>
+      registerIssueDate(b).localeCompare(registerIssueDate(a)) ||
+      String(b?.created_at || "").localeCompare(String(a?.created_at || "")) ||
+      String(b?.id || "").localeCompare(String(a?.id || "")));
 }
 
 // A real sheet number is a discipline prefix and a number: "E221", "M-507",
@@ -58,15 +70,29 @@ export function prepareRegisterRows(rows: any[]): any[] {
 // The optional `.NN` tail is a DOB-NOW filing suffix (e.g. P101.00, PD101.01).
 export const SHEET_NO_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?(?:\.\d{1,2})?)$/;
 
-export function canonicalSheet(sheet: any): { sheetNo: string; discipline: string } | null {
+export function canonicalSheet(sheet: any): { sheetNo: string; key: string; discipline: string } | null {
   const raw = String(sheet?.sheetNo || "").toUpperCase().replace(/\s+/g, "");
   const m = SHEET_NO_RE.exec(raw);
   if (!m) return null;
   // The prefix is the only reliable statement of discipline. The register's own
   // `discipline` field is free text that has held "Electrical", "STTQ" and
   // "General" on the same project, depending on which era wrote the row.
-  return { sheetNo: m[1] + m[2], discipline: m[1] };
+  //
+  // `key` is the sheet's IDENTITY and strips the DOB-NOW filing suffix: P101,
+  // P101.00 and P101.01 are the same physical sheet across filings, and keeping
+  // the suffix in the fold key meant a re-filing never superseded its
+  // predecessor — both showed as "current". `sheetNo` keeps the suffix for
+  // display, so the filing designation is never lost.
+  return { sheetNo: m[1] + m[2], key: m[1] + m[2].replace(/\.\d{1,2}$/, ""), discipline: m[1] };
 }
+
+// pms_filing_log.sp_folder_url is stored DECODED (a set named "Addendum #2"
+// carries a literal '#', and milestone folders are named "50% CD"/"100% CD").
+// A raw href truncates at the '#', and encoding spaces BEFORE '%' turns
+// "100% CD" into the invalid escape "100%%20CD" — so '%' must go first. Graph
+// webUrls arrive pre-encoded and must NOT pass through this.
+export const encodeSpUrl = (u: any): string | null =>
+  u ? String(u).replace(/%/g, "%25").replace(/ /g, "%20").replace(/#/g, "%23") : null;
 
 // Conventional AEC set order, not alphabetical: a PM scanning a set expects
 // mechanical before electrical. Anything unrecognised sorts last, alphabetically.
@@ -113,8 +139,8 @@ export function composeCurrentSet(rows: any[]) {
         });
         continue;
       }
-      if (current.has(c.sheetNo)) { supersededCount++; continue; }
-      current.set(c.sheetNo, {
+      if (current.has(c.key)) { supersededCount++; continue; }
+      current.set(c.key, {
         sheetNo: c.sheetNo,
         discipline: c.discipline,
         title: String(s?.title || "").replace(/\s+/g, " ").trim() || null,
@@ -127,7 +153,7 @@ export function composeCurrentSet(rows: any[]) {
         // send. It is still authoritative, but the difference matters to anyone
         // auditing where a sheet's current revision came from.
         backfilled: row?.files?.backfilled === true,
-        folderUrl: row?.sp_folder_url || null,
+        folderUrl: encodeSpUrl(row?.sp_folder_url),
         // Phase 2: the file's own Graph webUrl when the register captured it
         // (new sends and backfilled rows). Null falls back to the set folder.
         webUrl: s?.webUrl ?? null,

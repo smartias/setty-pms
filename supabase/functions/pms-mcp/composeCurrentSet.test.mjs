@@ -20,7 +20,7 @@
 
 import {
   composeCurrentSet, canonicalSheet, disciplineRank, sheetRank,
-  DISCIPLINE_ORDER, registerIssueDate, prepareRegisterRows,
+  DISCIPLINE_ORDER, registerIssueDate, prepareRegisterRows, encodeSpUrl,
 } from "./currentSet.ts";
 import * as browser from "../../../currentSetFold.js";
 import { readFileSync } from "node:fs";
@@ -35,7 +35,9 @@ function check(cond, label) {
 // ── fixtures: real SAPX196006.00 register rows, newest first ───────────────
 const row = (tno, setName, issuedAt, sheets, backfilled = true) => ({
   created_at: issuedAt + " 12:00:00+00",
-  sp_folder_url: "https://setty.sharepoint.com/sites/NYCProjects/x/Outgoing/" + encodeURIComponent(setName),
+  // Stored DECODED, exactly as transmittal.html writes it (safeDecodeFolderUrl):
+  // a set named "Addendum #1" carries a literal '#'. The fold is what encodes.
+  sp_folder_url: "https://setty.sharepoint.com/sites/NYCProjects/x/Outgoing/" + setName,
   files: { transmittalNumber: tno, milestoneName: setName, issuedAt, backfilled, sheets },
 });
 
@@ -145,6 +147,34 @@ check(flat.get("E001").webUrl === null, "a sheet with no captured webUrl reports
 check(flat.get("E211").folderUrl === "https://setty.sharepoint.com/sites/NYCProjects/x/Outgoing/2025-01-21_Addendum%20%231",
   "the set folderUrl is still present alongside the file webUrl");
 
+// ── 6d. DOB-NOW filing suffix: identity, not a new sheet ────────────────────
+// P101, P101.00 and P101.01 are one physical sheet across filings. The fold
+// key strips the suffix so a re-filing SUPERSEDES its predecessor; the display
+// number keeps it so the filing designation is never lost.
+check(JSON.stringify(canonicalSheet({ sheetNo: "P101.00" })) ===
+  JSON.stringify({ sheetNo: "P101.00", key: "P101", discipline: "P" }),
+  "a DOB-NOW suffix stays in sheetNo but is stripped from the identity key");
+const dobOld = row("T-D1", "2026-01-10_DOB Filing", "2026-01-10", [
+  { title: "PLUMBING PLAN", sheetNo: "P101.00", filename: "P101.00.pdf", revision: "0", discipline: "P" },
+]);
+const dobNew = row("T-D2", "2026-03-05_DOB Refiling", "2026-03-05", [
+  { title: "PLUMBING PLAN", sheetNo: "P101.01", filename: "P101.01.pdf", revision: "1", discipline: "P" },
+]);
+const dobFold = composeCurrentSet(prepareRegisterRows([dobOld, dobNew]));
+check(dobFold.sheetCount === 1, `suffix variants fold to ONE sheet (got ${dobFold.sheetCount})`);
+check(dobFold.supersededCount === 1, "the earlier filing counts as superseded");
+check(dobFold.disciplines[0].sheets[0].sheetNo === "P101.01", "the newer filing's designation is what displays");
+const dobMixed = composeCurrentSet(prepareRegisterRows([dobOld,
+  row("T-D3", "2026-04-01_CD Set", "2026-04-01", [
+    { title: "PLUMBING PLAN", sheetNo: "P-101", filename: "P101.pdf", revision: "2", discipline: "P" }])]));
+check(dobMixed.sheetCount === 1 && dobMixed.disciplines[0].sheets[0].sheetNo === "P101",
+  "an unsuffixed re-issue supersedes a suffixed DOB filing of the same sheet");
+
+// ── 6e. encodeSpUrl: '%' first, then space and '#'; webUrl-style inputs stay ─
+check(encodeSpUrl("https://x/50% CD Set/Addendum #2") === "https://x/50%25%20CD%20Set/Addendum%20%232",
+  "'%' encodes FIRST so '50% CD' never becomes an invalid escape");
+check(encodeSpUrl(null) === null && encodeSpUrl("") === null, "empty input passes through as null");
+
 // ── 7. Degenerate input ────────────────────────────────────────────────────
 const empty = composeCurrentSet([]);
 check(empty.sheetCount === 0 && empty.disciplines.length === 0, "an empty register composes to an empty set");
@@ -163,6 +193,24 @@ check(registerIssueDate(prepped[0]) >= registerIssueDate(prepped[prepped.length 
   "rows come out newest-issue-first");
 check(prepped[0].files.transmittalNumber === "T-001", "Bulletin #13 (2026-04-17) sorts first");
 check(prepareRegisterRows([]).length === 0, "an empty register prepares to empty");
+
+// ── 8b. Deterministic tiebreak: fetch order must not decide the fold ───────
+// Two rows sharing an issue date tiebreak on created_at then id, so the
+// connector and the panel (which fetch with different orderings) fold the
+// same register identically. first-sighting-wins makes this outcome-affecting.
+const tieA = { id: "aaa", created_at: "2026-05-01 12:00:00+00",
+  files: { issuedAt: "2026-05-01", milestoneName: "x", sheets: [{ sheetNo: "M-101", filename: "a.pdf", revision: "1" }] } };
+const tieB = { id: "bbb", created_at: "2026-05-01 12:00:00+00",
+  files: { issuedAt: "2026-05-01", milestoneName: "x", sheets: [{ sheetNo: "M-101", filename: "b.pdf", revision: "2" }] } };
+check(JSON.stringify(prepareRegisterRows([tieA, tieB])) === JSON.stringify(prepareRegisterRows([tieB, tieA])),
+  "identical-date rows come out in one order regardless of input order");
+
+// ── 8c. Tier-3 created_at is the ET calendar day, not the UTC slice ────────
+// An 8:05pm ET filing is the NEXT day in UTC; slicing the UTC string stamped
+// it a day late and could outrank a genuinely newer same-day set.
+const eveningEt = { created_at: "2026-01-23T01:05:00+00:00", files: { milestoneName: "Bulletin", sheets: [] } };
+check(registerIssueDate(eveningEt) === "2026-01-22",
+  `a late-evening ET filing keeps its ET date (got ${registerIssueDate(eveningEt)})`);
 // The whole browser path in one call: raw rows -> prepare -> compose.
 check(composeCurrentSet(prepareRegisterRows(raw)).sheetCount ===
   composeCurrentSet(prepareRegisterRows(raw)).disciplines.reduce((n, d) => n + d.sheetCount, 0),
@@ -176,10 +224,16 @@ const edgeJson = JSON.stringify(out);
 const browserJson = JSON.stringify(browser.composeCurrentSet(REGISTER));
 check(edgeJson === browserJson, "currentSetFold.js composes IDENTICALLY to currentSet.ts on the real register");
 check(browser.composeCurrentSet([]).sheetCount === 0, "the mirror handles the empty register too");
-for (const s of ["E-211", "fp 301a", "STTQ-01", "E1", ""]) {
+for (const s of ["E-211", "fp 301a", "STTQ-01", "E1", "", "P101.00", "PD101.01"]) {
   check(JSON.stringify(browser.canonicalSheet({ sheetNo: s })) === JSON.stringify(canonicalSheet({ sheetNo: s })),
     `canonicalSheet agrees across edge/browser for "${s}"`);
 }
+for (const u of [null, "https://x/50% CD/Addendum #2", "https://x/plain"]) {
+  check(browser.encodeSpUrl(u) === encodeSpUrl(u), `encodeSpUrl agrees across edge/browser for ${JSON.stringify(u)}`);
+}
+check(browser.registerIssueDate({ created_at: "2026-01-23T01:05:00+00:00", files: {} }) ===
+  registerIssueDate({ created_at: "2026-01-23T01:05:00+00:00", files: {} }),
+  "tier-3 ET date agrees across edge/browser");
 check(browser.SHEET_NO_RE.source === "^([A-Z]{1,3})[-_ ]?(\\d{2,4}[A-Z]?(?:\\.\\d{1,2})?)$",
   "the mirror's SHEET_NO_RE is the shared pattern (incl. the .NN filing suffix)");
 check(browser.DISCIPLINE_ORDER.join(",") === DISCIPLINE_ORDER.join(","), "DISCIPLINE_ORDER matches across edge/browser");
