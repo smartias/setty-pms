@@ -28,9 +28,9 @@ if (a < 0 || b < 0 || b <= a) {
 // mapDiscipline lives further down the file; the parser only needs its mapping.
 const src = "function mapDiscipline(c){ return ({M:'Mechanical',E:'Electrical',P:'Plumbing',FP:'Fire Protection',T:'Technology'})[c] || c || 'General'; }\n"
   + html.slice(a, b)
-  + "\nexport { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_PATTERNS };";
+  + "\nexport { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_PATTERNS, parseDrawingList };";
 const mod = await import("data:text/javascript;base64," + Buffer.from(src, "utf8").toString("base64"));
-const { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_PATTERNS } = mod;
+const { parseTitleBlock, tbRevision, isoFromUsDate, TITLE_BLOCK_PATTERNS, parseDrawingList } = mod;
 
 let failures = 0, total = 0;
 const check = (c, m) => { total++; if (!c) { failures++; console.error("FAIL: " + m); } };
@@ -136,14 +136,32 @@ eq(tbRevision("Revisions Rev Description Date 13 BULLETIN 013 04/17/2026 13").re
 eq(tbRevision("Revisions Rev Description Date A ADD 01/22/2025 RFI-144 03/25/2026").revision, "RFI-144",
   "a description-less row still yields its label");
 
+// ── Drawing list (cover-sheet index) — the architect-independent fallback ──
+// Real CHCR New Dorp plumbing cover text: "PLUMBING DRAWING LIST SHEET DRAWING
+// TITLE 1 P-001.00 ...". One page yields the whole set. The revision table that
+// follows on some sheets must not bleed into the last title.
+const DL = "PLUMBING DRAWING LIST SHEET DRAWING TITLE 1 P-001.00 GENERAL NOTES, SYMBOLS & ABBREVIATIONS 2 P-051.00 PLUMBING SITE PLAN 3 P-101.00 GROUND FLOOR PLAN - PLUMBING No. Date Revision 1 11/21/2025 Issued for Bid";
+const dl = parseDrawingList(DL);
+eq(dl.length, 3, "three sheets parsed from the cover drawing list");
+eq(dl[0].sheetNo, "P-001.00", "first sheet number keeps its .00 filing suffix");
+eq(dl[0].sheetTitle, "GENERAL NOTES, SYMBOLS & ABBREVIATIONS", "first sheet title");
+eq(dl[2].sheetNo, "P-101.00", "last sheet number");
+eq(dl[2].sheetTitle, "GROUND FLOOR PLAN - PLUMBING", "last title stops before the revision table (No. Date Revision)");
+// A title legitimately containing a digit is not truncated.
+const DL2 = "FIRE ALARM DRAWING LIST SHEET DRAWING TITLE 1 FA001.00 FIRE ALARM LEVEL 1 PLAN 2 FA002.00 FIRE ALARM RISER";
+eq(parseDrawingList(DL2)[0].sheetTitle, "FIRE ALARM LEVEL 1 PLAN", "a digit inside a title does not truncate it");
+check(parseDrawingList("no drawing list on this page at all").length === 0, "a page with no list yields nothing");
+check(parseDrawingList("DRAWING LIST SHEET DRAWING TITLE 1 P-001 ONLY ONE ROW").length === 0, "a single row is treated as noise, not a list");
+
 // ── Drift check against the connector ──────────────────────────────────────
 // Each literal sits on its own line in both files. Match to end of line: a
 // dotall capture runs straight past it into the next declaration.
 const grab = (src2, name) => {
-  const m = new RegExp("const " + name + " =\\s*(/[^\\n]*/);").exec(src2);
+  const m = new RegExp("const " + name + " =\\s*(/[^\\n]*/[a-z]*);").exec(src2);
   return m ? m[1].trim() : "";
 };
-for (const name of ["TITLE_BLOCK_SHEET_FIRST", "TITLE_BLOCK_SHEET_LAST", "TITLE_BLOCK_DOB_NOW"]) {
+for (const name of ["TITLE_BLOCK_SHEET_FIRST", "TITLE_BLOCK_SHEET_LAST", "TITLE_BLOCK_DOB_NOW",
+                    "DRAWING_LIST_ANCHOR", "DRAWING_LIST_ROW", "DRAWING_LIST_TAIL"]) {
   const htmlRe = grab(html, name), mcpRe = grab(mcp, name);
   check(htmlRe !== "", `found ${name} in transmittal.html`);
   check(mcpRe !== "", `found ${name} in the connector`);
