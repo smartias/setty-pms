@@ -1728,18 +1728,58 @@ const DRAWING_LIST_ROW = /(\d{1,3})\s+([A-Z]{1,4}-?\d{2,4}(?:\.\d{2})?[A-Z]?)(?=
 const DRAWING_LIST_TAIL =
   /\b((?:NYC|NEW YORK CITY)\s+BUILDING\s+DEPARTMENT|SPECIAL\s+INSPECTIONS?|ABBREVIATIONS\s+SYMBOLS|No\.\s+Date\s+Revision|Revisions\s+Rev\s+Description|NO\.\s+REVISIONS\s+DATE)\b/;
 const DRAWING_LIST_MAX_TITLE = 80;
+// Format B: Setty's in-house "DRAWING INDEX" cover. No "SHEET DRAWING TITLE" header
+// row; each row is the PROJECT NUMBER, a dash, the sheet, then the title, grouped
+// under discipline section headers ("... PHASING DIAGRAM ARCHITECTURAL 1223 - A101 ...").
+// A PORT of parseDrawingIndex in supabase/functions/pms-mcp/index.ts; the four regex
+// literals are drift-checked against the connector by titleBlock.test.mjs.
+const DRAWING_INDEX_ANCHOR = /DRAWING\s+INDEX/;
+const DRAWING_INDEX_ROW = /(\d{3,5})\s*-\s*([A-Z]{1,3}-?\d{2,4}(?:\.\d{2})?[A-Z]?)\s/g;
+const DRAWING_INDEX_HEAD = /\s+(?:GENERAL|ARCHITECTURAL|STRUCTURAL|MECHANICAL|MECHANICAL SITE|PLUMBING|FIRE PROTECTION|FIRE ALARM|SPRINKLER|ELECTRICAL|ELECTRICAL SITE|TECHNOLOGY|CIVIL|LANDSCAPE|GEOTHERMAL|ENERGY)\s*$/;
+const DRAWING_INDEX_TAIL = /\s+(?:www|PROJECT NUMBER|DRAWING INDEX|NOT FOR CONSTRUCTION|CONSULTANTS|SEALS)\b/;
 function parseDrawingList(pageText) {
   const at = pageText.search(DRAWING_LIST_ANCHOR);
-  if (at < 0) return [];
-  const tail = pageText.slice(at);
-  const rows = [...tail.matchAll(DRAWING_LIST_ROW)];
-  if (rows.length < 2) return [];
-  return rows.map((m, i) => {
+  if (at >= 0) {
+    const tail = pageText.slice(at);
+    const rows = [...tail.matchAll(DRAWING_LIST_ROW)];
+    if (rows.length >= 2) {
+      const out = rows.map((m, i) => {
+        const from = m.index + m[0].length;
+        const to = i + 1 < rows.length ? rows[i + 1].index : tail.length;
+        let title = tail.slice(from, to).trim();
+        const cut = DRAWING_LIST_TAIL.exec(title);
+        if (cut) title = title.slice(0, cut.index).trim();
+        if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
+        return { sheetNo: m[2], sheetTitle: title.replace(/\s+/g, " ") };
+      }).filter(r => r.sheetTitle.length > 0);
+      if (out.length) return out;
+    }
+  }
+  return parseDrawingIndex(pageText);
+}
+function parseDrawingIndex(pageText) {
+  if (!DRAWING_INDEX_ANCHOR.test(pageText)) return [];
+  const rows = [...pageText.matchAll(DRAWING_INDEX_ROW)];
+  if (rows.length < 3) return [];
+  const counts = {};
+  for (const m of rows) counts[m[1]] = (counts[m[1]] || 0) + 1;
+  const proj = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+  const keep = rows.filter(m => m[1] === proj);
+  if (keep.length < 3) return [];
+  return keep.map((m, i) => {
+    const next = keep[i + 1];
     const from = m.index + m[0].length;
-    const to = i + 1 < rows.length ? rows[i + 1].index : tail.length;
-    let title = tail.slice(from, to).trim();
-    const cut = DRAWING_LIST_TAIL.exec(title);
+    const to = next ? next.index : pageText.length;
+    let title = pageText.slice(from, to).trim();
+    const cut = DRAWING_INDEX_TAIL.exec(title);
     if (cut) title = title.slice(0, cut.index).trim();
+    // Strip a trailing discipline SECTION HEADER only when the next sheet begins a
+    // different discipline — a header announces a new group. A discipline word that
+    // ends a same-discipline title ("PENTHOUSE ROOF LEVEL PLAN - MECHANICAL") is
+    // part of the title, not a header, so it must be kept.
+    const dThis = (/^([A-Z]{1,3})/.exec(m[2]) || [, ""])[1];
+    const dNext = next ? (/^([A-Z]{1,3})/.exec(next[2]) || [, ""])[1] : "";
+    if (dNext && dNext !== dThis) title = title.replace(DRAWING_INDEX_HEAD, "").trim();
     if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
     return { sheetNo: m[2], sheetTitle: title.replace(/\s+/g, " ") };
   }).filter(r => r.sheetTitle.length > 0);

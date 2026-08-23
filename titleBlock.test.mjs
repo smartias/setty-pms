@@ -153,6 +153,23 @@ eq(parseDrawingList(DL2)[0].sheetTitle, "FIRE ALARM LEVEL 1 PLAN", "a digit insi
 check(parseDrawingList("no drawing list on this page at all").length === 0, "a page with no list yields nothing");
 check(parseDrawingList("DRAWING LIST SHEET DRAWING TITLE 1 P-001 ONLY ONE ROW").length === 0, "a single row is treated as noise, not a list");
 
+// Second cover format: Setty's "DRAWING INDEX" (project-number-prefixed rows,
+// discipline-grouped, no "SHEET DRAWING TITLE" header) — SUNY Upstate. The list
+// rows come BEFORE the "DRAWING INDEX" label in the extracted text.
+const DIDX = "SUCF PROJECT NO: 151092 UPSTATE PROJECT NO: 1223 1223 - G000 TITLE SHEET 1223 - G001 PHASING DIAGRAM ARCHITECTURAL 1223 - A101 DEMO PLAN, FLOOR PLANS & DETAILS STRUCTURAL 1223 - S101 SECTIONS AND DETAILS MECHANICAL 1223 - M102 PENTHOUSE ROOF LEVEL PLAN - MECHANICAL 1223 - M501 MECHANICAL DETAILS ELECTRICAL 1223 - E601 ELECTRICAL SCHEDULES www. SETTY .com PROJECT NUMBER: TM 149 W 36 th Street DRAWING INDEX PROJECT NO.: SAPX216001.00";
+const di = parseDrawingList(DIDX);
+eq(di.length, 7, "seven sheets parsed from the Setty DRAWING INDEX cover");
+eq(di[0].sheetNo, "G000", "the project-number prefix (1223 -) is dropped, leaving the sheet number");
+eq(di[0].sheetTitle, "TITLE SHEET", "first index title");
+eq(di[1].sheetTitle, "PHASING DIAGRAM", "a trailing discipline section header (ARCHITECTURAL, next group differs) is stripped");
+eq(di.find(s => s.sheetNo === "S101").sheetTitle, "SECTIONS AND DETAILS", "...and again where the next group differs (MECHANICAL)");
+// The key case: a discipline word ENDING a title is kept when the next sheet is the
+// same discipline — it is part of the title, not a section header.
+eq(di.find(s => s.sheetNo === "M102").sheetTitle, "PENTHOUSE ROOF LEVEL PLAN - MECHANICAL", "a same-discipline trailing 'MECHANICAL' is kept, not stripped");
+eq(di.find(s => s.sheetNo === "M501").sheetTitle, "MECHANICAL DETAILS", "M501's trailing ELECTRICAL header (next group differs) is stripped");
+eq(di.find(s => s.sheetNo === "E601").sheetTitle, "ELECTRICAL SCHEDULES", "last title stops before the SETTY title block");
+check(parseDrawingList("DRAWING INDEX 1223 - G001 ONLY ONE ROW HERE").length === 0, "fewer than three index rows is treated as noise");
+
 // ── Drift check against the connector ──────────────────────────────────────
 // Each literal sits on its own line in both files. Match to end of line: a
 // dotall capture runs straight past it into the next declaration.
@@ -161,7 +178,8 @@ const grab = (src2, name) => {
   return m ? m[1].trim() : "";
 };
 for (const name of ["TITLE_BLOCK_SHEET_FIRST", "TITLE_BLOCK_SHEET_LAST", "TITLE_BLOCK_DOB_NOW",
-                    "DRAWING_LIST_ANCHOR", "DRAWING_LIST_ROW", "DRAWING_LIST_TAIL"]) {
+                    "DRAWING_LIST_ANCHOR", "DRAWING_LIST_ROW", "DRAWING_LIST_TAIL",
+                    "DRAWING_INDEX_ANCHOR", "DRAWING_INDEX_ROW", "DRAWING_INDEX_HEAD", "DRAWING_INDEX_TAIL"]) {
   const htmlRe = grab(html, name), mcpRe = grab(mcp, name);
   check(htmlRe !== "", `found ${name} in transmittal.html`);
   check(mcpRe !== "", `found ${name} in the connector`);
