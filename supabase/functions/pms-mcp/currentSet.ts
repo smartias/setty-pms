@@ -113,6 +113,43 @@ export const sheetRank = (no: string) => {
   return m ? Number(String(m[2]).replace(/[A-Z]$/, "")) : 0;
 };
 
+// What did a set CHANGE? Each of the set's sheets against the fold of
+// everything issued BEFORE it: never seen -> new; seen at a different revision
+// label -> revised; seen at the same label -> reissued. Labels are compared for
+// EQUALITY only — revision schemes change mid-project (A/B/C then 2,3,6,13), so
+// ordering labels is meaningless but "did it move?" is not. priorRows must be
+// prepared (superseded dropped, newest-issue-first) and must NOT contain the
+// set being diffed. Series keys that name no single sheet ("STTQ-01") cannot be
+// diffed and are counted out where the caller can see them.
+export function setDelta(setSheets: any[], priorRows: any[]) {
+  const prevBySheet = new Map<string, any>();
+  for (const row of (Array.isArray(priorRows) ? priorRows : [])) {
+    for (const s of sheetsOf(row)) {
+      const c = canonicalSheet(s);
+      if (c && !prevBySheet.has(c.key)) {
+        prevBySheet.set(c.key, { revision: s?.revision ?? null, issuedIn: row?.files?.milestoneName || null });
+      }
+    }
+  }
+  const newSheets: string[] = [];
+  const revised: any[] = [];
+  const reissued: string[] = [];
+  let unkeyable = 0;
+  const seen = new Set<string>();
+  for (const s of (Array.isArray(setSheets) ? setSheets : [])) {
+    const c = canonicalSheet(s);
+    if (!c) { unkeyable++; continue; }
+    if (seen.has(c.key)) continue;
+    seen.add(c.key);
+    const prev = prevBySheet.get(c.key);
+    if (!prev) newSheets.push(c.sheetNo);
+    else if (String(prev.revision ?? "") !== String(s?.revision ?? "")) {
+      revised.push({ sheet: c.sheetNo, from: prev.revision ?? null, to: s?.revision ?? null, previouslyIn: prev.issuedIn });
+    } else reissued.push(c.sheetNo);
+  }
+  return { newSheets, revised, reissued, unkeyable, priorSheetsKnown: prevBySheet.size };
+}
+
 // Fold register rows (NEWEST-ISSUE-FIRST — call prepareRegisterRows first) into
 // one entry per sheet at its most recent issuance, grouped by discipline. The
 // first sighting of a sheet number wins; every later sighting is superseded.

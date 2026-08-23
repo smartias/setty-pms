@@ -20,7 +20,7 @@
 
 import {
   composeCurrentSet, canonicalSheet, disciplineRank, sheetRank,
-  DISCIPLINE_ORDER, registerIssueDate, prepareRegisterRows, encodeSpUrl,
+  DISCIPLINE_ORDER, registerIssueDate, prepareRegisterRows, encodeSpUrl, setDelta,
 } from "./currentSet.ts";
 import * as browser from "../../../currentSetFold.js";
 import { readFileSync } from "node:fs";
@@ -175,6 +175,30 @@ check(encodeSpUrl("https://x/50% CD Set/Addendum #2") === "https://x/50%25%20CD%
   "'%' encodes FIRST so '50% CD' never becomes an invalid escape");
 check(encodeSpUrl(null) === null && encodeSpUrl("") === null, "empty input passes through as null");
 
+// ── 6f. setDelta: what did a set change vs everything issued before it ──────
+{
+  const priorRows = prepareRegisterRows([T014, T009]); // E-001, E-211 at rev 0 history
+  const bulletinSheets = [
+    { sheetNo: "E-211", revision: "13", filename: "E211.pdf" },     // label moved 0 -> 13
+    { sheetNo: "E-001", revision: "0", filename: "E001.pdf" },      // unchanged re-issue
+    { sheetNo: "M-501", revision: "2", filename: "M501.pdf" },      // never seen before
+    { sheetNo: "STTQ-01", revision: "13", filename: "STTQ-01-E.pdf" }, // series key: undiffable
+    { sheetNo: "E211.00", revision: "13", filename: "dup.pdf" },    // suffix variant of a sheet already in this set
+  ];
+  const d = setDelta(bulletinSheets, priorRows);
+  check(d.newSheets.join(",") === "M501", `new sheets detected (got ${d.newSheets.join(",")})`);
+  check(d.revised.length === 1 && d.revised[0].sheet === "E211" && d.revised[0].from === "0" && d.revised[0].to === "13",
+    "a revision-label move is reported with from/to");
+  check(d.revised[0].previouslyIn === "2025-01-21_Addendum #1", "the revised sheet names where it last appeared");
+  check(d.reissued.join(",") === "E001", "an unchanged label is a re-issue, not a revision");
+  check(d.unkeyable === 1, "a series key counts as undiffable, never guessed");
+  check(d.priorSheetsKnown === 3, `prior fold size reported (E001, E211, E111 — got ${d.priorSheetsKnown})`);
+  // With no history everything keyable is new; the E211.00 suffix variant
+  // collapses into E211 within the set, so 3 not 4.
+  check(setDelta([], priorRows).newSheets.length === 0 && setDelta(bulletinSheets, []).newSheets.length === 3,
+    "empty set and empty history both degrade sanely");
+}
+
 // ── 7. Degenerate input ────────────────────────────────────────────────────
 const empty = composeCurrentSet([]);
 check(empty.sheetCount === 0 && empty.disciplines.length === 0, "an empty register composes to an empty set");
@@ -234,6 +258,12 @@ for (const u of [null, "https://x/50% CD/Addendum #2", "https://x/plain"]) {
 check(browser.registerIssueDate({ created_at: "2026-01-23T01:05:00+00:00", files: {} }) ===
   registerIssueDate({ created_at: "2026-01-23T01:05:00+00:00", files: {} }),
   "tier-3 ET date agrees across edge/browser");
+{
+  const dp = prepareRegisterRows([T014, T009]);
+  const ds = [{ sheetNo: "E-211", revision: "13", filename: "E211.pdf" }, { sheetNo: "M-501", revision: "2", filename: "M501.pdf" }];
+  check(JSON.stringify(browser.setDelta(ds, dp)) === JSON.stringify(setDelta(ds, dp)),
+    "setDelta agrees across edge/browser");
+}
 check(browser.SHEET_NO_RE.source === "^([A-Z]{1,3})[-_ ]?(\\d{2,4}[A-Z]?(?:\\.\\d{1,2})?)$",
   "the mirror's SHEET_NO_RE is the shared pattern (incl. the .NN filing suffix)");
 check(browser.DISCIPLINE_ORDER.join(",") === DISCIPLINE_ORDER.join(","), "DISCIPLINE_ORDER matches across edge/browser");
