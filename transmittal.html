@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-19-transmittal-v17-worddocs-delivery-picker";
+    window.__appVersion = "2026-08-23-transmittal-v18-register-write-hardening";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -707,11 +707,16 @@ async function supersedePriorRegisterRows(projId, folderUrlDecoded, newTransmitt
     files.superseded = true;
     files.supersededAt = new Date().toISOString();
     if (newTransmittalNo) files.supersededBy = newTransmittalNo;
+    // return=representation, counting the rows that actually come back: under
+    // RLS a PATCH matching 0 rows still returns 2xx with return=minimal, which
+    // is exactly how this write silently no-op'd for weeks before the UPDATE
+    // policy existed. An ok status alone proves nothing landed.
     const patch = await fetch(
       SUPABASE_URL + "/rest/v1/pms_filing_log?id=eq." + encodeURIComponent(r.id),
-      { method: "PATCH", headers: Object.assign({ "Prefer": "return=minimal" }, headers),
+      { method: "PATCH", headers: Object.assign({ "Prefer": "return=representation" }, headers),
         body: JSON.stringify({ files }) });
-    if (patch.ok) ids.push(r.id);
+    const wrote = patch.ok ? await patch.json().catch(() => []) : [];
+    if (Array.isArray(wrote) && wrote.length) ids.push(r.id);
   }
   return { superseded: ids.length, ids };
 }
@@ -1843,6 +1848,12 @@ async function readTitleBlocks() {
   const rows = [];
   const listed = new Map();   // sheetNo -> {sheetNo,title,discipline,filename,date}: the cover-sheet drawing list, harvested across every file
   const unreadable = [];
+  // Sheet-number IDENTITY for dedupe: hyphen/space variants and the DOB-NOW
+  // filing suffix are one sheet ("M-101" == "M101", "P101.00" == "P101").
+  // Without this, a cover list spelling that differed from the title block put
+  // the same sheet in the table twice — and both copies into the register.
+  const sheetKey = no => String(no || "").toUpperCase().replace(/[\s\-_]+/g, "").replace(/\.\d{1,2}$/, "");
+  const fileMeta = []; // {name, lmd, tb, listFirst} per successfully-read file — fallback decided AFTER the loop
   for (let n = 0; n < pdfs.length; n++) {
     const f = pdfs[n];
     setStatus("loadStatus", "info", "⏳ Reading title blocks — file " + (n + 1) + " of " + pdfs.length + " (" + f.name + ")…");
@@ -1891,30 +1902,50 @@ async function readTitleBlocks() {
           filename: f.name,
         });
       }
-      // A file that yielded NEITHER a title block NOR any drawing-list rows keeps its
-      // filename-derived row, so reading can only add information, never lose a file.
-      // A booked set whose cover fed the drawing list is represented by those sheets.
-      if (fileTb === 0 && fileList === 0) {
-        unreadable.push(f.name);
-        rows.push(parseFilename(f.name, f.lastModifiedDateTime));
-      }
+      // Whether this file's harvested LIST rows can represent it depends on
+      // whether the whole FOLDER yielded title blocks, which is unknowable
+      // mid-loop — so the filename-fallback decision happens after the loop.
+      fileMeta.push({ name: f.name, lmd: f.lastModifiedDateTime, tb: fileTb, listFirst: fileList });
     } catch (e) {
       unreadable.push(f.name + " (" + e.message + ")");
       rows.push(parseFilename(f.name, f.lastModifiedDateTime));
     }
   }
 
-  // Merge in drawing-list sheets no title block already covered. A parsed title
-  // block wins (it carries a real revision); a listed-only sheet's revision is
+  // Title blocks anywhere in the folder mean this is a PER-SHEET set. In that
+  // world a cover's drawing list can name sheets that are NOT in this
+  // transmittal (a building cover lists every discipline), so listed-only rows
+  // arrive UNCHECKED for a human to confirm. Only in a booked/scanned folder
+  // that yielded NO title blocks is the cover list the set's own inventory —
+  // then, and only then, listed rows are pre-checked (the New Dorp / Upstate
+  // booked-set path, unchanged).
+  const anyTb = rows.some(r => r.source === "title-block");
+
+  // Every successfully-read file must end represented by at least one row —
+  // reading can only add information, never lose a file. A booked folder's
+  // book is represented by the list rows it harvested; anywhere else, a file
+  // whose own title block did not read keeps its filename-derived row. (The
+  // old condition skipped the fallback whenever the file tripped a LIST
+  // parser, which silently dropped real files from the table and register.)
+  for (const fm of fileMeta) {
+    if (fm.tb > 0) continue;
+    if (!anyTb && fm.listFirst > 0) continue; // the booked-set book itself
+    unreadable.push(fm.name);
+    rows.push(parseFilename(fm.name, fm.lmd));
+  }
+
+  // Merge in drawing-list sheets no title block (or fallback row) already
+  // covered — compared on IDENTITY, not raw spelling. A parsed title block
+  // wins (it carries a real revision); a listed-only sheet's revision is
   // unknown, so it is left blank rather than asserting a base issue at rev 0.
-  const parsedNos = new Set(rows.map(r => r.sheetNo));
+  const parsedNos = new Set(rows.map(r => sheetKey(r.sheetNo)));
   let fromList = 0;
   for (const [no, r] of listed) {
-    if (parsedNos.has(no)) continue;
+    if (parsedNos.has(sheetKey(no))) continue;
     fromList++;
     rows.push({
       id: uid(),
-      include: true,
+      include: !anyTb,
       discipline: r.discipline,
       sheetNo: r.sheetNo,
       title: r.title,
@@ -3220,12 +3251,37 @@ async function backfillWebUrls() {
           "| needing:", needing.map(s => s.filename), "| folder has:", [...map.keys()]);
         continue;
       }
-      // PATCH only `files`; every other key (issuedAt, superseded, backfilled, ...)
-      // survives because we mutated the fetched object in place and write it back.
+      // Re-read the row IMMEDIATELY before writing. The `files` in hand is a
+      // snapshot from run start; a transmittal issued mid-run may have marked
+      // this row superseded, and writing the stale snapshot back would erase
+      // that mark — resurrecting an old set as current. The fresh copy gets
+      // ONLY the missing webUrls merged in; every other key is whatever is in
+      // the database right now.
+      let fresh;
+      try {
+        const rr = await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log?id=eq." + encodeURIComponent(r.id) + "&select=files", { headers });
+        if (!rr.ok) throw new Error("re-read " + rr.status);
+        fresh = (await rr.json())[0];
+      } catch (e2) { patchFail++; console.warn("[backfill] re-read failed", r.id, e2.message); continue; }
+      if (!fresh || !fresh.files) { patchFail++; console.warn("[backfill] row vanished mid-run", r.id); continue; }
+      const freshSheets = Array.isArray(fresh.files.sheets) ? fresh.files.sheets : [];
+      let applied = 0;
+      for (const fs of freshSheets) {
+        if (fs && fs.filename && !fs.webUrl) { const u = map.get(fs.filename); if (u) { fs.webUrl = u; applied++; } }
+      }
+      if (!applied) { alreadyDone++; continue; } // filled by someone else mid-run
+      // return=representation, counting rows back: under RLS a 0-row PATCH
+      // still returns 2xx with return=minimal — the documented silent no-op
+      // this exact table has already exhibited. An ok status proves nothing.
       const patch = await fetch(SUPABASE_URL + "/rest/v1/pms_filing_log?id=eq." + encodeURIComponent(r.id),
-        { method: "PATCH", headers: Object.assign({ "Prefer": "return=minimal" }, headers), body: JSON.stringify({ files }) });
-      if (!patch.ok) { patchFail++; console.warn("[backfill] PATCH failed", patch.status, await patch.text().catch(() => "")); continue; }
-      rowsPatched++; sheetsFilled += changed;
+        { method: "PATCH", headers: Object.assign({ "Prefer": "return=representation" }, headers), body: JSON.stringify({ files: fresh.files }) });
+      const wrote = patch.ok ? await patch.json().catch(() => []) : [];
+      if (!patch.ok || !Array.isArray(wrote) || !wrote.length) {
+        patchFail++;
+        console.warn("[backfill] PATCH did not land", patch.status, r.id, patch.ok ? "(0 rows matched — RLS?)" : await patch.text().catch(() => ""));
+        continue;
+      }
+      rowsPatched++; sheetsFilled += applied;
     }
     const summary = "✓ Done. " + sheetsFilled + " link(s) filled across " + rowsPatched + " row(s). "
       + alreadyDone + " already complete, " + offSite + " off-site, " + folderMiss + " folder-not-found, "

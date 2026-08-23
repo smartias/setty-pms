@@ -14,25 +14,18 @@
 // roadmap assumed, so synthetic fixtures would have hidden both defects this
 // file pins down.
 
-// ── copies from index.ts ────────────────────────────────────────────────────
+// ── the fold helpers are IMPORTED, not copied ───────────────────────────────
+// These moved to currentSet.ts, and this file's old hand copies were the kind
+// of stale-test drift the 2026-08-23 review flagged: assertions passing
+// against behavior production no longer has. Importing the shipped source
+// makes that impossible. setFolderDate/sheetDisciplines below are still
+// index.ts-private, so those remain copies with drift anchors in section 7.
+import { registerIssueDate, registerIssueDateSource, sheetsOf } from "./currentSet.ts";
+
 function setFolderDate(name) {
   const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(name || ""));
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 }
-function registerIssueDate(row) {
-  const explicit = row?.files?.issuedAt;
-  if (explicit) return String(explicit).slice(0, 10);
-  const named = /^\s*(\d{4})[-_](\d{2})[-_](\d{2})/.exec(String(row?.files?.milestoneName || ""));
-  if (named) return `${named[1]}-${named[2]}-${named[3]}`;
-  return String(row?.created_at || "").slice(0, 10);
-}
-function registerIssueDateSource(row) {
-  if (row?.files?.issuedAt) return "stated issue date";
-  if (/^\s*\d{4}[-_]\d{2}[-_]\d{2}/.test(String(row?.files?.milestoneName || ""))) return "set folder name";
-  return "filing timestamp (may not be the issue date)";
-}
-
-const sheetsOf = (row) => Array.isArray(row?.files?.sheets) ? row.files.sheets : [];
 function sheetDisciplines(sheet) {
   const out = new Set();
   const stored = String(sheet?.discipline || "").toLowerCase().trim();
@@ -236,8 +229,12 @@ check(
   "the register query still filters on operation = transmittal-generated",
 );
 check(
-  shipped.includes(".filter((r: any) => r?.files?.superseded !== true)"),
-  "transmittalRows still drops superseded rows",
+  shipped.includes("return prepareRegisterRows(Array.isArray(rows) ? rows : []);"),
+  "transmittalRows delegates to prepareRegisterRows (the shared, drift-guarded prepare)",
+);
+check(
+  !/\.filter\(\(r: any\) => r\?\.files\?\.superseded !== true\)/.test(shipped),
+  "index.ts holds NO inline copy of the superseded-row filter (it lives in currentSet.ts only)",
 );
 
 const total = ran;

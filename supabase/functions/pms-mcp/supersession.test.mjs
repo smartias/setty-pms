@@ -10,27 +10,16 @@
 // pair. A test suite built on invented data would have missed both.
 import { strict as assert } from "node:assert";
 import test from "node:test";
-
-const SHEET_NO_RE = /^([A-Z]{1,3})[-_ ]?(\d{2,4}[A-Z]?)$/;
-
-function canonicalSheet(sheet) {
-  const raw = String(sheet?.sheetNo || "").toUpperCase().replace(/\s+/g, "");
-  const m = SHEET_NO_RE.exec(raw);
-  if (!m) return null;
-  return { sheetNo: m[1] + m[2], discipline: m[1] };
-}
-
-const sheetsOf = (row) => (Array.isArray(row?.files?.sheets) ? row.files.sheets : []);
-
-function registerIssueDate(row) {
-  const explicit = row?.files?.issuedAt;
-  if (explicit) return String(explicit).slice(0, 10);
-  const named = /^\s*(\d{4})[-_](\d{2})[-_](\d{2})/.exec(String(row?.files?.milestoneName || ""));
-  if (named) return `${named[1]}-${named[2]}-${named[3]}`;
-  return String(row?.created_at || "").slice(0, 10);
-}
+// The fold helpers are IMPORTED from the shipped source — this file's old hand
+// copies carried the pre-DOB-NOW SHEET_NO_RE and passed green against behavior
+// production no longer had (2026-08-23 review). Only buildSupersessionIndex /
+// fileSupersessionStatus remain copies (index.ts is a Deno module that boots a
+// server on import); drift anchors at the bottom pin their key lines.
+import { canonicalSheet, sheetsOf, registerIssueDate } from "./currentSet.ts";
 
 function buildSupersessionIndex(rows) {
+  // Keyed on the sheet's identity KEY (DOB-NOW .NN suffix stripped): P101,
+  // P101.00 and P101.01 are one sheet across filings.
   const bySheet = new Map();
   const byFilename = new Map();
   let registeredFiles = 0;
@@ -41,8 +30,8 @@ function buildSupersessionIndex(rows) {
     for (const s of sheetsOf(row)) {
       const fn = String(s?.filename || "").trim().toLowerCase();
       const c = canonicalSheet(s);
-      if (c && !bySheet.has(c.sheetNo)) {
-        bySheet.set(c.sheetNo, {
+      if (c && !bySheet.has(c.key)) {
+        bySheet.set(c.key, {
           status: "current", sheetNo: c.sheetNo, discipline: c.discipline,
           revision: s?.revision ?? null, issuedIn: setName, transmittalNumber,
           issueDate, backfilled: row?.files?.backfilled === true,
@@ -54,6 +43,7 @@ function buildSupersessionIndex(rows) {
         if (!list) { list = []; byFilename.set(fn, list); }
         list.push({
           sheetNo: c ? c.sheetNo : "",
+          key: c ? c.key : "",
           setName, issueDate, transmittalNumber, revision: s?.revision ?? null,
         });
       }
@@ -67,15 +57,16 @@ function fileSupersessionStatus(fileName, folderPath, idx) {
   if (!nameLower) return null;
   const pathLower = String(folderPath || "").toLowerCase();
   const regs = idx.byFilename.get(nameLower);
-  let sheetNo = "";
+  let sheetKey = "";
   let mine = null;
   if (regs && regs.length) {
-    const keys = new Set(regs.map((r) => r.sheetNo).filter(Boolean));
+    const keys = new Set(regs.map((r) => r.key).filter(Boolean));
     if (keys.size > 1) {
-      return { status: "ambiguous", basis: "multi-sheet filename", sheetNumbers: [...keys].sort() };
+      return { status: "ambiguous", basis: "multi-sheet filename",
+        sheetNumbers: [...new Set(regs.map((r) => r.sheetNo).filter(Boolean))].sort() };
     }
     if (keys.size === 0) return null;
-    sheetNo = [...keys][0];
+    sheetKey = [...keys][0];
     mine = regs.find((r) => r.setName && pathLower.includes(String(r.setName).toLowerCase())) ?? null;
     if (!mine) {
       if (regs.length === 1) mine = regs[0];
@@ -84,17 +75,17 @@ function fileSupersessionStatus(fileName, folderPath, idx) {
   } else {
     const stem = nameLower.replace(/\.[a-z0-9]+$/i, "").toUpperCase().replace(/\s+/g, "");
     const c = canonicalSheet({ sheetNo: stem });
-    if (!c || !idx.bySheet.has(c.sheetNo)) return null;
-    sheetNo = c.sheetNo;
+    if (!c || !idx.bySheet.has(c.key)) return null;
+    sheetKey = c.key;
   }
-  const currentRec = idx.bySheet.get(sheetNo);
+  const currentRec = idx.bySheet.get(sheetKey);
   if (!currentRec) return null;
   if (!mine) return { ...currentRec, basis: "matched by sheet number parsed from the filename" };
   const isCurrent = mine.issueDate === currentRec.issueDate &&
     (mine.setName ?? null) === (currentRec.issuedIn ?? null);
   if (isCurrent) return { ...currentRec, basis: "matched by filename in the transmittal register" };
   return {
-    status: "superseded", sheetNo, discipline: currentRec.discipline,
+    status: "superseded", sheetNo: mine.sheetNo || currentRec.sheetNo, discipline: currentRec.discipline,
     revision: mine.revision, issuedIn: mine.setName,
     transmittalNumber: mine.transmittalNumber, issueDate: mine.issueDate,
     backfilled: currentRec.backfilled,
@@ -213,4 +204,40 @@ test("issue date drives the fold, not filing timestamp", () => {
   // Tabler bug: a 2025 set filed in 2026 reported as current.
   const idx = buildSupersessionIndex(rows);
   assert.equal(fileSupersessionStatus("E211.pdf", NEW_SET, idx).issueDate, "2026-04-17");
+});
+
+test("a DOB-NOW filing suffix is identity, not a new sheet", () => {
+  // P101.00 refiled as P101.01: the newer filing supersedes; a plain "P101.pdf"
+  // resolves against the suffixed register key. Before the key existed, all
+  // three were distinct sheets and supersession never fired across them.
+  const dobRows = [
+    { created_at: "2026-03-05T12:00:00Z", files: {
+      milestoneName: "2026-03-05_DOB Refiling", transmittalNumber: "T-D2", issuedAt: "2026-03-05",
+      sheets: [{ sheetNo: "P101.01", discipline: "P", revision: "1", filename: "P101.01.pdf" }] } },
+    { created_at: "2026-01-10T12:00:00Z", files: {
+      milestoneName: "2026-01-10_DOB Filing", transmittalNumber: "T-D1", issuedAt: "2026-01-10",
+      sheets: [{ sheetNo: "P101.00", discipline: "P", revision: "0", filename: "P101.00.pdf" }] } },
+  ];
+  const idx = buildSupersessionIndex(dobRows);
+  assert.equal(idx.bySheet.size, 1, "suffix variants index as ONE sheet");
+  const older = fileSupersessionStatus("P101.00.pdf", "Outgoing/2026-01-10_DOB Filing", idx);
+  assert.equal(older.status, "superseded");
+  assert.equal(older.supersededBy.transmittalNumber, "T-D2");
+  const byStem = fileSupersessionStatus("P101.pdf", "Documents/loose", idx);
+  assert.equal(byStem.status, "current", "an unsuffixed stem resolves against the suffixed register key");
+});
+
+test("DRIFT: the copied index/status logic matches the shipped key lines", async () => {
+  const { readFileSync } = await import("node:fs");
+  const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  for (const anchor of [
+    "if (c && !bySheet.has(c.key)) {",
+    "bySheet.set(c.key, {",
+    "const keys = new Set(regs.map((r) => r.key).filter(Boolean));",
+    "if (!c || !idx.bySheet.has(c.key)) return null;",
+    "const currentRec = idx.bySheet.get(sheetKey);",
+  ]) {
+    assert.ok(shipped.includes(anchor),
+      "index.ts supersession logic drifted from this test's copy — missing: " + anchor);
+  }
 });
