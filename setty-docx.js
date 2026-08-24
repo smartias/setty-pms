@@ -996,25 +996,24 @@ export function expandFees(xml, fees) {
   const textOf = (p) => matchAll(RUN_RE, p).map((r) => runText(r[0])).join("");
   const body10 = (p) => p.replace(/(<w:szC?s? w:val=")22("\/>)/g, "$120$2");
 
-  // Fill the nth text-bearing run of a paragraph (0-based), leaving the rest.
-  const setNthRunText = (para, targets) => {
-    let n = -1;
-    return para.replace(new RegExp(RUN_RE.source, "g"), (run) => {
-      if (!new RegExp(TEXT_RE.source).test(run)) return run;
-      n++;
-      return targets[n] === undefined ? run : setRunText(run, xmlEscape(targets[n]));
-    });
-  };
-
+  // The template splits these lines across MANY runs ("Design " + "Manual",
+  // the sentence in pieces), so writing into runs by POSITION interleaved
+  // new text with old remnants. Instead, parse the paragraph's JOINED text
+  // for the example values and swap them through replaceInParagraph, which
+  // maps the character stream across run boundaries.
   const bfIdx = paras.findIndex((p) => textOf(p[0]).trim().startsWith("Basic Fee:"));
   if (bfIdx === -1) return { xml, found: false };
-  const bf = setNthRunText(paras[bfIdx][0], [
-    undefined, // "Basic Fee:" label keeps its bold run
-    " The fee for services will be " + fees.totalWords + " (",
-    undefined, // the bookmarked "$"
-    fees.totalAmount + "). This project is to be invoiced " + fees.feeType +
-      ", plus expenses based on the stages of completion listed below.  ",
-  ]);
+  const bfText = textOf(paras[bfIdx][0]);
+  const mWords = bfText.match(/will be (.+?) \(/);
+  const mAmt = bfText.match(/\(\$?\s*([\d,]+\.\d{2})\)/);
+  const mType = bfText.match(/invoiced (.+?),/);
+  if (!mWords || !mAmt) return { xml, found: false };
+  let bf = paras[bfIdx][0];
+  bf = replaceInParagraph(bf, mWords[1], xmlEscape(fees.totalWords));
+  bf = replaceInParagraph(bf, mAmt[1], xmlEscape(fees.totalAmount));
+  if (mType && fees.feeType && mType[1] !== fees.feeType) {
+    bf = replaceInParagraph(bf, "invoiced " + mType[1], xmlEscape("invoiced " + fees.feeType));
+  }
 
   // Phase rows: Default-styled money lines after Basic Fee, ending at the
   // bold "Total" line. Non-money paragraphs in the range (the rule above
@@ -1036,12 +1035,16 @@ export function expandFees(xml, fees) {
   if (!rowIdx.length || totalIdx === -1) return { xml, found: false };
 
   const proto = paras[rowIdx[0]][0];
-  const fillRow = (row) => body10(setNthRunText(proto, [row.label, undefined, row.amount]));
-  const total = body10(setNthRunText(paras[totalIdx][0], [undefined, undefined, fees.totalAmount]));
+  const pm = textOf(proto).match(/^\s*(.*\S)\s*\$\s*([\d,]+\.\d{2})\s*$/);
+  const tm = textOf(paras[totalIdx][0]).match(/([\d,]+\.\d{2})/);
+  if (!pm || !tm) return { xml, found: false };
+  const fillRow = (row) => body10(
+    replaceInParagraph(replaceInParagraph(proto, pm[1], xmlEscape(row.label)), pm[2], xmlEscape(row.amount)));
+  const total = body10(replaceInParagraph(paras[totalIdx][0], tm[1], xmlEscape(fees.totalAmount)));
 
   // Rebuild back-to-front so earlier indices stay valid.
   let out = xml;
-  const splice = (pm, repl) => { out = out.slice(0, pm.index) + repl + out.slice(pm.index + pm[0].length); };
+  const splice = (p, repl) => { out = out.slice(0, p.index) + repl + out.slice(p.index + p[0].length); };
   splice(paras[totalIdx], total);
   for (let k = rowIdx.length - 1; k >= 1; k--) splice(paras[rowIdx[k]], "");
   splice(paras[rowIdx[0]], fees.rows.map(fillRow).join(""));
