@@ -585,7 +585,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-23-big-book-page-windows";
+const BUILD = "2026-08-23-nysharesite-cross-site-crawl";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4652,8 +4652,90 @@ async function drawingScopeFiles(numPrefix: string, subfolder?: string): Promise
   return scope;
 }
 
+// ── NYSharesite cross-site scope ─────────────────────────────────────────────
+// Roughly 10 CA projects keep their ISSUED SETS on a different SharePoint site
+// (NYSharesite), reachable only through .url shortcut files at the project
+// folder root ("Setty Deliverables (NYSharesite).url"). Those projects were
+// invisible to drawing indexing, which scoped to Outgoing in the Project
+// Document Library. This follows the shortcut: read the .url (a tiny
+// [InternetShortcut] INI), resolve its target through the Graph SHARES API —
+// which turns any URL, plain or share-style, into a driveItem without
+// hand-parsing site/drive/path — and crawl that folder's subtree on the
+// foreign drive. "Client Uploads (NYSharesite).url" is deliberately NOT
+// followed: it is the client's INBOUND folder, the analog of the Email
+// attachments, not of Outgoing.
+const CROSS_SITE_MAX_REQUESTS = 60;
+async function crossSiteDeliverables(numPrefix: string): Promise<{
+  files: any[]; followed: string[]; truncated: boolean; error: string | null;
+}> {
+  const out = { files: [] as any[], followed: [] as string[], truncated: false, error: null as string | null };
+  try {
+    const drives = await siteDrives();
+    const docLib = drives.find((d) => d.name === DOC_LIBRARY) || drives[0];
+    if (!docLib) return out;
+    const root = await findProjectFolderInDrive(docLib.id, numPrefix);
+    if (!root) return out;
+    const top = await graphGet(`/drives/${docLib.id}/items/${root.id}/children?$select=id,name,file&$top=200`);
+    const shortcuts = (top.value || []).filter((it: any) =>
+      it.file && /\.url$/i.test(String(it.name)) && /deliverables/i.test(String(it.name)));
+    let requests = 0;
+    for (const sc of shortcuts) {
+      const res = await fetch(
+        `https://graph.microsoft.com/v1.0/drives/${docLib.id}/items/${sc.id}/content`,
+        { headers: { Authorization: "Bearer " + (await graphToken()) } },
+      );
+      if (!res.ok) continue;
+      const m = /^URL=(.+)$/im.exec(await res.text());
+      const target = m ? m[1].trim() : "";
+      if (!target) continue;
+      // Graph shares API: base64url-encode the URL into a u! share token.
+      const token = "u!" + btoa(target).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+      let item: any;
+      try {
+        item = await graphGet(`/shares/${encodeURIComponent(token)}/driveItem?$select=id,name,webUrl,folder,parentReference`);
+      } catch (e) {
+        // The commonest failure here would be the Graph app lacking access to
+        // the NYSharesite site — say so, because "no files" would read as an
+        // empty folder rather than a permission gap.
+        out.error = `could not resolve "${sc.name}": ${String((e as any)?.message ?? e).slice(0, 140)}` +
+          " — if this is a 403, the Graph app needs access to the NYSharesite site (IT grant).";
+        continue;
+      }
+      const foreignDrive = item?.parentReference?.driveId;
+      if (!item?.folder || !foreignDrive) continue;
+      out.followed.push(String(sc.name).replace(/\.url$/i, ""));
+      const basePath = "NYSharesite/" + String(item.name || "Deliverables");
+      const queue: Array<{ id: string; path: string }> = [{ id: item.id, path: basePath }];
+      while (queue.length) {
+        if (requests >= CROSS_SITE_MAX_REQUESTS || out.files.length >= TREE_MAX_FILES) { out.truncated = true; break; }
+        const node = queue.shift()!;
+        let url = `/drives/${foreignDrive}/items/${node.id}/children` +
+          "?$select=id,name,folder,file,webUrl,lastModifiedDateTime,size&$top=200";
+        while (url) {
+          if (requests >= CROSS_SITE_MAX_REQUESTS) { out.truncated = true; break; }
+          let page: any;
+          try { page = await graphGet(url); } catch { break; }
+          requests++;
+          for (const it of (page.value || [])) {
+            const path = node.path ? node.path + "/" + it.name : it.name;
+            if (it.folder) queue.push({ id: it.id, path });
+            else if (out.files.length < TREE_MAX_FILES) out.files.push(treeFileRow(foreignDrive, "NYSharesite", it, node.path));
+            else out.truncated = true;
+          }
+          const next = page["@odata.nextLink"];
+          url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
+        }
+      }
+    }
+  } catch (e) {
+    out.error = String((e as any)?.message ?? e).slice(0, 160);
+  }
+  return out;
+}
+
 async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<DrawingScope> {
   let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
+  const explicitSubfolder = !!rel;
   if (!rel) {
     const drives = await siteDrives();
     const docLib = drives.find((d) => d.name === DOC_LIBRARY) || drives[0];
@@ -4663,11 +4745,36 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
       const outgoing = (top.value || []).find((it: any) => it.folder && String(it.name).toLowerCase().includes("outgoing"));
       if (outgoing) rel = String(outgoing.name);
     }
-    if (!rel) return { files: [], scopePath: "Outgoing", truncated: false, resolved: false };
   }
-  const sub = await subtreeFiles(numPrefix, rel);
-  const files = sub.files.filter((f) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath));
-  return { files, scopePath: rel, truncated: sub.truncated, resolved: sub.resolvedIn.length > 0 };
+  let files: any[] = [];
+  let truncated = false;
+  let resolved = false;
+  let scopePath = rel || "Outgoing";
+  if (rel) {
+    const sub = await subtreeFiles(numPrefix, rel);
+    files = sub.files.filter((f) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath));
+    truncated = sub.truncated;
+    resolved = sub.resolvedIn.length > 0;
+  }
+  // Cross-site deliverables join the default scope (never an explicit
+  // subfolder request — those name a Project Document Library path). This is
+  // what makes the ~10 NYSharesite projects visible at all; for projects with
+  // both, the scope is the union.
+  if (!explicitSubfolder) {
+    const cross = await crossSiteDeliverables(numPrefix);
+    if (cross.files.length) {
+      const crossPdfs = cross.files.filter((f) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath));
+      files = files.concat(crossPdfs);
+      truncated = truncated || cross.truncated;
+      resolved = true;
+      scopePath = (rel ? rel + " + " : "") + cross.followed.map((n) => "NYSharesite: " + n).join(" + ");
+    } else if (cross.error && !resolved) {
+      // Surface the failure where an empty answer would otherwise lie.
+      scopePath = (rel || "Outgoing") + " (NYSharesite shortcut found but not crawlable: " + cross.error + ")";
+    }
+  }
+  if (!resolved) return { files: [], scopePath, truncated: false, resolved: false };
+  return { files, scopePath, truncated, resolved };
 }
 
 mcp.tool("search_drawings", {
@@ -4691,7 +4798,9 @@ mcp.tool("search_drawings", {
     "Query semantics: all words must appear on the same page (AND); quote a phrase to keep it together; " +
     "hyphens and spaces inside a tag are interchangeable (FCU-11 finds 'FCU 11' and 'FCU11'). Case-insensitive. " +
     "This reads text layers only: a scanned or image-only sheet indexes as empty and is reported under " +
-    "coverage.textlessFiles. Nothing here writes to the transmittal register.",
+    "coverage.textlessFiles. Projects whose issued sets live on the NYSharesite site (reached through a " +
+    "'Setty Deliverables (NYSharesite)' shortcut in the project folder) are crawled there automatically — " +
+    "coverage.scope names the site when that happens. Nothing here writes to the transmittal register.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR project name."),
     query: z.string().optional().describe("What to look for on the sheets, e.g. 'perchloric fume hood', 'FCU-11', '\"emergency generator\" 208V'. Required unless indexOnly is true."),
@@ -4724,7 +4833,9 @@ mcp.tool("search_drawings", {
         project, query, count: 0, sheets: [],
         reason: subfolder
           ? `No folder "${subfolder}" exists under this project.`
-          : "No Outgoing folder was found under this project, so there are no issued drawings to index.",
+          : (/NYSharesite shortcut found/.test(scope.scopePath)
+            ? "This project's issued sets live on the NYSharesite site, but the shortcut could not be crawled: " + scope.scopePath
+            : "No Outgoing folder was found under this project (and no NYSharesite deliverables shortcut), so there are no issued drawings to index."),
         nextStep: "Confirm the path with list_project_documents and pass it as subfolder, exactly as printed.",
       });
     }
