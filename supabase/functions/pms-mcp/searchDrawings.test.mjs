@@ -323,7 +323,7 @@ const matches = (pat, text) => new RegExp(pat, "i").test(text);
 // These are inline in the handler, so they are pinned by anchor rather than
 // copied — an edit that removes one must decide what replaces it.
 {
-  const src = readFileSync(join(here, "index.ts"), "utf8");
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   for (const anchor of [
     "const DRAWING_INDEX_PAGE_WINDOW = 40;",
     "const DRAWING_INDEX_FLUSH_EVERY = 10;",
