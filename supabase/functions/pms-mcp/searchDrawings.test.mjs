@@ -318,4 +318,23 @@ const matches = (pat, text) => new RegExp(pat, "i").test(text);
   }
 }
 
+// Big-book page-windowed indexing (2026-08-23): the invariants that keep a
+// 400-page book from OOM-crashing the worker or double-counting on resume.
+// These are inline in the handler, so they are pinned by anchor rather than
+// copied — an edit that removes one must decide what replaces it.
+{
+  const src = readFileSync(join(here, "index.ts"), "utf8");
+  for (const anchor of [
+    "const DRAWING_INDEX_PAGE_WINDOW = 40;",
+    "const DRAWING_INDEX_FLUSH_EVERY = 10;",
+    "const startPage = Math.max(0, Number(prev?.pages_done || 0)) + 1;",
+    "attempts: lastFlushed > Number(prev?.pages_done || 0) ? 0 : attempts,",
+    'status: finished ? "done" : "pending",',
+    "if (r.resumes) continue;",
+    "pages_done,text_pages",
+  ]) {
+    assert.ok(src.includes(anchor), "big-book windowing invariant missing from index.ts: " + anchor);
+  }
+}
+
 console.log("searchDrawings.test.mjs: all assertions passed");

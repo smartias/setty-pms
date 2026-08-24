@@ -585,7 +585,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-23-set-delta-register-diff";
+const BUILD = "2026-08-23-big-book-page-windows";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4417,7 +4417,17 @@ mcp.tool("extract_sheet_index", {
 const DRAWING_INDEX_DEADLINE_MS = 28_000;   // stop opening NEW files after this; the search still runs
 const DRAWING_INDEX_MAX_FILES = 10;          // per call, unless the caller asks otherwise; the deadline governs anyway
 const DRAWING_INDEX_MAX_FILES_CAP = 20;      // ceiling a caller can ask for
-const DRAWING_INDEX_MAX_ATTEMPTS = 3;        // a file that dies mid-request 3 times is left alone
+const DRAWING_INDEX_MAX_ATTEMPTS = 3;        // a file that dies mid-request 3 times WITHOUT PROGRESS is left alone
+// Big-book page windows. A 400-page discipline book cannot be parsed in one
+// invocation: the old single-pass accumulated every page row in memory and
+// upserted them as ONE body, and the worker died (OOM, no recorded error)
+// until the file was given up — 12 books portfolio-wide ended there. Now a
+// call processes a bounded window from where the last attempt stopped
+// (pages_done), flushes rows in small batches, and a call that makes progress
+// RESETS the attempt clock, so only a book that crashes without advancing ever
+// runs out of attempts.
+const DRAWING_INDEX_PAGE_WINDOW = 40;        // pages per file per call
+const DRAWING_INDEX_FLUSH_EVERY = 10;        // pages per pms_drawing_text upsert batch
 const DRAWING_INDEX_MAX_BYTES = MAX_DOC_BYTES; // the 42MB combined book times out on download; skip, say so
 
 // Query → POSIX regexes for Postgres `~*`. Every whitespace-separated term must
@@ -4721,7 +4731,7 @@ mcp.tool("search_drawings", {
 
     // ── 2. What IS indexed already ────────────────────────────────────────────
     const known: any[] = await sbGetAll(
-      "pms_drawing_index_files?select=item_id,status,attempts,pages,text_pages,file_name,folder_path,error" +
+      "pms_drawing_index_files?select=item_id,status,attempts,pages,pages_done,text_pages,file_name,folder_path,error" +
       "&project_prefix=eq." + encodeURIComponent(numPrefix) + "&order=item_id",
     );
     const knownById = new Map(known.map((k) => [k.item_id, k]));
@@ -4797,9 +4807,30 @@ mcp.tool("search_drawings", {
         const { getDocumentProxy } = await import("unpdf");
         const pdf: any = await getDocumentProxy(new Uint8Array(buf));
         const total: number = pdf.numPages;
-        const rows: any[] = [];
-        let textPages = 0;
-        for (let i = 1; i <= total; i++) {
+        // Page-windowed resume (see DRAWING_INDEX_PAGE_WINDOW). Start where the
+        // last attempt stopped; pms_drawing_text rows upsert on (item_id,page)
+        // so re-processing a page after a mid-window crash is idempotent, and
+        // text_pages/pages_done are written only for flushed pages, so counts
+        // never double on a retried window.
+        const startPage = Math.max(0, Number(prev?.pages_done || 0)) + 1;
+        const windowEnd = Math.min(total, startPage + DRAWING_INDEX_PAGE_WINDOW - 1);
+        let textPages = Number(prev?.text_pages || 0);
+        let batch: any[] = [];
+        let lastFlushed = startPage - 1;
+        let flushedTextPages = textPages;
+        const flush = async (upTo: number, tp: number) => {
+          if (batch.length) {
+            await drawingIndexWrite("pms_drawing_text?on_conflict=item_id,page", batch, "resolution=merge-duplicates,return=minimal");
+            batch = [];
+          }
+          lastFlushed = upTo; flushedTextPages = tp;
+        };
+        const sheetsSeen = new Set<string>();
+        let stoppedAt = startPage - 1;
+        for (let i = startPage; i <= windowEnd; i++) {
+          // The window itself can outlive the request budget on text-dense
+          // books; stop at the deadline and let pages_done carry the progress.
+          if (i > startPage && Date.now() - t0 > DRAWING_INDEX_DEADLINE_MS) break;
           const pg = await pdf.getPage(i);
           const tc = await pg.getTextContent();
           // Null bytes appear in some PDFs' text layers (seen: a ProjNet
@@ -4807,9 +4838,11 @@ mcp.tool("search_drawings", {
           // converted to text", 22P05), leaving the file permanently
           // unindexable. Strip them before anything downstream sees the text.
           const text = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/\u0000/g, " ").replace(/ +/g, " ").trim();
+          if (typeof pg.cleanup === "function") pg.cleanup();
           if (text.length >= 50) textPages++;
           const tb = text.length >= 50 ? parseTitleBlock(text) : null;
-          rows.push({
+          if (tb?.sheetNo) sheetsSeen.add(tb.sheetNo);
+          batch.push({
             project_prefix: numPrefix, item_id: f.itemId, page: i,
             file_name: f.name, folder_path: f.folderPath, web_url: f.webUrl,
             sheet_no: tb?.sheetNo ?? null, sheet_title: tb?.sheetTitle ?? null,
@@ -4817,16 +4850,26 @@ mcp.tool("search_drawings", {
             revision_description: tb?.revisionDescription ?? null, title_block_layout: tb?.titleBlockLayout ?? null,
             text, text_len: text.length, indexed_at: new Date().toISOString(),
           });
+          stoppedAt = i;
+          if (batch.length >= DRAWING_INDEX_FLUSH_EVERY) await flush(i, textPages);
         }
-        if (rows.length) {
-          await drawingIndexWrite("pms_drawing_text?on_conflict=item_id,page", rows, "resolution=merge-duplicates,return=minimal");
-        }
+        await flush(stoppedAt, textPages);
+        const finished = lastFlushed >= total;
         await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
-          { ...base, status: "done", attempts, pages: total, text_pages: textPages, error: null, indexed_at: new Date().toISOString() },
+          {
+            ...base,
+            status: finished ? "done" : "pending",
+            // Progress RESETS the attempt clock: only a book that crashes
+            // without advancing pages_done can ever reach MAX_ATTEMPTS.
+            attempts: lastFlushed > Number(prev?.pages_done || 0) ? 0 : attempts,
+            pages: total, pages_done: lastFlushed, text_pages: flushedTextPages, error: null,
+            ...(finished ? { indexed_at: new Date().toISOString() } : {}),
+          },
           "resolution=merge-duplicates,return=minimal");
         indexedNow.push({
-          file: f.name, folderPath: f.folderPath, pages: total, textPages,
-          sheets: [...new Set(rows.map((r) => r.sheet_no).filter(Boolean))],
+          file: f.name, folderPath: f.folderPath, pages: total, textPages: flushedTextPages,
+          ...(finished ? {} : { pagesDone: lastFlushed, resumes: "large file — the next call continues from where this one stopped" }),
+          sheets: [...sheetsSeen],
         });
       } catch (e) {
         const msg = `PDF parse failed: ${String((e as any)?.message ?? e)}`;
@@ -4838,7 +4881,13 @@ mcp.tool("search_drawings", {
 
     // ── 4. Coverage, from the scope list and the (now updated) file table ────
     const doneIds = new Set(known.filter((k) => k.status === "done").map((k) => k.item_id));
-    for (const r of indexedNow) doneIds.add(ordered.find((f) => f.name === r.file && f.folderPath === r.folderPath)?.itemId);
+    for (const r of indexedNow) {
+      // A page-windowed big book that has not reached its last page is
+      // progress, not completion — it must stay in filesPending so drain
+      // loops keep calling until it truly finishes.
+      if (r.resumes) continue;
+      doneIds.add(ordered.find((f) => f.name === r.file && f.folderPath === r.folderPath)?.itemId);
+    }
     const skippedNowIds = new Set(skippedNow.map((s) => s.itemId));
     const givenUpIds = new Set(givenUp.map((f) => f.itemId));
     const tally = (list: typeof ordered) => {
