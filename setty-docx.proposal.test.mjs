@@ -105,16 +105,22 @@ const DOC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   P(`<w:pStyle w:val="Heading2"/><w:ind w:left="720"/>`, R("{{PROVISIONS_BODY}}")) +
   P(`<w:ind w:left="720"/>`, `<w:r><w:t xml:space="preserve">{{RATE_ROLE_A}}</w:t><w:tab/><w:t>{{RATE_A}}</w:t><w:tab/><w:t>{{RATE_ROLE_B}}</w:t><w:tab/><w:t>{{RATE_B}}</w:t></w:r>`) +
   P(`<w:pStyle w:val="Heading1"/>`, R("FEES")) +
-  // Basic Fee sentence: label run, sentence-head run, bookmarked "$", tail run
+  // Basic Fee sentence and rows SPLIT across many runs, as the real
+  // template has them (rsid fragmentation) — position-based run writing
+  // interleaved new text with old remnants here.
   P(`<w:ind w:left="360"/><w:jc w:val="both"/>`,
     `<w:r><w:rPr><w:b/></w:rPr><w:t>Basic Fee:</w:t></w:r>` +
-    `<w:r><w:t xml:space="preserve"> The fee for services will be FORTY THOUSAND EIGHT HUNDRED DOLLARS AND NO CENTS (</w:t></w:r>` +
+    `<w:r><w:t xml:space="preserve"> The fee for services will be </w:t></w:r>` +
+    `<w:r><w:t xml:space="preserve">FORTY THOUSAND EIGHT HUNDRED DOLLARS </w:t></w:r>` +
+    `<w:r><w:t xml:space="preserve">AND NO CENTS (</w:t></w:r>` +
     `<w:r><w:t>$</w:t></w:r>` +
     `<w:r><w:t xml:space="preserve">40,800.00). This project is to be invoiced lump sum, plus expenses based on the stages of completion listed below.  </w:t></w:r>`) +
   P(`<w:pStyle w:val="Default"/><w:ind w:left="1800"/>`,
-    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">Design Manual</w:t><w:tab/></w:r>` +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">Design </w:t></w:r>` +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">Manual</w:t><w:tab/></w:r>` +
     `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>$</w:t></w:r>` +
-    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>12,240.00</w:t></w:r>`) +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>12,2</w:t></w:r>` +
+    `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>40.00</w:t></w:r>`) +
   P(`<w:pStyle w:val="Default"/><w:ind w:left="1800"/>`,
     `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t xml:space="preserve">Construction Documents/Permit</w:t><w:tab/></w:r>` +
     `<w:r><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr><w:t>$</w:t></w:r>` +
@@ -178,14 +184,12 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     fields: { CLIENT_FIRM: "Zambrano Architects", PROJECT_NAME: "Frank McCourt High School" },
     rates: [{ role: "Principal", rate: 336 }, { role: "Project Manager", rate: 205 }],
     fees: {
-      totalWords: "FIFTY-ONE THOUSAND DOLLARS AND NO CENTS",
-      totalAmount: "51,000.00",
+      totalWords: "FORTY THOUSAND SIX HUNDRED NINETY-EIGHT DOLLARS AND NO CENTS",
+      totalAmount: "40,698.00",
       feeType: "lump sum",
       rows: [
-        { label: "Design Manual", amount: "15,300.00" },
-        { label: "Construction Documents/Permit", amount: "20,400.00" },
-        { label: "Bidding", amount: "2,040.00" },
-        { label: "Construction Administration", amount: "13,260.00" },
+        { label: "Conditions Assessment", amount: "14,244.30" },
+        { label: "Design Development Documents", amount: "26,453.70" },
       ],
     },
     headerLogo: logoBytes,
@@ -329,17 +333,23 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   check(ratesHead.includes('<w:pStyle w:val="Heading1"/>'), "rates: SCHEDULE OF HOURLY RATES heading added");
   check(paraWith("Principal:").includes("$336.00/hr."), "rates: rows filled");
 
-  // fee block: real figures over the template example, at 12pt
+  // fee block: real figures over the template example, at 10pt, with no
+  // remnants of the example text left beside them (the split-run trap)
   check(!doc.includes("FORTY THOUSAND EIGHT HUNDRED"), "fees: example sentence replaced");
-  check(doc.includes("FIFTY-ONE THOUSAND DOLLARS AND NO CENTS ("), "fees: real total in words");
-  check(!doc.includes("40,800.00") && !doc.includes("16,320.00") && !doc.includes("12,240.00"),
-        "fees: example amounts gone");
-  eq((doc.match(/51,000\.00/g) || []).length, 2, "fees: real total in sentence and Total row");
-  const ddRow = paraWith("Design Manual</w:t>");
-  check(ddRow.includes("15,300.00"), "fees: phase row amount filled");
+  check(doc.includes("FORTY THOUSAND SIX HUNDRED NINETY-EIGHT DOLLARS AND NO CENTS"), "fees: real total in words");
+  check(!doc.includes("40,800.00") && !doc.includes("16,320.00") &&
+        !doc.includes("12,240.00") && !doc.includes("12,2</w:t>") && !doc.includes(">40.00<"),
+        "fees: example amounts gone, including split-run fragments");
+  eq((doc.match(/40,698\.00/g) || []).length, 2, "fees: real total in sentence and Total row");
+  check((paraWith("Basic Fee:").match(/This project is to be invoiced/g) || []).length === 1,
+        "fees: sentence appears once, no duplicated tail");
+  const ddRow = paraWith("Conditions Assessment</w:t>");
+  check(ddRow.includes("14,244.30"), "fees: phase row amount filled");
+  check(!ddRow.includes("Manual") && !ddRow.includes("Design "),
+        "fees: no example-label fragment beside the new label");
   check(ddRow.includes('<w:sz w:val="20"/>') && !ddRow.includes('<w:sz w:val="22"/>'),
         "fees: chart set to 10pt body size");
-  check(paraWith("Bidding").includes("2,040.00"), "fees: all four phase rows present");
+  check(paraWith("Design Development Documents").includes("26,453.70"), "fees: second phase row present");
 
   // header: FPID gone, project name + logo in, package parts added
   const hdr = dec.decode(out.get("word/header1.xml"));
