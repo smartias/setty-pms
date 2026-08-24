@@ -12,7 +12,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // "Current Set" panel in SettyPMS.html (which mirrors it in currentSetFold.js)
 // cannot answer "what is the current set?" differently. See currentSet.ts.
 import {
-  registerIssueDate, registerIssueDateSource, sheetsOf, prepareRegisterRows,
+  registerIssueDate, registerIssueDateSource, sheetsOf, prepareRegisterRows, setDelta,
   SHEET_NO_RE, canonicalSheet, encodeSpUrl, DISCIPLINE_ORDER, DISCIPLINE_NAME,
   disciplineRank, sheetRank, composeCurrentSet,
 } from "./currentSet.ts";
@@ -585,7 +585,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-23-current-set-review-fixes";
+const BUILD = "2026-08-23-set-delta-register-diff";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.1.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2358,6 +2358,12 @@ mcp.tool("get_current_set", {
         return true;
       });
       const sheets = disc ? all.filter((s: any) => sheetHasDiscipline(s, disc)) : all;
+      // Revision delta (linking Stage 3, register-diff half): what did THIS set
+      // change? Sets are mostly partial — a bulletin re-issues a handful — so
+      // diffing against "the previous set" compares disjoint slices. Diffing
+      // against the fold of everything issued BEFORE answers what a PM asks:
+      // which sheets are new, which moved revision, which are unchanged.
+      const changes = setDelta(sheets, candidates.filter((r) => setKey(r) !== key));
       // Prior sets are listed once each, not once per discipline row, or the
       // list is five rows of the same addendum.
       const priorSeen = new Set<string>();
@@ -2398,6 +2404,16 @@ mcp.tool("get_current_set", {
           backfilled: f.backfilled === true,
           sheetCount: sheets.length,
           sheets,
+          ...(sheets.length ? {
+            changes: {
+              newSheets: changes.newSheets,
+              revised: changes.revised,
+              reissued: changes.reissued,
+              note: "Each sheet vs the fold of everything issued before this set: " +
+                "newSheets never appeared before, revised moved revision label, reissued went out again unchanged." +
+                (changes.unkeyable ? ` ${changes.unkeyable} sheet(s) had no parseable number and could not be diffed.` : ""),
+            },
+          } : {}),
         },
         ...(disc ? { disciplineFilter: discipline } : {}),
         // The commonest misreading of this tool: a bulletin covering 8 sheets is
