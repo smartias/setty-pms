@@ -22545,6 +22545,16 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   // legacy single-blob project arrives with everything in `included` via the
   // scopeSectionHtml fallback.
   const secs = scopeSectionsOf(project);
+  // Stamped clauses keep their data-phase / data-discipline tags, so the
+  // filters re-run at export time: turning a phase or discipline off AFTER
+  // the scope was built still drops the tagged line items from the document.
+  {
+    const disc = scopeDisciplinesOf(project);
+    const codes = activePhaseCodes(project);
+    Object.keys(secs).forEach(k => {
+      secs[k] = filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(secs[k], disc), codes);
+    });
+  }
   const fields = proposalDocxFields(project);
   const blank = [];
   if (honorific) fields.CONTACT_HONORIFIC = honorific;
@@ -23890,6 +23900,37 @@ function clauseVariantTag(clause, lib, variants) {
   return "this proposal uses " + (chosen ? variantOptionLabel(chosen) : "the other option");
 }
 
+// Which schedule phases this proposal carries: the codes present in
+// project.phases (the Fee Calculator's phase list — a DD-only job simply has
+// no CD/BS/CA rows). An absent list means the default five, so an untouched
+// project keeps everything.
+function activePhaseCodes(project) {
+  const phases = (project && Array.isArray(project.phases) && project.phases.length) ? project.phases : DEFAULT_PHASES;
+  return new Set(phases.map(p => p && p.code).filter(Boolean));
+}
+
+// Drop clause line items tagged for phases this proposal does not carry:
+// <li data-phase="CD">, <li data-phase-not="CA">. Mirrors the discipline
+// filter below — this is how a DD-only proposal stops the deliverables
+// clause from promising CD packages and bid-phase services.
+function filterClauseHtmlByPhase(html, codes) {
+  const s = String(html || "");
+  if (!/data-phase/.test(s)) return s;
+  try {
+    const doc = new DOMParser().parseFromString(s, "text/html");
+    doc.body.querySelectorAll("[data-phase],[data-phase-not]").forEach(el => {
+      const need = (el.getAttribute("data-phase") || "").split(/[\s,]+/).filter(Boolean);
+      const not = (el.getAttribute("data-phase-not") || "").split(/[\s,]+/).filter(Boolean);
+      const keep = (!need.length || need.some(k => codes.has(k))) && !not.some(k => codes.has(k));
+      if (!keep) el.remove();
+    });
+    doc.body.querySelectorAll("ul,ol").forEach(l => { if (!l.children.length) l.remove(); });
+    return doc.body.innerHTML;
+  } catch (_) {
+    return s;
+  }
+}
+
 // Drop the line items that do not apply, and any list left empty by that.
 function filterClauseHtmlByDiscipline(html, active) {
   const s = String(html || "");
@@ -24120,7 +24161,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       const decl = (clause.params || {})[tok];
       return (decl && decl.default != null) ? decl.default : m;
     });
-    return filterClauseHtmlByDiscipline(filled, activeDisc);
+    return filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(filled, activeDisc), activePhaseCodes(project));
   }
   function fillClauseParams(clause) {
     return substituteClauseTokens(clause, clauseParams[clause.clause_key] || {});
@@ -24315,6 +24356,9 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (project.owner) facts.push("- Owner / agency: " + project.owner);
     if (project.projectAddress) facts.push("- Location: " + project.projectAddress);
     facts.push("- Disciplines in this proposal: " + (discOn.join(", ") || "MEP/FP"));
+    const phaseNames = ((project.phases && project.phases.length) ? project.phases : DEFAULT_PHASES)
+      .map(p => p.name + " (" + p.code + ")");
+    facts.push("- Design phases in this proposal: " + phaseNames.join(", ") + ". The scope ENDS at the last phase listed.");
     if (project.feeType) facts.push("- Fee type: " + project.feeType);
     if (project.proposalFolderUrl) facts.push("- Proposal folder: " + project.proposalFolderUrl);
     // Catalog: only clauses this proposal can take, keys + titles + tokens.
@@ -24349,6 +24393,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Written sections stay short: understanding 1 to 3 paragraphs, approach 3 to 6 short paragraphs or a compact list, each custom assumption one sentence.",
       "- Plain paragraphs only in understanding and approach: no bold run-in titles at the start of a paragraph (write \"Setty will attend the scope meeting…\", not \"<strong>Scope Report Phase.</strong> Setty will…\").",
       "- Name ONLY the disciplines listed in the project facts above, everywhere in the narrative. If plumbing is not in the list, no sentence mentions plumbing (and write M/E/FP, never MEP/FP). This applies to understanding, approach, custom assumptions and open items alike.",
+      "- Deliverables must match the RFP and the phase list in the project facts EXACTLY. Never describe submissions or services for a phase this proposal does not carry: no construction documents packages, bid phase or construction administration on a job that stops at design development. When in doubt, list fewer deliverables and put the question in openItems.",
       "- Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].",
       "- Plain AEC professional English. No em dashes anywhere. No marketing superlatives. Spell out agency names on first use.",
       "- Never invent a fee total. suggestedPhases must sum to 100; basisOfFeeNote says how the fee could be benchmarked. Dollar amounts only if the RFP states them, and only inside understanding.",
