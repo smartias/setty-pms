@@ -709,22 +709,31 @@ function logoRunXml(cx, cy) {
 }
 
 /**
- * Rewrite the FPID header paragraph: [logo] [project name]. Keeps the
- * paragraph's pPr (centering) and reuses the FPID run's rPr so the name
- * matches the header's established look. Returns null when this part has no
- * FPID paragraph.
+ * Rewrite the FPID header paragraph: logo at the LEFT margin, project name
+ * CENTERED via the Header style's center tab stop (4320 in this template).
+ * The name reuses the FPID run's rPr so it keeps the header's established
+ * look; with no logo the paragraph stays centered as the template had it.
+ * Returns null when this part has no FPID paragraph.
  */
 export function renderHeaderXml(xml, projectName, withLogo) {
   const pm = matchAll(PARA_RE, xml).find((p) => p[0].includes("FPID"));
   if (!pm) return null;
   const para = pm[0];
-  const pPr = (para.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [""])[0];
+  let pPr = (para.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [""])[0];
   const fpidRun = matchAll(RUN_RE, para).find((r) => runText(r[0]).includes("FPID"));
   const rPr = fpidRun ? (fpidRun[0].match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [""])[0] : "";
-  const name = projectName
-    ? "<w:r>" + rPr + '<w:t xml:space="preserve">' + (withLogo ? "   " : "") + xmlEscape(projectName) + "</w:t></w:r>"
-    : "";
-  const next = "<w:p>" + pPr + (withLogo ? logoRunXml(LOGO_CX, LOGO_CY) : "") + name + "</w:p>";
+  let runs;
+  if (withLogo) {
+    pPr = pPr.replace('<w:jc w:val="center"/>', "");
+    runs = logoRunXml(LOGO_CX, LOGO_CY) +
+      (projectName ? "<w:r>" + rPr + "<w:tab/></w:r>" +
+        "<w:r>" + rPr + '<w:t xml:space="preserve">' + xmlEscape(projectName) + "</w:t></w:r>" : "");
+  } else {
+    runs = projectName
+      ? "<w:r>" + rPr + '<w:t xml:space="preserve">' + xmlEscape(projectName) + "</w:t></w:r>"
+      : "";
+  }
+  const next = "<w:p>" + pPr + runs + "</w:p>";
   return xml.slice(0, pm.index) + next + xml.slice(pm.index + para.length);
 }
 
