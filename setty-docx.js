@@ -962,6 +962,51 @@ function unnumberHeading(xml, title) {
   return xml;
 }
 
+// After "END OF ATTACHMENT A" the template trails empty paragraphs, an
+// explicit page break, and a section break into a FINAL EMPTY SECTION —
+// two to three blank pages on the end of every proposal. Trim the blanks
+// (a paragraph with no text and no drawing, page-break-only included) from
+// the tail, keep the section-break paragraph itself (it carries the previous
+// section's headers/footers), and when the final section is left with no
+// content make it `continuous` so it stops forcing a fresh page.
+export function trimTrailingBlanks(xml) {
+  const kids = topLevelChildren(xml);
+  if (kids.length < 2 || kids[kids.length - 1].kind !== "sectPr") return xml;
+  const slice = (k) => xml.slice(k.start, k.end);
+  const isBlank = (s) =>
+    !/<w:sectPr\b/.test(s) && !/<w:drawing\b|<w:pict\b/.test(s) &&
+    !matchAll(TEXT_RE, s).map((m) => m[2]).join("").trim();
+  const isSectionBreak = (k) => k.kind === "p" && /<w:pPr>[\s\S]*?<w:sectPr\b/.test(slice(k));
+
+  const cuts = [];
+  let i = kids.length - 2;
+  while (i >= 0 && kids[i].kind === "p" && isBlank(slice(kids[i]))) { cuts.push(kids[i]); i--; }
+  const finalSectionEmptied = i >= 0 && isSectionBreak(kids[i]);
+  if (finalSectionEmptied) {
+    let j = i - 1;
+    while (j >= 0 && kids[j].kind === "p" && isBlank(slice(kids[j]))) { cuts.push(kids[j]); j--; }
+  }
+  let out = xml;
+  for (const k of cuts.sort((a, b) => b.start - a.start)) out = out.slice(0, k.start) + out.slice(k.end);
+  if (finalSectionEmptied) {
+    // The (now content-free) final section joins the previous page instead
+    // of opening a blank one. Type sits after the header/footer references.
+    const fin = out.lastIndexOf("<w:sectPr");
+    const seg = out.slice(fin);
+    let next;
+    if (/^<w:sectPr[^>]*\/>/.test(seg)) {
+      next = seg.replace(/^<w:sectPr([^>]*)\/>/, '<w:sectPr$1><w:type w:val="continuous"/></w:sectPr>');
+    } else if (/<w:type w:val="[^"]*"\/>/.test(seg.slice(0, seg.indexOf("</w:sectPr>")))) {
+      next = seg.replace(/<w:type w:val="[^"]*"\/>/, '<w:type w:val="continuous"/>');
+    } else {
+      const insertAt = seg.search(/<w:pgSz\b|<w:pgMar\b|<\/w:sectPr>/);
+      next = insertAt === -1 ? seg : seg.slice(0, insertAt) + '<w:type w:val="continuous"/>' + seg.slice(insertAt);
+    }
+    out = out.slice(0, fin) + next;
+  }
+  return out;
+}
+
 // Remove a template heading outright — the body's "TERMS AND CONDITIONS AS
 // OUTLINED IN ATTACHMENT A." line lives in the proposal body section, so
 // omitting the attachment leaves it pointing at nothing.
@@ -1240,6 +1285,9 @@ export async function buildDocx(
         const firm = xmlEscape(fields.CLIENT_FIRM);
         xml = xml.replace(/>(?:212 ARCHITECTS|212 Architects)</g, ">" + firm + "<");
       }
+      // Last: strip the template's trailing blank paragraphs, page break and
+      // empty final section — otherwise every proposal ends on blank pages.
+      xml = trimTrailingBlanks(xml);
     }
     if (blank.length) {
       const gone = {};

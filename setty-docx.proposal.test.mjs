@@ -134,7 +134,16 @@ const DOC = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   P(`<w:pStyle w:val="Heading1"/>`, R("TERMS AND CONDITIONS")) +
   P(`<w:pStyle w:val="Heading1"/>`, R("{{TERMS_HEADING}}")) +
   P(`<w:ind w:left="360"/>`, R("{{TERMS_BODY}}")) +
-  `<w:sectPr/></w:body></w:document>`;
+  // the template's real tail: blanks, an explicit page break, a section
+  // break, then a final EMPTY section — the source of the trailing blank pages
+  P(`<w:ind w:left="360"/>`, "") +
+  P("", "") +
+  P("", `<w:r><w:br w:type="page"/></w:r>`) +
+  P("", "") +
+  `<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:pPr></w:p>` +
+  P("", "") +
+  P("", "") +
+  `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>`;
 
 // The sent-proposal footer: Fairfax | New York columns, the NY street stale
 // (and truncated at "21s" in the template itself), and a leftover FPID.
@@ -364,6 +373,21 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         "header: relationship written");
   check(dec.decode(out.get("[Content_Types].xml")).includes('Extension="png"'),
         "header: png content type declared");
+
+  // tail: blanks, the page break and the final empty section's page are gone
+  {
+    const kids = sd.topLevelChildren(doc);
+    const last = kids[kids.length - 1];
+    check(last.kind === "sectPr" && doc.slice(last.start, last.end).includes('<w:type w:val="continuous"/>'),
+          "tail: emptied final section joins the previous page");
+    const prev = doc.slice(kids[kids.length - 2].start, kids[kids.length - 2].end);
+    check(/<w:pPr>[\s\S]*?<w:sectPr\b/.test(prev) && prev.includes("headerReference"),
+          "tail: the section-break paragraph (with its header refs) survives");
+    check(!doc.includes('<w:br w:type="page"/>'), "tail: trailing page break removed");
+    const between = doc.slice(doc.indexOf("Basis body."), kids[kids.length - 2].start);
+    check(!/<w:p><w:pPr><w:ind w:left="360"\/><\/w:pPr><\/w:p>/.test(between.slice(between.indexOf("</w:p>"))),
+          "tail: blank paragraphs before the section break removed");
+  }
 
   // footer: current NY office in, old office and stale FPID out
   const ftr = dec.decode(out.get("word/footer1.xml"));
