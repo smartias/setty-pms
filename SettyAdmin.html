@@ -177,6 +177,12 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v16 (23 Aug 2026) — System Guide §8: the infrastructure OWNERSHIP MIGRATION
+// plan (Raj's "move to Setty GitHub" ask, correctly translated): repo → Setty
+// GitHub org, Cloudflare worker → Setty account + custom domain, IT visibility
+// package; SharePoint documents explicitly DO NOT move. Includes the full
+// origin-cutover checklist so the migration runs from a list, not from memory.
+// Status: planned, nothing executed.
 // v15 (22 Aug 2026) — with the whole portfolio tagged, the Teams card's flat
 // list became unusable: now one collapsed <details> group per team with
 // counts (untagged, if any, opens first as the attention group; open state
@@ -1287,7 +1293,8 @@ function renderGuide() {
         <a class="jump" href="#g-arch">↓ Architecture</a> ·
         <a class="jump" href="#g-apps">↓ Applications</a> ·
         <a class="jump" href="#g-knowledge">↓ Knowledge layer</a> ·
-        <a class="jump" href="#g-templates">↓ Document templates</a>
+        <a class="jump" href="#g-templates">↓ Document templates</a> ·
+        <a class="jump" href="#g-migration">↓ Ownership migration (planned)</a>
       </div>
     </div>
 
@@ -1610,6 +1617,57 @@ python prep.py subagreement    # or just one</code></pre>
       <p style="font-size:12.5px;color:var(--muted)">Deeper technical history (per-version changelogs, incident notes, data-shape details) lives in the working
          session notes and the PMS-MCP folder in the PMS OneDrive directory — but this page plus the code comments are intended to be enough to operate the system.</p>
       </details>
+    </div>
+
+    <div class="card doc" id="g-migration">
+      <div class="sechead">8 · Infrastructure ownership migration — PLANNED, not started</div>
+      <p><b>The agreed position (Aug 2026, Sara + Raj):</b> the application already lives in GitHub and always has —
+         SharePoint holds project <i>documents</i>, which are already inside the Microsoft 365 tenant IT controls and
+         monitors, and <b>they do not move</b>. What does move: two pieces of infrastructure currently under personal
+         accounts go under <b>Setty-owned accounts with IT visibility</b>.</p>
+      <table style="margin:10px 0"><thead><tr><th>Move</th><th>From</th><th>To</th></tr></thead><tbody>
+        <tr><td><b>Code repository</b> (GitHub Pages serves the whole suite from it)</td>
+            <td><code>smartias/setty-pms</code> (personal account)</td>
+            <td>A Setty GitHub <b>organization</b>, IT among the owners — secret scanning, dependency alerts and an
+                audit log come with it. Private hosting needs a paid org plan (decision below).</td></tr>
+        <tr><td><b>Cloudflare worker</b> (the Claude-connector discovery proxy)</td>
+            <td>Personal free account, <code>workers.dev</code> subdomain</td>
+            <td>A Setty Cloudflare account, <b>paid tier</b>, on a company custom domain (e.g. <code>pms.setty.com</code>)
+                — the custom-domain move was already recommended before firm-wide rollout.</td></tr>
+        <tr><td><b>Database visibility</b></td><td>Supabase org, PMS admins only</td>
+            <td>IT invited to the Supabase organization (logs, security advisors, the RLS posture) — no code change.</td></tr>
+      </tbody></table>
+      <p style="font-size:12.5px"><b>What IT already has today:</b> every sign-in runs through the Setty Entra tenant
+         (all three app registrations live there — sign-in logs are theirs now), and every Claude-connector request is
+         logged per caller in the Usage &amp; audit view on the Claude/MCP tab of this console.</p>
+      <p style="font-size:12.5px;border-left:3px solid var(--amber,#b45309);padding-left:10px">
+        <b>Why this is a coordinated cutover, not a transfer click:</b> the Pages origin
+        (<code>smartias.github.io</code>) is load-bearing. Entra redirect URIs, the add-in URLs, sign-in persistence
+        (per-origin token cache — everyone re-signs-in once), and every bookmark and emailed link point at it.
+        Do the origin migration <b>exactly once</b>, onto the custom domain, so it never happens again.</p>
+      <div class="sechead" style="margin-top:12px;font-size:13px">Cutover checklist (execute in order)</div>
+      <ol style="font-size:12.5px">
+        <li><b>Decisions first:</b> public vs private repo (private Pages = paid GitHub org — strengthens the case for
+            IT owning the org); who owns the GitHub org, the Cloudflare account and the DNS; pick the domain.</li>
+        <li><b>IT creates</b> the Setty GitHub org and Cloudflare account; Sara + Danny + IT as owners.</li>
+        <li><b>DNS:</b> one CNAME for Pages on the custom domain, one route for the worker.</li>
+        <li><b>Transfer the repo.</b> Git remotes redirect automatically; <b>the Pages origin does not</b> — that is the
+            whole point of the checklist. Redeploy the worker (<code>mcp-proxy/</code>) to the Setty Cloudflare account
+            (keep the rate limiter at period 10; every URL it emits derives from the request origin, so the code itself
+            does not change).</li>
+        <li><b>Entra (IT):</b> add the new origin's redirect URIs to the suite app registration <i>before</i> cutover,
+            keeping the old ones during transition. The connector URL changes with the proxy domain → a Claude org
+            Owner updates the connector in claude.ai (expect remove-and-re-add; tool lists cache at add).</li>
+        <li><b>Sweep for the old origin:</b> grep every repo and edge function for <code>smartias.github.io</code> —
+            the in-app updater, deep links, jobcard "Ask Claude" links, welcome-email and digest links, add-in manifest.
+            Bump every app's version marker.</li>
+        <li><b>Cutover day:</b> staff re-sign-in once (token caches are per-origin); watch the Filing Log and the
+            connector health endpoint through a full workday.</li>
+        <li><b>Decommission:</b> old origin serves a redirect for a transition period, then retires; rotate the
+            connector's shared secret so no legacy lane survives the move.</li>
+      </ol>
+      <p style="font-size:12px;color:var(--muted)">Status: <b>nothing executed yet</b> — this section is the plan of
+         record so the migration is run from a checklist, not from memory.</p>
     </div>`;
 }
 
