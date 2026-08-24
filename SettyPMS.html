@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-23-pms-v137-sheetref-chips";
+    window.__appVersion = "2026-08-24-pms-v138-addin-invoice-flag";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -7567,6 +7567,30 @@ function ScheduleView({ project, onChange, onEagerSave }) {
   // tracking where it went.
   const [frozenOrder, setFrozenOrder] = useState(null); // array of milestone ids, or null
   const [recentlyEditedId, setRecentlyEditedId] = useState(null);
+
+  // ── Deferred invoice prompt (add-in close-out) ──────────────────────────────
+  // The Outlook add-in's "Mark Complete in PMS" button (on PMS-synced calendar
+  // events) has no invoicing UI, so it stamps invoicePromptPending on billable
+  // milestones it completes. Pop the standard invoice prompt here on tab open.
+  // The flag is cleared BEFORE the prompt shows so a dismissed prompt doesn't
+  // nag forever — the CA invoice table still surfaces uninvoiced work. One at a
+  // time; a second flagged milestone prompts on the next tab open.
+  React.useEffect(() => {
+    const flagged = (project.milestones || []).filter(m => m.invoicePromptPending);
+    if (!flagged.length) return;
+    const pending = flagged.find(m => !m.cancelled && m.type === "billable" && (m.fee || 0) > 0) || flagged[0];
+    onChange({
+      ...project,
+      milestones: (project.milestones || []).map(m =>
+        m.id === pending.id ? { ...m, invoicePromptPending: null } : m),
+    }, { notifyTeams: false });
+    if (pending.cancelled || pending.type !== "billable" || !(pending.fee > 0)) return;
+    let amount = 0;
+    try { amount = calcInvoiceAmount(pending, pending.pctComplete || 100, project); } catch (e) { /* non-fatal */ }
+    if (amount > 0) {
+      setInvoicePrompt({ milestone: { ...pending }, newPct: pending.pctComplete || 100, invoiceAmount: amount });
+    }
+  }, [project.id]);
 
   // calMap derived from milestone objects — single source of truth in project data
   const calMap = Object.fromEntries(
