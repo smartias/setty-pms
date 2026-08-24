@@ -356,6 +356,9 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   check(!hdr.includes("FPID"), "header: FPID line removed");
   check(hdr.includes("Frank McCourt High School"), "header: project name present");
   check(hdr.includes('r:embed="rIdSettyLogo"'), "header: logo drawing embedded");
+  check(!hdr.includes('<w:jc w:val="center"/>'), "header: paragraph left-aligned so the logo sits at the margin");
+  check(/<\/w:drawing><\/w:r><w:r>[^]*?<w:tab\/><\/w:r><w:r>[^]*?Frank McCourt High School</.test(hdr),
+        "header: name tabs to the center stop after the logo");
   check(!!out.get("word/media/settylogo.png"), "header: logo media part added");
   check(dec.decode(out.get("word/_rels/header1.xml.rels")).includes("media/settylogo.png"),
         "header: relationship written");
