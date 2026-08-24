@@ -4824,6 +4824,16 @@ mcp.tool("search_drawings", {
             batch = [];
           }
           lastFlushed = upTo; flushedTextPages = tp;
+          // The resume pointer is persisted at EVERY flush, not only at window
+          // end: the platform can kill the isolate the moment the client
+          // disconnects (~25s at the proxy), which is BEFORE the 28s deadline
+          // path runs — without this, page rows landed but pages_done stayed 0
+          // and the book re-parsed from page 1 every call until given up.
+          if (upTo >= startPage) {
+            await drawingIndexWrite("pms_drawing_index_files?on_conflict=item_id",
+              { ...base, status: "pending", attempts: 0, pages: total, pages_done: upTo, text_pages: tp, error: null },
+              "resolution=merge-duplicates,return=minimal").catch(() => {});
+          }
         };
         const sheetsSeen = new Set<string>();
         let stoppedAt = startPage - 1;
