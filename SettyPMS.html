@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-24-pms-v138-addin-invoice-flag";
+    window.__appVersion = "2026-08-24-pms-v139-milestone-uid-backfill";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2118,12 +2118,15 @@ async function fetchCalendarEventDate(eventId, hints = {}) {
     if (cal) ev = await locateNycEvent(cal.base, { eventId, uid: hints.uid, subject: hints.subject });
     // Legacy: before 8/17 the app fell back to the user's PERSONAL calendar
     // when the shared one wasn't visible; those events still live there.
-    if (!ev && eventId) ev = await graphFetch("GET", "/me/events/" + eventId + "?$select=id,start,isAllDay");
+    if (!ev && eventId) ev = await graphFetch("GET", "/me/events/" + eventId + "?$select=id,start,isAllDay,iCalUId");
     if (!ev) return cal ? { found: false } : null;
     // All-day events carry the calendar date in the dateTime string itself,
     // so the first 10 chars are the date regardless of timezone representation
     const date = (ev.start?.dateTime || "").slice(0, 10);
-    return { found: true, date: date || null, id: ev.id };
+    // uid lets callers backfill calendarEventUid on milestones synced before
+    // UID stamping existed — the mailbox-independent key the add-in's
+    // milestone-event card matches on.
+    return { found: true, date: date || null, id: ev.id, uid: ev.iCalUId || null };
   } catch (e) {
     return null;
   }
@@ -7617,6 +7620,12 @@ function ScheduleView({ project, onChange, onEagerSave }) {
 
   // ── Two-way sync (pull direction): on tab open, read each synced event back
   // from Outlook and prompt when the calendar date no longer matches PMS ──
+  // The sweep saves AFTER Graph roundtrips; by then other mount-time saves
+  // (e.g. the deferred invoice prompt clearing its flag) may have landed.
+  // Spreading the mount-time `project` closure would resurrect what they
+  // changed, so late saves build on the latest prop via this ref.
+  const projectRef = React.useRef(project);
+  projectRef.current = project;
   const [outlookConflicts, setOutlookConflicts] = useState([]); // [{id, name, pmsDate, outlookDate, deleted}]
   const [outlookMassMissing, setOutlookMassMissing] = useState(0); // see splitMassMissing
 
@@ -7632,11 +7641,16 @@ function ScheduleView({ project, onChange, onEagerSave }) {
     (async () => {
       const toCheck = (project.milestones || []).filter(shouldCheckOutlookDate);
       if (!toCheck.length) return;
+      const uidBackfill = {}; // milestone id → iCalUId learned during the sweep
       const results = await Promise.all(toCheck.map(async m => {
         // uid/subject hints let the lookup succeed when calendarEventId was
         // minted in a colleague's mailbox (Graph event ids are per-mailbox).
         const r = await fetchCalendarEventDate(m.calendarEventId, { uid: m.calendarEventUid, subject: nycEventSubject(project.name, project.projectNumber, m.name) });
         if (!r) return null; // fetch failed — unknown state, don't prompt
+        // Milestones synced before UID stamping carry only calendarEventId.
+        // Stamp the mailbox-independent iCalUId we just read so colleagues'
+        // sweeps and the add-in's milestone-event card can match this event.
+        if (r.found && r.uid && !m.calendarEventUid) uidBackfill[m.id] = r.uid;
         if (!r.found) return { id: m.id, name: m.name, pmsDate: m.dueDate, outlookDate: null, deleted: true };
         // outlookDateAck = the Outlook date the user already chose "Keep PMS
         // Date" against. Suppress the prompt until Outlook moves AGAIN; a
@@ -7648,6 +7662,17 @@ function ScheduleView({ project, onChange, onEagerSave }) {
       const split = splitMassMissing(results.filter(Boolean), toCheck.length);
       setOutlookConflicts(split.conflicts);
       setOutlookMassMissing(split.massMissing);
+      // One quiet save for all UIDs learned this sweep (single project row —
+      // never the dashboard-wide bulk-write pattern behind the 6/24 outage).
+      // Built from projectRef, not the mount-time closure: see ref comment.
+      if (Object.keys(uidBackfill).length) {
+        const latest = projectRef.current;
+        onChange({
+          ...latest,
+          milestones: (latest.milestones || []).map(m =>
+            uidBackfill[m.id] && !m.calendarEventUid ? { ...m, calendarEventUid: uidBackfill[m.id] } : m),
+        }, { notifyTeams: false });
+      }
     })();
     return () => { alive = false; };
   }, []); // runs once per Schedule tab open — ScheduleView remounts on tab switch
