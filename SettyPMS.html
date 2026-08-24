@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-23-pms-v136-current-set-review-fixes";
+    window.__appVersion = "2026-08-23-pms-v137-sheetref-chips";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -64,8 +64,10 @@
 <script type="module">
   import * as SettyDocx from "./setty-docx.js";
   import * as CurrentSetFold from "./currentSetFold.js";
+  import * as SheetRefs from "./sheetRefs.js";
   window.SettyDocx = SettyDocx;
   window.CurrentSetFold = CurrentSetFold;
+  window.SheetRefs = SheetRefs;
 </script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -2980,6 +2982,62 @@ async function fetchAllAnon(tableQuery, label) {
     const rows = await res.json();
     if (rows && rows.length) out.push(...rows);
     if (!rows || rows.length < PAGE) break;   // last page reached
+  }
+  return out;
+}
+
+// ─── Sheet-reference validation keys (linking Stage 1 chips) ─────────────────
+// One fetch per project per session (10-min TTL): the transmittal register's
+// sheet identity keys plus the drawing index's parsed sheet numbers, via the
+// authenticated lookups pms_drawing_sheet_keys / pms_drawing_text_occurs
+// (pms_drawing_text itself is admin-only under RLS, so the lookups expose only
+// what validation needs — never drawing text). Text-occurrence probes are
+// per-term and cached, so retyping a response never re-asks the database about
+// sheets it already answered.
+const _sheetRefKeysCache = new Map(); // project id -> {at, registerKeys, indexKeys, textCache, prefix}
+async function sheetRefRpc(fn, body) {
+  const res = await fetch(SUPABASE_URL + "/rest/v1/rpc/" + fn, {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + settyAuth.token(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(fn + " HTTP " + res.status);
+  return res.json();
+}
+async function sheetRefKeys(project) {
+  const pid = project && project.id;
+  if (!pid || !window.SheetRefs) return null;
+  const hit = _sheetRefKeysCache.get(pid);
+  if (hit && Date.now() - hit.at < 600000) return hit;
+  await settyAuthReady;
+  const prefix = String(project.projectNumber || "").toLowerCase().trim();
+  const [logRows, idxKeys] = await Promise.all([
+    fetchAllAnon(FILING_LOG_TABLE_PMS + "?select=files&project_id=eq." + encodeURIComponent(pid) +
+      "&operation=eq.transmittal-generated", "sheet-ref register"),
+    prefix ? sheetRefRpc("pms_drawing_sheet_keys", { p_prefix: prefix }).catch(() => []) : Promise.resolve([]),
+  ]);
+  const entry = {
+    at: Date.now(),
+    registerKeys: window.SheetRefs.registerKeysFromRows(logRows),
+    indexKeys: window.SheetRefs.normalizeKeys(idxKeys),
+    textCache: new Map(), // term -> boolean
+    prefix,
+  };
+  _sheetRefKeysCache.set(pid, entry);
+  return entry;
+}
+async function sheetRefTextKeys(entry, terms) {
+  const out = new Set();
+  const unknown = [];
+  for (const t of terms) {
+    if (entry.textCache.has(t)) { if (entry.textCache.get(t)) out.add(t); }
+    else unknown.push(t);
+  }
+  if (unknown.length && entry.prefix) {
+    try {
+      const found = new Set(await sheetRefRpc("pms_drawing_text_occurs", { p_prefix: entry.prefix, p_terms: unknown }));
+      for (const t of unknown) { entry.textCache.set(t, found.has(t)); if (found.has(t)) out.add(t); }
+    } catch (e) { /* validation degrades toward 'unvalidated'; never blocks the card */ }
   }
   return out;
 }
@@ -10427,6 +10485,89 @@ function newSubmittal(subs, dueDays) {
 
 // ─── SHARED: RFI/SUBMITTAL DETAIL MODAL ──────────────────────────────────────
 
+// ─── SHEET-REFERENCE CHIPS (linking Stage 1) ─────────────────────────────────
+// Which drawing sheets does this RFI/submittal talk about? Suggestions are
+// DERIVED on open — the same matcher and confidence tiers as the connector's
+// trace_references, mirrored in sheetRefs.js — and only the PM's decisions are
+// stored (sheetRefs[] on the item, riding the card's normal Save). Suggestions
+// recompute deterministically, so storing them would be write churn and merge
+// noise for nothing. One item at a time, never a bulk sweep.
+const REF_TIER_LABEL = {
+  register: "In the transmittal register — this sheet was issued on this project.",
+  "drawing-index": "Matches a sheet number parsed from this project's indexed drawings.",
+  "drawing-text": "The number appears in this project's indexed drawing text.",
+  unvalidated: "Looks like a sheet number but matches no known sheet — verify before trusting.",
+};
+const REF_TIER_ICON = { register: "✓", "drawing-index": "◆", "drawing-text": "◇", unvalidated: "?" };
+function SheetRefChips({ form, project, type, onChangeRefs }) {
+  const [sugg, setSugg] = React.useState(null); // null = loading
+  const stored = form.sheetRefs || [];
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const S = window.SheetRefs;
+        const entry = await sheetRefKeys(project);
+        if (!S || !entry) { if (alive) setSugg([]); return; }
+        const unknown = S.unknownCandidates(form, type, entry.registerKeys, entry.indexKeys);
+        const textKeys = await sheetRefTextKeys(entry, unknown);
+        const list = S.computeSuggestions(form, type, {
+          registerKeys: entry.registerKeys, indexKeys: entry.indexKeys, textKeys,
+        });
+        if (alive) setSugg(list);
+      } catch (e) { if (alive) setSugg([]); }
+    })();
+    return () => { alive = false; };
+  }, [form.id, form.title, form.description, form.response, form.comments, form.notes]);
+
+  const decided = new Set(stored.map(x => x.sheet));
+  const suggested = (sugg || []).filter(s => !decided.has(s.sheet));
+  const confirmed = stored.filter(x => x.status === "confirmed");
+  const dismissedCount = stored.length - confirmed.length;
+  const decide = (s, status) => onChangeRefs([...stored, {
+    sheet: s.sheet, discipline: s.discipline, confidence: s.confidence,
+    field: s.field, snippet: s.snippet, status,
+    by: (settyAuth && settyAuth.email && settyAuth.email()) || null,
+    at: new Date().toISOString(),
+  }]);
+  const undecide = sheet => onChangeRefs(stored.filter(x => x.sheet !== sheet));
+
+  if (sugg === null && !stored.length) return <div style={{ fontSize: 12, color: P.textDim }}>Checking for drawing references…</div>;
+  if (!suggested.length && !stored.length) return <div style={{ fontSize: 12, color: P.textDim }}>No sheet numbers detected in this item's text.</div>;
+
+  const chipBase = { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, padding: "4px 10px", borderRadius: 20 };
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {confirmed.map(c => (
+          <span key={c.sheet} title={REF_TIER_LABEL[c.confidence] + (c.snippet ? "\n“" + c.snippet + "”" : "") + (c.by ? "\nConfirmed by " + c.by : "")}
+            style={{ ...chipBase, background: P.accentDim, border: `1px solid ${P.accent}`, color: P.accentLight, fontWeight: 700 }}>
+            📐 {c.sheet}
+            <span onClick={() => undecide(c.sheet)} title="Remove this link (returns to suggested)"
+              style={{ cursor: "pointer", color: P.textDim, fontWeight: 400 }}>✕</span>
+          </span>
+        ))}
+        {suggested.map(s => (
+          <span key={s.sheet} title={REF_TIER_LABEL[s.confidence] + (s.snippet ? "\n“" + s.snippet + "”" : "") + "\nFound in: " + s.field}
+            style={{ ...chipBase, background: P.bg, border: `1px dashed ${s.confidence === "unvalidated" ? P.border : P.accent}`,
+              color: s.confidence === "unvalidated" ? P.textDim : P.text }}>
+            {REF_TIER_ICON[s.confidence]} {s.sheet}
+            <span onClick={() => decide(s, "confirmed")} title="Confirm — this item really is about this sheet"
+              style={{ cursor: "pointer", color: P.green, fontWeight: 700 }}>✓</span>
+            <span onClick={() => decide(s, "dismissed")} title="Dismiss — not a drawing reference"
+              style={{ cursor: "pointer", color: P.textDim }}>✕</span>
+          </span>
+        ))}
+      </div>
+      <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>
+        Dashed = suggested from this item's text (✓ confirms, ✕ dismisses; decisions save with the card).
+        ✓ register · ◆ drawing index · ◇ drawing text · ? unvalidated.
+        {dismissedCount > 0 && <span> {dismissedCount} dismissed — <span onClick={() => onChangeRefs(stored.filter(x => x.status === "confirmed"))} style={{ cursor: "pointer", textDecoration: "underline" }}>restore</span>.</span>}
+      </div>
+    </div>
+  );
+}
+
 function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }) {
   const [form, setForm] = useState({ ...item });
   const [emailStatus, setEmailStatus] = useState("idle");
@@ -10663,6 +10804,12 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
               onChange={e => setF(isRFI ? "response" : "comments", e.target.value)}
               placeholder={isRFI ? "Formal response text…" : "Review comments to return with submittal…"}
               style={{ width: "100%", height: 90, resize: "vertical", fontSize: 13 }} />
+          </Field>
+
+          {/* Referenced drawings (linking Stage 1) */}
+          <Field label="📐 Referenced Drawings" style={{ gridColumn: "1 / -1" }}>
+            <SheetRefChips form={form} project={project} type={type}
+              onChangeRefs={list => setF("sheetRefs", list)} />
           </Field>
 
           {/* Description (RFI detailed question) */}
