@@ -22575,12 +22575,22 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   // so shipping without this substitutes SAMPLE fees into a real proposal.
   const fd = proposalFeeData(project);
   const amt = (v) => (Math.round(v * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const projAlts = (project.proposalAlternates || [])
+    .filter(a => String(a.name || "").trim() || String(a.scope || "").trim());
   const fees = fd.total > 0 ? {
     totalWords: amountToWordsUSD(fd.total),
     totalAmount: amt(fd.total),
     feeType: (project.feeType || "Lump Sum").toLowerCase(),
     rows: fd.billable.map(ph => ({ label: ph.name, amount: amt(ph.fee) }))
       .concat(fd.changeOrders.map(co => ({ label: "Change Order: " + (co.name || co.number), amount: amt(co.fee || 0) }))),
+    // Named alternates render under the Total line; an unpriced one carries
+    // its pricing note (or "priced upon request"), never $0.
+    alternates: projAlts.map(a => ({
+      name: String(a.name || "").trim(),
+      scope: scopeHtmlToText(a.scope || ""),
+      amount: Number(a.fee) > 0 ? amt(Number(a.fee)) : "",
+      pricingNote: String(a.pricingNote || "").trim(),
+    })),
   } : null;
   const built = await window.SettyDocx.buildDocx(source, {
     omit, fields, blank,
@@ -22605,6 +22615,11 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   const activeDisc = scopeDisciplinesOf(project);
   const offWords = SCOPE_DISCIPLINES.filter(d => d.core && d.word && !activeDisc[d.key]).map(d => d.word);
   const warnings = [];
+  projAlts.forEach(a => {
+    if (!(Number(a.fee) > 0) && !String(a.pricingNote || "").trim()) {
+      warnings.push("Alternate " + JSON.stringify(String(a.name || "(unnamed)")) + " has no fee — it will print as priced upon request (set the fee in the Alternates panel)");
+    }
+  });
   if (offWords.length) {
     SCOPE_SECTIONS.forEach(s => {
       if (s.internal) return;
@@ -23977,6 +23992,7 @@ function ScopeView({ project, onChange, clients = [] }) {
   const [showAudit, setShowAudit] = React.useState(false);
   const [showTerms, setShowTerms] = React.useState(false);
   const [showRates, setShowRates] = React.useState(false);
+  const [showAlternates, setShowAlternates] = React.useState(false);
   // Clause library — firm-governed building blocks (pms_proposal_clauses).
   // Loaded on demand; PMs assemble from approved clauses, params filled inline.
   const [showClauses, setShowClauses] = React.useState(false);
@@ -24057,6 +24073,23 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (scopeLocked) return;
     onChange({ ...project, hourlyRates: rates.filter((_, i) => i !== idx) });
   }
+  // Named, separately priced alternates (schema v1 `alternates`, or added by
+  // hand). The PM prices them here; they render under the fee table in Word.
+  const alternates = project.proposalAlternates || [];
+  function updateAlternate(idx, field, val) {
+    if (scopeLocked) return;
+    const next = alternates.map((a, i) => i === idx ? { ...a, [field]: field === "fee" ? Number(val) || 0 : val } : a);
+    onChange({ ...project, proposalAlternates: next });
+  }
+  function addAlternate() {
+    if (scopeLocked) return;
+    onChange({ ...project, proposalAlternates: [...alternates, { name: "", scope: "", fee: 0, pricingNote: "" }] });
+  }
+  function removeAlternate(idx) {
+    if (scopeLocked) return;
+    onChange({ ...project, proposalAlternates: alternates.filter((_, i) => i !== idx) });
+  }
+
   function resetRatesToDefault() {
     if (scopeLocked) return;
     if (!window.confirm("Reset hourly rates to the firm-standard defaults?\n\nAny project-specific rate edits will be discarded.")) return;
@@ -24238,6 +24271,17 @@ function ScopeView({ project, onChange, clients = [] }) {
       .map(s => ({ title: String((s && s.title) || "").slice(0, 200), html: clean(s && s.html) }))
       .filter(s => s.title || s.html);
     const openItems = (Array.isArray(d.openItems) ? d.openItems : []).map(s => String(s || "").trim()).filter(Boolean);
+    // Named, separately priced alternates. The draft supplies name, scope and
+    // a pricing note — never a dollar amount; the PM prices them in the
+    // Alternates panel and they render under the fee table in Word.
+    const seenAltNames = new Set();
+    const alternates = (Array.isArray(d.alternates) ? d.alternates : [])
+      .map(a => ({
+        name: String((a && a.name) || "").slice(0, 200).trim(),
+        scope: clean(a && a.scope),
+        pricingNote: String((a && a.pricingNote) || "").slice(0, 500).trim(),
+      }))
+      .filter(a => (a.name || a.scope) && !seenAltNames.has(a.name.toLowerCase()) && (seenAltNames.add(a.name.toLowerCase()), true));
 
     const pickBlock = (sels, block) => sels.filter(s => s.clause.block === block);
     // Routed straight into the four boxes. Section headings are NOT emitted
@@ -24298,6 +24342,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       authoredCount: authored.length,
       customCount: asmCustom.length + excCustom.length,
       openItemCount: openItems.length,
+      alternateCount: alternates.length,
       hasInternalNotes: !!internalNotes,
       unknownKeys,
       disciplineDropped,
@@ -24310,7 +24355,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       phasePctTotal: phases.reduce((a, p) => a + p.pct, 0),
       basisOfFeeNote: String(d.basisOfFeeNote || ""),
     };
-    return { html, sections, report };
+    return { html, sections, report, alternates };
   }
   async function validateImport() {
     setImportError("");
@@ -24393,6 +24438,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Written sections stay short: understanding 1 to 3 paragraphs, approach 3 to 6 short paragraphs or a compact list, each custom assumption one sentence.",
       "- Plain paragraphs only in understanding and approach: no bold run-in titles at the start of a paragraph (write \"Setty will attend the scope meeting…\", not \"<strong>Scope Report Phase.</strong> Setty will…\").",
       "- Name ONLY the disciplines listed in the project facts above, everywhere in the narrative. If plumbing is not in the list, no sentence mentions plumbing (and write M/E/FP, never MEP/FP). This applies to understanding, approach, custom assumptions and open items alike.",
+      "- A named, separately priced alternate the RFP invites (add alternates, optional services with their own price line) goes in alternates[] with its name, its own scope description, and a pricingNote saying how it would be priced. Never wedge an alternate into exclusions, and never invent its price: the PM sets the amount in the PMS and it renders under the fee table.",
       "- Deliverables must match the RFP and the phase list in the project facts EXACTLY. Never describe submissions or services for a phase this proposal does not carry: no construction documents packages, bid phase or construction administration on a job that stops at design development. When in doubt, list fewer deliverables and put the question in openItems.",
       "- Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].",
       "- Plain AEC professional English. No em dashes anywhere. No marketing superlatives. Spell out agency names on first use.",
@@ -24413,6 +24459,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       "  \"authoredScope\": [ { \"title\": \"\", \"html\": \"<p>HTML</p>\" } ],",
       "  \"assumptions\": { \"clauseKeys\": [], \"custom\": [\"<p>HTML</p>\"] },",
       "  \"exclusions\": { \"clauseKeys\": [], \"custom\": [\"<li>HTML list item</li>\"] },",
+      "  \"alternates\": [ { \"name\": \"\", \"scope\": \"<p>HTML</p>\", \"pricingNote\": \"how it would be priced; NEVER a dollar amount\" } ],",
       "  \"openItems\": [\"\"],",
       "  \"suggestedPhases\": [ { \"name\": \"\", \"pct\": 0 } ],",
       "  \"basisOfFeeNote\": \"\",",
@@ -24519,13 +24566,24 @@ function ScopeView({ project, onChange, clients = [] }) {
       else if (add) el.innerHTML += add;
     });
     const r = importParsed.report;
+    // Alternates ride along: fee starts at 0 (the PM prices them; an unpriced
+    // alternate prints "priced upon request", never $0). Replace swaps the
+    // list; append adds only names not already present.
+    const importedAlts = (importParsed.alternates || []).map(a => ({ ...a, fee: 0 }));
+    let nextAlts = project.proposalAlternates || [];
+    if (mode === "replace") nextAlts = importedAlts;
+    else if (importedAlts.length) {
+      const have = new Set(nextAlts.map(a => String(a.name || "").toLowerCase()));
+      nextAlts = nextAlts.concat(importedAlts.filter(a => !have.has(String(a.name || "").toLowerCase())));
+    }
     const entry = {
       id: uid(), action: genFromAIRef.current ? "ai-generate" : "ai-import", user: getCurrentUser(), date: new Date().toISOString(),
       note: (mode === "replace" ? "Replaced scope" : "Appended to scope") + " from AI draft"
         + (r.projectName ? " · " + r.projectName : "") + " · " + r.clauseCount + " clauses"
+        + ((r.alternateCount || 0) ? " · " + r.alternateCount + " alternate" + (r.alternateCount > 1 ? "s" : "") : "")
         + (r.flagged.length ? " · " + r.flagged.length + " flagged" : ""),
     };
-    onChange({ ...project, ...snapshotSections(), scopeAuditLog: [...auditLog, entry] });
+    onChange({ ...project, ...snapshotSections(), proposalAlternates: nextAlts, scopeAuditLog: [...auditLog, entry] });
     setWc(countScopeWords());
     setShowImport(false); setImportParsed(null);
     genFromAIRef.current = false;
@@ -25409,6 +25467,9 @@ function ScopeView({ project, onChange, clients = [] }) {
                   {(r.duplicatesDropped || []).length > 0 && (
                     <li>⧉ Listed more than once in the draft, kept once: {r.duplicatesDropped.join(", ")}</li>
                   )}
+                  {(r.alternateCount || 0) > 0 && (
+                    <li>◇ {r.alternateCount} separately priced alternate{r.alternateCount > 1 ? "s" : ""} <span style={{ color: P.textDim }}>(price them in the Alternates panel below before sending; unpriced ones print "priced upon request")</span></li>
+                  )}
                   {r.suggestedPhases.length > 0 && (
                     <li>Suggested fee phase split ({r.phasePctTotal}%{r.phasePctTotal !== 100 ? ", does not sum to 100" : ""}): {r.suggestedPhases.map(p => p.name + " " + p.pct + "%").join(", ")} <span style={{ color: P.textDim }}>(apply manually in the Fee Calculator)</span></li>
                   )}
@@ -25856,6 +25917,54 @@ function ScopeView({ project, onChange, clients = [] }) {
             </div>
           </div>
         )}
+
+        <div style={{ marginTop: 16 }}>
+          <button onClick={() => setShowAlternates(v => !v)}
+            style={{ background: "none", border: "none", color: P.text, cursor: "pointer", fontSize: 14, fontWeight: 700, padding: 0, display: "flex", alignItems: "center", gap: 6 }}>
+            {showAlternates ? "▼" : "▶"} Alternates{alternates.length ? " (" + alternates.length + ")" : ""}
+          </button>
+          <div style={{ fontSize: 12, color: P.textDim, marginTop: 4 }}>
+            Named, separately priced alternates (from the AI draft's alternates list, or added here). They print under the fee table in the Word proposal; an unpriced one says "priced upon request", never $0.
+          </div>
+          {showAlternates && (
+            <div style={{ border: `1px solid ${P.border}`, borderRadius: 6, padding: "12px 14px", marginTop: 10, background: "#fff", opacity: scopeLocked ? 0.85 : 1 }}>
+              {alternates.length === 0 && (
+                <div style={{ fontSize: 12.5, color: P.textDim, padding: "2px 0 8px" }}>No alternates on this proposal.</div>
+              )}
+              {alternates.map((a, i) => (
+                <div key={i} style={{ padding: "8px 0", borderBottom: `1px dashed ${P.border}` }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 150px 28px", gap: 8, alignItems: "center" }}>
+                    <input value={a.name || ""} onChange={e => updateAlternate(i, "name", e.target.value)}
+                      placeholder={"Alternate No. " + (i + 1) + " name (e.g. Standby Generator)"} disabled={scopeLocked}
+                      style={{ width: "100%", fontSize: 13, padding: "5px 8px" }} />
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ color: P.textDim, fontSize: 13 }}>$</span>
+                      <input type="number" value={a.fee || 0} onChange={e => updateAlternate(i, "fee", e.target.value)}
+                        disabled={scopeLocked} min="0" step="1"
+                        style={{ width: "100%", fontSize: 13, padding: "5px 8px", textAlign: "right" }} />
+                    </div>
+                    <button onClick={() => removeAlternate(i)} disabled={scopeLocked}
+                      title={scopeLocked ? "Locked with the scope" : "Remove this alternate"}
+                      style={{ background: "none", border: "none", color: P.textDim, cursor: scopeLocked ? "not-allowed" : "pointer", fontSize: 16, padding: 0, lineHeight: 1, opacity: scopeLocked ? 0.4 : 1 }}>
+                      ×
+                    </button>
+                  </div>
+                  <textarea value={scopeHtmlToText(a.scope || "")} onChange={e => updateAlternate(i, "scope", e.target.value)}
+                    placeholder="Scope of this alternate, one or two sentences" disabled={scopeLocked} rows={2}
+                    style={{ width: "100%", fontSize: 12.5, padding: "5px 8px", marginTop: 6, resize: "vertical" }} />
+                  {!(Number(a.fee) > 0) && (
+                    <input value={a.pricingNote || ""} onChange={e => updateAlternate(i, "pricingNote", e.target.value)}
+                      placeholder="Pricing note while unpriced (e.g. Priced after the assessment confirms extent.)" disabled={scopeLocked}
+                      style={{ width: "100%", fontSize: 12, padding: "4px 8px", marginTop: 4, color: P.textDim }} />
+                  )}
+                </div>
+              ))}
+              <div style={{ marginTop: 10 }}>
+                <Btn variant="ghost" small onClick={addAlternate} disabled={scopeLocked}>+ Add Alternate</Btn>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Lock/Unlock + Finalize/Unfinalize modal */}
