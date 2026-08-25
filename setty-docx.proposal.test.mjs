@@ -200,6 +200,10 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         { label: "Conditions Assessment", amount: "14,244.30" },
         { label: "Design Development Documents", amount: "26,453.70" },
       ],
+      alternates: [
+        { name: "Standby Generator Design", scope: "Design of a standby generator and transfer switch", amount: "18,500.00", pricingNote: "" },
+        { name: "Roof Replacement Engineering", scope: "Engineering for the low-slope roof replacement.", amount: "", pricingNote: "Priced after the assessment confirms extent" },
+      ],
     },
     headerLogo: logoBytes,
     scopeSections: {
@@ -359,6 +363,21 @@ const CT = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   check(ddRow.includes('<w:sz w:val="20"/>') && !ddRow.includes('<w:sz w:val="22"/>'),
         "fees: chart set to 10pt body size");
   check(paraWith("Design Development Documents").includes("26,453.70"), "fees: second phase row present");
+
+  // alternates render after the Total line, priced or honestly unpriced
+  {
+    const totalAt = doc.indexOf("40,698.00", doc.indexOf("Total"));
+    const a1 = doc.indexOf("Alternate No. 1 — Standby Generator Design:");
+    const a2 = doc.indexOf("Alternate No. 2 — Roof Replacement Engineering:");
+    check(a1 > totalAt && a2 > a1, "alternates: listed in order after the Total line");
+    check(paraWith("Standby Generator Design").includes("Add $18,500.00 to the Basic Fee."),
+          "alternates: priced alternate carries its amount");
+    const a2p = paraWith("Roof Replacement Engineering");
+    check(a2p.includes("Priced after the assessment confirms extent.") && !a2p.includes("$"),
+          "alternates: unpriced alternate uses its pricing note, no dollar amount");
+    check(doc.includes("offered as separately priced additions to the Basic Fee"),
+          "alternates: intro sentence present");
+  }
 
   // header: FPID gone, project name + logo in, package parts added
   const hdr = dec.decode(out.get("word/header1.xml"));

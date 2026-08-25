@@ -48,6 +48,7 @@ Hard rules:
 - Written sections stay short. Understanding: 1 to 3 paragraphs. Approach: 3 to 6 short paragraphs or a compact list. Each custom assumption: one sentence.
 - Plain paragraphs only in understanding and approach: no bold run-in titles at the start of a paragraph (write "Setty will attend the scope meeting…", not "<strong>Scope Report Phase.</strong> Setty will…").
 - Name ONLY the disciplines this proposal carries, everywhere in the narrative. If plumbing is not among them, no sentence mentions plumbing. This applies to understanding, approach, custom assumptions and open items alike.
+- A named, separately priced alternate the RFP invites (add alternates, optional services with their own price line) goes in alternates[] with its name, its own scope description, and a pricingNote saying how it would be priced. Never wedge an alternate into exclusions, and never invent its price: the PM sets the amount in the PMS and it renders under the fee table.
 - Deliverables must match the RFP's requested phases EXACTLY. Never describe submissions or services for a phase the RFP does not request: no construction documents packages, bid phase or construction administration on a job that stops at design development. When in doubt, list fewer deliverables and put the question in openItems.
 - Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].
 - Language: plain AEC professional English. No em dashes anywhere; use colons, commas, or separate sentences. No marketing superlatives. Spell out agency names on first use.
@@ -66,6 +67,7 @@ Output contract (schemaVersion 1) - respond with ONLY this JSON object, no comme
   "authoredScope": [ { "title": "", "html": "<p>HTML</p>" } ],
   "assumptions": { "clauseKeys": [], "custom": ["<p>HTML</p>"] },
   "exclusions": { "clauseKeys": [], "custom": ["<li>HTML list item</li>"] },
+  "alternates": [ { "name": "", "scope": "<p>HTML</p>", "pricingNote": "how it would be priced; NEVER a dollar amount" } ],
   "openItems": [""],
   "suggestedPhases": [ { "name": "", "pct": 0 } ],
   "basisOfFeeNote": "",

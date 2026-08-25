@@ -1040,9 +1040,15 @@ function tightenHeading(xml, title) {
  * them from the project's fee data, and set the chart to 10pt, the body size
  * (the template had it at 11).
  *
- * fees = { totalWords, totalAmount, feeType, rows: [{label, amount}] };
- * amounts are pre-formatted WITHOUT the dollar sign — the "$" lives in its
- * own bookmarked run in the template and stays put.
+ * fees = { totalWords, totalAmount, feeType, rows: [{label, amount}],
+ * alternates? }; amounts are pre-formatted WITHOUT the dollar sign — the "$"
+ * lives in its own bookmarked run in the template and stays put.
+ *
+ * fees.alternates renders after the Total line: named, separately priced
+ * alternates ({name, scope, amount, pricingNote}), one run-in paragraph
+ * each. A priced alternate says "Add $X to the Basic Fee."; an unpriced one
+ * falls back to its pricingNote (or "Priced upon request.") so a number the
+ * PM has not set can never print as $0.
  */
 export function expandFees(xml, fees) {
   if (!fees || !Array.isArray(fees.rows)) return { xml, found: false };
@@ -1096,10 +1102,34 @@ export function expandFees(xml, fees) {
     replaceInParagraph(replaceInParagraph(proto, pm[1], xmlEscape(row.label)), pm[2], xmlEscape(row.amount)));
   const total = body10(replaceInParagraph(paras[totalIdx][0], tm[1], xmlEscape(fees.totalAmount)));
 
+  // Alternates follow the Total line as their own run-in paragraphs.
+  let altXml = "";
+  const alts = Array.isArray(fees.alternates) ? fees.alternates.filter((a) => a && (a.name || a.scope)) : [];
+  if (alts.length) {
+    const AP = (runs) => '<w:p><w:pPr><w:ind w:left="360"/></w:pPr>' + runs + "</w:p>";
+    const bold = (t) => '<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">' + xmlEscape(t) + "</w:t></w:r>";
+    const plain = (t) => '<w:r><w:t xml:space="preserve">' + xmlEscape(t) + "</w:t></w:r>";
+    const sentence = (s) => {
+      const t = String(s || "").trim();
+      return t && !/[.!?]$/.test(t) ? t + "." : t;
+    };
+    altXml = AP("") + AP(
+      bold("Alternates: ") +
+      plain("The following alternates are offered as separately priced additions to the Basic Fee and may be accepted individually."));
+    alts.forEach((a, i) => {
+      const pricing = a.amount
+        ? " Add $" + a.amount + " to the Basic Fee."
+        : " " + (sentence(a.pricingNote) || "Priced upon request.");
+      altXml += AP(
+        bold("Alternate No. " + (i + 1) + (a.name ? " — " + a.name : "") + ": ") +
+        plain((sentence(a.scope) + pricing).trim()));
+    });
+  }
+
   // Rebuild back-to-front so earlier indices stay valid.
   let out = xml;
   const splice = (p, repl) => { out = out.slice(0, p.index) + repl + out.slice(p.index + p[0].length); };
-  splice(paras[totalIdx], total);
+  splice(paras[totalIdx], total + altXml);
   for (let k = rowIdx.length - 1; k >= 1; k--) splice(paras[rowIdx[k]], "");
   splice(paras[rowIdx[0]], fees.rows.map(fillRow).join(""));
   splice(paras[bfIdx], bf);
