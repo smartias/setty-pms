@@ -657,6 +657,94 @@ function getCurrentUser() {
   return "Unknown";
 }
 
+// ─── INTERACTIVE RE-AUTH (Reconnect banner) ─────────────────────────────────
+// A popup opened straight after a failed silent renewal (or on page load with
+// no cached account) is usually blocked: there was either no click at all, or
+// the click activation expired during the silent call's network round trip.
+// The old behavior threw "popup was blocked, allow popups" — a dead end.
+// Instead show an in-page Reconnect button and open the popup from THAT
+// click, which browsers always allow. The operation that needed the token
+// stays awaiting it and continues by itself once reconnected — no lost form
+// state, no manual retry. Requests are keyed per scope set (Graph vs Teams)
+// so concurrent callers share one banner and one popup per scope set.
+let reauthBanner = null;
+const pendingInteractive = new Map(); // key -> {key, scopes, useLogin, promise, resolve}
+
+function ensureReauthBanner() {
+  if (reauthBanner) return reauthBanner;
+  const el = document.createElement("div");
+  el.id = "reauthBanner";
+  el.setAttribute("role", "alertdialog");
+  el.setAttribute("aria-live", "assertive");
+  el.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:99999;" +
+    "max-width:520px;width:calc(100% - 32px);background:#12152a;" +
+    "border:1px solid #eab308;border-radius:10px;padding:14px 16px;" +
+    "box-shadow:0 8px 24px rgba(0,0,0,.5);display:none";
+  el.innerHTML =
+    '<div id="reauthMsg" style="font-size:13px;line-height:1.5;margin-bottom:10px;color:#e2e8f0"></div>' +
+    '<button type="button" id="reauthBtn" style="background:#1d4ed8;color:#fff;border:1px solid #3b82f6;' +
+    'border-radius:6px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer">' +
+    'Reconnect Microsoft sign-in</button>';
+  document.body.appendChild(el);
+  reauthBanner = el;
+  return el;
+}
+
+function showReauthBanner() {
+  const entry = pendingInteractive.values().next().value;
+  const el = ensureReauthBanner();
+  if (!entry) { el.style.display = "none"; return; }
+  const msg = el.querySelector("#reauthMsg");
+  const btn = el.querySelector("#reauthBtn");
+  msg.textContent = "Your Microsoft session expired, so SharePoint/Teams can't be reached. " +
+    "Click Reconnect to sign back in — everything on this page is kept, and whatever " +
+    "you were doing picks up where it left off.";
+  el.style.display = "block";
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      // The popup window opens synchronously inside this click handler, so
+      // the browser treats it as user-initiated and allows it.
+      const app = await getMsalApp();
+      let r;
+      if (entry.useLogin && !(app.getActiveAccount() || app.getAllAccounts()[0])) {
+        r = await app.loginPopup({ scopes: entry.scopes });
+        if (r.account) app.setActiveAccount(r.account);
+      } else {
+        const account = app.getActiveAccount() || app.getAllAccounts()[0];
+        r = await app.acquireTokenPopup({ scopes: entry.scopes, account });
+      }
+      pendingInteractive.delete(entry.key);
+      entry.resolve(r.accessToken);
+      showReauthBanner(); // serve the next pending scope set, or hide
+    } catch (e) {
+      const m = (e?.message || "").toLowerCase();
+      if (m.includes("popup") || m.includes("blocked")) {
+        msg.textContent = "The sign-in popup was still blocked. Allow popups for this site " +
+          "(browser address bar 🚫 icon), then click Reconnect again.";
+      } else if (m.includes("cancel")) {
+        msg.textContent = "Sign-in was cancelled. Click Reconnect to try again.";
+      } else {
+        msg.textContent = "Could not reconnect: " + (e?.message || "unknown error") +
+          ". Click Reconnect to try again.";
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+function acquireTokenInteractive(scopes, useLogin) {
+  const key = (useLogin ? "login:" : "acq:") + scopes.join(" ");
+  const existing = pendingInteractive.get(key);
+  if (existing) return existing.promise;
+  const entry = { key, scopes, useLogin };
+  entry.promise = new Promise((resolve) => { entry.resolve = resolve; });
+  pendingInteractive.set(key, entry);
+  showReauthBanner();
+  return entry.promise;
+}
+
 async function getTokenForScopes(scopes, forceRefresh = false) {
   const app = await getMsalApp();
 
@@ -669,29 +757,33 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
 
   let account = app.getActiveAccount() || accounts[0];
 
-  // Step 0 — No cached account at all. Trigger interactive sign-in via popup.
+  // Step 0 — No cached account at all. Interactive sign-in is required.
   // Common when: MSAL session expired completely, browser cleared cookies/storage,
-  // or this is a brand-new device. Previously the app threw a misleading
-  // "Click Connect Microsoft" error referencing a button that doesn't exist.
+  // or this is a brand-new device. A direct popup is attempted only while the
+  // user's click activation is still live; otherwise (or when it's blocked
+  // anyway) the Reconnect banner takes over — its own click can always open
+  // the popup.
   if (!account) {
-    try {
-      const r = await app.loginPopup({ scopes });
-      if (r.account) {
-        app.setActiveAccount(r.account);
-        account = r.account;
+    if (navigator.userActivation?.isActive) {
+      try {
+        const r = await app.loginPopup({ scopes });
+        if (r.account) {
+          app.setActiveAccount(r.account);
+          account = r.account;
+        }
+        // loginPopup returns the access token directly — return it without
+        // doing another silent acquisition (which would just be a cache hit).
+        if (r.accessToken) return r.accessToken;
+      } catch (loginErr) {
+        const msg = (loginErr?.message || "").toLowerCase();
+        if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
+          throw new Error("Sign-in cancelled. Click the action again to retry.");
+        }
+        // Blocked or failed popup: hand off to the Reconnect banner.
+        return acquireTokenInteractive(scopes, true);
       }
-      // loginPopup returns the access token directly — return it without
-      // doing another silent acquisition (which would just be a cache hit).
-      if (r.accessToken) return r.accessToken;
-    } catch (loginErr) {
-      const msg = (loginErr?.message || "").toLowerCase();
-      if (msg.includes("popup_window_error") || msg.includes("popup window") || msg.includes("blocked")) {
-        throw new Error("Microsoft sign-in popup was blocked. Allow popups for this site (browser address bar 🚫 icon), then retry. The app cannot sign you in without popups enabled.");
-      }
-      if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
-        throw new Error("Sign-in cancelled. Click the action again to retry.");
-      }
-      throw new Error("Microsoft sign-in failed: " + (loginErr?.message || "unknown") + ". Refresh the page and try again.");
+    } else {
+      return acquireTokenInteractive(scopes, true);
     }
     // Fall through to the silent path below in the unlikely case loginPopup
     // succeeded but didn't return a token directly.
@@ -709,21 +801,22 @@ async function getTokenForScopes(scopes, forceRefresh = false) {
     // back to a popup, which is a real top-level window with no sandbox.
     // Manifests as: "Create Document Set Folder" / "Save email" / etc.
     // working right after sign-in but failing ~1 hour later when token expires
-    // and silent refresh hits the iframe-blocked code path.
-    try {
-      const r = await app.acquireTokenPopup({ scopes, account });
-      return r.accessToken;
-    } catch (popupErr) {
-      console.error("Popup token acquisition failed:", popupErr);
-      const msg = (popupErr?.message || "").toLowerCase();
-      if (msg.includes("popup_window_error") || msg.includes("popup window") || msg.includes("blocked")) {
-        throw new Error("Microsoft sign-in popup was blocked. Allow popups for this site (browser address bar 🚫 icon), then click the action again. Or refresh the page to fully re-authenticate.");
+    // and silent refresh hits the iframe-blocked code path. Popup directly
+    // only while click activation is live; the Reconnect banner otherwise.
+    if (navigator.userActivation?.isActive) {
+      try {
+        const r = await app.acquireTokenPopup({ scopes, account });
+        return r.accessToken;
+      } catch (popupErr) {
+        console.error("Popup token acquisition failed:", popupErr);
+        const msg = (popupErr?.message || "").toLowerCase();
+        if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
+          throw new Error("Sign-in was cancelled. Click the action again to retry.");
+        }
+        // Blocked or failed popup: fall through to the banner below.
       }
-      if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
-        throw new Error("Sign-in was cancelled. Click the action again to retry.");
-      }
-      throw new Error("Could not refresh Microsoft session: " + (popupErr?.message || "unknown error") + ". Refresh the page to re-sign in.");
     }
+    return acquireTokenInteractive(scopes, false);
   }
 }
 

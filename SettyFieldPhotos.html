@@ -825,31 +825,102 @@ async function signOut() {
   msalApp.logoutRedirect();
 }
 
+// Interactive re-auth via an in-page Reconnect button. A popup opened straight
+// after a failed silent renewal is usually blocked: the tap activation expires
+// during the silent call's network round trip (worst on cellular), so the
+// browser treats the popup as unsolicited. The old behavior threw "popup was
+// blocked, allow popups" — a dead end that cost the photo queue on refresh.
+// Instead show a Reconnect button and open the popup from THAT tap, which
+// browsers always allow. The upload awaiting the token continues by itself
+// once reconnected — queue kept, no re-picking photos.
+let reauthBanner = null;
+let pendingInteractiveToken = null; // all concurrent token requests share one banner
+
+function ensureReauthBanner() {
+  if (reauthBanner) return reauthBanner;
+  const el = document.createElement("div");
+  el.id = "reauthBanner";
+  el.setAttribute("role", "alertdialog");
+  el.setAttribute("aria-live", "assertive");
+  el.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:9999;" +
+    "max-width:520px;width:calc(100% - 32px);background:var(--card,#1A1D2E);" +
+    "border:1px solid #eab308;border-radius:10px;padding:14px 16px;" +
+    "box-shadow:0 8px 24px rgba(0,0,0,.5);display:none";
+  el.innerHTML =
+    '<div id="reauthMsg" style="font-size:14px;line-height:1.5;margin-bottom:10px;color:var(--text,#E2E8F0)"></div>' +
+    '<button type="button" class="btn-primary" id="reauthBtn">Reconnect Microsoft sign-in</button>';
+  document.body.appendChild(el);
+  reauthBanner = el;
+  return el;
+}
+
+function acquireTokenInteractive() {
+  if (pendingInteractiveToken) return pendingInteractiveToken;
+  pendingInteractiveToken = new Promise((resolve) => {
+    const el = ensureReauthBanner();
+    const msg = el.querySelector("#reauthMsg");
+    const btn = el.querySelector("#reauthBtn");
+    msg.textContent = "Your Microsoft session expired, so the upload is paused. " +
+      "Tap Reconnect to sign back in — your photo queue is kept, and the upload " +
+      "picks up where it left off.";
+    el.style.display = "block";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        // acquireTokenPopup opens its window synchronously inside this tap
+        // handler, so the browser treats it as user-initiated and allows it.
+        const accounts = msalApp.getAllAccounts();
+        const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
+        el.style.display = "none";
+        pendingInteractiveToken = null;
+        resolve(r.accessToken);
+      } catch (e) {
+        const m = (e?.message || "").toLowerCase();
+        if (m.includes("popup") || m.includes("blocked")) {
+          msg.textContent = "The sign-in popup was still blocked. Allow popups for this site " +
+            "in your browser settings, then tap Reconnect again.";
+        } else if (m.includes("cancel")) {
+          msg.textContent = "Sign-in was cancelled. Tap Reconnect to try again.";
+        } else {
+          msg.textContent = "Could not reconnect: " + (e?.message || "unknown error") +
+            ". Tap Reconnect to try again.";
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  });
+  return pendingInteractiveToken;
+}
+
 async function getToken() {
   await msalReady;
   const accounts = msalApp.getAllAccounts();
   if (!accounts.length) throw new Error("Not signed in");
   // Mobile context matters here: field workers on cellular have tokens expire
-  // mid-upload constantly. Without a popup fallback, the first expiry kills
-  // the upload — and the user has to re-pick photos and start over.
-  // 3-tier: silent → popup → loud error.
+  // mid-upload constantly. Without an interactive fallback, the first expiry
+  // kills the upload — and the user has to re-pick photos and start over.
+  // 3-tier: silent → in-gesture popup → Reconnect banner.
   try {
     const r = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
     return r.accessToken;
   } catch (silentErr) {
-    try {
-      const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
-      return r.accessToken;
-    } catch (popupErr) {
-      const msg = (popupErr?.message || "").toLowerCase();
-      if (msg.includes("popup") || msg.includes("blocked")) {
-        throw new Error("Microsoft sign-in popup was blocked. Allow popups for this site, then retry. (Pulling up to refresh the page will lose any photos in your queue.)");
+    // Try a direct popup only while the user's tap activation is still live;
+    // otherwise (or if it's blocked anyway) fall back to the Reconnect
+    // banner, whose own tap can always open the popup.
+    if (navigator.userActivation?.isActive) {
+      try {
+        const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: accounts[0] });
+        return r.accessToken;
+      } catch (popupErr) {
+        const msg = (popupErr?.message || "").toLowerCase();
+        if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
+          throw new Error("Sign-in cancelled. Tap upload again to retry.");
+        }
+        // Blocked or failed popup: fall through to the banner below.
       }
-      if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
-        throw new Error("Sign-in cancelled. Tap upload again to retry.");
-      }
-      throw new Error("Could not refresh Microsoft session: " + (popupErr?.message || "unknown"));
     }
+    return acquireTokenInteractive();
   }
 }
 
