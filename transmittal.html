@@ -1266,6 +1266,75 @@ document.getElementById("signOutBtn").onclick = async () => {
   await msalApp.logoutRedirect({ account: msalAccount });
 };
 
+// ─── INTERACTIVE RE-AUTH ─────────────────────────────────────────────────────
+// A popup opened straight after a failed silent renewal is usually blocked:
+// on page load (?number= deep link auto-opens the folder browser) there was
+// never a click at all, and even on a real click the activation expires
+// during the silent call's network round trip. The old behavior threw a
+// "popup was blocked, allow popups or refresh" error — a dead end that cost
+// unsaved sheet edits. Instead, show an in-page Reconnect button and open the
+// popup from THAT click, which browsers always allow. The operation that
+// needed the token stays awaiting it, so it continues by itself once
+// reconnected — no lost form state, no manual retry.
+let reauthBanner = null;
+let pendingInteractiveToken = null; // all concurrent getToken() calls share one banner
+
+function ensureReauthBanner() {
+  if (reauthBanner) return reauthBanner;
+  const el = document.createElement("div");
+  el.id = "reauthBanner";
+  el.setAttribute("role", "alertdialog");
+  el.setAttribute("aria-live", "assertive");
+  el.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:9999;" +
+    "max-width:520px;width:calc(100% - 32px);background:var(--card,#161b22);" +
+    "border:1px solid #eab308;border-radius:10px;padding:14px 16px;" +
+    "box-shadow:0 8px 24px rgba(0,0,0,.5);display:none";
+  el.innerHTML =
+    '<div id="reauthMsg" style="font-size:13px;line-height:1.5;margin-bottom:10px;color:var(--text,#e6edf3)"></div>' +
+    '<button type="button" class="btn" id="reauthBtn">Reconnect Microsoft sign-in</button>';
+  document.body.appendChild(el);
+  reauthBanner = el;
+  return el;
+}
+
+function acquireTokenInteractive() {
+  if (pendingInteractiveToken) return pendingInteractiveToken;
+  pendingInteractiveToken = new Promise((resolve) => {
+    const el = ensureReauthBanner();
+    const msg = el.querySelector("#reauthMsg");
+    const btn = el.querySelector("#reauthBtn");
+    msg.textContent = "Your Microsoft session expired, so SharePoint can't be reached. " +
+      "Click Reconnect to sign back in — your entries on this page are kept, and whatever " +
+      "you were doing picks up where it left off.";
+    el.style.display = "block";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        // acquireTokenPopup opens its window synchronously inside this click
+        // handler, so the browser treats it as user-initiated and allows it.
+        const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: msalAccount });
+        el.style.display = "none";
+        pendingInteractiveToken = null;
+        resolve(r.accessToken);
+      } catch (e) {
+        const m = (e?.message || "").toLowerCase();
+        if (m.includes("popup") || m.includes("blocked")) {
+          msg.textContent = "The sign-in popup was still blocked. Allow popups for this site " +
+            "(browser address-bar 🚫 icon), then click Reconnect again.";
+        } else if (m.includes("cancel")) {
+          msg.textContent = "Sign-in was cancelled. Click Reconnect to try again.";
+        } else {
+          msg.textContent = "Could not reconnect: " + (e?.message || "unknown error") +
+            ". Click Reconnect to try again.";
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    };
+  });
+  return pendingInteractiveToken;
+}
+
 async function getToken() {
   try {
     const r = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: msalAccount });
@@ -1273,20 +1342,23 @@ async function getToken() {
   } catch(e) {
     // Redirect would wipe the form (sheet selections, recipient fields,
     // generated DOCX in memory) and dump the user back at /transmittal.html
-    // with no context. Popup keeps the page state intact while re-auth happens.
-    try {
-      const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: msalAccount });
-      return r.accessToken;
-    } catch (popupErr) {
-      const msg = (popupErr?.message || "").toLowerCase();
-      if (msg.includes("popup") || msg.includes("blocked")) {
-        throw new Error("Microsoft sign-in popup was blocked. Allow popups for this site (browser address-bar 🚫 icon), then click again. If you'd rather refresh, you'll lose any unsaved sheet edits.");
+    // with no context, so interactive re-auth stays on this page. Try a
+    // direct popup only while the user's click activation is still live;
+    // otherwise (or if it's blocked anyway) fall back to the Reconnect
+    // banner, whose own click can always open the popup.
+    if (navigator.userActivation?.isActive) {
+      try {
+        const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account: msalAccount });
+        return r.accessToken;
+      } catch (popupErr) {
+        const msg = (popupErr?.message || "").toLowerCase();
+        if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
+          throw new Error("Sign-in cancelled. Click again to retry.");
+        }
+        // Blocked or failed popup: fall through to the banner below.
       }
-      if (msg.includes("user_cancelled") || msg.includes("cancelled")) {
-        throw new Error("Sign-in cancelled. Click again to retry.");
-      }
-      throw new Error("Could not refresh Microsoft session: " + (popupErr?.message || "unknown"));
     }
+    return acquireTokenInteractive();
   }
 }
 
