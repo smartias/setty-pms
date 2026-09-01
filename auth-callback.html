@@ -28,12 +28,46 @@
     (function () {
       const icon = document.getElementById("icon"), msg = document.getElementById("msg"), sub = document.getElementById("sub");
       const hash = location.hash || "";
+
+      // Launcher mode (?start=azure): Office dialogs must OPEN on our own
+      // domain, so the taskpane opens THIS page, which bounces to the Azure
+      // authorize URL and returns here with the tokens. The flag survives the
+      // round-trip in sessionStorage (same window navigates away and back) so
+      // the token landing knows to message the Office parent.
+      if (new URLSearchParams(location.search).get("start") === "azure" && !/access_token=|error_description=/.test(hash)) {
+        try { sessionStorage.setItem("settyAuth:officeDialog", "1"); } catch (_) {}
+        location.replace(settyAuth.supabaseUrl() + "/auth/v1/authorize?provider=azure&redirect_to=" +
+          encodeURIComponent(location.origin + location.pathname));
+        return;
+      }
+      let officeDialog = false;
+      try {
+        officeDialog = sessionStorage.getItem("settyAuth:officeDialog") === "1";
+        sessionStorage.removeItem("settyAuth:officeDialog");
+      } catch (_) {}
+      // Hands a payload back to the Office taskpane that opened this dialog.
+      // office.js is only loaded here, on demand — plain browser popups never
+      // pay for it and keep using the opener/localStorage channels.
+      function postToOfficeParent(payload) {
+        const s = document.createElement("script");
+        s.src = "https://appsforoffice.microsoft.com/lib/1/hosted/office.js";
+        s.onload = function () {
+          try {
+            Office.onReady().then(function () {
+              try { Office.context.ui.messageParent(JSON.stringify(payload)); } catch (_) {}
+            });
+          } catch (_) {}
+        };
+        document.head.appendChild(s);
+      }
+
       if (/error_description=/.test(hash)) {
         icon.textContent = "⚠️";
         msg.setAttribute("role", "alert");
         sub.setAttribute("role", "alert");
         msg.textContent = "Sign-in failed";
         sub.textContent = new URLSearchParams(hash.slice(1)).get("error_description") || "";
+        if (officeDialog) postToOfficeParent({ type: "settyAuth:error" });
         return;
       }
       if (!/access_token=/.test(hash)) {
@@ -49,6 +83,10 @@
       //  3. localStorage (desktop webviews share it with the pane).
       const sess = settyAuth.adoptFromHash(hash, { scrub: false });
       try { if (window.opener) window.opener.postMessage({ type: "settyAuth:session", session: sess }, location.origin); } catch (_) {}
+      //  4. Office dialog → messageParent (Outlook web partitions BOTH storage
+      //     and the opener link away from the taskpane; this is the only
+      //     channel guaranteed to reach it).
+      if (officeDialog) postToOfficeParent({ type: "settyAuth:session", session: sess });
       icon.textContent = "✅";
       msg.textContent = "Signed in";
       sub.textContent = "This window will close itself.";

@@ -169,20 +169,86 @@
     return sess;
   }
 
+  // Office add-in host with the sanctioned dialog API available. window.open
+  // is unreliable across Outlook clients (blocked outright in some desktop
+  // webviews, opener-severed in others), so add-in surfaces sign in through
+  // Office.context.ui.displayDialogAsync instead.
+  function _officeDialogApi() {
+    try {
+      const O = window.Office;
+      return (O && O.context && O.context.ui &&
+              typeof O.context.ui.displayDialogAsync === "function") ? O : null;
+    } catch (_) { return null; }
+  }
+
+  // Embedded frames must never full-page redirect: login.microsoftonline.com
+  // refuses to render in an iframe, and an Office pane can't navigate off its
+  // AppDomains — either way the surface is left stranded. A cross-origin
+  // parent throws on access, which still means "embedded".
+  function _isEmbedded() {
+    try { return window.top !== window.self; } catch (_) { return true; }
+  }
+
+  // Office-dialog sign-in. The dialog must OPEN on our own domain, so it
+  // starts on auth-callback.html?start=azure (a launcher that bounces to the
+  // Azure authorize URL and returns to itself). The callback hands the session
+  // back via Office.context.ui.messageParent; localStorage stays as a backup
+  // channel for desktop webviews that share storage with the pane.
+  function _signInOfficeDialog(O, cb) {
+    return new Promise((resolve) => {
+      let dlg = null, settled = false;
+      const onSess = (sess) => { if (sess) finish(sess); };
+      const finish = (val) => {
+        if (settled) return; settled = true;
+        clearTimeout(to);
+        const i = listeners.indexOf(onSess); if (i >= 0) listeners.splice(i, 1);
+        try { if (dlg) dlg.close(); } catch (_) {}
+        resolve(val);
+      };
+      listeners.push(onSess);
+      const to = setTimeout(() => finish(session), 180000);
+      O.context.ui.displayDialogAsync(cb + "?start=azure",
+        { height: 70, width: 30, promptBeforeOpen: false },
+        (res) => {
+          const ok = res && res.status === ((O.AsyncResultStatus && O.AsyncResultStatus.Succeeded) || "succeeded");
+          if (!ok) { finish(session); return; }
+          dlg = res.value;
+          if (settled) { try { dlg.close(); } catch (_) {} return; }
+          dlg.addEventHandler(O.EventType.DialogMessageReceived, (arg) => {
+            let d = null;
+            try { d = JSON.parse((arg && arg.message) || "null"); } catch (_) {}
+            if (d && d.type === "settyAuth:session" && d.session && d.session.access_token) {
+              store(d.session);
+              finish(session);
+            } else if (d && d.type === "settyAuth:error") {
+              finish(null);
+            }
+          });
+          // Fires when the user closes the dialog or navigation inside it
+          // fails — resolve with whatever the backup channels landed.
+          dlg.addEventHandler(O.EventType.DialogEventReceived, () => finish(session));
+        });
+    });
+  }
+
   // Popup variant for embedded surfaces (Office taskpanes, iframes) where a
-  // full-page redirect is impossible. The popup finishes on auth-callback.html
+  // full-page redirect is impossible. Inside an Office host it uses the
+  // sanctioned dialog API; elsewhere the popup finishes on auth-callback.html
   // (same folder as this script), which stores the session to localStorage —
   // our storage listener then adopts it here. Resolves with the session, or
   // null if the user closes the popup / nothing arrives within 3 minutes.
   function signInPopup(popupOpts) {
     const po = popupOpts || {};
     const cb = SCRIPT_BASE + "auth-callback.html";
+    const O = _officeDialogApi();
+    if (O) return _signInOfficeDialog(O, cb);
     const url = SUPABASE_URL + "/auth/v1/authorize?provider=azure&redirect_to=" + encodeURIComponent(cb);
     const w = window.open(url, "settyAuthPopup", "width=480,height=640,menubar=no,toolbar=no");
     // Popup blocked → full-page redirect fallback, UNLESS the caller holds
-    // in-memory work a navigation would destroy (photo queues, unsaved forms).
+    // in-memory work a navigation would destroy (photo queues, unsaved forms)
+    // or we're embedded, where the redirect would strand the frame.
     if (!w) {
-      if (po.noRedirectFallback) return Promise.resolve(null);
+      if (po.noRedirectFallback || _isEmbedded()) return Promise.resolve(null);
       signInWithMicrosoft();
       return Promise.resolve(null);
     }
@@ -359,7 +425,15 @@
     // The Bearer for every Supabase data call. Anon fallback keeps signed-out
     // users working until Phase 2 tightens RLS.
     token() {
-      if (session && session.access_token && session.expires_at * 1000 > Date.now()) return session.access_token;
+      if (session && session.access_token) {
+        if (session.expires_at * 1000 > Date.now()) return session.access_token;
+        // Expired with the refresh timer never having fired (suspended Office
+        // pane, slept laptop). Post-RLS-flip the anon fallback returns EMPTY
+        // data, which callers misread as deletions — kick a refresh now
+        // (single-flight) so the next call is authenticated again, and a hard
+        // refresh failure clears the session so the sign-in pill reappears.
+        refresh().catch(() => {});
+      }
       return ANON_KEY;
     },
     anonKey() { return ANON_KEY; },
