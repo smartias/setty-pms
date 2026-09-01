@@ -1,7 +1,54 @@
 # Proposal: knowledge write-back (`save_knowledge`)
 
-Status: PROPOSAL — nothing here is built. One slice per branch per PR, same
-working rules as ROADMAP.md.
+Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2–K4
+remain proposals. One slice per branch per PR, same working rules as
+ROADMAP.md.
+
+## K1 as built (2026-09-01) — revision against the live DB
+
+The design below sketches a new `pms_knowledge` table. Building K1 against
+the live database showed that table already exists in all but name:
+**`pms_lessons`** (128 rows, mined and approved, reviewed in
+`SettyIntelligence.html`) carries `project_id` **as a project number**,
+agency, discipline, `source_reference`, `superseded_by`, and a status
+constraint that already included `'suggested'` — the pending state this
+proposal needs. Creating `pms_knowledge` beside it would split firm
+knowledge across two homes, the exact failure section 3 warns about for
+agency preferences. So K1 gated and extended the existing tables instead
+(migration `20260901000000_knowledge_capabilities.sql`, verified with
+`supabase/k1-knowledge-verify.sql`):
+
+- **Capabilities** `knowledge.contribute` / `knowledge.review` added to
+  `pms_capability_catalog` and the role matrix. This also closes the
+  Phase 5 "Not in the catalog" open decision: `pms_lessons`,
+  `pms_agency_preferences` and `pms_best_practices` were the last tables
+  on blanket authenticated-wide ALL policies.
+- **Matrix defaults** follow the Phase 5 zero-behavior-change posture, not
+  this proposal's admin+PM suggestion: every role keeps both capabilities
+  except **qaqc** (Gate B's read-only stance extended). Tightening review
+  to admin + project_manager is a checkbox on Users & Roles, not a
+  migration — open question 1 goes to Sara as a checkbox decision.
+- **RLS** on all three tables: SELECT stays open to authenticated; INSERT
+  requires contribute; UPDATE/DELETE require review. On `pms_lessons` the
+  terms are project-scoped through `project_id`, so per-project locks
+  resolve. Verified by the 9-persona sweep (qaqc and no-email denied, all
+  others allowed), a fabricated per-project lock (denies inside scope,
+  allows outside, rolled back), real UPDATE/DELETE as qaqc → 0 rows with
+  reads intact, INSERT as qaqc → RLS violation, INSERT as engineer → lands
+  (rolled back).
+- **`pms_lessons` gains** `author_email`, `author_name`, `reviewed_at`,
+  `review_note`; status adds `'rejected'`; origin adds `'connector'`.
+
+Consequences for the remaining slices: K2's `save_knowledge` writes
+`pms_lessons` rows with `status='suggested'`, `origin='connector'` and the
+Phase A caller in `author_email` (never `approved`); K3's
+`search_knowledge` serves approved `pms_lessons` rows (agency preferences
+already have their tool); K4 extends **`SettyIntelligence.html`** — which
+already approves/archives/deletes lessons — with the suggested-queue badge,
+reject-with-note, and promote-to-agency-preferences, rather than adding a
+tab to SettyAdmin. Read the design below with that mapping in mind:
+`pms_knowledge` → `pms_lessons`, `pending` → `suggested`, `active` →
+`approved`.
 
 ## The problem
 
