@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-01-k5-team-activity";
+const BUILD = "2026-09-01-project-knowledge-rename";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.4.0",
+  name: "setty-pms", version: "1.4.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1752,7 +1752,7 @@ mcp.tool("project_briefing", {
       recentNotes: notes,
       ...(Array.isArray(lessons) && lessons.length ? {
         knowledge: {
-          note: "Reviewed lessons learned captured on THIS project. Fold anything relevant into the answer — this is exactly the context a teammate new to the job lacks. search_knowledge finds more (other projects, agencies).",
+          note: "Reviewed PROJECT KNOWLEDGE captured on THIS job — research findings, decisions, constraints, lessons. Fold anything relevant into the answer — this is exactly the context a teammate new to the job lacks. search_knowledge finds more (other projects, agencies).",
           lessons: lessons.map(slimLesson),
         },
       } : {}),
@@ -5586,7 +5586,7 @@ const slimLesson = (r: any) => ({
 
 mcp.tool("search_knowledge", {
   description:
-    "Search Setty's reviewed LESSONS LEARNED / firm knowledge: findings people and Claude sessions " +
+    "Search Setty's reviewed PROJECT KNOWLEDGE: research findings, decisions, constraints and lessons people and Claude sessions " +
     "have captured about projects, agencies, systems and processes, each one human-approved before " +
     "it is served here. Use when starting work on a project ('what do we already know about X?'), " +
     "when a problem feels like it may have happened before, or to check whether a finding is " +
@@ -5702,8 +5702,8 @@ mcp.tool("save_knowledge", {
     "Save a durable finding to Setty's shared knowledge layer as a SUGGESTED entry for human " +
     "review — it is NOT published until a reviewer approves it in the Intelligence console, and " +
     "this tool cannot approve. Use ONLY when the user explicitly asks to save, remember, or " +
-    "share something the session established: a project decision or constraint, how an agency " +
-    "behaved, a firm convention. Always cite sources (noteIds, document paths, email subjects, " +
+    "share something the session established: project-specific research or findings, a decision " +
+    "or constraint, how an agency behaved, a firm convention. Always cite sources (noteIds, document paths, email subjects, " +
     "RFI numbers) so the reviewer can verify without re-deriving. Never save speculation, " +
     "anything the user did not ask to save, or anything search_agency_preferences already " +
     "carries. Tell the user the entry is pending review, not that it is saved as firm knowledge.",
@@ -5758,7 +5758,7 @@ mcp.tool("save_knowledge", {
     if (Array.isArray(mine) && mine.length >= KNOWLEDGE_MAX_PENDING) {
       return asText({
         error: `You already have ${mine.length} suggested entries awaiting review — the ceiling is ${KNOWLEDGE_MAX_PENDING}.`,
-        nextStep: "Ask a knowledge reviewer to work the queue in the Intelligence console (Lessons Learned), then retry.",
+        nextStep: "Ask a knowledge reviewer to work the queue in the Intelligence console (Project Knowledge), then retry.",
       });
     }
 
@@ -5809,7 +5809,7 @@ mcp.tool("save_knowledge", {
         project: pn, agency: agency?.trim() || null,
         author: caller.email,
       },
-      note: "Saved as a SUGGESTION — pending human review in the Intelligence console (Lessons Learned tab). " +
+      note: "Saved as a SUGGESTION — pending human review in the Intelligence console (Project Knowledge tab). " +
         "It is not served as firm knowledge until a reviewer approves it. Tell the user so.",
     });
   },
