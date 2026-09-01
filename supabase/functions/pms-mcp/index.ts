@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-01-project-knowledge-rename";
+const BUILD = "2026-09-01-briefing-knowledge-count";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.4.1",
+  name: "setty-pms", version: "1.4.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1668,14 +1668,26 @@ mcp.tool("project_briefing", {
         })),
       recentMail(pid, mailCap).catch(() => [] as any[]),
       (p.projectNumber
-        ? sbGet(
-            "pms_lessons?select=lesson_id,project_id,agency,discipline,lesson_summary," +
-            "source_reference,status,date_added&status=eq.approved" +
-            "&project_id=eq." + encodeURIComponent(p.projectNumber) +
-            "&order=date_added.desc&limit=6",
-          )
-        : Promise.resolve([])
-      ).catch(() => [] as any[]),
+        ? Promise.all([
+            sbGet(
+              "pms_lessons?select=lesson_id,project_id,agency,discipline,lesson_summary," +
+              "source_reference,status,date_added&status=eq.approved" +
+              "&project_id=eq." + encodeURIComponent(p.projectNumber) +
+              "&order=date_added.desc&limit=6",
+            ),
+            // The total, so the model knows the 6 above are a slice and digs
+            // with search_knowledge instead of treating them as everything.
+            // id-only keeps it cheap; the whole firm holds ~130 entries today.
+            sbGet(
+              "pms_lessons?select=lesson_id&status=eq.approved" +
+              "&project_id=eq." + encodeURIComponent(p.projectNumber) + "&limit=1000",
+            ),
+          ]).then(([rows, ids]) => ({
+            rows: Array.isArray(rows) ? rows : [],
+            total: Array.isArray(ids) ? ids.length : (Array.isArray(rows) ? rows.length : 0),
+          }))
+        : Promise.resolve({ rows: [] as any[], total: 0 })
+      ).catch(() => ({ rows: [] as any[], total: 0 })),
       // Team activity (K5): recent telemetry, filtered per-project in memory
       // because project_number stores whatever ref the caller typed.
       sbGet(
@@ -1750,10 +1762,16 @@ mcp.tool("project_briefing", {
       recentEmails: mail.slice(0, 10).map((m: any) =>
         ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),
       recentNotes: notes,
-      ...(Array.isArray(lessons) && lessons.length ? {
+      ...(lessons.rows.length ? {
         knowledge: {
-          note: "Reviewed PROJECT KNOWLEDGE captured on THIS job — research findings, decisions, constraints, lessons. Fold anything relevant into the answer — this is exactly the context a teammate new to the job lacks. search_knowledge finds more (other projects, agencies).",
-          lessons: lessons.map(slimLesson),
+          totalApprovedOnProject: lessons.total,
+          note: `Reviewed PROJECT KNOWLEDGE captured on THIS job — research findings, decisions, constraints, lessons. ` +
+            (lessons.total > lessons.rows.length
+              ? `Showing the ${lessons.rows.length} newest of ${lessons.total} entries: when the question touches a specific ` +
+                `topic, call search_knowledge with this projectNumber and the topic to check the rest before answering.`
+              : `All ${lessons.rows.length} of this project's entries are shown.`) +
+            " Fold anything relevant into the answer — this is exactly the context a teammate new to the job lacks.",
+          entries: lessons.rows.map(slimLesson),
         },
       } : {}),
       ...(teamActivity.length ? {
@@ -5701,11 +5719,16 @@ mcp.tool("save_knowledge", {
   description:
     "Save a durable finding to Setty's shared knowledge layer as a SUGGESTED entry for human " +
     "review — it is NOT published until a reviewer approves it in the Intelligence console, and " +
-    "this tool cannot approve. Use ONLY when the user explicitly asks to save, remember, or " +
-    "share something the session established: project-specific research or findings, a decision " +
-    "or constraint, how an agency behaved, a firm convention. Always cite sources (noteIds, document paths, email subjects, " +
-    "RFI numbers) so the reviewer can verify without re-deriving. Never save speculation, " +
-    "anything the user did not ask to save, or anything search_agency_preferences already " +
+    "this tool cannot approve. CALL IT ONLY AFTER THE USER SAYS YES: either they asked to save, " +
+    "remember, or share something, or they accepted your offer. DO offer — once, briefly, at a " +
+    "natural pause — when the session just did work worth capturing: research assembled from " +
+    "several documents, emails or RFIs; a decision or constraint that will matter later on the " +
+    "project; how an agency behaved; a firm convention. Something like: 'Want me to save this to " +
+    "the project record so the next person doesn't have to re-derive it?' Do NOT offer for " +
+    "routine lookups, restatements of what the PMS already shows, or speculation, and never " +
+    "repeat a declined offer in the same session. Always cite sources (noteIds, document paths, " +
+    "email subjects, RFI numbers) so the reviewer can verify without re-deriving. Never save " +
+    "anything the user did not agree to save, or anything search_agency_preferences already " +
     "carries. Tell the user the entry is pending review, not that it is saved as firm knowledge.",
   inputSchema: z.object({
     summary: z.string().min(20).max(4000).describe("The finding itself, self-contained: what a teammate needs to know, in 1-5 sentences."),
