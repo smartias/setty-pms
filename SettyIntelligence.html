@@ -99,6 +99,7 @@
     .lesson.draft { border-left: 3px solid var(--yellow); }
     .lesson.suggested { border-left: 3px solid var(--yellow); }
     .lesson.approved { border-left: 3px solid var(--green); }
+    .lesson.rejected { border-left: 3px solid var(--red); opacity: .75; }
     .lesson.archived { border-left: 3px solid var(--muted); opacity: .65; }
     .lesson-top { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
     .lesson-summary { font-size: 14px; line-height: 1.5; font-weight: 600; color: var(--text); }
@@ -364,7 +365,13 @@ function _renderInner() {
 function renderTabs() {
   $("tabs").innerHTML = MODULES.map(m => {
     const count = m.key === "lessons" ? state.lessons.length : (state.counts[m.key] ?? "");
-    const badge = count === "" ? "" : `<span class="badge">${count}</span>`;
+    // The lessons tab leads with the review queue when one exists: "3 to
+    // review" is the call to action; the total is just inventory.
+    const pending = m.key === "lessons"
+      ? state.lessons.filter(l => l.status === "draft" || l.status === "suggested").length : 0;
+    const badge = pending
+      ? `<span class="badge" style="background:var(--yellow);color:#1a1a1a" title="${pending} of ${count} awaiting review">${pending} to review</span>`
+      : count === "" ? "" : `<span class="badge">${count}</span>`;
     return `<button class="tab ${state.tab === m.key ? "active" : ""}"${state.tab === m.key ? ' aria-current="page"' : ""} onclick="setTab('${m.key}')">${esc(m.label)} ${badge}</button>`;
   }).join("");
 }
@@ -1344,10 +1351,14 @@ function bulkBar(kind) {
   const set = bulkSelSet(kind);
   if (!set.size) return "";
   const approveStatus = kind === "A" ? "active" : "approved";
+  // Lessons carry a real 'rejected' status (K1) so the contributor can see the
+  // outcome; prefs/practices keep 'archived'. Bulk reject writes no note — use
+  // the per-card Reject when the contributor deserves a reason.
+  const rejectStatus = kind === "L" ? "rejected" : "archived";
   return `<div class="status info" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
     <b>${set.size} selected</b>
     <button class="btn btn-success btn-sm" onclick="bulkStatus('${kind}','${approveStatus}')">✓ Approve selected</button>
-    <button class="btn btn-ghost btn-sm" onclick="bulkStatus('${kind}','archived')">✕ Reject selected</button>
+    <button class="btn btn-ghost btn-sm" onclick="bulkStatus('${kind}','${rejectStatus}')">✕ Reject selected</button>
     <button class="btn btn-ghost btn-sm" onclick="clearSel('${kind}')">Clear</button>
   </div>`;
 }
@@ -1360,11 +1371,12 @@ async function bulkStatus(kind, status) {
   const idcol = isL ? "lesson_id" : isA ? "pref_id" : "practice_id";
   const payload = { status, updated_at: new Date().toISOString() };
   if (status === "approved" && isL) payload.approved_by = state.user;
+  if (isL && (status === "approved" || status === "rejected")) payload.reviewed_at = new Date().toISOString();
   if (status === "active" && isA) payload.date_verified = new Date().toISOString().slice(0,10);
   try {
     await sb("PATCH", `/rest/v1/${table}?${idcol}=in.(${[...set].join(",")})`, payload);
     const noun = isL ? "lesson" : isA ? "preference" : "practice";
-    toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" ? "rejected" : status === "active" ? "approved — now feed briefs" : "approved"}.`, "success");
+    toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" || status === "rejected" ? "rejected" : status === "active" ? "approved — now feed briefs" : "approved"}.`, "success");
     set.clear();
     if (isL) await reloadLessons(); else if (isA) await loadAgencyPrefs(); else await loadPractices();
   } catch (e) { toast("Bulk update failed: " + e.message, "error"); }
@@ -1729,7 +1741,8 @@ function renderLessons() {
           <option value="suggested" ${state.filter.status==="suggested"?"selected":""}>Suggested</option>
           <option value="draft" ${state.filter.status==="draft"?"selected":""}>Draft</option>
           <option value="approved" ${state.filter.status==="approved"?"selected":""}>Approved</option>
-          <option value="archived" ${state.filter.status==="archived"?"selected":""}>Rejected</option>
+          <option value="rejected" ${state.filter.status==="rejected"?"selected":""}>Rejected</option>
+          <option value="archived" ${state.filter.status==="archived"?"selected":""}>Archived</option>
         </select>
       </div>
       <div class="field">
@@ -1737,6 +1750,7 @@ function renderLessons() {
         <select id="lfOrigin" onchange="state.filter.origin=this.value; renderLessonList()">
           <option value="">All</option>
           <option value="mined" ${state.filter.origin==="mined"?"selected":""}>🤖 Mined</option>
+          <option value="connector" ${state.filter.origin==="connector"?"selected":""}>💬 Claude</option>
           <option value="manual" ${state.filter.origin==="manual"?"selected":""}>✍ Manual</option>
         </select>
       </div>
@@ -1765,23 +1779,28 @@ function renderReviewNote() {
   const el = $("reviewNote"); if (!el) return;
   const pending = state.lessons.filter(l => l.status === "draft" || l.status === "suggested").length;
   const mined = state.lessons.filter(l => l.origin === "mined").length;
+  const fromClaude = state.lessons.filter(l => l.origin === "connector" && (l.status === "suggested" || l.status === "draft")).length;
   el.innerHTML = pending
-    ? `<div class="status info" style="display:block;margin-bottom:14px">🤖 ${mined} lesson${mined===1?"":"s"} mined from your project record · <b>${pending} awaiting your review</b>. Approve the ones that hold, edit to sharpen, reject the rest.</div>`
+    ? `<div class="status info" style="display:block;margin-bottom:14px">🤖 ${mined} lesson${mined===1?"":"s"} mined from your project record${fromClaude ? ` · 💬 ${fromClaude} saved from Claude sessions` : ""} · <b>${pending} awaiting your review</b>. Approve the ones that hold, edit to sharpen, reject the rest — a reject note goes back to the contributor.</div>`
     : "";
 }
 
 function renderLessonCard(l) {
   const confPill = { low: "pill-gray", medium: "pill-yellow", high: "pill-green" }[l.confidence] || "pill-gray";
-  const statusPill = { suggested: "pill-yellow", draft: "pill-yellow", approved: "pill-green", archived: "pill-red" }[l.status] || "pill-gray";
-  const statusLabel = { suggested: "suggested", draft: "needs review", approved: "approved", archived: "rejected" }[l.status] || l.status;
+  const statusPill = { suggested: "pill-yellow", draft: "pill-yellow", approved: "pill-green", rejected: "pill-red", archived: "pill-gray" }[l.status] || "pill-gray";
+  const statusLabel = { suggested: "suggested", draft: "needs review", approved: "approved", rejected: "rejected", archived: "archived" }[l.status] || l.status;
   const proj = state.projects.find(p => p.id === l.project_id);
   const projLabel = l.project_id ? esc(l.project_id) + (proj ? " · " + esc(proj.name) : "") : "";
-  const originBadge = l.origin === "mined"
+  const originBadge = l.origin === "connector"
+    ? `<span class="pill pill-blue" title="Saved from a Claude session via the PMS connector${l.author_email ? " by " + esc(l.author_email) : ""}">💬 Claude</span>`
+    : l.origin === "mined"
     ? `<span class="pill pill-purple" title="Extracted from the project record">🤖 mined</span>`
     : `<span class="pill pill-gray">✍ manual</span>`;
+  const authorPill = l.author_name || l.author_email
+    ? `<span class="pill pill-gray" title="Contributor — who asked to save this">by ${esc(l.author_name || l.author_email)}</span>` : "";
   const srcType = l.source_type ? `<span class="pill pill-blue">${esc(l.source_type)}</span>` : "";
   const pills = [
-    originBadge, srcType,
+    originBadge, authorPill, srcType,
     l.discipline ? `<span class="pill pill-blue">${esc(l.discipline)}</span>` : "",
     l.system ? `<span class="pill pill-purple">${esc(l.system)}</span>` : "",
     l.issue_type ? `<span class="pill pill-gray">${esc(l.issue_type)}</span>` : "",
@@ -1795,7 +1814,10 @@ function renderLessonCard(l) {
   const actions = [
     `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="openLessonForm(this.dataset.id)">Edit</button>`,
     l.status !== "approved" ? `<button class="btn btn-success btn-sm" data-id="${esc(l.lesson_id)}" onclick="approveLesson(this.dataset.id)">✓ Approve</button>` : "",
-    l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="setLessonStatus(this.dataset.id,'archived')">✕ Reject</button>` : "",
+    // Agency know-how belongs in the curated agency-preferences table, where
+    // briefs and the connector's search_agency_preferences read it.
+    l.agency && l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="promoteLessonToPref(this.dataset.id)" title="Move into Agency Preferences (goes live on briefs); this lesson is archived pointing at it">→ Agency pref</button>` : "",
+    l.status !== "rejected" && l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="openRejectModal(this.dataset.id)">✕ Reject</button>` : "",
     `<button class="btn btn-danger btn-sm" data-id="${esc(l.lesson_id)}" onclick="deleteLesson(this.dataset.id)" title="Delete permanently" aria-label="Delete lesson">🗑</button>`,
   ].filter(Boolean).join(" ");
   return `
@@ -1818,6 +1840,7 @@ function renderLessonCard(l) {
         ${(l.tags && l.tags.length) ? `<br/><b>Tags:</b> ${l.tags.map(esc).join(", ")}` : ""}
       </div>
       ${srcChips}
+      ${l.review_note ? `<div class="lesson-sub"><b>Review note:</b> ${esc(l.review_note)}${l.reviewed_at ? ` <span style="color:var(--muted)">(${esc(String(l.reviewed_at).slice(0,10))})</span>` : ""}</div>` : ""}
       ${l.reusable_prompt ? `<div class="lesson-prompt">💡 ${esc(l.reusable_prompt)}</div>` : ""}
     </div>`;
 }
@@ -2096,19 +2119,76 @@ async function approveLesson(id) {
   if (!state.user) { openNameModal(() => approveLesson(id)); return; }
   try {
     await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id),
-      { status: "approved", approved_by: state.user, updated_at: new Date().toISOString() });
-    toast("Approved. It now feeds Best Practices and the Expertise Graph.", "success");
+      { status: "approved", approved_by: state.user, reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    toast("Approved. It now feeds briefs, Best Practices, the Expertise Graph and the Claude connector.", "success");
     await reloadLessons();
   } catch (e) { toast("Approve failed: " + e.message, "error"); }
 }
 
-async function setLessonStatus(id, status) {
+// Reject keeps the row and the reason: 'rejected' + review_note is what the
+// contributor sees back in their Claude session (search_knowledge mine:true),
+// so rejection teaches instead of vanishing. Delete stays for actual junk.
+function openRejectModal(id) {
+  const l = state.lessons.find(x => x.lesson_id === id);
+  $("modalMount").innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:520px" role="dialog" aria-modal="true" aria-labelledby="rejectModalTitle">
+        <h3 id="rejectModalTitle">Reject this lesson</h3>
+        <p style="font-size:13px;color:var(--dim);line-height:1.6">${esc((l && l.lesson_summary || "").slice(0, 200))}</p>
+        <div class="fieldset">
+          <label for="rejectNote">Why? (goes back to the contributor${l && (l.author_name || l.author_email) ? " — " + esc(l.author_name || l.author_email) : ""})</label>
+          <textarea id="rejectNote" rows="3" placeholder="e.g. Already covered by an agency preference / too specific to one submittal / couldn't verify the source"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-danger" id="rejectBtn">✕ Reject</button>
+        </div>
+      </div>
+    </div>`;
+  $("rejectBtn").onclick = () => { const note = $("rejectNote").value.trim(); closeModal(); rejectLesson(id, note); };
+  focusModal();
+}
+async function rejectLesson(id, note) {
   try {
     await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id),
-      { status, updated_at: new Date().toISOString() });
-    toast("Lesson " + status + ".", "success");
+      { status: "rejected", review_note: note || null, reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    toast(note ? "Rejected — the note is visible to the contributor." : "Rejected.", "success");
     await reloadLessons();
-  } catch (e) { toast("Update failed: " + e.message, "error"); }
+  } catch (e) { toast("Reject failed: " + e.message, "error"); }
+}
+
+// Agency-shaped lessons graduate into pms_agency_preferences, the single home
+// for how-an-agency-works knowledge (briefs and the connector's
+// search_agency_preferences read only that table). The lesson is archived —
+// not deleted — with a note pointing at where it went.
+function promoteLessonToPref(id) {
+  const l = state.lessons.find(x => x.lesson_id === id);
+  if (!l || !l.agency) { toast("Only lessons with an agency can move to Agency Preferences.", "error"); return; }
+  if (!state.user) { openNameModal(() => promoteLessonToPref(id)); return; }
+  openConfirmModal(
+    `Move this into Agency Preferences for ${l.agency}? It goes ACTIVE (live on briefs and in the connector) immediately, and the lesson is archived pointing at it.`,
+    "Promote", () => reallyPromoteLesson(id));
+}
+async function reallyPromoteLesson(id) {
+  const l = state.lessons.find(x => x.lesson_id === id);
+  if (!l) return;
+  try {
+    await sb("POST", "/rest/v1/pms_agency_preferences", {
+      agency: l.agency,
+      preference_type: l.issue_type || "Process",
+      discipline: l.discipline || null,
+      requirement_or_preference: l.lesson_summary,
+      source: [l.source_reference, "promoted from lesson " + l.lesson_id + (state.user ? " by " + state.user : "")].filter(Boolean).join(" · "),
+      notes: l.reusable_prompt || null,
+      status: "active",
+      date_verified: new Date().toISOString().slice(0, 10),
+    });
+    await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id),
+      { status: "archived", review_note: "Promoted to Agency Preferences (" + l.agency + ")", reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    state.prefs.loaded = false;   // the Agency Preferences tab reloads on next visit
+    toast("Promoted to Agency Preferences — live on briefs for " + l.agency + ".", "success");
+    await reloadLessons();
+  } catch (e) { toast("Promote failed: " + e.message, "error"); }
 }
 
 function deleteLesson(id) {

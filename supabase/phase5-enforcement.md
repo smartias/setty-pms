@@ -109,9 +109,16 @@ Leftover cosmetics: the three surviving SELECT policies on the register tables
 still carry `_anon` names (`pms_rfis_select_anon` etc.) — scoped TO
 authenticated, name only. Rename next time those tables are touched.
 
-## Not in the catalog (open decision)
+## Not in the catalog — RESOLVED for intelligence tables (2026-09-01)
 
-Intelligence tables (`pms_agency_preferences`, `pms_lessons`,
-`pms_best_practices`, profiles/standards/regulations) have no capability.
-Either add a row to `pms_capability_catalog` (console is catalog-driven — a new
-cap appears in the grid automatically) or leave them authenticated-wide.
+`pms_agency_preferences`, `pms_lessons` and `pms_best_practices` are now
+gated: `knowledge.contribute` on INSERT, `knowledge.review` on UPDATE/DELETE,
+reads open to authenticated, project-scoped through `pms_lessons.project_id`.
+Migration `20260901000000_knowledge_capabilities.sql`; rollback row
+`k1-knowledge-caps-rollback-2026-09-01`; verified per the slice recipe with
+`k1-knowledge-verify.sql` (9-persona sweep, fabricated project lock, real
+write probes as qaqc and engineer, boot-path reads). Matrix defaults preserve
+today's behavior except **qaqc** (Gate B extended, blast radius one user).
+See `functions/pms-mcp/PROPOSAL-knowledge-writeback.md` for the knowledge
+write-back plan this serves. Profiles/standards/regulations tables remain
+authenticated-wide — still open.

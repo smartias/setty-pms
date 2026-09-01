@@ -1,5 +1,8 @@
-// PMS MCP Server — read-only access to Setty PMS data for the team's
-// enterprise Claude accounts. Runs as a Supabase Edge Function. Read-only.
+// PMS MCP Server — access to Setty PMS data for the team's enterprise
+// Claude accounts. Runs as a Supabase Edge Function. Read-only except ONE
+// deliberate write path: save_knowledge, which stages suggested-status
+// knowledge rows for human review (K2 of PROPOSAL-knowledge-writeback.md)
+// and can publish nothing on its own.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { McpServer, StreamableHttpTransport } from "mcp-lite";
@@ -172,6 +175,22 @@ async function sbRpc(fn: string, body: Record<string, unknown>): Promise<any> {
   });
   if (!res.ok) throw new Error(`Supabase rpc ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json();
+}
+
+// The one write helper, used ONLY by save_knowledge. return=representation so
+// the caller gets the row id to hand back to the user.
+async function sbInsert(table: string, row: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=representation",
+    },
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) throw new Error(`Supabase insert ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const rows = await res.json();
+  return Array.isArray(rows) ? rows[0] : rows;
 }
 
 // PostgREST caps responses at 1000 rows; page past it.
@@ -585,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-23-nysharesite-cross-site-crawl";
+const BUILD = "2026-09-01-k5-team-activity";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.1.0",
+  name: "setty-pms", version: "1.4.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1546,6 +1565,67 @@ async function recentMail(pid: string, cap: number): Promise<any[]> {
   });
 }
 
+// ── K5: team activity awareness ──────────────────────────────────────────────
+// Two people asking Claude about the same project at the same time cannot see
+// each other's sessions — but the telemetry table already records every tool
+// call within seconds, so the BRIEFING can say "Shari's session has been on
+// this project this morning" and suggest talking to her. Presence, not
+// transcripts: what leaves this function is who, when, which tools, and a few
+// distilled topic words — never a verbatim query. That line is deliberate
+// (surfacing colleagues' raw queries reads as over-the-shoulder monitoring)
+// and the Admin console's Usage & audit card already discloses that tool
+// calls are logged per user.
+const ACTIVITY_WINDOW_HOURS = 8;
+const ACTIVITY_FETCH_LIMIT = 400;   // firm-wide volume is ~60 calls per 8h; 400 is headroom, not pagination
+const ACTIVITY_MAX_PEOPLE = 5;
+const ACTIVITY_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at", "with", "about",
+  "what", "who", "when", "where", "how", "is", "are", "was", "were", "me", "my", "our",
+  "get", "find", "show", "give", "list", "all", "any", "current", "latest", "recent",
+  "status", "project", "projects", "please",
+]);
+
+// A few topic words from a person's queries — most-frequent first, no phrases.
+function activityTopics(queries: string[], cap = 6): string[] {
+  const freq = new Map<string, number>();
+  for (const q of queries) {
+    for (const w of String(q || "").toLowerCase().split(/[^a-z0-9#&-]+/)) {
+      if (w.length < 3 || ACTIVITY_STOPWORDS.has(w) || /^\d+$/.test(w)) continue;
+      freq.set(w, (freq.get(w) ?? 0) + 1);
+    }
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, cap).map(([w]) => w);
+}
+
+// Aggregate telemetry rows into per-teammate presence for one project. `refs`
+// carries every string the project answers to (number AND name), because
+// telemetry stores whatever ref the caller typed.
+function summarizeTeamActivity(rows: any[], selfEmail: string | null, refs: string[]): any[] {
+  const refSet = new Set(refs.filter(Boolean).map((r) => String(r).toLowerCase().trim()));
+  const self = (selfEmail || "").toLowerCase();
+  const byPerson = new Map<string, { calls: number; lastActive: string; tools: Set<string>; queries: string[] }>();
+  for (const r of rows) {
+    const email = String(r.caller_email || "").toLowerCase();
+    const ref = String(r.project_number || "").toLowerCase().trim();
+    if (!email || email === self || !ref || !refSet.has(ref)) continue;
+    const e = byPerson.get(email) ?? { calls: 0, lastActive: "", tools: new Set<string>(), queries: [] };
+    e.calls++;
+    if (String(r.created_at || "") > e.lastActive) e.lastActive = String(r.created_at || "");
+    if (r.tool) e.tools.add(String(r.tool));
+    if (r.query) e.queries.push(String(r.query));
+    byPerson.set(email, e);
+  }
+  return [...byPerson.entries()]
+    .map(([email, e]) => ({
+      teammate: email, calls: e.calls, lastActive: e.lastActive || null,
+      tools: [...e.tools].slice(0, 6),
+      ...(e.queries.length ? { topics: activityTopics(e.queries) } : {}),
+    }))
+    .sort((a, b) => String(b.lastActive).localeCompare(String(a.lastActive)))
+    .slice(0, ACTIVITY_MAX_PEOPLE);
+}
+
 mcp.tool("project_briefing", {
   description:
     "THE entry point for 'what's going on with <project>', 'catch me up on <project>', 'status " +
@@ -1577,14 +1657,35 @@ mcp.tool("project_briefing", {
 
     // Graph and Postgres are independent; neither should wait on the other.
     // Either can fail without costing the caller the rest of the briefing.
-    const [docs, mail] = await Promise.all([
+    // Knowledge (K3): approved lessons ride along so a teammate opening the
+    // project gets what the firm already learned without knowing to ask.
+    // Approved-only — suggested rows are a review queue, not knowledge.
+    const [docs, mail, lessons, activityRows] = await Promise.all([
       meetingRecords(p.projectNumber, docCap)
         .catch((e) => ({
           items: [] as any[], truncated: false,
           note: "SharePoint lookup failed: " + String((e as any)?.message ?? e),
         })),
       recentMail(pid, mailCap).catch(() => [] as any[]),
+      (p.projectNumber
+        ? sbGet(
+            "pms_lessons?select=lesson_id,project_id,agency,discipline,lesson_summary," +
+            "source_reference,status,date_added&status=eq.approved" +
+            "&project_id=eq." + encodeURIComponent(p.projectNumber) +
+            "&order=date_added.desc&limit=6",
+          )
+        : Promise.resolve([])
+      ).catch(() => [] as any[]),
+      // Team activity (K5): recent telemetry, filtered per-project in memory
+      // because project_number stores whatever ref the caller typed.
+      sbGet(
+        "pms_mcp_telemetry?select=caller_email,tool,project_number,query,created_at" +
+        "&created_at=gte." + encodeURIComponent(new Date(Date.now() - ACTIVITY_WINDOW_HOURS * 3600_000).toISOString()) +
+        "&caller_email=not.is.null&order=created_at.desc&limit=" + ACTIVITY_FETCH_LIMIT,
+      ).catch(() => [] as any[]),
     ]);
+    const teamActivity = summarizeTeamActivity(
+      activityRows, currentCaller().email, [p.projectNumber, p.name]);
 
     const notes = (p.notes ?? [])
       .filter((n: any) => n.body)
@@ -1628,6 +1729,11 @@ mcp.tool("project_briefing", {
         : `This project is not in Construction Administration (status: ${p.status || "unknown"}). RFIs and ` +
           "submittals do not exist yet, so they are omitted here. Do not report their absence as a finding.",
     ];
+    if (teamActivity.length) {
+      guidance.push(
+        "`teamActivity` shows teammates whose Claude sessions touched this project recently. Tell the " +
+        "user who — if someone is on the same question right now, suggest talking to them directly.");
+    }
 
     const related = await relatedProjectsOf(p);
 
@@ -1644,6 +1750,20 @@ mcp.tool("project_briefing", {
       recentEmails: mail.slice(0, 10).map((m: any) =>
         ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),
       recentNotes: notes,
+      ...(Array.isArray(lessons) && lessons.length ? {
+        knowledge: {
+          note: "Reviewed lessons learned captured on THIS project. Fold anything relevant into the answer — this is exactly the context a teammate new to the job lacks. search_knowledge finds more (other projects, agencies).",
+          lessons: lessons.map(slimLesson),
+        },
+      } : {}),
+      ...(teamActivity.length ? {
+        teamActivity: {
+          note: `Other people's Claude sessions touched this project in the last ${ACTIVITY_WINDOW_HOURS} hours. ` +
+            "Presence only — who, when, which tools, distilled topic words — never their actual queries or answers. " +
+            "Mention it to the user: if a teammate is working the same question right now, a conversation beats two parallel sessions.",
+          people: teamActivity,
+        },
+      } : {}),
       readNext,
       guidance,
     });
@@ -5428,6 +5548,269 @@ mcp.tool("search_agency_preferences", {
         notes: r.notes || undefined, source: r.source || undefined,
         verified: r.date_verified || undefined, status: r.status,
       })),
+    });
+  },
+});
+
+// ── K3: search_knowledge — the read half of the knowledge loop ───────────────
+// Serves ONLY approved pms_lessons rows (archived on request): 'suggested' is
+// a queue, not knowledge, and serving it would make save_knowledge a self-
+// publishing tool with extra steps. The one exception is mine:true, which
+// shows the CALLER their own suggested/rejected rows with the reviewer's
+// note — so a contributor can see what happened to a submission — and never
+// anyone else's.
+
+const KNOWLEDGE_RESULT_CAP = 100;
+
+function filterKnowledge(rows: any[], f: { query?: string; agency?: string; discipline?: string }): any[] {
+  const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
+  let out = rows;
+  if (f.agency) { const a = f.agency.toLowerCase().trim(); out = out.filter((r: any) => has(r.agency, a)); }
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+  if (f.query) {
+    const q = f.query.toLowerCase().trim();
+    out = out.filter((r: any) =>
+      [r.lesson_summary, r.agency, r.discipline, r.system, r.issue_type, r.source_reference,
+       Array.isArray(r.tags) ? r.tags.join(" ") : r.tags]
+        .some((v: unknown) => has(v, q)));
+  }
+  return out;
+}
+
+const slimLesson = (r: any) => ({
+  lessonId: r.lesson_id, project: r.project_id || undefined, agency: r.agency || undefined,
+  discipline: r.discipline || undefined, summary: r.lesson_summary,
+  source: r.source_reference || undefined, date: (r.date_added || "").slice(0, 10) || undefined,
+  status: r.status,
+});
+
+mcp.tool("search_knowledge", {
+  description:
+    "Search Setty's reviewed LESSONS LEARNED / firm knowledge: findings people and Claude sessions " +
+    "have captured about projects, agencies, systems and processes, each one human-approved before " +
+    "it is served here. Use when starting work on a project ('what do we already know about X?'), " +
+    "when a problem feels like it may have happened before, or to check whether a finding is " +
+    "already captured before save_knowledge. Complements search_agency_preferences (verified " +
+    "agency process rules — check both for agency questions). Pass mine: true to ALSO see your own " +
+    "pending and rejected submissions with the reviewer's notes; other people's pending entries " +
+    "are never shown.",
+  inputSchema: z.object({
+    query: z.string().optional().describe("Free text across summary, agency, discipline, system, issue type, sources and tags"),
+    projectNumber: z.string().optional().describe("Limit to one project's lessons (number or name)"),
+    agency: z.string().optional().describe("Agency filter (substring), e.g. 'DASNY', 'CUNY'"),
+    discipline: z.string().optional().describe("Discipline filter (substring), e.g. 'Mechanical'"),
+    includeArchived: z.boolean().optional().describe("Include archived (superseded) entries (default false)"),
+    mine: z.boolean().optional().describe("Also return YOUR OWN suggested/rejected submissions with review notes"),
+  }),
+  handler: async ({ query, projectNumber, agency, discipline, includeArchived, mine }) => {
+    // A project ref resolves through the same visibility-filtered path as
+    // everywhere else: a hidden project answers NOT FOUND, never its lessons.
+    let pn: string | null = null;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber.trim());
+      const p = pid ? await getProjectById(pid) : null;
+      if (!p) return asText({ error: `No project matching "${projectNumber}"` });
+      pn = p.projectNumber || null;
+    }
+
+    const statuses = includeArchived ? "in.(approved,archived)" : "eq.approved";
+    const rows = await sbGetAll(
+      "pms_lessons?select=lesson_id,project_id,agency,discipline,system,issue_type," +
+      "lesson_summary,source_reference,tags,status,date_added&status=" + statuses +
+      (pn ? "&project_id=eq." + encodeURIComponent(pn) : "") +
+      "&order=date_added.desc",
+    );
+
+    // Project-scoped rows follow the project's visibility: a lesson from a job
+    // the caller cannot see is part of that job's record and stays hidden with
+    // it. Unattributed rows (no project) are firm knowledge and always serve.
+    const caps = await resolveCaps();
+    let visible = rows;
+    if (!caps.isAdmin) {
+      const projs = await getProjects();
+      const ok = new Set(projs.map((p: any) => p.projectNumber).filter(Boolean));
+      visible = rows.filter((r: any) => !r.project_id || ok.has(r.project_id));
+    }
+
+    const out = filterKnowledge(visible, { query, agency, discipline });
+
+    let own: any[] | undefined;
+    if (mine) {
+      const caller = currentCaller();
+      own = caller.email
+        ? (await sbGet(
+            "pms_lessons?select=lesson_id,project_id,agency,discipline,lesson_summary," +
+            "source_reference,status,review_note,reviewed_at,date_added" +
+            "&author_email=eq." + encodeURIComponent(caller.email) +
+            "&status=in.(suggested,rejected)&order=date_added.desc&limit=50",
+          )).map((r: any) => ({ ...slimLesson(r), reviewNote: r.review_note || undefined }))
+        : [];
+    }
+
+    return asText({
+      count: out.length,
+      truncated: out.length > KNOWLEDGE_RESULT_CAP,
+      lessons: out.slice(0, KNOWLEDGE_RESULT_CAP).map(slimLesson),
+      ...(own !== undefined ? {
+        mySubmissions: own,
+        mySubmissionsNote: own.length
+          ? "Your own entries awaiting review or rejected — NOT served as firm knowledge; do not present them as established fact."
+          : "You have no pending or rejected submissions.",
+      } : {}),
+    });
+  },
+});
+
+// ── K2: save_knowledge — the connector's ONE write tool ──────────────────────
+// (PROPOSAL-knowledge-writeback.md; capabilities and RLS landed in K1.)
+//
+// Posture, same as prepare_transmittal's reasoning read forward: the connector
+// runs service-role, so this handler enforces what RLS enforces for the web
+// consoles — identity (the Phase A caller) and the knowledge.contribute
+// capability — and the tool is constructed so it CANNOT publish: status is
+// hardwired to 'suggested', which search_agency_preferences and the future
+// search_knowledge never serve. A person promotes rows to 'approved' in
+// SettyIntelligence.html, where the audit trail names them (approved_by).
+//
+// Two abuse bounds, both cheap:
+//   - a caller may have at most KNOWLEDGE_MAX_PENDING suggested rows
+//     outstanding, so a runaway session cannot silt up the review queue;
+//   - a near-duplicate of an existing suggested/approved row is returned to
+//     the model instead of inserted, unless it insists via allowDuplicate.
+const KNOWLEDGE_MAX_PENDING = 20;
+const KNOWLEDGE_DUP_THRESHOLD = 0.7;
+
+// Containment overlap of meaningful words: |A ∩ B| / min(|A|,|B|). Catches
+// "the DASNY reviewer requires X" vs "DASNY requires X" restatements without
+// pg_trgm, which PostgREST does not expose. Words of 1-2 chars are noise.
+function knowledgeWords(s: string): Set<string> {
+  return new Set(
+    String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
+}
+function knowledgeOverlap(a: string, b: string): number {
+  const A = knowledgeWords(a), B = knowledgeWords(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.min(A.size, B.size);
+}
+
+mcp.tool("save_knowledge", {
+  description:
+    "Save a durable finding to Setty's shared knowledge layer as a SUGGESTED entry for human " +
+    "review — it is NOT published until a reviewer approves it in the Intelligence console, and " +
+    "this tool cannot approve. Use ONLY when the user explicitly asks to save, remember, or " +
+    "share something the session established: a project decision or constraint, how an agency " +
+    "behaved, a firm convention. Always cite sources (noteIds, document paths, email subjects, " +
+    "RFI numbers) so the reviewer can verify without re-deriving. Never save speculation, " +
+    "anything the user did not ask to save, or anything search_agency_preferences already " +
+    "carries. Tell the user the entry is pending review, not that it is saved as firm knowledge.",
+  inputSchema: z.object({
+    summary: z.string().min(20).max(4000).describe("The finding itself, self-contained: what a teammate needs to know, in 1-5 sentences."),
+    projectNumber: z.string().optional().describe("Project number OR name when the finding is about one job. Omit for agency-wide or firm-wide knowledge."),
+    agency: z.string().optional().describe("Client agency (DASNY, CUNY, SCA, ...) when the finding is about how that agency works."),
+    discipline: z.string().optional().describe("Discipline it applies to, e.g. 'Mechanical', 'Electrical'. Omit if cross-discipline."),
+    source: z.string().max(1000).optional().describe("Citations the reviewer can check: noteIds, document paths, email subjects, RFI/submittal numbers."),
+    allowDuplicate: z.boolean().optional().describe("Set true ONLY after this tool returned possibleDuplicate and the user confirmed the new entry is genuinely different."),
+  }),
+  handler: async ({ summary, projectNumber, agency, discipline, source, allowDuplicate }) => {
+    // Identity is not optional here. The old no-write rule existed because
+    // sign-in was a boolean gate; an unattributed knowledge row would be
+    // exactly that failure again.
+    const caller = currentCaller();
+    if (caller.kind !== "user" || !caller.email) {
+      return asText({
+        error: "save_knowledge requires a signed-in user — this session's caller has no identity to attribute the entry to.",
+        nextStep: "Reconnect the Setty PMS connector (sign in with your Setty account) and retry.",
+      });
+    }
+
+    // Resolve the project first: capability checks are project-scoped, and a
+    // project the caller cannot view must behave as NOT FOUND (HIDE).
+    let project: any = null;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber.trim());
+      project = pid ? await getProjectById(pid) : null;
+      if (!project) {
+        return asText({
+          error: `No project matching "${projectNumber}"`,
+          nextStep: "search_projects finds projects by number or name. Omit projectNumber for agency-wide or firm-wide knowledge.",
+        });
+      }
+    }
+    const pn: string | null = project?.projectNumber || null;
+
+    const caps = await resolveCaps();
+    if (!capFor(caps, "knowledge.contribute", pn)) {
+      return asText({
+        error: "Your role does not have the knowledge.contribute capability" + (pn ? ` for project ${pn}` : "") + ".",
+        nextStep: "An admin can grant it on the Users & Roles tab of the Admin console.",
+      });
+    }
+
+    // Queue ceiling: outstanding suggestions by this caller, not lifetime.
+    const mine = await sbGet(
+      "pms_lessons?select=lesson_id&status=eq.suggested&author_email=eq." +
+      encodeURIComponent(caller.email) + "&limit=" + (KNOWLEDGE_MAX_PENDING + 1),
+    );
+    if (Array.isArray(mine) && mine.length >= KNOWLEDGE_MAX_PENDING) {
+      return asText({
+        error: `You already have ${mine.length} suggested entries awaiting review — the ceiling is ${KNOWLEDGE_MAX_PENDING}.`,
+        nextStep: "Ask a knowledge reviewer to work the queue in the Intelligence console (Lessons Learned), then retry.",
+      });
+    }
+
+    // Near-duplicate nudge against live rows in the same scope. Suggested rows
+    // count too: two sessions saving the same finding an hour apart is the
+    // common case, not the edge case.
+    const scope = pn
+      ? "project_id=eq." + encodeURIComponent(pn)
+      : agency?.trim()
+        ? "agency=ilike." + encodeURIComponent("*" + agency.trim() + "*")
+        : "project_id=is.null";
+    const candidates = await sbGet(
+      "pms_lessons?select=lesson_id,lesson_summary,status&status=in.(suggested,approved)&" + scope + "&limit=500",
+    );
+    if (!allowDuplicate) {
+      const dup = (Array.isArray(candidates) ? candidates : [])
+        .map((r: any) => ({ r, s: knowledgeOverlap(summary, r.lesson_summary) }))
+        .filter((x) => x.s >= KNOWLEDGE_DUP_THRESHOLD)
+        .sort((a, b) => b.s - a.s)[0];
+      if (dup) {
+        return asText({
+          possibleDuplicate: {
+            lessonId: dup.r.lesson_id, status: dup.r.status, summary: dup.r.lesson_summary,
+          },
+          note: "Nothing was saved. An entry this similar already exists in the same scope. " +
+            "If the user confirms the new finding is genuinely different, retry with allowDuplicate: true; " +
+            "if it updates the existing one, tell the user to raise it with a knowledge reviewer instead.",
+        });
+      }
+    }
+
+    const row = await sbInsert("pms_lessons", {
+      project_id: pn,
+      agency: agency?.trim() || null,
+      discipline: discipline?.trim() || null,
+      lesson_summary: summary.trim(),
+      source_reference: source?.trim() || null,
+      status: "suggested",          // hardwired: this tool cannot publish
+      origin: "connector",
+      author_email: caller.email,
+      author_name: caller.name,
+    });
+
+    return asText({
+      saved: {
+        lessonId: row?.lesson_id ?? null,
+        status: "suggested",
+        project: pn, agency: agency?.trim() || null,
+        author: caller.email,
+      },
+      note: "Saved as a SUGGESTION — pending human review in the Intelligence console (Lessons Learned tab). " +
+        "It is not served as firm knowledge until a reviewer approves it. Tell the user so.",
     });
   },
 });
