@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-01-k2-save-knowledge";
+const BUILD = "2026-09-01-k3-search-knowledge";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.2.0",
+  name: "setty-pms", version: "1.3.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1596,13 +1596,25 @@ mcp.tool("project_briefing", {
 
     // Graph and Postgres are independent; neither should wait on the other.
     // Either can fail without costing the caller the rest of the briefing.
-    const [docs, mail] = await Promise.all([
+    // Knowledge (K3): approved lessons ride along so a teammate opening the
+    // project gets what the firm already learned without knowing to ask.
+    // Approved-only — suggested rows are a review queue, not knowledge.
+    const [docs, mail, lessons] = await Promise.all([
       meetingRecords(p.projectNumber, docCap)
         .catch((e) => ({
           items: [] as any[], truncated: false,
           note: "SharePoint lookup failed: " + String((e as any)?.message ?? e),
         })),
       recentMail(pid, mailCap).catch(() => [] as any[]),
+      (p.projectNumber
+        ? sbGet(
+            "pms_lessons?select=lesson_id,project_id,agency,discipline,lesson_summary," +
+            "source_reference,status,date_added&status=eq.approved" +
+            "&project_id=eq." + encodeURIComponent(p.projectNumber) +
+            "&order=date_added.desc&limit=6",
+          )
+        : Promise.resolve([])
+      ).catch(() => [] as any[]),
     ]);
 
     const notes = (p.notes ?? [])
@@ -1663,6 +1675,12 @@ mcp.tool("project_briefing", {
       recentEmails: mail.slice(0, 10).map((m: any) =>
         ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),
       recentNotes: notes,
+      ...(Array.isArray(lessons) && lessons.length ? {
+        knowledge: {
+          note: "Reviewed lessons learned captured on THIS project. Fold anything relevant into the answer — this is exactly the context a teammate new to the job lacks. search_knowledge finds more (other projects, agencies).",
+          lessons: lessons.map(slimLesson),
+        },
+      } : {}),
       readNext,
       guidance,
     });
@@ -5447,6 +5465,115 @@ mcp.tool("search_agency_preferences", {
         notes: r.notes || undefined, source: r.source || undefined,
         verified: r.date_verified || undefined, status: r.status,
       })),
+    });
+  },
+});
+
+// ── K3: search_knowledge — the read half of the knowledge loop ───────────────
+// Serves ONLY approved pms_lessons rows (archived on request): 'suggested' is
+// a queue, not knowledge, and serving it would make save_knowledge a self-
+// publishing tool with extra steps. The one exception is mine:true, which
+// shows the CALLER their own suggested/rejected rows with the reviewer's
+// note — so a contributor can see what happened to a submission — and never
+// anyone else's.
+
+const KNOWLEDGE_RESULT_CAP = 100;
+
+function filterKnowledge(rows: any[], f: { query?: string; agency?: string; discipline?: string }): any[] {
+  const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
+  let out = rows;
+  if (f.agency) { const a = f.agency.toLowerCase().trim(); out = out.filter((r: any) => has(r.agency, a)); }
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+  if (f.query) {
+    const q = f.query.toLowerCase().trim();
+    out = out.filter((r: any) =>
+      [r.lesson_summary, r.agency, r.discipline, r.system, r.issue_type, r.source_reference,
+       Array.isArray(r.tags) ? r.tags.join(" ") : r.tags]
+        .some((v: unknown) => has(v, q)));
+  }
+  return out;
+}
+
+const slimLesson = (r: any) => ({
+  lessonId: r.lesson_id, project: r.project_id || undefined, agency: r.agency || undefined,
+  discipline: r.discipline || undefined, summary: r.lesson_summary,
+  source: r.source_reference || undefined, date: (r.date_added || "").slice(0, 10) || undefined,
+  status: r.status,
+});
+
+mcp.tool("search_knowledge", {
+  description:
+    "Search Setty's reviewed LESSONS LEARNED / firm knowledge: findings people and Claude sessions " +
+    "have captured about projects, agencies, systems and processes, each one human-approved before " +
+    "it is served here. Use when starting work on a project ('what do we already know about X?'), " +
+    "when a problem feels like it may have happened before, or to check whether a finding is " +
+    "already captured before save_knowledge. Complements search_agency_preferences (verified " +
+    "agency process rules — check both for agency questions). Pass mine: true to ALSO see your own " +
+    "pending and rejected submissions with the reviewer's notes; other people's pending entries " +
+    "are never shown.",
+  inputSchema: z.object({
+    query: z.string().optional().describe("Free text across summary, agency, discipline, system, issue type, sources and tags"),
+    projectNumber: z.string().optional().describe("Limit to one project's lessons (number or name)"),
+    agency: z.string().optional().describe("Agency filter (substring), e.g. 'DASNY', 'CUNY'"),
+    discipline: z.string().optional().describe("Discipline filter (substring), e.g. 'Mechanical'"),
+    includeArchived: z.boolean().optional().describe("Include archived (superseded) entries (default false)"),
+    mine: z.boolean().optional().describe("Also return YOUR OWN suggested/rejected submissions with review notes"),
+  }),
+  handler: async ({ query, projectNumber, agency, discipline, includeArchived, mine }) => {
+    // A project ref resolves through the same visibility-filtered path as
+    // everywhere else: a hidden project answers NOT FOUND, never its lessons.
+    let pn: string | null = null;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber.trim());
+      const p = pid ? await getProjectById(pid) : null;
+      if (!p) return asText({ error: `No project matching "${projectNumber}"` });
+      pn = p.projectNumber || null;
+    }
+
+    const statuses = includeArchived ? "in.(approved,archived)" : "eq.approved";
+    const rows = await sbGetAll(
+      "pms_lessons?select=lesson_id,project_id,agency,discipline,system,issue_type," +
+      "lesson_summary,source_reference,tags,status,date_added&status=" + statuses +
+      (pn ? "&project_id=eq." + encodeURIComponent(pn) : "") +
+      "&order=date_added.desc",
+    );
+
+    // Project-scoped rows follow the project's visibility: a lesson from a job
+    // the caller cannot see is part of that job's record and stays hidden with
+    // it. Unattributed rows (no project) are firm knowledge and always serve.
+    const caps = await resolveCaps();
+    let visible = rows;
+    if (!caps.isAdmin) {
+      const projs = await getProjects();
+      const ok = new Set(projs.map((p: any) => p.projectNumber).filter(Boolean));
+      visible = rows.filter((r: any) => !r.project_id || ok.has(r.project_id));
+    }
+
+    const out = filterKnowledge(visible, { query, agency, discipline });
+
+    let own: any[] | undefined;
+    if (mine) {
+      const caller = currentCaller();
+      own = caller.email
+        ? (await sbGet(
+            "pms_lessons?select=lesson_id,project_id,agency,discipline,lesson_summary," +
+            "source_reference,status,review_note,reviewed_at,date_added" +
+            "&author_email=eq." + encodeURIComponent(caller.email) +
+            "&status=in.(suggested,rejected)&order=date_added.desc&limit=50",
+          )).map((r: any) => ({ ...slimLesson(r), reviewNote: r.review_note || undefined }))
+        : [];
+    }
+
+    return asText({
+      count: out.length,
+      truncated: out.length > KNOWLEDGE_RESULT_CAP,
+      lessons: out.slice(0, KNOWLEDGE_RESULT_CAP).map(slimLesson),
+      ...(own !== undefined ? {
+        mySubmissions: own,
+        mySubmissionsNote: own.length
+          ? "Your own entries awaiting review or rejected — NOT served as firm knowledge; do not present them as established fact."
+          : "You have no pending or rejected submissions.",
+      } : {}),
     });
   },
 });

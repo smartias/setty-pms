@@ -1,11 +1,36 @@
 # Proposal: knowledge write-back (`save_knowledge`)
 
-Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2 code
-complete on this branch (save_knowledge in index.ts, BUILD
-2026-09-01-k2-save-knowledge) — deploys with the next connector deploy
-after merge, per the usual path; /health echoes the BUILD to confirm.
-K3–K4 remain proposals. One slice per branch per PR, same working rules
-as ROADMAP.md.
+Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2 and
+K3 code complete on this branch (save_knowledge + search_knowledge +
+briefing fold-in in index.ts, BUILD 2026-09-01-k3-search-knowledge) —
+they deploy with the next connector deploy after merge, per the usual
+path; /health echoes the BUILD to confirm. K4 remains a proposal. One
+slice per branch per PR, same working rules as ROADMAP.md.
+
+### K3 as built (2026-09-01)
+
+`search_knowledge` serves ONLY approved `pms_lessons` rows (archived on
+request) — 'suggested' is a queue, not knowledge — filtered by free
+text, project, agency and discipline, in the same in-memory style as
+search_agency_preferences. Two rules drift-checked by
+`searchKnowledge.test.mjs`:
+
+- **Project visibility follows the project.** A lesson tied to a job the
+  caller lacks projects.view for is hidden with the job (rows with no
+  project are firm-wide and always serve); a hidden project ref answers
+  NOT FOUND, same as everywhere else.
+- **`mine: true`** additionally returns the caller's OWN
+  suggested/rejected rows with the reviewer's `review_note` — never
+  anyone else's pending entries — flagged so the model does not present
+  them as established fact. This resolves open question 2: briefings
+  stay strictly approved-only; a contributor checks their own queue
+  explicitly.
+
+`project_briefing` folds in up to 6 approved lessons for the project
+(newest first, fetched alongside Graph/mail so a knowledge outage never
+costs the briefing), with guidance to weave them into the answer — the
+passive-sharing half: a teammate opening the project gets what the firm
+learned without knowing to ask.
 
 ### K2 as built (2026-09-01)
 
