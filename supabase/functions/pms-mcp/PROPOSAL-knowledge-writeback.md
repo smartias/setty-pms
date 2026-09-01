@@ -1,13 +1,13 @@
 # Proposal: knowledge write-back (`save_knowledge`)
 
-Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2 and
-K3 code complete on this branch (save_knowledge + search_knowledge +
-briefing fold-in in index.ts, BUILD 2026-09-01-k3-search-knowledge) —
-they deploy with the next connector deploy after merge, per the usual
-path; /health echoes the BUILD to confirm. K4 (SettyIntelligence review
-queue) code complete on this branch — it is a static page, live on the
-next Pages deploy after merge. One slice per branch per PR, same working
-rules as ROADMAP.md.
+Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2, K3
+and K5 code complete on this branch (save_knowledge + search_knowledge +
+briefing fold-in + team activity awareness in index.ts, BUILD
+2026-09-01-k5-team-activity) — they deploy with the next connector
+deploy after merge, per the usual path; /health echoes the BUILD to
+confirm. K4 (SettyIntelligence review queue) code complete on this
+branch — it is a static page, live on the next Pages deploy after
+merge. One slice per branch per PR, same working rules as ROADMAP.md.
 
 ### K4 as built (2026-09-01)
 
@@ -30,6 +30,31 @@ added:
   search_agency_preferences immediately), and the lesson is archived
   with a note pointing at where it went — one home for agency know-how.
 - Approvals now stamp `reviewed_at` alongside `approved_by`.
+
+### K5 as built (2026-09-01) — team activity awareness
+
+The near-real-time half of the sharing question: two people asking Claude
+about the same project cannot see each other's sessions, but
+`pms_mcp_telemetry` records every tool call within seconds. K5 mines it
+into `project_briefing`: a `teamActivity` section listing teammates whose
+sessions touched the project in the last 8 hours — who, when, how many
+calls, which tools, and a few distilled topic words — with guidance to
+tell the user and suggest a direct conversation over two parallel
+sessions.
+
+The privacy line is deliberate and pinned by `teamActivity.test.mjs`:
+**presence, never transcripts**. Verbatim queries never leave the
+function (topic words are frequency-distilled, stopword-filtered
+single words), the caller never sees their own activity echoed back, a
+teammate's rows on OTHER projects never leak through, and the Admin
+console's Usage & audit card already discloses that tool calls are
+logged per user. At most 5 teammates are listed; telemetry rows without
+a caller identity are ignored. The fetch is one bounded query (8-hour
+window, 400-row cap against a measured ~60 calls/8h firm-wide) filtered
+in memory because `project_number` stores whatever ref the caller typed
+— so the match runs against both the project's number and its name, and
+it rides the briefing's Promise.all with a catch, so telemetry trouble
+never costs the briefing.
 
 ### K3 as built (2026-09-01)
 

@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-01-k3-search-knowledge";
+const BUILD = "2026-09-01-k5-team-activity";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.3.0",
+  name: "setty-pms", version: "1.4.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1565,6 +1565,67 @@ async function recentMail(pid: string, cap: number): Promise<any[]> {
   });
 }
 
+// ── K5: team activity awareness ──────────────────────────────────────────────
+// Two people asking Claude about the same project at the same time cannot see
+// each other's sessions — but the telemetry table already records every tool
+// call within seconds, so the BRIEFING can say "Shari's session has been on
+// this project this morning" and suggest talking to her. Presence, not
+// transcripts: what leaves this function is who, when, which tools, and a few
+// distilled topic words — never a verbatim query. That line is deliberate
+// (surfacing colleagues' raw queries reads as over-the-shoulder monitoring)
+// and the Admin console's Usage & audit card already discloses that tool
+// calls are logged per user.
+const ACTIVITY_WINDOW_HOURS = 8;
+const ACTIVITY_FETCH_LIMIT = 400;   // firm-wide volume is ~60 calls per 8h; 400 is headroom, not pagination
+const ACTIVITY_MAX_PEOPLE = 5;
+const ACTIVITY_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at", "with", "about",
+  "what", "who", "when", "where", "how", "is", "are", "was", "were", "me", "my", "our",
+  "get", "find", "show", "give", "list", "all", "any", "current", "latest", "recent",
+  "status", "project", "projects", "please",
+]);
+
+// A few topic words from a person's queries — most-frequent first, no phrases.
+function activityTopics(queries: string[], cap = 6): string[] {
+  const freq = new Map<string, number>();
+  for (const q of queries) {
+    for (const w of String(q || "").toLowerCase().split(/[^a-z0-9#&-]+/)) {
+      if (w.length < 3 || ACTIVITY_STOPWORDS.has(w) || /^\d+$/.test(w)) continue;
+      freq.set(w, (freq.get(w) ?? 0) + 1);
+    }
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, cap).map(([w]) => w);
+}
+
+// Aggregate telemetry rows into per-teammate presence for one project. `refs`
+// carries every string the project answers to (number AND name), because
+// telemetry stores whatever ref the caller typed.
+function summarizeTeamActivity(rows: any[], selfEmail: string | null, refs: string[]): any[] {
+  const refSet = new Set(refs.filter(Boolean).map((r) => String(r).toLowerCase().trim()));
+  const self = (selfEmail || "").toLowerCase();
+  const byPerson = new Map<string, { calls: number; lastActive: string; tools: Set<string>; queries: string[] }>();
+  for (const r of rows) {
+    const email = String(r.caller_email || "").toLowerCase();
+    const ref = String(r.project_number || "").toLowerCase().trim();
+    if (!email || email === self || !ref || !refSet.has(ref)) continue;
+    const e = byPerson.get(email) ?? { calls: 0, lastActive: "", tools: new Set<string>(), queries: [] };
+    e.calls++;
+    if (String(r.created_at || "") > e.lastActive) e.lastActive = String(r.created_at || "");
+    if (r.tool) e.tools.add(String(r.tool));
+    if (r.query) e.queries.push(String(r.query));
+    byPerson.set(email, e);
+  }
+  return [...byPerson.entries()]
+    .map(([email, e]) => ({
+      teammate: email, calls: e.calls, lastActive: e.lastActive || null,
+      tools: [...e.tools].slice(0, 6),
+      ...(e.queries.length ? { topics: activityTopics(e.queries) } : {}),
+    }))
+    .sort((a, b) => String(b.lastActive).localeCompare(String(a.lastActive)))
+    .slice(0, ACTIVITY_MAX_PEOPLE);
+}
+
 mcp.tool("project_briefing", {
   description:
     "THE entry point for 'what's going on with <project>', 'catch me up on <project>', 'status " +
@@ -1599,7 +1660,7 @@ mcp.tool("project_briefing", {
     // Knowledge (K3): approved lessons ride along so a teammate opening the
     // project gets what the firm already learned without knowing to ask.
     // Approved-only — suggested rows are a review queue, not knowledge.
-    const [docs, mail, lessons] = await Promise.all([
+    const [docs, mail, lessons, activityRows] = await Promise.all([
       meetingRecords(p.projectNumber, docCap)
         .catch((e) => ({
           items: [] as any[], truncated: false,
@@ -1615,7 +1676,16 @@ mcp.tool("project_briefing", {
           )
         : Promise.resolve([])
       ).catch(() => [] as any[]),
+      // Team activity (K5): recent telemetry, filtered per-project in memory
+      // because project_number stores whatever ref the caller typed.
+      sbGet(
+        "pms_mcp_telemetry?select=caller_email,tool,project_number,query,created_at" +
+        "&created_at=gte." + encodeURIComponent(new Date(Date.now() - ACTIVITY_WINDOW_HOURS * 3600_000).toISOString()) +
+        "&caller_email=not.is.null&order=created_at.desc&limit=" + ACTIVITY_FETCH_LIMIT,
+      ).catch(() => [] as any[]),
     ]);
+    const teamActivity = summarizeTeamActivity(
+      activityRows, currentCaller().email, [p.projectNumber, p.name]);
 
     const notes = (p.notes ?? [])
       .filter((n: any) => n.body)
@@ -1659,6 +1729,11 @@ mcp.tool("project_briefing", {
         : `This project is not in Construction Administration (status: ${p.status || "unknown"}). RFIs and ` +
           "submittals do not exist yet, so they are omitted here. Do not report their absence as a finding.",
     ];
+    if (teamActivity.length) {
+      guidance.push(
+        "`teamActivity` shows teammates whose Claude sessions touched this project recently. Tell the " +
+        "user who — if someone is on the same question right now, suggest talking to them directly.");
+    }
 
     const related = await relatedProjectsOf(p);
 
@@ -1679,6 +1754,14 @@ mcp.tool("project_briefing", {
         knowledge: {
           note: "Reviewed lessons learned captured on THIS project. Fold anything relevant into the answer — this is exactly the context a teammate new to the job lacks. search_knowledge finds more (other projects, agencies).",
           lessons: lessons.map(slimLesson),
+        },
+      } : {}),
+      ...(teamActivity.length ? {
+        teamActivity: {
+          note: `Other people's Claude sessions touched this project in the last ${ACTIVITY_WINDOW_HOURS} hours. ` +
+            "Presence only — who, when, which tools, distilled topic words — never their actual queries or answers. " +
+            "Mention it to the user: if a teammate is working the same question right now, a conversation beats two parallel sessions.",
+          people: teamActivity,
         },
       } : {}),
       readNext,
