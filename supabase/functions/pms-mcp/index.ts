@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-01-project-knowledge-rename";
+const BUILD = "2026-09-01-save-knowledge-offers";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.4.1",
+  name: "setty-pms", version: "1.4.2",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -5701,11 +5701,16 @@ mcp.tool("save_knowledge", {
   description:
     "Save a durable finding to Setty's shared knowledge layer as a SUGGESTED entry for human " +
     "review — it is NOT published until a reviewer approves it in the Intelligence console, and " +
-    "this tool cannot approve. Use ONLY when the user explicitly asks to save, remember, or " +
-    "share something the session established: project-specific research or findings, a decision " +
-    "or constraint, how an agency behaved, a firm convention. Always cite sources (noteIds, document paths, email subjects, " +
-    "RFI numbers) so the reviewer can verify without re-deriving. Never save speculation, " +
-    "anything the user did not ask to save, or anything search_agency_preferences already " +
+    "this tool cannot approve. CALL IT ONLY AFTER THE USER SAYS YES: either they asked to save, " +
+    "remember, or share something, or they accepted your offer. DO offer — once, briefly, at a " +
+    "natural pause — when the session just did work worth capturing: research assembled from " +
+    "several documents, emails or RFIs; a decision or constraint that will matter later on the " +
+    "project; how an agency behaved; a firm convention. Something like: 'Want me to save this to " +
+    "the project record so the next person doesn't have to re-derive it?' Do NOT offer for " +
+    "routine lookups, restatements of what the PMS already shows, or speculation, and never " +
+    "repeat a declined offer in the same session. Always cite sources (noteIds, document paths, " +
+    "email subjects, RFI numbers) so the reviewer can verify without re-deriving. Never save " +
+    "anything the user did not agree to save, or anything search_agency_preferences already " +
     "carries. Tell the user the entry is pending review, not that it is saved as firm knowledge.",
   inputSchema: z.object({
     summary: z.string().min(20).max(4000).describe("The finding itself, self-contained: what a teammate needs to know, in 1-5 sentences."),
