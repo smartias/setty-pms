@@ -81,8 +81,10 @@ has('mcp.tool("search_knowledge"', "search_knowledge is still registered");
 has('const statuses = includeArchived ? "in.(approved,archived)" : "eq.approved";', "approved-only default");
 has('&status=in.(suggested,rejected)&order=date_added.desc&limit=50', "mine: own suggested/rejected only");
 has("visible = rows.filter((r: any) => !r.project_id || ok.has(r.project_id));", "project visibility filter");
-// The briefing fold-in stays approved-only and per-project:
-has('"source_reference,status,date_added&status=eq.approved" +\n            "&project_id=eq."', "briefing fold-in approved-only");
+// The briefing fold-in stays approved-only and per-project, and it tells the
+// model how many entries exist beyond the slice it shows:
+has('"source_reference,status,date_added&status=eq.approved" +\n              "&project_id=eq."', "briefing fold-in approved-only");
+has("totalApprovedOnProject: lessons.total,", "briefing fold-in total count");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
