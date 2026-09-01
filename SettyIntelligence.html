@@ -233,7 +233,10 @@ const CONFIDENCE    = ["low","medium","high"];
 const MODULES = [
   { key: "brief",     label: "📥 Project Brief",       table: null,                        idcol: null,          live: true  },
   { key: "heatmap",   label: "🔥 Heat Map",            table: null,                        idcol: null,          live: true  },
-  { key: "lessons",   label: "Lessons Learned",       table: "pms_lessons",               idcol: "lesson_id",   live: true  },
+  // Renamed from "Lessons Learned" (2026-09-01): entries are mostly
+  // project-specific research and findings, not portable lessons. Label only —
+  // the table, columns and statuses keep their names.
+  { key: "lessons",   label: "Project Knowledge",     table: "pms_lessons",               idcol: "lesson_id",   live: true  },
   { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
   { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: true  },
   { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: false },
@@ -1781,7 +1784,7 @@ function renderReviewNote() {
   const mined = state.lessons.filter(l => l.origin === "mined").length;
   const fromClaude = state.lessons.filter(l => l.origin === "connector" && (l.status === "suggested" || l.status === "draft")).length;
   el.innerHTML = pending
-    ? `<div class="status info" style="display:block;margin-bottom:14px">🤖 ${mined} lesson${mined===1?"":"s"} mined from your project record${fromClaude ? ` · 💬 ${fromClaude} saved from Claude sessions` : ""} · <b>${pending} awaiting your review</b>. Approve the ones that hold, edit to sharpen, reject the rest — a reject note goes back to the contributor.</div>`
+    ? `<div class="status info" style="display:block;margin-bottom:14px">🤖 ${mined} entr${mined===1?"y":"ies"} mined from your project record${fromClaude ? ` · 💬 ${fromClaude} saved from Claude sessions` : ""} · <b>${pending} awaiting your review</b>. Approve the ones that hold, edit to sharpen, reject the rest — a reject note goes back to the contributor.</div>`
     : "";
 }
 
