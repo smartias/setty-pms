@@ -4,8 +4,32 @@ Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2 and
 K3 code complete on this branch (save_knowledge + search_knowledge +
 briefing fold-in in index.ts, BUILD 2026-09-01-k3-search-knowledge) —
 they deploy with the next connector deploy after merge, per the usual
-path; /health echoes the BUILD to confirm. K4 remains a proposal. One
-slice per branch per PR, same working rules as ROADMAP.md.
+path; /health echoes the BUILD to confirm. K4 (SettyIntelligence review
+queue) code complete on this branch — it is a static page, live on the
+next Pages deploy after merge. One slice per branch per PR, same working
+rules as ROADMAP.md.
+
+### K4 as built (2026-09-01)
+
+SettyIntelligence's Lessons tab already had the review machinery
+(approve, bulk actions, filters); K4 wires in what the knowledge loop
+added:
+
+- **The tab badge leads with the queue**: "N to review" in yellow when
+  suggestions await, the plain total otherwise.
+- **Connector rows are first-class**: a 💬 Claude origin badge and
+  filter, and a "by <author>" pill from the Phase A attribution, so a
+  reviewer sees who asked to save each entry.
+- **Reject keeps the row and the reason**: per-card Reject opens a note
+  modal and writes `status='rejected'` + `review_note` + `reviewed_at` —
+  exactly what the contributor reads back via `search_knowledge`
+  `mine: true`. Bulk reject writes `rejected` without a note (prefs and
+  practices keep `archived`). Delete remains for junk.
+- **Promote to Agency Preferences**: an agency-tagged lesson moves into
+  `pms_agency_preferences` as an active row (live on briefs and in
+  search_agency_preferences immediately), and the lesson is archived
+  with a note pointing at where it went — one home for agency know-how.
+- Approvals now stamp `reviewed_at` alongside `approved_by`.
 
 ### K3 as built (2026-09-01)
 
