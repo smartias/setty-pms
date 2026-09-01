@@ -1,5 +1,8 @@
-// PMS MCP Server — read-only access to Setty PMS data for the team's
-// enterprise Claude accounts. Runs as a Supabase Edge Function. Read-only.
+// PMS MCP Server — access to Setty PMS data for the team's enterprise
+// Claude accounts. Runs as a Supabase Edge Function. Read-only except ONE
+// deliberate write path: save_knowledge, which stages suggested-status
+// knowledge rows for human review (K2 of PROPOSAL-knowledge-writeback.md)
+// and can publish nothing on its own.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { McpServer, StreamableHttpTransport } from "mcp-lite";
@@ -172,6 +175,22 @@ async function sbRpc(fn: string, body: Record<string, unknown>): Promise<any> {
   });
   if (!res.ok) throw new Error(`Supabase rpc ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json();
+}
+
+// The one write helper, used ONLY by save_knowledge. return=representation so
+// the caller gets the row id to hand back to the user.
+async function sbInsert(table: string, row: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=representation",
+    },
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) throw new Error(`Supabase insert ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const rows = await res.json();
+  return Array.isArray(rows) ? rows[0] : rows;
 }
 
 // PostgREST caps responses at 1000 rows; page past it.
@@ -585,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-08-23-nysharesite-cross-site-crawl";
+const BUILD = "2026-09-01-k2-save-knowledge";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.1.0",
+  name: "setty-pms", version: "1.2.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -5428,6 +5447,160 @@ mcp.tool("search_agency_preferences", {
         notes: r.notes || undefined, source: r.source || undefined,
         verified: r.date_verified || undefined, status: r.status,
       })),
+    });
+  },
+});
+
+// ── K2: save_knowledge — the connector's ONE write tool ──────────────────────
+// (PROPOSAL-knowledge-writeback.md; capabilities and RLS landed in K1.)
+//
+// Posture, same as prepare_transmittal's reasoning read forward: the connector
+// runs service-role, so this handler enforces what RLS enforces for the web
+// consoles — identity (the Phase A caller) and the knowledge.contribute
+// capability — and the tool is constructed so it CANNOT publish: status is
+// hardwired to 'suggested', which search_agency_preferences and the future
+// search_knowledge never serve. A person promotes rows to 'approved' in
+// SettyIntelligence.html, where the audit trail names them (approved_by).
+//
+// Two abuse bounds, both cheap:
+//   - a caller may have at most KNOWLEDGE_MAX_PENDING suggested rows
+//     outstanding, so a runaway session cannot silt up the review queue;
+//   - a near-duplicate of an existing suggested/approved row is returned to
+//     the model instead of inserted, unless it insists via allowDuplicate.
+const KNOWLEDGE_MAX_PENDING = 20;
+const KNOWLEDGE_DUP_THRESHOLD = 0.7;
+
+// Containment overlap of meaningful words: |A ∩ B| / min(|A|,|B|). Catches
+// "the DASNY reviewer requires X" vs "DASNY requires X" restatements without
+// pg_trgm, which PostgREST does not expose. Words of 1-2 chars are noise.
+function knowledgeWords(s: string): Set<string> {
+  return new Set(
+    String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
+}
+function knowledgeOverlap(a: string, b: string): number {
+  const A = knowledgeWords(a), B = knowledgeWords(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.min(A.size, B.size);
+}
+
+mcp.tool("save_knowledge", {
+  description:
+    "Save a durable finding to Setty's shared knowledge layer as a SUGGESTED entry for human " +
+    "review — it is NOT published until a reviewer approves it in the Intelligence console, and " +
+    "this tool cannot approve. Use ONLY when the user explicitly asks to save, remember, or " +
+    "share something the session established: a project decision or constraint, how an agency " +
+    "behaved, a firm convention. Always cite sources (noteIds, document paths, email subjects, " +
+    "RFI numbers) so the reviewer can verify without re-deriving. Never save speculation, " +
+    "anything the user did not ask to save, or anything search_agency_preferences already " +
+    "carries. Tell the user the entry is pending review, not that it is saved as firm knowledge.",
+  inputSchema: z.object({
+    summary: z.string().min(20).max(4000).describe("The finding itself, self-contained: what a teammate needs to know, in 1-5 sentences."),
+    projectNumber: z.string().optional().describe("Project number OR name when the finding is about one job. Omit for agency-wide or firm-wide knowledge."),
+    agency: z.string().optional().describe("Client agency (DASNY, CUNY, SCA, ...) when the finding is about how that agency works."),
+    discipline: z.string().optional().describe("Discipline it applies to, e.g. 'Mechanical', 'Electrical'. Omit if cross-discipline."),
+    source: z.string().max(1000).optional().describe("Citations the reviewer can check: noteIds, document paths, email subjects, RFI/submittal numbers."),
+    allowDuplicate: z.boolean().optional().describe("Set true ONLY after this tool returned possibleDuplicate and the user confirmed the new entry is genuinely different."),
+  }),
+  handler: async ({ summary, projectNumber, agency, discipline, source, allowDuplicate }) => {
+    // Identity is not optional here. The old no-write rule existed because
+    // sign-in was a boolean gate; an unattributed knowledge row would be
+    // exactly that failure again.
+    const caller = currentCaller();
+    if (caller.kind !== "user" || !caller.email) {
+      return asText({
+        error: "save_knowledge requires a signed-in user — this session's caller has no identity to attribute the entry to.",
+        nextStep: "Reconnect the Setty PMS connector (sign in with your Setty account) and retry.",
+      });
+    }
+
+    // Resolve the project first: capability checks are project-scoped, and a
+    // project the caller cannot view must behave as NOT FOUND (HIDE).
+    let project: any = null;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber.trim());
+      project = pid ? await getProjectById(pid) : null;
+      if (!project) {
+        return asText({
+          error: `No project matching "${projectNumber}"`,
+          nextStep: "search_projects finds projects by number or name. Omit projectNumber for agency-wide or firm-wide knowledge.",
+        });
+      }
+    }
+    const pn: string | null = project?.projectNumber || null;
+
+    const caps = await resolveCaps();
+    if (!capFor(caps, "knowledge.contribute", pn)) {
+      return asText({
+        error: "Your role does not have the knowledge.contribute capability" + (pn ? ` for project ${pn}` : "") + ".",
+        nextStep: "An admin can grant it on the Users & Roles tab of the Admin console.",
+      });
+    }
+
+    // Queue ceiling: outstanding suggestions by this caller, not lifetime.
+    const mine = await sbGet(
+      "pms_lessons?select=lesson_id&status=eq.suggested&author_email=eq." +
+      encodeURIComponent(caller.email) + "&limit=" + (KNOWLEDGE_MAX_PENDING + 1),
+    );
+    if (Array.isArray(mine) && mine.length >= KNOWLEDGE_MAX_PENDING) {
+      return asText({
+        error: `You already have ${mine.length} suggested entries awaiting review — the ceiling is ${KNOWLEDGE_MAX_PENDING}.`,
+        nextStep: "Ask a knowledge reviewer to work the queue in the Intelligence console (Lessons Learned), then retry.",
+      });
+    }
+
+    // Near-duplicate nudge against live rows in the same scope. Suggested rows
+    // count too: two sessions saving the same finding an hour apart is the
+    // common case, not the edge case.
+    const scope = pn
+      ? "project_id=eq." + encodeURIComponent(pn)
+      : agency?.trim()
+        ? "agency=ilike." + encodeURIComponent("*" + agency.trim() + "*")
+        : "project_id=is.null";
+    const candidates = await sbGet(
+      "pms_lessons?select=lesson_id,lesson_summary,status&status=in.(suggested,approved)&" + scope + "&limit=500",
+    );
+    if (!allowDuplicate) {
+      const dup = (Array.isArray(candidates) ? candidates : [])
+        .map((r: any) => ({ r, s: knowledgeOverlap(summary, r.lesson_summary) }))
+        .filter((x) => x.s >= KNOWLEDGE_DUP_THRESHOLD)
+        .sort((a, b) => b.s - a.s)[0];
+      if (dup) {
+        return asText({
+          possibleDuplicate: {
+            lessonId: dup.r.lesson_id, status: dup.r.status, summary: dup.r.lesson_summary,
+          },
+          note: "Nothing was saved. An entry this similar already exists in the same scope. " +
+            "If the user confirms the new finding is genuinely different, retry with allowDuplicate: true; " +
+            "if it updates the existing one, tell the user to raise it with a knowledge reviewer instead.",
+        });
+      }
+    }
+
+    const row = await sbInsert("pms_lessons", {
+      project_id: pn,
+      agency: agency?.trim() || null,
+      discipline: discipline?.trim() || null,
+      lesson_summary: summary.trim(),
+      source_reference: source?.trim() || null,
+      status: "suggested",          // hardwired: this tool cannot publish
+      origin: "connector",
+      author_email: caller.email,
+      author_name: caller.name,
+    });
+
+    return asText({
+      saved: {
+        lessonId: row?.lesson_id ?? null,
+        status: "suggested",
+        project: pn, agency: agency?.trim() || null,
+        author: caller.email,
+      },
+      note: "Saved as a SUGGESTION — pending human review in the Intelligence console (Lessons Learned tab). " +
+        "It is not served as firm knowledge until a reviewer approves it. Tell the user so.",
     });
   },
 });

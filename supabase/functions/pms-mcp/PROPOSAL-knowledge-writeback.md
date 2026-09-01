@@ -1,8 +1,38 @@
 # Proposal: knowledge write-back (`save_knowledge`)
 
-Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2–K4
-remain proposals. One slice per branch per PR, same working rules as
-ROADMAP.md.
+Status: K1 LIVE (2026-09-01, revised — see "K1 as built" below). K2 code
+complete on this branch (save_knowledge in index.ts, BUILD
+2026-09-01-k2-save-knowledge) — deploys with the next connector deploy
+after merge, per the usual path; /health echoes the BUILD to confirm.
+K3–K4 remain proposals. One slice per branch per PR, same working rules
+as ROADMAP.md.
+
+### K2 as built (2026-09-01)
+
+`save_knowledge` follows the revised mapping: it inserts `pms_lessons`
+rows with `status='suggested'` (hardwired — the tool cannot write any
+other status), `origin='connector'`, and the Phase A caller in
+`author_email`/`author_name`. Guard order in the handler, each step
+load-bearing and drift-checked by `saveKnowledge.test.mjs`:
+
+1. **Identity** — a caller without a verified user email is refused
+   before anything else; an anonymous caller must not even learn what a
+   role could do.
+2. **Project HIDE** — `projectNumber` resolves through the same
+   visibility-filtered path as get_project, so a hidden project answers
+   "no project matching", never a capability error that confirms
+   existence.
+3. **Capability** — `capFor(caps, 'knowledge.contribute', pn)`, the same
+   verdict K1's RLS gives the web consoles.
+4. **Queue ceiling** — at most 20 suggested rows outstanding per author.
+5. **Duplicate nudge** — containment overlap (≥ 0.7 of meaningful words)
+   against suggested + approved rows in the same scope returns the
+   existing row instead of inserting; `allowDuplicate: true` proceeds
+   after the user confirms.
+
+The tool description tells the model to save only on an explicit user
+ask, to cite sources, and to report "pending review", never "saved as
+firm knowledge".
 
 ## K1 as built (2026-09-01) — revision against the live DB
 
