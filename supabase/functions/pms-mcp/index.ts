@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-02-scoped-publish";
+const BUILD = "2026-09-02-photos-and-scope-posture";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.5.0",
+  name: "setty-pms", version: "1.6.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -747,7 +747,11 @@ const _rawTool = mcp.tool.bind(mcp);
         // Phase C when project numbers ride the resolution path anyway.
         try {
           const caps = await resolveCaps();
-          if (!caps.isAdmin && !capFor(caps, "fees.view", ref)) {
+          // Redaction rebuilds the response as ONE text block, which would
+          // silently drop the image blocks a mixed-content tool (view_photos)
+          // returns. Those tools carry no fee fields, so skip them entirely.
+          const singleText = Array.isArray(res?.content) && res.content.length === 1 && res.content[0]?.type === "text";
+          if (singleText && !caps.isAdmin && !capFor(caps, "fees.view", ref)) {
             const payload = JSON.parse(res?.content?.[0]?.text ?? "null");
             if (payload && typeof payload === "object" && !Array.isArray(payload)) {
               const red = redactFees(payload);
@@ -1626,6 +1630,62 @@ function summarizeTeamActivity(rows: any[], selfEmail: string | null, refs: stri
     .slice(0, ACTIVITY_MAX_PEOPLE);
 }
 
+// ── Scope posture (Sara, 2026-09-02) ─────────────────────────────────────────
+// Setty is the MEPFP consultant on most jobs, not the design lead. Advice that
+// wanders into architecture, structural, civil, code interpretation or hazmat
+// reads as overreach — those disciplines have their own firms on the project,
+// usually right there in the directory. And the model's instinct to volunteer
+// site visits and extra investigation is scope creep against an agreed fee.
+// So the briefing states WHO Setty is on this job and WHICH firms own the
+// neighboring disciplines, and its guidance says to stay in lane.
+//
+// The mapping keys are the Global Directory's company types (COMPANY_TYPES);
+// a directory company matches by exact name against getClients(), which is
+// where types live — the per-person `type` field on directory entries is
+// free-text and unreliable.
+const DEFER_DISCIPLINES: Record<string, string> = {
+  "Architect": "architecture (egress, envelope, finishes, layouts, ADA clearances)",
+  "Structural Engineer": "structural",
+  "Civil Engineer": "civil / site utilities",
+  "Code/Permit Consultant": "code interpretation and filings",
+  "Environmental": "environmental / hazardous materials",
+  "Cost Estimator": "cost estimating",
+  "Construction Manager": "means & methods, sequencing, construction cost",
+  "General Contractor": "means & methods",
+  "Owners Rep": "owner-side direction",
+};
+
+function scopeDeferrals(
+  companyNames: string[],
+  clients: any[],
+): Array<{ discipline: string; firm: string }> {
+  const byName = new Map(clients.map((c: any) => [String(c?.name || "").toLowerCase().trim(), c]));
+  const out: Array<{ discipline: string; firm: string }> = [];
+  const seen = new Set<string>();
+  for (const raw of companyNames) {
+    const name = String(raw || "").trim();
+    if (!name) continue;
+    const c = byName.get(name.toLowerCase());
+    for (const t of (Array.isArray(c?.types) ? c.types : [])) {
+      const disc = DEFER_DISCIPLINES[t];
+      const key = t + "|" + name.toLowerCase();
+      if (!disc || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ discipline: disc, firm: name });
+    }
+  }
+  return out;
+}
+
+const SCOPE_POSTURE_GUIDANCE =
+  "STAY IN SETTY'S LANE. Setty is the MEPFP consultant here unless `scopePosture` says prime: answer " +
+  "mechanical/electrical/plumbing/fire-protection questions with authority, but do NOT opine on " +
+  "architecture, structural, civil, code interpretation, or hazmat — flag those as questions for the " +
+  "responsible firm (`scopePosture.deferTo` names them from this project's own directory) rather than " +
+  "answering as if Setty owns them. And do NOT volunteer extra site visits, studies, investigations or " +
+  "deliverables beyond the agreed scope: if more work genuinely seems warranted, present it as a " +
+  "possible ADDITIONAL SERVICE for the PM to decide, not as something Setty should just do.";
+
 mcp.tool("project_briefing", {
   description:
     "THE entry point for 'what's going on with <project>', 'catch me up on <project>', 'status " +
@@ -1699,6 +1759,28 @@ mcp.tool("project_briefing", {
     const teamActivity = summarizeTeamActivity(
       activityRows, currentCaller().email, [p.projectNumber, p.name]);
 
+    // Scope posture: who Setty is on this job, and which directory firms own
+    // the neighboring disciplines. Directory + prime/client names are matched
+    // against the Global Directory for their company types. Failure-tolerant:
+    // a directory hiccup costs the deferral list, never the briefing.
+    let scopePosture: any = null;
+    try {
+      const dirCompanies: string[] = [...new Set<string>(
+        (Array.isArray(p.directory) ? p.directory : [])
+          .map((d: any) => String(d?.company || "").trim()).filter(Boolean)
+          .concat([p.prime, p.clientName, p.owner].map((x: any) => String(x || "").trim()).filter(Boolean)),
+      )];
+      const deferTo = scopeDeferrals(dirCompanies, await getClients());
+      const isPrime = /setty/i.test(String(p.prime || ""));
+      scopePosture = {
+        settyRole: isPrime
+          ? "PRIME consultant — Setty leads this job; broader coordination advice is appropriate."
+          : "MEPFP consultant" + (p.prime ? ` (sub to ${p.prime})` : "") +
+            " — advise on mechanical, electrical, plumbing and fire protection only.",
+        ...(deferTo.length ? { deferTo } : {}),
+      };
+    } catch { /* posture is guidance, never load-bearing */ }
+
     const notes = (p.notes ?? [])
       .filter((n: any) => n.body)
       .sort((a: any, b: any) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")))
@@ -1746,11 +1828,13 @@ mcp.tool("project_briefing", {
         "`teamActivity` shows teammates whose Claude sessions touched this project recently. Tell the " +
         "user who — if someone is on the same question right now, suggest talking to them directly.");
     }
+    guidance.push(SCOPE_POSTURE_GUIDANCE);
 
     const related = await relatedProjectsOf(p);
 
     return asText({
       project: summarizeProject(p),
+      ...(scopePosture ? { scopePosture } : {}),
       projectManager: p.projectManager ?? null,
       deputyProjectManager: p.deputyProjectManager ?? null,
       client: p.clientName ?? null,
@@ -5345,6 +5429,145 @@ mcp.tool("search_field_photos", {
         source: r.source, folderUrl: r.folder_url,
       })),
     });
+  },
+});
+
+// ── view_photos: put actual images in front of the model ─────────────────────
+// search_field_photos and list_project_documents could only say WHERE photos
+// live; the answer to "which photo shows the switchgear?" was a folder link.
+// This fetches SharePoint's own THUMBNAILS (web resolution, a few hundred KB)
+// and returns them as MCP image content, so the model can look at the photos
+// and describe equipment, conditions and nameplates. Thumbnails, never the
+// originals: an 8MB phone photo through the connector helps nobody, and Graph
+// renders HEIC to JPEG for free. Read-only.
+const PHOTO_EXT = new Set(["jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "bmp", "tif", "tiff"]);
+const VIEW_PHOTOS_MAX = 8;
+
+// Graph shares API token for a raw URL (same encoding crossSiteDeliverables
+// uses): base64url with the "u!" prefix. btoa throws on non-latin1; the folder
+// URLs in pms_field_photo_sessions are ASCII, but guard anyway.
+function graphShareToken(url: string): string | null {
+  try {
+    return "u!" + btoa(url).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+  } catch { return null; }
+}
+
+function b64FromBuffer(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+const isPhotoName = (name: string) =>
+  PHOTO_EXT.has((String(name).split(".").pop() || "").toLowerCase());
+
+mcp.tool("view_photos", {
+  description:
+    "LOOK AT field photos and image files — returns the actual images (SharePoint web-resolution " +
+    "thumbnails) so you can see and describe what they show: equipment, nameplates, conditions, " +
+    "installations. Use it to answer 'which photo shows X', 'what does the nameplate say', 'describe " +
+    "the existing switchgear' — anything that needs eyes on the picture rather than the folder link. " +
+    "Two ways in: pass `folderUrl` from a search_field_photos result to page through that session's " +
+    "photos (a text block lists each returned photo's number and filename — cite photos by FILENAME), " +
+    "or pass `itemId` of a single image file from list_project_documents. Up to " + VIEW_PHOTOS_MAX + " " +
+    "images per call, oldest-name first; use `offset` from the result to keep paging. Thumbnails are " +
+    "for reading content, not for reproducing in deliverables — the folder link still serves the " +
+    "full-resolution originals.",
+  inputSchema: z.object({
+    folderUrl: z.string().optional().describe("A SharePoint folder URL, e.g. `folderUrl` from search_field_photos — pages through the image files inside."),
+    itemId: z.string().optional().describe("A 'driveId|itemId' composite of ONE image file, from list_project_documents."),
+    offset: z.number().optional().describe("Skip this many images (folder mode) — pass the previous result's nextOffset to continue."),
+    count: z.number().optional().describe("Images to return this call (default 4, max " + VIEW_PHOTOS_MAX + ")"),
+  }),
+  handler: async ({ folderUrl, itemId, offset, count }) => {
+    const cap = Math.min(Math.max(count ?? 4, 1), VIEW_PHOTOS_MAX);
+    const start = Math.max(offset ?? 0, 0);
+
+    // Resolve to a list of (driveId, itemId, name) image files.
+    let files: Array<{ drive: string; id: string; name: string }> = [];
+    let folderNote = "";
+    if (itemId?.trim()) {
+      const bar = itemId.indexOf("|");
+      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
+      const drive = itemId.slice(0, bar), realId = itemId.slice(bar + 1);
+      let meta: any;
+      try {
+        meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,file,webUrl`);
+      } catch (e) {
+        return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
+      }
+      if (!isPhotoName(meta.name || "")) {
+        return asText({ error: `"${meta.name}" is not an image file.`, nextStep: "view_photos reads photos and images; use read_document for documents.", webUrl: meta.webUrl ?? null });
+      }
+      files = [{ drive, id: meta.id, name: meta.name }];
+    } else if (folderUrl?.trim()) {
+      const token = graphShareToken(folderUrl.trim());
+      if (!token) return asText({ error: "That folder URL could not be encoded for the SharePoint API." });
+      let folder: any;
+      try {
+        folder = await graphGet(`/shares/${encodeURIComponent(token)}/driveItem?$select=id,name,folder,parentReference`);
+      } catch (e) {
+        return asText({
+          error: `Could not open that folder via SharePoint: ${String((e as any)?.message ?? e).slice(0, 200)}`,
+          nextStep: "Pass folderUrl exactly as search_field_photos returned it.",
+        });
+      }
+      const drive = folder?.parentReference?.driveId;
+      if (!folder?.folder || !drive) return asText({ error: "That URL is not a folder the connector can list." });
+      const listing = await listChildren(`/drives/${drive}/items/${folder.id}/children?$select=id,name,file&$top=200`);
+      files = listing.value.filter((it: any) => it.file && isPhotoName(it.name))
+        .map((it: any) => ({ drive, id: it.id, name: it.name }))
+        // Stable name order so offset paging never skips or repeats.
+        .sort((a, b) => a.name.localeCompare(b.name));
+      folderNote = folder.name || "";
+      if (!files.length) {
+        return asText({ folder: folderNote, totalImages: 0, error: "No image files in that folder.", ...(listing.truncated ? { truncated: true } : {}) });
+      }
+    } else {
+      return asText({
+        error: "Pass folderUrl (from search_field_photos) or itemId (an image file from list_project_documents).",
+        nextStep: "search_field_photos finds the photo session and returns its folderUrl.",
+      });
+    }
+
+    const page = files.slice(start, start + cap);
+    const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+    const shown: Array<{ n: number; file: string }> = [];
+    const failed: Array<{ file: string; reason: string }> = [];
+    for (let i = 0; i < page.length; i++) {
+      const f = page[i];
+      try {
+        // Graph renders the thumbnail server-side (HEIC included) and hands a
+        // short-lived pre-authorized URL; 'large' is ~800px — plenty to read a
+        // nameplate, a fraction of the original's bytes.
+        const th = await graphGet(`/drives/${f.drive}/items/${f.id}/thumbnails?$select=large`);
+        const url = th?.value?.[0]?.large?.url;
+        if (!url) { failed.push({ file: f.name, reason: "no thumbnail available" }); continue; }
+        const res = await fetch(url);
+        if (!res.ok) { failed.push({ file: f.name, reason: `thumbnail fetch ${res.status}` }); continue; }
+        images.push({ type: "image", data: b64FromBuffer(await res.arrayBuffer()), mimeType: "image/jpeg" });
+        shown.push({ n: start + i + 1, file: f.name });
+      } catch (e) {
+        failed.push({ file: f.name, reason: String((e as any)?.message ?? e).slice(0, 120) });
+      }
+    }
+
+    const consumed = start + page.length;
+    const summary = {
+      ...(folderNote ? { folder: folderNote } : {}),
+      totalImages: files.length,
+      showing: shown,
+      ...(failed.length ? { failed } : {}),
+      nextOffset: consumed < files.length ? consumed : null,
+      note: "Images below are in `showing` order — refer to photos by FILENAME so a teammate can find " +
+        "the original. These are web-resolution thumbnails for viewing; the session's folderUrl holds full resolution." +
+        (consumed < files.length ? ` ${files.length - consumed} more image(s) — call again with offset:${consumed}.` : ""),
+    };
+    return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, ...images] };
   },
 });
 
