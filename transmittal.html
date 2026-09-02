@@ -489,7 +489,15 @@
       <div></div>
     </div>
     <input type="hidden" id="transmittalNo" value="T-001"/>
-    <button class="btn btn-primary" id="loadFolderBtn">🔍 Load Files from SharePoint</button>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-primary" id="loadFolderBtn">🔍 Load Files from SharePoint</button>
+      <button type="button" class="btn btn-ghost" id="localUploadBtn"
+        title="Pick a folder on your computer or a mapped network drive. Its drawing files are copied into the SharePoint folder above, replacing any files with the same name.">📤 Upload drawings from my computer…</button>
+    </div>
+    <!-- webkitdirectory turns the picker into an OS folder dialog; the browser
+         hands back every file inside (subfolders included) but never the local
+         path itself. Mapped network drives work — the dialog is the OS's. -->
+    <input type="file" id="localUploadInput" webkitdirectory multiple style="display:none"/>
     <div class="status" id="loadStatus" role="status"></div>
   </div>
 
@@ -1684,6 +1692,131 @@ async function loadFolder() {
     setStatus("loadStatus", "error", "✗ " + e.message);
   }
   btn.disabled = false;
+}
+
+// ─── UPLOAD FROM LOCAL FOLDER ─────────────────────────────────────────────────
+// Drawings usually start life somewhere the browser can't reach by path — a
+// local Downloads folder or the network drive — but the OS folder picker can,
+// mapped drives included. The picker hands back File objects; each is streamed
+// into the selected SharePoint folder through the same chunked upload session
+// the ZIP flow uses, with conflictBehavior "replace" (a re-upload is almost
+// always a corrected plot). loadFolder() then re-reads the folder so the fresh
+// set is immediately transmittable.
+const UPLOADABLE_FILE_RE = /\.(pdf|docx?|dwg|rvt|dgn|dxf)$/i; // keep in sync with loadFolder()
+
+// Graph rejects item names containing these characters outright.
+function sanitizeGraphName(name) {
+  return name.replace(/[\\/:*?"<>|]/g, "").replace(/\s{2,}/g, " ").trim();
+}
+
+document.getElementById("localUploadBtn").onclick = () => {
+  if (!folderUrl) {
+    setStatus("loadStatus", "error", "✗ Pick the project's SharePoint folder first — that's where the drawings get copied.");
+    return;
+  }
+  document.getElementById("localUploadInput").click();
+};
+
+document.getElementById("localUploadInput").onchange = (e) => {
+  const picked = Array.from(e.target.files || []);
+  e.target.value = ""; // so re-picking the same folder fires change again
+  if (picked.length) void uploadLocalFiles(picked);
+};
+
+async function uploadLocalFiles(picked) {
+  const uploadBtn = document.getElementById("localUploadBtn");
+  const loadBtn = document.getElementById("loadFolderBtn");
+
+  // Flatten (subfolder structure is dropped — sets are flat in the library)
+  // and keep only the file types the sheet list works with.
+  const candidates = picked.filter(f => UPLOADABLE_FILE_RE.test(f.name));
+  const skippedType = picked.length - candidates.length;
+
+  // Two same-named files from different subfolders would silently overwrite
+  // each other once flattened — keep the first, count the rest.
+  const seen = new Set();
+  const files = [];
+  let dupes = 0;
+  for (const f of candidates) {
+    const key = sanitizeGraphName(f.name).toLowerCase();
+    if (!key || seen.has(key)) { dupes++; continue; }
+    seen.add(key);
+    files.push(f);
+  }
+
+  if (!files.length) {
+    setStatus("loadStatus", "warn", "⚠ No drawing or document files found in that folder. Only PDF, Word (.doc/.docx), DWG, RVT, DGN, and DXF files are uploaded.");
+    return;
+  }
+
+  // Destination: parse the library path from folderUrl exactly like loadFolder().
+  const decoded = safeDecodeFolderUrl(folderUrl);
+  const libIdx = decoded.indexOf(LIB_PREFIX);
+  if (libIdx === -1) {
+    setStatus("loadStatus", "error", "✗ Could not parse the folder path from the SharePoint URL.");
+    return;
+  }
+  const destPath = decoded.slice(libIdx + LIB_PREFIX.length).replace(/\/+$/, "");
+
+  const totalMB = (files.reduce((s, f) => s + f.size, 0) / 1048576).toFixed(1);
+  const nameList = files.slice(0, 15).map(f => "  • " + f.name).join("\n") +
+    (files.length > 15 ? "\n  …and " + (files.length - 15) + " more" : "");
+  const notes = [];
+  if (skippedType) notes.push(skippedType + " non-drawing file" + (skippedType === 1 ? "" : "s") + " skipped");
+  if (dupes) notes.push(dupes + " duplicate name" + (dupes === 1 ? "" : "s") + " skipped");
+  const ok = window.confirm(
+    "Upload " + files.length + " file" + (files.length === 1 ? "" : "s") + " (" + totalMB + " MB) to:\n\n" +
+    destPath + "\n\n" + nameList + "\n\n" +
+    (notes.length ? notes.join("; ") + ".\n" : "") +
+    "Files already in SharePoint with the same name will be REPLACED."
+  );
+  if (!ok) { setStatus("loadStatus", "info", "Upload cancelled — nothing was copied."); return; }
+
+  uploadBtn.disabled = true;
+  loadBtn.disabled = true;
+  const failed = [];
+  try {
+    const driveId = await ensureDriveId();
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const name = sanitizeGraphName(f.name);
+      const label = "⏳ Uploading " + (i + 1) + "/" + files.length + " — " + name;
+      setStatus("loadStatus", "info", label);
+      try {
+        await uploadLargeFileToFolder(f, name, {
+          driveId,
+          parentPath: destPath,
+          onProgress: (done, total) => {
+            // Only worth narrating on multi-chunk files.
+            if (total > 10 * 1024 * 1024) {
+              setStatus("loadStatus", "info", label + " (" + Math.round(done / total * 100) + "%)");
+            }
+          },
+        });
+      } catch (err) {
+        failed.push(name + " — " + err.message);
+      }
+    }
+  } catch (e) {
+    // ensureDriveId / token failure: nothing was uploaded.
+    setStatus("loadStatus", "error", "✗ " + e.message);
+    uploadBtn.disabled = false;
+    loadBtn.disabled = false;
+    return;
+  }
+  uploadBtn.disabled = false;
+  loadBtn.disabled = false;
+
+  // Refresh the sheet list from what's actually in SharePoint now — landed
+  // uploads should appear even when some failed.
+  await loadFolder();
+  if (failed.length) {
+    setStatus("loadStatus", "error", "✗ " + failed.length + " of " + files.length +
+      " uploads failed (the rest are in the list): " + failed.join("; "));
+  } else {
+    setStatus("loadStatus", "success", "✓ Uploaded " + files.length + " file" +
+      (files.length === 1 ? "" : "s") + " to SharePoint and refreshed the list.");
+  }
 }
 
 // ─── TITLE-BLOCK READER ───────────────────────────────────────────────────────
@@ -3102,6 +3235,8 @@ async function sendToClient() {
 // opts.driveId / opts.parentPath override the destination — used by the
 // portal publish flow to upload into NYSharesite instead of the source
 // Outgoing folder. Defaults preserve the original behavior.
+// opts.onProgress(bytesDone, bytesTotal) fires after each chunk lands — the
+// local-folder upload uses it to show a percentage on 100MB+ drawing sets.
 async function uploadLargeFileToFolder(blob, fileName, opts = {}) {
   const destDriveId = opts.driveId    || resolvedDriveId;
   const destPath    = opts.parentPath || resolvedFolderPath;
@@ -3141,6 +3276,7 @@ async function uploadLargeFileToFolder(blob, fileName, opts = {}) {
     if (!chunkRes.ok) {
       throw new Error(`Chunk upload failed at byte ${start}: HTTP ${chunkRes.status}`);
     }
+    if (opts.onProgress) { try { opts.onProgress(end + 1, size); } catch (e) {} }
     if (chunkRes.status === 200 || chunkRes.status === 201) {
       uploadedItem = await chunkRes.json();
     }
