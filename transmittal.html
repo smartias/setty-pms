@@ -344,7 +344,10 @@
       <div class="app-subtitle" id="headerUser">Not signed in</div>
     </div>
   </div>
-  <button class="sign-btn" id="signOutBtn" style="display:none">Sign out</button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="sign-btn" id="backToPmsBtn" title="Open this project's record in the PMS — or the PMS home if no project is selected yet.">← Back to PMS</button>
+    <button class="sign-btn" id="signOutBtn" style="display:none">Sign out</button>
+  </div>
 </header>
 
 <main class="main" id="main" inert>
@@ -492,12 +495,17 @@
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-primary" id="loadFolderBtn">🔍 Load Files from SharePoint</button>
       <button type="button" class="btn btn-ghost" id="localUploadBtn"
-        title="Pick a folder on your computer or a mapped network drive. Its drawing files are copied into the SharePoint folder above, replacing any files with the same name.">📤 Upload drawings from my computer…</button>
+        title="Pick a folder on your computer or a mapped network drive. Its drawing files are copied into the SharePoint folder above, replacing any files with the same name.">📤 Upload a folder of drawings…</button>
+      <button type="button" class="btn btn-ghost" id="localUploadFilesBtn"
+        title="Pick individual files instead of a whole folder. Same destination, same replace-on-same-name behavior.">📄 Upload individual files…</button>
     </div>
     <!-- webkitdirectory turns the picker into an OS folder dialog; the browser
          hands back every file inside (subfolders included) but never the local
-         path itself. Mapped network drives work — the dialog is the OS's. -->
+         path itself. Mapped network drives work — the dialog is the OS's.
+         The second input is the plain multi-file picker; both feed the same
+         uploadLocalFiles() flow. -->
     <input type="file" id="localUploadInput" webkitdirectory multiple style="display:none"/>
+    <input type="file" id="localUploadFilesInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.dwg,.rvt,.dgn,.dxf" style="display:none"/>
     <div class="status" id="loadStatus" role="status"></div>
   </div>
 
@@ -1709,18 +1717,33 @@ function sanitizeGraphName(name) {
   return name.replace(/[\\/:*?"<>|]/g, "").replace(/\s{2,}/g, " ").trim();
 }
 
-document.getElementById("localUploadBtn").onclick = () => {
+// Both pickers (whole folder / individual files) share the guard and the
+// upload flow — they differ only in which hidden input they open.
+function promptLocalUpload(inputId) {
   if (!folderUrl) {
     setStatus("loadStatus", "error", "✗ Pick the project's SharePoint folder first — that's where the drawings get copied.");
     return;
   }
-  document.getElementById("localUploadInput").click();
-};
+  document.getElementById(inputId).click();
+}
+document.getElementById("localUploadBtn").onclick = () => promptLocalUpload("localUploadInput");
+document.getElementById("localUploadFilesBtn").onclick = () => promptLocalUpload("localUploadFilesInput");
 
-document.getElementById("localUploadInput").onchange = (e) => {
+function onLocalPick(e) {
   const picked = Array.from(e.target.files || []);
-  e.target.value = ""; // so re-picking the same folder fires change again
+  e.target.value = ""; // so re-picking the same folder/files fires change again
   if (picked.length) void uploadLocalFiles(picked);
+}
+document.getElementById("localUploadInput").onchange = onLocalPick;
+document.getElementById("localUploadFilesInput").onchange = onLocalPick;
+
+// Back to the PMS record this transmittal belongs to. resolveLogProjectId()
+// covers both launch modes: ?projectId= from a PMS deep link, or the project
+// number typed/picked in a direct launch. No project yet → PMS home.
+document.getElementById("backToPmsBtn").onclick = () => {
+  const id = resolveLogProjectId();
+  window.location.href = "https://smartias.github.io/setty-pms/SettyPMS.html" +
+    (id ? "#project:" + encodeURIComponent(id) : "");
 };
 
 async function uploadLocalFiles(picked) {
