@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-01-briefing-knowledge-count";
+const BUILD = "2026-09-01-scoped-publish";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.4.3",
+  name: "setty-pms", version: "1.5.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -5682,13 +5682,13 @@ mcp.tool("search_knowledge", {
 // ── K2: save_knowledge — the connector's ONE write tool ──────────────────────
 // (PROPOSAL-knowledge-writeback.md; capabilities and RLS landed in K1.)
 //
-// Posture, same as prepare_transmittal's reasoning read forward: the connector
-// runs service-role, so this handler enforces what RLS enforces for the web
-// consoles — identity (the Phase A caller) and the knowledge.contribute
-// capability — and the tool is constructed so it CANNOT publish: status is
-// hardwired to 'suggested', which search_agency_preferences and the future
-// search_knowledge never serve. A person promotes rows to 'approved' in
-// SettyIntelligence.html, where the audit trail names them (approved_by).
+// Posture: the connector runs service-role, so this handler enforces what RLS
+// enforces for the web consoles — identity (the Phase A caller) and the
+// knowledge.contribute capability. Publication is SCOPED (Sara, 2026-09-01):
+// a project-scoped entry publishes on the user's confirmation (their yes is
+// the review, blast radius one project, name attached, reviewer can undo);
+// an agency/firm-wide entry stays 'suggested' until a person approves it in
+// SettyIntelligence.html, because it silently shapes every project.
 //
 // Two abuse bounds, both cheap:
 //   - a caller may have at most KNOWLEDGE_MAX_PENDING suggested rows
@@ -5717,19 +5717,23 @@ function knowledgeOverlap(a: string, b: string): number {
 
 mcp.tool("save_knowledge", {
   description:
-    "Save a durable finding to Setty's shared knowledge layer as a SUGGESTED entry for human " +
-    "review — it is NOT published until a reviewer approves it in the Intelligence console, and " +
-    "this tool cannot approve. CALL IT ONLY AFTER THE USER SAYS YES: either they asked to save, " +
-    "remember, or share something, or they accepted your offer. DO offer — once, briefly, at a " +
-    "natural pause — when the session just did work worth capturing: research assembled from " +
-    "several documents, emails or RFIs; a decision or constraint that will matter later on the " +
-    "project; how an agency behaved; a firm convention. Something like: 'Want me to save this to " +
-    "the project record so the next person doesn't have to re-derive it?' Do NOT offer for " +
-    "routine lookups, restatements of what the PMS already shows, or speculation, and never " +
-    "repeat a declined offer in the same session. Always cite sources (noteIds, document paths, " +
-    "email subjects, RFI numbers) so the reviewer can verify without re-deriving. Never save " +
-    "anything the user did not agree to save, or anything search_agency_preferences already " +
-    "carries. Tell the user the entry is pending review, not that it is saved as firm knowledge.",
+    "Save a durable finding to Setty's SHARED project knowledge record in the PMS. When the user " +
+    "asks to save, remember, or share a project finding — 'save that', 'add this to the project " +
+    "record' — THIS TOOL is the destination, NOT your private conversation memory: memory is " +
+    "invisible to their teammates, and saving there instead of here silently loses the finding " +
+    "for the team. CALL IT ONLY AFTER THE USER SAYS YES: either they asked, or they accepted " +
+    "your offer. DO offer — once, briefly, at a natural pause — when the session just did work " +
+    "worth capturing: research assembled from several documents, emails or RFIs; a decision or " +
+    "constraint that will matter later on the project; how an agency behaved; a firm convention. " +
+    "Something like: 'Want me to save this to the project record so the next person doesn't have " +
+    "to re-derive it?' Do NOT offer for routine lookups, restatements of what the PMS already " +
+    "shows, or speculation, and never repeat a declined offer in the same session. Always cite " +
+    "sources (noteIds, document paths, email subjects, RFI numbers). Never save anything the " +
+    "user did not agree to save, or anything search_agency_preferences already carries. " +
+    "PUBLICATION IS SCOPED: an entry WITH a projectNumber goes live for the team immediately " +
+    "(the user's yes is the approval; a reviewer can still edit or remove it later), while an " +
+    "agency-wide or firm-wide entry (no projectNumber) is held as SUGGESTED for human review " +
+    "because it shapes every project. Report which happened from the response.",
   inputSchema: z.object({
     summary: z.string().min(20).max(4000).describe("The finding itself, self-contained: what a teammate needs to know, in 1-5 sentences."),
     projectNumber: z.string().optional().describe("Project number OR name when the finding is about one job. Omit for agency-wide or firm-wide knowledge."),
@@ -5813,13 +5817,20 @@ mcp.tool("save_knowledge", {
       }
     }
 
+    // Scoped publishing (Sara, 2026-09-01): a PROJECT-scoped entry publishes on
+    // the user's confirmation — the person closest to the fact vouched for it,
+    // the blast radius is one project's team, and the entry carries their name;
+    // a reviewer can still edit or remove it in the Intelligence console.
+    // Agency-wide and firm-wide entries (no project) keep the review gate:
+    // they silently shape every project, so one reviewer's eyes stay worth it.
+    const status = pn ? "approved" : "suggested";
     const row = await sbInsert("pms_lessons", {
       project_id: pn,
       agency: agency?.trim() || null,
       discipline: discipline?.trim() || null,
       lesson_summary: summary.trim(),
       source_reference: source?.trim() || null,
-      status: "suggested",          // hardwired: this tool cannot publish
+      status,
       origin: "connector",
       author_email: caller.email,
       author_name: caller.name,
@@ -5828,12 +5839,15 @@ mcp.tool("save_knowledge", {
     return asText({
       saved: {
         lessonId: row?.lesson_id ?? null,
-        status: "suggested",
+        status,
         project: pn, agency: agency?.trim() || null,
         author: caller.email,
       },
-      note: "Saved as a SUGGESTION — pending human review in the Intelligence console (Project Knowledge tab). " +
-        "It is not served as firm knowledge until a reviewer approves it. Tell the user so.",
+      note: pn
+        ? "Added to the project record — LIVE for the whole team now (search_knowledge, project briefings, and " +
+          "the Project Knowledge tab, credited to the author). A reviewer can edit or remove it there. Tell the user it is saved and shared."
+        : "Saved as a SUGGESTION — agency/firm-wide entries shape every project, so this one is held for human " +
+          "review in the Intelligence console (Project Knowledge tab). Tell the user it is pending review.",
     });
   },
 });

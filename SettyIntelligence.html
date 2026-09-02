@@ -478,21 +478,10 @@ function briefBodyHTML(b) {
   // `key` names the section for 👍/👎 relevance feedback.
   const sec = (icon, title, inner, key) =>
     inner ? `<div class="card">${secTitle(icon, title, key)}${inner}</div>` : "";
-  const sim = (b.similar_projects || []).map(s =>
-    `<div class="brief-row" style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><span style="flex:1"><b>${esc(s.name||s.num)}</b> <span class="pill pill-gray">${esc(s.num)}</span> <span class="pill pill-blue">${esc(s.why||"")}</span>${s.construction_type?` <span class="pill pill-gray">${esc(s.construction_type)}</span>`:""} <span style="color:var(--dim);font-size:12px">${esc(s.status||"")}</span></span>${fbHTML("similar", s.num, s.name||s.num)}</div>`).join("");
-  const maxc = Math.max(1, ...((b.common_coordination_issues||[]).map(c => c.cnt||0)));
-  const coordSev = d => (d==null) ? "" : (d>=20 ? `<span class="pill pill-red">~${d}d avg review</span>` : d>=12 ? `<span class="pill pill-yellow">~${d}d</span>` : `<span class="pill pill-gray">~${d}d</span>`);
-  const coord = (b.common_coordination_issues || []).map(c => {
-    const pct = Math.round((c.cnt / maxc) * 100);
-    const ex = (c.examples || []).filter(Boolean).slice(0,3);
-    const disc = (c.disciplines || []).filter(Boolean).join(" · ");
-    return `<div style="margin-bottom:13px">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px"><b>${esc(c.theme)}</b><span style="white-space:nowrap">${coordSev(c.avg_days)} <span class="pill pill-blue">${c.cnt}</span> ${fbHTML("coordination", c.theme, c.theme)}</span></div>
-      <div style="height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin:5px 0"><div style="height:100%;width:${pct}%;background:var(--blue)"></div></div>
-      ${c.insight?`<div style="font-size:12px;color:var(--text);line-height:1.5;margin:3px 0 4px">${esc(c.insight)}</div>`:""}
-      ${disc?`<div style="font-size:11px;color:var(--dim);margin-bottom:2px">${esc(disc)}</div>`:""}
-      ${ex.length?`<div style="font-size:11px;color:var(--muted)">e.g. ${ex.map(s=>esc(s)).join(" · ")}</div>`:""}</div>`;
-  }).join("");
+  // Similar projects, recurring coordination issues, best practices, workflow
+  // watch-outs, schedule and inbox signals were REMOVED from the brief
+  // (Sara, 2026-09-01): too noisy / duplicated other tabs / not accurate
+  // enough. The RPC no longer computes them.
   // Owner comment ITEMS mined from actual review-comment logs (Bluebeam/xlsx
   // comment sets). On this project → its own comments; on peers → typical for
   // the same owner/agency. The richer, verbatim signal above the email threads.
@@ -507,14 +496,17 @@ function briefBodyHTML(b) {
       <div style="color:var(--muted);margin-top:3px;font-size:11px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap"><span>${esc(o.reviewer||"")}${o.review_date?` · ${esc(o.review_date)}`:""}${o.source_file?` · 📄 ${esc(o.source_file)}`:""}</span><span style="margin-left:auto">${fbHTML("owner_comments", String(o.id||"")||(o.comment_text||"").slice(0,60), o.comment_text)}</span></div>
     </div>`;
   }).join("");
-  // Own-project lessons plus approved lessons from other projects matched by
-  // shared tags/agency (own=false) — marked so readers know where each came from.
+  // Own-project knowledge (research findings, decisions, lessons — including
+  // entries saved from Claude sessions via the connector, badged 💬) plus
+  // approved entries from other projects matched by shared tags/agency
+  // (own=false) — marked so readers know where each came from.
   const lessons = (b.lessons_learned || []).map(l => {
     const own = String(l.own) !== "false";
     const d = (l.date_added || "").slice(0,10);
     return `<div class="brief-row"><div style="font-size:13px;font-weight:600">${esc(l.lesson_summary)}</div>
       ${l.reusable_prompt?`<div class="lesson-prompt" style="margin-top:6px">💡 ${esc(l.reusable_prompt)}</div>`:""}
       <div style="font-size:11px;color:var(--muted);margin-top:4px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap">
+        ${l.origin==="connector"?`<span class="pill pill-blue" title="Saved from a Claude session via the PMS connector">💬 Claude</span>`:""}
         ${own?"":`<span class="pill pill-blue" title="Arrived via shared tags / same agency">🔁 similar · ${esc(l.project_id||"")}</span>`}
         ${l.status==="draft"?`<span class="pill pill-yellow">needs review</span>`:""}
         <span>${esc(l.source_reference||"")}${d?` · ${esc(d)}`:""}</span>
@@ -530,12 +522,15 @@ function briefBodyHTML(b) {
       ${p.scope_summary ? `<div style="font-size:13px;line-height:1.6;margin-bottom:${scopeTags?"8px":"0"}">${esc(p.scope_summary)}</div>` : ""}
       ${scopeTags}
     </div>` : "";
-  // Team & company ratings (from the Global Directory star ratings).
+  // Team & company ratings (from the Global Directory star ratings). Includes
+  // every company in the project's own directory, not just owner/prime/client;
+  // `people` is how many contacts we hold for that firm on this job.
   const teamRows = (b.project_team || []).map(t => {
     const rated = (t.rating != null);
     const r = rated ? ` — <span style="color:var(--yellow)">${stars(t.rating)}</span> ${esc(t.rating)}` : "";
     const low = (rated && Number(t.rating) <= 2) ? ` <span class="pill pill-red">heads-up</span>` : "";
-    return `<div class="brief-row" style="font-size:12px"><b>${esc(t.role)}:</b> ${esc(t.firm||"")}${r}${low}</div>`;
+    const ppl = t.people ? ` <span style="color:var(--muted)">· ${t.people} contact${t.people==1?"":"s"}</span>` : "";
+    return `<div class="brief-row" style="font-size:12px"><b>${esc(t.role)}:</b> ${esc(t.firm||"")}${r}${low}${ppl}</div>`;
   }).join("");
   const teamInner = teamRows || "";
   // Project analysis — scope risks, open requests from minutes, owner directives.
@@ -552,50 +547,10 @@ function briefBodyHTML(b) {
         ${a.source_ref?`<div style="color:var(--muted);margin-top:3px">↳ ${esc(a.source_ref)}</div>`:""}
       </div>`).join("")}
     </div>`).join("");
-  // Inbox signals data (detail card below). The "awaiting Setty" rollup that used
-  // to live here is now covered by the at-a-glance hero + "Needs attention now",
-  // so this card carries only the detailed scope/minutes/comments analysis.
-  const es = b.email_sentiment;
-  const eoi = b.email_open_issues || [];
   const analysisCard = (b.project_analysis && b.project_analysis.length) ? `
     <div class="card" style="border-left:3px solid var(--red)">
       ${secTitle("🔎","Project analysis — scope, minutes & comments")}
       ${analysisHTML}
-    </div>` : "";
-  // Inbox signals — heuristic tone gauge + open items where the last word in a
-  // thread was the other party's (ball in Setty's court). All from pms_project_emails.
-  const toneMap = { "calm":["pill-green","🟢 calm"], "some friction":["pill-yellow","🟡 some friction"], "elevated":["pill-red","🔴 elevated"] };
-  const toneGauge = es ? (() => {
-    const tm = toneMap[es.overall] || ["pill-gray", esc(es.overall||"")];
-    const flagged = (es.overall!=="calm" && es.flagged && es.flagged.length)
-      ? `<div style="margin-top:10px">${es.flagged.slice(0,3).map(f=>`
-          <div class="brief-row" style="font-size:12px">
-            <div style="display:flex;gap:8px;align-items:baseline"><span style="flex:1;font-weight:600">${esc(f.subject||"(no subject)")}</span>${fbHTML("inbox_tone", (f.subject||"").slice(0,60)+"|"+(f.date||""), f.subject)}</div>
-            <div style="color:var(--dim)">${esc(f.from||"")}${f.org?` · ${esc(f.org)}`:""}${f.date?` · ${esc(f.date)}`:""}</div>
-            ${f.snippet?`<div style="color:var(--muted);margin-top:2px;font-style:italic">“${esc(f.snippet)}…”</div>`:""}
-          </div>`).join("")}</div>` : "";
-    return `<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;font-size:12.5px">
-        <span class="pill ${tm[0]}">${tm[1]}</span>
-        <span style="color:var(--dim)">tone across <b style="color:var(--text)">${es.incoming}</b> incoming emails · <b style="color:var(--text)">${es.friction_pct}%</b> carry escalation language${es.pressure?` · <b style="color:var(--text)">${es.pressure}</b> deadline-pressure`:""}</span>
-      </div>${flagged}`;
-  })() : "";
-  const openIssues = eoi.length ? `
-    <div style="${es?"margin-top:14px;border-top:1px solid var(--border);padding-top:12px":""}">
-      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#60a5fa;margin-bottom:8px">Awaiting Setty — their message was last in the thread (${eoi.length})</div>
-      ${eoi.map(o=>`<div class="brief-row" style="font-size:12px">
-        <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
-          <div style="font-weight:600">${(String(o.urgent)==="true")?`<span class="pill pill-red">urgent</span> `:""}${esc(o.subject||"(no subject)")}${safeUrl(o.link)?` <a href="${esc(safeUrl(o.link))}" target="_blank" rel="noreferrer" title="Open in SharePoint" aria-label="Open in SharePoint">📁</a>`:""}</div>
-          <div style="white-space:nowrap;display:flex;gap:8px;align-items:baseline"><span style="font-family:monospace;font-size:11px;color:${o.age_days>=45?"var(--red)":"var(--muted)"}">${esc(String(o.age_days))}d</span>${fbHTML("inbox_open", (o.subject||"").slice(0,60)+"|"+(o.date||""), o.subject)}</div>
-        </div>
-        <div style="color:var(--dim)">${esc(o.from||"")}${o.org?` · ${esc(o.org)}`:""}${o.date?` · ${esc(o.date)}`:""}</div>
-        ${o.snippet?`<div style="color:var(--muted);margin-top:2px">${esc(o.snippet)}…</div>`:""}
-      </div>`).join("")}
-    </div>` : "";
-  const emailCard = (es || eoi.length) ? `
-    <div class="card" style="border-left:3px solid #6366f1">
-      ${secTitle("📨","Inbox signals — tone & open items")}
-      ${toneGauge}
-      ${openIssues}
     </div>` : "";
   // Submitting parties on this project with firm-wide review history — churn
   // prediction: a party with a high R&R rate deserves front-loaded rigor.
@@ -646,102 +601,20 @@ function briefBodyHTML(b) {
     </div>`).join("");
   const regsCard = (b.regulations && b.regulations.length)
     ? `<div class="card">${secTitle("📜","Regulations & sustainability")}${regsHTML}</div>` : "";
-  // Best practices — the actionable checklist, full-width highlight.
-  const bpCard = (b.best_practices && b.best_practices.length) ? `
-    <div class="card" style="border-left:3px solid var(--green)">
-      ${secTitle("✅","Recommended best practices")}
-      ${b.best_practices.map(pr => `<div class="brief-row">
-        <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
-        <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
-        <div style="margin-top:5px;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap">
-          ${pr.coord_theme?`<span class="pill pill-yellow">🎯 ${(pr.from_own && pr.theme_weight)?`${pr.theme_weight} RFI${pr.theme_weight==1?"":"s"} on this project`:"recurs on similar projects"} · ${esc(pr.coord_theme)}</span>`:""}
-          ${(pr.trigger&&pr.trigger.phase)?`<span class="pill pill-gray">phase: ${esc(pr.trigger.phase)}</span>`:""}
-          <span style="margin-left:auto">${fbHTML("best_practices", pr.practice_id || pr.title, pr.title)}</span>
-        </div>
-      </div>`).join("")}
-    </div>` : "";
-  // Workflow watch-outs — firm-wide process/workflow practices mined from project
-  // emails (issue_type='workflow'), phase-matched to this project. Distinct from the
-  // design-coordination best practices above.
-  const wfCard = (b.workflow_practices && b.workflow_practices.length) ? `
-    <div class="card" style="border-left:3px solid var(--purple)">
-      ${secTitle("🧭","Workflow watch-outs")}
-      ${b.workflow_practices.map(pr => `<div class="brief-row">
-        <div style="font-size:13px;font-weight:700">${esc(pr.title)}</div>
-        <div style="font-size:12px;color:var(--dim);margin-top:3px;line-height:1.55">${esc(pr.practice_text||"")}</div>
-        <div style="margin-top:5px;display:flex;gap:6px;align-items:baseline">
-          ${pr.phase?`<span class="pill pill-gray">phase: ${esc(pr.phase)}</span>`:""}
-          <span style="margin-left:auto">${fbHTML("workflow", pr.practice_id || pr.title, pr.title)}</span>
-        </div>
-      </div>`).join("")}
-    </div>` : "";
-  // Schedule — real milestone dates + completion state from the project record.
-  // Completion is driven by the milestone's own status/pctComplete, NEVER inferred
-  // from the due date (a past-due milestone is not automatically "done"). When the
-  // data has no completion signal (no status, 0%) we show the date only rather than
-  // assert done or overdue.
-  // Local date, not toISOString() (UTC) — after ~8pm ET the UTC date is already
-  // tomorrow, which flipped due-today milestones to "past due" every evening.
-  const _now = new Date();
-  const _today = _now.getFullYear() + "-" + String(_now.getMonth()+1).padStart(2,"0") + "-" + String(_now.getDate()).padStart(2,"0");
-  const msRows = (b.milestones || []).filter(m => m && m.due);
-  const _isDone = m => (String(m.status||"").toLowerCase()==="completed") || (Number(m.pct)>=100);
-  const _nextIdx = msRows.findIndex(m => !_isDone(m));   // first not-done = the active phase
-  const milestonesCard = msRows.length ? `
-    <div class="card">
-      <h2>🗓 Schedule</h2>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${msRows.map((m,i) => {
-          const done = _isDone(m);
-          const pct = Number(m.pct) || 0;
-          const inProg = !done && (pct > 0 || String(m.status||"").toLowerCase()==="in progress");
-          const future = m.due >= _today;
-          const isNext = i === _nextIdx;
-          const hasSignal = !!m.status || pct > 0;
-          const days = Math.round((new Date(m.due+"T00:00:00") - new Date(_today+"T00:00:00"))/86400000);
-          let when, cls, dim = false;
-          if (done)            { when = "✓ done";                       cls = "pill pill-gray"; dim = true; }
-          else if (inProg)     { when = pct ? pct+"%" : "in progress";  cls = "pill pill-yellow"; }
-          else if (future)     { when = days===0 ? "today" : days+"d";  cls = isNext ? "pill pill-yellow" : "pill pill-blue"; }
-          else if (hasSignal)  { when = "past due";                     cls = "pill pill-red"; }
-          else                 { when = "";                             cls = "pill pill-gray"; dim = true; }  // untracked
-          return `<span class="${cls}"${dim?' style="opacity:.6"':''} title="${esc(m.name||"")}${m.status?" · "+esc(m.status):""}">${esc(m.phase||m.name||"")} · ${esc(m.due)}${when?` · ${when}`:""}</span>`;
-        }).join("")}
-      </div>
-    </div>` : "";
   // ── At-a-glance hero + "Needs attention now" synthesis ──────────────────────
-  // Pulls the actionable signals (schedule, open email items, tone, scope risks)
-  // into a scannable summary at the top. All computed from data already in `b`.
-  const daysTo = d => Math.round((new Date(d+"T00:00:00") - new Date(_today+"T00:00:00"))/86400000);
-  const nextMs = msRows.find(m => !_isDone(m));
-  const overdueMs = msRows.filter(m => !_isDone(m) && m.due < _today && (!!m.status || Number(m.pct) > 0));
-  const eoi2 = b.email_open_issues || [];
+  // Slimmed 2026-09-01: the schedule and inbox-signal tiles left with their
+  // sections; what remains are payment flags and the scope/minutes analysis.
   const payFlags = b.payment_flags || [];
-  const eoiOld = eoi2.length ? Math.max(...eoi2.map(o => Number(o.age_days) || 0)) : 0;
-  const eoiUrg = eoi2.filter(o => String(o.urgent) === "true").length;
-  const es2 = b.email_sentiment;
   const sevRank = { high:0, medium:1, low:2 };
   const risks = (b.project_analysis || []).filter(a => a.category === "scope_risk")
                   .sort((x,y) => (sevRank[x.severity]??3) - (sevRank[y.severity]??3));
   const openReqs = (b.project_analysis || []).filter(a => a.category === "open_request");
-  const toneMap2 = { "calm":["🟢 calm","var(--green)"], "some friction":["🟡 some friction","var(--yellow)"], "elevated":["🔴 elevated","var(--red)"] };
-  const toneInfo = es2 ? (toneMap2[es2.overall] || [esc(es2.overall||"—"),"var(--text)"]) : null;
   const tile = (label, value, sub, color) => `<div style="flex:1;min-width:132px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:9px 12px">
       <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:700">${label}</div>
       <div style="font-size:15px;font-weight:800;margin-top:2px;color:${color||"var(--text)"}">${value}</div>
       ${sub?`<div style="font-size:11px;color:var(--dim);margin-top:1px">${sub}</div>`:""}
     </div>`;
   const heroTiles = [
-    nextMs
-      ? tile("Active phase", esc(nextMs.phase || nextMs.name || "—"),
-          (Number(nextMs.pct)>0 && Number(nextMs.pct)<100) ? `${Number(nextMs.pct)}% · due ${esc(nextMs.due)}`
-            : (daysTo(nextMs.due)>=0 ? `due ${esc(nextMs.due)} · ${daysTo(nextMs.due)}d` : `due ${esc(nextMs.due)}`),
-          overdueMs.length ? "var(--red)" : undefined)
-      : (msRows.length ? tile("Schedule","✓ complete","all milestones done","var(--green)") : null),
-    tile("Awaiting Setty", eoi2.length ? `${eoi2.length} open` : "0 open",
-        eoi2.length ? `${eoiUrg?eoiUrg+" urgent · ":""}oldest ${eoiOld}d` : "inbox clear",
-        eoi2.length ? ((eoiOld>=45||eoiUrg) ? "var(--red)" : undefined) : "var(--green)"),
-    toneInfo ? tile("Inbox tone", toneInfo[0], es2 ? `${es2.friction_pct}% escalation · ${es2.incoming} in` : "", toneInfo[1]) : null,
     payFlags.length ? tile("💰 Payment flags", `${payFlags.length} thread${payFlags.length===1?"":"s"}`,
         `latest ${esc(payFlags[0].date||"")}`, "var(--red)") : null,
     risks.length ? tile("Scope risks", `${risks.length}`, risks[0] ? `${esc(risks[0].severity)} severity top` : "",
@@ -750,11 +623,7 @@ function briefBodyHTML(b) {
   const heroCard = heroTiles ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${heroTiles}</div>` : "";
   const attn = [];
   payFlags.slice(0,3).forEach(f => attn.push({ sev:"high", txt:`💰 Payment: <b>${esc(f.subject||"(no subject)")}</b> · ${esc(f.date||"")}` }));
-  overdueMs.forEach(m => attn.push({ sev:"high", txt:`🗓 <b>${esc(m.phase||m.name)}</b> milestone past due · ${esc(m.due)}` }));
-  if (nextMs && !overdueMs.length) { const d = daysTo(nextMs.due); if (d>=0 && d<=21) attn.push({ sev: d<=7?"high":"med", txt:`🗓 <b>${esc(nextMs.phase||nextMs.name)}</b> due in ${d}d · ${esc(nextMs.due)}` }); }
   risks.filter(r => r.severity==="high").forEach(r => attn.push({ sev:"high", txt:`⚠️ Scope risk: <b>${esc(r.title)}</b>` }));
-  eoi2.filter(o => String(o.urgent)==="true" || Number(o.age_days)>=45).slice(0,4).forEach(o =>
-    attn.push({ sev: Number(o.age_days)>=60?"high":"med", txt:`📨 Awaiting reply ${o.age_days}d: <b>${esc(o.subject||"(no subject)")}</b>${o.org?` · ${esc(o.org)}`:""}` }));
   openReqs.slice(0,3).forEach(r => attn.push({ sev:"med", txt:`📋 Open request: <b>${esc(r.title)}</b>` }));
   const _sevColor = { high:"var(--red)", med:"var(--yellow)", low:"var(--muted)" };
   const _sevOrder = { high:0, med:1, low:2 };
@@ -797,21 +666,15 @@ function briefBodyHTML(b) {
     ${heroCard}
     ${attnCard}
     ${payCard}
-    ${milestonesCard}
     ${scopeCard}
     ${analysisCard}
-    ${emailCard}
     ${siCard}
     ${govCard}
-    ${bpCard}
-    ${wfCard}
     <div class="brief-grid">
       ${sec("🏛️","AHJs, utilities & codes",ahjHTML)}
       ${sec("📋","Agency preferences (mined)",reqs)}
-      ${sec("🔁","Similar projects",sim)}
-      ${sec("⚠️","Recurring coordination issues — similar projects",coord)}
       ${sec("💬","Owner review comments",oci)}
-      ${sec("💡","Lessons learned (this & similar projects)",lessons)}
+      ${sec("💡","Project knowledge (this & similar projects)",lessons)}
       ${sec("🤝","Team & ratings",teamInner)}
     </div>
     ${regsCard}`;
@@ -833,16 +696,9 @@ function briefAsText(b) {
   if (meta) add(meta);
   if (p.electric_utility || p.gas_utility) add(`Utilities: ${p.electric_utility || "—"} (electric) · ${p.gas_utility || "—"} (gas)`);
   if (b.generated_at) add(`Assembled: ${new Date(b.generated_at).toLocaleString()}`);
-  section("Schedule", (b.milestones || []).filter(m => m && m.due).map(m =>
-    `${m.phase || m.name}: ${m.due}${m.status ? ` (${m.status})` : (Number(m.pct) > 0 ? ` (${Number(m.pct)}%)` : "")}`));
   section("Scope", [p.scope_summary, (p.scope_tags || []).length ? "Tags: " + p.scope_tags.join(", ") : null]);
   section("Project analysis", (b.project_analysis || []).map(a =>
     `[${a.category}${a.severity ? "/" + a.severity : ""}] ${a.title}${a.detail ? " — " + a.detail : ""}`));
-  const es = b.email_sentiment;
-  section("Inbox signals", [
-    es ? `Tone: ${es.overall} — ${es.friction_pct}% escalation language across ${es.incoming} incoming emails` : null,
-    ...(b.email_open_issues || []).map(o =>
-      `Awaiting Setty ${o.age_days}d${String(o.urgent) === "true" ? " (URGENT)" : ""}: ${o.subject || "(no subject)"} — ${o.from || ""}${o.org ? " · " + o.org : ""}`)]);
   const g = b.governing_standards;
   section("Governing design standards", g ? [
     `${g.owner_name}: ${g.design_standards || ""}`,
@@ -850,18 +706,13 @@ function briefAsText(b) {
   section("Also governed by", (b.additional_authorities || []).map(a => `${a.owner_name}: ${a.design_standards || ""}`));
   section("Submittal parties — review history", (b.submittal_intel || []).map(r =>
     `${r.party}: ${r.here_n} here · firm-wide ${r.submittals} across ${r.projects} project(s) · R&R ${r.rr_pct}%${r.avg_review_days != null ? ` · ~${r.avg_review_days}d avg review` : ""}`));
-  section("Recommended best practices", (b.best_practices || []).map(x => `${x.title} — ${x.practice_text || ""}`));
-  section("Workflow watch-outs", (b.workflow_practices || []).map(x => `${x.title} — ${x.practice_text || ""}`));
   section("AHJs, utilities & codes", (b.ahjs_codes || []).map(a => `${a.ahj || ""} — ${a.codes_standards || a.jurisdiction || ""}`));
   section("Agency preferences", (b.agency_requirements || []).map(r => `${r.preference_type || r.discipline || ""}: ${r.requirement_or_preference}`));
-  section("Similar projects", (b.similar_projects || []).map(s => `${s.name || s.num} (${s.num}) — ${s.why || ""}`));
-  section("Recurring coordination issues (similar projects)", (b.common_coordination_issues || []).map(c =>
-    `${c.theme} ×${c.cnt}${c.avg_days != null ? ` (~${c.avg_days}d avg review)` : ""}${c.insight ? " — " + c.insight : ""}`));
   section("Owner review comments", (b.owner_comment_items || []).map(o =>
     `${o.own ? "[this project]" : "[typical · " + (o.agency || "") + "]"}${o.discipline ? " [" + o.discipline + "]" : ""} ${o.comment_text}`));
-  section("Lessons learned", (b.lessons_learned || []).map(l =>
+  section("Project knowledge", (b.lessons_learned || []).map(l =>
     `${String(l.own) === "false" ? "[similar · " + (l.project_id || "") + "] " : ""}${l.lesson_summary}${l.reusable_prompt ? ` | Do: ${l.reusable_prompt}` : ""}`));
-  section("Team & ratings", (b.project_team || []).map(t => `${t.role}: ${t.firm || ""}${t.rating != null ? ` (${t.rating}/5)` : ""}`));
+  section("Team & ratings", (b.project_team || []).map(t => `${t.role}: ${t.firm || ""}${t.rating != null ? ` (${t.rating}/5)` : ""}${t.people ? ` — ${t.people} contact(s)` : ""}`));
   section("Regulations & sustainability", (b.regulations || []).map(r => `${r.ref_code || ""} ${r.title || ""}`.trim()));
   return L.join("\n");
 }
