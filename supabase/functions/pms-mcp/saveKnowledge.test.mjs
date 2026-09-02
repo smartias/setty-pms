@@ -67,14 +67,17 @@ const has = (needle, label) => check(shipped.includes(needle), `${label} has DRI
 has("const KNOWLEDGE_DUP_THRESHOLD = 0.7;", "duplicate threshold");
 has(".filter((w) => w.length > 2),", "meaningful-word filter");
 has("return inter / Math.min(A.size, B.size);", "containment denominator");
-has('status: "suggested",          // hardwired: this tool cannot publish', "suggested-only insert");
+// Scoped publishing: a project entry publishes on the user's yes; anything
+// without a project stays a suggestion for review.
+has('const status = pn ? "approved" : "suggested";', "scoped publish rule");
+has("NOT your private conversation memory", "anti-memory routing in the description");
 has('mcp.tool("save_knowledge"', "save_knowledge is still registered");
 // The refusal ORDER is load-bearing: identity before caps (an anonymous
 // caller must never learn what a role could do), project resolution before
 // caps (HIDE must not leak that a project exists via a capability error).
 const idxIdentity = shipped.indexOf("save_knowledge requires a signed-in user");
 const idxProject = shipped.indexOf('error: `No project matching "${projectNumber}"`,\n          nextStep: "search_projects finds projects');
-const idxCap = shipped.indexOf("knowledge.contribute capability");
+const idxCap = shipped.indexOf("Your role does not have the knowledge.contribute capability");
 const idxCeiling = shipped.indexOf("suggested entries awaiting review");
 const idxDup = shipped.indexOf("possibleDuplicate: {");
 check(idxIdentity > 0 && idxProject > idxIdentity && idxCap > idxProject &&

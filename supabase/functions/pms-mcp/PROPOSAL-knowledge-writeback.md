@@ -31,6 +31,24 @@ added:
   with a note pointing at where it went — one home for agency know-how.
 - Approvals now stamp `reviewed_at` alongside `approved_by`.
 
+### Scoped publishing (2026-09-01) — review gate narrowed
+
+Sara's call after using the loop: the save-confirmation ("yes, save that")
+IS a human review by the person closest to the fact, and a queue nobody
+works is worse than no queue. `save_knowledge` now publishes by scope:
+
+- **Project-scoped entries go live immediately** as `approved` — blast
+  radius is one project's team, the entry carries the contributor's name,
+  and a reviewer can still edit or remove it in the console (oversight
+  becomes spot-check, not gate).
+- **Agency-wide / firm-wide entries** (no project) stay `suggested` for
+  review — they silently shape every project.
+
+The tool description also now routes "save that" explicitly to this tool
+rather than Claude's private conversation memory (the first smoke test
+went to memory — invisible to the team — because the session predated
+the deploy and improvised). The description says so in as many words.
+
 ### K5 as built (2026-09-01) — team activity awareness
 
 The near-real-time half of the sharing question: two people asking Claude
