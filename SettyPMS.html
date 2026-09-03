@@ -2039,7 +2039,7 @@ let _nycCalPromise = null;   // de-dupes concurrent resolves (dashboard sweep fi
 let _nycCalAttempts = [];    // what was tried on the last failed resolve — surfaced by the debug button
 
 function nycEventSubject(projectName, projectNumber, milestoneName) {
-  return (projectNumber ? "[" + projectNumber + "] " : "") + (projectName || "Project") + " - " + milestoneName;
+  return (projectNumber ? projectNumber + " " : "") + (projectName || "Project") + " - " + milestoneName;
 }
 
 function nycCalendarMatch(cals) {
