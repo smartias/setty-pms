@@ -604,7 +604,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-02-photos-and-scope-posture";
+const BUILD = "2026-09-04-doc-style-guidance";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.6.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -5575,8 +5575,6 @@ mcp.tool("view_photos", {
 // "Homeport II CA Extension Add Service.docx" (Sara Arias, 2026-07-15). The ACCEPTANCE
 // paragraph and signature block are contract boilerplate — reproduce them VERBATIM.
 const ADD_SERVICE_TEMPLATE = [
-  "MECHANICAL AND ELECTRICAL DESIGN ENGINEERING SERVICES",
-  "",
   "To: {{CONTACT_NAME}}                                Date: {{DATE}}",
   "    {{CONTACT_TITLE}}                               Project: {{PROJECT_NAME}} Add Service {{ADD_SERVICE_NO}}",
   "    {{CLIENT_FIRM}}                                 Location: {{LOCATION}}",
@@ -5623,6 +5621,22 @@ const ADD_SERVICE_TEMPLATE = [
   "CEO & Founder                                       ____________________________________",
   "(Title)                                             (Title)",
 ].join("\n");
+
+// Formatting rules for every document drafted from these templates, per Sara's
+// review of the St Totentine fire alarm report (2026-09-04). These target the
+// visual tells that make a document read as machine-generated.
+const DOCUMENT_STYLE_GUIDANCE = [
+  "Body text is Calibri 10-12pt, black. The ONLY emphasis is bold and grey; never use " +
+    "colored text (no red, no blue), colored rules, or filled/colored heading boxes.",
+  "Section headings are plain black bold. Do NOT draw horizontal rules beside, under, or " +
+    "trailing from headings; do not add decorative hairlines anywhere in the body.",
+  "NEVER use em dashes (—) or en dashes as punctuation, and no interpunct (·) " +
+    "separators. Split the sentence, use a colon, or use commas/'and' in lists. Stack a " +
+    "two-part title on two lines instead of joining it with a dash.",
+  "Use straight quotes, not curly/smart quotes, and quote sparingly.",
+  "Do NOT add a firm tagline or services heading (the old 'MECHANICAL AND ELECTRICAL " +
+    "DESIGN ENGINEERING SERVICES' line is retired); the document starts at the To/Date header.",
+];
 
 // Filing rules for documents drafted from these templates. The PMS Word add-in
 // ("Print to OneNote") auto-detects the project by scoring the FILENAME (+10 when it
@@ -5676,8 +5690,8 @@ const ADD_SERVICE_INSTRUCTIONS = {
     "The two ACCEPTANCE paragraphs.",
     "The closing exclusions line ('All other exclusions in the base-bid contract...').",
     "Setty signature block: SETTY & ASSOCIATES, LTD. PC / Boggarm S. Setty, P.E., ASHRAE Fellow, AEE Fellow / CEO & Founder.",
-    "The letterhead heading 'MECHANICAL AND ELECTRICAL DESIGN ENGINEERING SERVICES'.",
   ],
+  style: DOCUMENT_STYLE_GUIDANCE,
   filing: FILING_GUIDANCE,
 };
 
@@ -5702,8 +5716,6 @@ async function projectHeaderContext(projectNumber?: string): Promise<any | null>
 // Setty's standard letterhead — the SAME style as the add-service template; per Sara
 // (2026-07-15) it is the firm's general format for formal outbound documents.
 const SETTY_LETTERHEAD_TEMPLATE = [
-  "MECHANICAL AND ELECTRICAL DESIGN ENGINEERING SERVICES",
-  "",
   "To: {{CONTACT_NAME}}                                Date: {{DATE}}",
   "    {{CONTACT_TITLE}}                               Project: {{PROJECT_TITLE}}",
   "    {{RECIPIENT_FIRM}}                              Location: {{LOCATION}}",
@@ -5734,9 +5746,8 @@ const SETTY_SIGNATURE_BLOCK = [
 const LETTERHEAD_INSTRUCTIONS = {
   usage:
     "This is Setty & Associates' standard letterhead format for formal outbound documents " +
-    "(letters, proposals, agreements, notices). Fill every {{PLACEHOLDER}}; keep the heading " +
-    "'MECHANICAL AND ELECTRICAL DESIGN ENGINEERING SERVICES' and the header field order " +
-    "(To/Date/Project/Location/Project #/Email) exactly. {{DOCUMENT_TITLE}} is an ALL-CAPS " +
+    "(letters, proposals, agreements, notices). Fill every {{PLACEHOLDER}}; keep the header " +
+    "field order (To/Date/Project/Location/Project #/Email) exactly. {{DOCUMENT_TITLE}} is an ALL-CAPS " +
     "document-type title (e.g. 'ADDITIONAL SERVICES AGREEMENT', 'PROPOSAL', 'TRANSMITTAL'); " +
     "{{BODY}} is the document content, typically organized under short ALL-CAPS section " +
     "headings. For agreements needing client acceptance, close with signatureBlock (two " +
@@ -5746,6 +5757,7 @@ const LETTERHEAD_INSTRUCTIONS = {
     "get_add_service_template instead — it carries the full agreement structure and its " +
     "required boilerplate.",
   signatureBlock: SETTY_SIGNATURE_BLOCK,
+  style: DOCUMENT_STYLE_GUIDANCE,
   filing: FILING_GUIDANCE,
 };
 
@@ -6149,6 +6161,7 @@ const TEMPLATE_INSTRUCTIONS = {
     "(e.g. 'This form has fields. To begin, just click...') — that is NOT document content, " +
     "drop it. Formatting follows Setty's letterhead conventions (get_letterhead_template). " +
     "Ask the user for any value you cannot derive from PMS data or the conversation.",
+  style: DOCUMENT_STYLE_GUIDANCE,
   filing: FILING_GUIDANCE,
 };
 
