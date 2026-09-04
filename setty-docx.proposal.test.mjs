@@ -40,6 +40,27 @@ const eq = (a, b, msg) => check(
   eq(one("<h3>Project Approach</h3>").kind, "h", "real h3 stays a heading");
 }
 
+// ── 1b. htmlToBlocks: unwrapped text must not vanish ────────────────────────
+// Hand-typed box content often has no block wrapper at all (contenteditable
+// emits bare text or <span>/<b> for short entries). Dropping it exported the
+// Additional Services box as an empty section.
+{
+  eq(sd.htmlToBlocks("Additional services are available upon request."),
+     [{ kind: "p", text: "Additional services are available upon request." }],
+     "bare text with no tags becomes one paragraph");
+  eq(sd.htmlToBlocks("<span>Available upon request.</span>"),
+     [{ kind: "p", text: "Available upon request." }],
+     "inline-only markup becomes one paragraph");
+  eq(sd.htmlToBlocks("Available upon request:<ul><li>Energy modeling</li></ul>").map((b) => b.text),
+     ["Available upon request:", "Energy modeling"],
+     "lead-in before the first block tag is kept");
+  eq(sd.htmlToBlocks("<p>First.</p>Trailing line typed after the list.").map((b) => b.text),
+     ["First.", "Trailing line typed after the list."],
+     "text after a closing tag is kept");
+  eq(sd.htmlToBlocks("<p>a</p><p>b</p>").map((b) => b.text), ["a", "b"],
+     "wrapped paragraphs are unchanged by the unwrapped-text handling");
+}
+
 // ── 2. block helpers ────────────────────────────────────────────────────────
 {
   eq(sd.stripEnum("1. Predesign Site Visit"), "Predesign Site Visit", "stripEnum digits");
