@@ -1243,11 +1243,13 @@ async function renderLibrary() {
       </table>
     </div>
     <div class="card">
-      <b>💲 Client rate schedules</b> — negotiated hourly rates stored on the client record. New projects for that
-      client seed from this schedule; the Scope tab's “⇩ Client Schedule” button loads it on demand. No schedule = firm-standard rates.
-      ${clientsWithRates.length ? `<div style="margin-top:6px;font-size:12px;color:var(--dim)">Clients with stored schedules: ${clientsWithRates.map(r => `<a href="#" onclick="state.libClientSel='${esc(r.id)}';state.libClientQ='';render();return false">${esc(r.client.name)}</a>`).join(" · ")}</div>` : ""}
+      <b>💲 Agency / client rate schedules</b> — negotiated hourly rates stored on the company record. Schedules are
+      typically agency-specific, so store them on the <i>agency</i> (SCA, DASNY, DDC…) rather than the prime; the PMS
+      matches a project's Owner/Agency first, then Client, then Prime. New projects seed from the matched schedule;
+      the Scope tab's “⇩ Agency Schedule” button loads it on demand. No schedule = firm-standard rates.
+      ${clientsWithRates.length ? `<div style="margin-top:6px;font-size:12px;color:var(--dim)">Companies with stored schedules: ${clientsWithRates.map(r => `<a href="#" onclick="state.libClientSel='${esc(r.id)}';state.libClientQ='';render();return false">${esc(r.client.name)}</a>`).join(" · ")}</div>` : ""}
       <div class="row" style="margin-top:10px">
-        <input id="lib-client-q" placeholder="Find a client by name…" value="${esc(state.libClientQ)}"
+        <input id="lib-client-q" placeholder="Find an agency or client by name…" value="${esc(state.libClientQ)}"
           oninput="state.libClientQ=this.value;state.libClientSel=null;render()" style="width:300px">
       </div>
       ${libClientMatches().map(r => `<div style="margin-top:4px"><a href="#" onclick="state.libClientSel='${esc(r.id)}';render();return false">${esc(r.client.name)}</a>${Array.isArray(r.client.rateSchedule) && r.client.rateSchedule.length ? ' <span class="pill ok">has schedule</span>' : ""}</div>`).join("")}

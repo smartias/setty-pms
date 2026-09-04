@@ -424,15 +424,9 @@ export function htmlToBlocks(html) {
   // return the entire 75 KB as one heading.
   const tags = [...s.matchAll(/<(\/?)(p|div|h[1-6]|li|tr)\b[^>]*>/gi)];
   const blocks = [];
-  for (let i = 0; i < tags.length; i++) {
-    const t = tags[i];
-    if (t[1] === "/") continue;                       // closing tag
-    const name = t[2].toLowerCase();
-    const from = t.index + t[0].length;
-    const to = i + 1 < tags.length ? tags[i + 1].index : s.length;
-    const raw = s.slice(from, to);
+  const pushChunk = (raw, name) => {
     const text = decodeEntities(raw.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
-    if (!text) continue;                              // wrapper with no own text
+    if (!text) return;                                // wrapper with no own text
     const inner = raw.replace(/<\/?(span|font|o:p|a)\b[^>]*>/gi, "").trim();
     // A paragraph that STARTS bold is a heading -- but only when little or
     // nothing follows the bold lead. Requiring the whole thing to be bold was
@@ -446,13 +440,26 @@ export function htmlToBlocks(html) {
     // sub-lines steal list numbers. The tail after the bold lead decides:
     // empty or short (a heading's remainder) = heading, a sentence = body.
     const startsBold = /^<(b|strong)\b[^>]*>/i.test(inner);
-    let kind = /^h[1-6]$/.test(name) ? "h" : "p";
+    let kind = (name && /^h[1-6]$/.test(name)) ? "h" : "p";
     if (kind === "p" && startsBold) {
       const afterLead = inner.replace(/^(?:\s*<(?:b|strong)\b[^>]*>[\s\S]*?<\/(?:b|strong)>)+/i, "");
       const tail = decodeEntities(afterLead.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
       if (tail.length <= 60) kind = "h";
     }
     blocks.push({ kind, text });
+  };
+  // Text with no block tag over it at all: hand-typed box content often has
+  // no wrapper (contenteditable emits bare text and <span>/<b> for short
+  // entries), and dropping it silently exported that box as EMPTY -- "the
+  // Additional Services section didn't export". The lead-in before the first
+  // block tag, the whole thing when there are no block tags, and text sitting
+  // after a closing tag all become plain paragraphs.
+  pushChunk(s.slice(0, tags.length ? tags[0].index : s.length), null);
+  for (let i = 0; i < tags.length; i++) {
+    const t = tags[i];
+    const from = t.index + t[0].length;
+    const to = i + 1 < tags.length ? tags[i + 1].index : s.length;
+    pushChunk(s.slice(from, to), t[1] === "/" ? null : t[2].toLowerCase());
   }
   return blocks;
 }
