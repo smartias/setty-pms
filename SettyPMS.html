@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-08-24-pms-v139-milestone-uid-backfill";
+    window.__appVersion = "2026-09-04-pms-v140-agency-rate-schedules";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -2806,12 +2806,32 @@ function findDuplicateProjects({ name, projectNumber }, existing) {
   return out;
 }
 
+// Hourly rate schedules are typically negotiated with the AGENCY at the top
+// of the contracting chain (SCA, DASNY, DDC, PANYNJ…), not with the prime
+// that hires Setty. Resolve candidates in owner/agency → client → prime
+// order; among name matches, a company tagged "Agency" wins.
+// (Mirrored as component-local logic in the Fee tab's findClientWithRates —
+// that lives in the other JSX block, so no shared global.)
+function resolveRateScheduleCompany(clients, orderedNames) {
+  const wanted = (orderedNames || []).map(s => String(s || "").trim().toLowerCase()).filter(Boolean);
+  if (!wanted.length) return null;
+  const matches = [];
+  for (const n of wanted) {
+    const hit = (clients || []).find(cl => cl && cl.name
+      && String(cl.name).trim().toLowerCase() === n
+      && Array.isArray(cl.rateSchedule) && cl.rateSchedule.length);
+    if (hit && !matches.includes(hit)) matches.push(hit);
+  }
+  return matches.find(cl => Array.isArray(cl.types) && cl.types.includes("Agency")) || matches[0] || null;
+}
+
 function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [] }) {
   const [name,          setName]          = React.useState("");
   const [status,        setStatus]        = React.useState("Proposal Due");
   const [projectNumber, setProjectNumber] = React.useState("");
   const [prime,         setPrime]         = React.useState("Setty");
   const [clientName,    setClientName]    = React.useState("");
+  const [owner,         setOwner]         = React.useState("");
   const [proposalDueDate, setProposalDueDate] = React.useState("");
   const [error,         setError]         = React.useState("");
   const [confirmedDup,  setConfirmedDup]  = React.useState(false);
@@ -2838,19 +2858,18 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
       return;
     }
     if (dupMatches.length && !confirmedDup) { setConfirmedDup(true); setError(""); return; }
-    // Seed the project's hourly rates from the client's negotiated schedule
-    // (client.rateSchedule, managed in the Admin Console) when one exists for
-    // the prime or client name. Falls back to the firm default otherwise.
-    const rateNames = [prime, clientName].map(s => (s || "").trim().toLowerCase()).filter(Boolean);
-    const rateClient = rateNames.length ? clients.find(cl =>
-      cl && cl.name && rateNames.includes(String(cl.name).trim().toLowerCase())
-      && Array.isArray(cl.rateSchedule) && cl.rateSchedule.length) : null;
+    // Seed the project's hourly rates from a stored schedule (rateSchedule on
+    // the company record, managed in the Admin Console). Schedules are
+    // typically agency-specific, so the owner/agency is checked first, then
+    // the client, then the prime. Falls back to the firm default otherwise.
+    const rateClient = resolveRateScheduleCompany(clients, [owner, clientName, prime]);
     onCreate({
       name: name.trim(),
       status,
       projectNumber: projectNumber.trim(),
       prime: prime.trim(),
       clientName: clientName.trim(),
+      ...(owner.trim() ? { owner: owner.trim() } : {}),
       proposalDueDate: isProposal ? proposalDueDate : "",
       ...(rateClient ? { hourlyRates: rateClient.rateSchedule.map(r => ({ ...r })) } : {}),
     });
@@ -2926,6 +2945,21 @@ function NewProjectModal({ onClose, onCreate, clients = [], existingProjects = [
           </div>
         </div>
       </div>
+
+      {!isSettyFirm(prime) && (
+        <div style={fieldStyle}>
+          <label style={labelStyle} htmlFor="np-owner">
+            Owner / Agency <span style={{ color: P.textMuted, textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>(optional)</span>
+          </label>
+          <input id="np-owner" value={owner} onChange={e => setOwner(e.target.value)} style={inputStyle}
+            list="newProjectFirmOptions"
+            placeholder="Public agency / owner at top of chain (e.g. SCA, DASNY)" />
+          <div style={{ fontSize: 11, color: P.textMuted, marginTop: 4, lineHeight: 1.4 }}>
+            Hourly rate schedules are stored per agency, so naming the agency here seeds this
+            project's rates from its stored schedule. Can also be set later on the Directory tab.
+          </div>
+        </div>
+      )}
 
       {isProposal && (
         <div style={fieldStyle}>
@@ -24189,21 +24223,30 @@ function ScopeView({ project, onChange, clients = [] }) {
     onChange({ ...project, hourlyRates: HOURLY_RATES_DEFAULT.map(r => ({ ...r })) });
   }
 
-  // Client-negotiated rate schedule (client.rateSchedule, managed in the Admin
-  // Console). Matched by prime/client name; loads into project.hourlyRates.
+  // Stored rate schedule (rateSchedule on the company record, managed in the
+  // Admin Console). Schedules are typically negotiated with the AGENCY at the
+  // top of the chain (SCA, DASNY, DDC…), not the prime that hires Setty, so
+  // the owner/agency is checked first, then client, then prime; among name
+  // matches a company tagged "Agency" wins. (Mirrors the top-level
+  // resolveRateScheduleCompany in the other JSX block.)
   function findClientWithRates() {
-    const names = [project.prime, project.clientName]
-      .filter(Boolean).map(s => String(s).trim().toLowerCase());
-    if (!names.length) return null;
-    return (clients || []).find(cl =>
-      cl && cl.name && names.includes(String(cl.name).trim().toLowerCase())
-      && Array.isArray(cl.rateSchedule) && cl.rateSchedule.length) || null;
+    const wanted = [project.owner, project.clientName, project.prime]
+      .map(s => String(s || "").trim().toLowerCase()).filter(Boolean);
+    if (!wanted.length) return null;
+    const matches = [];
+    for (const n of wanted) {
+      const hit = (clients || []).find(cl => cl && cl.name
+        && String(cl.name).trim().toLowerCase() === n
+        && Array.isArray(cl.rateSchedule) && cl.rateSchedule.length);
+      if (hit && !matches.includes(hit)) matches.push(hit);
+    }
+    return matches.find(cl => Array.isArray(cl.types) && cl.types.includes("Agency")) || matches[0] || null;
   }
   function loadClientRates() {
     if (scopeLocked) return;
     const cl = findClientWithRates();
     if (!cl) {
-      window.alert("No stored rate schedule found for “" + (project.prime || project.clientName || "this client") + "”.\n\nClient rate schedules are managed in the Admin Console (Proposal Library). Until one is stored there, this project uses the firm-standard rates.");
+      window.alert("No stored rate schedule found for “" + (project.owner || project.prime || project.clientName || "this project") + "”.\n\nRate schedules are usually agency-specific: they are stored on the agency's company record in the Admin Console (Proposal Library) and matched against this project's Owner/Agency, Client, and Prime. Until one is stored there, this project uses the firm-standard rates.");
       return;
     }
     if (!window.confirm("Load the stored rate schedule for " + cl.name + "?\n\nThis replaces the current project rates" + (cl.rateScheduleNote ? "\n\nNote: " + cl.rateScheduleNote : "") + ".")) return;
@@ -25959,7 +26002,7 @@ function ScopeView({ project, onChange, clients = [] }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            {showRates && <Btn variant="ghost" small onClick={loadClientRates} disabled={scopeLocked} title="Load this client's negotiated rate schedule (stored on the client record, managed in the Admin Console)">⇩ Client Schedule</Btn>}
+            {showRates && <Btn variant="ghost" small onClick={loadClientRates} disabled={scopeLocked} title="Load the stored rate schedule for this project's agency (or client/prime as fallback). Schedules live on the company record, managed in the Admin Console.">⇩ Agency Schedule</Btn>}
             {showRates && <Btn variant="ghost" small onClick={resetRatesToDefault} disabled={scopeLocked}>↻ Reset to Default</Btn>}
             <Btn onClick={() => printHourlyRates(project)}>🖨 Print Rates</Btn>
           </div>
