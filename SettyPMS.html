@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-04-pms-v140-agency-rate-schedules";
+    window.__appVersion = "2026-09-06-pms-v141-current-set-delta-line";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -17439,8 +17439,27 @@ function CurrentSetPanel({ project }) {
           "current-set fetch");
         const fold = window.CurrentSetFold;
         if (!fold) throw new Error("the current-set module is still loading — reload the page");
-        const set = fold.composeCurrentSet(fold.prepareRegisterRows(rows || []));
-        if (alive) setState({ loading: false, error: null, set });
+        const prepared = fold.prepareRegisterRows(rows || []);
+        const set = fold.composeCurrentSet(prepared);
+        // What did the NEWEST set change, vs the fold of everything issued
+        // before it? Same grouping as the connector (currentSet.ts): one set =
+        // every register row sharing issue date + set name (the transmittal
+        // tool writes a row per discipline), sheets collapsed on
+        // sheetNo+filename so a twice-transmitted discipline counts once.
+        let delta = null;
+        if (prepared.length) {
+          const setKeyOf = r => `${fold.registerIssueDate(r)}|${(r && r.files && r.files.milestoneName) || ""}`;
+          const key = setKeyOf(prepared[0]);
+          const seenSheet = new Set();
+          const setSheets = prepared.filter(r => setKeyOf(r) === key).flatMap(r => fold.sheetsOf(r)).filter(s => {
+            const k = String((s && s.sheetNo) || "").toUpperCase().replace(/\s+/g, "") + "|" + String((s && s.filename) || "");
+            if (seenSheet.has(k)) return false;
+            seenSheet.add(k);
+            return true;
+          });
+          delta = fold.setDelta(setSheets, prepared.filter(r => setKeyOf(r) !== key));
+        }
+        if (alive) setState({ loading: false, error: null, set, delta });
       } catch (e) {
         if (alive) setState({ loading: false, error: String((e && e.message) || e), set: null });
       }
@@ -17448,7 +17467,7 @@ function CurrentSetPanel({ project }) {
     return () => { alive = false; };
   }, [pid]);
 
-  const { loading, error, set } = state;
+  const { loading, error, set, delta } = state;
   const wrap = { marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 14 };
   // folderUrl arrives ALREADY ENCODED from the fold (encodeSpUrl in
   // currentSetFold.js handles '%', spaces and '#' — '%' first, or "100% CD"
@@ -17477,6 +17496,11 @@ function CurrentSetPanel({ project }) {
             {set.sheetCount} sheet{set.sheetCount === 1 ? "" : "s"} · {set.disciplines.length} discipline{set.disciplines.length === 1 ? "" : "s"}
             {set.sourceSets[0] && <> · newest set <span style={{ color: P.text }}>{set.sourceSets[0].setName || "—"}</span> ({set.sourceSets[0].issueDate})</>}
             {set.supersededCount > 0 && <> · {set.supersededCount} older sighting{set.supersededCount === 1 ? "" : "s"} superseded</>}
+            {delta && delta.priorSheetsKnown > 0 && (delta.revised.length + delta.newSheets.length + delta.reissued.length) > 0 && (
+              <> · this set: <span style={{ color: P.text }} title={"Each sheet in the newest set vs the fold of everything issued before it: revised moved revision label, new never appeared before, reissued went out again unchanged." + (delta.unkeyable > 0 ? ` ${delta.unkeyable} sheet(s) had no parseable number and could not be diffed.` : "")}>
+                {delta.revised.length} revised / {delta.newSheets.length} new{delta.reissued.length > 0 && <> / {delta.reissued.length} reissued</>}
+              </span></>
+            )}
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, tableLayout: "fixed" }}>
             <colgroup>
