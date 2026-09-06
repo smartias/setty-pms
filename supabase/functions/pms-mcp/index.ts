@@ -453,22 +453,64 @@ async function graphGet(path: string): Promise<any> {
   if (!res.ok) throw new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json();
 }
-let _docDriveId: string | null = null;
-async function docDriveId(): Promise<string> {
-  if (_docDriveId) return _docDriveId;
-  const drives = await graphGet(`/sites/${SP_SITE_ID}/drives?$select=id,name`);
+// ── Multi-region SharePoint routing (2026-09-06) ────────────────────────────
+// pms_regions maps a project's `team` to its region's SharePoint site, so each
+// region's files are served from its own site while the NY env defaults keep
+// working for any team without an enabled row (and when the table is absent).
+// Sites and drive ids are stable facts, cached per site; the region map itself
+// refreshes on the same 300s clock as the projects cache so a newly added
+// region shows up without a redeploy.
+type RegionSite = { siteId: string; docLibrary: string };
+const DEFAULT_REGION: RegionSite = { siteId: SP_SITE_ID, docLibrary: DOC_LIBRARY };
+let _regions: { at: number; map: Map<string, RegionSite> } | null = null;
+async function regionMap(): Promise<Map<string, RegionSite>> {
+  if (_regions && (Date.now() - _regions.at) < 300000) return _regions.map;
+  const map = new Map<string, RegionSite>();
+  try {
+    const rows = await sbGet("pms_regions?select=team,sharepoint_site_id,doc_library&enabled=eq.true");
+    for (const r of (Array.isArray(rows) ? rows : [])) {
+      if (r?.team && r?.sharepoint_site_id) {
+        map.set(String(r.team).toUpperCase().trim(), {
+          siteId: String(r.sharepoint_site_id),
+          docLibrary: String(r.doc_library || DOC_LIBRARY),
+        });
+      }
+    }
+  } catch { /* table missing or unreadable: every team falls back to the env defaults */ }
+  _regions = { at: Date.now(), map };
+  return map;
+}
+async function siteForTeam(team: string | null | undefined): Promise<RegionSite> {
+  if (!team) return DEFAULT_REGION;
+  return (await regionMap()).get(String(team).toUpperCase().trim()) ?? DEFAULT_REGION;
+}
+// A project's team, from the slim projects cache (team is a real column and
+// rides the same 300s cache every portfolio tool already pays for). Uses the
+// UNFILTERED list on purpose: routing derives a site, it reveals nothing.
+async function teamForProject(projectNumber: string | null | undefined): Promise<string | null> {
+  const num = String(projectNumber || "").toLowerCase().trim();
+  if (!num) return null;
+  const all = await getProjectsUnfiltered();
+  const p = all.find((x) => String(x.projectNumber || "").toLowerCase() === num) ??
+    all.find((x) => String(x.projectNumber || "").toLowerCase().startsWith(num));
+  return p?.team ?? null;
+}
+
+const _docDrive = new Map<string, string>();
+async function docDriveId(team?: string | null): Promise<string> {
+  const region = await siteForTeam(team);
+  const hit = _docDrive.get(region.siteId);
+  if (hit) return hit;
+  const drives = await graphGet(`/sites/${region.siteId}/drives?$select=id,name`);
   const list = drives.value || [];
-  const match = list.find((d: any) => d.name === DOC_LIBRARY) || list[0];
-  if (!match) throw new Error("No document library found on the configured site.");
-  // Return the local, not the field: TS cannot narrow a mutable module-level
-  // `string | null` after assignment, and `deno check --strict` is only worth
-  // having as a pre-deploy gate if it runs clean.
+  const match = list.find((d: any) => d.name === region.docLibrary) || list[0];
+  if (!match) throw new Error("No document library found on the region's site.");
   const id: string = match.id;
-  _docDriveId = id;
+  _docDrive.set(region.siteId, id);
   return id;
 }
 async function projectFolder(projectNumber: string): Promise<any | null> {
-  const drive = await docDriveId();
+  const drive = await docDriveId(await teamForProject(projectNumber));
   const num = projectNumber.toLowerCase().trim();
   let url: string = `/drives/${drive}/root/children?$select=id,name,folder&$top=200`;
   while (url) {
@@ -482,14 +524,17 @@ async function projectFolder(projectNumber: string): Promise<any | null> {
   return null;
 }
 
-// All document libraries (drives) on the site, cached. Proposals/Contracts live in
-// their own libraries alongside the main Project Document Library.
-let _drives: Array<{ id: string; name: string }> | null = null;
-async function siteDrives(): Promise<Array<{ id: string; name: string }>> {
-  if (_drives) return _drives;
-  const d = await graphGet(`/sites/${SP_SITE_ID}/drives?$select=id,name`);
+// All document libraries (drives) on a region's site, cached per site.
+// Proposals/Contracts live in their own libraries alongside the main
+// Project Document Library.
+const _drivesBySite = new Map<string, Array<{ id: string; name: string }>>();
+async function siteDrives(team?: string | null): Promise<Array<{ id: string; name: string }>> {
+  const region = await siteForTeam(team);
+  const hit = _drivesBySite.get(region.siteId);
+  if (hit) return hit;
+  const d = await graphGet(`/sites/${region.siteId}/drives?$select=id,name`);
   const list: Array<{ id: string; name: string }> = (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
-  _drives = list;
+  _drivesBySite.set(region.siteId, list);
   return list;
 }
 // Find a project's root folder (named by NUMBER, e.g. "<number> - ...") within a drive.
@@ -604,9 +649,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-06-automated-review-gate";
+const BUILD = "2026-09-06-multi-region-sites";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.6.1",
+  name: "setty-pms", version: "1.7.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1431,9 +1476,9 @@ async function meetingRecords(
   if (!num) {
     return { items: [], truncated: false, note: "This project has no project number, so its SharePoint folder cannot be located." };
   }
-  const drive = await docDriveId();
+  const drive = await docDriveId(await teamForProject(projectNumber));
   const root = await findProjectFolderInDrive(drive, num);
-  if (!root) return { items: [], truncated: false, note: `No folder starting with "${projectNumber}" in ${DOC_LIBRARY}.` };
+  if (!root) return { items: [], truncated: false, note: `No folder starting with "${projectNumber}" in the project document library.` };
 
   const SELECT = "?$select=id,name,folder,file,size,lastModifiedDateTime&$top=200";
   // Follow @odata.nextLink. Graph caps a page at 200 entries and the longest-
@@ -2662,12 +2707,12 @@ mcp.tool("get_current_set", {
       ? `The register has ${rows.length} transmittal(s) for this project but none recording discipline "${discipline}". Falling back to folder inference for the set overall.`
       : null;
     try {
-      const driveId = await docDriveId();
+      const driveId = await docDriveId(await teamForProject(String(project)));
       const folder = await findProjectFolderInDrive(driveId, String(project).toLowerCase().trim());
       if (!folder) {
         return asText({
           project, inferred: true, current: null,
-          reason: `No folder for ${project} in the ${DOC_LIBRARY}, and no transmittal record.`,
+          reason: `No folder for ${project} in the project document library, and no transmittal record.`,
           nextStep: "The project is most likely not provisioned in SharePoint yet. Confirm with list_project_documents.",
         });
       }
@@ -3007,12 +3052,13 @@ mcp.tool("list_project_documents", {
   }),
   handler: async ({ projectNumber, subfolder, library, folderMatch, folderId }) => {
     try {
-      const drives = await siteDrives();
+      const team = await teamForProject(projectNumber);
+      const drives = await siteDrives(team);
       const rel = subfolder && subfolder.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "").split("/").map(encodeURIComponent).join("/") : "";
       // Mode 3: open a specific folder by composite id.
       if (folderId && String(folderId).trim()) {
         const bar = folderId.indexOf("|");
-        const dId = bar > 0 ? folderId.slice(0, bar) : await docDriveId();
+        const dId = bar > 0 ? folderId.slice(0, bar) : await docDriveId(team);
         const fId = bar > 0 ? folderId.slice(bar + 1) : folderId;
         const libName = (drives.find((d) => d.id === dId) || { name: "" }).name;
         const listPath = (rel
@@ -3103,6 +3149,8 @@ mcp.tool("read_document", {
   handler: async ({ itemId, find, pages }) => {
     try {
       const bar = itemId.indexOf("|");
+      // Composite ids carry their own driveId (any region); a bare id is a
+      // legacy form that only ever came from the default region's library.
       const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
       const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
       const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl`);
@@ -3305,7 +3353,7 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
   const shared = await treeFromDb(numPrefix);
   if (shared) { _treeCache.set(numPrefix, shared); return shared; }
 
-  const drives = await siteDrives();
+  const drives = await siteDrives(await teamForProject(numPrefix));
   const files: any[] = [];
   const libraries: string[] = [];
   let requests = 0;
@@ -3406,7 +3454,7 @@ async function subtreeFiles(numPrefix: string, rel: string): Promise<{
 }> {
   const relClean = String(rel || "").replace(/^\/+|\/+$/g, "");
   const encoded = relClean.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-  const drives = await siteDrives();
+  const drives = await siteDrives(await teamForProject(numPrefix));
   const files: any[] = [];
   const resolvedIn: string[] = [];
   let requests = 0;
@@ -4892,8 +4940,10 @@ async function crossSiteDeliverables(numPrefix: string): Promise<{
 }> {
   const out = { files: [] as any[], followed: [] as string[], truncated: false, error: null as string | null };
   try {
-    const drives = await siteDrives();
-    const docLib = drives.find((d) => d.name === DOC_LIBRARY) || drives[0];
+    const team = await teamForProject(numPrefix);
+    const region = await siteForTeam(team);
+    const drives = await siteDrives(team);
+    const docLib = drives.find((d) => d.name === region.docLibrary) || drives[0];
     if (!docLib) return out;
     const root = await findProjectFolderInDrive(docLib.id, numPrefix);
     if (!root) return out;
@@ -4959,8 +5009,10 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
   let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
   const explicitSubfolder = !!rel;
   if (!rel) {
-    const drives = await siteDrives();
-    const docLib = drives.find((d) => d.name === DOC_LIBRARY) || drives[0];
+    const team = await teamForProject(numPrefix);
+    const region = await siteForTeam(team);
+    const drives = await siteDrives(team);
+    const docLib = drives.find((d) => d.name === region.docLibrary) || drives[0];
     const root = docLib ? await findProjectFolderInDrive(docLib.id, numPrefix) : null;
     if (root) {
       const top = await graphGet(`/drives/${docLib.id}/items/${root.id}/children?$select=id,name,folder&$top=200`);
@@ -6150,6 +6202,9 @@ mcp.tool("get_add_service_template", {
 let _tmplFolder: { driveId: string; itemId: string } | null = null;
 async function templatesFolder(): Promise<{ driveId: string; itemId: string }> {
   if (_tmplFolder) return _tmplFolder;
+  // Templates live in the NY site's "SAPX26XXX - NY 2026 Templates and
+  // Standards" folder — deliberately default-region until regions get their
+  // own templates path on pms_regions.
   const driveId = await docDriveId();
   const proj = await findProjectFolderInDrive(driveId, "sapx26xxx");
   if (!proj) throw new Error("Templates project folder ('SAPX26XXX - NY 2026 Templates and Standards') not found in the Project Document Library.");
