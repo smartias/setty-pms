@@ -177,6 +177,18 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v17 (6 Sep 2026) — brings the Claude/MCP tab and guide current with the
+// late-Aug/early-Sep server work: 32 tools (was 23 — companies/contacts,
+// term contracts, trace_references, prepare_transmittal, search_drawings,
+// view_photos and the knowledge pair added), and the connector is now
+// READ-FIRST rather than strictly read-only: save_knowledge (1 Sep) writes
+// project knowledge to the intelligence tables — project-scoped entries
+// publish immediately as approved, firm/agency-wide entries queue as
+// suggested — and can never touch project data, the register, or email.
+// Also retires two stale rules stated on the tab: the "pull live source
+// before editing" deploy step (source is committed; edit repo, deploy from
+// disk) and the 2 Aug "capabilities do not scope connector reads" bullet
+// (superseded by identity Phases A-C on 22 Aug — kept as history, marked so).
 // v16 (23 Aug 2026) — System Guide §8: the infrastructure OWNERSHIP MIGRATION
 // plan (Raj's "move to Setty GitHub" ask, correctly translated): repo → Setty
 // GitHub org, Cloudflare worker → Setty account + custom domain, IT visibility
@@ -1330,7 +1342,7 @@ function renderGuide() {
       <ul>
         <li><b>Identity:</b> everything sensitive requires a Setty Microsoft account. Microsoft 365 content is additionally limited to each person's own permissions (delegated tokens — the app can't out-read its user).</li>
         <li><b>Database:</b> Supabase Postgres with Row-Level Security. The <i>anon key</i> that appears in the public code is a publishable key by design — the protection is RLS plus the sign-in layer, not key secrecy. The powerful <i>service-role key</i> exists only inside server-side Edge Functions, never in a browser.</li>
-        <li><b>External surfaces are read-only and fail-closed:</b> the Claude/MCP endpoint and the SETTYfy billing feed both reject every request without a valid credential, and neither can write PMS data. The feed token can be rotated instantly from the Integration tab.</li>
+        <li><b>External surfaces are fail-closed and cannot change project data:</b> the Claude/MCP endpoint and the SETTYfy billing feed both reject every request without a valid credential. Neither can write project records, emails, or the register; the connector's one write tool (<code>save_knowledge</code>, 1 Sep) saves reviewed knowledge entries to the intelligence tables and nothing else. The feed token can be rotated instantly from the Integration tab.</li>
         <li><b>Operational safety:</b> optimistic-concurrency versioning on project rows, global email de-duplication, a delete-proof email mirror with nightly dated snapshots, Supabase's own daily whole-database backups, and the filing log for auditing what the add-in wrote where.</li>
       </ul>
       <p style="margin-top:12px"><b>Progress updates — the security rollout.</b> <b>The Phase&nbsp;4 flip is LIVE</b> (2026-07-24). Signed-out browsers now get an empty app with a sign-in card; signed-in staff notice nothing. Phase&nbsp;5 enforcement is now <b>three capability slices in and one to go</b> (detail below, re-verified against the live database 2 Aug 2026):</p>
@@ -1450,7 +1462,7 @@ function renderGuide() {
              own Edge Function.</p>
           <div class="src">Edge Functions pms-user-emails · unsubscribe</div></div>
         <div class="appcard"><h4>🤖 Claude / MCP server</h4>
-          <p>Read-only connector that lets the team's enterprise Claude accounts search and read PMS data — 23 tools. Full runbook on the Claude/MCP tab.</p>
+          <p>Connector that lets the team's enterprise Claude accounts search and read PMS data — 32 tools. Read-first: the one write tool, <code>save_knowledge</code>, saves project knowledge to the intelligence tables and cannot touch project data. Full runbook on the Claude/MCP tab.</p>
           <div class="src">Edge Function pms-mcp</div></div>
       </div>
     </div>
@@ -1461,11 +1473,11 @@ function renderGuide() {
       <ul>
         <li><b>Project record</b> (<code>pms_projects</code>): status, fees, milestones, RFIs/submittals, notes with action items, contacts, contract terms, related-project grouping.</li>
         <li><b>Email archive</b> (<code>pms_project_emails</code>): every filed email, globally de-duplicated, full bodies preserved — ~15k+ messages and growing, including back-filed mailboxes of departed staff.</li>
-        <li><b>Institutional intelligence tables:</b> lessons learned, best practices, <b>agency preferences</b> (61 mined per-agency process rules; approved ones feed the project brief), engineering standards, expertise graph (<code>pms_person_work</code>).</li>
+        <li><b>Institutional intelligence tables:</b> <b>project knowledge</b> (renamed from "lessons learned", 1 Sep; entries saved through Claude carry a 💬 badge in the brief), best practices, <b>agency preferences</b> (100+ mined per-agency process rules; approved ones feed the project brief), engineering standards, expertise graph (<code>pms_person_work</code>).</li>
         <li><b>Live analytics in the database:</b> project brief, portfolio heat map, payment flags and email sentiment run as SQL functions next to the data — fast and always current.</li>
         <li><b>Microsoft 365 stores:</b> SharePoint project folders (documents, photos, metadata sidecars), per-project OneNote notebooks, and the <b>"Templates for MCP Connector"</b> folder. Dropping a Word file in makes Claude aware of it immediately with no redeploy — but that path gives Claude the template's <i>text only</i>, which is what caused the formatting drift. For a document that comes out on real letterhead the template also needs a tokenized copy; see <a class="jump" href="#g-templates">§7 Document templates</a>.</li>
       </ul>
-      <p><b>How knowledge gets in:</b> the add-in files it (emails, notes, action items), the field apps capture it (photos, site reports), the sync tools parse it (RFIs/submittals), and mining passes distill it (agency preferences, lessons).<br>
+      <p><b>How knowledge gets in:</b> the add-in files it (emails, notes, action items), the field apps capture it (photos, site reports), the sync tools parse it (RFIs/submittals), mining passes distill it (agency preferences, lessons) — and since 1 Sep, Claude itself saves it through the connector's <code>save_knowledge</code>: a project-scoped fact publishes immediately as approved (the person confirming the save is the review; spot-check or remove it here in the console), while firm- or agency-wide entries queue as suggested for review.<br>
          <b>How it gets out:</b> the PMS and Intelligence apps display it; the MCP connector lets anyone ask Claude about it in plain English.</p>
     </div>
 
@@ -1688,8 +1700,10 @@ function renderMcp() {
       <div class="sechead">Claude / MCP integration — how it's built &amp; how to connect it</div>
       <p>The PMS exposes its data to the team's <b>enterprise Claude accounts</b> through a
          <b>Model Context Protocol (MCP) server</b> — the "custom connector" (plug-in) Claude understands.
-         It is <b>read-only</b>, <b>fail-closed</b> (no credential → no data), and runs as a Supabase Edge Function
-         right next to the database, so there is no extra server to maintain.</p>
+         It is <b>read-first</b>, <b>fail-closed</b> (no credential → no data), and runs as a Supabase Edge Function
+         right next to the database, so there is no extra server to maintain. Read-first, not read-only, since 1 Sep:
+         the single write tool, <code>save_knowledge</code>, saves project knowledge to the intelligence tables — it cannot
+         touch project data, emails, or the transmittal register.</p>
       <div class="row" style="margin-top:8px">
         <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${MCP_URL}').then(()=>toast('Connector URL copied','success'))">Copy connector URL</button>
         <a class="btn" href="${PROXY_BASE}/health" target="_blank" rel="noopener">▶ Live health check</a>
@@ -1720,10 +1734,11 @@ function renderMcp() {
     </div>
 
     <div class="card doc">
-      <div class="sechead">Current status: 5 Aug 2026</div>
+      <div class="sechead">Current status: 6 Sep 2026</div>
       <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
         <tr><td>Discovery proxy (<code>mcp-proxy/</code>)</td><td><b>Live, and it is the URL to give Claude.</b> Verified end to end on 5 Aug: 14/14 checks on the full discovery chain, plus passthrough to the Edge Function confirmed. This is what unblocked org-wide sign-in after weeks of <code>{"error":"requested path is invalid"}</code>. A rate limiter is live on the proxied path (25 requests/10s per client, 429 + Retry-After, fail-open), added after a real client was observed retrying a dozen times in half a minute during an auth failure. Still on a <code>workers.dev</code> subdomain, so move it to a custom domain before firm-wide rollout (see the note above).</td></tr>
-        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Deploy 50, live. Build <code>2026-08-02-current-full-set</code>, 23 tools.</b> The health link above echoes that build string, so "is my change live?" is answerable without diffing source. Since v31 the connector gained the document-finding, drawing-register and project-briefing tools (full list below). The 25 Jul OAuth discovery fix remains in place: the advertised resource now matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures.</td></tr>
+        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Live. Build <code>2026-09-04-doc-style-guidance</code> as of this writing, 32 tools.</b> The health link above echoes the live build string, so "is my change live?" is answerable without diffing source — trust the health link over this row if they ever disagree. Recent additions: drawings search and reference tracing, transmittal pre-flight, company/contact lookups, field-photo viewing, and the knowledge pair (full list below). The 25 Jul OAuth discovery fix remains in place: the advertised resource matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures.</td></tr>
+        <tr><td>Knowledge write-back (1 Sep 2026)</td><td><b>Live.</b> <code>save_knowledge</code> is the connector's first and only write tool, scoped to the intelligence tables. Publishing is scoped by reach: a <b>project-scoped</b> entry publishes immediately as approved (the person telling Claude "save that" is the review; edit or remove it in the console), while <b>firm- or agency-wide</b> entries queue as suggested for review. Connector-saved entries show a 💬 badge in the project brief.</td></tr>
         <tr><td>OAuth sign-in, end to end</td><td><b>WORKS. First confirmed 5 Aug 2026, ~2:50 PM.</b> A real user signed in with a Setty
             Microsoft account through the proxy and pulled live data: full handshake on the wire (initialize 200, tools/list 200, 23 tools),
             user-side consent, no admin grant needed. Three stacked defects fell to get here: the discovery origin (fixed by the proxy),
@@ -1746,7 +1761,7 @@ function renderMcp() {
             pilot needs no deploy, just the two tags. Admins and the shared-secret lane bypass scoping.</td></tr>
         <tr><td>Local Python bridge (per-device)</td><td><b>Deprecated — being retired.</b> Pilot-era install; see the warning under the admin steps below. Note the server still accepts the pilot shared secret, so any surviving install keeps working until <code>MCP_SHARED_SECRET</code> is rotated — rotation is what actually decommissions it.</td></tr>
       </tbody></table>
-      <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector is read-only, and since 22 Aug its
+      <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector cannot change project data (its one write tool saves reviewed knowledge entries, nothing else), and since 22 Aug its
         reads are <b>scoped per caller</b>: fee and billing fields are redacted for roles without <code>fees.view</code>, per-project
         <code>projects.view</code> rules hide projects outright, and teamed users see only their team's tagged projects. So enabling
         it org-wide gives each person at most the view their PMS role allows — in the fee columns, slightly <i>less</i> than the web
@@ -1756,30 +1771,34 @@ function renderMcp() {
     <div class="card doc">
       <div class="sechead">How the server is set up</div>
       <ul>
-        <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. Currently <b>deploy 45</b>, build <code>2026-08-02-issue-date</code>. The deploy number is just Supabase's counter; the <b>build string is the meaningful version</b> — it is set in the source and echoed by <code>/health</code>.</li>
+        <li><b>Runtime:</b> Supabase Edge Function <code>pms-mcp</code> (Deno) using the Streamable-HTTP MCP transport. The <b>build string is the meaningful version</b> — it is set in the source, echoed by <code>/health</code>, and the health link above is the authoritative answer to "what is live" (Supabase's deploy counter is just a counter).</li>
         <li><b>Data path:</b> the function holds the service-role key server-side and reads <code>pms_projects</code>, <code>pms_project_emails</code> and the analytics SQL functions. A 5-minute in-memory cache plus a slim field projection keeps broad questions fast.</li>
         <li><b>Documents &amp; templates:</b> project documents and the live "Templates for MCP Connector" SharePoint folder are read through a separate app-only Microsoft Graph app (client credentials, read-only Sites permission — the one admin-consented piece).</li>
         <li><b>Permission model (since 22 Aug):</b> identity-scoped. The verified sign-in's email resolves against the Phase 5
             matrix (<code>pms_caps_for</code>) on every request: fee fields redact without <code>fees.view</code>, hidden projects
             answer as not-found, teams scope the portfolio. Reads still execute with the service-role key — the Edge Function is the
-            enforcer, RLS is not in that path. Read-only: there are no write tools.</li>
+            enforcer, RLS is not in that path. Read-first: the single write tool, <code>save_knowledge</code> (1 Sep), writes only the
+            intelligence tables under its own capability and RLS — no project data, email, or register write path exists.</li>
         <li><b>Source of truth — changed since v31:</b> the function source is now <b>committed to the repo</b> at <code>supabase/functions/pms-mcp/</code>. It used to live only on the deployed function, so the old rule here was "pull the live source before editing." <b>That rule is retired for <code>pms-mcp</code>:</b> edit the repo copy and deploy from disk. (It still applies to <code>pms-user-emails</code> and <code>weekly-digest</code>, which have not been reconciled yet.)</li>
         <li><b>Deploys:</b> from the repo root via <code>supabase functions deploy --no-verify-jwt pms-mcp</code> (always pass the deno.json import map). Bump the <code>BUILD</code> constant in <code>index.ts</code> in the same change, then confirm the new string comes back from the health link above — that is the deploy check.</li>
       </ul>
-      <div class="sechead" style="margin-top:14px">The 23 tools</div>
+      <div class="sechead" style="margin-top:14px">The 32 tools</div>
       <table><thead><tr><th>Group</th><th>Tools</th></tr></thead><tbody>
-        <tr><td>Projects</td><td><code>search_projects</code> · <code>get_project</code> · <code>firm_overview</code> · <code>list_milestones</code> · <code>list_action_items</code> · <code>project_briefing</code> <span style="color:var(--muted)">(new)</span></td></tr>
+        <tr><td>Projects</td><td><code>search_projects</code> · <code>get_project</code> · <code>firm_overview</code> · <code>list_milestones</code> · <code>list_action_items</code> · <code>project_briefing</code></td></tr>
+        <tr><td>Directory</td><td><code>search_companies</code> · <code>find_contact</code> · <code>list_term_contracts</code></td></tr>
         <tr><td>Emails</td><td><code>search_emails</code> · <code>read_email</code> · <code>summarize_project_emails</code></td></tr>
-        <tr><td>Notes &amp; CA</td><td><code>search_notes</code> · <code>read_note</code> · <code>search_rfis_submittals</code> · <code>read_rfi_submittal</code> · <code>search_field_photos</code></td></tr>
-        <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code> · <code>find_document</code> <span style="color:var(--muted)">(new)</span></td></tr>
-        <tr><td>Drawings <span style="color:var(--muted)">(new)</span></td><td><code>get_current_set</code> · <code>extract_sheet_index</code></td></tr>
-        <tr><td>Knowledge</td><td><code>search_agency_preferences</code> <span style="color:var(--muted)">(new)</span></td></tr>
+        <tr><td>Notes &amp; CA</td><td><code>search_notes</code> · <code>read_note</code> · <code>search_rfis_submittals</code> · <code>read_rfi_submittal</code></td></tr>
+        <tr><td>Field</td><td><code>search_field_photos</code> · <code>view_photos</code></td></tr>
+        <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code> · <code>find_document</code></td></tr>
+        <tr><td>Drawings</td><td><code>get_current_set</code> · <code>extract_sheet_index</code> · <code>search_drawings</code> · <code>trace_references</code> · <code>prepare_transmittal</code></td></tr>
+        <tr><td>Knowledge</td><td><code>search_agency_preferences</code> · <code>search_knowledge</code> · <code>save_knowledge</code> <span style="color:var(--muted)">(the one write tool)</span></td></tr>
         <tr><td>Templates</td><td><code>get_template</code> · <code>get_add_service_template</code> · <code>get_letterhead_template</code></td></tr>
       </tbody></table>
-      <p style="font-size:12.5px;margin-top:8px;color:var(--muted)">Five tools added since the v31 runbook. <code>project_briefing</code> is the one to know about:
+      <p style="font-size:12.5px;margin-top:8px;color:var(--muted)"><code>project_briefing</code> is still the one to know about:
         it answers "what is going on with this job" by returning the project record <i>plus</i> the meeting minutes and review comments, rather than
-        reciting fields anyone can read off the PMS web app. The drawings group reads transmittal sets and sheet registers — still being rolled out
-        per the roadmap further down this tab.</p>
+        reciting fields anyone can read off the PMS web app. The drawings group now searches drawing <i>content</i> (<code>search_drawings</code>
+        reads the text layer of issued sheets, lazily indexed per project) and traces sheet references out of RFI/submittal text
+        (<code>trace_references</code>); <code>prepare_transmittal</code> is pre-flight only — issuing stays in the transmittal app.</p>
     </div>
 
     <div class="card doc">
@@ -1934,24 +1953,22 @@ function renderMcp() {
         <li><b>Phase 4 is the one that changes the cost story.</b> Everything up to it is text, which is cheap. Images consume far more context than text, so when <code>view_drawing</code> ships the answer to "what does this cost" changes from "minimal" to "minimal, plus drawing rendering when someone asks for it." That is a deliberate trade, worth flagging to leadership when it lands rather than after.</li>
         <li><b>Two hard-won constraints for phase 4.</b> Use the <b>deno.land</b> build of imagescript — <code>npm:imagescript</code> crashes the edge worker on an unsupported native codec. And an E-size sheet at full scale is roughly 140MB of bitmap, so resolution must be capped around 1500–2000px; but at that size small text is illegible, so the tool needs a <b>region/crop argument</b> rather than whole-sheet rendering. Phases 1–3 are what make that targetable: the register names the file and the index names the sheet.</li>
         <li><b>Index lazily, never in bulk.</b> The 24 Jun firm-wide outage was write contention from a bulk sweep. The field-photo index already uses the lazy pattern — it fills as people browse — and this should match it.</li>
-        <li><b>Keep the MCP read-only.</b> Register writes happen in the transmittal app; the connector only ever reads.</li>
+        <li><b>Keep the MCP out of the register.</b> Register writes happen in the transmittal app; the connector reads it and never writes it (its sole write tool, <code>save_knowledge</code>, touches only the knowledge tables).</li>
       </ul>
 
       <div class="sechead">Best practices (IT &amp; whoever maintains this)</div>
       <ul>
         <li><b>Rollout timing:</b> the connector is <b>independent of the security-rollout phases</b> — it never touches the anon key or user database sessions (it has its own gate + a server-side key), so the Phase 4 RLS flip changed nothing for it. Connect it whenever IT is ready; the admin-consent step is usually the long pole, so start that early.</li>
-        <li><b>Where the connector sits relative to Phase 5</b> <span style="color:var(--muted)">(re-verified against deployed build 2026-08-02-issue-date, 2 Aug 2026 — still true: all connector reads use the server-side key, so the Phase 5 capability checks do not scope connector results)</span>:
-            the Microsoft sign-in is an <b>authentication gate, not an identity</b> — <code>verifyEntraToken()</code> checks the token's
-            signature, issuer, audience and tenant and returns <i>true/false</i>, discarding the payload. No user claim (oid, upn,
-            preferred_username) reaches any query. Every read then goes out with the <code>SUPABASE_SERVICE_ROLE_KEY</code>, which bypasses
-            RLS by design, and the source contains no reference to <code>pms_has_cap</code> or <code>auth.uid</code>. So role capabilities do
-            <b>not</b> narrow what the connector returns, and the sign-in proves only "this is a current Setty account."
-            That is acceptable because the connector is read-only and surfaces what staff already see in PMS — but note it is
-            <b>not</b> one config change away from per-role scoping: the verifier would have to return its claims, and each tool
-            would need to filter on them.</li>
-        <li><b>Keep it read-only.</b> All writes go through the PMS apps, which handle versioning and conflict protection. Adding write tools to the connector is a deliberate architecture decision, not a tweak.</li>
+        <li><b>Where the connector sits relative to Phase 5</b> <span style="color:var(--muted)">(SUPERSEDED 22 Aug by identity Phases A–C — kept as history)</span>:
+            before 22 Aug the Microsoft sign-in was an authentication gate, not an identity — the verifier returned true/false,
+            no user claim reached any query, and role capabilities did not narrow connector results. That build described here
+            (2026-08-02) is gone: the verifier now returns its claims, the caller's email resolves against the Phase 5 matrix
+            (<code>pms_caps_for</code>) on every request, and fees redaction / project hiding / team scoping all apply — see the
+            Identity &amp; scoping row in the status card above. Reads still execute with the service-role key; the Edge Function
+            is the enforcer, not RLS.</li>
+        <li><b>Keep it read-first.</b> Project-data writes go through the PMS apps, which handle versioning and conflict protection. The one deliberate exception is <code>save_knowledge</code> (1 Sep): it writes the intelligence tables only, under its own capability + RLS. Any further write tool is an architecture decision, not a tweak.</li>
         <li><b>Finalize before broad rollout:</b> because clients cache the tool list, add/settle new tools first, then have the team connect — otherwise everyone needs a reconnect to see them.</li>
-        <li><b>Deploy discipline:</b> pull the live source before editing (disk copies drift stale — deploying one would regress features), keep <code>verify_jwt</code> off with the deno.json import map on every deploy, and hit <code>/health</code> afterward — a 200 proves it compiled and booted.</li>
+        <li><b>Deploy discipline:</b> the source is committed at <code>supabase/functions/pms-mcp/</code> — edit the repo copy and deploy from disk (the old "pull the live source first" rule is retired for this function). Keep <code>verify_jwt</code> off with the deno.json import map on every deploy, bump the <code>BUILD</code> constant in the same change, and hit <code>/health</code> afterward — the new build string coming back is the deploy check.</li>
         <li><b>Rotating the shared secret:</b> set a new <code>MCP_SHARED_SECRET</code> in Supabase function secrets — old callers cut off instantly. The OAuth path is unaffected by rotation, so once the deprecated local bridges are decommissioned this can be rotated freely with nothing else to update. Until then it is also embedded in any remaining bridge install.</li>
         <li><b>New permissions need lead time:</b> any new Entra scope or Graph permission requires an IT admin-consent click (tenant policy) — plan it into the schedule rather than discovering it at rollout.</li>
         <li><b>Watch, don't guess:</b> Supabase dashboard → Edge Functions → pms-mcp → Logs shows every request with timing; the server has been measured healthy at ~1–2s warm, so persistent slowness reports usually point at the client bridge or a cold start, not the server.</li>
