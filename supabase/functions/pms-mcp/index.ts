@@ -604,9 +604,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-04-doc-style-guidance";
+const BUILD = "2026-09-06-automated-review-gate";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.6.0",
+  name: "setty-pms", version: "1.6.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -5931,6 +5931,7 @@ mcp.tool("search_knowledge", {
 //   - a near-duplicate of an existing suggested/approved row is returned to
 //     the model instead of inserted, unless it insists via allowDuplicate.
 const KNOWLEDGE_MAX_PENDING = 20;
+const KNOWLEDGE_MAX_PENDING_AUTOMATED = 50;
 const KNOWLEDGE_DUP_THRESHOLD = 0.7;
 
 // Containment overlap of meaningful words: |A ∩ B| / min(|A|,|B|). Catches
@@ -5968,7 +5969,11 @@ mcp.tool("save_knowledge", {
     "PUBLICATION IS SCOPED: an entry WITH a projectNumber goes live for the team immediately " +
     "(the user's yes is the approval; a reviewer can still edit or remove it later), while an " +
     "agency-wide or firm-wide entry (no projectNumber) is held as SUGGESTED for human review " +
-    "because it shapes every project. Report which happened from the response.",
+    "because it shapes every project. EXCEPTION — automated runs: when the entries come from a " +
+    "pipeline or batch extraction (a QC memo generator, a script, any run where the user did not " +
+    "personally vouch for THIS specific finding in conversation), set automated: true; such " +
+    "entries ALWAYS queue for human review, project-scoped or not. Report which happened from " +
+    "the response.",
   inputSchema: z.object({
     summary: z.string().min(20).max(4000).describe("The finding itself, self-contained: what a teammate needs to know, in 1-5 sentences."),
     projectNumber: z.string().optional().describe("Project number OR name when the finding is about one job. Omit for agency-wide or firm-wide knowledge."),
@@ -5976,8 +5981,9 @@ mcp.tool("save_knowledge", {
     discipline: z.string().optional().describe("Discipline it applies to, e.g. 'Mechanical', 'Electrical'. Omit if cross-discipline."),
     source: z.string().max(1000).optional().describe("Citations the reviewer can check: noteIds, document paths, email subjects, RFI/submittal numbers."),
     allowDuplicate: z.boolean().optional().describe("Set true ONLY after this tool returned possibleDuplicate and the user confirmed the new entry is genuinely different."),
+    automated: z.boolean().optional().describe("Set true when this save comes from an automated pipeline or batch extraction (e.g. a QC memo run) rather than a finding the user personally confirmed in this conversation. Automated entries always queue for human review."),
   }),
-  handler: async ({ summary, projectNumber, agency, discipline, source, allowDuplicate }) => {
+  handler: async ({ summary, projectNumber, agency, discipline, source, allowDuplicate, automated }) => {
     // Identity is not optional here. The old no-write rule existed because
     // sign-in was a boolean gate; an unattributed knowledge row would be
     // exactly that failure again.
@@ -6013,13 +6019,19 @@ mcp.tool("save_knowledge", {
     }
 
     // Queue ceiling: outstanding suggestions by this caller, not lifetime.
+    // Counted per lane so a pipeline flooding its own lane never blocks the
+    // same person's hand saves (and vice versa): conversational saves count
+    // origin=connector rows against KNOWLEDGE_MAX_PENDING, automated runs
+    // count origin=mined rows against the larger KNOWLEDGE_MAX_PENDING_AUTOMATED.
+    const isAutomated = automated === true;
+    const ceiling = isAutomated ? KNOWLEDGE_MAX_PENDING_AUTOMATED : KNOWLEDGE_MAX_PENDING;
     const mine = await sbGet(
-      "pms_lessons?select=lesson_id&status=eq.suggested&author_email=eq." +
-      encodeURIComponent(caller.email) + "&limit=" + (KNOWLEDGE_MAX_PENDING + 1),
+      "pms_lessons?select=lesson_id&status=eq.suggested&origin=eq." + (isAutomated ? "mined" : "connector") +
+      "&author_email=eq." + encodeURIComponent(caller.email) + "&limit=" + (ceiling + 1),
     );
-    if (Array.isArray(mine) && mine.length >= KNOWLEDGE_MAX_PENDING) {
+    if (Array.isArray(mine) && mine.length >= ceiling) {
       return asText({
-        error: `You already have ${mine.length} suggested entries awaiting review — the ceiling is ${KNOWLEDGE_MAX_PENDING}.`,
+        error: `You already have ${mine.length} suggested entries awaiting review — the ceiling is ${ceiling}.`,
         nextStep: "Ask a knowledge reviewer to work the queue in the Intelligence console (Project Knowledge), then retry.",
       });
     }
@@ -6058,7 +6070,12 @@ mcp.tool("save_knowledge", {
     // a reviewer can still edit or remove it in the Intelligence console.
     // Agency-wide and firm-wide entries (no project) keep the review gate:
     // they silently shape every project, so one reviewer's eyes stay worth it.
-    const status = pn ? "approved" : "suggested";
+    // Automated review gate (Sara, 2026-09-06): pipeline/batch entries always
+    // queue, project-scoped or not — nobody personally vouched for the
+    // individual finding, so a human reviewer's yes replaces the user's yes.
+    // They land as origin 'mined', which SettyIntelligence already badges 🤖
+    // and filters, keeping the machine stream distinct from hand saves.
+    const status = pn && !isAutomated ? "approved" : "suggested";
     const row = await sbInsert("pms_lessons", {
       project_id: pn,
       agency: agency?.trim() || null,
@@ -6066,7 +6083,7 @@ mcp.tool("save_knowledge", {
       lesson_summary: summary.trim(),
       source_reference: source?.trim() || null,
       status,
-      origin: "connector",
+      origin: isAutomated ? "mined" : "connector",
       author_email: caller.email,
       author_name: caller.name,
     });
@@ -6078,7 +6095,10 @@ mcp.tool("save_knowledge", {
         project: pn, agency: agency?.trim() || null,
         author: caller.email,
       },
-      note: pn
+      note: isAutomated
+        ? "Queued as a SUGGESTION — automated/pipeline entries always go through human review in the " +
+          "Intelligence console (Project Knowledge tab), even project-scoped ones. Report it as pending review."
+        : pn
         ? "Added to the project record — LIVE for the whole team now (search_knowledge, project briefings, and " +
           "the Project Knowledge tab, credited to the author). A reviewer can edit or remove it there. Tell the user it is saved and shared."
         : "Saved as a SUGGESTION — agency/firm-wide entries shape every project, so this one is held for human " +

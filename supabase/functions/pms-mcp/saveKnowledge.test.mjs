@@ -68,8 +68,14 @@ has("const KNOWLEDGE_DUP_THRESHOLD = 0.7;", "duplicate threshold");
 has(".filter((w) => w.length > 2),", "meaningful-word filter");
 has("return inter / Math.min(A.size, B.size);", "containment denominator");
 // Scoped publishing: a project entry publishes on the user's yes; anything
-// without a project stays a suggestion for review.
-has('const status = pn ? "approved" : "suggested";', "scoped publish rule");
+// without a project stays a suggestion for review — and automated/pipeline
+// entries ALWAYS stay suggestions (Sara, 2026-09-06), landing as origin
+// 'mined' so the review screen badges and filters the machine stream.
+has('const status = pn && !isAutomated ? "approved" : "suggested";', "scoped publish rule with automated gate");
+has('origin: isAutomated ? "mined" : "connector",', "automated entries land as origin mined");
+has("const KNOWLEDGE_MAX_PENDING_AUTOMATED = 50;", "separate automated ceiling");
+has('"pms_lessons?select=lesson_id&status=eq.suggested&origin=eq." + (isAutomated ? "mined" : "connector")',
+  "per-lane ceiling counting (pipeline floods never block hand saves)");
 has("NOT your private conversation memory", "anti-memory routing in the description");
 has('mcp.tool("save_knowledge"', "save_knowledge is still registered");
 // The refusal ORDER is load-bearing: identity before caps (an anonymous
