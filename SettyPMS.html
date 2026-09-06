@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-06-pms-v141-current-set-delta-line";
+    window.__appVersion = "2026-09-06-pms-v142-cowork-in-folder";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -20650,12 +20650,32 @@ function AskClaudeMenu({ project }) {
     "Produce the standard Setty two-tab Open Items & Design Assumptions Log workbook.",
   ]);
 
+  // Work-in-the-folder — the one entry that is NOT a chat. Rides the same
+  // per-device settypms: handler as the jobcard's 📂 button (My Projects →
+  // My Settings), with a "cowork" verb that opens a Claude Code session whose
+  // working directory IS the synced project folder, so it can read and write
+  // the actual documents (and the network drive) instead of chatting about
+  // them. Same folder-name extraction as the jobcard's explorerFolderName.
+  const coworkFolderName = (() => {
+    const spUrl = (project.projectFolderUrl || "").trim();
+    if (!spUrl) return "";
+    const parts = safeDecodeFolderUrl(spUrl).replace(/\/+$/, "").split("/");
+    return (parts[parts.length - 1] || "").trim();
+  })();
+  const coworkReady = !!coworkFolderName && localStorage.getItem("pmsExplorerHandler") === "1";
+
   const entries = [
     { icon: "💬", title: "Ask about this job", desc: "Briefing: what needs attention, risks, next steps", url: briefingUrl },
     { icon: "📅", title: "Prep my next meeting", desc: "Per-item status, decisions, open questions, sources", url: meetingPrepUrl },
     { icon: "📄", title: "Draft a proposal from an RFP", desc: "Paste the RFP, get import-ready draft JSON", url: proposalUrl },
     { icon: "✅", title: "Build the open items log", desc: "Assumptions and awaited items for the next deliverable", url: openItemsUrl },
   ];
+  if (coworkReady) entries.push({
+    icon: "📁", title: "Work in the project folder",
+    desc: "Opens Claude Code inside the synced folder to work on the actual files, not just chat",
+    href: "settypms:cowork?folder=" + encodeURIComponent(coworkFolderName),
+    divider: true,
+  });
 
   return (
     <div style={{ position: "relative" }}>
@@ -20674,10 +20694,16 @@ function AskClaudeMenu({ project }) {
           boxShadow: "0 6px 20px rgba(0,0,0,0.4)",
         }} onMouseLeave={() => setOpen(false)}>
           {entries.map((entry, i) => (
-            <a key={i} href={entry.url()} target="_blank" rel="noreferrer"
+            // Protocol entries (settypms:) carry a plain href and must NOT
+            // target _blank: a new tab for a protocol launch is a stranded
+            // blank page. Chat entries stay claude.ai/new in a new tab.
+            <a key={i} href={entry.href || entry.url()}
+              target={entry.href ? undefined : "_blank"} rel={entry.href ? undefined : "noreferrer"}
               onClick={() => setOpen(false)}
               style={{ display: "block", padding: "8px 12px", borderRadius: 4,
-                fontSize: 12, color: P.text, textDecoration: "none" }}
+                fontSize: 12, color: P.text, textDecoration: "none",
+                borderTop: entry.divider ? `1px solid ${P.border}` : undefined,
+                marginTop: entry.divider ? 4 : 0, paddingTop: entry.divider ? 10 : 8 }}
               onMouseOver={e => e.currentTarget.style.background = P.bg}
               onMouseOut={e => e.currentTarget.style.background = "transparent"}>
               <div style={{ fontWeight: 600, color: P.accentLight, marginBottom: 2 }}>
