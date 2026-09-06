@@ -14,9 +14,11 @@
   folder) is registered.
 
   URL contract:  open.html?folder=<encodeURIComponent(project folder name)>
-  URLSearchParams.get() decodes exactly ONCE, and we re-encode exactly once
-  when building the settypms: URI — so folder names with a literal "%"
-  ("100% CD") survive. Do not add another decode here.
+  Optional:      &verb=cowork  — fires settypms:cowork instead of settypms:open
+  (launches a Claude Code session IN the folder; anything but the whitelisted
+  verbs falls back to "open"). URLSearchParams.get() decodes exactly ONCE, and
+  we re-encode exactly once when building the settypms: URI — so folder names
+  with a literal "%" ("100% CD") survive. Do not add another decode here.
 -->
 <style>
   body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #0f1420; color: #e5e9f0;
@@ -54,12 +56,19 @@
 </div>
 <script>
   // ONE decode (URLSearchParams) + ONE encode below — exact round-trip.
-  var folder = (new URLSearchParams(location.search).get("folder") || "").trim();
+  var params = new URLSearchParams(location.search);
+  var folder = (params.get("folder") || "").trim();
+  // Whitelisted verbs only; anything else degrades to the safe default.
+  var verb = params.get("verb") === "cowork" ? "cowork" : "open";
   document.getElementById("folderName").textContent = folder || "(none)";
+  if (verb === "cowork") {
+    document.querySelector("h1").textContent = "📁 Opening Claude Code in the project folder…";
+    document.title = "Work in the project folder — Setty PMS";
+  }
 
   function fire() {
     if (!folder) return;
-    location.href = "settypms:open?folder=" + encodeURIComponent(folder);
+    location.href = "settypms:" + verb + "?folder=" + encodeURIComponent(folder);
   }
   document.getElementById("openBtn").onclick = fire;
 
