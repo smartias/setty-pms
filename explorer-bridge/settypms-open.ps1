@@ -71,9 +71,12 @@ if ($verb -eq 'cowork') {
       'Setty PMS - Work in project folder')
     exit
   }
-  # A visible terminal in the project folder running Claude Code. Plain
-  # session, no arguments: the person says what they need once it opens.
-  Start-Process powershell -WorkingDirectory $path -ArgumentList '-NoExit','-NoProfile','-Command', ('& "' + $claudeExe + '"')
+  # A visible terminal in the project folder running Claude Code, opened
+  # with a fixed kickoff prompt (hardcoded here, never from the link):
+  # orient in the folder, then offer a menu of work rather than starting
+  # anything unasked. Deliberately apostrophe-free for the quoting below.
+  $kickoff = 'Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep, identify the project from the folder name, and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses.'
+  Start-Process powershell -WorkingDirectory $path -ArgumentList '-NoExit','-NoProfile','-Command', ('& "' + $claudeExe + '" ''' + $kickoff + '''')
   exit
 }
 
