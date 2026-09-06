@@ -525,12 +525,35 @@ async function teamForProject(projectNumber: string | null | undefined): Promise
   return p?.team ?? null;
 }
 
+// A region row may carry the site as a plain URL (what an admin pastes into
+// the console's Regions tab) instead of a Graph composite id. Detect the URL
+// form and resolve it once through Graph; ids pass through untouched.
+function siteUrlToGraphPath(ref: string): string | null {
+  if (!/^https?:\/\//i.test(ref)) return null;
+  try {
+    const u = new URL(ref);
+    const path = u.pathname.replace(/\/+$/, "");
+    return `/sites/${u.hostname}:${path || "/"}`;
+  } catch { return null; }
+}
+const _siteIdByRef = new Map<string, string>();
+async function resolveSiteId(ref: string): Promise<string> {
+  const graphPath = siteUrlToGraphPath(ref);
+  if (!graphPath) return ref;
+  const hit = _siteIdByRef.get(ref);
+  if (hit) return hit;
+  const site = await graphGet(`${graphPath}?$select=id`);
+  const id = String(site.id);
+  _siteIdByRef.set(ref, id);
+  return id;
+}
+
 const _docDrive = new Map<string, string>();
 async function docDriveId(team?: string | null): Promise<string> {
   const region = await siteForTeam(team);
   const hit = _docDrive.get(region.siteId);
   if (hit) return hit;
-  const drives = await graphGet(`/sites/${region.siteId}/drives?$select=id,name`);
+  const drives = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
   const list = drives.value || [];
   const match = list.find((d: any) => d.name === region.docLibrary) || list[0];
   if (!match) throw new Error("No document library found on the region's site.");
@@ -561,7 +584,7 @@ async function siteDrives(team?: string | null): Promise<Array<{ id: string; nam
   const region = await siteForTeam(team);
   const hit = _drivesBySite.get(region.siteId);
   if (hit) return hit;
-  const d = await graphGet(`/sites/${region.siteId}/drives?$select=id,name`);
+  const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
   const list: Array<{ id: string; name: string }> = (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
   _drivesBySite.set(region.siteId, list);
   return list;
@@ -678,9 +701,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-06-storage-seam";
+const BUILD = "2026-09-06-regions-console";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.7.1",
+  name: "setty-pms", version: "1.7.2",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });

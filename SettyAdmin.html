@@ -242,6 +242,7 @@ const TABS = [
   { key: "backups", label: "🗄️ Backups" },
   { key: "filing",  label: "📨 Filing Log" },
   { key: "integration", label: "🔗 Integration" },
+  { key: "regions", label: "🌎 Regions" },
   { key: "library", label: "📚 Proposal Library" },
   { key: "guide", label: "📖 System Guide" },
   { key: "mcp",   label: "🤖 Claude / MCP" },
@@ -251,6 +252,7 @@ const state = { tab: "signins", roster: null, staffCount: null, roles: null, bac
                 sovOpen: null, sovMaps: null, sovMilestones: {},
                 permCatalog: null, permMatrix: null, permOverrides: null,
                 teamProjects: null, mcpAudit: null,
+                regions: null, regionEdit: null,
                 lib: null, libEditKey: null, libNew: false, libClients: null, libClientQ: "", libClientSel: null,
                 myRole: undefined };   // undefined = not checked · "pending" · "none" · or a ROLES value
 
@@ -432,7 +434,7 @@ function render() {
   $("tabs").innerHTML = TABS.map(t =>
     `<button type="button" class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</button>`).join("");
   ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration,
-     library: renderLibrary, guide: renderGuide, mcp: renderMcp })[state.tab]();
+     regions: renderRegions, library: renderLibrary, guide: renderGuide, mcp: renderMcp })[state.tab]();
   // Restore focus/caret if the focused element was rebuilt (cached renderers
   // set #view synchronously, so the replacement element exists by now).
   if (_focusId) {
@@ -900,6 +902,132 @@ async function renderFiling() {
             <td style="color:var(--red);font-size:12px">${esc((x.error || "").slice(0, 80))}</td></tr>`).join("") ||
         '<tr><td colspan="7" class="empty">Nothing matches this filter.</td></tr>'}</tbody></table>
     </div>`;
+}
+
+// ── Regions (multi-region SharePoint routing for the PMS connector) ──────────
+// One row per office team ('NY', 'DC', ...). The Claude connector routes each
+// project's file access to its region's site through this table and picks up
+// changes within ~5 minutes — no deploy. The site can be pasted as a plain
+// SharePoint URL: the console tries to resolve it to a Graph site id via the
+// admin's Microsoft session; if that scope isn't granted the URL is stored
+// as-is and the connector resolves it server-side. SAS tokens for
+// azure_files regions NEVER go through this page — the form stores only the
+// NAME of the Edge Function secret that holds the token.
+const REGION_FIELDS = "team,region_name,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env,enabled,updated_at";
+function regionBlank() {
+  return { team: "", region_name: "", sharepoint_site_id: "", doc_library: "Project Document Library",
+           storage_kind: "sharepoint", azure_share_url: "", azure_sas_env: "", enabled: true, _isNew: true };
+}
+async function renderRegions() {
+  const v = $("view");
+  if (!state.regions) {
+    v.innerHTML = '<div class="empty">Loading regions…</div>';
+    try { state.regions = await sb("GET", "/rest/v1/pms_regions?select=" + REGION_FIELDS + "&order=team") || []; }
+    catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
+  }
+  const ed = state.regionEdit;
+  const rows = state.regions.map((r, i) => `
+    <tr style="${r.enabled ? "" : "opacity:.55"}">
+      <td><b>${esc(r.team)}</b></td><td>${esc(r.region_name)}</td>
+      <td><span class="pill ${r.storage_kind === "sharepoint" ? "ok" : "warn"}">${r.storage_kind === "sharepoint" ? "SharePoint" : "Azure share"}</span></td>
+      <td style="font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.sharepoint_site_id)}">${esc(r.sharepoint_site_id)}</td>
+      <td style="font-size:12px">${esc(r.doc_library)}</td>
+      <td>${r.enabled ? '<span class="pill ok">on</span>' : '<span class="pill bad">off</span>'}</td>
+      <td><button class="btn" onclick="editRegion(${i})">Edit</button></td>
+    </tr>`).join("");
+  const azure = ed && ed.storage_kind === "azure_files";
+  const form = !ed ? "" : `
+    <div class="card" style="border-color:var(--accent)">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">${ed._isNew ? "ADD REGION" : "EDIT REGION — " + esc(ed.team)}</div>
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <label style="font-size:12px">Team code<br><input id="rgTeam" value="${esc(ed.team)}" ${ed._isNew ? "" : "disabled"} placeholder="DC" style="width:70px" oninput="state.regionEdit.team=this.value.toUpperCase()"></label>
+        <label style="font-size:12px">Region name<br><input id="rgName" value="${esc(ed.region_name)}" placeholder="Washington DC" style="width:160px" oninput="state.regionEdit.region_name=this.value"></label>
+        <label style="font-size:12px">Storage<br><select id="rgKind" onchange="state.regionEdit.storage_kind=this.value; if(this.value==='azure_files'&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env='AZURE_SAS_'+(state.regionEdit.team||'XX');} render()">
+          <option value="sharepoint" ${!azure ? "selected" : ""}>SharePoint (full)</option>
+          <option value="azure_files" ${azure ? "selected" : ""}>Azure share (browse/read)</option>
+        </select></label>
+        <label style="font-size:12px;flex:1;min-width:260px">SharePoint site URL (or Graph site id)<br><input id="rgSite" value="${esc(ed.sharepoint_site_id)}" placeholder="https://setty.sharepoint.com/sites/DCProjects" style="width:100%" oninput="state.regionEdit.sharepoint_site_id=this.value"></label>
+        <label style="font-size:12px">Document library<br><input id="rgLib" value="${esc(ed.doc_library)}" style="width:180px" oninput="state.regionEdit.doc_library=this.value"></label>
+        ${azure ? `
+        <label style="font-size:12px;flex:1;min-width:260px">Azure share URL<br><input id="rgAzUrl" value="${esc(ed.azure_share_url || "")}" placeholder="https://<account>.file.core.windows.net/<share>" style="width:100%" oninput="state.regionEdit.azure_share_url=this.value"></label>
+        <label style="font-size:12px">SAS secret name<br><input id="rgAzEnv" value="${esc(ed.azure_sas_env || "")}" placeholder="AZURE_SAS_DC" style="width:140px" oninput="state.regionEdit.azure_sas_env=this.value"></label>` : ""}
+        <label style="font-size:12px"><input type="checkbox" ${ed.enabled ? "checked" : ""} onchange="state.regionEdit.enabled=this.checked"> enabled</label>
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn btn-primary" onclick="saveRegion()">Save region</button>
+        <button class="btn" onclick="state.regionEdit=null;render()">Cancel</button>
+        <span id="rgNote" style="color:var(--muted);font-size:12px;margin-left:8px"></span>
+      </div>
+      ${azure ? `
+      <div style="margin-top:10px;padding:10px;background:var(--panel2,rgba(125,125,125,.08));border-radius:8px;font-size:12.5px;line-height:1.5">
+        <b>Where the SAS token goes (never into this page, chat, or email):</b><br>
+        1&nbsp;· In Azure, generate a <b>read-only</b> SAS for the share, with an expiry (rotate on a calendar).<br>
+        2&nbsp;· In the Supabase dashboard → project <b>khxmgjilwhdguuepbhne</b> → Edge Functions → Secrets, add a secret named
+        <code>${esc(ed.azure_sas_env || "AZURE_SAS_" + (ed.team || "XX"))}</code> with the token as its value
+        (CLI alternative: <code>npx supabase secrets set ${esc(ed.azure_sas_env || "AZURE_SAS_" + (ed.team || "XX"))}=… --project-ref khxmgjilwhdguuepbhne</code>).<br>
+        3&nbsp;· The connector reads the secret by this name at runtime. This form stores only the name.
+      </div>` : ""}
+    </div>`;
+  v.innerHTML = `
+    <div class="card row">
+      <div class="stat"><b>${state.regions.length}</b><span>regions configured</span></div>
+      <div class="stat"><b>${state.regions.filter(r => r.enabled).length}</b><span>enabled</span></div>
+      <button class="btn btn-primary" onclick="state.regionEdit=regionBlank();render()">＋ Add region</button>
+      <button class="btn" onclick="state.regions=null;state.regionEdit=null;render()">↻ Refresh</button>
+      <span style="color:var(--muted);font-size:12px">The Claude connector picks up changes within ~5 minutes. Projects route by their PMS <b>team</b>; a team without an enabled row falls back to NY.</span>
+    </div>
+    ${form}
+    <div class="card">
+      <table><thead><tr><th>Team</th><th>Region</th><th>Storage</th><th>Site</th><th>Library</th><th>Enabled</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="7" class="empty">No regions yet.</td></tr>'}</tbody></table>
+      <div style="color:var(--muted);font-size:12px;margin-top:6px">
+        Regional sites must follow the NY filing standard: project folders at the library root named by project number,
+        with the standard subfolders (Outgoing, Emails, Photos, …). Azure-share regions get browse/read only —
+        search, drawings, photos and transmittals need the project record in SharePoint.
+      </div>
+    </div>`;
+}
+function editRegion(i) { state.regionEdit = { ...state.regions[i] }; render(); }
+// Best effort: turn a pasted site URL into the Graph composite id using the
+// admin's Microsoft session. Falls back to storing the URL — the connector
+// resolves URLs server-side with its own app credentials.
+async function resolveSiteUrl(ref) {
+  if (!/^https?:\/\//i.test(ref)) return ref;
+  try {
+    const u = new URL(ref);
+    const token = await graphToken(false);
+    const res = await fetch("https://graph.microsoft.com/v1.0/sites/" + u.hostname + ":" + u.pathname.replace(/\/+$/, "") + "?$select=id",
+      { headers: { "Authorization": "Bearer " + token } });
+    if (!res.ok) return ref;
+    const j = await res.json();
+    return j.id || ref;
+  } catch (_) { return ref; }
+}
+async function saveRegion() {
+  const ed = state.regionEdit;
+  if (!ed) return;
+  const team = String(ed.team || "").toUpperCase().trim();
+  if (!team) { toast("Team code is required (matches the PMS team, e.g. DC).", "error"); return; }
+  if (!String(ed.sharepoint_site_id || "").trim()) { toast("SharePoint site URL (or id) is required.", "error"); return; }
+  if (ed.storage_kind === "azure_files" && !String(ed.azure_sas_env || "").trim()) {
+    toast("Azure regions need the SAS secret NAME (e.g. AZURE_SAS_" + team + ").", "error"); return;
+  }
+  const note = $("rgNote"); if (note) note.textContent = "Saving…";
+  const siteRef = await resolveSiteUrl(String(ed.sharepoint_site_id).trim());
+  const row = {
+    team, region_name: String(ed.region_name || team).trim(),
+    sharepoint_site_id: siteRef,
+    doc_library: String(ed.doc_library || "Project Document Library").trim(),
+    storage_kind: ed.storage_kind === "azure_files" ? "azure_files" : "sharepoint",
+    azure_share_url: String(ed.azure_share_url || "").trim() || null,
+    azure_sas_env: String(ed.azure_sas_env || "").trim() || null,
+    enabled: !!ed.enabled, updated_at: new Date().toISOString(),
+  };
+  try {
+    await sb("POST", "/rest/v1/pms_regions?on_conflict=team", row, "resolution=merge-duplicates");
+    toast("Region " + team + " saved" + (siteRef !== ed.sharepoint_site_id ? " (site URL resolved to its Graph id)" : "") + ". The connector picks it up within ~5 minutes.", "success");
+    state.regions = null; state.regionEdit = null; render();
+  } catch (e) { toast("Save failed: " + e.message, "error"); if (note) note.textContent = ""; }
 }
 
 // ── Integration (PMS ↔ SETTYfy billing loop) ─────────────────────────────────
