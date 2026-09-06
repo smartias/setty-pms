@@ -79,13 +79,15 @@ if ($verb -eq 'cowork') {
   # it enters the single-quoted argument below; everything else in the
   # prompt is hardcoded and deliberately apostrophe-free.
   $safeName = $name -replace "'", "''"
-  $kickoff = 'Project: ' + $safeName + '. This session is for that project and should be titled after it. Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses. End your first reply with a short note under a Good to know heading: this session is saved and can be continued later in the Claude app or by running claude --continue in this folder; keep this window open while Claude is actively working, but closing it when idle loses nothing; clicking the PMS button again starts a fresh session rather than reopening this one.'
+  $kickoff = 'Project: ' + $safeName + '. This session is for that project and should be titled after it. Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses. End your first reply with a short note under a Good to know heading: this session is saved and can be continued later in the Claude app or by running claude --continue in this folder. Keep this window open while Claude is actively working, but closing it when idle loses nothing. Clicking the PMS button again starts a fresh session rather than reopening this one.'
   $inner = '& "' + $claudeExe + '" ''' + $kickoff + ''''
   # Prefer Windows Terminal when present (nicer window, same session).
   # wt needs ONE pre-joined argument string: Start-Process array args break
-  # its -d quoting (verified 9/6). wt splits panes on ';', so any path
-  # containing one falls back to the plain PowerShell host.
-  if ((Get-Command wt -ErrorAction SilentlyContinue) -and $path -notmatch ';') {
+  # its -d quoting (verified 9/6). wt splits panes on ';' ANYWHERE in its
+  # command line — path AND prompt (a ';' in the kickoff text truncated the
+  # command and errored, 9/6) — so any ';' at all falls back to the plain
+  # PowerShell host, which has no such splitting.
+  if ((Get-Command wt -ErrorAction SilentlyContinue) -and $path -notmatch ';' -and $inner -notmatch ';') {
     Start-Process wt -ArgumentList ('-d "' + $path + '" powershell -NoExit -NoProfile -Command ' + $inner)
   } else {
     Start-Process powershell -WorkingDirectory $path -ArgumentList '-NoExit','-NoProfile','-Command', $inner
