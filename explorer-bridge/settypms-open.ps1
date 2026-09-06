@@ -72,10 +72,14 @@ if ($verb -eq 'cowork') {
     exit
   }
   # A visible terminal in the project folder running Claude Code, opened
-  # with a fixed kickoff prompt (hardcoded here, never from the link):
-  # orient in the folder, then offer a menu of work rather than starting
-  # anything unasked. Deliberately apostrophe-free for the quoting below.
-  $kickoff = 'Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep, identify the project from the folder name, and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses.'
+  # with a kickoff prompt: orient in the folder, then offer a menu of work
+  # rather than starting anything unasked. The prompt LEADS with the project
+  # folder name so the session auto-titles after the project (Sara 9/6).
+  # That name comes from the link, so single quotes in it are doubled before
+  # it enters the single-quoted argument below; everything else in the
+  # prompt is hardcoded and deliberately apostrophe-free.
+  $safeName = $name -replace "'", "''"
+  $kickoff = 'Project: ' + $safeName + '. This session is for that project and should be titled after it. Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses.'
   $inner = '& "' + $claudeExe + '" ''' + $kickoff + ''''
   # Prefer Windows Terminal when present (nicer window, same session).
   # wt needs ONE pre-joined argument string: Start-Process array args break
