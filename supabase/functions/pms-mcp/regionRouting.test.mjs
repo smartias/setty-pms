@@ -28,6 +28,14 @@ function siteForTeam(map, team) {
   if (!team) return DEFAULT_REGION;
   return map.get(String(team).toUpperCase().trim()) ?? DEFAULT_REGION;
 }
+function siteUrlToGraphPath(ref) {
+  if (!/^https?:\/\//i.test(ref)) return null;
+  try {
+    const u = new URL(ref);
+    const path = u.pathname.replace(/\/+$/, "");
+    return `/sites/${u.hostname}:${path || "/"}`;
+  } catch { return null; }
+}
 function teamForProject(projects, projectNumber) {
   const num = String(projectNumber || "").toLowerCase().trim();
   if (!num) return null;
@@ -66,7 +74,16 @@ check(teamForProject(PROJECTS, "SAPX206004.00") === null, "a project without a t
 check(teamForProject(PROJECTS, "") === null && teamForProject(PROJECTS, "NOPE") === null,
   "empty and unknown numbers yield null");
 
-// ── 3. Drift checks against the shipped source ─────────────────────────────
+// ── 3. Site URL → Graph path (console-pasted URLs) ──────────────────────────
+check(siteUrlToGraphPath("https://setty.sharepoint.com/sites/DCProjects") ===
+  "/sites/setty.sharepoint.com:/sites/DCProjects", "a plain site URL becomes a hostname:path Graph lookup");
+check(siteUrlToGraphPath("https://setty.sharepoint.com/sites/DCProjects/") ===
+  "/sites/setty.sharepoint.com:/sites/DCProjects", "trailing slash is trimmed");
+check(siteUrlToGraphPath("setty.sharepoint.com,aa58,c97a") === null,
+  "a composite Graph id passes through untouched (null = not a URL)");
+check(siteUrlToGraphPath("") === null, "empty ref is not a URL");
+
+// ── 4. Drift checks against the shipped source ─────────────────────────────
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED from this test's copy`);
@@ -82,6 +99,8 @@ check((shipped.match(/AZURE_LIMITED_NOTE/g) || []).length >= 7,
 has('if ((await storageFor(project)).kind !== "sharepoint") {', "gates run on the RESOLVED project (after HIDE)");
 has("azureSasEnv: r.azure_sas_env ? String(r.azure_sas_env) : null,",
   "SAS config is an env-var NAME — the token itself never comes from the database");
+has("return `/sites/${u.hostname}:${path || \"/\"}`;", "URL-form site refs resolve via hostname:path");
+has("/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name", "drive lookups resolve URL-form site refs");
 has("async function docDriveId(team?: string | null): Promise<string> {", "docDriveId is region-aware");
 has("async function siteDrives(team?: string | null): Promise<Array<{ id: string; name: string }>> {",
   "siteDrives is region-aware");
