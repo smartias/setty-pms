@@ -76,7 +76,16 @@ if ($verb -eq 'cowork') {
   # orient in the folder, then offer a menu of work rather than starting
   # anything unasked. Deliberately apostrophe-free for the quoting below.
   $kickoff = 'Orient yourself in this Setty project folder: skim the folder structure a couple of levels deep, identify the project from the folder name, and note the main document types you see. Then give the user a two line snapshot and ask what they would like to tackle, suggesting for example: generate a document from a Setty template, edit or update an existing document, assemble a transmittal or submittal package, organize or rename files, or summarize a document or drawing set. If the Setty PMS connector tools are available, use them for project context. Do not start any work until the user chooses.'
-  Start-Process powershell -WorkingDirectory $path -ArgumentList '-NoExit','-NoProfile','-Command', ('& "' + $claudeExe + '" ''' + $kickoff + '''')
+  $inner = '& "' + $claudeExe + '" ''' + $kickoff + ''''
+  # Prefer Windows Terminal when present (nicer window, same session).
+  # wt needs ONE pre-joined argument string: Start-Process array args break
+  # its -d quoting (verified 9/6). wt splits panes on ';', so any path
+  # containing one falls back to the plain PowerShell host.
+  if ((Get-Command wt -ErrorAction SilentlyContinue) -and $path -notmatch ';') {
+    Start-Process wt -ArgumentList ('-d "' + $path + '" powershell -NoExit -NoProfile -Command ' + $inner)
+  } else {
+    Start-Process powershell -WorkingDirectory $path -ArgumentList '-NoExit','-NoProfile','-Command', $inner
+  }
   exit
 }
 
