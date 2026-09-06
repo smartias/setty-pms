@@ -929,13 +929,19 @@ async function renderRegions() {
   const rows = state.regions.map((r, i) => `
     <tr style="${r.enabled ? "" : "opacity:.55"}">
       <td><b>${esc(r.team)}</b></td><td>${esc(r.region_name)}</td>
-      <td><span class="pill ${r.storage_kind === "sharepoint" ? "ok" : "warn"}">${r.storage_kind === "sharepoint" ? "SharePoint" : "Azure share"}</span></td>
+      <td><span class="pill ${r.storage_kind === "sharepoint" ? "ok" : "warn"}">${
+        r.storage_kind !== "sharepoint" ? "Azure share" : r.azure_share_url ? "SharePoint + drive annex" : "SharePoint"
+      }</span></td>
       <td style="font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.sharepoint_site_id)}">${esc(r.sharepoint_site_id)}</td>
       <td style="font-size:12px">${esc(r.doc_library)}</td>
       <td>${r.enabled ? '<span class="pill ok">on</span>' : '<span class="pill bad">off</span>'}</td>
       <td><button class="btn" onclick="editRegion(${i})">Edit</button></td>
     </tr>`).join("");
   const azure = ed && ed.storage_kind === "azure_files";
+  // Hybrid: the Azure share is an optional readable ANNEX on any region, not
+  // an either/or with SharePoint — a migrating region keeps full features for
+  // everything filed in SharePoint while its legacy drive stays readable.
+  const annex = ed && (azure || ed.azure_share_url || ed.azure_sas_env);
   const form = !ed ? "" : `
     <div class="card" style="border-color:var(--accent)">
       <div style="color:var(--muted);font-size:12px;margin-bottom:8px">${ed._isNew ? "ADD REGION" : "EDIT REGION — " + esc(ed.team)}</div>
@@ -943,22 +949,24 @@ async function renderRegions() {
         <label style="font-size:12px">Team code<br><input id="rgTeam" value="${esc(ed.team)}" ${ed._isNew ? "" : "disabled"} placeholder="DC" style="width:70px" oninput="state.regionEdit.team=this.value.toUpperCase()"></label>
         <label style="font-size:12px">Region name<br><input id="rgName" value="${esc(ed.region_name)}" placeholder="Washington DC" style="width:160px" oninput="state.regionEdit.region_name=this.value"></label>
         <label style="font-size:12px">Storage<br><select id="rgKind" onchange="state.regionEdit.storage_kind=this.value; if(this.value==='azure_files'&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env='AZURE_SAS_'+(state.regionEdit.team||'XX');} render()">
-          <option value="sharepoint" ${!azure ? "selected" : ""}>SharePoint (full)</option>
-          <option value="azure_files" ${azure ? "selected" : ""}>Azure share (browse/read)</option>
+          <option value="sharepoint" ${!azure ? "selected" : ""}>SharePoint (full features)</option>
+          <option value="azure_files" ${azure ? "selected" : ""}>Azure share only (browse/read)</option>
         </select></label>
         <label style="font-size:12px;flex:1;min-width:260px">SharePoint site URL (or Graph site id)<br><input id="rgSite" value="${esc(ed.sharepoint_site_id)}" placeholder="https://setty.sharepoint.com/sites/DCProjects" style="width:100%" oninput="state.regionEdit.sharepoint_site_id=this.value"></label>
         <label style="font-size:12px">Document library<br><input id="rgLib" value="${esc(ed.doc_library)}" style="width:180px" oninput="state.regionEdit.doc_library=this.value"></label>
-        ${azure ? `
-        <label style="font-size:12px;flex:1;min-width:260px">Azure share URL<br><input id="rgAzUrl" value="${esc(ed.azure_share_url || "")}" placeholder="https://<account>.file.core.windows.net/<share>" style="width:100%" oninput="state.regionEdit.azure_share_url=this.value"></label>
-        <label style="font-size:12px">SAS secret name<br><input id="rgAzEnv" value="${esc(ed.azure_sas_env || "")}" placeholder="AZURE_SAS_DC" style="width:140px" oninput="state.regionEdit.azure_sas_env=this.value"></label>` : ""}
         <label style="font-size:12px"><input type="checkbox" ${ed.enabled ? "checked" : ""} onchange="state.regionEdit.enabled=this.checked"> enabled</label>
+      </div>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px">NETWORK-DRIVE ANNEX (optional, any region) — legacy documents on the office drive stay browsable/readable while migration to SharePoint happens folder by folder; whatever is filed in SharePoint keeps the full feature set.</div>
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:4px">
+        <label style="font-size:12px;flex:1;min-width:260px">Azure share URL<br><input id="rgAzUrl" value="${esc(ed.azure_share_url || "")}" placeholder="https://<account>.file.core.windows.net/<share>" style="width:100%" oninput="state.regionEdit.azure_share_url=this.value; if(this.value&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env='AZURE_SAS_'+(state.regionEdit.team||'XX');render()}"></label>
+        <label style="font-size:12px">SAS secret name<br><input id="rgAzEnv" value="${esc(ed.azure_sas_env || "")}" placeholder="AZURE_SAS_DC" style="width:140px" oninput="state.regionEdit.azure_sas_env=this.value"></label>
       </div>
       <div style="margin-top:10px">
         <button class="btn btn-primary" onclick="saveRegion()">Save region</button>
         <button class="btn" onclick="state.regionEdit=null;render()">Cancel</button>
         <span id="rgNote" style="color:var(--muted);font-size:12px;margin-left:8px"></span>
       </div>
-      ${azure ? `
+      ${annex ? `
       <div style="margin-top:10px;padding:10px;background:var(--panel2,rgba(125,125,125,.08));border-radius:8px;font-size:12.5px;line-height:1.5">
         <b>Where the SAS token goes (never into this page, chat, or email):</b><br>
         1&nbsp;· In Azure, generate a <b>read-only</b> SAS for the share, with an expiry (rotate on a calendar).<br>
@@ -982,8 +990,10 @@ async function renderRegions() {
       <tbody>${rows || '<tr><td colspan="7" class="empty">No regions yet.</td></tr>'}</tbody></table>
       <div style="color:var(--muted);font-size:12px;margin-top:6px">
         Regional sites must follow the NY filing standard: project folders at the library root named by project number,
-        with the standard subfolders (Outgoing, Emails, Photos, …). Azure-share regions get browse/read only —
-        search, drawings, photos and transmittals need the project record in SharePoint.
+        with the standard subfolders (Outgoing, Emails, Photos, …). Regions can run HYBRID during migration:
+        the SharePoint site carries the project record (full features) while a registered drive annex keeps
+        legacy documents browsable/readable — moving a folder into SharePoint is what upgrades it to
+        search, drawings, photos and transmittals.
       </div>
     </div>`;
 }
@@ -1009,8 +1019,8 @@ async function saveRegion() {
   const team = String(ed.team || "").toUpperCase().trim();
   if (!team) { toast("Team code is required (matches the PMS team, e.g. DC).", "error"); return; }
   if (!String(ed.sharepoint_site_id || "").trim()) { toast("SharePoint site URL (or id) is required.", "error"); return; }
-  if (ed.storage_kind === "azure_files" && !String(ed.azure_sas_env || "").trim()) {
-    toast("Azure regions need the SAS secret NAME (e.g. AZURE_SAS_" + team + ").", "error"); return;
+  if ((ed.storage_kind === "azure_files" || String(ed.azure_share_url || "").trim()) && !String(ed.azure_sas_env || "").trim()) {
+    toast("An Azure share needs the SAS secret NAME (e.g. AZURE_SAS_" + team + ").", "error"); return;
   }
   const note = $("rgNote"); if (note) note.textContent = "Saving…";
   const siteRef = await resolveSiteUrl(String(ed.sharepoint_site_id).trim());
