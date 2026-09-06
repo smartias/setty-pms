@@ -70,11 +70,22 @@ check(teamForProject(PROJECTS, "") === null && teamForProject(PROJECTS, "NOPE") 
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED from this test's copy`);
-has('"pms_regions?select=team,sharepoint_site_id,doc_library&enabled=eq.true"', "region rows query (enabled only)");
+has('"pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env&enabled=eq.true"',
+  "region rows query (enabled only, storage seam columns)");
+// Storage seam (slice A): 'azure_files' regions are gated to browse/read
+// semantics, the gates sit AFTER project resolution (HIDE must win), and the
+// refusal text is one shared constant so every tool says the same true thing.
+has('kind: r.storage_kind === "azure_files" ? "azure_files" : "sharepoint",', "unknown storage kinds fail closed to sharepoint");
+has("const AZURE_LIMITED_NOTE =", "single shared azure-limitation note");
+check((shipped.match(/AZURE_LIMITED_NOTE/g) || []).length >= 7,
+  "the azure gate guards the file tools (drawings, sheets, current set, transmittals, find_document, listing)");
+has('if ((await storageFor(project)).kind !== "sharepoint") {', "gates run on the RESOLVED project (after HIDE)");
+has("azureSasEnv: r.azure_sas_env ? String(r.azure_sas_env) : null,",
+  "SAS config is an env-var NAME — the token itself never comes from the database");
 has("async function docDriveId(team?: string | null): Promise<string> {", "docDriveId is region-aware");
 has("async function siteDrives(team?: string | null): Promise<Array<{ id: string; name: string }>> {",
   "siteDrives is region-aware");
-has("const DEFAULT_REGION: RegionSite = { siteId: SP_SITE_ID, docLibrary: DOC_LIBRARY };", "env-default fallback");
+has('siteId: SP_SITE_ID, docLibrary: DOC_LIBRARY, kind: "sharepoint",', "env-default fallback (sharepoint kind)");
 has("const drive = await docDriveId(await teamForProject(projectNumber));", "projectFolder routes by project team");
 has("const drives = await siteDrives(await teamForProject(numPrefix));", "tree/subtree walks route by project team");
 has('const proj = await findProjectFolderInDrive(driveId, "sapx26xxx");', "templates stay default-region (NY) for now");

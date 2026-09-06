@@ -460,25 +460,54 @@ async function graphGet(path: string): Promise<any> {
 // Sites and drive ids are stable facts, cached per site; the region map itself
 // refreshes on the same 300s clock as the projects cache so a newly added
 // region shows up without a redeploy.
-type RegionSite = { siteId: string; docLibrary: string };
-const DEFAULT_REGION: RegionSite = { siteId: SP_SITE_ID, docLibrary: DOC_LIBRARY };
+// storage_kind is the SEAM between tools and storage (slice A, 2026-09-06):
+// 'sharepoint' regions get every file capability through Graph as always;
+// 'azure_files' regions (shares synced into Azure Files, read via a SAS
+// token named by azure_sas_env — the secret itself lives in the function's
+// env, never the database) are the browse-and-read bridge for the firm's
+// current hybrid: people still save to network drives while migration to
+// SharePoint happens region by region. Tools that need search, thumbnails,
+// or library semantics check the kind up front and say what the storage
+// can't do instead of failing confusingly. The provider itself lands in
+// slice B; until a row says 'azure_files', nothing routes there.
+type StorageKind = "sharepoint" | "azure_files";
+type RegionSite = {
+  siteId: string; docLibrary: string; kind: StorageKind;
+  azureShareUrl: string | null; azureSasEnv: string | null;
+};
+const DEFAULT_REGION: RegionSite = {
+  siteId: SP_SITE_ID, docLibrary: DOC_LIBRARY, kind: "sharepoint",
+  azureShareUrl: null, azureSasEnv: null,
+};
 let _regions: { at: number; map: Map<string, RegionSite> } | null = null;
 async function regionMap(): Promise<Map<string, RegionSite>> {
   if (_regions && (Date.now() - _regions.at) < 300000) return _regions.map;
   const map = new Map<string, RegionSite>();
   try {
-    const rows = await sbGet("pms_regions?select=team,sharepoint_site_id,doc_library&enabled=eq.true");
+    const rows = await sbGet("pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env&enabled=eq.true");
     for (const r of (Array.isArray(rows) ? rows : [])) {
       if (r?.team && r?.sharepoint_site_id) {
         map.set(String(r.team).toUpperCase().trim(), {
           siteId: String(r.sharepoint_site_id),
           docLibrary: String(r.doc_library || DOC_LIBRARY),
+          kind: r.storage_kind === "azure_files" ? "azure_files" : "sharepoint",
+          azureShareUrl: r.azure_share_url ? String(r.azure_share_url) : null,
+          azureSasEnv: r.azure_sas_env ? String(r.azure_sas_env) : null,
         });
       }
     }
   } catch { /* table missing or unreadable: every team falls back to the env defaults */ }
   _regions = { at: Date.now(), map };
   return map;
+}
+// The honest refusal for capabilities Azure Files storage cannot provide.
+// One place, so every tool says the same true thing.
+const AZURE_LIMITED_NOTE =
+  "This project's region stores its files on an Azure file share (synced from the office network " +
+  "drive), which supports browsing folders and reading named files only. Search, drawings, photos " +
+  "and transmittal features need the project record in the region's SharePoint site.";
+async function storageFor(projectNumber: string | null | undefined): Promise<RegionSite> {
+  return siteForTeam(await teamForProject(projectNumber));
 }
 async function siteForTeam(team: string | null | undefined): Promise<RegionSite> {
   if (!team) return DEFAULT_REGION;
@@ -649,9 +678,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-06-multi-region-sites";
+const BUILD = "2026-09-06-storage-seam";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.7.0",
+  name: "setty-pms", version: "1.7.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -2587,6 +2616,11 @@ mcp.tool("get_current_set", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
+    // Storage seam: capability gates sit AFTER project resolution so a hidden
+    // project still reads as not-found, never as "exists but on Azure".
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "list_project_documents can browse this region's share once its credentials are configured." });
+    }
     const disc = (discipline ?? "").toLowerCase().trim();
 
     let rows: any[] = [];
@@ -3053,6 +3087,14 @@ mcp.tool("list_project_documents", {
   handler: async ({ projectNumber, subfolder, library, folderMatch, folderId }) => {
     try {
       const team = await teamForProject(projectNumber);
+      // Slice B lands the Azure Files browse/read provider here; until a
+      // region's credentials are configured there is nothing to list.
+      if ((await siteForTeam(team)).kind !== "sharepoint") {
+        return asText({
+          error: AZURE_LIMITED_NOTE,
+          note: "Browsing this region's Azure share is not enabled yet — its read credentials are not configured. Ask Sara Arias.",
+        });
+      }
       const drives = await siteDrives(team);
       const rel = subfolder && subfolder.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "").split("/").map(encodeURIComponent).join("/") : "";
       // Mode 3: open a specific folder by composite id.
@@ -3658,6 +3700,9 @@ mcp.tool("find_document", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "list_project_documents can browse this region's share once its credentials are configured." });
+    }
 
     let tree;
     try {
@@ -4165,6 +4210,9 @@ mcp.tool("prepare_transmittal", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site." });
+    }
 
     let rows: any[] = [];
     try {
@@ -4323,6 +4371,9 @@ mcp.tool("extract_sheet_index", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "read_document can read a specific named file once the region's share credentials are configured." });
+    }
 
     // ── DEFAULT: the current full set, composed from the register ────────────
     // No subfolder means "the whole set as it stands", which is the question
@@ -5088,6 +5139,9 @@ mcp.tool("search_drawings", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Drawing search needs the drawing set filed in the region's SharePoint site (Outgoing)." });
+    }
     const numPrefix = String(project).toLowerCase().trim();
     const patterns = drawingQueryPatterns(query || "");
     if (!indexOnly && !patterns.length) {
