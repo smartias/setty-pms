@@ -602,8 +602,17 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   the tab remains the human sign-off record.
 - Still open in this arc — the PLANNED SCHEDULE, in order (per Sara,
   2026-09-07 evening):
-  1. **Ledger view in the QA tab**: findings list with confirm/dismiss per
-     row (human close for external comments), reading pms_qa_findings.
+  1. **QA tab becomes "QA Reviews"** (per Sara, 2026-09-07 late): the
+     ledger IS the tab. Primary view: review runs + findings from
+     pms_qa_reviews/pms_qa_findings — what was found or commented, by whom,
+     backcheck state, confirm/dismiss per row with a note (human close for
+     external comments). The 130-item manual checklist UI RETIRES: the
+     checklist content stays in pms_qa_checklist as the review engine, and
+     the only hand-checked surface left is a small per-review card for the
+     ~8 manual-tier judgment items (lineweights, plot integrity, ceiling
+     congestion), checked off with a name so the sign-off trail survives.
+     Existing project.checklists instances stay readable (history), just no
+     longer the workflow.
   2. **Automatic back-check trigger**: new set/bulletin detected in
      Outgoing → back-check pass over the project's open ledger rows.
   3. **Backgrounds inventory + clash screening** (skill shipped 2026-09-07,
