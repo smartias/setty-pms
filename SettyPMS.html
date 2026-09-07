@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-07-pms-v143-qa-review-button";
+    window.__appVersion = "2026-09-07-pms-v144-design-narrative";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -20685,11 +20685,19 @@ function AskClaudeMenu({ project }) {
   })();
   const coworkReady = !!coworkFolderName && localStorage.getItem("pmsExplorerHandler") === "1";
 
+  const narrativeUrl = () => promptUrl([
+    "Generate the design narrative / Basis of Design for " + label + " for the current phase.",
+    "",
+    "Use the Setty PMS connector: find and read any PREVIOUS design narratives on the project first (structure and voice to update, not rewrite), then build from the issued drawings (current set, sheet index, schedules for capacities and basis-of-design selections, code summaries), meeting notes, and filed emails. Every design statement must trace to the record - cite decisions to their meeting or email, and leave [ENGINEER TO CONFIRM] brackets where the record is silent rather than inventing a basis.",
+    "",
+    "Include a drawing index section: every sheet in the current set per discipline with its number, title, and one sentence on what it shows. End with the sources used and the list of brackets left for my review. Produce it as an editable Word document.",
+  ]);
   const entries = [
     { icon: "💬", title: "Ask about this job", desc: "Briefing: what needs attention, risks, next steps", url: briefingUrl },
     { icon: "📅", title: "Prep my next meeting", desc: "Per-item status, decisions, open questions, sources", url: meetingPrepUrl },
     { icon: "📄", title: "Draft a proposal from an RFP", desc: "Paste the RFP, get import-ready draft JSON", url: proposalUrl },
     { icon: "✅", title: "Build the open items log", desc: "Assumptions and awaited items for the next deliverable", url: openItemsUrl },
+    { icon: "📐", title: "Generate design narrative", desc: "Basis of Design from drawings, minutes, emails and prior narratives - with a drawing index", url: narrativeUrl },
   ];
   if (coworkReady) entries.push({
     icon: "📁", title: "Work in the project folder",
