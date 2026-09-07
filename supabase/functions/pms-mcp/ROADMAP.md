@@ -646,6 +646,21 @@ Owner: unassigned. Raised by Sara 2026-08-06.
      zero-false-positive ingest at save time. Dedupe key: source_doc.
      The QA Reviews tab then shows them with backcheck state automatically,
      since it reads the ledger.
+  7. **Code review of the drawings** (per Sara, 2026-09-07 late): a code-
+     compliance pass as part of (or alongside) the coordination review —
+     check the set against the applicable codes the sheets themselves cite
+     (NYC/NYS Building Code, Mechanical Code, Energy Code, FDNY, plus
+     agency-specific requirements from search_agency_preferences): code-
+     summary consistency across disciplines, required notes present
+     (special inspections, energy progress inspections), ventilation/
+     exhaust rates on schedules vs code minimums where derivable,
+     fire/smoke damper requirements at rated assemblies, egress lighting
+     coverage. Same posture as everything here: evidence-cited flags for an
+     engineer's judgment, never a compliance certification; findings land
+     in the ledger keyed to checklist items (grow the checklist's agency
+     section with code-check rows as content). Candidate approach: a
+     code-requirements layer in the knowledge base per jurisdiction/agency
+     so the review cites the requirement it checked against.
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
