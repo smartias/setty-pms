@@ -64,7 +64,16 @@ type ResolvedCaps = {
   caps: Record<string, boolean>;
   projects: Record<string, Record<string, boolean>>;
 };
-const SERVICE_CAPS: ResolvedCaps = { email: null, role: "service", team: null, isAdmin: true, caps: {}, projects: {} };
+// The shared-secret lane is LEAST-PRIVILEGE, not admin (2026-09-07): a
+// surviving pilot-era Python bridge was found querying with the secret from
+// outside the office, and the lane's old isAdmin=true meant it bypassed fee
+// redaction, project hiding and team scoping entirely. A bearer secret is
+// weaker than a per-user sign-in (it does not expire, names nobody, and
+// travels wherever the script is copied), so it must never grant MORE than a
+// signed-in user gets: service callers now read like untagged staff — fees
+// redacted, HIDE rules apply, no admin bypass. Anything needing more must
+// sign in as a real identity.
+const SERVICE_CAPS: ResolvedCaps = { email: null, role: "service", team: null, isAdmin: false, caps: { "projects.view": true }, projects: {} };
 // If the resolver itself fails, degrade to "new-hire" behavior (visible but
 // fee-redacted) rather than a blank session or a silent full-access pass.
 // team null on the fallback errs toward the untagged pool, never toward a
@@ -701,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-06-regions-console";
+const BUILD = "2026-09-07-service-lane-least-privilege";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.7.2",
+  name: "setty-pms", version: "1.7.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -881,7 +890,9 @@ const _rawTool = mcp.tool.bind(mcp);
           // Requires the caller_email column to exist BEFORE this deploys:
           // PostgREST 400s inserts with unknown columns, and logTelemetry
           // swallows that, which would silently kill ALL telemetry.
-          caller_email: currentCaller().email,
+          // The shared-secret lane is labeled, not null: a null here is what
+          // let a stray pilot bridge look like nobody for a week.
+          caller_email: currentCaller().kind === "service" ? "(shared-secret)" : currentCaller().email,
           query: args?.query ? String(args.query).slice(0, TELEMETRY_QUERY_MAX) : null,
           detail: cls.detail,
         });
@@ -6450,7 +6461,17 @@ app.use("/pms-mcp/mcp", async (c, next) => {
     const payload = await verifyEntraToken(auth.slice(7));
     if (payload) {
       const caller = callerFromPayload(payload);
-      console.log("[caller]", caller.email ?? "(no email claim)", caller.oid ?? "");
+      // A verified token with no user claims is an app-only (client
+      // credentials) token: real, tenant-issued, and NAMELESS. Every
+      // capability decision here keys off the person, so a nameless token
+      // gets refused outright rather than served as a ghost — automations
+      // use the shared-secret lane (least-privilege) or a future service
+      // identity, never an anonymous pass.
+      if (!caller.email) {
+        console.warn("[auth] verified token carries no user identity (app-only?) — refused. oid:", caller.oid ?? "?");
+        return c.json({ error: "This connector requires a signed-in Setty user account; app-only tokens are not accepted." }, 403);
+      }
+      console.log("[caller]", caller.email, caller.oid ?? "");
       await callerStore.run(caller, () => next());
       return;
     }
