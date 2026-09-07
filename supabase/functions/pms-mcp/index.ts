@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-07-qa-findings-ledger";
+const BUILD = "2026-09-07-qa-cost-severity";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.10.0",
+  name: "setty-pms", version: "1.10.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6432,7 +6432,14 @@ mcp.tool("get_qa_checklist", {
 // never closed without a note naming the human decision.
 
 const QA_FINDING_SOURCES = ["qa", "ripple", "drchecks", "owner", "architect", "agency", "other"] as const;
-const QA_FINDING_SEVERITIES = ["life-safety", "agency", "rfi-bait", "polish"] as const;
+const QA_FINDING_SEVERITIES = ["life-safety", "agency", "cost", "rfi-bait", "polish"] as const;
+// Working order for the ledger: worst consequence first, and external
+// reviewer comments outrank internal findings of the same severity —
+// an agency comment is never below a house nit.
+const QA_SEVERITY_RANK: Record<string, number> = { "life-safety": 0, "agency": 1, "cost": 2, "rfi-bait": 3, "polish": 4 };
+const QA_EXTERNAL_SOURCES = new Set(["drchecks", "owner", "architect", "agency"]);
+const qaFindingRank = (r: { severity?: string | null; source?: string | null }) =>
+  (QA_SEVERITY_RANK[r.severity ?? ""] ?? 5) * 2 + (QA_EXTERNAL_SOURCES.has(r.source ?? "") ? 0 : 1);
 const QA_FINDING_STATUSES = ["open", "ready_to_backcheck", "closed", "dismissed"] as const;
 const QA_FINDINGS_MAX_PER_CALL = 50;
 
@@ -6468,7 +6475,9 @@ mcp.tool("record_qa_findings", {
     "review run (qa-coordination-review skill) so findings persist for back-check on the next bulletin; use " +
     "kind:'comment-log' with sourceDoc when ingesting a DrChecks/owner/architect comment register (one finding " +
     "per comment, externalRef = the comment number, source naming the commenter). Findings default to status " +
-    "'open'. Severity vocabulary: life-safety, agency (rejection risk), rfi-bait (contractor confusion), " +
+    "'open'. Severity vocabulary, worst first: life-safety, agency (rejection risk), cost (significant cost " +
+    "exposure — mandatory consideration on any POST-BID review: after bid issuance every change is a potential " +
+    "change order, so bulletin findings state their cost consequence), rfi-bait (contractor confusion), " +
     "polish. Every row is stamped with the signed-in caller. Recording findings does NOT mark anything " +
     "resolved — update_qa_finding moves status, and list_qa_findings reads the ledger.",
   inputSchema: z.object({
@@ -6550,7 +6559,7 @@ mcp.tool("list_qa_findings", {
     const project = p?.projectNumber || projectNumber;
     const lim = Math.min(Math.max(limit ?? 50, 1), 200);
     let path = "pms_qa_findings?select=id,review_id,item_id,source,severity,title,sheets,evidence,action,status,status_note,status_by,status_at,external_ref,created_by,created_at" +
-      "&project=eq." + encodeURIComponent(project) + "&order=status,severity,created_at.desc&limit=" + lim;
+      "&project=eq." + encodeURIComponent(project) + "&order=created_at.desc&limit=" + lim;
     const st = (status ?? "open").trim().toLowerCase();
     if (st === "open") path += "&status=in.(open,ready_to_backcheck)";
     else if (st !== "all") path += "&status=eq." + encodeURIComponent(st);
@@ -6559,10 +6568,13 @@ mcp.tool("list_qa_findings", {
     try { rows = await sbGetAll(path); } catch (e) {
       return asText({ project, error: `Could not read the ledger: ${String((e as any)?.message ?? e)}` });
     }
+    // Working order: severity worst-first, external reviewer comments before
+    // internal findings at the same severity, then newest.
+    rows.sort((a, b) => qaFindingRank(a) - qaFindingRank(b) || String(b.created_at).localeCompare(String(a.created_at)));
     const counts = rows.reduce((m: Record<string, number>, r) => ((m[r.status] = (m[r.status] || 0) + 1), m), {});
     return asText({
       project, count: rows.length, byStatus: counts, findings: rows,
-      note: "'ready_to_backcheck' external rows await a HUMAN close. Back-check: verify each open row against the newest revision of its cited sheets (search_drawings history / read_drawing_schedule / view_drawing), then update_qa_finding with the evidence.",
+      note: "Ordered worst-first (life-safety > agency > cost > rfi-bait > polish), external reviewer comments before internal findings at the same severity. 'ready_to_backcheck' external rows await a HUMAN close. Back-check: verify each open row against the newest revision of its cited sheets (search_drawings history / read_drawing_schedule / view_drawing), then update_qa_finding with the evidence.",
     });
   },
 });

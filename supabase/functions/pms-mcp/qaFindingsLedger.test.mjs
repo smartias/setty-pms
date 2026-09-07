@@ -47,5 +47,26 @@ const srcSources = src.match(/QA_FINDING_SOURCES = \[([^\]]+)\]/)[1].replace(/["
 assert.equal(srcSources, "qa,ripple,drchecks,owner,architect,agency,other");
 const srcStatuses = src.match(/QA_FINDING_STATUSES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
 assert.equal(srcStatuses, "open,ready_to_backcheck,closed,dismissed");
+const srcSeverities = src.match(/QA_FINDING_SEVERITIES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
+assert.equal(srcSeverities, "life-safety,agency,cost,rfi-bait,polish");
+
+// Priority order: worst severity first; external reviewer comments outrank
+// internal findings at the same severity (copy of qaFindingRank).
+const QA_SEVERITY_RANK = { "life-safety": 0, "agency": 1, "cost": 2, "rfi-bait": 3, "polish": 4 };
+const QA_EXTERNAL_SOURCES = new Set(["drchecks", "owner", "architect", "agency"]);
+const qaFindingRank = (r) => (QA_SEVERITY_RANK[r.severity ?? ""] ?? 5) * 2 + (QA_EXTERNAL_SOURCES.has(r.source ?? "") ? 0 : 1);
+const sorted = [
+  { severity: "polish", source: "qa" },
+  { severity: "cost", source: "qa" },
+  { severity: "agency", source: "drchecks" },
+  { severity: "agency", source: "qa" },
+  { severity: "cost", source: "owner" },
+  { severity: null, source: "qa" },
+].sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
+assert.deepEqual(sorted.map((r) => `${r.severity}/${r.source}`),
+  ["agency/drchecks", "agency/qa", "cost/owner", "cost/qa", "polish/qa", "null/qa"]);
+assert.ok(src.includes("const qaFindingRank"), "index.ts lost qaFindingRank");
+const cost = readFileSync(join(here, "../../migrations/20260907150000_qa_severity_cost.sql"), "utf8");
+assert.ok(cost.includes("check (severity in ('life-safety','agency','cost','rfi-bait','polish'))"), "cost migration lost the vocabulary");
 
 console.log("qaFindingsLedger.test.mjs: all assertions passed");
