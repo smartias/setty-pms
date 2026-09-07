@@ -631,6 +631,21 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   5. **Sync the qa-coordination-review skill into the firm's Claude skill
      library** so the QA-tab button's prompt always lands on it for every
      user.
+  6. **Automatic comment-log ingest** (per Sara, 2026-09-07 late): owner/
+     architect/agency comments should reach the ledger the moment someone
+     saves them, not when someone remembers to ingest. Two complementary
+     routes: (a) a scheduled comment-log WATCHER — a Routine that fires a
+     fresh Claude session on a cadence, sweeps active projects' Email
+     folders for `*COMMENTS*` files whose name is not yet in
+     pms_qa_reviews.source_doc, ingests each via record_qa_findings
+     kind:'comment-log' (source best-guessed from the file/sender, flagged
+     for PM confirmation when ambiguous), and reports what it ingested;
+     this is P3.11's "dropping a *COMMENTS* file triggers action" made
+     real, read-only Graph, no new scopes. (b) an Outlook add-in filing
+     action — "file as review comments" — for explicit, immediate,
+     zero-false-positive ingest at save time. Dedupe key: source_doc.
+     The QA Reviews tab then shows them with backcheck state automatically,
+     since it reads the ledger.
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
