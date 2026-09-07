@@ -175,5 +175,20 @@ for (const anchor of [
   check(shipped.includes(anchor), "fee-detection anchor missing from index.ts (drift): " + anchor);
 }
 
+// ── service-lane least privilege (2026-09-07) ───────────────────────────────
+// A surviving pilot-era bridge script was found reading with the shared
+// secret from outside the office; the lane must never again be an admin
+// bypass. These anchors pin the whole posture: least-privilege caps, a
+// telemetry label instead of a null, and a hard refusal of nameless
+// (app-only) Entra tokens.
+for (const [anchor, label] of [
+  ['role: "service", team: null, isAdmin: false, caps: { "projects.view": true }', "SERVICE_CAPS is least-privilege, never admin"],
+  ['currentCaller().kind === "service" ? "(shared-secret)" : currentCaller().email', "telemetry labels the shared-secret lane"],
+  ["app-only tokens are not accepted", "nameless verified tokens are refused, not served as ghosts"],
+  ["if (!caller.email) {", "the refusal keys on a missing user identity"],
+]) {
+  check(shipped.includes(anchor), label + " has DRIFTED from this test's anchor");
+}
+
 console.log(failures ? `\n${failures} assertions FAILED` : "\nall assertions pass (caps enforcement)");
 process.exit(failures ? 1 : 0);
