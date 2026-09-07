@@ -600,10 +600,28 @@ Owner: unassigned. Raised by Sara 2026-08-06.
 - **QA-tab button** (SettyPMS v143): "Run Coordination Review" in
   QA → Checklists opens the user's Claude seat with the review prompt;
   the tab remains the human sign-off record.
-- Still open in this arc: ledger view IN the QA tab (findings list with
-  confirm/dismiss per row), automatic back-check trigger on new-set
-  detection, ripple rules as a DB table, and syncing the skill into the
-  firm's Claude skill library so the button's prompt always lands on it.
+- Still open in this arc — the PLANNED SCHEDULE, in order (per Sara,
+  2026-09-07 evening):
+  1. **Ledger view in the QA tab**: findings list with confirm/dismiss per
+     row (human close for external comments), reading pms_qa_findings.
+  2. **Automatic back-check trigger**: new set/bulletin detected in
+     Outgoing → back-check pass over the project's open ledger rows.
+  3. **Backgrounds inventory + clash screening** (skill shipped 2026-09-07,
+     needs piloting): every review inventories incoming A/S/site/RCP PDFs
+     and reports found / stale / MISSING so the team knows what to request;
+     with current backgrounds, screen the coordination items (piping over
+     panels, RCP overlaps, duct vs structure) via paired view_drawing
+     renders. Always framed as 2D gross-conflict screening with the areas
+     screened listed — never sold as geometric clash detection (no 3D
+     model, no elevations). Follow-ups: index incoming backgrounds
+     (search_drawings currently scopes Outgoing only), and a
+     staleness check comparing background dates to our issue dates as an
+     auto-tier item.
+  4. **Ripple rules as a DB table** (now content in the skill) so lessons
+     learned extend them without a deploy.
+  5. **Sync the qa-coordination-review skill into the firm's Claude skill
+     library** so the QA-tab button's prompt always lands on it for every
+     user.
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
