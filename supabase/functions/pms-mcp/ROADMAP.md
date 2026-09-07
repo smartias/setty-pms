@@ -537,6 +537,19 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   `stillPresentAtLatest`, revision-block description) that is phase 3 made
   explicit. What phase 3 still lacks is the register's "who received it".
 
+### Drawing Intelligence phase 4: `view_drawing` (2026-09-07)
+
+- Renders one page of an issued drawing PDF as an image (PDFium wasm +
+  imagescript, the `pdf-render-test` probe's proven pair) so the model can SEE
+  the sheet: plans, details, schedules, title block. Sheet mode resolves
+  through `pms_drawing_text` (newest revision default, pinnable by revision or
+  set, individual file preferred over combined book); direct mode renders any
+  PDF by itemId + page. `region` quadrants zoom to ~2x effective resolution
+  for reading small text. What phase 4 still lacks: structured extraction of
+  SCHEDULES into rows (the text index sees schedule text but not its table
+  geometry), and OCR for scanned sheets (P3.10) — an image-only sheet renders
+  fine in view_drawing but stays invisible to search_drawings.
+
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
 Raised by Sara: "there should be a company retrieval tool... I need a WBE

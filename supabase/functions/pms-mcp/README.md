@@ -240,6 +240,30 @@ one indexed query.
 node supabase/functions/pms-mcp/searchDrawings.test.mjs
 ```
 
+## `view_drawing`, eyes on the sheet (Drawing Intelligence phase 4)
+
+`search_drawings` says WHERE something is (file, page, revision); `view_drawing` renders that
+page as an image so the model can look at the drawing itself — plan layout, details, schedules,
+the title block. PDFium (wasm, `@hyzyla/pdfium`) rasterizes the page and imagescript encodes it,
+both proven by the `pdf-render-test` probe function and loaded lazily like unpdf.
+
+- **Sheet mode**: `projectNumber` + `sheet` resolves through `pms_drawing_text` — hyphen/space/dot
+  agnostic (a loose `ilike` candidate pattern, then exact normalized-token equality). Newest
+  indexed revision by default (same `drawingRevSort` as search), pinnable with `revision` or
+  `set`; at the same revision an INDIVIDUAL sheet file beats a combined book (smaller download).
+  The result lists the other indexed revisions. A miss reports close matches and index coverage.
+- **Direct mode**: `itemId` (+ `page`) renders any PDF from `list_project_documents`, no index needed.
+- **`region`**: full sheet targets ~1600px on the long edge — layout resolution. Quadrants
+  (`top-left`, ..., `center`) render at roughly double the effective resolution for reading
+  notes and schedules, overlapping 6% so seam content is never lost. A full-page pixel cap
+  (24M px) bounds memory; oversized PNGs re-encode as JPEG so the response stays shippable.
+- Read-only, one PDF download per call, 40MB file cap. Index pages are 1-based, PDFium 0-based —
+  the `- 1` at `getPage` is pinned by a drift anchor.
+
+```bash
+node supabase/functions/pms-mcp/viewDrawing.test.mjs
+```
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.

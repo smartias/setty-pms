@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-07-service-lane-least-privilege";
+const BUILD = "2026-09-07-view-drawing";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.7.3",
+  name: "setty-pms", version: "1.8.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -5592,8 +5592,8 @@ function graphShareToken(url: string): string | null {
   } catch { return null; }
 }
 
-function b64FromBuffer(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
+function b64FromBuffer(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let bin = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -5710,6 +5710,288 @@ mcp.tool("view_photos", {
     return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, ...images] };
   },
 });
+
+// ── view_drawing: put an actual SHEET in front of the model (phase 4) ────────
+// search_drawings knows WHERE everything is (file + page, per revision); this
+// renders that page as an image so the model can look at the drawing itself —
+// plans, details, schedules, the title block — instead of only its text layer.
+// Rendering runs in-process: PDFium (wasm) rasterizes, imagescript encodes.
+// Both were proven in the pdf-render-test probe (2026-06) and load lazily on
+// first use, same posture as unpdf. Read-only; downloads ONE PDF per call.
+const VIEW_DRAWING_REGIONS = ["full", "top-left", "top-right", "bottom-left", "bottom-right", "center"] as const;
+type ViewDrawingRegion = typeof VIEW_DRAWING_REGIONS[number];
+const VIEW_DRAWING_TARGET_EDGE = 1600;        // px on the region's long edge — matches what the model actually resolves
+const VIEW_DRAWING_MAX_PIXELS = 24_000_000;   // full-page RGBA bitmap cap (~96MB) — stays inside the isolate
+const VIEW_DRAWING_MAX_PDF_BYTES = 40 * 1024 * 1024;
+const VIEW_DRAWING_MAX_IMG_BYTES = 3_500_000; // PNG above this re-encodes as JPEG: base64 inflation must not blow the response
+const VIEW_DRAWING_REGION_OVERLAP = 0.06;     // quadrants overlap so content on the seam is never lost
+
+const normSheetToken = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// PostgREST candidate filter: the sheet's letters/digits joined by '%'
+// ("E211" -> "%e%2%1%1%") so E-211, E 2.11 and E211 all come back; exactness
+// is re-checked client-side with normSheetToken equality, so overmatching
+// here costs nothing but a few extra rows.
+function sheetLoosePattern(s: string): string {
+  const chars = normSheetToken(s).split("");
+  return chars.length ? "%" + chars.join("%") + "%" : "";
+}
+
+// Fractional crop box per region. Quadrants take half the page plus the
+// overlap margin; center takes the middle 56%.
+function drawingRegionBox(region: ViewDrawingRegion): { fx: number; fy: number; fw: number; fh: number } {
+  const half = 0.5 + VIEW_DRAWING_REGION_OVERLAP;
+  switch (region) {
+    case "top-left": return { fx: 0, fy: 0, fw: half, fh: half };
+    case "top-right": return { fx: 1 - half, fy: 0, fw: half, fh: half };
+    case "bottom-left": return { fx: 0, fy: 1 - half, fw: half, fh: half };
+    case "bottom-right": return { fx: 1 - half, fy: 1 - half, fw: half, fh: half };
+    case "center": return { fx: 0.22, fy: 0.22, fw: 0.56, fh: 0.56 };
+    default: return { fx: 0, fy: 0, fw: 1, fh: 1 };
+  }
+}
+
+// Scale so the REGION's long edge hits the target; the WHOLE page is rendered
+// (crop happens after), so the pixel cap applies to the full page and wins
+// over the target when the two disagree. A 30x42 sheet is 2160x3024pt: full
+// renders at ~0.53x, a quadrant at ~0.94x.
+function drawingRenderScale(wPt: number, hPt: number, box: { fw: number; fh: number }): number {
+  const longEdgePt = Math.max(wPt * box.fw, hPt * box.fh);
+  const target = longEdgePt > 0 ? VIEW_DRAWING_TARGET_EDGE / longEdgePt : 1;
+  const cap = wPt * hPt > 0 ? Math.sqrt(VIEW_DRAWING_MAX_PIXELS / (wPt * hPt)) : 1;
+  return Math.min(target, cap);
+}
+
+async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
+  const { PDFiumLibrary } = await import("@hyzyla/pdfium") as any;
+  const { Image } = await import("imagescript") as any;
+  const library = await PDFiumLibrary.init();
+  let doc: any = null;
+  try {
+    doc = await library.loadDocument(pdfBytes);
+    let pageCount: number | null = null;
+    try { pageCount = doc.getPageCount?.() ?? null; } catch { /* count is advisory */ }
+    if (pageCount != null && (pageInFile < 1 || pageInFile > pageCount)) {
+      throw new Error(`page ${pageInFile} is out of range — the file has ${pageCount} page(s)`);
+    }
+    const pg = doc.getPage(pageInFile - 1); // index pages are 1-based, PDFium is 0-based
+    const box = drawingRegionBox(region);
+    let wPt = 0, hPt = 0;
+    try { const sz = pg.getSize?.(); wPt = Number(sz?.width ?? pg.width ?? 0); hPt = Number(sz?.height ?? pg.height ?? 0); } catch { /* fall through */ }
+    let rendered: any;
+    if (wPt > 0 && hPt > 0) {
+      rendered = await pg.render({ scale: drawingRenderScale(wPt, hPt, box), render: "bitmap" });
+    } else {
+      // This build of the lib would not say the page size: render at 1x to
+      // learn it, and re-render only when 1x is badly off the target.
+      rendered = await pg.render({ scale: 1, render: "bitmap" });
+      const s = drawingRenderScale(rendered.width, rendered.height, box);
+      if (s < 0.9 || s > 1.5) rendered = await pg.render({ scale: s, render: "bitmap" });
+    }
+    let img = new Image(rendered.width, rendered.height);
+    img.bitmap.set(rendered.data);
+    if (region !== "full") {
+      const x = Math.max(0, Math.round(box.fx * rendered.width));
+      const y = Math.max(0, Math.round(box.fy * rendered.height));
+      const w = Math.min(rendered.width - x, Math.round(box.fw * rendered.width));
+      const h = Math.min(rendered.height - y, Math.round(box.fh * rendered.height));
+      if (w > 8 && h > 8) img = img.crop(x, y, w, h);
+    }
+    let bytes: Uint8Array = await img.encode();
+    let mimeType = "image/png";
+    if (bytes.length > VIEW_DRAWING_MAX_IMG_BYTES) { bytes = await img.encodeJPEG(80); mimeType = "image/jpeg"; }
+    return { b64: b64FromBuffer(bytes), mimeType, width: img.width, height: img.height, pageCount };
+  } finally {
+    try { doc?.destroy?.(); } catch { /* best-effort teardown */ }
+    try { library.destroy?.(); } catch { /* ditto */ }
+  }
+}
+
+async function fetchDrawingPdf(drive: string, realId: string): Promise<Uint8Array> {
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } },
+  );
+  if (!res.ok) throw new Error(`Graph content ${res.status}`);
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength > VIEW_DRAWING_MAX_PDF_BYTES) {
+    throw new Error(`the file is ${(buf.byteLength / 1048576).toFixed(0)}MB — over the ${VIEW_DRAWING_MAX_PDF_BYTES / 1048576}MB render limit`);
+  }
+  return new Uint8Array(buf);
+}
+
+mcp.tool("view_drawing", {
+  description:
+    "LOOK AT a drawing sheet (Drawing Intelligence phase 4) — renders one page of an issued drawing PDF as an " +
+    "image so you can see what is actually drawn: plan layouts, equipment placement, details, schedules, the " +
+    "title block. Use it when search_drawings or extract_sheet_index has named the sheet and the question needs " +
+    "eyes on the drawing rather than its text layer. Pass projectNumber + sheet (e.g. 'E-211'; hyphens/spacing " +
+    "don't matter). The NEWEST indexed revision renders by default; pin an older one with revision ('B', '13') " +
+    "or set (issue-folder substring, e.g. 'Bulletin #13'), and the result lists the other indexed revisions. " +
+    "A full-size sheet at model resolution shows LAYOUT, not fine print: pass region (top-left / top-right / " +
+    "bottom-left / bottom-right / center) to zoom into part of the sheet when notes, a schedule, or the title " +
+    "block must be READ — quadrants overlap slightly so nothing on the seam is lost. Only INDEXED sheets " +
+    "resolve by number: a miss reports close matches and whether indexing is still pending (fill it with " +
+    "search_drawings indexOnly:true). Any PDF can also be rendered directly by itemId ('driveId|itemId' from " +
+    "list_project_documents) + page. Renders are for viewing; the webUrl serves the full-resolution original. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("Project number OR project name (required unless itemId is passed)."),
+    sheet: z.string().optional().describe("Sheet number, e.g. 'E-211', 'M501', 'FP-102'. Hyphens, dots and spaces are interchangeable."),
+    revision: z.string().optional().describe("Pin a revision by its label ('B', '2', '13'). Default: the newest indexed revision."),
+    set: z.string().optional().describe("Pin the issue by folder-name substring, e.g. 'Bulletin #13' or '100% CD'."),
+    region: z.enum(VIEW_DRAWING_REGIONS).optional().describe("Part of the sheet to render. Default 'full'; quadrants/center render at roughly double the effective resolution — use them to read small text."),
+    itemId: z.string().optional().describe("Direct mode: a 'driveId|itemId' composite of ONE PDF from list_project_documents (no index needed)."),
+    page: z.number().optional().describe("Direct mode: 1-based page inside the itemId file (default 1). Ignored in sheet mode — the index knows the page."),
+  }),
+  handler: async ({ projectNumber, sheet, revision, set, region, itemId, page }) => {
+    const reg: ViewDrawingRegion = region ?? "full";
+
+    // ── Direct mode: render any PDF by itemId, no index required ───────────
+    if (itemId?.trim()) {
+      const bar = itemId.indexOf("|");
+      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
+      const drive = itemId.slice(0, bar), realId = itemId.slice(bar + 1);
+      let meta: any;
+      try {
+        meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,webUrl,file`);
+      } catch (e) {
+        return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
+      }
+      if (!/\.pdf$/i.test(meta?.name || "")) {
+        return asText({ error: `"${meta?.name}" is not a PDF.`, nextStep: "view_drawing renders drawing PDFs; view_photos shows image files.", webUrl: meta?.webUrl ?? null });
+      }
+      if (Number(meta?.size || 0) > VIEW_DRAWING_MAX_PDF_BYTES) {
+        return asText({ error: `"${meta.name}" is ${(Number(meta.size) / 1048576).toFixed(0)}MB — over the ${VIEW_DRAWING_MAX_PDF_BYTES / 1048576}MB render limit.`, nextStep: "Open the webUrl in the browser instead.", webUrl: meta.webUrl ?? null });
+      }
+      const pageInFile = Math.max(1, Math.round(page ?? 1));
+      try {
+        const bytes = await fetchDrawingPdf(drive, realId);
+        const out = await renderDrawingPage(bytes, pageInFile, reg);
+        const summary = {
+          file: meta.name, pageInFile, ...(out.pageCount != null ? { pagesInFile: out.pageCount } : {}),
+          region: reg, renderedPixels: `${out.width}x${out.height}`, webUrl: meta.webUrl ?? null,
+          note: reg === "full"
+            ? "Small text may not be legible at full-sheet resolution — call again with a region (top-left/top-right/bottom-left/bottom-right/center) to zoom in."
+            : `Rendered the ${reg} region; the webUrl serves the full-resolution original.`,
+        };
+        return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, { type: "image" as const, data: out.b64, mimeType: out.mimeType }] };
+      } catch (e) {
+        return asText({ error: `Could not render "${meta.name}" page ${pageInFile}: ${String((e as any)?.message ?? e).slice(0, 200)}`, webUrl: meta.webUrl ?? null });
+      }
+    }
+
+    // ── Sheet mode: resolve through the drawing text index ─────────────────
+    if (!projectNumber?.trim() || !sheet?.trim()) {
+      return asText({ error: "Pass projectNumber + sheet (e.g. 'E-211'), or itemId for a specific PDF.", nextStep: "search_drawings and extract_sheet_index name the sheets." });
+    }
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Rendering needs the drawing set filed in the region's SharePoint site (Outgoing)." });
+    }
+    const numPrefix = String(project).toLowerCase().trim();
+    const sheetNorm = normSheetToken(sheet);
+    if (!sheetNorm) return asText({ error: `"${sheet}" is not a sheet number.` });
+
+    let rowsAll: any[];
+    try {
+      rowsAll = await sbGetAll(
+        "pms_drawing_text?select=item_id,page,file_name,folder_path,web_url,sheet_no,sheet_title,revision,revision_date,revision_description" +
+        "&project_prefix=eq." + encodeURIComponent(numPrefix) +
+        "&sheet_no=ilike." + encodeURIComponent(sheetLoosePattern(sheet)) +
+        "&order=item_id,page",
+      );
+    } catch (e) {
+      return asText({ project, error: `Could not read the drawing index: ${String((e as any)?.message ?? e)}` });
+    }
+    const matches = rowsAll.filter((r) => normSheetToken(r.sheet_no) === sheetNorm);
+    if (!matches.length) {
+      const closeMatches = [...new Set(rowsAll.map((r) => r.sheet_no).filter(Boolean))].slice(0, 12);
+      let indexedFiles = 0, filesPending = 0;
+      try {
+        const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+        indexedFiles = known.filter((k) => k.status === "done").length;
+        filesPending = known.filter((k) => k.status === "pending").length;
+      } catch { /* coverage is advisory here */ }
+      return asText({
+        project, sheet, error: "No indexed page carries that sheet number.",
+        ...(closeMatches.length ? { closeMatches } : {}), indexedFiles, filesPending,
+        nextStep: filesPending > 0
+          ? `The index is incomplete (${filesPending} file(s) pending) — run search_drawings with indexOnly:true, then retry.`
+          : (indexedFiles === 0
+            ? "Nothing is indexed for this project yet — run search_drawings with indexOnly:true first."
+            : "Check the number with extract_sheet_index or search_drawings, or pass itemId + page directly."),
+      });
+    }
+
+    const revOf = (r: any): DrawingRev => ({ revision: r.revision ?? null, revisionDate: r.revision_date ?? null, revisionDescription: r.revision_description ?? null, set: drawingSetOf(r.folder_path) });
+    const revLabel = (r: any) => ({ revision: r.revision ?? null, revisionDate: r.revision_date ?? null, revisionDescription: r.revision_description ?? null, set: drawingSetOf(r.folder_path) });
+
+    let pool = matches;
+    if (revision?.trim()) {
+      const rn = normSheetToken(revision);
+      const filtered = pool.filter((r) => normSheetToken(r.revision) === rn);
+      if (!filtered.length) {
+        return asText({ project, sheet: matches[0].sheet_no, error: `No indexed revision "${revision}" of this sheet.`, indexedRevisions: dedupeRevs(pool.map(revLabel)) });
+      }
+      pool = filtered;
+    }
+    if (set?.trim()) {
+      const sl = set.trim().toLowerCase();
+      const filtered = pool.filter((r) => String(r.folder_path || "").toLowerCase().includes(sl));
+      if (!filtered.length) {
+        return asText({ project, sheet: matches[0].sheet_no, error: `No indexed copy of this sheet in a set matching "${set}".`, indexedRevisions: dedupeRevs(pool.map(revLabel)) });
+      }
+      pool = filtered;
+    }
+
+    // Newest revision first; at the same revision prefer the INDIVIDUAL sheet
+    // file over a combined book (smaller download), then the lowest page.
+    pool = [...pool].sort((a, b) =>
+      drawingRevSort(revOf(a), revOf(b)) ||
+      Number(normSheetToken(b.file_name).includes(sheetNorm)) - Number(normSheetToken(a.file_name).includes(sheetNorm)) ||
+      a.page - b.page);
+    const chosen = pool[0];
+    const chosenKey = drawingRevKey(revOf(chosen));
+    const otherRevisions = dedupeRevs(matches.map(revLabel)).filter((r) => `${r.revision ?? ""}|${r.set}` !== chosenKey);
+
+    const bar = String(chosen.item_id).indexOf("|");
+    if (bar <= 0) return asText({ project, error: "The index row carries a malformed file id — re-index with search_drawings indexOnly:true." });
+    try {
+      const bytes = await fetchDrawingPdf(chosen.item_id.slice(0, bar), chosen.item_id.slice(bar + 1));
+      const out = await renderDrawingPage(bytes, Number(chosen.page), reg);
+      const summary = {
+        project, sheet: chosen.sheet_no, sheetTitle: chosen.sheet_title ?? null,
+        revision: chosen.revision ?? null, revisionDate: chosen.revision_date ?? null,
+        revisionDescription: chosen.revision_description ?? null,
+        set: drawingSetOf(chosen.folder_path), file: chosen.file_name, pageInFile: chosen.page,
+        region: reg, renderedPixels: `${out.width}x${out.height}`,
+        ...(otherRevisions.length ? { otherIndexedRevisions: otherRevisions } : {}),
+        webUrl: chosen.web_url ?? null,
+        note: (reg === "full"
+          ? "Full sheet — good for layout; small text may not be legible. Call again with a region (top-left/top-right/bottom-left/bottom-right/center) to zoom in. "
+          : `Rendered the ${reg} region of the sheet. `) +
+          "This is the newest indexed revision unless one was pinned; unindexed revisions may exist (check search_drawings coverage). The webUrl serves the full-resolution original.",
+      };
+      return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, { type: "image" as const, data: out.b64, mimeType: out.mimeType }] };
+    } catch (e) {
+      return asText({
+        project, sheet: chosen.sheet_no, file: chosen.file_name, pageInFile: chosen.page,
+        error: `Could not render: ${String((e as any)?.message ?? e).slice(0, 200)}`,
+        webUrl: chosen.web_url ?? null,
+        nextStep: "The webUrl opens the sheet in the browser.",
+      });
+    }
+  },
+});
+
+// Distinct (revision, set) labels, order preserved.
+function dedupeRevs(revs: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }>) {
+  const seen = new Set<string>();
+  return revs.filter((r) => { const k = `${r.revision ?? ""}|${r.set}`; if (seen.has(k)) return false; seen.add(k); return true; });
+}
 
 // Canonical Additional Services Agreement (add service) template. Source of truth:
 // "Homeport II CA Extension Add Service.docx" (Sara Arias, 2026-07-15). The ACCEPTANCE
