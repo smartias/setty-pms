@@ -153,8 +153,20 @@ Reviewed <date> · Index coverage: <n>/<m> current-set files, <k> textless sheet
 ```
 
 Findings reference sheets as `E-211 Rev 6 (Bulletin #13)`. Severity is
-ordered by consequence (life safety / agency rejection / contractor RFI bait
-/ polish), not by checklist order. If the user wants a file, produce the
+ordered by consequence, not checklist order: **life-safety > agency
+(rejection risk) > cost (significant cost exposure) > rfi-bait > polish** —
+and at equal severity, EXTERNAL reviewer comments (agency above all, then
+owner/architect) come before internal findings: someone else's unanswered
+comment always outranks a house nit.
+
+**Post-bid cost posture.** From bid issuance on, every change is a potential
+change order. On any review of a bid set, bulletin, or addendum: state each
+finding's cost consequence explicitly; a design change that could have been
+caught pre-bid is severity 'cost' at minimum; the ripple analysis asks not
+only "did the other discipline pick it up" but "what does this change cost
+now that a contractor holds a price". The same lens applies when the
+submittal reviewer (roadmap) lands: a submittal deviating from the bid
+documents is a cost event, not just a technical one. If the user wants a file, produce the
 report as a document via the open-items-log or docx skill conventions;
 otherwise the chat report stands.
 
