@@ -587,6 +587,24 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   cowork pattern), and — later — pointing the app's QA tab at the table so
   the code template becomes fallback-only.
 
+### QA review flow shipped end to end (2026-09-07, later the same day)
+
+- **Skill**: `.claude/skills/qa-coordination-review/SKILL.md` — tiers,
+  evidence rules, change-record + cross-discipline ripple analysis
+  (parameter → discipline rules table), back-check mode. Piloted on Tabler:
+  12 findings incl. M601's backward revision stamp and the SF-1..8 HP
+  mismatch between M601 and E602.
+- **Findings ledger**: `pms_qa_reviews`/`pms_qa_findings` + record/list/
+  update tools (v1.10.0). External comments ingest into the same ledger;
+  automated passes never close external rows. Pilot findings seeded.
+- **QA-tab button** (SettyPMS v143): "Run Coordination Review" in
+  QA → Checklists opens the user's Claude seat with the review prompt;
+  the tab remains the human sign-off record.
+- Still open in this arc: ledger view IN the QA tab (findings list with
+  confirm/dismiss per row), automatic back-check trigger on new-set
+  detection, ripple rules as a DB table, and syncing the skill into the
+  firm's Claude skill library so the button's prompt always lands on it.
+
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
 Raised by Sara: "there should be a company retrieval tool... I need a WBE

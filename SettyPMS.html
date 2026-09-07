@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-06-pms-v142-cowork-in-folder";
+    window.__appVersion = "2026-09-07-pms-v143-qa-review-button";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13292,7 +13292,28 @@ function ProjectChecklistsView({ project, onChange }) {
             QA / coordination checklists per project. Templates are firm-wide; each instance tracks check / N/A / notes independently.
           </div>
         </div>
-        <Btn variant="primary" onClick={() => setShowPicker(true)}>+ Add Checklist</Btn>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {/* Launches the qa-coordination-review skill on the user's own Claude
+              seat (same claude.ai/new pattern as the Ask Claude menu): Claude runs
+              the checklist against the current set via the PMS connector and
+              records findings to the ledger. The review never checks items off
+              here - this tab stays the human sign-off record. */}
+          <a href={"https://claude.ai/new?q=" + encodeURIComponent([
+              "Run an internal coordination QA review of the current issued drawing set for " + [project.projectNumber, project.name].filter(Boolean).join(" - ") + ".",
+              "",
+              "Use the Setty PMS connector: identify the current set and derive its phase, fetch the QA Deliverables Checklist (get_qa_checklist), confirm drawing index coverage, run the automated checks (equipment tags vs schedules, voltage/power coordination, placeholders, revision integrity), spot-check the riskiest assisted items, and pull the open items log and lessons learned.",
+              "",
+              "If the findings ledger already has open findings for this project (list_qa_findings), back-check those against the newest revisions first. Report findings by checklist item id with sheet-level evidence for my sign-off, then record them with record_qa_findings.",
+            ].join("\n"))}
+            target="_blank" rel="noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
+              border: `1px solid ${P.border}`, borderRadius: 6, fontSize: 12, fontWeight: 600,
+              color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}
+            title="Opens your Claude seat with the coordination review prefilled - checks the current set against this checklist, the open items log and lessons learned, and records findings to the QA ledger for your sign-off">
+            🤖 Run Coordination Review
+          </a>
+          <Btn variant="primary" onClick={() => setShowPicker(true)}>+ Add Checklist</Btn>
+        </div>
       </div>
 
       {/* Template picker */}

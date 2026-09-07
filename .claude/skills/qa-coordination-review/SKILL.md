@@ -114,6 +114,14 @@ ordered by consequence (life safety / agency rejection / contractor RFI bait
 report as a document via the open-items-log or docx skill conventions;
 otherwise the chat report stands.
 
+**Then persist: `record_qa_findings`.** After the user has seen the report,
+write the findings into the ledger (one call: project, set, phase, coverage,
+the findings with item ids/severity/sheets/evidence). That is what makes the
+next bulletin's back-check possible — an unrecorded finding cannot be
+back-checked and quietly dies. External comment logs ingest the same way
+(`kind:'comment-log'`, one row per comment, `externalRef` = comment number,
+`source` naming the commenter).
+
 ## Change record and cross-discipline ripple analysis
 
 Every revision of every sheet is indexed separately, so the system already
@@ -158,11 +166,13 @@ most often made under time pressure by one discipline alone.
 ## Back-check mode
 
 If the user asks to back-check (a new bulletin landed, or external review
-comments came back): load the prior findings (or the comment log —
-`list_project_documents` Email folder, `*COMMENTS*` files, read row by row),
-and for each open item verify the pickup on the NEWEST revision of the cited
-sheet (`search_drawings` history / `read_drawing_schedule` / `view_drawing`).
-Report per item: evidence found (ready to close), no change detected (still
-open), or sheet not reissued. For EXTERNAL comments (DrChecks, owner,
-architect) never report "closed" — report "evidence found, ready to
-backcheck"; the human closes those.
+comments came back): `list_qa_findings` for the project's open rows (ingest
+a new comment log first via `record_qa_findings kind:'comment-log'` — the
+registers live in the Email folder as `*COMMENTS*` files), and for each open
+row verify the pickup on the NEWEST revision of the cited sheets
+(`search_drawings` history / `read_drawing_schedule` / `view_drawing`).
+Then move status with `update_qa_finding`, always with the evidence as the
+note: internal (`source:'qa'`) rows may go straight to `closed`; EXTERNAL
+rows (DrChecks, owner, architect, agency) go to `ready_to_backcheck` at
+most — a human closes those, never an automated pass. A sheet not reissued
+stays `open`; a deliberate no-fix is `dismissed` with the reasoning.

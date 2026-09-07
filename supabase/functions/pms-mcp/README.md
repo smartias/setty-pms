@@ -322,6 +322,24 @@ automation contract.
 node supabase/functions/pms-mcp/qaChecklist.test.mjs
 ```
 
+## The QA findings ledger (`record_qa_findings` / `list_qa_findings` / `update_qa_finding`)
+
+One shared record (migration `20260907140000_qa_findings_ledger.sql`: `pms_qa_reviews` +
+`pms_qa_findings`) for internal coordination-review findings AND ingested external comments
+(DrChecks/owner/architect — `kind:'comment-log'`, `external_ref` = comment number), so one
+back-check engine serves both. Status contract: `open → ready_to_backcheck → closed`, or
+`dismissed`; terminal states REQUIRE a note; every write stamps the signed-in caller and the
+shared-secret lane is refused (`qaLedgerCaller`). The behavioral rule the tools and the
+qa-coordination-review skill both carry: an automated pass may close internal (`source:'qa'`)
+rows with evidence, but external rows stop at `ready_to_backcheck` — a human clicks close,
+because agency backchecks are contractual. `list_qa_findings` defaults to the working set
+(open + ready_to_backcheck), which is exactly what the next bulletin's back-check re-verifies
+against the newest revisions. The Tabler pilot's 11 findings are seeded as review #1.
+
+```bash
+node supabase/functions/pms-mcp/qaFindingsLedger.test.mjs
+```
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
