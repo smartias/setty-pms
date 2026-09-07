@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-07-drawing-intelligence";
+const BUILD = "2026-09-07-qa-findings-ledger";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.9.0",
+  name: "setty-pms", version: "1.10.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6420,6 +6420,190 @@ mcp.tool("get_qa_checklist", {
         "review never marks items complete itself. Combine with list_action_items (open items) and " +
         "search_knowledge (lessons learned) for the project-specific layer.",
     });
+  },
+});
+
+// ── The QA findings ledger ───────────────────────────────────────────────────
+// One shared record for internal coordination-review findings AND external
+// review comments (DrChecks/owner/architect), so one back-check engine works
+// both. Rows live until resolved: open -> ready_to_backcheck -> closed, or
+// dismissed with a note. The write tools stamp the signed-in caller and
+// refuse the anonymous shared-secret lane; external-source findings are
+// never closed without a note naming the human decision.
+
+const QA_FINDING_SOURCES = ["qa", "ripple", "drchecks", "owner", "architect", "agency", "other"] as const;
+const QA_FINDING_SEVERITIES = ["life-safety", "agency", "rfi-bait", "polish"] as const;
+const QA_FINDING_STATUSES = ["open", "ready_to_backcheck", "closed", "dismissed"] as const;
+const QA_FINDINGS_MAX_PER_CALL = 50;
+
+async function sbPatch(path: string, body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: "PATCH",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=representation",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Supabase patch ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const rows = await res.json();
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+// A ledger write needs a person behind it: the shared-secret lane and
+// nameless callers are refused, so every row carries a real email.
+function qaLedgerCaller(): { ok: true; email: string } | { ok: false; response: { content: Array<{ type: "text"; text: string }> } } {
+  const c = currentCaller();
+  if (c.kind === "service" || !c.email) {
+    return { ok: false, response: asText({ error: "The QA ledger records who wrote each row — sign-in required; the service lane cannot write findings." }) };
+  }
+  return { ok: true, email: c.email };
+}
+
+mcp.tool("record_qa_findings", {
+  description:
+    "Write the results of a QA coordination review, back-check pass, or ingested external comment log into the " +
+    "FINDINGS LEDGER — the standing record of what was found, on which sheets, and what happened to it. Creates " +
+    "one review row (project, set, phase, kind, coverage note) plus one row per finding. Use it at the END of a " +
+    "review run (qa-coordination-review skill) so findings persist for back-check on the next bulletin; use " +
+    "kind:'comment-log' with sourceDoc when ingesting a DrChecks/owner/architect comment register (one finding " +
+    "per comment, externalRef = the comment number, source naming the commenter). Findings default to status " +
+    "'open'. Severity vocabulary: life-safety, agency (rejection risk), rfi-bait (contractor confusion), " +
+    "polish. Every row is stamped with the signed-in caller. Recording findings does NOT mark anything " +
+    "resolved — update_qa_finding moves status, and list_qa_findings reads the ledger.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    setName: z.string().optional().describe("The deliverable/set reviewed, e.g. '2024-10-24_Revised 100% CD Submission + bulletins through 8/19'."),
+    phase: z.string().optional().describe("Derived phase (SD/DD/CD/Bid/CA/Bulletin...)."),
+    kind: z.enum(["review", "backcheck", "comment-log"]).optional().describe("What produced these rows (default 'review')."),
+    sourceDoc: z.string().optional().describe("comment-log only: the register file name the comments came from."),
+    coverage: z.string().optional().describe("Honest coverage note, e.g. '744/749 files indexed; 4 spec books pending'."),
+    findings: z.array(z.object({
+      title: z.string().describe("One-sentence finding, sheets and values included."),
+      itemId: z.string().optional().describe("QA checklist item id (qa-060 ...) when the finding maps to one."),
+      source: z.enum(QA_FINDING_SOURCES).optional().describe("Default 'qa'. External comments: drchecks/owner/architect/agency."),
+      severity: z.enum(QA_FINDING_SEVERITIES).optional(),
+      sheets: z.array(z.string()).optional().describe("Sheets cited, with revisions: ['M601 Rev 11', 'E602 Rev 15']."),
+      evidence: z.string().optional().describe("The text/values supporting it."),
+      action: z.string().optional().describe("Suggested action."),
+      externalRef: z.string().optional().describe("Comment number / DrChecks id for external rows."),
+    })).min(1).max(QA_FINDINGS_MAX_PER_CALL),
+  }),
+  handler: async ({ projectNumber, setName, phase, kind, sourceDoc, coverage, findings }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    let review: any;
+    try {
+      review = await sbInsert("pms_qa_reviews", {
+        project, set_name: setName ?? null, phase: phase ?? null,
+        kind: kind ?? "review", source_doc: sourceDoc ?? null, coverage: coverage ?? null,
+        run_by: who.email,
+      });
+    } catch (e) {
+      return asText({ error: `Could not open the review record: ${String((e as any)?.message ?? e)}` });
+    }
+    const recorded: Array<{ id: number; title: string }> = [];
+    const failed: Array<{ title: string; reason: string }> = [];
+    for (const f of findings) {
+      try {
+        const row = await sbInsert("pms_qa_findings", {
+          review_id: review.id, project,
+          item_id: f.itemId ?? null, source: f.source ?? "qa", severity: f.severity ?? null,
+          title: f.title, sheets: f.sheets ?? null, evidence: f.evidence ?? null,
+          action: f.action ?? null, external_ref: f.externalRef ?? null,
+          created_by: who.email,
+        });
+        recorded.push({ id: row.id, title: f.title });
+      } catch (e) {
+        failed.push({ title: f.title, reason: String((e as any)?.message ?? e).slice(0, 150) });
+      }
+    }
+    return asText({
+      project, reviewId: review.id, recorded: recorded.length, findingIds: recorded,
+      ...(failed.length ? { failed } : {}),
+      note: "Rows are status 'open'. update_qa_finding moves them; the next back-check pass reads them with list_qa_findings.",
+    });
+  },
+});
+
+mcp.tool("list_qa_findings", {
+  description:
+    "Read the QA FINDINGS LEDGER — internal review findings and ingested external comments (DrChecks/owner/" +
+    "architect) with their live status. This is what a back-check pass works from: every 'open' or " +
+    "'ready_to_backcheck' row on a project should be re-verified against the newest revision of its cited " +
+    "sheets when a new set lands. Default: open + ready_to_backcheck rows; status:'all' for the full history " +
+    "(closed/dismissed rows keep their note and who moved them).",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    status: z.string().optional().describe("open (default: open + ready_to_backcheck), or one of open/ready_to_backcheck/closed/dismissed, or 'all'."),
+    source: z.enum(QA_FINDING_SOURCES).optional().describe("Only rows from one source."),
+    limit: z.number().optional().describe("Max rows (default 50, max 200)."),
+  }),
+  handler: async ({ projectNumber, status, source, limit }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const lim = Math.min(Math.max(limit ?? 50, 1), 200);
+    let path = "pms_qa_findings?select=id,review_id,item_id,source,severity,title,sheets,evidence,action,status,status_note,status_by,status_at,external_ref,created_by,created_at" +
+      "&project=eq." + encodeURIComponent(project) + "&order=status,severity,created_at.desc&limit=" + lim;
+    const st = (status ?? "open").trim().toLowerCase();
+    if (st === "open") path += "&status=in.(open,ready_to_backcheck)";
+    else if (st !== "all") path += "&status=eq." + encodeURIComponent(st);
+    if (source) path += "&source=eq." + source;
+    let rows: any[];
+    try { rows = await sbGetAll(path); } catch (e) {
+      return asText({ project, error: `Could not read the ledger: ${String((e as any)?.message ?? e)}` });
+    }
+    const counts = rows.reduce((m: Record<string, number>, r) => ((m[r.status] = (m[r.status] || 0) + 1), m), {});
+    return asText({
+      project, count: rows.length, byStatus: counts, findings: rows,
+      note: "'ready_to_backcheck' external rows await a HUMAN close. Back-check: verify each open row against the newest revision of its cited sheets (search_drawings history / read_drawing_schedule / view_drawing), then update_qa_finding with the evidence.",
+    });
+  },
+});
+
+mcp.tool("update_qa_finding", {
+  description:
+    "Move one QA ledger finding's status, stamping who and why. Statuses: 'ready_to_backcheck' (evidence of " +
+    "pickup found — the normal automated result for EXTERNAL comments, which a human then closes), 'closed' " +
+    "(resolved — for external-source rows a note naming the human decision is REQUIRED and an automated pass " +
+    "must not close them), 'dismissed' (deliberate override — note required), 'open' (reopen). Always pass the " +
+    "evidence or reasoning as note; the ledger is the project's defensibility record.",
+  inputSchema: z.object({
+    findingId: z.number().describe("The ledger row id (from record_qa_findings or list_qa_findings)."),
+    status: z.enum(QA_FINDING_STATUSES),
+    note: z.string().optional().describe("Evidence or reasoning. Required for closed/dismissed."),
+  }),
+  handler: async ({ findingId, status, note }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    if ((status === "closed" || status === "dismissed") && !note?.trim()) {
+      return asText({ error: `'${status}' requires a note — the ledger records why, not just that.` });
+    }
+    let existing: any[];
+    try { existing = await sbGet("pms_qa_findings?select=id,source,status,title&id=eq." + Math.round(findingId)); } catch (e) {
+      return asText({ error: `Could not read the finding: ${String((e as any)?.message ?? e)}` });
+    }
+    if (!existing?.length) return asText({ error: `No ledger finding with id ${findingId}.` });
+    const row = existing[0];
+    try {
+      const updated = await sbPatch("pms_qa_findings?id=eq." + Math.round(findingId), {
+        status, status_note: note ?? null, status_by: who.email, status_at: new Date().toISOString(),
+      });
+      return asText({
+        id: updated.id, title: updated.title, from: row.status, to: updated.status,
+        by: who.email,
+        ...(row.source !== "qa" && status === "closed"
+          ? { reminder: "External-source finding closed — the note above should name the human decision behind it." } : {}),
+      });
+    } catch (e) {
+      return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
+    }
   },
 });
 

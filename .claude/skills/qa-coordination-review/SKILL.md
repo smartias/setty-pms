@@ -56,6 +56,50 @@ human reviewer signs off on. Three rules govern everything below:
    a discipline is a targeted check; a lesson learned is an extra checklist
    row in spirit even before QA formalizes it.
 
+## Backgrounds inventory — ALWAYS run, ALWAYS report
+
+MEPFP coordination is only checkable against the other disciplines'
+CURRENT drawings, and those arrive as PDFs from outside. Before the tiers:
+
+1. Inventory what the project HAS: `list_project_documents` — the **Email**
+   folder (files received from others; `*COMMENTS*`, architectural/
+   structural issues) and the main library's incoming/backgrounds folders.
+   Look for structural (S), architectural plans and **RCPs** (A), site/civil
+   (C), and any federated/combined sets, by file name and folder.
+2. Date every background found (file name date, folder date, modified date)
+   and compare against the set under review's issue date.
+3. **Report the inventory in every review, in its own section** — found,
+   with dates ("reviewed against: A-RCP set dated 2026-03-02"); found but
+   STALE (older than our latest issue — coordination against it proves
+   little); or NOT FOUND ("no structural PDFs anywhere in the project
+   folder — request current S set from the architect"). The team can only
+   ask for what they know is missing, so absence is a first-class result,
+   never a silent skip. A stale or missing background also caps how far the
+   cross-discipline items below can go — say so on each affected item.
+
+## Cross-discipline clash screening (assisted — never sold as clash detection)
+
+With current backgrounds in hand, the checklist's coordination items
+(qa-072 piping over electrical gear, qa-080/081/082 RCP overlaps, qa-103/
+qa-210 penetrations through structure, qa-084 ceiling devices vs beams,
+qa-110 roof equipment vs roof plan) become screenable:
+
+- **Method**: `view_drawing` in DIRECT mode renders ANY PDF page by itemId —
+  including incoming background PDFs that were never indexed. Render the
+  background sheet and our sheet for the SAME area (matching region zooms)
+  and compare: beam/joist lines through duct mains, panels with piping
+  above, sprinkler heads on diffusers, shafts vs framing. Work the
+  congested areas first: mechanical rooms, corridors, the floor's main
+  duct runs, RCP areas with hard ceilings.
+- **Honesty rule, verbatim in the report**: this is 2D gross-conflict
+  SCREENING from drawings, not geometric clash detection — there is no 3D
+  model here, elevations are mostly unstated, and a clean screen does not
+  mean clash-free. Every hit is a flag for the engineer; every area
+  actually screened is listed (sheet pairs + regions), so "screened" is
+  never mistaken for "verified".
+- Record hits to the ledger with `source:'ripple'` or `'qa'`, both sheets
+  cited (ours and the background's file/date).
+
 ## Running the tiers
 
 **Auto items** (each carries a `how` hint naming the tools — follow it):
@@ -114,6 +158,14 @@ ordered by consequence (life safety / agency rejection / contractor RFI bait
 report as a document via the open-items-log or docx skill conventions;
 otherwise the chat report stands.
 
+**Then persist: `record_qa_findings`.** After the user has seen the report,
+write the findings into the ledger (one call: project, set, phase, coverage,
+the findings with item ids/severity/sheets/evidence). That is what makes the
+next bulletin's back-check possible — an unrecorded finding cannot be
+back-checked and quietly dies. External comment logs ingest the same way
+(`kind:'comment-log'`, one row per comment, `externalRef` = comment number,
+`source` naming the commenter).
+
 ## Change record and cross-discipline ripple analysis
 
 Every revision of every sheet is indexed separately, so the system already
@@ -158,11 +210,13 @@ most often made under time pressure by one discipline alone.
 ## Back-check mode
 
 If the user asks to back-check (a new bulletin landed, or external review
-comments came back): load the prior findings (or the comment log —
-`list_project_documents` Email folder, `*COMMENTS*` files, read row by row),
-and for each open item verify the pickup on the NEWEST revision of the cited
-sheet (`search_drawings` history / `read_drawing_schedule` / `view_drawing`).
-Report per item: evidence found (ready to close), no change detected (still
-open), or sheet not reissued. For EXTERNAL comments (DrChecks, owner,
-architect) never report "closed" — report "evidence found, ready to
-backcheck"; the human closes those.
+comments came back): `list_qa_findings` for the project's open rows (ingest
+a new comment log first via `record_qa_findings kind:'comment-log'` — the
+registers live in the Email folder as `*COMMENTS*` files), and for each open
+row verify the pickup on the NEWEST revision of the cited sheets
+(`search_drawings` history / `read_drawing_schedule` / `view_drawing`).
+Then move status with `update_qa_finding`, always with the evidence as the
+note: internal (`source:'qa'`) rows may go straight to `closed`; EXTERNAL
+rows (DrChecks, owner, architect, agency) go to `ready_to_backcheck` at
+most — a human closes those, never an automated pass. A sheet not reissued
+stays `open`; a deliberate no-fix is `dismissed` with the reasoning.
