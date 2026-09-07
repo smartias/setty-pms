@@ -114,6 +114,47 @@ ordered by consequence (life safety / agency rejection / contractor RFI bait
 report as a document via the open-items-log or docx skill conventions;
 otherwise the chat report stands.
 
+## Change record and cross-discipline ripple analysis
+
+Every revision of every sheet is indexed separately, so the system already
+holds the change record: what revised, in which set, with the revision
+block's own label ("BULLETIN #13") and the transmittal register's when and
+to-whom. When reviewing a bulletin or back-checking, USE it:
+
+1. **Diff the change.** For each sheet the set revised, compare against its
+   prior revision — text for plans/notes, `read_drawing_schedule` per pinned
+   `set` for schedules (the schedule diff is the high-value one: capacity,
+   HP, V/Ph, MCA, weight, dimensions per tag).
+2. **For every changed equipment parameter, run the ripple rules** and check
+   whether each affected discipline's sheet ALSO revised in the same set (or
+   a later one) — `find_equipment` names every sheet the tag touches, and
+   the register knows which sheets each set revised. A fan upsized in a
+   bulletin whose electrical sheets did not move is a finding, always:
+
+   | Changed parameter | Ripples to — verify |
+   |---|---|
+   | Motor HP / kW, MCA, MOCP | E: breaker/feeder size, panel schedule row, disconnect rating; starter/VFD |
+   | Voltage / phase | E: panel assignment (no 120V load on a 480V panel), wiring, disconnect |
+   | Airflow (CFM) | M: duct mains/branches, diffuser selection, outside-air balance; sound |
+   | Water flow (GPM) / head | M/P: pipe sizes, pump selection, balancing valves |
+   | Heating/cooling capacity | M: coil connections, condensate; E: electric-heat circuits |
+   | Physical size / configuration | A: clearances, access, ceiling/shaft space; M: duct/pipe connections |
+   | Operating weight | S: pad, dunnage, roof framing, housekeeping pad note |
+   | Equipment added or deleted | ALL: power, controls, condensate/drain, structural support, and the schedule row itself (qa-201/202) |
+   | Gas-fired equipment | P: gas load/pipe size; M: venting/combustion air |
+   | Fire/smoke rating of a wall | M: fire/smoke dampers (qa-211); FP: head layout |
+
+3. **Report the ripple as its own finding**: "Bulletin #14 changed EF-7 from
+   1 HP to 2 HP on M-601; its circuit on E-610 (panel LP-2, cct 14) was not
+   revised in Bulletin #14 or since — verify breaker/feeder sizing." Cite
+   both sides. When the counterpart DID revise, say so — that is the
+   coordination working, and the record of it is worth as much as a catch.
+
+These rules are a starting set; lessons learned extend them. Treat any
+reviewer/RFI-driven change (the "owner wants the fan bigger" case) as the
+highest-priority ripple candidate — externally-driven changes are the ones
+most often made under time pressure by one discipline alone.
+
 ## Back-check mode
 
 If the user asks to back-check (a new bulletin landed, or external review
