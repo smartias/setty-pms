@@ -573,8 +573,19 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   against the QA Deliverables Checklist, the open items log, and the
   knowledge layer / lessons learned. Prepare-only like prepare_transmittal;
   the connector provides the primitives, the review itself runs as a Claude
-  session/skill, and the checklist lives as editable content (knowledge layer
-  or a SharePoint template), never hard-coded.
+  session/skill, and the checklist lives as editable content, never
+  hard-coded.
+
+### QA checklist as content: `get_qa_checklist` (2026-09-07)
+
+- Step 1 of the review flow, done: SettyPMS.html's code-defined
+  CHECKLIST_TEMPLATES seeded into `pms_qa_checklist` (same item ids —
+  per-project check-off state unaffected), admin-editable, lesson rows
+  addable without a deploy. 128 items classified: 19 auto / 101 assisted /
+  8 manual, auto hints naming the exact connector tools. Remaining steps:
+  the review skill itself, the QA-tab launch button (settypms: handler,
+  cowork pattern), and — later — pointing the app's QA tab at the table so
+  the code template becomes fallback-only.
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 

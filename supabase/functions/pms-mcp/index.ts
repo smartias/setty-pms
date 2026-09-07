@@ -6349,6 +6349,71 @@ mcp.tool("find_equipment", {
   },
 });
 
+// ── get_qa_checklist: the QA Deliverables Checklist as CONTENT ───────────────
+// Was code-defined in SettyPMS.html (CHECKLIST_TEMPLATES); now lives in
+// pms_qa_checklist (seeded 2026-09-07 with the same item ids, so per-project
+// check-off state keeps working) where QA can edit it without a deploy and
+// lessons learned land as new rows (source='lesson'). Each item carries an
+// `automation` class telling the coordination review what it can do with it.
+const QA_ASSISTED_HINT =
+  "Gather evidence (search_drawings text, view_drawing region renders of the affected sheets), flag exceptions with sheet references; a human confirms.";
+
+mcp.tool("get_qa_checklist", {
+  description:
+    "The firm's QA DELIVERABLES CHECKLIST (internal coordination review standard for MEPFP design " +
+    "submissions), grouped by section. Use it to RUN or PREPARE a deliverable QA / internal coordination " +
+    "review: work the items against the project's current set, and report findings per item id with sheet " +
+    "references — never mark anything passed on the team's behalf; the review output is evidence for a human " +
+    "sign-off. Each item carries `automation`: 'auto' items the connector checks mechanically (the hint names " +
+    "the tools — drawing index, read_drawing_schedule, find_equipment, search_drawings), 'assisted' items " +
+    "where you gather evidence and flag exceptions for a human, 'manual' items that stay with the reviewer " +
+    "(list them as such). Filter with section or automation. The checklist is firm content editable by QA " +
+    "admins, and lessons learned are added over time — always fetch it fresh rather than assuming last " +
+    "month's items. Pair a review with list_action_items (the open items log) and search_knowledge (lessons " +
+    "learned, agency preferences) for the project-specific layer.",
+  inputSchema: z.object({
+    section: z.string().optional().describe("Only sections whose name contains this text, e.g. 'Electrical', 'Ceiling'."),
+    automation: z.enum(["auto", "assisted", "manual"]).optional().describe("Only items of one automation class."),
+  }),
+  handler: async ({ section, automation }) => {
+    let rows: any[];
+    try {
+      rows = await sbGetAll(
+        "pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,source" +
+        "&enabled=eq.true&order=sort,item_id",
+      );
+    } catch (e) {
+      return asText({ error: `Could not read the QA checklist: ${String((e as any)?.message ?? e)}` });
+    }
+    if (section?.trim()) {
+      const sl = section.trim().toLowerCase();
+      rows = rows.filter((r) => String(r.section || "").toLowerCase().includes(sl));
+    }
+    if (automation) rows = rows.filter((r) => r.automation === automation);
+    if (!rows.length) return asText({ items: 0, sections: [], reason: "No checklist items match those filters." });
+
+    const secMap = new Map<string, any[]>();
+    for (const r of rows) {
+      const list = secMap.get(r.section) || [];
+      list.push({
+        id: r.item_id, text: r.text, ...(r.details ? { details: r.details } : {}),
+        automation: r.automation,
+        ...(r.automation_hint ? { how: r.automation_hint } : (r.automation === "assisted" ? { how: QA_ASSISTED_HINT } : {})),
+        ...(r.source && r.source !== "seed" ? { source: r.source } : {}),
+      });
+      secMap.set(r.section, list);
+    }
+    const counts = rows.reduce((m: Record<string, number>, r) => ((m[r.automation] = (m[r.automation] || 0) + 1), m), {});
+    return asText({
+      items: rows.length, byAutomation: counts,
+      sections: [...secMap.entries()].map(([name, items]) => ({ name, items })),
+      note: "Report review findings per item id with sheet references and evidence; a human signs off — the " +
+        "review never marks items complete itself. Combine with list_action_items (open items) and " +
+        "search_knowledge (lessons learned) for the project-specific layer.",
+    });
+  },
+});
+
 // Canonical Additional Services Agreement (add service) template. Source of truth:
 // "Homeport II CA Extension Add Service.docx" (Sara Arias, 2026-07-15). The ACCEPTANCE
 // paragraph and signature block are contract boilerplate — reproduce them VERBATIM.

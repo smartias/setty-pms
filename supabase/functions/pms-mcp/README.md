@@ -302,6 +302,26 @@ enumeration; tag mode is spelling-tolerant like `search_drawings`.
 node supabase/functions/pms-mcp/findEquipment.test.mjs
 ```
 
+## `get_qa_checklist`, the QA Deliverables Checklist as content
+
+The firm's internal coordination review standard was code-defined in SettyPMS.html
+(`CHECKLIST_TEMPLATES`, "not user-editable in PMS"). It now lives in `pms_qa_checklist`
+(migration `20260907120000_qa_checklist_content.sql`), seeded with the SAME item ids so
+per-project check-off state (`project.checklists`) keeps working. Reads for all authenticated;
+writes admin-only (`is_pms_admin()`), so QA edits the checklist — and lessons learned land as
+new rows (`source='lesson'`) — without a deploy. Every item carries an `automation` class for
+the coordination review: `auto` (19 items the connector checks mechanically — the hint names the
+tools: drawing index, `read_drawing_schedule`, `find_equipment`, `search_drawings`), `assisted`
+(101 — Claude gathers evidence and flags exceptions, a human confirms), `manual` (8 — plot and
+engineering judgment). The tool groups by section, filters by section/automation, and its text
+holds the posture line: findings are evidence for a human sign-off; the review never marks items
+complete itself. `qaChecklist.test.mjs` pins the app-template ↔ seed id agreement and the
+automation contract.
+
+```bash
+node supabase/functions/pms-mcp/qaChecklist.test.mjs
+```
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
