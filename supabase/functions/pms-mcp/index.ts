@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-07-service-lane-least-privilege";
+const BUILD = "2026-09-07-drawing-intelligence";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.7.3",
+  name: "setty-pms", version: "1.9.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -5592,8 +5592,8 @@ function graphShareToken(url: string): string | null {
   } catch { return null; }
 }
 
-function b64FromBuffer(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
+function b64FromBuffer(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let bin = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -5708,6 +5708,718 @@ mcp.tool("view_photos", {
         (consumed < files.length ? ` ${files.length - consumed} more image(s) — call again with offset:${consumed}.` : ""),
     };
     return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, ...images] };
+  },
+});
+
+// ── view_drawing: put an actual SHEET in front of the model (phase 4) ────────
+// search_drawings knows WHERE everything is (file + page, per revision); this
+// renders that page as an image so the model can look at the drawing itself —
+// plans, details, schedules, the title block — instead of only its text layer.
+// Rendering runs in-process: PDFium (wasm) rasterizes, imagescript encodes.
+// Both were proven in the pdf-render-test probe (2026-06) and load lazily on
+// first use, same posture as unpdf. Read-only; downloads ONE PDF per call.
+const VIEW_DRAWING_REGIONS = ["full", "top-left", "top-right", "bottom-left", "bottom-right", "center"] as const;
+type ViewDrawingRegion = typeof VIEW_DRAWING_REGIONS[number];
+const VIEW_DRAWING_TARGET_EDGE = 1600;        // px on the region's long edge — matches what the model actually resolves
+const VIEW_DRAWING_MAX_PIXELS = 24_000_000;   // full-page RGBA bitmap cap (~96MB) — stays inside the isolate
+const VIEW_DRAWING_MAX_PDF_BYTES = 40 * 1024 * 1024;
+const VIEW_DRAWING_MAX_IMG_BYTES = 3_500_000; // PNG above this re-encodes as JPEG: base64 inflation must not blow the response
+const VIEW_DRAWING_REGION_OVERLAP = 0.06;     // quadrants overlap so content on the seam is never lost
+
+const normSheetToken = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// PostgREST candidate filter: the sheet's letters/digits joined by '%'
+// ("E211" -> "%e%2%1%1%") so E-211, E 2.11 and E211 all come back; exactness
+// is re-checked client-side with normSheetToken equality, so overmatching
+// here costs nothing but a few extra rows.
+function sheetLoosePattern(s: string): string {
+  const chars = normSheetToken(s).split("");
+  return chars.length ? "%" + chars.join("%") + "%" : "";
+}
+
+// Fractional crop box per region. Quadrants take half the page plus the
+// overlap margin; center takes the middle 56%.
+function drawingRegionBox(region: ViewDrawingRegion): { fx: number; fy: number; fw: number; fh: number } {
+  const half = 0.5 + VIEW_DRAWING_REGION_OVERLAP;
+  switch (region) {
+    case "top-left": return { fx: 0, fy: 0, fw: half, fh: half };
+    case "top-right": return { fx: 1 - half, fy: 0, fw: half, fh: half };
+    case "bottom-left": return { fx: 0, fy: 1 - half, fw: half, fh: half };
+    case "bottom-right": return { fx: 1 - half, fy: 1 - half, fw: half, fh: half };
+    case "center": return { fx: 0.22, fy: 0.22, fw: 0.56, fh: 0.56 };
+    default: return { fx: 0, fy: 0, fw: 1, fh: 1 };
+  }
+}
+
+// Scale so the REGION's long edge hits the target; the WHOLE page is rendered
+// (crop happens after), so the pixel cap applies to the full page and wins
+// over the target when the two disagree. A 30x42 sheet is 2160x3024pt: full
+// renders at ~0.53x, a quadrant at ~0.94x.
+function drawingRenderScale(wPt: number, hPt: number, box: { fw: number; fh: number }): number {
+  const longEdgePt = Math.max(wPt * box.fw, hPt * box.fh);
+  const target = longEdgePt > 0 ? VIEW_DRAWING_TARGET_EDGE / longEdgePt : 1;
+  const cap = wPt * hPt > 0 ? Math.sqrt(VIEW_DRAWING_MAX_PIXELS / (wPt * hPt)) : 1;
+  return Math.min(target, cap);
+}
+
+async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
+  const { PDFiumLibrary } = await import("@hyzyla/pdfium") as any;
+  const { Image } = await import("imagescript") as any;
+  const library = await PDFiumLibrary.init();
+  let doc: any = null;
+  try {
+    doc = await library.loadDocument(pdfBytes);
+    let pageCount: number | null = null;
+    try { pageCount = doc.getPageCount?.() ?? null; } catch { /* count is advisory */ }
+    if (pageCount != null && (pageInFile < 1 || pageInFile > pageCount)) {
+      throw new Error(`page ${pageInFile} is out of range — the file has ${pageCount} page(s)`);
+    }
+    const pg = doc.getPage(pageInFile - 1); // index pages are 1-based, PDFium is 0-based
+    const box = drawingRegionBox(region);
+    let wPt = 0, hPt = 0;
+    try { const sz = pg.getSize?.(); wPt = Number(sz?.width ?? pg.width ?? 0); hPt = Number(sz?.height ?? pg.height ?? 0); } catch { /* fall through */ }
+    let rendered: any;
+    if (wPt > 0 && hPt > 0) {
+      rendered = await pg.render({ scale: drawingRenderScale(wPt, hPt, box), render: "bitmap" });
+    } else {
+      // This build of the lib would not say the page size: render at 1x to
+      // learn it, and re-render only when 1x is badly off the target.
+      rendered = await pg.render({ scale: 1, render: "bitmap" });
+      const s = drawingRenderScale(rendered.width, rendered.height, box);
+      if (s < 0.9 || s > 1.5) rendered = await pg.render({ scale: s, render: "bitmap" });
+    }
+    let img = new Image(rendered.width, rendered.height);
+    img.bitmap.set(rendered.data);
+    if (region !== "full") {
+      const x = Math.max(0, Math.round(box.fx * rendered.width));
+      const y = Math.max(0, Math.round(box.fy * rendered.height));
+      const w = Math.min(rendered.width - x, Math.round(box.fw * rendered.width));
+      const h = Math.min(rendered.height - y, Math.round(box.fh * rendered.height));
+      if (w > 8 && h > 8) img = img.crop(x, y, w, h);
+    }
+    let bytes: Uint8Array = await img.encode();
+    let mimeType = "image/png";
+    if (bytes.length > VIEW_DRAWING_MAX_IMG_BYTES) { bytes = await img.encodeJPEG(80); mimeType = "image/jpeg"; }
+    return { b64: b64FromBuffer(bytes), mimeType, width: img.width, height: img.height, pageCount };
+  } finally {
+    try { doc?.destroy?.(); } catch { /* best-effort teardown */ }
+    try { library.destroy?.(); } catch { /* ditto */ }
+  }
+}
+
+async function fetchDrawingPdf(drive: string, realId: string): Promise<Uint8Array> {
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } },
+  );
+  if (!res.ok) throw new Error(`Graph content ${res.status}`);
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength > VIEW_DRAWING_MAX_PDF_BYTES) {
+    throw new Error(`the file is ${(buf.byteLength / 1048576).toFixed(0)}MB — over the ${VIEW_DRAWING_MAX_PDF_BYTES / 1048576}MB render limit`);
+  }
+  return new Uint8Array(buf);
+}
+
+mcp.tool("view_drawing", {
+  description:
+    "LOOK AT a drawing sheet (Drawing Intelligence phase 4) — renders one page of an issued drawing PDF as an " +
+    "image so you can see what is actually drawn: plan layouts, equipment placement, details, schedules, the " +
+    "title block. Use it when search_drawings or extract_sheet_index has named the sheet and the question needs " +
+    "eyes on the drawing rather than its text layer. Pass projectNumber + sheet (e.g. 'E-211'; hyphens/spacing " +
+    "don't matter). The NEWEST indexed revision renders by default; pin an older one with revision ('B', '13') " +
+    "or set (issue-folder substring, e.g. 'Bulletin #13'), and the result lists the other indexed revisions. " +
+    "A full-size sheet at model resolution shows LAYOUT, not fine print: pass region (top-left / top-right / " +
+    "bottom-left / bottom-right / center) to zoom into part of the sheet when notes, a schedule, or the title " +
+    "block must be READ — quadrants overlap slightly so nothing on the seam is lost. Only INDEXED sheets " +
+    "resolve by number: a miss reports close matches and whether indexing is still pending (fill it with " +
+    "search_drawings indexOnly:true). Any PDF can also be rendered directly by itemId ('driveId|itemId' from " +
+    "list_project_documents) + page. Renders are for viewing; the webUrl serves the full-resolution original. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("Project number OR project name (required unless itemId is passed)."),
+    sheet: z.string().optional().describe("Sheet number, e.g. 'E-211', 'M501', 'FP-102'. Hyphens, dots and spaces are interchangeable."),
+    revision: z.string().optional().describe("Pin a revision by its label ('B', '2', '13'). Default: the newest indexed revision."),
+    set: z.string().optional().describe("Pin the issue by folder-name substring, e.g. 'Bulletin #13' or '100% CD'."),
+    region: z.enum(VIEW_DRAWING_REGIONS).optional().describe("Part of the sheet to render. Default 'full'; quadrants/center render at roughly double the effective resolution — use them to read small text."),
+    itemId: z.string().optional().describe("Direct mode: a 'driveId|itemId' composite of ONE PDF from list_project_documents (no index needed)."),
+    page: z.number().optional().describe("Direct mode: 1-based page inside the itemId file (default 1). Ignored in sheet mode — the index knows the page."),
+  }),
+  handler: async ({ projectNumber, sheet, revision, set, region, itemId, page }) => {
+    const reg: ViewDrawingRegion = region ?? "full";
+
+    // ── Direct mode: render any PDF by itemId, no index required ───────────
+    if (itemId?.trim()) {
+      const bar = itemId.indexOf("|");
+      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
+      const drive = itemId.slice(0, bar), realId = itemId.slice(bar + 1);
+      let meta: any;
+      try {
+        meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,webUrl,file`);
+      } catch (e) {
+        return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
+      }
+      if (!/\.pdf$/i.test(meta?.name || "")) {
+        return asText({ error: `"${meta?.name}" is not a PDF.`, nextStep: "view_drawing renders drawing PDFs; view_photos shows image files.", webUrl: meta?.webUrl ?? null });
+      }
+      if (Number(meta?.size || 0) > VIEW_DRAWING_MAX_PDF_BYTES) {
+        return asText({ error: `"${meta.name}" is ${(Number(meta.size) / 1048576).toFixed(0)}MB — over the ${VIEW_DRAWING_MAX_PDF_BYTES / 1048576}MB render limit.`, nextStep: "Open the webUrl in the browser instead.", webUrl: meta.webUrl ?? null });
+      }
+      const pageInFile = Math.max(1, Math.round(page ?? 1));
+      try {
+        const bytes = await fetchDrawingPdf(drive, realId);
+        const out = await renderDrawingPage(bytes, pageInFile, reg);
+        const summary = {
+          file: meta.name, pageInFile, ...(out.pageCount != null ? { pagesInFile: out.pageCount } : {}),
+          region: reg, renderedPixels: `${out.width}x${out.height}`, webUrl: meta.webUrl ?? null,
+          note: reg === "full"
+            ? "Small text may not be legible at full-sheet resolution — call again with a region (top-left/top-right/bottom-left/bottom-right/center) to zoom in."
+            : `Rendered the ${reg} region; the webUrl serves the full-resolution original.`,
+        };
+        return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, { type: "image" as const, data: out.b64, mimeType: out.mimeType }] };
+      } catch (e) {
+        return asText({ error: `Could not render "${meta.name}" page ${pageInFile}: ${String((e as any)?.message ?? e).slice(0, 200)}`, webUrl: meta.webUrl ?? null });
+      }
+    }
+
+    // ── Sheet mode: resolve through the drawing text index ─────────────────
+    const picked = await resolveIndexedSheet(projectNumber, sheet, revision, set);
+    if (!picked.ok) return picked.response;
+    const { project, chosen, otherRevisions } = picked;
+
+    const bar = String(chosen.item_id).indexOf("|");
+    if (bar <= 0) return asText({ project, error: "The index row carries a malformed file id — re-index with search_drawings indexOnly:true." });
+    try {
+      const bytes = await fetchDrawingPdf(chosen.item_id.slice(0, bar), chosen.item_id.slice(bar + 1));
+      const out = await renderDrawingPage(bytes, Number(chosen.page), reg);
+      const summary = {
+        project, sheet: chosen.sheet_no, sheetTitle: chosen.sheet_title ?? null,
+        revision: chosen.revision ?? null, revisionDate: chosen.revision_date ?? null,
+        revisionDescription: chosen.revision_description ?? null,
+        set: drawingSetOf(chosen.folder_path), file: chosen.file_name, pageInFile: chosen.page,
+        region: reg, renderedPixels: `${out.width}x${out.height}`,
+        ...(otherRevisions.length ? { otherIndexedRevisions: otherRevisions } : {}),
+        webUrl: chosen.web_url ?? null,
+        note: (reg === "full"
+          ? "Full sheet — good for layout; small text may not be legible. Call again with a region (top-left/top-right/bottom-left/bottom-right/center) to zoom in. "
+          : `Rendered the ${reg} region of the sheet. `) +
+          "This is the newest indexed revision unless one was pinned; unindexed revisions may exist (check search_drawings coverage). The webUrl serves the full-resolution original.",
+      };
+      return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, { type: "image" as const, data: out.b64, mimeType: out.mimeType }] };
+    } catch (e) {
+      return asText({
+        project, sheet: chosen.sheet_no, file: chosen.file_name, pageInFile: chosen.page,
+        error: `Could not render: ${String((e as any)?.message ?? e).slice(0, 200)}`,
+        webUrl: chosen.web_url ?? null,
+        nextStep: "The webUrl opens the sheet in the browser.",
+      });
+    }
+  },
+});
+
+// Distinct (revision, set) labels, order preserved.
+function dedupeRevs(revs: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }>) {
+  const seen = new Set<string>();
+  return revs.filter((r) => { const k = `${r.revision ?? ""}|${r.set}`; if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
+// Resolve project + sheet number to ONE indexed (file, page) — the shared
+// front door of view_drawing and read_drawing_schedule. Newest indexed
+// revision unless pinned by revision label or set folder substring; at the
+// same revision the INDIVIDUAL sheet file beats a combined book (smaller
+// download), then the lowest page. Errors come back as ready-to-return
+// responses so callers stay one-liner thin.
+type IndexedSheetPick =
+  | { ok: true; project: string; chosen: any; otherRevisions: Array<{ revision: string | null; revisionDate: string | null; revisionDescription: string | null; set: string }> }
+  | { ok: false; response: { content: Array<{ type: "text"; text: string }> } };
+
+async function resolveIndexedSheet(projectNumber: string | undefined, sheet: string | undefined, revision: string | undefined, set: string | undefined): Promise<IndexedSheetPick> {
+  const fail = (payload: unknown): IndexedSheetPick => ({ ok: false, response: asText(payload) });
+  if (!projectNumber?.trim() || !sheet?.trim()) {
+    return fail({ error: "Pass projectNumber + sheet (e.g. 'E-211'), or itemId for a specific PDF.", nextStep: "search_drawings and extract_sheet_index name the sheets." });
+  }
+  const pid = await resolveProjectId(projectNumber);
+  if (!pid) return fail({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+  const p = await getProjectById(pid);
+  const project = p?.projectNumber || projectNumber;
+  if ((await storageFor(project)).kind !== "sharepoint") {
+    return fail({ error: AZURE_LIMITED_NOTE, nextStep: "This needs the drawing set filed in the region's SharePoint site (Outgoing)." });
+  }
+  const numPrefix = String(project).toLowerCase().trim();
+  const sheetNorm = normSheetToken(sheet);
+  if (!sheetNorm) return fail({ error: `"${sheet}" is not a sheet number.` });
+
+  let rowsAll: any[];
+  try {
+    rowsAll = await sbGetAll(
+      "pms_drawing_text?select=item_id,page,file_name,folder_path,web_url,sheet_no,sheet_title,revision,revision_date,revision_description" +
+      "&project_prefix=eq." + encodeURIComponent(numPrefix) +
+      "&sheet_no=ilike." + encodeURIComponent(sheetLoosePattern(sheet)) +
+      "&order=item_id,page",
+    );
+  } catch (e) {
+    return fail({ project, error: `Could not read the drawing index: ${String((e as any)?.message ?? e)}` });
+  }
+  const matches = rowsAll.filter((r) => normSheetToken(r.sheet_no) === sheetNorm);
+  if (!matches.length) {
+    const closeMatches = [...new Set(rowsAll.map((r) => r.sheet_no).filter(Boolean))].slice(0, 12);
+    let indexedFiles = 0, filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      indexedFiles = known.filter((k) => k.status === "done").length;
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory here */ }
+    return fail({
+      project, sheet, error: "No indexed page carries that sheet number.",
+      ...(closeMatches.length ? { closeMatches } : {}), indexedFiles, filesPending,
+      nextStep: filesPending > 0
+        ? `The index is incomplete (${filesPending} file(s) pending) — run search_drawings with indexOnly:true, then retry.`
+        : (indexedFiles === 0
+          ? "Nothing is indexed for this project yet — run search_drawings with indexOnly:true first."
+          : "Check the number with extract_sheet_index or search_drawings, or pass itemId + page directly."),
+    });
+  }
+
+  const revOf = (r: any): DrawingRev => ({ revision: r.revision ?? null, revisionDate: r.revision_date ?? null, revisionDescription: r.revision_description ?? null, set: drawingSetOf(r.folder_path) });
+  const revLabel = (r: any) => ({ revision: r.revision ?? null, revisionDate: r.revision_date ?? null, revisionDescription: r.revision_description ?? null, set: drawingSetOf(r.folder_path) });
+
+  let pool = matches;
+  if (revision?.trim()) {
+    const rn = normSheetToken(revision);
+    const filtered = pool.filter((r) => normSheetToken(r.revision) === rn);
+    if (!filtered.length) {
+      return fail({ project, sheet: matches[0].sheet_no, error: `No indexed revision "${revision}" of this sheet.`, indexedRevisions: dedupeRevs(pool.map(revLabel)) });
+    }
+    pool = filtered;
+  }
+  if (set?.trim()) {
+    const sl = set.trim().toLowerCase();
+    const filtered = pool.filter((r) => String(r.folder_path || "").toLowerCase().includes(sl));
+    if (!filtered.length) {
+      return fail({ project, sheet: matches[0].sheet_no, error: `No indexed copy of this sheet in a set matching "${set}".`, indexedRevisions: dedupeRevs(pool.map(revLabel)) });
+    }
+    pool = filtered;
+  }
+
+  pool = [...pool].sort((a, b) =>
+    drawingRevSort(revOf(a), revOf(b)) ||
+    Number(normSheetToken(b.file_name).includes(sheetNorm)) - Number(normSheetToken(a.file_name).includes(sheetNorm)) ||
+    a.page - b.page);
+  const chosen = pool[0];
+  const chosenKey = drawingRevKey(revOf(chosen));
+  const otherRevisions = dedupeRevs(matches.map(revLabel)).filter((r) => `${r.revision ?? ""}|${r.set}` !== chosenKey);
+  return { ok: true, project, chosen, otherRevisions };
+}
+
+// ── read_drawing_schedule: schedules as structured rows (phase 5 slice) ──────
+// The text index flattens each page to one space-joined string, so "what's
+// the CFM on AHU-2" could locate the schedule but not read it. This re-opens
+// the page and uses the text runs' POSITIONS (which the indexer discards) to
+// rebuild the tables: lines cluster by y, columns by recurring x-starts —
+// CAD-generated schedules are strongly aligned, which is what makes this
+// reliable without any drawing-specific configuration.
+const SCHEDULE_TITLE_RE = /\bSCHEDULES?\b/i;
+const SCHED_LINE_TOL = 3;      // pt of y-drift that still reads as one row
+const SCHED_COL_TOL = 6;       // pt of x-drift that still reads as one column
+const SCHED_GAP_LINES = 3;     // sparse lines that end the table
+const SCHED_MAX_ROWS = 250;    // per schedule
+const SCHED_MAX_CHARS = 60_000; // whole response guard
+
+type SheetTextItem = { str: string; x: number; y: number };
+
+function clusterSheetLines(items: SheetTextItem[]): Array<{ y: number; cells: SheetTextItem[] }> {
+  const sorted = [...items].sort((a, b) => b.y - a.y || a.x - b.x);
+  const lines: Array<{ y: number; cells: SheetTextItem[] }> = [];
+  for (const it of sorted) {
+    const line = lines[lines.length - 1];
+    if (line && Math.abs(line.y - it.y) <= SCHED_LINE_TOL) line.cells.push(it);
+    else lines.push({ y: it.y, cells: [it] });
+  }
+  for (const l of lines) l.cells.sort((a, b) => a.x - b.x);
+  return lines;
+}
+
+function extractSheetTables(items: SheetTextItem[], matchFilter?: string): Array<{ title: string; columns: number; rows: string[][]; truncatedRows: number }> {
+  const lines = clusterSheetLines(items);
+  const titleIdx: number[] = [];
+  lines.forEach((l, i) => {
+    const text = l.cells.map((c) => c.str).join(" ");
+    if (SCHEDULE_TITLE_RE.test(text) && text.length <= 120) titleIdx.push(i);
+  });
+  const tables: Array<{ title: string; columns: number; rows: string[][]; truncatedRows: number }> = [];
+  for (let t = 0; t < titleIdx.length; t++) {
+    const start = titleIdx[t];
+    const end = titleIdx[t + 1] ?? lines.length;
+    const titleLine = lines[start];
+    const title = titleLine.cells.map((c) => c.str).join(" ").trim();
+    if (matchFilter && !title.toLowerCase().includes(matchFilter.toLowerCase())) continue;
+    const titleX = titleLine.cells[0].x;
+
+    // Header = the first line below the title with 3+ cells near it; its
+    // extent bounds the table horizontally so plan text to the side of the
+    // schedule never leaks into the rows.
+    let headerCells: SheetTextItem[] | null = null, hIdx = -1;
+    for (let i = start + 1; i < end && i - start <= 6; i++) {
+      const cand = lines[i].cells.filter((c) => c.x >= titleX - 60);
+      if (cand.length >= 3) { headerCells = cand; hIdx = i; break; }
+    }
+    if (!headerCells) continue;
+    const xMin = headerCells[0].x - 20;
+    const xMax = headerCells[headerCells.length - 1].x + 400;
+
+    const blockLines: SheetTextItem[][] = [];
+    let gap = 0;
+    for (let i = hIdx; i < end; i++) {
+      const cells = lines[i].cells.filter((c) => c.x >= xMin && c.x <= xMax);
+      if (cells.length >= 2) { blockLines.push(cells); gap = 0; }
+      else if (blockLines.length && ++gap >= SCHED_GAP_LINES) break;
+    }
+    if (blockLines.length < 2) continue;
+
+    // Column starts: x positions that recur across enough rows. A text run
+    // the PDF split mid-cell yields an x nothing else aligns with, so the
+    // frequency floor drops it and bucketing folds it into the column to
+    // its left.
+    const clusters: Array<{ sum: number; n: number; lines: Set<number> }> = [];
+    blockLines.forEach((cells, li) => {
+      for (const c of cells) {
+        const hit = clusters.find((cl) => Math.abs(cl.sum / cl.n - c.x) <= SCHED_COL_TOL);
+        if (hit) { hit.sum += c.x; hit.n++; hit.lines.add(li); }
+        else clusters.push({ sum: c.x, n: 1, lines: new Set([li]) });
+      }
+    });
+    const minLines = Math.max(2, Math.ceil(blockLines.length * 0.3));
+    const bounds = clusters.filter((cl) => cl.lines.size >= minLines).map((cl) => cl.sum / cl.n).sort((a, b) => a - b);
+    if (bounds.length < 2) continue;
+
+    const rows = blockLines.map((cells) => {
+      const row = new Array<string>(bounds.length).fill("");
+      for (const c of cells) {
+        let k = 0;
+        while (k + 1 < bounds.length && bounds[k + 1] <= c.x + SCHED_COL_TOL) k++;
+        row[k] = row[k] ? row[k] + " " + c.str : c.str;
+      }
+      return row;
+    });
+    tables.push({
+      title, columns: bounds.length,
+      rows: rows.slice(0, SCHED_MAX_ROWS),
+      truncatedRows: Math.max(0, rows.length - SCHED_MAX_ROWS),
+    });
+  }
+  return tables;
+}
+
+mcp.tool("read_drawing_schedule", {
+  description:
+    "READ the SCHEDULES on a drawing sheet as structured rows — equipment schedules, fixture schedules, fan/" +
+    "pump/AHU schedules, panel schedules: any titled '... SCHEDULE' table on the sheet. Answers 'what's the " +
+    "CFM on AHU-2', 'list the fixture units on the plumbing schedule', 'compare the fan schedule between " +
+    "revisions' (call once per revision, pinned with revision or set). Pass projectNumber + sheet (e.g. " +
+    "'M-601'); the NEWEST indexed revision reads by default, and the result lists other indexed revisions. " +
+    "Rows are rebuilt from the PDF's text geometry: the first row(s) are the column headers as printed " +
+    "(multi-row headers arrive as separate rows), and a cell the extractor could not place lands in the " +
+    "column to its left — sanity-check surprising values with view_drawing (region zoom) before quoting them. " +
+    "match filters to schedules whose title contains the text (e.g. match:'FAN'). Direct mode: itemId + page " +
+    "reads any PDF page's tables without the index. Scanned/image-only sheets have no text to rebuild — use " +
+    "view_drawing there. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("Project number OR project name (required unless itemId is passed)."),
+    sheet: z.string().optional().describe("Sheet number carrying the schedule, e.g. 'M-601'. Hyphens/spacing don't matter."),
+    revision: z.string().optional().describe("Pin a revision by label. Default: newest indexed."),
+    set: z.string().optional().describe("Pin the issue by folder-name substring, e.g. 'Bulletin #13'."),
+    match: z.string().optional().describe("Only schedules whose TITLE contains this text, e.g. 'FAN', 'PANEL LP-1'."),
+    itemId: z.string().optional().describe("Direct mode: 'driveId|itemId' of a PDF from list_project_documents."),
+    page: z.number().optional().describe("Direct mode: 1-based page (default 1). Ignored in sheet mode."),
+  }),
+  handler: async ({ projectNumber, sheet, revision, set, match, itemId, page }) => {
+    let drive = "", realId = "", pageInFile = 1;
+    let source: Record<string, unknown> = {};
+    if (itemId?.trim()) {
+      const bar = itemId.indexOf("|");
+      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
+      drive = itemId.slice(0, bar); realId = itemId.slice(bar + 1);
+      pageInFile = Math.max(1, Math.round(page ?? 1));
+      source = { pageInFile };
+    } else {
+      const picked = await resolveIndexedSheet(projectNumber, sheet, revision, set);
+      if (!picked.ok) return picked.response;
+      const c = picked.chosen;
+      const bar = String(c.item_id).indexOf("|");
+      if (bar <= 0) return asText({ project: picked.project, error: "The index row carries a malformed file id — re-index with search_drawings indexOnly:true." });
+      drive = c.item_id.slice(0, bar); realId = c.item_id.slice(bar + 1);
+      pageInFile = Number(c.page);
+      source = {
+        project: picked.project, sheet: c.sheet_no, sheetTitle: c.sheet_title ?? null,
+        revision: c.revision ?? null, revisionDate: c.revision_date ?? null,
+        revisionDescription: c.revision_description ?? null,
+        set: drawingSetOf(c.folder_path), file: c.file_name, pageInFile: c.page,
+        ...(picked.otherRevisions.length ? { otherIndexedRevisions: picked.otherRevisions } : {}),
+        webUrl: c.web_url ?? null,
+      };
+    }
+
+    let items: SheetTextItem[];
+    try {
+      const bytes = await fetchDrawingPdf(drive, realId);
+      const { getDocumentProxy } = await import("unpdf");
+      const pdf: any = await getDocumentProxy(bytes);
+      if (pageInFile < 1 || pageInFile > pdf.numPages) {
+        return asText({ ...source, error: `Page ${pageInFile} is out of range — the file has ${pdf.numPages} page(s).` });
+      }
+      const pg = await pdf.getPage(pageInFile);
+      const tc = await pg.getTextContent();
+      items = (tc.items as any[])
+        .map((it) => ({
+          str: String(it?.str ?? "").replace(/\u0000/g, " ").trim(),
+          x: Number(it?.transform?.[4] ?? 0),
+          y: Number(it?.transform?.[5] ?? 0),
+        }))
+        .filter((it) => it.str);
+      if (typeof pg.cleanup === "function") pg.cleanup();
+    } catch (e) {
+      return asText({ ...source, error: `Could not read the page: ${String((e as any)?.message ?? e).slice(0, 200)}` });
+    }
+    if (!items.length) {
+      return asText({ ...source, tables: [], error: "The page has no text layer (scanned or image-only).", nextStep: "view_drawing renders it as an image instead." });
+    }
+
+    let tables = extractSheetTables(items, match);
+    const titlesOnSheet = extractSheetTables(items).map((tb) => tb.title);
+    if (!tables.length) {
+      return asText({
+        ...source, tables: [],
+        ...(titlesOnSheet.length ? { schedulesOnSheet: titlesOnSheet } : {}),
+        note: match && titlesOnSheet.length
+          ? `No schedule title contains "${match}" — the sheet's schedules are listed under schedulesOnSheet.`
+          : "No '... SCHEDULE' table was recognized on this page. The schedule may be drawn without a title line, laid out unusually, or on another sheet — search_drawings finds which sheets mention it, and view_drawing shows the page.",
+      });
+    }
+    // Response-size guard: drop whole tables from the end rather than
+    // truncating rows mid-table, and say so.
+    let dropped = 0;
+    while (tables.length > 1 && JSON.stringify(tables).length > SCHED_MAX_CHARS) { tables = tables.slice(0, -1); dropped++; }
+    return asText({
+      ...source,
+      tables,
+      ...(dropped ? { tablesDropped: dropped, note2: `Response size cap: ${dropped} schedule(s) omitted — call again with match to target one.` } : {}),
+      note: "Rows are rebuilt from text geometry: header rows arrive as printed (possibly multiple), and a cell " +
+        "the extractor could not place lands in the column to its left. Verify surprising values visually with " +
+        "view_drawing (region zoom) before quoting them in a deliverable.",
+    });
+  },
+});
+
+// ── find_equipment: the equipment tag registry (derived, never stored) ───────
+// "What equipment is on this job" and "show me everything about FCU-11".
+// Tags come out of the drawing text index AT QUERY TIME (pms_equipment_tags
+// RPC), so the registry is exactly as fresh and as complete as the index —
+// no second store to drift, no backfill job. Two noise gates, both pinned by
+// tests: a tag on most of the project's sheets is title-block boilerplate,
+// not equipment (STTQ-01 sits on all 192 Tabler sheets), and a discipline
+// letter plus exactly three digits is a SHEET reference (M-501), not a tag.
+const EQUIP_SHEETLIKE_RE = /^(A|E|EL|FA|FP|G|H|I|M|P|S|SP|T)-\d{3}$/;
+const EQUIP_BOILERPLATE_RATIO = 0.6;
+const EQUIP_MIN_SHEETS_FOR_RATIO = 12;
+
+function equipmentNoiseFilter<T extends { tag: string; sheets: number | string }>(tags: T[], totalSheets: number): T[] {
+  return tags.filter((t) =>
+    !EQUIP_SHEETLIKE_RE.test(String(t.tag)) &&
+    !(totalSheets >= EQUIP_MIN_SHEETS_FOR_RATIO && Number(t.sheets) >= totalSheets * EQUIP_BOILERPLATE_RATIO));
+}
+
+mcp.tool("find_equipment", {
+  description:
+    "The EQUIPMENT TAG REGISTRY, derived live from the drawing text index. Two modes. WITHOUT tag: enumerate " +
+    "every hyphenated equipment tag on the project's indexed drawings (FCU-11, DOAS-1, CHWP-2, ...), grouped " +
+    "by family with sheet counts — answers 'what equipment is on this job'. WITH tag: everything the PMS can " +
+    "connect to one piece of equipment — the sheets it appears on (schedule sheets flagged first, every " +
+    "indexed revision listed) AND the CA record: submittals and RFIs whose text mentions it. Follow up with " +
+    "read_drawing_schedule on a flagged schedule sheet for its scheduled capacities, view_drawing to see it " +
+    "in place, and read_rfi_submittal for the full CA text. The registry only sees INDEXED drawings (coverage " +
+    "is reported; fill with search_drawings indexOnly:true) and enumerates hyphenated tags only — a tag " +
+    "written 'FCU11' on the sheet will not enumerate, though tag mode still finds it (hyphen, space, or " +
+    "nothing are interchangeable there). Title-block boilerplate and sheet-number lookalikes (M-501) are " +
+    "filtered from enumeration. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    tag: z.string().optional().describe("One equipment tag, e.g. 'FCU-11'. Omit to enumerate all tags on the project."),
+    minHits: z.number().optional().describe("Enumeration mode: only tags with at least this many text hits (default 3)."),
+  }),
+  handler: async ({ projectNumber, tag, minHits }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "The registry reads the drawing index, which needs the sets filed in SharePoint (Outgoing)." });
+    }
+    const numPrefix = String(project).toLowerCase().trim();
+
+    let indexedFiles = 0, filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      indexedFiles = known.filter((k) => k.status === "done").length;
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    const coverage = { indexedFiles, filesPending, ...(filesPending ? { note: "Index incomplete — search_drawings indexOnly:true fills it." } : {}) };
+
+    // ── Enumeration mode ───────────────────────────────────────────────────
+    if (!tag?.trim()) {
+      let rows: any[];
+      try {
+        rows = (await sbRpc("pms_equipment_tags", { p_prefix: numPrefix, p_min_hits: Math.max(1, Math.round(minHits ?? 3)) })) || [];
+      } catch (e) {
+        return asText({ project, error: `Tag enumeration failed: ${String((e as any)?.message ?? e)}` });
+      }
+      if (!rows.length) {
+        return asText({
+          project, coverage, families: [],
+          reason: indexedFiles === 0 ? "Nothing is indexed for this project yet." : "No hyphenated tags recur on the indexed sheets.",
+          nextStep: indexedFiles === 0 ? "Run search_drawings with indexOnly:true first." : "search_drawings finds specific text either way.",
+        });
+      }
+      const totalSheets = Number(rows[0]?.total_sheets ?? 0);
+      const kept = equipmentNoiseFilter(rows, totalSheets);
+      const famMap = new Map<string, any[]>();
+      for (const r of kept) {
+        const list = famMap.get(r.tag_prefix) || [];
+        list.push({ tag: r.tag, sheets: Number(r.sheets), hits: Number(r.hits), sampleSheets: r.sample_sheets ?? [] });
+        famMap.set(r.tag_prefix, list);
+      }
+      const families = [...famMap.entries()]
+        .map(([prefix, tags]) => ({ prefix, tagCount: tags.length, totalHits: tags.reduce((n, t) => n + t.hits, 0), tags: tags.slice(0, 40) }))
+        .sort((a, b) => b.totalHits - a.totalHits);
+      return asText({
+        project, coverage, indexedSheets: totalSheets, tagCount: kept.length, families,
+        note: "Derived from the drawing text index at query time. Pass tag:'FCU-11' for one unit's sheets + CA record; family prefixes map to equipment types (FCU fan coil, EF exhaust fan, CHWP chilled water pump, ...).",
+      });
+    }
+
+    // ── One-tag mode: drawings + CA record ─────────────────────────────────
+    const patterns = drawingQueryPatterns(tag);
+    if (!patterns.length) return asText({ error: `"${tag}" is not a tag.` });
+    let hits: any[] = [];
+    try {
+      hits = (await sbRpc("pms_drawing_search", { p_prefix: numPrefix, p_patterns: patterns, p_folder: null, p_limit: 120 })) || [];
+    } catch (e) {
+      return asText({ project, tag, coverage, error: `Drawing search failed: ${String((e as any)?.message ?? e)}` });
+    }
+    const bySheet = new Map<string, any>();
+    for (const h of hits) {
+      const key = h.sheet_no || `(no title block) ${h.file_name} p.${h.page}`;
+      const setName = drawingSetOf(h.folder_path);
+      const entry = bySheet.get(key) || { sheet: h.sheet_no ?? null, sheetTitle: h.sheet_title ?? null, looksLikeSchedule: false, revisions: [] as any[] };
+      if (!entry.sheetTitle && h.sheet_title) entry.sheetTitle = h.sheet_title;
+      if (/SCHEDULE/i.test(String(h.sheet_title || "")) || /SCHEDULE/i.test(String(h.snippet || ""))) entry.looksLikeSchedule = true;
+      if (!entry.revisions.find((o: any) => o.revision === (h.revision ?? null) && o.set === setName)) {
+        entry.revisions.push({ revision: h.revision ?? null, revisionDate: h.revision_date ?? null, set: setName, page: h.page, webUrl: h.web_url ?? null });
+      }
+      bySheet.set(key, entry);
+    }
+    const sheets = [...bySheet.values()]
+      .map((s) => { s.revisions.sort(drawingRevSort); return s; })
+      .sort((a, b) => Number(b.looksLikeSchedule) - Number(a.looksLikeSchedule) || String(a.sheet ?? "~").localeCompare(String(b.sheet ?? "~")));
+
+    // CA record: hyphen/space tolerant, word-bounded so FCU-11 never matches
+    // FCU-110.
+    const tagRe = new RegExp(`\\b(?:${patterns.join("|")})\\b`, "i");
+    const ca: any[] = [];
+    for (const kind of ["rfi", "submittal"] as const) {
+      for (const item of ((kind === "rfi" ? p?.rfis : p?.submittals) ?? [])) {
+        const hay = [item.number, item.title, item.description, item.response, item.comments, item.specSection].filter(Boolean).join(" ");
+        if (tagRe.test(hay)) {
+          ca.push({
+            type: kind, number: item.number,
+            subject: item.title || String(item.description || "").slice(0, 80),
+            status: item.status ?? null, ...(item.specSection ? { specSection: item.specSection } : {}),
+          });
+        }
+      }
+    }
+
+    return asText({
+      project, tag: tag.trim().toUpperCase(), coverage,
+      sheetCount: sheets.length, sheets: sheets.slice(0, 40),
+      caCount: ca.length, caRecord: ca.slice(0, 30),
+      ...(sheets.length === 0 && ca.length === 0 ? {
+        reason: "No indexed sheet and no CA record mentions it.",
+        nextStep: filesPending > 0 ? "Index incomplete — search_drawings indexOnly:true, then retry." : "Check the spelling; enumeration mode (omit tag) lists what exists.",
+      } : {}),
+      note: "Schedule-flagged sheets first: read_drawing_schedule reads the scheduled capacities there; view_drawing shows the unit in place; read_rfi_submittal opens a CA item in full.",
+    });
+  },
+});
+
+// ── get_qa_checklist: the QA Deliverables Checklist as CONTENT ───────────────
+// Was code-defined in SettyPMS.html (CHECKLIST_TEMPLATES); now lives in
+// pms_qa_checklist (seeded 2026-09-07 with the same item ids, so per-project
+// check-off state keeps working) where QA can edit it without a deploy and
+// lessons learned land as new rows (source='lesson'). Each item carries an
+// `automation` class telling the coordination review what it can do with it.
+const QA_ASSISTED_HINT =
+  "Gather evidence (search_drawings text, view_drawing region renders of the affected sheets), flag exceptions with sheet references; a human confirms.";
+
+mcp.tool("get_qa_checklist", {
+  description:
+    "The firm's QA DELIVERABLES CHECKLIST (internal coordination review standard for MEPFP design " +
+    "submissions), grouped by section. Use it to RUN or PREPARE a deliverable QA / internal coordination " +
+    "review: work the items against the project's current set, and report findings per item id with sheet " +
+    "references — never mark anything passed on the team's behalf; the review output is evidence for a human " +
+    "sign-off. Each item carries `automation`: 'auto' items the connector checks mechanically (the hint names " +
+    "the tools — drawing index, read_drawing_schedule, find_equipment, search_drawings), 'assisted' items " +
+    "where you gather evidence and flag exceptions for a human, 'manual' items that stay with the reviewer " +
+    "(list them as such). Filter with section or automation. The checklist is firm content editable by QA " +
+    "admins, and lessons learned are added over time — always fetch it fresh rather than assuming last " +
+    "month's items. Reviews are PHASE-AWARE: derive the phase from the deliverable/set name being reviewed " +
+    "(e.g. '100% CD Submission' -> CD, 'DD Progress Set' -> DD) and pass it as phase — items restricted to " +
+    "other phases drop out, items with no restriction always apply. Pair a review with list_action_items " +
+    "(the open items log) and search_knowledge (lessons learned, agency preferences) for the project-specific layer.",
+  inputSchema: z.object({
+    section: z.string().optional().describe("Only sections whose name contains this text, e.g. 'Electrical', 'Ceiling'."),
+    automation: z.enum(["auto", "assisted", "manual"]).optional().describe("Only items of one automation class."),
+    phase: z.string().optional().describe("The deliverable's phase (SD, DD, CD, Permit, Bid, Bulletin, ...), derived from the set name. Items restricted to other phases are excluded; unrestricted items always apply."),
+  }),
+  handler: async ({ section, automation, phase }) => {
+    let rows: any[];
+    try {
+      rows = await sbGetAll(
+        "pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,source,phases" +
+        "&enabled=eq.true&order=sort,item_id",
+      );
+    } catch (e) {
+      return asText({ error: `Could not read the QA checklist: ${String((e as any)?.message ?? e)}` });
+    }
+    if (section?.trim()) {
+      const sl = section.trim().toLowerCase();
+      rows = rows.filter((r) => String(r.section || "").toLowerCase().includes(sl));
+    }
+    if (automation) rows = rows.filter((r) => r.automation === automation);
+    if (phase?.trim()) {
+      const pl = phase.trim().toLowerCase();
+      rows = rows.filter((r) => !Array.isArray(r.phases) || r.phases.length === 0 ||
+        r.phases.some((p: unknown) => String(p).toLowerCase() === pl));
+    }
+    if (!rows.length) return asText({ items: 0, sections: [], reason: "No checklist items match those filters." });
+
+    const secMap = new Map<string, any[]>();
+    for (const r of rows) {
+      const list = secMap.get(r.section) || [];
+      list.push({
+        id: r.item_id, text: r.text, ...(r.details ? { details: r.details } : {}),
+        automation: r.automation,
+        ...(r.automation_hint ? { how: r.automation_hint } : (r.automation === "assisted" ? { how: QA_ASSISTED_HINT } : {})),
+        ...(Array.isArray(r.phases) && r.phases.length ? { phases: r.phases } : {}),
+        ...(r.source && r.source !== "seed" ? { source: r.source } : {}),
+      });
+      secMap.set(r.section, list);
+    }
+    const counts = rows.reduce((m: Record<string, number>, r) => ((m[r.automation] = (m[r.automation] || 0) + 1), m), {});
+    return asText({
+      items: rows.length, byAutomation: counts,
+      sections: [...secMap.entries()].map(([name, items]) => ({ name, items })),
+      note: "Report review findings per item id with sheet references and evidence; a human signs off — the " +
+        "review never marks items complete itself. Combine with list_action_items (open items) and " +
+        "search_knowledge (lessons learned) for the project-specific layer.",
+    });
   },
 });
 

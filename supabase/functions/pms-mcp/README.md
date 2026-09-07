@@ -240,6 +240,88 @@ one indexed query.
 node supabase/functions/pms-mcp/searchDrawings.test.mjs
 ```
 
+## `view_drawing`, eyes on the sheet (Drawing Intelligence phase 4)
+
+`search_drawings` says WHERE something is (file, page, revision); `view_drawing` renders that
+page as an image so the model can look at the drawing itself — plan layout, details, schedules,
+the title block. PDFium (wasm, `@hyzyla/pdfium`) rasterizes the page and imagescript encodes it,
+both proven by the `pdf-render-test` probe function and loaded lazily like unpdf.
+
+- **Sheet mode**: `projectNumber` + `sheet` resolves through `pms_drawing_text` — hyphen/space/dot
+  agnostic (a loose `ilike` candidate pattern, then exact normalized-token equality). Newest
+  indexed revision by default (same `drawingRevSort` as search), pinnable with `revision` or
+  `set`; at the same revision an INDIVIDUAL sheet file beats a combined book (smaller download).
+  The result lists the other indexed revisions. A miss reports close matches and index coverage.
+- **Direct mode**: `itemId` (+ `page`) renders any PDF from `list_project_documents`, no index needed.
+- **`region`**: full sheet targets ~1600px on the long edge — layout resolution. Quadrants
+  (`top-left`, ..., `center`) render at roughly double the effective resolution for reading
+  notes and schedules, overlapping 6% so seam content is never lost. A full-page pixel cap
+  (24M px) bounds memory; oversized PNGs re-encode as JPEG so the response stays shippable.
+- Read-only, one PDF download per call, 40MB file cap. Index pages are 1-based, PDFium 0-based —
+  the `- 1` at `getPage` is pinned by a drift anchor.
+
+```bash
+node supabase/functions/pms-mcp/viewDrawing.test.mjs
+```
+
+## `read_drawing_schedule`, schedules as rows (phase 5 slice)
+
+The text index flattens each page to one space-joined string, so it could FIND the fan schedule
+but not READ it. `read_drawing_schedule` re-opens the page and uses the text runs' positions
+(which the indexer discards) to rebuild every titled `... SCHEDULE` table into structured rows:
+lines cluster by y (±3pt), columns by x-starts that recur across ≥30% of the block's rows (±6pt) —
+CAD-generated schedules are strongly aligned, which is what makes this work with no per-drawing
+configuration. Split text runs fold into the column to their left; empty cells stay empty; plan
+text beside the schedule is excluded by the header row's horizontal extent.
+
+Sheet resolution is shared with `view_drawing` (`resolveIndexedSheet`: newest indexed revision,
+pinnable by `revision`/`set`, individual file over combined book), so "compare the fan schedule
+between revisions" is two calls with `set` pinned. `match` filters by schedule title; direct mode
+(`itemId` + `page`) works without the index. Header rows arrive as printed (multi-row headers are
+separate rows) — the model interprets them. Scanned sheets have no text: the tool says so and
+points at `view_drawing`.
+
+```bash
+node supabase/functions/pms-mcp/readDrawingSchedule.test.mjs
+```
+
+## `find_equipment`, the tag registry (derived, never stored)
+
+Tags are extracted from `pms_drawing_text` AT QUERY TIME by the `pms_equipment_tags` RPC
+(migration `20260907000000_equipment_tags.sql`, service_role only), so the registry is exactly as
+fresh and as complete as the drawing index — no second store, no backfill job. Enumeration mode
+(no `tag`) groups every recurring hyphenated tag by family with sheet counts; two noise gates are
+pinned by tests: a tag on ≥60% of the set's sheets is title-block boilerplate (live case: STTQ-01
+on all 192 Tabler sheets), and a discipline letter + exactly three digits is a sheet reference
+(M-501). Tag mode links one unit across the PMS: the sheets it appears on (schedule sheets
+flagged first, revisions listed) plus the CA record — submittals/RFIs whose text mentions it,
+word-bounded and hyphen/space-tolerant so FCU-11 never matches FCU-110. Hyphenated tags only in
+enumeration; tag mode is spelling-tolerant like `search_drawings`.
+
+```bash
+node supabase/functions/pms-mcp/findEquipment.test.mjs
+```
+
+## `get_qa_checklist`, the QA Deliverables Checklist as content
+
+The firm's internal coordination review standard was code-defined in SettyPMS.html
+(`CHECKLIST_TEMPLATES`, "not user-editable in PMS"). It now lives in `pms_qa_checklist`
+(migration `20260907120000_qa_checklist_content.sql`), seeded with the SAME item ids so
+per-project check-off state (`project.checklists`) keeps working. Reads for all authenticated;
+writes admin-only (`is_pms_admin()`), so QA edits the checklist — and lessons learned land as
+new rows (`source='lesson'`) — without a deploy. Every item carries an `automation` class for
+the coordination review: `auto` (19 items the connector checks mechanically — the hint names the
+tools: drawing index, `read_drawing_schedule`, `find_equipment`, `search_drawings`), `assisted`
+(101 — Claude gathers evidence and flags exceptions, a human confirms), `manual` (8 — plot and
+engineering judgment). The tool groups by section, filters by section/automation, and its text
+holds the posture line: findings are evidence for a human sign-off; the review never marks items
+complete itself. `qaChecklist.test.mjs` pins the app-template ↔ seed id agreement and the
+automation contract.
+
+```bash
+node supabase/functions/pms-mcp/qaChecklist.test.mjs
+```
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
