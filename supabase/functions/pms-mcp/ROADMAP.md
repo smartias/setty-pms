@@ -557,11 +557,24 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   resolution with view_drawing. Enables "what's the CFM on AHU-2" and
   revision-to-revision schedule diffs (call per set). Known limits, stated in
   the tool text: multi-row headers arrive as printed, misplaced cells fold
-  LEFT, scanned sheets have no text (P3.10 OCR still open). Next in this arc
-  (per Sara, 2026-09-07): an equipment tag registry linking tags across
-  drawings ↔ schedule rows ↔ specs ↔ submittals, then a standalone internal
-  coordination "review" flow (QA tab) checking the current set against the QA
-  Deliverables Checklist, the open items log, and the knowledge layer.
+  LEFT, scanned sheets have no text (P3.10 OCR still open).
+
+### Equipment tag registry: `find_equipment` (2026-09-07)
+
+- Derived live from the drawing text index (`pms_equipment_tags` RPC), never
+  stored: enumeration groups every recurring hyphenated tag by family
+  (title-block boilerplate and sheet-number lookalikes filtered, both gates
+  test-pinned); tag mode links one unit to its sheets (schedule sheets
+  flagged) and its CA record (submittals/RFIs mentioning it). Spec-section
+  linking deferred: submittal rows already carry specSection, so the join
+  exists where the CA record does.
+- Next in this arc (per Sara, 2026-09-07): a standalone internal coordination
+  "review" flow launched from the project QA tab — current set checked
+  against the QA Deliverables Checklist, the open items log, and the
+  knowledge layer / lessons learned. Prepare-only like prepare_transmittal;
+  the connector provides the primitives, the review itself runs as a Claude
+  session/skill, and the checklist lives as editable content (knowledge layer
+  or a SharePoint template), never hard-coded.
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 

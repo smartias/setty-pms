@@ -710,7 +710,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-07-drawing-schedules";
+const BUILD = "2026-09-07-drawing-intelligence";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.9.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -6204,6 +6204,147 @@ mcp.tool("read_drawing_schedule", {
       note: "Rows are rebuilt from text geometry: header rows arrive as printed (possibly multiple), and a cell " +
         "the extractor could not place lands in the column to its left. Verify surprising values visually with " +
         "view_drawing (region zoom) before quoting them in a deliverable.",
+    });
+  },
+});
+
+// ── find_equipment: the equipment tag registry (derived, never stored) ───────
+// "What equipment is on this job" and "show me everything about FCU-11".
+// Tags come out of the drawing text index AT QUERY TIME (pms_equipment_tags
+// RPC), so the registry is exactly as fresh and as complete as the index —
+// no second store to drift, no backfill job. Two noise gates, both pinned by
+// tests: a tag on most of the project's sheets is title-block boilerplate,
+// not equipment (STTQ-01 sits on all 192 Tabler sheets), and a discipline
+// letter plus exactly three digits is a SHEET reference (M-501), not a tag.
+const EQUIP_SHEETLIKE_RE = /^(A|E|EL|FA|FP|G|H|I|M|P|S|SP|T)-\d{3}$/;
+const EQUIP_BOILERPLATE_RATIO = 0.6;
+const EQUIP_MIN_SHEETS_FOR_RATIO = 12;
+
+function equipmentNoiseFilter<T extends { tag: string; sheets: number | string }>(tags: T[], totalSheets: number): T[] {
+  return tags.filter((t) =>
+    !EQUIP_SHEETLIKE_RE.test(String(t.tag)) &&
+    !(totalSheets >= EQUIP_MIN_SHEETS_FOR_RATIO && Number(t.sheets) >= totalSheets * EQUIP_BOILERPLATE_RATIO));
+}
+
+mcp.tool("find_equipment", {
+  description:
+    "The EQUIPMENT TAG REGISTRY, derived live from the drawing text index. Two modes. WITHOUT tag: enumerate " +
+    "every hyphenated equipment tag on the project's indexed drawings (FCU-11, DOAS-1, CHWP-2, ...), grouped " +
+    "by family with sheet counts — answers 'what equipment is on this job'. WITH tag: everything the PMS can " +
+    "connect to one piece of equipment — the sheets it appears on (schedule sheets flagged first, every " +
+    "indexed revision listed) AND the CA record: submittals and RFIs whose text mentions it. Follow up with " +
+    "read_drawing_schedule on a flagged schedule sheet for its scheduled capacities, view_drawing to see it " +
+    "in place, and read_rfi_submittal for the full CA text. The registry only sees INDEXED drawings (coverage " +
+    "is reported; fill with search_drawings indexOnly:true) and enumerates hyphenated tags only — a tag " +
+    "written 'FCU11' on the sheet will not enumerate, though tag mode still finds it (hyphen, space, or " +
+    "nothing are interchangeable there). Title-block boilerplate and sheet-number lookalikes (M-501) are " +
+    "filtered from enumeration. Read-only.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR project name."),
+    tag: z.string().optional().describe("One equipment tag, e.g. 'FCU-11'. Omit to enumerate all tags on the project."),
+    minHits: z.number().optional().describe("Enumeration mode: only tags with at least this many text hits (default 3)."),
+  }),
+  handler: async ({ projectNumber, tag, minHits }) => {
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "The registry reads the drawing index, which needs the sets filed in SharePoint (Outgoing)." });
+    }
+    const numPrefix = String(project).toLowerCase().trim();
+
+    let indexedFiles = 0, filesPending = 0;
+    try {
+      const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+      indexedFiles = known.filter((k) => k.status === "done").length;
+      filesPending = known.filter((k) => k.status === "pending").length;
+    } catch { /* coverage is advisory */ }
+    const coverage = { indexedFiles, filesPending, ...(filesPending ? { note: "Index incomplete — search_drawings indexOnly:true fills it." } : {}) };
+
+    // ── Enumeration mode ───────────────────────────────────────────────────
+    if (!tag?.trim()) {
+      let rows: any[];
+      try {
+        rows = (await sbRpc("pms_equipment_tags", { p_prefix: numPrefix, p_min_hits: Math.max(1, Math.round(minHits ?? 3)) })) || [];
+      } catch (e) {
+        return asText({ project, error: `Tag enumeration failed: ${String((e as any)?.message ?? e)}` });
+      }
+      if (!rows.length) {
+        return asText({
+          project, coverage, families: [],
+          reason: indexedFiles === 0 ? "Nothing is indexed for this project yet." : "No hyphenated tags recur on the indexed sheets.",
+          nextStep: indexedFiles === 0 ? "Run search_drawings with indexOnly:true first." : "search_drawings finds specific text either way.",
+        });
+      }
+      const totalSheets = Number(rows[0]?.total_sheets ?? 0);
+      const kept = equipmentNoiseFilter(rows, totalSheets);
+      const famMap = new Map<string, any[]>();
+      for (const r of kept) {
+        const list = famMap.get(r.tag_prefix) || [];
+        list.push({ tag: r.tag, sheets: Number(r.sheets), hits: Number(r.hits), sampleSheets: r.sample_sheets ?? [] });
+        famMap.set(r.tag_prefix, list);
+      }
+      const families = [...famMap.entries()]
+        .map(([prefix, tags]) => ({ prefix, tagCount: tags.length, totalHits: tags.reduce((n, t) => n + t.hits, 0), tags: tags.slice(0, 40) }))
+        .sort((a, b) => b.totalHits - a.totalHits);
+      return asText({
+        project, coverage, indexedSheets: totalSheets, tagCount: kept.length, families,
+        note: "Derived from the drawing text index at query time. Pass tag:'FCU-11' for one unit's sheets + CA record; family prefixes map to equipment types (FCU fan coil, EF exhaust fan, CHWP chilled water pump, ...).",
+      });
+    }
+
+    // ── One-tag mode: drawings + CA record ─────────────────────────────────
+    const patterns = drawingQueryPatterns(tag);
+    if (!patterns.length) return asText({ error: `"${tag}" is not a tag.` });
+    let hits: any[] = [];
+    try {
+      hits = (await sbRpc("pms_drawing_search", { p_prefix: numPrefix, p_patterns: patterns, p_folder: null, p_limit: 120 })) || [];
+    } catch (e) {
+      return asText({ project, tag, coverage, error: `Drawing search failed: ${String((e as any)?.message ?? e)}` });
+    }
+    const bySheet = new Map<string, any>();
+    for (const h of hits) {
+      const key = h.sheet_no || `(no title block) ${h.file_name} p.${h.page}`;
+      const setName = drawingSetOf(h.folder_path);
+      const entry = bySheet.get(key) || { sheet: h.sheet_no ?? null, sheetTitle: h.sheet_title ?? null, looksLikeSchedule: false, revisions: [] as any[] };
+      if (!entry.sheetTitle && h.sheet_title) entry.sheetTitle = h.sheet_title;
+      if (/SCHEDULE/i.test(String(h.sheet_title || "")) || /SCHEDULE/i.test(String(h.snippet || ""))) entry.looksLikeSchedule = true;
+      if (!entry.revisions.find((o: any) => o.revision === (h.revision ?? null) && o.set === setName)) {
+        entry.revisions.push({ revision: h.revision ?? null, revisionDate: h.revision_date ?? null, set: setName, page: h.page, webUrl: h.web_url ?? null });
+      }
+      bySheet.set(key, entry);
+    }
+    const sheets = [...bySheet.values()]
+      .map((s) => { s.revisions.sort(drawingRevSort); return s; })
+      .sort((a, b) => Number(b.looksLikeSchedule) - Number(a.looksLikeSchedule) || String(a.sheet ?? "~").localeCompare(String(b.sheet ?? "~")));
+
+    // CA record: hyphen/space tolerant, word-bounded so FCU-11 never matches
+    // FCU-110.
+    const tagRe = new RegExp(`\\b(?:${patterns.join("|")})\\b`, "i");
+    const ca: any[] = [];
+    for (const kind of ["rfi", "submittal"] as const) {
+      for (const item of ((kind === "rfi" ? p?.rfis : p?.submittals) ?? [])) {
+        const hay = [item.number, item.title, item.description, item.response, item.comments, item.specSection].filter(Boolean).join(" ");
+        if (tagRe.test(hay)) {
+          ca.push({
+            type: kind, number: item.number,
+            subject: item.title || String(item.description || "").slice(0, 80),
+            status: item.status ?? null, ...(item.specSection ? { specSection: item.specSection } : {}),
+          });
+        }
+      }
+    }
+
+    return asText({
+      project, tag: tag.trim().toUpperCase(), coverage,
+      sheetCount: sheets.length, sheets: sheets.slice(0, 40),
+      caCount: ca.length, caRecord: ca.slice(0, 30),
+      ...(sheets.length === 0 && ca.length === 0 ? {
+        reason: "No indexed sheet and no CA record mentions it.",
+        nextStep: filesPending > 0 ? "Index incomplete — search_drawings indexOnly:true, then retry." : "Check the spelling; enumeration mode (omit tag) lists what exists.",
+      } : {}),
+      note: "Schedule-flagged sheets first: read_drawing_schedule reads the scheduled capacities there; view_drawing shows the unit in place; read_rfi_submittal opens a CA item in full.",
     });
   },
 });

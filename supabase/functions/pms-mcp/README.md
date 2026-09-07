@@ -285,6 +285,23 @@ points at `view_drawing`.
 node supabase/functions/pms-mcp/readDrawingSchedule.test.mjs
 ```
 
+## `find_equipment`, the tag registry (derived, never stored)
+
+Tags are extracted from `pms_drawing_text` AT QUERY TIME by the `pms_equipment_tags` RPC
+(migration `20260907000000_equipment_tags.sql`, service_role only), so the registry is exactly as
+fresh and as complete as the drawing index — no second store, no backfill job. Enumeration mode
+(no `tag`) groups every recurring hyphenated tag by family with sheet counts; two noise gates are
+pinned by tests: a tag on ≥60% of the set's sheets is title-block boilerplate (live case: STTQ-01
+on all 192 Tabler sheets), and a discipline letter + exactly three digits is a sheet reference
+(M-501). Tag mode links one unit across the PMS: the sheets it appears on (schedule sheets
+flagged first, revisions listed) plus the CA record — submittals/RFIs whose text mentions it,
+word-bounded and hyphen/space-tolerant so FCU-11 never matches FCU-110. Hyphenated tags only in
+enumeration; tag mode is spelling-tolerant like `search_drawings`.
+
+```bash
+node supabase/functions/pms-mcp/findEquipment.test.mjs
+```
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
