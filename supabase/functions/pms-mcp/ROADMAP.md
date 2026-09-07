@@ -550,6 +550,19 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   geometry), and OCR for scanned sheets (P3.10) — an image-only sheet renders
   fine in view_drawing but stays invisible to search_drawings.
 
+### Drawing Intelligence phase 5 slice: `read_drawing_schedule` (2026-09-07)
+
+- Schedules as structured rows, rebuilt on demand from the page's text
+  geometry (y-clustered lines, recurring x-starts as columns). Shares sheet
+  resolution with view_drawing. Enables "what's the CFM on AHU-2" and
+  revision-to-revision schedule diffs (call per set). Known limits, stated in
+  the tool text: multi-row headers arrive as printed, misplaced cells fold
+  LEFT, scanned sheets have no text (P3.10 OCR still open). Next in this arc
+  (per Sara, 2026-09-07): an equipment tag registry linking tags across
+  drawings ↔ schedule rows ↔ specs ↔ submittals, then a standalone internal
+  coordination "review" flow (QA tab) checking the current set against the QA
+  Deliverables Checklist, the open items log, and the knowledge layer.
+
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
 Raised by Sara: "there should be a company retrieval tool... I need a WBE

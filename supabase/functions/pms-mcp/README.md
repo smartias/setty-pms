@@ -264,6 +264,27 @@ both proven by the `pdf-render-test` probe function and loaded lazily like unpdf
 node supabase/functions/pms-mcp/viewDrawing.test.mjs
 ```
 
+## `read_drawing_schedule`, schedules as rows (phase 5 slice)
+
+The text index flattens each page to one space-joined string, so it could FIND the fan schedule
+but not READ it. `read_drawing_schedule` re-opens the page and uses the text runs' positions
+(which the indexer discards) to rebuild every titled `... SCHEDULE` table into structured rows:
+lines cluster by y (±3pt), columns by x-starts that recur across ≥30% of the block's rows (±6pt) —
+CAD-generated schedules are strongly aligned, which is what makes this work with no per-drawing
+configuration. Split text runs fold into the column to their left; empty cells stay empty; plan
+text beside the schedule is excluded by the header row's horizontal extent.
+
+Sheet resolution is shared with `view_drawing` (`resolveIndexedSheet`: newest indexed revision,
+pinnable by `revision`/`set`, individual file over combined book), so "compare the fan schedule
+between revisions" is two calls with `set` pinned. `match` filters by schedule title; direct mode
+(`itemId` + `page`) works without the index. Header rows arrive as printed (multi-row headers are
+separate rows) — the model interprets them. Scanned sheets have no text: the tool says so and
+points at `view_drawing`.
+
+```bash
+node supabase/functions/pms-mcp/readDrawingSchedule.test.mjs
+```
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
