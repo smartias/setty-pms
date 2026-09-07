@@ -6369,17 +6369,20 @@ mcp.tool("get_qa_checklist", {
     "where you gather evidence and flag exceptions for a human, 'manual' items that stay with the reviewer " +
     "(list them as such). Filter with section or automation. The checklist is firm content editable by QA " +
     "admins, and lessons learned are added over time — always fetch it fresh rather than assuming last " +
-    "month's items. Pair a review with list_action_items (the open items log) and search_knowledge (lessons " +
-    "learned, agency preferences) for the project-specific layer.",
+    "month's items. Reviews are PHASE-AWARE: derive the phase from the deliverable/set name being reviewed " +
+    "(e.g. '100% CD Submission' -> CD, 'DD Progress Set' -> DD) and pass it as phase — items restricted to " +
+    "other phases drop out, items with no restriction always apply. Pair a review with list_action_items " +
+    "(the open items log) and search_knowledge (lessons learned, agency preferences) for the project-specific layer.",
   inputSchema: z.object({
     section: z.string().optional().describe("Only sections whose name contains this text, e.g. 'Electrical', 'Ceiling'."),
     automation: z.enum(["auto", "assisted", "manual"]).optional().describe("Only items of one automation class."),
+    phase: z.string().optional().describe("The deliverable's phase (SD, DD, CD, Permit, Bid, Bulletin, ...), derived from the set name. Items restricted to other phases are excluded; unrestricted items always apply."),
   }),
-  handler: async ({ section, automation }) => {
+  handler: async ({ section, automation, phase }) => {
     let rows: any[];
     try {
       rows = await sbGetAll(
-        "pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,source" +
+        "pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,source,phases" +
         "&enabled=eq.true&order=sort,item_id",
       );
     } catch (e) {
@@ -6390,6 +6393,11 @@ mcp.tool("get_qa_checklist", {
       rows = rows.filter((r) => String(r.section || "").toLowerCase().includes(sl));
     }
     if (automation) rows = rows.filter((r) => r.automation === automation);
+    if (phase?.trim()) {
+      const pl = phase.trim().toLowerCase();
+      rows = rows.filter((r) => !Array.isArray(r.phases) || r.phases.length === 0 ||
+        r.phases.some((p: unknown) => String(p).toLowerCase() === pl));
+    }
     if (!rows.length) return asText({ items: 0, sections: [], reason: "No checklist items match those filters." });
 
     const secMap = new Map<string, any[]>();
@@ -6399,6 +6407,7 @@ mcp.tool("get_qa_checklist", {
         id: r.item_id, text: r.text, ...(r.details ? { details: r.details } : {}),
         automation: r.automation,
         ...(r.automation_hint ? { how: r.automation_hint } : (r.automation === "assisted" ? { how: QA_ASSISTED_HINT } : {})),
+        ...(Array.isArray(r.phases) && r.phases.length ? { phases: r.phases } : {}),
         ...(r.source && r.source !== "seed" ? { source: r.source } : {}),
       });
       secMap.set(r.section, list);

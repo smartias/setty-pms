@@ -164,3 +164,9 @@ insert into public.pms_qa_checklist (item_id, template_id, section, sort, text, 
 ('qa-234','deliverable-qa','Commonly Missed / High-Risk Coordination Items',1270,'Verify clouded revisions are actually revised.','["Common issue: Cloud shown but no change made."]'::jsonb,'assisted',null),
 ('qa-235','deliverable-qa','Commonly Missed / High-Risk Coordination Items',1280,'Verify all sheets have consistent spelling, capitalization, and naming conventions.','["Examples: \"Elec Room\" vs \"Electrical Room\", \"Toilet Room\" vs \"Restroom\""]'::jsonb,'assisted',null)
 on conflict (item_id) do nothing;
+
+-- Phase applicability (added same day). null = applies at every phase; a
+-- jsonb array like ["CD","Permit","Bid"] restricts the item. The seed leaves
+-- every item null on purpose: which items apply at which phase is an
+-- engineering call QA makes per item from the console, not a deploy.
+alter table public.pms_qa_checklist add column if not exists phases jsonb;

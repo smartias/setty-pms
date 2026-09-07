@@ -21,9 +21,12 @@ const app = readFileSync(join(here, "../../../SettyPMS.html"), "utf8");
 // claims completion authority.
 for (const anchor of [
   'mcp.tool("get_qa_checklist"',
-  '"pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,source"',
+  '"pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,source,phases"',
   '"&enabled=eq.true&order=sort,item_id"',
   "a human signs off",
+  // Phase gate: an item with no phases restriction applies at EVERY phase —
+  // the filter must never drop unrestricted items.
+  "!Array.isArray(r.phases) || r.phases.length === 0",
 ] ) {
   assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
 }
