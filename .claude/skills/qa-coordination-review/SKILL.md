@@ -100,6 +100,29 @@ qa-110 roof equipment vs roof plan) become screenable:
 - Record hits to the ledger with `source:'ripple'` or `'qa'`, both sheets
   cited (ours and the background's file/date).
 
+## External data dependencies — flag what the log cannot show
+
+Some design inputs live OUTSIDE the drawing set: the utility's available
+fault current, the hydrant flow test behind the FP hydraulic calcs, service
+coordination confirmations, owner-provided data. The checklist's "External
+Data Dependencies" section (qa-300+) drives this pass:
+
+1. Derive which dependencies apply FROM the design content (a service
+   entrance implies a utility letter; sprinkler hydraulic calcs imply a
+   flow test; gas-fired equipment implies gas availability).
+2. Hunt the project log for the evidence: `search_emails`,
+   `find_document`, and the values cited on the sheets themselves
+   (`search_drawings` for AVAILABLE FAULT CURRENT / FLOW TEST / STATIC /
+   RESIDUAL). Found → report the source and its DATE (a 2019 flow test
+   under a 2026 bid set is a finding, not a pass).
+3. **Not found → raise a ledger finding addressed to the user**: name the
+   missing data, why the design depends on it, and the action ("attach the
+   flow test report, or enter its status"). The user's answer is recorded
+   through `update_qa_finding` as the row's note — that note IS the record
+   that the dependency was consciously resolved, not assumed. Never mark
+   such an item clean on inference; only a document in the log or a human
+   note closes it.
+
 ## Running the tiers
 
 **Auto items** (each carries a `how` hint naming the tools — follow it):
