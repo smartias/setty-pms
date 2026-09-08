@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-08-pms-v147-backcheck-label";
+    window.__appVersion = "2026-09-08-pms-v148-qaqc-folder-option";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13336,7 +13336,7 @@ function ProjectQAReviewsView({ project, onChange }) {
 
   const reviewUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     selSet
-      ? "Run an internal coordination QA review of a SPECIFIC issued set for " + label + ": review the set \"" + selSet + "\" - pass it as the subfolder to search_drawings and extract_sheet_index, and treat it as the deliverable under review."
+      ? "Run an internal coordination QA review of a SPECIFIC set for " + label + ": review the folder \"" + (issuedSets.some(s => s.set === selSet) ? "Outgoing/" + selSet : selSet) + "\" - pass it as the subfolder to search_drawings and extract_sheet_index, and treat it as the deliverable under review. A QAQC/ path is a PRE-ISSUANCE internal QA set: findings are fix-before-issue."
       : "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
     "",
     "Use the Setty PMS connector: back-check this project's open ledger findings first (list_qa_findings), then run the full checklist review (get_qa_checklist with the phase derived from the set) and record new findings with record_qa_findings for my sign-off here. When the report is done, file it with file_qa_report into a new dated folder under Design Reports and Narratives and give me the folder link.",
@@ -13391,11 +13391,25 @@ function ProjectQAReviewsView({ project, onChange }) {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         {issuedSets.length > 0 && (
-          <select value={selSet} onChange={e => setSelSet(e.target.value)}
+          <select value={issuedSets.some(s => s.set === selSet) || selSet === "" ? selSet : "__typed__"} onChange={e => {
+            // Internal QA runs 1-2 weeks BEFORE issuance, so the set under
+            // review is not in the register yet - and it must NOT sit in
+            // Outgoing, which is reserved for what actually went out (per
+            // Sara). Convention: a top-level QAQC folder with dated
+            // subfolders (e.g. "QAQC/2026-09-22_100% CD QAQC"). The drawing
+            // crawler resolves an explicit subfolder from the PROJECT ROOT,
+            // so this needs no connector change and can never be mistaken
+            // for an issued set.
+            if (e.target.value === "__other__") {
+              const f = window.prompt("QAQC folder path from the project root (e.g. QAQC/2026-09-22_100% CD QAQC):", "QAQC/");
+              if (f && f.trim() && f.trim() !== "QAQC/") setSelSet(f.trim());
+            } else if (e.target.value !== "__typed__") setSelSet(e.target.value);
+          }}
             title="Which drawings the review examines - the current composed set, or one specific issue from the transmittal register"
             style={{ background: P.card, color: P.text, border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, padding: "6px 8px", maxWidth: 280 }}>
             <option value="">Current issued set (default)</option>
             {issuedSets.map(s => <option key={s.set} value={s.set}>{s.set}</option>)}
+            <option value="__other__">Other folder (pre-issuance QAQC set)&hellip;</option>
           </select>
         )}
         <a href={reviewUrl} target="_blank" rel="noreferrer"

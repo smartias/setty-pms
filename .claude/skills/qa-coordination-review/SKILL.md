@@ -15,9 +15,35 @@ description: >
 
 # QA Coordination Review
 
-You are performing Setty's internal coordination review of an issued (or
-about-to-issue) MEPFP drawing set. The deliverable is a findings report a
-human reviewer signs off on. Three rules govern everything below:
+You are performing Setty's coordination review of an MEPFP drawing set.
+The deliverable is a findings report a human reviewer signs off on.
+
+## Where in the lifecycle — say it, and let it shape the review
+
+QA is not one event. Identify which moment this review serves and state it
+in the report header:
+
+1. **Internal QA (1–2 weeks BEFORE official issuance).** The set under
+   review is NOT in the transmittal register yet, and it does NOT belong in
+   Outgoing — Outgoing is reserved for what actually went out (per Sara).
+   Convention: a top-level **QAQC** folder in the project library with dated
+   subfolders ("QAQC/YYYY-MM-DD_<phase> QAQC"), named via the tab's set
+   picker or by the user; pass that path as `subfolder` (the crawler
+   resolves explicit subfolders from the project root, and a QAQC path can
+   never be mistaken for an issued set). Every finding here is
+   FIX-BEFORE-ISSUE: severity leans practical (what would embarrass us or
+   draw comments), cost severity applies only if the job is already bid.
+   This is the highest-leverage review — run the full tiers.
+2. **Pre-issuance coordination comments.** Comments from the architect or
+   other disciplines on the QAQC set ingest as `kind:'comment-log'`
+   (`source:'architect'`/`'other'`) and are worked BEFORE issuance — the
+   goal is that the official set goes out with those rows closed.
+3. **Post-issuance: agency / AHJ / owner comments.** These arrive after the
+   official submission, ingest as comment-logs with their source, carry
+   priority over internal findings, and follow the human-close rule.
+   Back-check runs against each subsequent bulletin.
+
+Three rules govern everything below:
 
 1. **Evidence, not verdicts.** Every finding cites sheets, revisions, and the
    text or image that supports it. Every clean check states what was actually
