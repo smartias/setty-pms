@@ -6665,11 +6665,17 @@ async function graphSend(method: string, path: string, body: BodyInit, contentTy
   return res.json();
 }
 
-// Find-or-create a child folder by exact name (case-insensitive find, so a
-// hand-made "Design Reports and Narratives" folder is reused, never duplicated).
+// Find-or-create a child folder. The find is case-insensitive CONTAINS, not
+// exact: provisioned folders carry numbering/emoji prefixes ("02 📄 Design
+// Reports and Narratives" — live on Tabler), and an exact match would create
+// a duplicate next to the real folder. Exact-name match wins over contains
+// when both exist.
 async function ensureChildFolder(driveId: string, parentId: string, name: string): Promise<any> {
   const kids = await graphGet(`/drives/${driveId}/items/${parentId}/children?$select=id,name,folder&$top=200`);
-  const hit = (kids.value || []).find((k: any) => k.folder && String(k.name).toLowerCase() === name.toLowerCase());
+  const want = name.toLowerCase();
+  const folders = (kids.value || []).filter((k: any) => k.folder);
+  const hit = folders.find((k: any) => String(k.name).toLowerCase() === want) ||
+    folders.find((k: any) => String(k.name).toLowerCase().includes(want));
   if (hit) return hit;
   return graphSend("POST", `/drives/${driveId}/items/${parentId}/children`,
     JSON.stringify({ name, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }), "application/json");

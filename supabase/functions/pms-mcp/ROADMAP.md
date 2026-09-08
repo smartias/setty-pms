@@ -602,7 +602,25 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   the tab remains the human sign-off record.
 - Still open in this arc — the PLANNED SCHEDULE, in order (per Sara,
   2026-09-07 evening):
-  1. [BUILT 2026-09-08, PR pending merge] **QA tab becomes "QA Reviews"**
+  SCHEDULE STATUS (2026-09-08 midday): 1 SHIPPED (#242, v145/v146 incl. set
+  picker + back-check banner + report filing per Sara's transmittal-style
+  direction, #243); 2 PARTIAL (back-check-due banner shipped; a true
+  unattended trigger is BLOCKED: routine-fired sessions get no claude.ai
+  connectors and cannot push - both proven 2026-09-08); 3 PILOTED on Tabler
+  (ledger review #2: no A/S/C backgrounds reachable - they live behind the
+  Client Uploads NYSharesite shortcut the crawler doesn't follow, flow test
+  on record from 2024-08, one uningested 2024 code-review comment log);
+  4 SHIPPED (#244, pms_qa_ripple_rules served via get_qa_checklist);
+  5 NEEDS SARA (add qa-coordination-review + design-narrative to the firm's
+  claude.ai skill library so chat-button sessions load them);
+  6 PARTIAL (on-demand ingest shipped; watcher blocked like item 2 - the
+  add-in filing action lives in setty-pms-addin); 7 SHIPPED (#244,
+  qa-400..404). Follow-ups: crawl the Client Uploads shortcut for
+  backgrounds; upload-files flow needs the transmittal tool's delegated
+  Graph plumbing; file_qa_report's Graph write scope unverified until first
+  use (403 => IT consent ask).
+
+  1. **QA tab becomes "QA Reviews"**
      (per Sara, 2026-09-07 late): the
      ledger IS the tab. Primary view: review runs + findings from
      pms_qa_reviews/pms_qa_findings — what was found or commented, by whom,
