@@ -415,6 +415,79 @@ for (const p of ["PDFS/STTQ-01-FP_INDIVIDUAL PDF", "Outgoing/2026-04-17_Bulletin
   check(!NON_SHEET_FOLDER.test(p), `"${p}" is NOT excluded`);
 }
 
+// ── 7b. Format C: the BARE cover index ─────────────────────────────────────
+// Copies of the format-C parser (see parseDrawingIndexBare in index.ts). The
+// fixture is the REAL page-1 text of "TX-1_BID Submission Drawings.pdf" on
+// SUNY Upstate TX-1 Fan (SAPX216001.01), captured from pms_drawing_text on
+// 2026-09-08 — the combined multi-firm book where no title block parses and
+// formats A and B both miss, which made the whole project read as "no
+// sheets" and stopped Sara's first QA review on it.
+const DRAWING_INDEX_ANCHOR = /DRAWING\s+INDEX/;
+const DRAWING_INDEX_TAIL = /\s+(?:www|PROJECT NUMBER|DRAWING INDEX|NOT FOR CONSTRUCTION|CONSULTANTS|SEALS)\b/;
+const DRAWING_INDEX_HEAD = /\s+(?:GENERAL|ARCHITECTURAL|STRUCTURAL|MECHANICAL|MECHANICAL SITE|PLUMBING|FIRE PROTECTION|FIRE ALARM|SPRINKLER|ELECTRICAL|ELECTRICAL SITE|TECHNOLOGY|CIVIL|LANDSCAPE|GEOTHERMAL|ENERGY)\s*$/;
+const DRAWING_INDEX_BARE_ROW = /\b([A-Z]{1,3}-?\d{2,4}(?:\.\d{2})?[A-Z]?)\s/g;
+function parseDrawingIndexBare(pageText) {
+  if (!DRAWING_INDEX_ANCHOR.test(pageText)) return [];
+  const rows = [...pageText.matchAll(DRAWING_INDEX_BARE_ROW)];
+  if (rows.length < 5) return [];
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    const m = rows[i];
+    const next = rows[i + 1];
+    const from = m.index + m[0].length;
+    const to = next ? next.index : pageText.length;
+    let title = pageText.slice(from, to).trim();
+    const cut = DRAWING_INDEX_TAIL.exec(title);
+    if (cut) title = title.slice(0, cut.index).trim();
+    const dThis = (/^([A-Z]{1,3})/.exec(m[1]) || [, ""])[1];
+    const dNext = next ? (/^([A-Z]{1,3})/.exec(next[1]) || [, ""])[1] : "";
+    if (dNext && dNext !== dThis) title = title.replace(DRAWING_INDEX_HEAD, "").trim();
+    if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
+    title = title.replace(/\s+/g, " ");
+    if (!/^[A-Z]/.test(title)) continue;
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    out.push({ sheetNo: m[1], sheetTitle: title });
+  }
+  return out.length >= 5 ? out : [];
+}
+
+const SUNY_COVER = "OWNER: ARCHITECT: STRUCTURAL ENGINEER: SUNY UPSTATE MEDICAL UNIVERSITY 750 EAST ADAMS STREET, " +
+  "SYRACUSE, NY 13202. MEP ENGINEER: UPSTATE MEDICAL UNIVERSITY 750 EAST ADAMS STREET SYRACUSE, NY 13210 " +
+  "RYAN BIGGS | CLARK DAVIS P.O. BOX 217 SKANEATELES FALLS, NY 13153 SETTY 121 WEST 27TH STREET, SUITE 1100 " +
+  "NEW YORK, NY 10001 CAMPUS: PROJECT LOCATION PROJECT LOCATION UPSTATE MEDICAL UNIVERSITY ASHLEY MCGRAW " +
+  "125 EAST JEFFERESON STREET SYRACUSE, NEW YORK 13202 CRANE LOCATION AREA OF WORK SUCF PROJECT NO: 151092 " +
+  "UPSTATE PROJECT NO: 1223 G000 TITLE SHEET G001 PHASING DIAGRAM ARCHITECTURAL A101 DEMO PLAN, FLOOR PLANS & DETAILS " +
+  "A102 OVERALL ROOF PLAN STRUCTURAL S100 PLANS, DETAILS AND NOTES S101 SECTIONS AND DETAILS MECHANICAL " +
+  "M001 GENERAL NOTES, SYMBOLS & ABBREVIATIONS MD101 PENTHOUSE LEVEL PLAN - MECHANICAL - DEMOLITION " +
+  "M101 PENTHOUSE LEVEL PLAN - MECHANICAL - NEW WORK M102 PENTHOUSE ROOF LEVEL PLAN - MECHANICAL " +
+  "M501 MECHANICAL RISERS AND DETAILS M601 MECHANICAL SCHEDULES AND CONTROLS ELECTRICAL " +
+  "E001 GENERAL NOTES, SYMBOLS & ABBREVIATIONS ED101 PENTHOUSE LEVEL PLAN - ELECTRICAL DEMOLITION " +
+  "E101 PENTHOUSE LEVEL PLAN - ELECTRICAL NEW WORK E501 PENTHOUSE ROOF LEVEL PLAN - ELECTRICAL TEMPORARY WORK " +
+  "E502 ELECTRICAL RISER DIAGRAMS E601 ELECTRICAL SCHEDULES www. SETTY .com PROJECT NUMBER: TM 149 W 36 th Street " +
+  "8 th Floor New York, NY 10018 DRAWING INDEX PROJECT NO.: PROJECT DATE: SUCF / UPSTATE PROJECT NO: 151092 / 1223 " +
+  "SAPX216001.00 125 EAST JEFFERSON STREET SYRACUSE, NEW YORK 13202 SUNY-UPSTATE MEDICAL UNIVERSITY NORTH WING " +
+  "TX-1 FAN REPLACEMENT SAPX216001.00 07/03/2026 SUNY-UPSTATE MEDICAL UNIVERSITY NORTH WING TX-1 FAN REPLACEMENT " +
+  "750 E ADAMS ST, SYRACUSE, NY 13210 G000 09/04/2026";
+
+const bare = parseDrawingIndexBare(SUNY_COVER);
+eq(bare.length, 18, "the SUNY cover yields all 18 sheets");
+eq(bare[0].sheetNo, "G000", "first row");
+eq(bare[0].sheetTitle, "TITLE SHEET",
+  "G000's title is TITLE SHEET — the duplicate G000 in the title block is dropped, not merged");
+eq(bare[1].sheetTitle, "PHASING DIAGRAM", "a trailing discipline header (ARCHITECTURAL) is stripped");
+eq(bare[3].sheetTitle, "OVERALL ROOF PLAN", "…and STRUCTURAL is stripped off A102");
+eq(bare.find((r) => r.sheetNo === "M601").sheetTitle, "MECHANICAL SCHEDULES AND CONTROLS",
+  "ELECTRICAL header stripped off M601");
+eq(bare.find((r) => r.sheetNo === "MD101").sheetTitle, "PENTHOUSE LEVEL PLAN - MECHANICAL - DEMOLITION",
+  "a MECHANICAL inside a same-discipline title is kept");
+eq(bare[bare.length - 1].sheetNo, "E601", "last row");
+eq(bare[bare.length - 1].sheetTitle, "ELECTRICAL SCHEDULES", "the last title stops at the title-block tail (www…)");
+eq(parseDrawingIndexBare("G000 TITLE SHEET A101 PLAN").length, 0, "no DRAWING INDEX anchor → no rows");
+eq(parseDrawingIndexBare("DRAWING INDEX G000 09/04/2026 E601 12/01/2026 A101 5 S100 7 M001 9").length, 0,
+  "tokens followed by dates/numbers are title-block furniture, not index rows");
+
 // ── 8. Drift checks ────────────────────────────────────────────────────────
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -434,6 +507,9 @@ has(TITLE_BLOCK_SHEET_FIRST.source, "layout-1 regex literal (byte-identical)");
 has(TITLE_BLOCK_SHEET_LAST.source, "layout-2 regex literal (byte-identical)");
 has("const TITLE_BLOCK_DOB_NOW", "the DOB-NOW pattern (modeled by titleBlock.test.mjs, not here)");
 has("function parseDrawingIndex", "the DRAWING INDEX cover fallback");
+has("function parseDrawingIndexBare", "the format-C bare cover index fallback");
+has(DRAWING_INDEX_BARE_ROW.source, "format-C row regex literal (byte-identical)");
+has("return b.length ? b : parseDrawingIndexBare(pageText);", "format C chained after formats A and B");
 const shippedLayoutCount = (shipped.match(/\n\s*layout: "/g) || []).length;
 check(shippedLayoutCount === 3,
   `shipped TITLE_BLOCK_PATTERNS has ${shippedLayoutCount} layouts — this suite models 2 of the expected 3; a new layout needs triage here`);
