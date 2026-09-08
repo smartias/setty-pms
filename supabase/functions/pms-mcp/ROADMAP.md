@@ -602,7 +602,8 @@ Owner: unassigned. Raised by Sara 2026-08-06.
   the tab remains the human sign-off record.
 - Still open in this arc — the PLANNED SCHEDULE, in order (per Sara,
   2026-09-07 evening):
-  1. **QA tab becomes "QA Reviews"** (per Sara, 2026-09-07 late): the
+  1. [BUILT 2026-09-08, PR pending merge] **QA tab becomes "QA Reviews"**
+     (per Sara, 2026-09-07 late): the
      ledger IS the tab. Primary view: review runs + findings from
      pms_qa_reviews/pms_qa_findings — what was found or commented, by whom,
      backcheck state, confirm/dismiss per row with a note (human close for
