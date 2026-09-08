@@ -78,5 +78,11 @@ Follow the prior narrative's outline when one exists. Otherwise:
 Produce a .docx via the docx skill (firm letterhead conventions via
 get_letterhead_template where wanted), or a clean markdown draft if the
 user prefers chat. End with: sources used (documents, minutes, emails by
-date), and the list of [ENGINEER TO CONFIRM] brackets. Do not file the
-document anywhere — hand it to the user.
+date), and the list of [ENGINEER TO CONFIRM] brackets.
+
+**Filing**: after the user has seen the draft, file it with
+`file_qa_report` into a new dated folder under the project's "Design
+Reports and Narratives" folder (`title` like 'DD Design Narrative'; docx
+as contentBase64) and hand back the folder's webUrl. That folder is also
+where the NEXT narrative run looks for the prior narrative. File nowhere
+else, and never before the user has seen it.

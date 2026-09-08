@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-08-pms-v145-qa-reviews-tab";
+    window.__appVersion = "2026-09-08-pms-v146-qa-set-picker";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13267,19 +13267,24 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [showLegacy, setShowLegacy] = React.useState(false);
   const [expanded, setExpanded] = React.useState({});
   const [busyId, setBusyId] = React.useState(null);
+  const [issuedSets, setIssuedSets] = React.useState([]); // [{set, at}] newest first, from the register
+  const [selSet, setSelSet] = React.useState("");          // "" = current composed set
 
   React.useEffect(() => {
     let dead = false;
     (async () => {
       if (!projNum) { setReviews([]); return; }
       try {
-        const [rv, fd, mi] = await Promise.all([
+        const [rv, fd, mi, reg] = await Promise.all([
           sbFetch("GET", "/rest/v1/pms_qa_reviews?project=eq." + encodeURIComponent(projNum) + "&select=*&order=run_at.desc"),
           sbFetch("GET", "/rest/v1/pms_qa_findings?project=eq." + encodeURIComponent(projNum) + "&select=*&order=created_at.desc"),
           sbFetch("GET", "/rest/v1/pms_qa_checklist?automation=eq.manual&enabled=is.true&select=item_id,text&order=sort"),
+          project.id ? sbFetch("GET", "/rest/v1/" + FILING_LOG_TABLE_PMS + "?select=set:files->>milestoneName,at:created_at&project_id=eq." + encodeURIComponent(project.id) + "&operation=eq.transmittal-generated&order=created_at.desc&limit=40").catch(() => []) : Promise.resolve([]),
         ]);
         if (dead) return;
         setReviews(rv || []); setFindings(fd || []); setManualItems(mi || []); setError("");
+        const seen = {};
+        setIssuedSets((reg || []).filter(r => r.set && !seen[r.set] && (seen[r.set] = 1)));
       } catch (e) {
         if (!dead) { setError(String(e.message || e)); setReviews([]); }
       }
@@ -13330,9 +13335,11 @@ function ProjectQAReviewsView({ project, onChange }) {
   }
 
   const reviewUrl = "https://claude.ai/new?q=" + encodeURIComponent([
-    "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
+    selSet
+      ? "Run an internal coordination QA review of a SPECIFIC issued set for " + label + ": review the set \"" + selSet + "\" - pass it as the subfolder to search_drawings and extract_sheet_index, and treat it as the deliverable under review."
+      : "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
     "",
-    "Use the Setty PMS connector: back-check this project's open ledger findings first (list_qa_findings), then run the full checklist review (get_qa_checklist with the phase derived from the current set) and record new findings with record_qa_findings for my sign-off here.",
+    "Use the Setty PMS connector: back-check this project's open ledger findings first (list_qa_findings), then run the full checklist review (get_qa_checklist with the phase derived from the set) and record new findings with record_qa_findings for my sign-off here. When the report is done, file it with file_qa_report into a new dated folder under Design Reports and Narratives and give me the folder link.",
   ].join("\n"));
 
   function FindingRow({ f }) {
@@ -13379,9 +13386,18 @@ function ProjectQAReviewsView({ project, onChange }) {
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>QA Reviews</div>
           <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5, maxWidth: 640 }}>
             The findings ledger: coordination-review findings and external reviewer comments (Dr.Checks / owner / architect),
-            with backcheck state. External comments close only by a person, always with a note.
+            with backcheck state. External comments close only by a person, always with a note. Reports and narratives file to Design Reports and Narratives/&lt;date&gt;_&lt;title&gt;.
           </div>
         </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        {issuedSets.length > 0 && (
+          <select value={selSet} onChange={e => setSelSet(e.target.value)}
+            title="Which drawings the review examines - the current composed set, or one specific issue from the transmittal register"
+            style={{ background: P.card, color: P.text, border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, padding: "6px 8px", maxWidth: 280 }}>
+            <option value="">Current issued set (default)</option>
+            {issuedSets.map(s => <option key={s.set} value={s.set}>{s.set}</option>)}
+          </select>
+        )}
         <a href={reviewUrl} target="_blank" rel="noreferrer"
           style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
             border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
@@ -13389,7 +13405,25 @@ function ProjectQAReviewsView({ project, onChange }) {
           title="Opens your Claude seat with the coordination review prefilled - backchecks open findings, runs the checklist against the current set, and records new findings here for your sign-off">
           {"🤖"} Run Coordination Review
         </a>
+        </div>
       </div>
+
+      {(() => {
+        // A set issued AFTER the last recorded review, with findings still
+        // open, means the open rows have not been checked against the newest
+        // drawings - surface it instead of waiting for someone to notice.
+        const latestRun = (reviews || [])[0];
+        const newestIssue = issuedSets[0];
+        const openCount = findings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").length;
+        if (!latestRun || !newestIssue || !openCount) return null;
+        if (String(newestIssue.at) <= String(latestRun.run_at)) return null;
+        return (
+          <div style={{ border: "1px solid #d4a72c", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
+            <b>Back-check due:</b> "{newestIssue.set}" was issued after the last review, and {openCount} finding{openCount === 1 ? "" : "s"} {openCount === 1 ? "is" : "are"} still open.
+            Run the coordination review - it back-checks the open findings against the newest revisions first.
+          </div>
+        );
+      })()}
 
       {error && <div style={{ color: "#e5534b", fontSize: 12, marginBottom: 10 }}>Could not load the ledger: {error}</div>}
       {reviews === null && <div style={{ color: P.textDim, fontSize: 12 }}>Loading the ledger&hellip;</div>}

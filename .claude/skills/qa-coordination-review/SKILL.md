@@ -193,6 +193,11 @@ documents is a cost event, not just a technical one. If the user wants a file, p
 report as a document via the open-items-log or docx skill conventions;
 otherwise the chat report stands.
 
+**Reviewing a SPECIFIC set:** when the user (or the QA tab's set picker)
+names a set, that folder is the deliverable under review — pass it as
+`subfolder` to `search_drawings` / `extract_sheet_index` and say so in the
+report header. Default remains the composed current set.
+
 **Then persist: `record_qa_findings`.** After the user has seen the report,
 write the findings into the ledger (one call: project, set, phase, coverage,
 the findings with item ids/severity/sheets/evidence). That is what makes the
@@ -200,6 +205,13 @@ next bulletin's back-check possible — an unrecorded finding cannot be
 back-checked and quietly dies. External comment logs ingest the same way
 (`kind:'comment-log'`, one row per comment, `externalRef` = comment number,
 `source` naming the commenter).
+
+**Then file it: `file_qa_report`.** The report belongs in the project
+record, not just the chat: file it into a new dated folder under
+"Design Reports and Narratives" (`title` like 'QA Coordination Review' or
+'Back-check — Bulletin #14'; markdown as contentText, docx/xlsx as
+contentBase64) and hand the user the folder's webUrl. Filing never touches
+Outgoing and never issues anything.
 
 ## Change record and cross-discipline ripple analysis
 
