@@ -224,6 +224,18 @@ names a set, that folder is the deliverable under review — pass it as
 `subfolder` to `search_drawings` / `extract_sheet_index` and say so in the
 report header. Default remains the composed current set.
 
+**If the register comes back EMPTY** (`extract_sheet_index` with no
+subfolder says no set was ever logged as a transmittal — common on small
+CA jobs), that is NOT the end of the review: `list_project_documents` to
+find the set folders under Outgoing, pick the newest, and re-run
+`extract_sheet_index` / `search_drawings` with that folder as `subfolder`.
+On combined multi-firm books the per-sheet title blocks may not parse —
+the cover sheet's drawing index still yields the sheet list, and full-text
+search and `view_drawing` work regardless. Note in the report that the
+set is not in the transmittal register and that issuing through the
+transmittal tool is what enables revision tracking and back-check
+benchmarking on this project.
+
 **Then persist: `record_qa_findings`.** After the user has seen the report,
 write the findings into the ledger (one call: project, set, phase, coverage,
 the findings with item ids/severity/sheets/evidence). That is what makes the

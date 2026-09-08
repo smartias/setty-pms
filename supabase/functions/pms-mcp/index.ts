@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-08-qa-attribution";
+const BUILD = "2026-09-08-bare-cover-index";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.12.1",
+  name: "setty-pms", version: "1.12.2",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -4115,7 +4115,8 @@ function parseDrawingList(pageText: string): Array<{ sheetNo: string; sheetTitle
       if (out.length) return out;
     }
   }
-  return parseDrawingIndex(pageText);
+  const b = parseDrawingIndex(pageText);
+  return b.length ? b : parseDrawingIndexBare(pageText);
 }
 
 function parseDrawingIndex(pageText: string): Array<{ sheetNo: string; sheetTitle: string }> {
@@ -4144,6 +4145,46 @@ function parseDrawingIndex(pageText: string): Array<{ sheetNo: string; sheetTitl
     if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
     return { sheetNo: m[2], sheetTitle: title.replace(/\s+/g, " ") };
   }).filter((r) => r.sheetTitle.length > 0);
+}
+
+// Format C: a BARE cover index. "DRAWING INDEX" is on the page but the rows
+// carry no header line (format A) and no project-number prefix (format B) —
+// just SHEET TITLE pairs under discipline headers: "G000 TITLE SHEET G001
+// PHASING DIAGRAM ARCHITECTURAL A101 DEMO PLAN...". Seen 2026-09-08 on SUNY
+// Upstate TX-1 Fan (SAPX216001.01), a combined multi-firm book (arch/str/MEP
+// title blocks all different) where NO title block parses — the cover list is
+// the only machine-readable statement of the set, and without this the whole
+// project read as "no sheets". Rows are found by the sheet tokens themselves,
+// so the guards matter: the anchor text must be present, five real rows
+// minimum, and the slice after a token must READ AS A TITLE (start with a
+// letter) — the same token inside a title block is followed by dates or page
+// numbers and is dropped by that test.
+const DRAWING_INDEX_BARE_ROW = /\b([A-Z]{1,3}-?\d{2,4}(?:\.\d{2})?[A-Z]?)\s/g;
+function parseDrawingIndexBare(pageText: string): Array<{ sheetNo: string; sheetTitle: string }> {
+  if (!DRAWING_INDEX_ANCHOR.test(pageText)) return [];
+  const rows = [...pageText.matchAll(DRAWING_INDEX_BARE_ROW)];
+  if (rows.length < 5) return [];
+  const out: Array<{ sheetNo: string; sheetTitle: string }> = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < rows.length; i++) {
+    const m = rows[i];
+    const next = rows[i + 1];
+    const from = m.index! + m[0].length;
+    const to = next ? next.index! : pageText.length;
+    let title = pageText.slice(from, to).trim();
+    const cut = DRAWING_INDEX_TAIL.exec(title);
+    if (cut) title = title.slice(0, cut.index).trim();
+    const dThis = (/^([A-Z]{1,3})/.exec(m[1]) || [, ""])[1];
+    const dNext = next ? (/^([A-Z]{1,3})/.exec(next[1]) || [, ""])[1] : "";
+    if (dNext && dNext !== dThis) title = title.replace(DRAWING_INDEX_HEAD, "").trim();
+    if (title.length > DRAWING_LIST_MAX_TITLE) title = title.slice(0, DRAWING_LIST_MAX_TITLE).trim();
+    title = title.replace(/\s+/g, " ");
+    if (!/^[A-Z]/.test(title)) continue;
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    out.push({ sheetNo: m[1], sheetTitle: title });
+  }
+  return out.length >= 5 ? out : [];
 }
 
 // Folders inside a set that are not the issued sheets.
