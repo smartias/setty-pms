@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-08-qa-report-filing";
+const BUILD = "2026-09-08-ripple-rules-served";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.11.0",
+  name: "setty-pms", version: "1.11.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6413,9 +6413,22 @@ mcp.tool("get_qa_checklist", {
       secMap.set(r.section, list);
     }
     const counts = rows.reduce((m: Record<string, number>, r) => ((m[r.automation] = (m[r.automation] || 0) + 1), m), {});
+    // The cross-discipline ripple rules ride along un-filtered: they apply to
+    // every bulletin/back-check review, and serving them from the table (not
+    // the skill's seed copy) is what lets lessons learned extend them without
+    // a deploy.
+    let rippleRules: Array<{ parameter: string; ripplesTo: string }> = [];
+    try {
+      const rr: any[] = await sbGetAll("pms_qa_ripple_rules?select=parameter,ripples_to&enabled=eq.true&order=sort");
+      rippleRules = rr.map((r) => ({ parameter: r.parameter, ripplesTo: r.ripples_to }));
+    } catch { /* rules are additive — a missing table never blocks the checklist */ }
     return asText({
       items: rows.length, byAutomation: counts,
       sections: [...secMap.entries()].map(([name, items]) => ({ name, items })),
+      ...(rippleRules.length ? {
+        rippleRules,
+        rippleNote: "On any bulletin/back-check review, diff each changed equipment parameter and verify the ripple per these rules — a changed parameter whose counterpart discipline's sheets did not revise in the same or a later set is a finding, always.",
+      } : {}),
       note: "Report review findings per item id with sheet references and evidence; a human signs off — the " +
         "review never marks items complete itself. Combine with list_action_items (open items) and " +
         "search_knowledge (lessons learned) for the project-specific layer.",

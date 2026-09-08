@@ -24,6 +24,9 @@ for (const anchor of [
   '"pms_qa_checklist?select=item_id,section,sort,text,details,automation,automation_hint,source,phases"',
   '"&enabled=eq.true&order=sort,item_id"',
   "a human signs off",
+  // Ripple rules ride along from their table; a missing table never blocks.
+  '"pms_qa_ripple_rules?select=parameter,ripples_to&enabled=eq.true&order=sort"',
+  "rules are additive",
   // Phase gate: an item with no phases restriction applies at EVERY phase —
   // the filter must never drop unrestricted items.
   "!Array.isArray(r.phases) || r.phases.length === 0",

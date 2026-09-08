@@ -228,7 +228,10 @@ to-whom. When reviewing a bulletin or back-checking, USE it:
    whether each affected discipline's sheet ALSO revised in the same set (or
    a later one) — `find_equipment` names every sheet the tag touches, and
    the register knows which sheets each set revised. A fan upsized in a
-   bulletin whose electrical sheets did not move is a finding, always:
+   bulletin whose electrical sheets did not move is a finding, always.
+   **The authoritative rules come from `get_qa_checklist`'s `rippleRules`**
+   (the pms_qa_ripple_rules table — lessons learned extend it without a
+   deploy); the table below is the seed copy for reference:
 
    | Changed parameter | Ripples to — verify |
    |---|---|
