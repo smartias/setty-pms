@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-08-bare-cover-index";
+const BUILD = "2026-09-08-prime-mode";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.12.2",
+  name: "setty-pms", version: "1.12.3",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6412,7 +6412,10 @@ mcp.tool("get_qa_checklist", {
     "admins, and lessons learned are added over time — always fetch it fresh rather than assuming last " +
     "month's items. Reviews are PHASE-AWARE: derive the phase from the deliverable/set name being reviewed " +
     "(e.g. '100% CD Submission' -> CD, 'DD Progress Set' -> DD) and pass it as phase — items restricted to " +
-    "other phases drop out, items with no restriction always apply. Pair a review with list_action_items " +
+    "other phases drop out, items with no restriction always apply. Reviews are also ROLE-AWARE: items whose " +
+    "details carry primeOnly:true apply ONLY on projects where Setty is the PRIME (responsible for every " +
+    "discipline and for coordinating the subconsultants) — check the project's contractual role with " +
+    "get_project and DROP them on sub-consultant jobs. Pair a review with list_action_items " +
     "(the open items log) and search_knowledge (lessons learned, agency preferences) for the project-specific layer.",
   inputSchema: z.object({
     section: z.string().optional().describe("Only sections whose name contains this text, e.g. 'Electrical', 'Ceiling'."),
@@ -6529,9 +6532,11 @@ mcp.tool("record_qa_findings", {
     "review run (qa-coordination-review skill) so findings persist for back-check on the next bulletin; use " +
     "kind:'comment-log' when ingesting a DrChecks/owner/architect comment register — sourceDoc (the log's file " +
     "name) is REQUIRED there so every ingested comment traces back to the log it was pulled from (one finding " +
-    "per comment, externalRef = the comment number, source naming the commenter). Comments OUTSIDE Setty's " +
-    "MEPFP scope (architectural finishes, civil...) are ingested ONLY when they impact MEPFP work, titled " +
-    "'For reference: ...' so the tab shows them as reference rows. Findings default to status " +
+    "per comment, externalRef = the comment number, source naming the commenter). On SUB-CONSULTANT jobs, " +
+    "comments OUTSIDE Setty's MEPFP scope (architectural finishes, civil...) are ingested ONLY when they " +
+    "impact MEPFP work, titled 'For reference: ...' so the tab shows them as reference rows. When Setty is " +
+    "PRIME that rule is OFF: every discipline is Setty's scope, so ingest ALL comments as full rows with the " +
+    "responsible discipline/sub named in the action. Findings default to status " +
     "'open'. Severity vocabulary, worst first: life-safety, agency (rejection risk), cost (significant cost " +
     "exposure — mandatory consideration on any POST-BID review: after bid issuance every change is a potential " +
     "change order, so bulletin findings state their cost consequence), rfi-bait (contractor confusion), " +

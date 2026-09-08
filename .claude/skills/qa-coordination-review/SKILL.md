@@ -43,6 +43,41 @@ in the report header:
    priority over internal findings, and follow the human-close rule.
    Back-check runs against each subsequent bulletin.
 
+## Prime vs sub: establish Setty's role FIRST
+
+Before the first checklist pass, establish the contractual role with
+`get_project` (the prime/client field; a job contracted directly with the
+owner agency with subconsultants under Setty is a PRIME job — SUNY Upstate
+TX-1 Fan is the model case). When unsure, ask the user; the two modes
+review different things.
+
+**Setty is a SUB (default mode):** MEPFP is the scope. Other disciplines'
+sheets are backgrounds to coordinate against; their comments ingest only
+when MEPFP-impacting, titled "For reference: ...".
+
+**Setty is PRIME — the scope model inverts.** Setty is responsible for
+EVERYTHING and for coordinating everyone, so:
+
+- **Every discipline's sheets are in scope**, not backgrounds. A missing
+  or stale subconsultant deliverable is a FINDING (severity by
+  consequence), never a "backgrounds not reachable" note.
+- **Include the prime-coordination checklist items** (qa-500 series —
+  `details.primeOnly: true` in get_qa_checklist): cover-index vs delivered
+  set per discipline, cross-firm title-block consistency, every discipline
+  picking up each addendum/bulletin, comment routing, package completeness
+  (spec TOC vs sections shipped, narratives, owner forms). On sub jobs
+  DROP these items.
+- **The for-reference rule is OFF.** Every external comment — architectural,
+  civil, all of it — ingests as a full row with the responsible
+  discipline/subconsultant named in the action, and is tracked to closure.
+  The owner holds Setty accountable for all of them.
+- **Run ripple analysis across ALL disciplines**, not MEPFP-only: an
+  architectural change that should have moved a structural sheet is
+  Setty's coordination gap on a prime job.
+- **Severity leans harder on coordination gaps** — an uncoordinated
+  change between two subs is Setty's professional exposure, not somebody
+  else's problem.
+
 Three rules govern everything below:
 
 1. **Evidence, not verdicts.** Every finding cites sheets, revisions, and the
@@ -248,12 +283,14 @@ back-checked and quietly dies. External comment logs ingest the same way
   "2026-08-12_SBU Code Review Comments.pdf"). The QA tab shows it as each
   row's provenance; the tool refuses a comment-log without it. One log =
   one `record_qa_findings` call, never mixed logs in one review row.
-- **Non-MEPFP comments are reference-only.** A comment outside Setty's
-  MEPFP scope (architectural finishes, civil, "slip resistance flooring")
-  is ingested ONLY when it impacts MEPFP work — say how in the evidence —
-  and its title starts with `For reference: ` so the tab marks it as a
-  reference row. Comments with no MEPFP impact are left out entirely; the
-  log itself is the record of them.
+- **Non-MEPFP comments are reference-only — ON SUB JOBS.** A comment
+  outside Setty's MEPFP scope (architectural finishes, civil, "slip
+  resistance flooring") is ingested ONLY when it impacts MEPFP work — say
+  how in the evidence — and its title starts with `For reference: ` so the
+  tab marks it as a reference row. Comments with no MEPFP impact are left
+  out entirely; the log itself is the record of them. **When Setty is
+  PRIME this rule is OFF** (see "Prime vs sub" above): every comment
+  ingests as a full row with the responsible discipline/sub in the action.
 
 **Then file it: `file_qa_report`.** The report belongs in the project
 record, not just the chat: file it into a new dated folder under
