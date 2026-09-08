@@ -78,6 +78,31 @@ EVERYTHING and for coordinating everyone, so:
   change between two subs is Setty's professional exposure, not somebody
   else's problem.
 
+## Prior-issuance comments: sweep them in EVERY review, not just back-checks
+
+Before the checklist tiers, ALWAYS sweep the record for reviewer comments
+on previous issuances — they are the first thing a human reviewer would
+check the new set against, and a review that skips them can pass a set
+that ignores the owner's last round of comments:
+
+1. `find_document` with docType 'Comment Log' (queries like "review
+   comments responses markup"), plus `list_project_documents` on Emails —
+   comment packages live in dated Email folders named `*Comments*`
+   (e.g. "2025-10-29_SD Review Comments", "2026-06-12_Final SUCF DM
+   Review Comments & Responses", Bluebeam markup folders).
+2. Compare against the ledger (`list_qa_findings status:'all'`): any log
+   NOT yet ingested gets ingested now (`kind:'comment-log'`, `sourceDoc`
+   REQUIRED, one row per comment) — subject to the prime/sub scope rule
+   above.
+3. Then verify the set under review PICKED UP each open comment (the
+   back-check pass) before running the checklist tiers. Reviewer comments
+   outrank internal findings at equal severity; a prior comment the new
+   issuance did not address is a finding, never a footnote.
+4. The report's coverage note states which comment packages were found,
+   which were ingested, and which could not be read (scanned markups a
+   text pass cannot parse get listed for human review with view_drawing
+   spot-checks, not silently skipped).
+
 Three rules govern everything below:
 
 1. **Evidence, not verdicts.** Every finding cites sheets, revisions, and the
