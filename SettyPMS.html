@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-07-pms-v144-design-narrative";
+    window.__appVersion = "2026-09-08-pms-v145-qa-reviews-tab";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13226,6 +13226,243 @@ function promptForChecklistUserName() {
   return clean;
 }
 
+// ___ QA Reviews: the findings ledger view (replaces the manual checklists) ___
+// Per Sara (2026-09-07): the ledger IS the QA record. Rows come from the
+// coordination review and ingested external comment logs
+// (pms_qa_reviews / pms_qa_findings); this tab shows what was found or
+// commented, by whom, and its backcheck state, ordered the way the work
+// should happen: worst severity first (life-safety > agency > cost >
+// rfi-bait > polish) and EXTERNAL reviewer comments before internal
+// findings at equal severity - matching the connector's list_qa_findings.
+// Status moves call the pms_qa_finding_set_status RPC, which stamps the
+// signed-in caller from their JWT and refuses closed/dismissed without a
+// note. Closing an external comment here IS the human click the ledger
+// contract requires (automated passes stop external rows at
+// ready_to_backcheck). The 130-item manual checklist interface retires:
+// the checklist lives on as the review engine (pms_qa_checklist), the
+// judgment-only items get the small card below, and legacy per-project
+// checklists stay readable under history.
+const QA_SEV_RANK = { "life-safety": 0, "agency": 1, "cost": 2, "rfi-bait": 3, "polish": 4 };
+const QA_EXTERNAL_SRC = { drchecks: "Dr.Checks", owner: "Owner", architect: "Architect", agency: "Agency" };
+const QA_SEV_COLOR = { "life-safety": "#e5534b", "agency": "#d4a72c", "cost": "#e8a03c", "rfi-bait": "#58a6ff", "polish": "#8b949e" };
+const qaFindingRank = (f) => (QA_SEV_RANK[f.severity] !== undefined ? QA_SEV_RANK[f.severity] : 5) * 2 + (QA_EXTERNAL_SRC[f.source] ? 0 : 1);
+
+function QAChip({ text, color, solid }) {
+  return (
+    <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 9, fontSize: 10, fontWeight: 700,
+      whiteSpace: "nowrap", color: solid ? "#fff" : (color || P.textDim),
+      background: solid ? (color || P.border) : "transparent",
+      border: "1px solid " + (color || P.border) }}>{text}</span>
+  );
+}
+
+function ProjectQAReviewsView({ project, onChange }) {
+  const projNum = String(project.projectNumber || "").trim();
+  const label = [project.projectNumber, project.name].filter(Boolean).join(" - ");
+  const [reviews, setReviews] = React.useState(null);      // null = loading
+  const [findings, setFindings] = React.useState([]);
+  const [manualItems, setManualItems] = React.useState([]);
+  const [error, setError] = React.useState("");
+  const [showResolved, setShowResolved] = React.useState(false);
+  const [showLegacy, setShowLegacy] = React.useState(false);
+  const [expanded, setExpanded] = React.useState({});
+  const [busyId, setBusyId] = React.useState(null);
+
+  React.useEffect(() => {
+    let dead = false;
+    (async () => {
+      if (!projNum) { setReviews([]); return; }
+      try {
+        const [rv, fd, mi] = await Promise.all([
+          sbFetch("GET", "/rest/v1/pms_qa_reviews?project=eq." + encodeURIComponent(projNum) + "&select=*&order=run_at.desc"),
+          sbFetch("GET", "/rest/v1/pms_qa_findings?project=eq." + encodeURIComponent(projNum) + "&select=*&order=created_at.desc"),
+          sbFetch("GET", "/rest/v1/pms_qa_checklist?automation=eq.manual&enabled=is.true&select=item_id,text&order=sort"),
+        ]);
+        if (dead) return;
+        setReviews(rv || []); setFindings(fd || []); setManualItems(mi || []); setError("");
+      } catch (e) {
+        if (!dead) { setError(String(e.message || e)); setReviews([]); }
+      }
+    })();
+    return () => { dead = true; };
+  }, [projNum]);
+
+  async function moveStatus(f, status) {
+    const external = !!QA_EXTERNAL_SRC[f.source];
+    const needNote = status === "closed" || status === "dismissed";
+    const msg = status === "closed"
+      ? (external ? "Closing an EXTERNAL reviewer comment - record the human decision (required):" : "Close with the evidence or resolution (required):")
+      : status === "dismissed" ? "Dismiss with the reasoning (required):"
+      : status === "ready_to_backcheck" ? "Note the evidence found (optional):" : "Note (optional):";
+    const note = window.prompt(msg, "");
+    if (note === null) return;
+    if (needNote && !note.trim()) { window.alert("A note is required - the ledger records why, not just that."); return; }
+    setBusyId(f.id);
+    try {
+      await sheetRefRpc("pms_qa_finding_set_status", { p_id: f.id, p_status: status, p_note: note.trim() || null });
+      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, status, status_note: note.trim() || null, status_by: getChecklistUserName() || "you", status_at: new Date().toISOString() } : x));
+    } catch (e) { window.alert("Update failed: " + String(e.message || e)); }
+    setBusyId(null);
+  }
+
+  const openRows = findings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
+  const resolvedRows = findings.filter(f => f.status === "closed" || f.status === "dismissed");
+  const countsByReview = {};
+  findings.forEach(f => {
+    const k = f.review_id || 0;
+    countsByReview[k] = countsByReview[k] || { open: 0, total: 0 };
+    countsByReview[k].total += 1;
+    if (f.status === "open" || f.status === "ready_to_backcheck") countsByReview[k].open += 1;
+  });
+  const latest = (reviews || [])[0] || null;
+  const manualState = latest ? ((project.qaManualChecks || {})[latest.id] || {}) : {};
+
+  function toggleManual(itemId) {
+    if (!latest) return;
+    const cur = manualState[itemId];
+    let by = getChecklistUserName();
+    if (!cur && !by) by = promptForChecklistUserName();
+    const all = { ...(project.qaManualChecks || {}) };
+    all[latest.id] = { ...(all[latest.id] || {}) };
+    if (cur) delete all[latest.id][itemId];
+    else all[latest.id][itemId] = { by: by || "", at: new Date().toISOString() };
+    onChange({ ...project, qaManualChecks: all });
+  }
+
+  const reviewUrl = "https://claude.ai/new?q=" + encodeURIComponent([
+    "Run an internal coordination QA review of the current issued drawing set for " + label + ".",
+    "",
+    "Use the Setty PMS connector: back-check this project's open ledger findings first (list_qa_findings), then run the full checklist review (get_qa_checklist with the phase derived from the current set) and record new findings with record_qa_findings for my sign-off here.",
+  ].join("\n"));
+
+  function FindingRow({ f }) {
+    const external = !!QA_EXTERNAL_SRC[f.source];
+    const sevColor = QA_SEV_COLOR[f.severity];
+    const isOpen = f.status === "open" || f.status === "ready_to_backcheck";
+    const ex = expanded[f.id];
+    return (
+      <div style={{ border: "1px solid " + (external && isOpen ? "#8957e5" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+          {f.severity && <QAChip text={f.severity} color={sevColor} solid={f.severity === "life-safety"} />}
+          <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : "internal QA")} color={external ? "#8957e5" : undefined} />
+          {f.item_id && <QAChip text={f.item_id} />}
+          <QAChip text={String(f.status).replace(/_/g, " ")} color={f.status === "open" ? "#e5534b" : f.status === "ready_to_backcheck" ? "#d4a72c" : "#3fb950"} />
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 10, color: P.textMuted }}>{String(f.created_at || "").slice(0, 10)}</span>
+        </div>
+        <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 4 }}>{f.title}</div>
+        {Array.isArray(f.sheets) && f.sheets.length > 0 && (
+          <div style={{ fontSize: 11, color: P.accentLight, marginBottom: 4 }}>{f.sheets.join("  ·  ")}</div>
+        )}
+        {ex && f.evidence && <div style={{ fontSize: 11.5, color: P.textDim, background: P.bg, borderRadius: 6, padding: "6px 8px", marginBottom: 4, whiteSpace: "pre-wrap" }}>{f.evidence}</div>}
+        {ex && f.action && <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 4 }}>Suggested: {f.action}</div>}
+        {f.status_note && (
+          <div style={{ fontSize: 11, color: P.textMuted, marginBottom: 4 }}>
+            {(f.status === "dismissed" ? "Dismissed" : f.status === "closed" ? "Closed" : "Note")} by {f.status_by || "?"}{f.status_at ? " on " + String(f.status_at).slice(0, 10) : ""}: {f.status_note}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {(f.evidence || f.action) && <Btn variant="ghost" small onClick={() => setExpanded(x => ({ ...x, [f.id]: !ex }))}>{ex ? "Less" : "Evidence"}</Btn>}
+          {isOpen && <Btn variant="primary" small disabled={busyId === f.id} onClick={() => moveStatus(f, "closed")}>{f.status === "ready_to_backcheck" ? "Backchecked - close" : "Resolved - close"}</Btn>}
+          {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "ready_to_backcheck")}>Evidence found</Btn>}
+          {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "dismissed")}>Dismiss</Btn>}
+          {!isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "open")}>Reopen</Btn>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ paddingBottom: 40 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>QA Reviews</div>
+          <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5, maxWidth: 640 }}>
+            The findings ledger: coordination-review findings and external reviewer comments (Dr.Checks / owner / architect),
+            with backcheck state. External comments close only by a person, always with a note.
+          </div>
+        </div>
+        <a href={reviewUrl} target="_blank" rel="noreferrer"
+          style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
+            border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
+            color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}
+          title="Opens your Claude seat with the coordination review prefilled - backchecks open findings, runs the checklist against the current set, and records new findings here for your sign-off">
+          {"🤖"} Run Coordination Review
+        </a>
+      </div>
+
+      {error && <div style={{ color: "#e5534b", fontSize: 12, marginBottom: 10 }}>Could not load the ledger: {error}</div>}
+      {reviews === null && <div style={{ color: P.textDim, fontSize: 12 }}>Loading the ledger&hellip;</div>}
+
+      {reviews !== null && reviews.length === 0 && !error && (
+        <div style={{ border: "1px dashed " + P.border, borderRadius: 10, padding: 18, color: P.textDim, fontSize: 12.5, marginBottom: 16 }}>
+          No QA reviews recorded for this project yet. Run the coordination review to populate the ledger.
+        </div>
+      )}
+
+      {reviews !== null && reviews.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+          {reviews.map(r => (
+            <div key={r.id} style={{ border: "1px solid " + P.border, borderRadius: 8, padding: "8px 12px", fontSize: 11.5, minWidth: 220, background: P.card }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>{r.kind === "comment-log" ? "Comment log" : r.kind === "backcheck" ? "Back-check" : "Review"} #{r.id}{r.phase ? " · " + r.phase : ""}</div>
+              {r.set_name && <div style={{ color: P.textDim, marginBottom: 2 }}>{r.set_name}</div>}
+              <div style={{ color: P.textMuted }}>{String(r.run_at || "").slice(0, 10)} · {r.run_by}</div>
+              <div style={{ color: P.textMuted }}>{(countsByReview[r.id] || { open: 0, total: 0 }).open} open / {(countsByReview[r.id] || { total: 0 }).total} findings</div>
+              {r.coverage && <div style={{ color: P.textMuted, marginTop: 2, fontSize: 10.5 }}>{r.coverage}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {openRows.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Open ({openRows.length})</div>
+          {openRows.map(f => <FindingRow key={f.id} f={f} />)}
+        </div>
+      )}
+
+      {resolvedRows.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <Btn variant="ghost" small onClick={() => setShowResolved(s => !s)}>
+            {showResolved ? "Hide" : "Show"} resolved ({resolvedRows.length})
+          </Btn>
+          {showResolved && <div style={{ marginTop: 8 }}>{resolvedRows.map(f => <FindingRow key={f.id} f={f} />)}</div>}
+        </div>
+      )}
+
+      {latest && manualItems.length > 0 && (
+        <div style={{ border: "1px solid " + P.border, borderRadius: 10, padding: 14, marginBottom: 18, background: P.card }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>Reviewer&apos;s own checks &mdash; review #{latest.id}</div>
+          <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 10 }}>
+            The judgment-only items no machine can do (lineweights, plot integrity, ceiling congestion). Checking one records your name.
+          </div>
+          {manualItems.map(mi => {
+            const st = manualState[mi.item_id];
+            return (
+              <label key={mi.item_id} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, marginBottom: 6, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!st} onChange={() => toggleManual(mi.item_id)} style={{ marginTop: 2 }} />
+                <span style={{ flex: 1, color: st ? P.textMuted : P.text, textDecoration: st ? "line-through" : "none" }}>{mi.text}</span>
+                {st && <span style={{ fontSize: 10, color: P.textMuted, whiteSpace: "nowrap" }}>{st.by || "?"} {String(st.at || "").slice(0, 10)}</span>}
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      <div>
+        <Btn variant="ghost" small onClick={() => setShowLegacy(s => !s)}>
+          {showLegacy ? "Hide" : "Show"} legacy checklists (history)
+        </Btn>
+        {showLegacy && (
+          <div style={{ marginTop: 10, border: "1px solid " + P.border, borderRadius: 10, padding: 14 }}>
+            <ProjectChecklistsView project={project} onChange={onChange} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProjectChecklistsView({ project, onChange }) {
   const checklists = project.checklists || [];
   const [showPicker, setShowPicker] = React.useState(false);
@@ -17606,7 +17843,7 @@ function ProjectIntelligencePanel({ projectNumber }) {
   );
 }
 
-const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "Checklists"];
+const TABS = ["Overview", "Directory", "Investigation", "Scope", "Fee Calculator", "Team", "Schedule", "Notes", "Emails", "Gantt", "Contract", "Change Orders", "RFIs", "Submittals", "Subconsultants", "Financials", "Reimbursables", "Projections", "Photos", "QA Reviews"];
 
 // Tab groupings — top-level "sections" the user navigates by, with the existing
 // tabs as their sub-pages. Order reflects the natural project workflow.
@@ -17619,7 +17856,7 @@ const TAB_GROUPS = [
   { name: "Fee",                         tabs: ["Fee Calculator", "Change Orders"] },
   { name: "Team",                        tabs: ["Team"] },
   { name: "Schedule",                    tabs: ["Schedule", "Gantt"] },
-  { name: "QA",                          tabs: ["Checklists"] },
+  { name: "QA",                          tabs: ["QA Reviews"] },
   { name: "Construction Administration", tabs: ["RFIs", "Submittals"] },
   { name: "Subconsultants",              tabs: ["Subconsultants"] },
   { name: "Financials",                  tabs: ["Financials", "Reimbursables", "Projections"] },
@@ -18711,7 +18948,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
         {tab === "Contract" && <ContractView project={project} onChange={onUpdate} onEagerSave={onEagerSave} contractExpSyncState={contractExpSyncState} contractExpSyncMsg={contractExpSyncMsg} onSyncContractExp={syncContractExpiration} termContracts={termContracts} clients={clients} onUpdateClient={onUpdateClient} />}
         {tab === "Team" && <TeamView project={project} onChange={onUpdate} staff={staff} onAddStaff={onAddStaff} />}
         {tab === "Directory" && <ProjectDirectoryView project={project} onChange={onUpdate} clients={clients} />}
-        {tab === "Checklists" && <ProjectChecklistsView project={project} onChange={onUpdate} />}
+        {tab === "QA Reviews" && <ProjectQAReviewsView project={project} onChange={onUpdate} />}
         {tab === "Scope" && <ScopeView project={project} onChange={onUpdate} clients={clients} />}
         {tab === "Gantt" && <GanttView project={project} />}
         {tab === "Timeline" && <TimelineView project={project} />}
