@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-08-ripple-rules-served";
+const BUILD = "2026-09-08-qaqc-provisioning";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.11.1",
+  name: "setty-pms", version: "1.12.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6756,6 +6756,71 @@ mcp.tool("file_qa_report", {
     } catch (e) {
       return asText({ project, error: `Filing failed: ${String((e as any)?.message ?? e).slice(0, 400)}`, folderAttempted: `${QA_REPORTS_FOLDER}/${folderName}` });
     }
+  },
+});
+
+// ── ensure_qaqc_folders: one-time backfill of the QAQC folder ────────────────
+// Per Sara (2026-09-08): pre-issuance QA sets live in a project-root QAQC
+// folder (never Outgoing), added to the provisioning template as
+// "09 ✅ QAQC" (SettyPMS v149). This tool backfills it into projects
+// provisioned BEFORE the template change. Same write posture as
+// file_qa_report: signed-in callers only, idempotent (find-or-create via
+// ensureChildFolder), and the ONLY thing it can create is this one fixed
+// folder name directly under a project's root. Paged — ~20 projects per
+// call inside the time box; call again with the returned nextOffset.
+const QAQC_FOLDER_NAME = "09 ✅ QAQC";
+const QAQC_BACKFILL_PAGE = 20;
+
+mcp.tool("ensure_qaqc_folders", {
+  description:
+    "BACKFILL the project-root QAQC folder ('" + QAQC_FOLDER_NAME + "') into already-provisioned project " +
+    "folders — one-time admin task after the 2026-09-08 template change (new projects get it automatically). " +
+    "Idempotent: existing QAQC folders (any name containing 'QAQC') are left alone. Paged: processes ~" +
+    QAQC_BACKFILL_PAGE + " projects per call; keep calling with the returned nextOffset until done. Signed-in " +
+    "callers only; the only write it can make is this one folder name under a project root. A Graph 403 means " +
+    "the app registration lacks write consent — reported as the IT ask.",
+  inputSchema: z.object({
+    offset: z.number().optional().describe("Continue from a prior call's nextOffset (default 0)."),
+    projectNumber: z.string().optional().describe("Do just ONE project instead of paging through all."),
+  }),
+  handler: async ({ offset, projectNumber }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    let pool: any[];
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber);
+      if (!pid) return asText({ error: `No project matching "${projectNumber}".` });
+      pool = [await getProjectById(pid)].filter(Boolean);
+    } else {
+      pool = (await getProjects())
+        .filter((p: any) => p.projectNumber)
+        .sort((a: any, b: any) => String(a.projectNumber).localeCompare(String(b.projectNumber)));
+    }
+    const start = Math.max(0, Math.round(offset ?? 0));
+    const page = pool.slice(start, start + QAQC_BACKFILL_PAGE);
+    const created: string[] = [], existed: string[] = [], notProvisioned: string[] = [], failed: Array<{ project: string; reason: string }> = [];
+    for (const p of page) {
+      const num = String(p.projectNumber).toLowerCase().trim();
+      try {
+        if ((await storageFor(p.projectNumber)).kind !== "sharepoint") { notProvisioned.push(p.projectNumber + " (non-SharePoint region)"); continue; }
+        const drive = await docDriveId(await teamForProject(String(p.projectNumber)));
+        const root = await findProjectFolderInDrive(drive, num);
+        if (!root) { notProvisioned.push(p.projectNumber); continue; }
+        const kids = await graphGet(`/drives/${drive}/items/${root.id}/children?$select=id,name,folder&$top=200`);
+        const hasQaqc = (kids.value || []).some((k: any) => k.folder && String(k.name).toLowerCase().includes("qaqc"));
+        if (hasQaqc) { existed.push(p.projectNumber); continue; }
+        await ensureChildFolder(drive, root.id, QAQC_FOLDER_NAME);
+        created.push(p.projectNumber);
+      } catch (e) {
+        failed.push({ project: p.projectNumber, reason: String((e as any)?.message ?? e).slice(0, 200) });
+      }
+    }
+    const nextOffset = start + page.length < pool.length ? start + page.length : null;
+    return asText({
+      ranBy: who.email, processed: page.length, of: pool.length,
+      created, existed: existed.length, notProvisioned, failed,
+      ...(nextOffset !== null ? { nextOffset, nextStep: `Call again with offset:${nextOffset} to continue.` } : { done: true }),
+    });
   },
 });
 
