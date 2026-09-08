@@ -27,8 +27,26 @@ for (const anchor of [
   // Every row is stamped.
   "created_by: who.email",
   "status_by: who.email",
+  // Tabler Quad feedback (2026-09-08): every ingested reviewer comment
+  // traces to its comment log, and machine backcheck notes are marked so
+  // the app renders them as automated evidence, not a person's note.
+  "kind:'comment-log' requires sourceDoc",
+  '"Auto-backcheck: " + note.trim()',
 ] ) {
   assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
+}
+
+// The RPC migration relaxes the note requirement ONLY for the human
+// confirm-close of an already-backchecked row, and an empty note preserves
+// the recorded evidence rather than wiping it.
+const rpc = readFileSync(join(here, "../../migrations/20260908120000_qa_tabler_quad_feedback.sql"), "utf8");
+for (const anchor of [
+  "v_prev.status <> 'ready_to_backcheck'",
+  "a note is required to mark a finding dismissed",
+  "when p_status = 'closed' and v_note is null then v_prev.status_note",
+  "where item_id in ('qa-006','qa-009','qa-023','qa-024','qa-031','qa-033','qa-085','qa-086')",
+] ) {
+  assert.ok(rpc.includes(anchor), `feedback migration lost anchor: ${anchor}`);
 }
 
 for (const anchor of [

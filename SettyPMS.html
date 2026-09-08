@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-08-pms-v149-qaqc-provisioned";
+    window.__appVersion = "2026-09-08-pms-v150-qa-attribution";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13295,8 +13295,15 @@ function ProjectQAReviewsView({ project, onChange }) {
 
   async function moveStatus(f, status) {
     const external = !!QA_EXTERNAL_SRC[f.source];
-    const needNote = status === "closed" || status === "dismissed";
-    const msg = status === "closed"
+    // Closing a row already at ready_to_backcheck is a confirmation click:
+    // the backcheck evidence is on the row, so no note is required and an
+    // empty note KEEPS that evidence (the RPC enforces both server-side).
+    // Every other terminal move still records why. (Per Sara, Tabler Quad
+    // feedback 2026-09-08.)
+    const confirmClose = status === "closed" && f.status === "ready_to_backcheck";
+    const needNote = status === "dismissed" || (status === "closed" && !confirmClose);
+    const msg = confirmClose ? "Close as backchecked. Optional note - the evidence already on the row is kept:"
+      : status === "closed"
       ? (external ? "Closing an EXTERNAL reviewer comment - record the human decision (required):" : "Close with the evidence or resolution (required):")
       : status === "dismissed" ? "Dismiss with the reasoning (required):"
       : status === "ready_to_backcheck" ? "What shows this was addressed? (noted for the person backchecking - optional):" : "Note (optional):";
@@ -13306,7 +13313,7 @@ function ProjectQAReviewsView({ project, onChange }) {
     setBusyId(f.id);
     try {
       await sheetRefRpc("pms_qa_finding_set_status", { p_id: f.id, p_status: status, p_note: note.trim() || null });
-      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, status, status_note: note.trim() || null, status_by: getChecklistUserName() || "you", status_at: new Date().toISOString() } : x));
+      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, status, status_note: note.trim() || (confirmClose ? f.status_note : null), status_by: getChecklistUserName() || "you", status_at: new Date().toISOString() } : x));
     } catch (e) { window.alert("Update failed: " + String(e.message || e)); }
     setBusyId(null);
   }
@@ -13320,6 +13327,8 @@ function ProjectQAReviewsView({ project, onChange }) {
     countsByReview[k].total += 1;
     if (f.status === "open" || f.status === "ready_to_backcheck") countsByReview[k].open += 1;
   });
+  const reviewById = {};
+  (reviews || []).forEach(r => { reviewById[r.id] = r; });
   const latest = (reviews || [])[0] || null;
   const manualState = latest ? ((project.qaManualChecks || {})[latest.id] || {}) : {};
 
@@ -13348,6 +13357,17 @@ function ProjectQAReviewsView({ project, onChange }) {
     const sevColor = QA_SEV_COLOR[f.severity];
     const isOpen = f.status === "open" || f.status === "ready_to_backcheck";
     const ex = expanded[f.id];
+    // Provenance instead of a person's name (per Sara): reviewer comments
+    // name the comment log they were pulled from (the review row's
+    // source_doc); auto-generated findings name the review run.
+    const rev = reviewById[f.review_id];
+    const autoNote = !!(f.status_note && /^auto[- ]backcheck/i.test(f.status_note));
+    const forRef = /^for reference\b/i.test(String(f.title || ""));
+    const provenance = external
+      ? (QA_EXTERNAL_SRC[f.source] || "Reviewer") + " comment" + (f.external_ref ? " #" + f.external_ref : "")
+        + (rev && rev.source_doc ? " - from " + rev.source_doc : rev && rev.set_name ? " - " + rev.set_name : "")
+      : (f.source === "ripple" ? "Ripple check" : "Coordination review") + (f.review_id ? " #" + f.review_id : "")
+        + (rev && (rev.source_doc || rev.set_name) ? " - " + (rev.source_doc || rev.set_name) : "");
     return (
       <div style={{ border: "1px solid " + (external && isOpen ? "#8957e5" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
@@ -13355,23 +13375,30 @@ function ProjectQAReviewsView({ project, onChange }) {
           <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : "internal QA")} color={external ? "#8957e5" : undefined} />
           {f.item_id && <QAChip text={f.item_id} />}
           <QAChip text={String(f.status).replace(/_/g, " ")} color={f.status === "open" ? "#e5534b" : f.status === "ready_to_backcheck" ? "#d4a72c" : "#3fb950"} />
+          {f.status === "ready_to_backcheck" && autoNote && <QAChip text="auto-backchecked" color="#3fb950" />}
+          {forRef && <QAChip text="for reference" color="#8b949e" />}
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 10, color: P.textMuted }}>{String(f.created_at || "").slice(0, 10)}</span>
         </div>
         <div style={{ fontSize: 12.5, lineHeight: 1.5, marginBottom: 4 }}>{f.title}</div>
+        <div style={{ fontSize: 10.5, color: P.textMuted, marginBottom: 4 }}>{provenance}</div>
         {Array.isArray(f.sheets) && f.sheets.length > 0 && (
           <div style={{ fontSize: 11, color: P.accentLight, marginBottom: 4 }}>{f.sheets.join("  ·  ")}</div>
         )}
         {ex && f.evidence && <div style={{ fontSize: 11.5, color: P.textDim, background: P.bg, borderRadius: 6, padding: "6px 8px", marginBottom: 4, whiteSpace: "pre-wrap" }}>{f.evidence}</div>}
         {ex && f.action && <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 4 }}>Suggested: {f.action}</div>}
-        {f.status_note && (
+        {f.status_note && (f.status === "ready_to_backcheck" ? (
+          <div style={{ fontSize: 11, color: autoNote ? "#3fb950" : P.textMuted, marginBottom: 4 }}>
+            {autoNote ? f.status_note : "Backcheck note: " + f.status_note}
+          </div>
+        ) : (
           <div style={{ fontSize: 11, color: P.textMuted, marginBottom: 4 }}>
             {(f.status === "dismissed" ? "Dismissed" : f.status === "closed" ? "Closed" : "Note")} by {f.status_by || "?"}{f.status_at ? " on " + String(f.status_at).slice(0, 10) : ""}: {f.status_note}
           </div>
-        )}
+        ))}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {(f.evidence || f.action) && <Btn variant="ghost" small onClick={() => setExpanded(x => ({ ...x, [f.id]: !ex }))}>{ex ? "Less" : "Evidence"}</Btn>}
-          {isOpen && <Btn variant="primary" small disabled={busyId === f.id} onClick={() => moveStatus(f, "closed")}>{f.status === "ready_to_backcheck" ? "Backchecked - close" : "Resolved - close"}</Btn>}
+          {isOpen && <Btn variant="primary" small disabled={busyId === f.id} title={f.status === "ready_to_backcheck" ? "Confirms the backcheck evidence on the row - no note needed" : undefined} onClick={() => moveStatus(f, "closed")}>{f.status === "ready_to_backcheck" ? "Confirm & close" : "Resolved - close"}</Btn>}
           {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} title="The fix appears on the drawings (or a response came in) - marks the row ready for a person to backcheck and close" onClick={() => moveStatus(f, "ready_to_backcheck")}>Ready to backcheck</Btn>}
           {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "dismissed")}>Dismiss</Btn>}
           {!isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "open")}>Reopen</Btn>}
@@ -13387,7 +13414,8 @@ function ProjectQAReviewsView({ project, onChange }) {
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 2 }}>QA Reviews</div>
           <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5, maxWidth: 640 }}>
             The findings ledger: coordination-review findings and external reviewer comments (Dr.Checks / owner / architect),
-            with backcheck state. External comments close only by a person, always with a note. Reports and narratives file to Design Reports and Narratives/&lt;date&gt;_&lt;title&gt;.
+            each traced to the review run or comment log it came from. External comments close only by a person; auto-backchecked
+            rows show the machine evidence and close with one confirming click. Reports and narratives file to Design Reports and Narratives/&lt;date&gt;_&lt;title&gt;.
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>

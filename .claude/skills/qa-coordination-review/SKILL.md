@@ -230,7 +230,18 @@ the findings with item ids/severity/sheets/evidence). That is what makes the
 next bulletin's back-check possible — an unrecorded finding cannot be
 back-checked and quietly dies. External comment logs ingest the same way
 (`kind:'comment-log'`, one row per comment, `externalRef` = comment number,
-`source` naming the commenter).
+`source` naming the commenter) with two hard rules:
+
+- **`sourceDoc` is REQUIRED** — the comment log's file name (e.g.
+  "2026-08-12_SBU Code Review Comments.pdf"). The QA tab shows it as each
+  row's provenance; the tool refuses a comment-log without it. One log =
+  one `record_qa_findings` call, never mixed logs in one review row.
+- **Non-MEPFP comments are reference-only.** A comment outside Setty's
+  MEPFP scope (architectural finishes, civil, "slip resistance flooring")
+  is ingested ONLY when it impacts MEPFP work — say how in the evidence —
+  and its title starts with `For reference: ` so the tab marks it as a
+  reference row. Comments with no MEPFP impact are left out entirely; the
+  log itself is the record of them.
 
 **Then file it: `file_qa_report`.** The report belongs in the project
 record, not just the chat: file it into a new dated folder under
@@ -294,5 +305,10 @@ row verify the pickup on the NEWEST revision of the cited sheets
 Then move status with `update_qa_finding`, always with the evidence as the
 note: internal (`source:'qa'`) rows may go straight to `closed`; EXTERNAL
 rows (DrChecks, owner, architect, agency) go to `ready_to_backcheck` at
-most — a human closes those, never an automated pass. A sheet not reissued
-stays `open`; a deliberate no-fix is `dismissed` with the reasoning.
+most — a human closes those, never an automated pass. The tool stores your
+`ready_to_backcheck` note as `Auto-backcheck: <evidence>`; the QA tab
+renders that as machine evidence (an "auto-backchecked" chip, no person's
+name) and the human close is then a single confirming click, no further
+note required. So make the evidence note self-sufficient: sheet, revision,
+and what shows the pickup. A sheet not reissued stays `open`; a deliberate
+no-fix is `dismissed` with the reasoning.
