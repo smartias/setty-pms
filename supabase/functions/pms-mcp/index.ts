@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-07-qa-cost-severity";
+const BUILD = "2026-09-08-qa-report-filing";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.10.1",
+  name: "setty-pms", version: "1.11.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6615,6 +6615,127 @@ mcp.tool("update_qa_finding", {
       });
     } catch (e) {
       return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
+    }
+  },
+});
+
+// ── file_qa_report: the connector's ONE scoped write path to SharePoint ──────
+// Per Sara (2026-09-08): QA review reports, back-checks, and design
+// narratives file into a NEW DATED FOLDER under the project's "Design
+// Reports and Narratives" folder — same convention as Outgoing sets
+// (YYYY-MM-DD_<title>). This is deliberately the only Graph write in the
+// connector, and it is fenced three ways: signed-in callers only (the
+// shared-secret lane is refused and every filing is stamped), the write is
+// confined to the Design Reports and Narratives subtree (never Outgoing,
+// never the transmittal register — issuance stays prepare-only), and file
+// sizes are capped for the simple-upload path. If Graph refuses with 403,
+// the app registration lacks write consent (Files.ReadWrite.All /
+// Sites.ReadWrite.All application permission) — surfaced as an IT ask, not
+// swallowed.
+const QA_REPORTS_FOLDER = "Design Reports and Narratives";
+const QA_REPORT_MAX_FILE_BYTES = 3_500_000; // Graph simple-upload path (4MB hard cap)
+const QA_REPORT_MAX_FILES = 5;
+
+async function graphSend(method: string, path: string, body: BodyInit, contentType: string): Promise<any> {
+  const res = await fetch("https://graph.microsoft.com/v1.0" + path, {
+    method,
+    headers: { Authorization: "Bearer " + (await graphToken()), "Content-Type": contentType },
+    body,
+  });
+  if (!res.ok) {
+    const txt = (await res.text()).slice(0, 300);
+    if (res.status === 403) {
+      throw new Error(`Graph 403 (write refused): the connector's app registration needs write consent (Files.ReadWrite.All or Sites.ReadWrite.All, application) — an IT/admin-consent ask. ${txt}`);
+    }
+    throw new Error(`Graph ${res.status}: ${txt}`);
+  }
+  return res.json();
+}
+
+// Find-or-create a child folder by exact name (case-insensitive find, so a
+// hand-made "Design Reports and Narratives" folder is reused, never duplicated).
+async function ensureChildFolder(driveId: string, parentId: string, name: string): Promise<any> {
+  const kids = await graphGet(`/drives/${driveId}/items/${parentId}/children?$select=id,name,folder&$top=200`);
+  const hit = (kids.value || []).find((k: any) => k.folder && String(k.name).toLowerCase() === name.toLowerCase());
+  if (hit) return hit;
+  return graphSend("POST", `/drives/${driveId}/items/${parentId}/children`,
+    JSON.stringify({ name, folder: {}, "@microsoft.graph.conflictBehavior": "fail" }), "application/json");
+}
+
+mcp.tool("file_qa_report", {
+  description:
+    "FILE a QA review report, back-check report, or design narrative into the project's SharePoint record: " +
+    "creates a new DATED folder (YYYY-MM-DD_<title>) under the project's 'Design Reports and Narratives' " +
+    "folder and uploads the files into it — the same filing convention as Outgoing sets. Use at the END of a " +
+    "qa-coordination-review or design-narrative run, after the user has seen the deliverable, so the report " +
+    "lives in the project record and not just the chat. Files: pass text content directly (markdown/html/csv) " +
+    "or base64 for binaries (docx/xlsx/pdf), max 5 files, ~3.5MB each. This is the connector's ONLY SharePoint " +
+    "write and it is scoped to that one folder tree — it cannot touch Outgoing, issue transmittals, or modify " +
+    "drawings. Signed-in callers only; every filing is stamped. Returns the new folder's webUrl to hand back " +
+    "to the user.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    title: z.string().describe("Folder title after the date, e.g. 'QA Coordination Review' or 'DD Design Narrative' — becomes YYYY-MM-DD_<title>."),
+    date: z.string().optional().describe("YYYY-MM-DD for the folder prefix (default: today)."),
+    files: z.array(z.object({
+      name: z.string().describe("File name with extension, e.g. 'QA Review Report.md'."),
+      contentText: z.string().optional().describe("Text content (markdown/html/csv/plain). Exactly one of contentText/contentBase64."),
+      contentBase64: z.string().optional().describe("Base64 content for binaries (docx/xlsx/pdf)."),
+    })).min(1).max(QA_REPORT_MAX_FILES),
+  }),
+  handler: async ({ projectNumber, title, date, files }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    if ((await storageFor(project)).kind !== "sharepoint") {
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint." });
+    }
+    const day = (date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) ? date.trim() : new Date().toISOString().slice(0, 10);
+    const clean = (s: string) => s.replace(/[\\/:*?"<>|#%]/g, "-").replace(/\s+/g, " ").trim();
+    const folderName = `${day}_${clean(title)}`.slice(0, 120);
+
+    // Decode + validate all files BEFORE any write, so a bad payload files nothing.
+    const payloads: Array<{ name: string; bytes: Uint8Array }> = [];
+    for (const f of files) {
+      const name = clean(f.name);
+      if (!name || !(f.contentText || f.contentBase64) || (f.contentText && f.contentBase64)) {
+        return asText({ error: `File "${f.name}": pass a name plus exactly one of contentText or contentBase64.` });
+      }
+      let bytes: Uint8Array;
+      if (f.contentText !== undefined) bytes = new TextEncoder().encode(f.contentText);
+      else {
+        try { bytes = Uint8Array.from(atob(f.contentBase64!.replace(/\s/g, "")), (c) => c.charCodeAt(0)); }
+        catch { return asText({ error: `File "${f.name}": contentBase64 is not valid base64.` }); }
+      }
+      if (bytes.byteLength > QA_REPORT_MAX_FILE_BYTES) {
+        return asText({ error: `File "${f.name}" is ${(bytes.byteLength / 1e6).toFixed(1)}MB — over the ${(QA_REPORT_MAX_FILE_BYTES / 1e6).toFixed(1)}MB filing cap. Split it or reduce it.` });
+      }
+      payloads.push({ name, bytes });
+    }
+
+    try {
+      const drive = await docDriveId(await teamForProject(String(project)));
+      const root = await findProjectFolderInDrive(drive, String(project).toLowerCase().trim());
+      if (!root) return asText({ project, error: `No folder for ${project} in the project document library.`, nextStep: "Confirm provisioning with list_project_documents." });
+      const reportsRoot = await ensureChildFolder(drive, root.id, QA_REPORTS_FOLDER);
+      const dated = await ensureChildFolder(drive, reportsRoot.id, folderName);
+      const uploaded: Array<{ name: string; webUrl: string | null; bytes: number }> = [];
+      for (const f of payloads) {
+        const item = await graphSend("PUT",
+          `/drives/${drive}/items/${dated.id}:/${encodeURIComponent(f.name)}:/content`,
+          f.bytes as unknown as BodyInit, "application/octet-stream");
+        uploaded.push({ name: f.name, webUrl: item.webUrl ?? null, bytes: f.bytes.byteLength });
+      }
+      return asText({
+        project, filedBy: who.email, folder: `${QA_REPORTS_FOLDER}/${folderName}`,
+        folderWebUrl: dated.webUrl ?? null, files: uploaded,
+        note: "Filed to the project record. Hand the folder link to the user; the QA Reviews tab and future narratives reference documents here.",
+      });
+    } catch (e) {
+      return asText({ project, error: `Filing failed: ${String((e as any)?.message ?? e).slice(0, 400)}`, folderAttempted: `${QA_REPORTS_FOLDER}/${folderName}` });
     }
   },
 });
