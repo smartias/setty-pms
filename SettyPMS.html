@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-08-pms-v146-qa-set-picker";
+    window.__appVersion = "2026-09-08-pms-v147-backcheck-label";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13298,7 +13298,7 @@ function ProjectQAReviewsView({ project, onChange }) {
     const msg = status === "closed"
       ? (external ? "Closing an EXTERNAL reviewer comment - record the human decision (required):" : "Close with the evidence or resolution (required):")
       : status === "dismissed" ? "Dismiss with the reasoning (required):"
-      : status === "ready_to_backcheck" ? "Note the evidence found (optional):" : "Note (optional):";
+      : status === "ready_to_backcheck" ? "What shows this was addressed? (noted for the person backchecking - optional):" : "Note (optional):";
     const note = window.prompt(msg, "");
     if (note === null) return;
     if (needNote && !note.trim()) { window.alert("A note is required - the ledger records why, not just that."); return; }
@@ -13371,7 +13371,7 @@ function ProjectQAReviewsView({ project, onChange }) {
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {(f.evidence || f.action) && <Btn variant="ghost" small onClick={() => setExpanded(x => ({ ...x, [f.id]: !ex }))}>{ex ? "Less" : "Evidence"}</Btn>}
           {isOpen && <Btn variant="primary" small disabled={busyId === f.id} onClick={() => moveStatus(f, "closed")}>{f.status === "ready_to_backcheck" ? "Backchecked - close" : "Resolved - close"}</Btn>}
-          {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "ready_to_backcheck")}>Evidence found</Btn>}
+          {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} title="The fix appears on the drawings (or a response came in) - marks the row ready for a person to backcheck and close" onClick={() => moveStatus(f, "ready_to_backcheck")}>Ready to backcheck</Btn>}
           {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "dismissed")}>Dismiss</Btn>}
           {!isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "open")}>Reopen</Btn>}
         </div>
