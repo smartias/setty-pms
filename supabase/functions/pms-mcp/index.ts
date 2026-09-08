@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-08-qaqc-provisioning";
+const BUILD = "2026-09-08-qa-attribution";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.12.0",
+  name: "setty-pms", version: "1.12.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6486,8 +6486,11 @@ mcp.tool("record_qa_findings", {
     "FINDINGS LEDGER — the standing record of what was found, on which sheets, and what happened to it. Creates " +
     "one review row (project, set, phase, kind, coverage note) plus one row per finding. Use it at the END of a " +
     "review run (qa-coordination-review skill) so findings persist for back-check on the next bulletin; use " +
-    "kind:'comment-log' with sourceDoc when ingesting a DrChecks/owner/architect comment register (one finding " +
-    "per comment, externalRef = the comment number, source naming the commenter). Findings default to status " +
+    "kind:'comment-log' when ingesting a DrChecks/owner/architect comment register — sourceDoc (the log's file " +
+    "name) is REQUIRED there so every ingested comment traces back to the log it was pulled from (one finding " +
+    "per comment, externalRef = the comment number, source naming the commenter). Comments OUTSIDE Setty's " +
+    "MEPFP scope (architectural finishes, civil...) are ingested ONLY when they impact MEPFP work, titled " +
+    "'For reference: ...' so the tab shows them as reference rows. Findings default to status " +
     "'open'. Severity vocabulary, worst first: life-safety, agency (rejection risk), cost (significant cost " +
     "exposure — mandatory consideration on any POST-BID review: after bid issuance every change is a potential " +
     "change order, so bulletin findings state their cost consequence), rfi-bait (contractor confusion), " +
@@ -6498,7 +6501,7 @@ mcp.tool("record_qa_findings", {
     setName: z.string().optional().describe("The deliverable/set reviewed, e.g. '2024-10-24_Revised 100% CD Submission + bulletins through 8/19'."),
     phase: z.string().optional().describe("Derived phase (SD/DD/CD/Bid/CA/Bulletin...)."),
     kind: z.enum(["review", "backcheck", "comment-log"]).optional().describe("What produced these rows (default 'review')."),
-    sourceDoc: z.string().optional().describe("comment-log only: the register file name the comments came from."),
+    sourceDoc: z.string().optional().describe("REQUIRED for kind:'comment-log': the register file the comments came from (shown as each row's provenance in the QA tab)."),
     coverage: z.string().optional().describe("Honest coverage note, e.g. '744/749 files indexed; 4 spec books pending'."),
     findings: z.array(z.object({
       title: z.string().describe("One-sentence finding, sheets and values included."),
@@ -6514,6 +6517,12 @@ mcp.tool("record_qa_findings", {
   handler: async ({ projectNumber, setName, phase, kind, sourceDoc, coverage, findings }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
+    // Every reviewer comment must trace to the log it was pulled from —
+    // the tab shows source_doc as the row's provenance (per Sara, Tabler
+    // Quad feedback 2026-09-08).
+    if ((kind === "comment-log") && !sourceDoc?.trim()) {
+      return asText({ error: "kind:'comment-log' requires sourceDoc — name the comment log file these rows were pulled from." });
+    }
     const pid = await resolveProjectId(projectNumber);
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
@@ -6595,7 +6604,8 @@ mcp.tool("list_qa_findings", {
 mcp.tool("update_qa_finding", {
   description:
     "Move one QA ledger finding's status, stamping who and why. Statuses: 'ready_to_backcheck' (evidence of " +
-    "pickup found — the normal automated result for EXTERNAL comments, which a human then closes), 'closed' " +
+    "pickup found — the normal automated result for EXTERNAL comments; the note is stored as 'Auto-backcheck: " +
+    "...' so the QA tab shows it came from a machine pass, and the human close then needs no extra note), 'closed' " +
     "(resolved — for external-source rows a note naming the human decision is REQUIRED and an automated pass " +
     "must not close them), 'dismissed' (deliberate override — note required), 'open' (reopen). Always pass the " +
     "evidence or reasoning as note; the ledger is the project's defensibility record.",
@@ -6616,9 +6626,17 @@ mcp.tool("update_qa_finding", {
     }
     if (!existing?.length) return asText({ error: `No ledger finding with id ${findingId}.` });
     const row = existing[0];
+    // Machine moves to ready_to_backcheck carry a distinguishing prefix:
+    // the QA tab renders "Auto-backcheck: ..." notes as automated evidence
+    // (with a chip) instead of "Note by <person>", and the RPC lets the
+    // human close such a row without typing another note.
+    const stampedNote = note?.trim()
+      ? (status === "ready_to_backcheck" && !/^auto[- ]backcheck/i.test(note.trim())
+          ? "Auto-backcheck: " + note.trim() : note.trim())
+      : null;
     try {
       const updated = await sbPatch("pms_qa_findings?id=eq." + Math.round(findingId), {
-        status, status_note: note ?? null, status_by: who.email, status_at: new Date().toISOString(),
+        status, status_note: stampedNote, status_by: who.email, status_at: new Date().toISOString(),
       });
       return asText({
         id: updated.id, title: updated.title, from: row.status, to: updated.status,
