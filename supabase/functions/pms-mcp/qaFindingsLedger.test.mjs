@@ -62,7 +62,19 @@ for (const anchor of [
 
 // The tool and the table agree on vocabularies.
 const srcSources = src.match(/QA_FINDING_SOURCES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
-assert.equal(srcSources, "qa,ripple,drchecks,owner,architect,agency,other");
+assert.equal(srcSources, "qa,ripple,drchecks,owner,architect,agency,other,submittal,rfi");
+// The CA-review flow (2026-09-09) widened the source vocabulary so submittal/
+// RFI cost flags share the ledger; the widening migration must keep the DB
+// CHECK constraint in step with the tool constant above.
+const caMigration = readFileSync(join(here, "../../migrations/20260909000000_qa_ca_review_sources.sql"), "utf8");
+assert.ok(
+  caMigration.includes("check (source in ('qa','ripple','drchecks','owner','architect','agency','other','submittal','rfi'))"),
+  "CA-review migration lost the widened source constraint",
+);
+assert.ok(
+  caMigration.includes("check (kind in ('review','backcheck','comment-log','ca-review'))"),
+  "CA-review migration lost the widened kind constraint",
+);
 const srcStatuses = src.match(/QA_FINDING_STATUSES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
 assert.equal(srcStatuses, "open,ready_to_backcheck,closed,dismissed");
 const srcSeverities = src.match(/QA_FINDING_SEVERITIES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");

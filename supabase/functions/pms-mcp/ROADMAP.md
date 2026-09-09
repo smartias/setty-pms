@@ -681,6 +681,63 @@ Owner: unassigned. Raised by Sara 2026-08-06.
      code-requirements layer in the knowledge base per jurisdiction/agency
      so the review cites the requirement it checked against.
 
+### Submittal / RFI review flow, shipped end to end (2026-09-09)
+
+The submittal reviewer the equipment-registry arc pointed at (a submittal
+deviating from the bid documents is a cost event, not just a technical one).
+Same posture as the coordination review — prepare-only, evidence-cited,
+human signs off — scoped to ONE CA item instead of a whole set. Decisions
+(Sara, 2026-09-09): review output lives ON the CA record so it stays inside
+the existing submittal/RFI flow, with cost/scope red flags ALSO mirrored to
+the QA findings ledger for tracking and back-check; the backfill auto-extracts
+from the filed PDF / notification email (the Newforma cutover leaves many CA
+items logged only outside the PMS); full vertical slice.
+
+- **Skill**: `.claude/skills/submittal-rfi-review/SKILL.md` — resolve the item
+  (or backfill it first), establish the review basis (current set + governing
+  spec + schedules + equipment tag), reconcile submitted vs specified/scheduled,
+  run the ripple lens on any deviation, land a suggested response + stamp +
+  internal notes + cost/scope red flags. Leans on engineering-judgment for the
+  response voice on contested RFIs / rejected submittals.
+- **Connector tools** (the ONLY writes into the project blob, both through the
+  app's own optimistic-concurrency guard — read {id,project,version}, PATCH
+  filtered on that version, a concurrent app save aborts the write cleanly):
+  - `save_ca_review` — writes the `aiReview` block onto the record (NEVER the
+    human's response/comments/stamp) and mirrors life-safety/agency/cost flags
+    into pms_qa_findings (source 'submittal'/'rfi', kind 'ca-review',
+    external_ref = the item number).
+  - `backload_ca_item` — append-only-by-number, idempotent backfill of the CA
+    log from extracted fields; stamps source/provenance.
+- **DB**: `20260909000000_qa_ca_review_sources.sql` widens the ledger source
+  enum ('submittal','rfi') and the review kind enum ('ca-review'). No new
+  tables — the aiReview block rides in the CA item's JSON, the flags share the
+  QA ledger.
+- **App** (SettyPMS): the RFI/Submittal modal gains a "🤖 Send to Claude for
+  review" seat link and an **AI Review** panel (accept response / use stamp /
+  append notes / dismiss); the RFIs and Submittals tabs gain a "🤖 Backload
+  from PDF/email" seat link; the QA Reviews tab labels the mirrored flags as
+  "Submittal review" / "RFI review".
+- **Cut-sheet reading, shipped in the same arc (2026-09-09):** the submittal
+  review now confirms the MARKED selection, not just the notification metadata.
+  The contractor marks one of many models/options on the cut sheet; the skill
+  finds the submitted PDF (spFolderUrl / Submittals folder), reads it two ways —
+  `read_document` for the text layer and `view_drawing` DIRECT mode to SEE the
+  highlight/circle/check on the rendered page (region zoom for dense tables) —
+  and hands off to the **pdf-highlighted-selections** + **pdf** skills when the
+  reviewer has attached the PDF (they read the annotation layer directly). The
+  confirmed selection persists as a first-class `markedSelection` block on
+  save_ca_review (product, model, marked options, mark type, location, or
+  `confirmed:false` with a note when nothing/multiple/illegible is marked — an
+  unconfirmed selection can't be approved as submitted, which is itself a
+  finding), and the modal shows it FIRST so the engineer verifies the reading
+  before trusting the rest. No new backend: view_drawing already renders any
+  PDF by itemId.
+- Follow-ups: mirror the buttons into the standalone RFISubmittalSync app;
+  an add-in / watcher route for zero-click backfill from Procore/Forma
+  notifications (same blocker as the QA comment-log watcher — routine-fired
+  sessions get no claude.ai connectors); OCR for scanned image-only cut sheets
+  the render can't resolve (currently listed as a human-verify item).
+
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 
 Raised by Sara: "there should be a company retrieval tool... I need a WBE
