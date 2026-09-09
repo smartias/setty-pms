@@ -548,7 +548,9 @@ async function openEditor(kind, id){
     caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
-    `<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off. Save it to the log first so Claude can find it." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`+
+    // Review only makes sense once the item is in the log (a new record isn't
+    // saved yet and carries only a placeholder number) — hide the link until then.
+    (isNew?"":`<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`)+
     `<button class="ghost" style="font-size:12px" title="Open a pre-filled draft in Outlook" onclick="emailAction('${kind}','assign')">✉ Assign</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft an email to the subconsultant" onclick="emailAction('${kind}','sub')">✉ Forward to Sub</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft the ${kind==='rfi'?'response':'return'} email" onclick="emailAction('${kind}','respond')">✉ ${kind==='rfi'?'Draft Response':'Draft Return'}</button>`+
