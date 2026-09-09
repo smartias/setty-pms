@@ -6831,19 +6831,28 @@ mcp.tool("save_ca_review", {
     }
 
     // 2) Mirror the consequential flags into the QA ledger so they are tracked
-    //    and back-checked. Best-effort: the record write already succeeded.
+    //    and back-checked, and RECONCILE against a prior review of this same
+    //    item. The UI offers "Re-review with Claude", so a naive insert would
+    //    pile duplicate open flags into the working ledger — or leave a stale
+    //    flag open when the revised submission resolved it. So: insert the new
+    //    rows, then supersede this item's PRIOR still-open ca-review flags (the
+    //    ones we did NOT just insert). Only 'open' internal rows move; anything
+    //    a person already advanced (ready_to_backcheck/closed/dismissed) is
+    //    left untouched. Best-effort: the record write above already succeeded.
     const tracked = flags.filter((f) => CA_REVIEW_TRACKED_SEVERITIES.has(f.severity));
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
     let ledger: any = { mirrored: 0 };
-    if (tracked.length) {
-      const p = await getProjectById(pid);
-      const project = p?.projectNumber || projectNumber;
-      try {
+    try {
+      let reviewId: number | null = null;
+      const ids: number[] = [];
+      if (tracked.length) {
         const review = await sbInsert("pms_qa_reviews", {
           project, set_name: reviewedAgainstSet ?? null, phase: "CA",
           kind: "ca-review", source_doc: `${type === "rfi" ? "RFI" : "Submittal"} ${number}`,
           coverage: coverage ?? null, run_by: who.email,
         });
-        const ids: number[] = [];
+        reviewId = review.id;
         for (const f of tracked) {
           const row = await sbInsert("pms_qa_findings", {
             review_id: review.id, project,
@@ -6855,27 +6864,42 @@ mcp.tool("save_ca_review", {
           });
           ids.push(row.id);
         }
-        ledger = { mirrored: ids.length, reviewId: review.id, findingIds: ids };
-        // Record the ledger link back onto the block so the modal can show
-        // "tracked in QA ledger". A version race here is harmless — the flags
-        // are already in the ledger; we just skip the backlink.
+      }
+      // Supersede prior open flags for this item (never the just-inserted ids).
+      const priorFilter = "pms_qa_findings?project=eq." + encodeURIComponent(project) +
+        "&source=eq." + type + "&external_ref=eq." + encodeURIComponent(number) +
+        "&status=eq.open" + (ids.length ? "&id=not.in.(" + ids.join(",") + ")" : "");
+      const prior = await sbGet(priorFilter.replace("pms_qa_findings?", "pms_qa_findings?select=id&"));
+      let superseded = 0;
+      if (Array.isArray(prior) && prior.length) {
+        await sbPatch(priorFilter, {
+          status: "dismissed", status_note: "Superseded by re-review " + now.slice(0, 10),
+          status_by: who.email, status_at: now,
+        });
+        superseded = prior.length;
+      }
+      ledger = { mirrored: ids.length, ...(reviewId ? { reviewId } : {}), ...(ids.length ? { findingIds: ids } : {}), ...(superseded ? { superseded } : {}) };
+      // Record the ledger link back onto the block so the modal can show
+      // "tracked in QA ledger". A version race here is harmless — the flags
+      // are already in the ledger; we just skip the backlink.
+      if (reviewId != null) {
         try {
           await updateProjectRecord(pid, (proj) => {
             const key = caArrKey(type);
             const arr = Array.isArray(proj[key]) ? proj[key] : [];
             const item = findCaItem(arr, number);
             if (!item || !item.aiReview) return proj;
-            const next = arr.map((x: any) => (x === item ? { ...x, aiReview: { ...x.aiReview, ledgerReviewId: review.id } } : x));
+            const next = arr.map((x: any) => (x === item ? { ...x, aiReview: { ...x.aiReview, ledgerReviewId: reviewId } } : x));
             return { ...proj, [key]: next };
           });
         } catch { /* backlink is cosmetic */ }
-      } catch (e) {
-        ledger = { mirrored: 0, error: `Ledger mirror failed (the review is still on the record): ${String((e as any)?.message ?? e).slice(0, 200)}` };
       }
+    } catch (e) {
+      ledger = { mirrored: 0, error: `Ledger mirror failed (the review is still on the record): ${String((e as any)?.message ?? e).slice(0, 200)}` };
     }
 
     return asText({
-      project: (await getProjectById(pid))?.projectNumber || projectNumber,
+      project,
       type, number, subject: itemSubject, savedBy: who.email,
       redFlags: flags.length, ledger,
       note: "The review is on the record as aiReview — the RFI/Submittal modal shows it as an accept/dismiss suggestion; it did NOT change the human's response or stamp. Tracked flags (life-safety/agency/cost) are in the QA Reviews ledger.",
@@ -6937,12 +6961,18 @@ mcp.tool("backload_ca_item", {
         const arr = Array.isArray(proj[key]) ? proj[key] : [];
         const existing = arr.find((x: any) => String(x.number) === String(number));
         if (existing && !update) { outcome = "exists"; stored = existing; return proj; } // idempotent no-op
+        // Only fields the caller actually PROVIDED go into `fields` — never a
+        // default. On create the `base` template below supplies the defaults
+        // (discipline Mechanical, status Open/Received, stamp —); on update the
+        // omitted fields must be preserved, so injecting a default here would
+        // silently turn an existing Electrical/Returned record into Mechanical/
+        // Received (the P1 the review caught).
         const fields: Record<string, unknown> = {};
         const set = (k: string, v: unknown) => { if (v !== undefined && v !== "") fields[k] = v; };
         set("number", number);
-        set("discipline", args.discipline || "Mechanical");
+        set("discipline", args.discipline);
         set("from", args.from);
-        set("status", args.status || (type === "rfi" ? "Open" : "Received"));
+        set("status", args.status);
         set("dateReceived", args.dateReceived);
         set("dueDate", args.dueDate);
         set("spFolderUrl", args.spFolderUrl);
@@ -6956,7 +6986,7 @@ mcp.tool("backload_ca_item", {
           set("specSection", args.specSection);
           set("comments", args.comments);
           set("dateReturned", args.dateReturned);
-          set("stamp", args.stamp || "—");
+          set("stamp", args.stamp);
         }
         if (existing && update) {
           outcome = "updated";
