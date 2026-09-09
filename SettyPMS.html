@@ -10565,7 +10565,7 @@ function caBackloadSeatUrl(project, type) {
   return "https://claude.ai/new?q=" + encodeURIComponent([
     "Backfill and review a" + (isRFI ? "n RFI" : " submittal") + " for " + projLabel + " that isn't logged in the PMS yet.",
     "",
-    "Use the Setty PMS connector and the submittal-rfi-review skill: find the filed " + (isRFI ? "RFI" : "submittal") + " PDF or the transmittal / Procore / Forma notification email in the project, extract the item's number and fields, log it with backload_ca_item, then review it against the current issued set and the governing spec section and save the suggestion with save_ca_review so it appears in the PMS for my sign-off. If you can't find the source, ask me for the item number or the file.",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: find the filed " + (isRFI ? "RFI" : "submittal") + " PDF or the transmittal / Procore / Forma notification email in the project, extract the item's number and fields, log it with backload_ca_item, then review it against the current issued set and the governing spec section" + (isRFI ? "" : " — including reading the submitted cut sheet to confirm the MARKED selection (what's circled/highlighted/checked) against the spec and schedule basis of design") + " and save the suggestion with save_ca_review so it appears in the PMS for my sign-off. If you can't find the source, ask me for the item number or the file.",
   ].join("\n"));
 }
 const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Multi-Discipline", "Other"];
@@ -10781,7 +10781,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const reviewSeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     "Review this " + (isRFI ? "RFI" : "submittal") + " for " + projLabel + ": " + (form.number || "(unsaved — save it first)") + (aiSubject ? " — \"" + aiSubject + "\"" : "") + ".",
     "",
-    "Use the Setty PMS connector and the submittal-rfi-review skill: read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested " + (isRFI ? "response" : "response and stamp") + ", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off. If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested " + (isRFI ? "response" : "response and stamp") + ", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off." + (isRFI ? "" : " Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.") + " If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
   ].join("\n"));
   function acceptAiResponse() {
     if (!ai?.suggestedResponse) return;
@@ -11088,6 +11088,31 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
               Suggestions for your sign-off — accepting copies text into the fields above; nothing was sent, stamped, or returned.
             </div>
+
+            {ai.markedSelection && (
+              <div style={{ marginBottom: 12, border: "1px solid " + (ai.markedSelection.confirmed ? P.border : P.yellow), borderRadius: 6, background: P.card, padding: "8px 10px" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4 }}>
+                  Marked selection on the cut sheet{ai.markedSelection.confirmed ? "" : " — needs your eyes"}
+                </div>
+                {ai.markedSelection.confirmed ? (
+                  <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+                    {ai.markedSelection.product && <span style={{ fontWeight: 600 }}>{ai.markedSelection.product}: </span>}
+                    {ai.markedSelection.model || "(model not stated)"}
+                    {Array.isArray(ai.markedSelection.options) && ai.markedSelection.options.length > 0 && (
+                      <div style={{ color: P.textDim, marginTop: 2 }}>Options: {ai.markedSelection.options.join(", ")}</div>
+                    )}
+                    {(ai.markedSelection.markType || ai.markedSelection.location) && (
+                      <div style={{ fontSize: 10.5, color: P.textDim, marginTop: 3 }}>
+                        {[ai.markedSelection.markType && (ai.markedSelection.markType + " mark"), ai.markedSelection.location].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
+                    {ai.markedSelection.note && <div style={{ fontSize: 10.5, color: P.textDim, marginTop: 3 }}>{ai.markedSelection.note}</div>}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: P.yellow, lineHeight: 1.5 }}>{ai.markedSelection.note || "No single selection could be confirmed from the cut sheet — verify what was submitted before returning."}</div>
+                )}
+              </div>
+            )}
 
             {Array.isArray(ai.redFlags) && ai.redFlags.length > 0 && (
               <div style={{ marginBottom: 12 }}>

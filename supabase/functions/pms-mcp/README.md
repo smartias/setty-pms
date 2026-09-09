@@ -349,7 +349,12 @@ blob, and both go through the SAME optimistic-concurrency guard the PMS app uses
 version — a concurrent app save bumps the version, the filter matches nothing, and
 the write aborts cleanly with nothing clobbered). `save_ca_review` writes an
 `aiReview` block onto the CA record — never the human's response/comments/stamp,
-which the modal renders as an accept/dismiss suggestion — and mirrors
+which the modal renders as an accept/dismiss suggestion. For submittals the block
+carries a `markedSelection` (the model/option the contractor actually
+highlighted/circled on the cut sheet, read via `view_drawing` DIRECT renders or
+the pdf-highlighted-selections skill; `confirmed:false` when nothing/multiple/
+illegible is marked, which is itself a finding), shown first in the modal so the
+engineer verifies the reading. It also mirrors
 life-safety/agency/cost red flags into the QA ledger (`source:'submittal'`/`'rfi'`,
 `kind:'ca-review'`, `external_ref` = the item number; migration
 `20260909000000_qa_ca_review_sources.sql` widens both enums). `backload_ca_item` is

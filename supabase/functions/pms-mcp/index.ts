@@ -6756,7 +6756,8 @@ const findCaItem = (arr: any[], number: string) =>
 mcp.tool("save_ca_review", {
   description:
     "Write Claude's review of one submittal or RFI onto the CA record as its `aiReview` block — the suggested " +
-    "response, suggested stamp (submittals), internal notes to human-verify, and cost/scope RED FLAGS. This is " +
+    "response, suggested stamp (submittals), the confirmed MARKED SELECTION from the submitted cut sheet, " +
+    "internal notes to human-verify, and cost/scope RED FLAGS. This is " +
     "the persist step of the submittal-rfi-review skill. It NEVER overwrites the human's response/comments/stamp: " +
     "the block renders in the RFI/Submittal modal as a suggestion the reviewer accepts or dismisses. Red flags " +
     "whose severity is life-safety, agency, or cost are ALSO mirrored into the QA findings ledger (source " +
@@ -6775,15 +6776,24 @@ mcp.tool("save_ca_review", {
     suggestedResponse: z.string().describe("The suggested formal response (RFI) or return review comments (submittal). A draft for the reviewer, never sent automatically."),
     suggestedStamp: z.enum(["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected"]).optional().describe("Submittals only: the suggested review stamp."),
     internalNotes: z.string().optional().describe("Internal notes for the reviewer — what to human-verify before returning, spec paragraphs to read, field conditions to confirm. Not sent externally."),
+    markedSelection: z.object({
+      confirmed: z.boolean().describe("true only if ONE selection was legibly identified on the submitted cut sheet. false when nothing is marked, several options are marked, or the page is a scan the render can't resolve — each of which is itself a flag."),
+      product: z.string().optional().describe("What the item is, e.g. 'VAV terminal unit', 'centrifugal pump'."),
+      model: z.string().optional().describe("The marked model / size / series as printed on the cut sheet."),
+      options: z.array(z.string()).optional().describe("Marked accessories/options, e.g. ['hot-water reheat coil','24V actuator']."),
+      markType: z.string().optional().describe("How the selection was marked: highlight / circle / check / arrow / underline / handwritten."),
+      location: z.string().optional().describe("Where on the document, e.g. 'p.3 capacity table, row VAV-2'."),
+      note: z.string().optional().describe("Ambiguity or read limits: nothing marked, multiple marks, illegible scan — say which, so the reviewer knows what to eyeball."),
+    }).optional().describe("Submittals: what the contractor actually MARKED on the cut sheet, read via view_drawing renders or the pdf-highlighted-selections skill. This is the heart of the submittal review — the metadata says what was submitted, the marking says which of many options."),
     redFlags: z.array(z.object({
       title: z.string().describe("One-sentence flag, values/sheets included."),
       severity: z.enum(QA_FINDING_SEVERITIES).describe("life-safety, agency (rejection risk), cost (change-order/scope exposure), rfi-bait, polish. life-safety/agency/cost flags are mirrored to the QA ledger."),
-      evidence: z.string().optional().describe("The submitted value vs the specified/scheduled basis of design, or the drawing/spec text supporting it."),
+      evidence: z.string().optional().describe("The submitted/MARKED value vs the specified/scheduled basis of design, or the drawing/spec text supporting it."),
       sheets: z.array(z.string()).optional().describe("Sheets/schedules cited, e.g. ['M601 Rev 11','Spec 23 74 00']."),
       action: z.string().optional().describe("Suggested action."),
     })).optional().describe("Cost/scope/coordination red flags. Keep them concrete and grounded in the documents."),
   }),
-  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, redFlags }) => {
+  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     if (type === "rfi" && suggestedStamp) return asText({ error: "suggestedStamp applies to submittals only — RFIs have no stamp." });
@@ -6798,6 +6808,7 @@ mcp.tool("save_ca_review", {
       coverage: coverage ?? null,
       suggestedResponse,
       ...(type === "submittal" ? { suggestedStamp: suggestedStamp ?? null } : {}),
+      ...(markedSelection ? { markedSelection } : {}),
       internalNotes: internalNotes ?? null,
       redFlags: flags,
     };

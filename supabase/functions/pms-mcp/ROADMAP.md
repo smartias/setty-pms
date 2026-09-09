@@ -717,12 +717,26 @@ items logged only outside the PMS); full vertical slice.
   append notes / dismiss); the RFIs and Submittals tabs gain a "🤖 Backload
   from PDF/email" seat link; the QA Reviews tab labels the mirrored flags as
   "Submittal review" / "RFI review".
+- **Cut-sheet reading, shipped in the same arc (2026-09-09):** the submittal
+  review now confirms the MARKED selection, not just the notification metadata.
+  The contractor marks one of many models/options on the cut sheet; the skill
+  finds the submitted PDF (spFolderUrl / Submittals folder), reads it two ways —
+  `read_document` for the text layer and `view_drawing` DIRECT mode to SEE the
+  highlight/circle/check on the rendered page (region zoom for dense tables) —
+  and hands off to the **pdf-highlighted-selections** + **pdf** skills when the
+  reviewer has attached the PDF (they read the annotation layer directly). The
+  confirmed selection persists as a first-class `markedSelection` block on
+  save_ca_review (product, model, marked options, mark type, location, or
+  `confirmed:false` with a note when nothing/multiple/illegible is marked — an
+  unconfirmed selection can't be approved as submitted, which is itself a
+  finding), and the modal shows it FIRST so the engineer verifies the reading
+  before trusting the rest. No new backend: view_drawing already renders any
+  PDF by itemId.
 - Follow-ups: mirror the buttons into the standalone RFISubmittalSync app;
   an add-in / watcher route for zero-click backfill from Procore/Forma
   notifications (same blocker as the QA comment-log watcher — routine-fired
-  sessions get no claude.ai connectors); read the physical cut sheet
-  (pdf-highlighted-selections) so the review confirms marked selections, not
-  just the notification metadata.
+  sessions get no claude.ai connectors); OCR for scanned image-only cut sheets
+  the render can't resolve (currently listed as a human-verify item).
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 

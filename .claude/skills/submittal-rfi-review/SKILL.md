@@ -7,9 +7,15 @@ description: >
   red flags for the reviewing engineer. Use whenever someone asks to review,
   check, or draft a response to a submittal or RFI, or asks "what stamp should
   this submittal get", "is this substitution a problem", "draft a response to
-  RFI 12", "review the VAV submittal against the drawings". Also backfills the
-  log: if the item is not in the PMS yet (the Newforma cutover), it reads the
-  filed submittal PDF or transmittal email, logs the record, then reviews it.
+  RFI 12", "review the VAV submittal against the drawings", "which model did
+  they submit", "check the marked selection on this cut sheet against the spec".
+  Reads the submitted cut sheet to confirm which model/size/option the
+  contractor actually marked (highlighted, circled, checked) and reconciles it
+  against the scheduled and specified basis of design; pairs with the
+  pdf-highlighted-selections skill when the submittal PDF is in hand. Also
+  backfills the log: if the item is not in the PMS yet (the Newforma cutover),
+  it reads the filed submittal PDF or transmittal email, logs the record,
+  then reviews it.
   Produces suggestions the engineer accepts or edits in the RFI/Submittal
   modal; it never sends anything and never changes the human's response or
   stamp on its own.
@@ -108,14 +114,59 @@ response wording on any contested RFI or rejected submittal.
    preferences that bear on this item (a manufacturer the owner has rejected
    before, a detail this agency always comments on).
 
+## Step 1.5 — Read the SUBMITTED cut sheet and confirm the MARKED selection (submittals)
+
+This is the heart of a submittal review. A catalog cut sheet lists many
+models, sizes, and options; the contractor **marks the one** they are
+submitting — a highlight, a circle, a check, an arrow, a handwritten note. The
+notification metadata (Forma/Procore) tells you a submittal came in; it does
+NOT tell you which of the options on the page was selected. Reviewing the
+metadata without reading the marking is reviewing the envelope, not the letter.
+
+1. **Find the submitted file.** `list_project_documents` / `find_document` in
+   the submittal's own folder (the record's `spFolderUrl`), or the project's
+   Submittals folder, for the cut sheet / product data PDF. Get its
+   `driveId|itemId` composite.
+2. **Read it two ways — text AND image:**
+   - `read_document` for the text layer: enumerate the models/options printed
+     on the page and their published performance data.
+   - `view_drawing` in **DIRECT mode** (`itemId` = the composite, `page` = the
+     data-sheet page) renders the page as an IMAGE — the highlight, circle, or
+     check is drawn on the raster, so you can SEE what was marked. Use a
+     `region` zoom to read a dense capacity table or a handwritten note.
+   - **If the reviewer attached the PDF to this chat** (the most reliable
+     case), use the **pdf-highlighted-selections** skill together with the
+     public **pdf** skill instead — they read the annotation layer and mark
+     colors directly and catch faint highlights a single render can miss. Fall
+     back to `view_drawing` renders when the file lives only in SharePoint.
+3. **Identify the selection with the highlighted-selections discipline:**
+   - Exactly ONE thing marked → that is the selection. Record the product,
+     model/size/tag, the marked options/accessories, the mark type, and where
+     on the document (page + table/row).
+   - **Nothing marked, MULTIPLE things marked, conflicting marks, or an
+     illegible scan → the selection is NOT confirmed.** That is itself a
+     finding: an unmarked or ambiguously-marked submittal cannot be approved as
+     submitted — flag it (severity `rfi-bait` at least; `agency` if the agency
+     requires a clear selection) and suggest **Revise and Resubmit** unless the
+     spec allows a single basis-of-design with no options.
+   - Say what you could not read. A scanned image-only cut sheet the render
+     can't resolve is a human-verify item, listed in the internal notes with
+     the page to look at — never a silent pass.
+4. **Reconcile the MARKED values against the basis of design**, field by field:
+   model vs specified basis-of-design product and "or equal" language; capacity/
+   CFM/GPM/HP/kW vs the schedule; voltage/phase/MCA vs the schedule and the
+   panel; dimensions/weight/clearances vs the drawings; accessories vs what the
+   spec requires. Every mismatch is evidence, and every mismatch with a price
+   attached is a cost flag (below).
+
 ## Step 2 — The review
 
-**Submittal** — does the submitted product meet the contract, and what does
-accepting it cost?
+**Submittal** — does the MARKED product (Step 1.5) meet the contract, and what
+does accepting it cost?
 
-- Reconcile the SUBMITTED values against the SCHEDULED and SPECIFIED basis of
-  design, field by field: model, capacity, electrical characteristics,
-  dimensions/weight, accessories, finishes. Every mismatch is evidence.
+- The field-by-field reconciliation of the marked selection against the
+  scheduled and specified basis of design (Step 1.5) is the review body. Every
+  mismatch is evidence; an unconfirmed selection is a finding on its own.
 - Run the ripple lens on any deviation, the same rules the coordination review
   uses: a changed HP/MCA ripples to the electrical circuit and panel; a changed
   weight ripples to structural support; a changed dimension ripples to
@@ -148,8 +199,15 @@ but a person signs.
 
 Call **`save_ca_review`** with: `reviewedAgainstSet`, `specSections` checked,
 an honest `coverage` note, the `suggestedResponse`, `suggestedStamp` (submittals
-only), `internalNotes`, and `redFlags` (each with a severity — **life-safety >
-agency > cost > rfi-bait > polish**).
+only), the `markedSelection` you confirmed from the cut sheet (submittals —
+`confirmed:false` with a `note` when nothing/multiple/illegible), `internalNotes`,
+and `redFlags` (each with a severity — **life-safety > agency > cost > rfi-bait >
+polish**).
+
+- `markedSelection` is what the modal shows first: the product, model, marked
+  options, and where on the cut sheet it was marked — so the engineer confirms
+  the selection you read before they trust the rest. An unconfirmed selection
+  renders as a warning, not an approval.
 
 - It writes an `aiReview` block onto the CA record; the RFI/Submittal modal
   shows it as an **accept/dismiss suggestion** and does NOT change the human's
