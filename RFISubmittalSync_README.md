@@ -21,6 +21,17 @@ In short:
    Procore/Forma). The search box filters long lists.
 4. **Pull in Procore/Forma items.** New ones appear in the amber **📥 To import** strip —
    tick and import. They become normal records you can then edit.
+5. **Send a submittal/RFI to Claude for review** (🤖 in the editor). Opens your Claude
+   seat prefilled with the `submittal-rfi-review` skill: it reviews the item against the
+   current issued set and the governing spec (for submittals, it reads the cut sheet and
+   confirms the **marked selection**), then writes a suggested response, stamp, internal
+   notes, and cost/scope red flags back onto the record via the connector. They show up in
+   the editor as an **accept/dismiss** panel — a 🤖 marks rows with a review waiting for
+   sign-off. Accepting only **copies** text into the fields; nothing is ever sent, stamped,
+   or returned automatically. **🤖 Backload from PDF/email** (per section) does the same for
+   an item not in the PMS yet — Claude finds the filed PDF / notification email, logs it,
+   then reviews it. Same records as the main PMS, so a review saved from either surface
+   shows in both.
 
 ## Safe by design
 

@@ -359,7 +359,9 @@ function renderSection(kind, title, logged, inbox){
   const am=CURRENT.allMode;
   let html=`<div class="head"><h2>${title}</h2><span class="count">${shown.length===logged.length?logged.length:shown.length+" of "+logged.length} logged${news.length?` · ${news.length} to import`:""}</span><span class="spacer"></span>`+
     `<button class="ghost" style="font-size:12px" onclick="exportCSV('${kind}')">⬇ CSV</button>`+
-    (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:`<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button>`)+`</div>`;
+    (am?`<span class="muted" style="font-size:12px">pick one project to add / import</span>`:
+       `<a href="${esc(caBackloadSeatUrl(kind, CURRENT.proj.name||CURRENT.proj.number||""))}" target="_blank" rel="noreferrer" title="For items still in Newforma: open a Claude seat to find the filed PDF / notification email, log it here (backfill), then review it against the current set and specs." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">🤖 Backload from PDF/email</a>`+
+       `<button class="primary" onclick="openEditor('${kind}',null)">+ Add ${kind==='rfi'?'RFI':'Submittal'}</button>`)+`</div>`;
   if(news.length){
     const head = kind==="rfi" ? "<th scope='col'>RFI</th><th scope='col'>Title</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Asked by</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>"
                               : "<th scope='col'>Item</th><th scope='col'>Title</th><th scope='col'>Spec</th><th scope='col'>Status</th><th scope='col'>Due</th><th scope='col'>Discipline</th><th scope='col' class='right'>Import</th>";
@@ -388,9 +390,10 @@ function renderSection(kind, title, logged, inbox){
       // Keyboard path: real button on the number cell (stopPropagation so the
       // row's mouse-convenience onclick doesn't fire the editor twice).
       const numBtn=`<button type="button" class="rowbtn" aria-label="Open ${kind==="rfi"?"RFI":"submittal"} ${esc(r.number||"(no number)")}" onclick='event.stopPropagation();${open}'>${esc(r.number||"—")}</button>`;
+      const aiMark=r.aiReview?` <span title="Claude review waiting for sign-off — open to review" style="font-size:11px" role="img" aria-label="Claude review pending">🤖</span>`:"";
       const c = kind==="rfi"
-        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`
-        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`;
+        ? `<td class="num">${numBtn}</td><td class="title">${esc(r.title||r.description||"—")}${aiMark}</td><td>${esc(r.discipline||"")}</td><td>${esc(r.from||"")}</td><td class="muted">${asg}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`
+        : `<td class="num">${numBtn}</td><td class="title">${esc(r.description||r.title||"—")}${aiMark}<div class="muted" style="font-size:11px">${esc(r.specSection||"")}</div></td><td>${esc(r.discipline||"")}</td><td class="muted">${asg}</td><td>${esc(r.stamp&&r.stamp!=="—"?r.stamp:"")}</td><td>${esc(r.dateReceived||"—")}</td><td>${esc(r.dueDate||"—")}</td><td>${statusPill(r.status)}</td>`;
       const nw=JUST_IMPORTED.has(r.id)?" justnew":"";
       return `<tr class="click${nw}" onclick='${open}'>${pc}${c}</tr>`; }).join("");
     html+=`<table><thead><tr>${head}</tr></thead><tbody>${rows||`<tr><td colspan=${am?9:8} class="empty">No ${kind}s match the current filters.</td></tr>`}</tbody></table>`;
@@ -409,6 +412,80 @@ const SUB_FIELDS=[ {k:"number",l:"Submittal #"},{k:"specSection",l:"Spec Section
   {k:"dueDate",l:"Due",t:"date"},{k:"dateReturned",l:"Returned",t:"date"},{k:"description",l:"Description",full:1,ta:1},{k:"comments",l:"Review comments",full:1,ta:1},{k:"notes",l:"Internal notes",full:1,ta:1} ];
 function blankRFI(){ const t=today(); return {id:"",number:"",title:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,5),dateResponded:"",response:"",status:"Open",notes:"",spFolderUrl:"",links:[]}; }
 function blankSub(){ const t=today(); return {id:"",number:"",specSection:"",description:"",from:"",discipline:"Mechanical",assignedTo:[],subAssigned:"",dateReceived:t,dueDate:addWD(t,10),dateReturned:"",comments:"",status:"Received",stamp:"—",resubNumber:0,notes:"",spFolderUrl:"",links:[],registerItemId:""}; }
+
+/* =========================== Claude review (submittal-rfi-review skill) =========================== */
+/* Mirrors the main PMS RFI/Submittal modal: a "Send to Claude" seat link, a
+   "Backload from PDF/email" seat link, and an accept/dismiss panel that renders
+   the aiReview block the connector's save_ca_review wrote onto the record.
+   Accepting COPIES text into the fields (never sends/stamps); the block stays
+   until dismissed. Same records as the PMS, so a review saved from either
+   surface shows in both. */
+const CA_SEV_COLOR = { "life-safety":"#f87171","agency":"#fbbf24","cost":"#fb923c","rfi-bait":"#60a5fa","polish":"#94a3b8" };
+function caSeatUrl(lines){ return "https://claude.ai/new?q="+encodeURIComponent(lines.join("\n")); }
+function caReviewSeatUrl(kind, rec, projLabel){
+  const isRFI=kind==="rfi"; const subject=isRFI?(rec.title||""):(rec.description||"");
+  return caSeatUrl([
+    "Review this "+(isRFI?"RFI":"submittal")+" for "+(projLabel||"the project")+": "+(rec.number||"(unsaved — add it to the log first)")+(subject?' — "'+subject+'"':"")+".",
+    "",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested "+(isRFI?"response":"response and stamp")+", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off."+(isRFI?"":" Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.")+" If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
+  ]);
+}
+function caBackloadSeatUrl(kind, projLabel){
+  const isRFI=kind==="rfi";
+  return caSeatUrl([
+    "Backfill and review a"+(isRFI?"n RFI":" submittal")+" for "+(projLabel||"the project")+" that isn't logged in the PMS yet.",
+    "",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: find the filed "+(isRFI?"RFI":"submittal")+" PDF or the transmittal / Procore / Forma notification email in the project, extract the item's number and fields, log it with backload_ca_item, then review it against the current issued set and the governing spec section"+(isRFI?"":" — including reading the submitted cut sheet to confirm the MARKED selection (what's circled/highlighted/checked) against the spec and schedule basis of design")+" and save the suggestion with save_ca_review so it appears here for my sign-off. If you can't find the source, ask me for the item number or the file.",
+  ]);
+}
+function caAiPanelHtml(rec, kind){
+  const ai=rec&&rec.aiReview; if(!ai) return "";
+  const isRFI=kind==="rfi";
+  let h=`<div id="aiPanel" style="margin:0 18px 4px;border:1px solid var(--accent);border-radius:10px;background:var(--card2);padding:12px 14px">`;
+  h+=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-size:13px">🤖 Claude review</strong>`+
+     `<span class="muted" style="font-size:11px">${[ai.by?"by "+esc(ai.by):"",ai.at?esc(String(ai.at).slice(0,10)):"",ai.reviewedAgainstSet?"vs "+esc(ai.reviewedAgainstSet):""].filter(Boolean).join(" · ")}</span>`+
+     `<span style="flex:1"></span>`+(ai.ledgerReviewId?`<span style="font-size:11px;color:var(--ok)">Tracked in QA</span>`:"")+
+     `<button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caDismissAi()">Dismiss</button></div>`;
+  h+=`<div class="muted" style="font-size:11px;margin-bottom:10px">Suggestions for your sign-off — accepting copies text into the fields below; nothing was sent, stamped, or returned.</div>`;
+  if(ai.markedSelection){ const m=ai.markedSelection;
+    h+=`<div style="border:1px solid ${m.confirmed?"var(--line)":"var(--new)"};border-radius:6px;background:var(--card);padding:7px 10px;margin-bottom:10px">`+
+       `<div class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">Marked selection on the cut sheet${m.confirmed?"":" — needs your eyes"}</div>`;
+    if(m.confirmed){ h+=`<div style="font-size:12.5px">${m.product?`<strong>${esc(m.product)}: </strong>`:""}${esc(m.model||"(model not stated)")}`+
+      (Array.isArray(m.options)&&m.options.length?`<div class="muted" style="margin-top:2px">Options: ${esc(m.options.join(", "))}</div>`:"")+
+      ((m.markType||m.location)?`<div class="muted" style="font-size:10.5px;margin-top:3px">${[m.markType?esc(m.markType)+" mark":"",m.location?esc(m.location):""].filter(Boolean).join(" · ")}</div>`:"")+
+      (m.note?`<div class="muted" style="font-size:10.5px;margin-top:3px">${esc(m.note)}</div>`:"")+`</div>`; }
+    else { h+=`<div style="font-size:12px;color:var(--new)">${esc(m.note||"No single selection could be confirmed — verify what was submitted before returning.")}</div>`; }
+    h+=`</div>`;
+  }
+  if(Array.isArray(ai.redFlags)&&ai.redFlags.length){
+    h+=`<div style="margin-bottom:10px"><div class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Red flags — ${ai.redFlags.length}</div>`;
+    for(const f of ai.redFlags){ const col=CA_SEV_COLOR[f.severity]||"var(--line)";
+      h+=`<div style="border-left:3px solid ${col};background:var(--card);border-radius:5px;padding:6px 9px;margin-bottom:5px">`+
+         `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">${f.severity?`<span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${col}">${esc(f.severity)}</span>`:""}${Array.isArray(f.sheets)&&f.sheets.length?`<span style="font-size:10px;color:var(--accent)">${esc(f.sheets.join(" · "))}</span>`:""}</div>`+
+         `<div style="font-size:12.5px">${esc(f.title)}</div>`+
+         (f.evidence?`<div class="muted" style="font-size:11px;margin-top:2px;white-space:pre-wrap">${esc(f.evidence)}</div>`:"")+
+         (f.action?`<div class="muted" style="font-size:11px;margin-top:2px">Suggested: ${esc(f.action)}</div>`:"")+`</div>`;
+    }
+    h+=`</div>`;
+  }
+  if(ai.suggestedResponse){
+    h+=`<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px"><span class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Suggested ${isRFI?"response":"review comments"}</span><button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caAcceptResponse()">Copy into ${isRFI?"Response":"Comments"}</button></div>`+
+       `<div style="font-size:12.5px;white-space:pre-wrap;background:var(--card);border-radius:6px;padding:8px 10px">${esc(ai.suggestedResponse)}</div></div>`;
+  }
+  if(!isRFI && ai.suggestedStamp){
+    h+=`<div style="margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Suggested stamp</span><strong style="font-size:13px">${esc(ai.suggestedStamp)}</strong><button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caAcceptStamp()">Use this stamp</button></div>`;
+  }
+  if(ai.internalNotes){
+    h+=`<div style="margin-bottom:4px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px"><span class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Internal notes — verify before returning</span><button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caAcceptNotes()">Append to Internal notes</button></div>`+
+       `<div class="muted" style="font-size:12px;white-space:pre-wrap;background:var(--card);border-radius:6px;padding:8px 10px">${esc(ai.internalNotes)}</div></div>`;
+  }
+  if(ai.coverage) h+=`<div class="muted" style="font-size:10.5px;font-style:italic">Coverage: ${esc(ai.coverage)}</div>`;
+  h+=`</div>`; return h;
+}
+function caAcceptResponse(){ if(!EDIT||!EDIT.ai)return; const key=EDIT.kind==="rfi"?"response":"comments"; const el=document.getElementById("f_"+key); const t=(EDIT.ai.suggestedResponse||"").trim(); if(!el||!t)return; const cur=el.value||""; if(cur.includes(t)){ toast("Already added",true); return; } el.value=cur.trim()?cur.trim()+"\n\n"+t:t; }
+function caAcceptStamp(){ if(!EDIT||!EDIT.ai||!EDIT.ai.suggestedStamp)return; const el=document.getElementById("f_stamp"); if(el)el.value=EDIT.ai.suggestedStamp; }
+function caAcceptNotes(){ if(!EDIT||!EDIT.ai)return; const el=document.getElementById("f_notes"); const t=(EDIT.ai.internalNotes||"").trim(); if(!el||!t)return; const cur=el.value||""; if(cur.includes(t)){ toast("Already added",true); return; } el.value=cur.trim()?cur.trim()+"\n\n"+t:t; }
+function caDismissAi(){ if(!EDIT)return; if(!confirm("Dismiss Claude's review? The suggested response, notes, and red flags on this record will be cleared when you save. Any red flags already tracked in QA stay there."))return; EDIT.dismissAi=true; const p=document.getElementById("aiPanel"); if(p)p.remove(); }
 
 let EDIT=null, EDIT_TEAM=[], EDIT_SUBS=[], LAST_FOCUS=null;
 document.getElementById("overlay").addEventListener("keydown", e=>{
@@ -429,7 +506,7 @@ async function openEditor(kind, id){
   if(isNew){ rec = kind==="rfi"?blankRFI():blankSub(); rec.number = (kind==="rfi"?"RFI-":"SUB-")+String(list.length+1).padStart(3,"0"); }
   else { rec = list.find(r=>r.id===id); if(!rec) return; }
   const projId = rec.__projId||CURRENT.proj.id;
-  EDIT={kind,isNew,id:rec.id,projId,projName:rec.__projName||CURRENT.proj.name||""};
+  EDIT={kind,isNew,id:rec.id,projId,projName:rec.__projName||CURRENT.proj.name||"",ai:(rec.aiReview||null),dismissAi:false};
   let team=(CURRENT.teams&&CURRENT.teams[projId])||[], subs=[];
   try{ const pr=await fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`); if(pr[0]){ team=pr[0].team||team; subs=pr[0].subs||[]; } }catch(e){}
   team=team.filter(t=>t&&(t.name||t.role)); EDIT_TEAM=team; EDIT_SUBS=subs;
@@ -455,10 +532,13 @@ async function openEditor(kind, id){
     `<div class="fld full"><label for="f_subAssigned">Subconsultant (optional)</label>${subHtml}</div>`+
     `<div class="fld full"><label for="f_spFolderUrl">SharePoint folder</label>${spHtml}</div>`;
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
+  const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName);
   document.getElementById("modal").innerHTML =
     `<div class="mhead"><h3 id="modalTitle">${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
+    caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
+    `<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off. Save it to the log first so Claude can find it." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`+
     `<button class="ghost" style="font-size:12px" title="Open a pre-filled draft in Outlook" onclick="emailAction('${kind}','assign')">✉ Assign</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft an email to the subconsultant" onclick="emailAction('${kind}','sub')">✉ Forward to Sub</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft the ${kind==='rfi'?'response':'return'} email" onclick="emailAction('${kind}','respond')">✉ ${kind==='rfi'?'Draft Response':'Draft Return'}</button>`+
@@ -502,7 +582,7 @@ async function saveEditor(){
   try{
     await writeArray(arrKey, arr=>{
       if(isNew){ const base=kind==="rfi"?blankRFI():blankSub(); return [...arr, {...base, ...edits, id:uid(), loggedBy:who||"(unknown)", loggedAt:now}]; }
-      return arr.map(r=> r.id===id ? {...r, ...edits} : r);
+      return arr.map(r=>{ if(r.id!==id) return r; const m={...r, ...edits}; if(EDIT.dismissAi) delete m.aiReview; return m; });
     }, false, EDIT.projId);
     closeEditor(); toast(isNew?"Added to log ✓":"Saved ✓", true); selectProject(CURRENT.proj.id);
   }catch(err){ toast(err.message, false); }
