@@ -10553,6 +10553,21 @@ const SUBMITTAL_STATUSES = ["Received", "Under Review", "Pending Sub Review", "R
 const RFI_OPEN_STATUSES = ["Open", "Pending Sub Response"];
 const SUB_OPEN_STATUSES = ["Received", "Under Review", "Pending Sub Review"];
 const SUBMITTAL_STAMPS = ["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected", "—"];
+
+// Opens a Claude seat prefilled to BACKFILL a CA item not yet in the PMS (the
+// Newforma cutover) and then review it — the submittal-rfi-review skill reads
+// the filed PDF / notification email, logs it via backload_ca_item, and saves
+// the review via save_ca_review. Mirrors the QA tab's "Run Coordination Review"
+// seat link and the transmittal backfill posture: prepare-only, human signs off.
+function caBackloadSeatUrl(project, type) {
+  const isRFI = type === "rfi";
+  const projLabel = (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : "");
+  return "https://claude.ai/new?q=" + encodeURIComponent([
+    "Backfill and review a" + (isRFI ? "n RFI" : " submittal") + " for " + projLabel + " that isn't logged in the PMS yet.",
+    "",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: find the filed " + (isRFI ? "RFI" : "submittal") + " PDF or the transmittal / Procore / Forma notification email in the project, extract the item's number and fields, log it with backload_ca_item, then review it against the current issued set and the governing spec section and save the suggestion with save_ca_review so it appears in the PMS for my sign-off. If you can't find the source, ask me for the item number or the file.",
+  ].join("\n"));
+}
 const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Multi-Discipline", "Other"];
 const SUBMITTAL_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Other"];
 
@@ -10754,6 +10769,36 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
 
   function setF(k, v) { setForm(f => ({ ...f, [k]: v })); }
+
+  // ── Claude review (submittal-rfi-review skill) ──────────────────────────
+  // The connector's save_ca_review writes an `aiReview` block onto the record;
+  // it never touches the human's response/stamp. Here the reviewer accepts
+  // pieces of the suggestion into the real fields, or dismisses it. Accepting
+  // APPENDS to any existing text so a half-written response is never clobbered.
+  const ai = form.aiReview || null;
+  const projLabel = (project.name || "Project") + (project.projectNumber ? " (" + project.projectNumber + ")" : "");
+  const aiSubject = isRFI ? (form.title || "") : (form.description || "");
+  const reviewSeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
+    "Review this " + (isRFI ? "RFI" : "submittal") + " for " + projLabel + ": " + (form.number || "(unsaved — save it first)") + (aiSubject ? " — \"" + aiSubject + "\"" : "") + ".",
+    "",
+    "Use the Setty PMS connector and the submittal-rfi-review skill: read it with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested " + (isRFI ? "response" : "response and stamp") + ", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off. If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
+  ].join("\n"));
+  function acceptAiResponse() {
+    if (!ai?.suggestedResponse) return;
+    const key = isRFI ? "response" : "comments";
+    const cur = (form[key] || "").trim();
+    setF(key, cur ? cur + "\n\n" + ai.suggestedResponse : ai.suggestedResponse);
+  }
+  function acceptAiStamp() { if (ai?.suggestedStamp) setF("stamp", ai.suggestedStamp); }
+  function acceptAiNotes() {
+    if (!ai?.internalNotes) return;
+    const cur = (form.notes || "").trim();
+    setF("notes", cur ? cur + "\n\n" + ai.internalNotes : ai.internalNotes);
+  }
+  function dismissAiReview() {
+    if (!window.confirm("Dismiss Claude's review? The suggested response, internal notes, and red flags on this record will be cleared. Any red flags already tracked in QA Reviews stay there.")) return;
+    setF("aiReview", undefined);
+  }
 
   const staffList = project.teamMembers || [];
   const subList = (project.subconsultants || []);
@@ -11028,6 +11073,71 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           </Field>
         </div>
 
+        {/* Claude review — accept/dismiss suggestion from the submittal-rfi-review skill */}
+        {ai && (
+          <div style={{ gridColumn: "1 / -1", marginTop: 4, border: "1px solid " + P.accent, borderRadius: 10, background: P.bg, padding: "14px 16px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>🤖 Claude review</span>
+              <span style={{ fontSize: 10.5, color: P.textDim }}>
+                {ai.by ? "by " + ai.by : ""}{ai.at ? " · " + String(ai.at).slice(0, 10) : ""}{ai.reviewedAgainstSet ? " · vs " + ai.reviewedAgainstSet : ""}
+              </span>
+              <span style={{ flex: 1 }} />
+              {ai.ledgerReviewId && <span style={{ fontSize: 10.5, color: P.green }}>Tracked in QA Reviews</span>}
+              <Btn small variant="ghost" onClick={dismissAiReview}>Dismiss</Btn>
+            </div>
+            <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
+              Suggestions for your sign-off — accepting copies text into the fields above; nothing was sent, stamped, or returned.
+            </div>
+
+            {Array.isArray(ai.redFlags) && ai.redFlags.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Red flags — {ai.redFlags.length}</div>
+                {ai.redFlags.map((f, i) => (
+                  <div key={i} style={{ borderLeft: "3px solid " + (QA_SEV_COLOR[f.severity] || P.border), background: P.card, borderRadius: 6, padding: "7px 10px", marginBottom: 6 }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3, flexWrap: "wrap" }}>
+                      {f.severity && <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: QA_SEV_COLOR[f.severity] || P.text }}>{f.severity}</span>}
+                      {Array.isArray(f.sheets) && f.sheets.length > 0 && <span style={{ fontSize: 10, color: P.accentLight }}>{f.sheets.join(" · ")}</span>}
+                    </div>
+                    <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>{f.title}</div>
+                    {f.evidence && <div style={{ fontSize: 11, color: P.textDim, marginTop: 3, whiteSpace: "pre-wrap" }}>{f.evidence}</div>}
+                    {f.action && <div style={{ fontSize: 11, color: P.textDim, marginTop: 3 }}>Suggested: {f.action}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {ai.suggestedResponse && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em" }}>Suggested {isRFI ? "response" : "review comments"}</span>
+                  <Btn small variant="ghost" onClick={acceptAiResponse}>Copy into {isRFI ? "Response" : "Comments"}</Btn>
+                </div>
+                <div style={{ fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", background: P.card, borderRadius: 6, padding: "8px 10px" }}>{ai.suggestedResponse}</div>
+              </div>
+            )}
+
+            {!isRFI && ai.suggestedStamp && (
+              <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em" }}>Suggested stamp</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: STAMP_COLORS[ai.suggestedStamp]?.text || P.text }}>{ai.suggestedStamp}</span>
+                <Btn small variant="ghost" onClick={acceptAiStamp} disabled={form.stamp === ai.suggestedStamp}>{form.stamp === ai.suggestedStamp ? "Applied" : "Use this stamp"}</Btn>
+              </div>
+            )}
+
+            {ai.internalNotes && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em" }}>Internal notes — verify before returning</span>
+                  <Btn small variant="ghost" onClick={acceptAiNotes}>Append to Internal Notes</Btn>
+                </div>
+                <div style={{ fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap", color: P.textDim, background: P.card, borderRadius: 6, padding: "8px 10px" }}>{ai.internalNotes}</div>
+              </div>
+            )}
+
+            {ai.coverage && <div style={{ fontSize: 10.5, color: P.textDim, fontStyle: "italic" }}>Coverage: {ai.coverage}</div>}
+          </div>
+        )}
+
         {/* Linked items */}
         <div style={{ gridColumn: "1 / -1" }}>
           <LinkManager
@@ -11043,6 +11153,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         {/* Action buttons */}
         <div style={{ marginTop: 20, borderTop: `1px solid ${P.border}`, paddingTop: 16, display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <a href={reviewSeatUrl} target="_blank" rel="noreferrer"
+              title={"Opens your Claude seat with the review prefilled — reviews this " + (isRFI ? "RFI" : "submittal") + " against the current set and specs and saves a suggested " + (isRFI ? "response" : "response + stamp") + ", internal notes, and cost/scope red flags back here for your sign-off. Save the item first so Claude can find it."}
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px",
+                border: "1px solid " + P.accent, borderRadius: 6, fontSize: 12, fontWeight: 600,
+                color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
+              🤖 {ai ? "Re-review with Claude" : "Send to Claude for review"}
+            </a>
             <Btn small variant="ghost" onClick={draftAssignEmail}>✉ Assign Email</Btn>
             {(subList.length > 0 || form.subAssigned) && (
               <Btn small variant="ghost" onClick={draftSubEmail}>✉ Forward to Sub</Btn>
@@ -11123,7 +11240,14 @@ function RFIsView({ project, onChange, staff, clients }) {
           <option value="All">All Disciplines</option>
           {RFI_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
         </select>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <a href={caBackloadSeatUrl(project, "rfi")} target="_blank" rel="noreferrer"
+            title="For items still in Newforma: opens your Claude seat to find the filed RFI PDF/notification email, log it here (backfill), then review it against the current set and specs."
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px",
+              border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
+              color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
+            🤖 Backload from PDF/email
+          </a>
           <Btn small onClick={addRFI}>+ Add RFI</Btn>
         </div>
       </div>
@@ -11278,7 +11402,14 @@ function SubmittalsView({ project, onChange, staff, clients }) {
           <option value="All">All Disciplines</option>
           {SUBMITTAL_DISCIPLINES.map(d => <option key={d}>{d}</option>)}
         </select>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <a href={caBackloadSeatUrl(project, "submittal")} target="_blank" rel="noreferrer"
+            title="For items still in Newforma: opens your Claude seat to find the filed submittal PDF/notification email, log it here (backfill), then review it against the current set and specs."
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px",
+              border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
+              color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
+            🤖 Backload from PDF/email
+          </a>
           <Btn small variant="ghost" onClick={() => setShowRegister(v => !v)}>
             {showRegister ? "Hide Register" : "📋 Submittal Register" + (register.length > 0 ? ` (${register.length})` : "")}
           </Btn>
@@ -13245,6 +13376,9 @@ function promptForChecklistUserName() {
 // checklists stay readable under history.
 const QA_SEV_RANK = { "life-safety": 0, "agency": 1, "cost": 2, "rfi-bait": 3, "polish": 4 };
 const QA_EXTERNAL_SRC = { drchecks: "Dr.Checks", owner: "Owner", architect: "Architect", agency: "Agency" };
+// Cost/scope flags mirrored from the submittal-rfi-review skill (source 'submittal'/'rfi').
+// They are INTERNAL findings (a deviation we caught), not external comments.
+const QA_CA_SRC = { submittal: "Submittal review", rfi: "RFI review" };
 const QA_SEV_COLOR = { "life-safety": "#e5534b", "agency": "#d4a72c", "cost": "#e8a03c", "rfi-bait": "#58a6ff", "polish": "#8b949e" };
 const qaFindingRank = (f) => (QA_SEV_RANK[f.severity] !== undefined ? QA_SEV_RANK[f.severity] : 5) * 2 + (QA_EXTERNAL_SRC[f.source] ? 0 : 1);
 
@@ -13366,13 +13500,13 @@ function ProjectQAReviewsView({ project, onChange }) {
     const provenance = external
       ? (QA_EXTERNAL_SRC[f.source] || "Reviewer") + " comment" + (f.external_ref ? " #" + f.external_ref : "")
         + (rev && rev.source_doc ? " - from " + rev.source_doc : rev && rev.set_name ? " - " + rev.set_name : "")
-      : (f.source === "ripple" ? "Ripple check" : "Coordination review") + (f.review_id ? " #" + f.review_id : "")
+      : (f.source === "ripple" ? "Ripple check" : (QA_CA_SRC[f.source] || "Coordination review")) + (QA_CA_SRC[f.source] ? "" : (f.review_id ? " #" + f.review_id : ""))
         + (rev && (rev.source_doc || rev.set_name) ? " - " + (rev.source_doc || rev.set_name) : "");
     return (
       <div style={{ border: "1px solid " + (external && isOpen ? "#8957e5" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
           {f.severity && <QAChip text={f.severity} color={sevColor} solid={f.severity === "life-safety"} />}
-          <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : "internal QA")} color={external ? "#8957e5" : undefined} />
+          <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : (QA_CA_SRC[f.source] ? QA_CA_SRC[f.source] + (f.external_ref ? " " + f.external_ref : "") : "internal QA"))} color={external ? "#8957e5" : undefined} />
           {f.item_id && <QAChip text={f.item_id} />}
           <QAChip text={String(f.status).replace(/_/g, " ")} color={f.status === "open" ? "#e5534b" : f.status === "ready_to_backcheck" ? "#d4a72c" : "#3fb950"} />
           {f.status === "ready_to_backcheck" && autoNote && <QAChip text="auto-backchecked" color="#3fb950" />}

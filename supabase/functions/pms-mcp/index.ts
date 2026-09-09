@@ -6488,7 +6488,7 @@ mcp.tool("get_qa_checklist", {
 // refuse the anonymous shared-secret lane; external-source findings are
 // never closed without a note naming the human decision.
 
-const QA_FINDING_SOURCES = ["qa", "ripple", "drchecks", "owner", "architect", "agency", "other"] as const;
+const QA_FINDING_SOURCES = ["qa", "ripple", "drchecks", "owner", "architect", "agency", "other", "submittal", "rfi"] as const;
 const QA_FINDING_SEVERITIES = ["life-safety", "agency", "cost", "rfi-bait", "polish"] as const;
 // Working order for the ledger: worst consequence first, and external
 // reviewer comments outrank internal findings of the same severity —
@@ -6693,6 +6693,285 @@ mcp.tool("update_qa_finding", {
     } catch (e) {
       return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
     }
+  },
+});
+
+// ─── SUBMITTAL / RFI REVIEW ─────────────────────────────────────────────────
+// Two write tools behind the submittal-rfi-review skill and the CA-item modal's
+// "Send to Claude for review" button (per Sara, 2026-09-09). They are the
+// connector's ONLY writes into the project blob, and both go through the same
+// OPTIMISTIC-CONCURRENCY guard the PMS app uses (saveProjectV2 / the RFI-
+// Submittal sync's writeArray): read {id, project, version}, mutate the array,
+// PATCH filtered on the version we read. A concurrent app save bumps the
+// version, the filter matches zero rows, and the write aborts CLEANLY with
+// nothing clobbered — the caller re-runs. This is why the tools never blind-
+// write: a submittal record a PM is editing in the app must never be stomped.
+//
+// save_ca_review NEVER touches the human's response/comments/stamp — it writes
+// only the item's `aiReview` block, which the modal renders as an accept/dismiss
+// suggestion. backload_ca_item is append-only by item number (idempotent), the
+// "backfill the log" path for items still living in Newforma during the cutover.
+
+// The item's aiReview block, written by save_ca_review and read by the modal.
+const CA_REVIEW_TRACKED_SEVERITIES = new Set(["life-safety", "agency", "cost"]);
+
+// Version-guarded read-modify-write of one project's blob. mutate() receives a
+// deep-ish working copy of the project and returns the updated blob; on a
+// version race the write is refused (nothing written). Busts the portfolio
+// cache so the next read reflects the write.
+async function updateProjectRecord(pid: string, mutate: (proj: any) => any): Promise<any> {
+  const rows = await sbGet("pms_projects?select=id,project,version&project->>id=eq." + encodeURIComponent(pid));
+  if (!rows?.length) throw new Error("Project row not found for the resolved id.");
+  const rowId = rows[0].id, proj = rows[0].project, ver = rows[0].version;
+  const updated = mutate(proj);
+  // mutate returns the SAME reference to signal "no change" — skip the write so
+  // idempotent backfills and cosmetic backlinks don't bump the version or race
+  // a concurrent editor for nothing.
+  if (updated === proj) return rows[0];
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/pms_projects?id=eq.${encodeURIComponent(rowId)}&version=eq.${encodeURIComponent(ver)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+        "Content-Type": "application/json", Prefer: "return=representation",
+      },
+      body: JSON.stringify({ project: updated, version: ver + 1, updated_at: new Date().toISOString() }),
+    },
+  );
+  if (!res.ok) throw new Error(`Supabase patch ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const back = await res.json();
+  if (!Array.isArray(back) || !back.length) {
+    throw new Error("Project changed since it was read (a concurrent save) — nothing was written. Re-run the tool.");
+  }
+  _projCache = null; // the write invalidates the portfolio-wide cache
+  return back[0];
+}
+
+const caArrKey = (type: string) => (type === "rfi" ? "rfis" : "submittals");
+const findCaItem = (arr: any[], number: string) =>
+  arr.find((x: any) => String(x.number) === String(number)) ||
+  arr.find((x: any) => String(x.id) === String(number));
+
+mcp.tool("save_ca_review", {
+  description:
+    "Write Claude's review of one submittal or RFI onto the CA record as its `aiReview` block — the suggested " +
+    "response, suggested stamp (submittals), internal notes to human-verify, and cost/scope RED FLAGS. This is " +
+    "the persist step of the submittal-rfi-review skill. It NEVER overwrites the human's response/comments/stamp: " +
+    "the block renders in the RFI/Submittal modal as a suggestion the reviewer accepts or dismisses. Red flags " +
+    "whose severity is life-safety, agency, or cost are ALSO mirrored into the QA findings ledger (source " +
+    "'submittal'/'rfi', external_ref = the item number) so a deviation from the bid documents is tracked and " +
+    "back-checked like any other finding, not buried in one record. Version-guarded: a concurrent app save on " +
+    "the project aborts the write cleanly (re-run). Signed-in callers only; the aiReview block is stamped with " +
+    "the caller. Identify the item by project + type + number; the item must already be logged (run " +
+    "backload_ca_item first for items not yet in the PMS).",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    type: z.enum(["rfi", "submittal"]),
+    number: z.string().describe("The RFI/submittal number as logged (e.g. '004' or 'SUB-012')."),
+    reviewedAgainstSet: z.string().optional().describe("The drawing set/deliverable the review was run against, e.g. '2024-10-24_100% CD + bulletins through 8/19'."),
+    specSections: z.array(z.string()).optional().describe("Spec sections examined, e.g. ['23 09 23','23 74 00']."),
+    coverage: z.string().optional().describe("Honest coverage note — what was and was NOT checkable (textless sheets, spec book not in the library, values needing field verify)."),
+    suggestedResponse: z.string().describe("The suggested formal response (RFI) or return review comments (submittal). A draft for the reviewer, never sent automatically."),
+    suggestedStamp: z.enum(["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected"]).optional().describe("Submittals only: the suggested review stamp."),
+    internalNotes: z.string().optional().describe("Internal notes for the reviewer — what to human-verify before returning, spec paragraphs to read, field conditions to confirm. Not sent externally."),
+    redFlags: z.array(z.object({
+      title: z.string().describe("One-sentence flag, values/sheets included."),
+      severity: z.enum(QA_FINDING_SEVERITIES).describe("life-safety, agency (rejection risk), cost (change-order/scope exposure), rfi-bait, polish. life-safety/agency/cost flags are mirrored to the QA ledger."),
+      evidence: z.string().optional().describe("The submitted value vs the specified/scheduled basis of design, or the drawing/spec text supporting it."),
+      sheets: z.array(z.string()).optional().describe("Sheets/schedules cited, e.g. ['M601 Rev 11','Spec 23 74 00']."),
+      action: z.string().optional().describe("Suggested action."),
+    })).optional().describe("Cost/scope/coordination red flags. Keep them concrete and grounded in the documents."),
+  }),
+  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, redFlags }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    if (type === "rfi" && suggestedStamp) return asText({ error: "suggestedStamp applies to submittals only — RFIs have no stamp." });
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const flags = redFlags ?? [];
+    const now = new Date().toISOString();
+    const aiReview = {
+      by: who.email, at: now,
+      reviewedAgainstSet: reviewedAgainstSet ?? null,
+      specSections: specSections ?? null,
+      coverage: coverage ?? null,
+      suggestedResponse,
+      ...(type === "submittal" ? { suggestedStamp: suggestedStamp ?? null } : {}),
+      internalNotes: internalNotes ?? null,
+      redFlags: flags,
+    };
+
+    // 1) Write the block onto the record (version-guarded). Do this FIRST so a
+    //    concurrency abort leaves no orphan ledger rows.
+    let itemSubject: string | null = null;
+    try {
+      await updateProjectRecord(pid, (proj) => {
+        const key = caArrKey(type);
+        const arr = Array.isArray(proj[key]) ? proj[key] : [];
+        const item = findCaItem(arr, number);
+        if (!item) throw new Error(`No ${type} "${number}" on this project — run backload_ca_item first to log it.`);
+        itemSubject = item.title || item.description || null;
+        const next = arr.map((x: any) => (x === item ? { ...x, aiReview } : x));
+        return { ...proj, [key]: next };
+      });
+    } catch (e) {
+      return asText({ error: `Could not write the review onto the record: ${String((e as any)?.message ?? e)}` });
+    }
+
+    // 2) Mirror the consequential flags into the QA ledger so they are tracked
+    //    and back-checked. Best-effort: the record write already succeeded.
+    const tracked = flags.filter((f) => CA_REVIEW_TRACKED_SEVERITIES.has(f.severity));
+    let ledger: any = { mirrored: 0 };
+    if (tracked.length) {
+      const p = await getProjectById(pid);
+      const project = p?.projectNumber || projectNumber;
+      try {
+        const review = await sbInsert("pms_qa_reviews", {
+          project, set_name: reviewedAgainstSet ?? null, phase: "CA",
+          kind: "ca-review", source_doc: `${type === "rfi" ? "RFI" : "Submittal"} ${number}`,
+          coverage: coverage ?? null, run_by: who.email,
+        });
+        const ids: number[] = [];
+        for (const f of tracked) {
+          const row = await sbInsert("pms_qa_findings", {
+            review_id: review.id, project,
+            item_id: null, source: type, severity: f.severity,
+            title: f.title,
+            sheets: f.sheets ?? null, evidence: f.evidence ?? null,
+            action: f.action ?? null, external_ref: number,
+            created_by: who.email,
+          });
+          ids.push(row.id);
+        }
+        ledger = { mirrored: ids.length, reviewId: review.id, findingIds: ids };
+        // Record the ledger link back onto the block so the modal can show
+        // "tracked in QA ledger". A version race here is harmless — the flags
+        // are already in the ledger; we just skip the backlink.
+        try {
+          await updateProjectRecord(pid, (proj) => {
+            const key = caArrKey(type);
+            const arr = Array.isArray(proj[key]) ? proj[key] : [];
+            const item = findCaItem(arr, number);
+            if (!item || !item.aiReview) return proj;
+            const next = arr.map((x: any) => (x === item ? { ...x, aiReview: { ...x.aiReview, ledgerReviewId: review.id } } : x));
+            return { ...proj, [key]: next };
+          });
+        } catch { /* backlink is cosmetic */ }
+      } catch (e) {
+        ledger = { mirrored: 0, error: `Ledger mirror failed (the review is still on the record): ${String((e as any)?.message ?? e).slice(0, 200)}` };
+      }
+    }
+
+    return asText({
+      project: (await getProjectById(pid))?.projectNumber || projectNumber,
+      type, number, subject: itemSubject, savedBy: who.email,
+      redFlags: flags.length, ledger,
+      note: "The review is on the record as aiReview — the RFI/Submittal modal shows it as an accept/dismiss suggestion; it did NOT change the human's response or stamp. Tracked flags (life-safety/agency/cost) are in the QA Reviews ledger.",
+    });
+  },
+});
+
+mcp.tool("backload_ca_item", {
+  description:
+    "BACKFILL the RFI/submittal log: create a CA record for an item that is not in the PMS yet (the hybrid " +
+    "Newforma cutover — many CA items are still tracked outside the PMS). Append-only and idempotent by item " +
+    "number: if the number already exists it is left ALONE and returned (pass update:true to merge new fields " +
+    "into an existing record instead). Feed it the fields you extracted from the filed submittal PDF or " +
+    "transmittal/notification email (read_document / read_email / find_document) — the submittal-rfi-review " +
+    "skill does that extraction, then reviews the item it just logged. Version-guarded like the app's own save; " +
+    "a concurrent save aborts cleanly. Signed-in callers only; every backfilled record is stamped with source " +
+    "and the caller. This writes ONLY the CA log array — it never issues anything or touches SharePoint.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    type: z.enum(["rfi", "submittal"]),
+    number: z.string().describe("The item number as it should appear in the log (e.g. '004' or 'SUB-012'). The dedupe key."),
+    title: z.string().optional().describe("RFI title / question summary."),
+    description: z.string().optional().describe("Submittal description, or the RFI's full question text."),
+    specSection: z.string().optional().describe("Submittals: CSI spec section, e.g. '23 09 23'."),
+    discipline: z.string().optional().describe("Mechanical / Electrical / Plumbing / Fire Protection / Technology / Multi-Discipline / Other. Default Mechanical."),
+    from: z.string().optional().describe("GC/prime the item came from, or ball-in-court."),
+    status: z.string().optional().describe("Log status. RFI default 'Open'; submittal default 'Received'."),
+    stamp: z.enum(["Approved", "Approved as Noted", "Revise and Resubmit", "Rejected", "—"]).optional().describe("Submittals only: existing review stamp if the item was already actioned outside the PMS."),
+    dateReceived: z.string().optional().describe("YYYY-MM-DD."),
+    dueDate: z.string().optional().describe("YYYY-MM-DD."),
+    dateResponded: z.string().optional().describe("RFI: YYYY-MM-DD if already responded outside the PMS."),
+    dateReturned: z.string().optional().describe("Submittal: YYYY-MM-DD if already returned outside the PMS."),
+    response: z.string().optional().describe("RFI: the response text if the item was already answered outside the PMS."),
+    comments: z.string().optional().describe("Submittal: review comments if already reviewed outside the PMS."),
+    spFolderUrl: z.string().optional().describe("Link to the SharePoint folder, source PDF, or filed email."),
+    sourceDoc: z.string().optional().describe("Provenance: the filed file/email this was backfilled from, e.g. '2026-08-12 Forma notification.pdf'."),
+    update: z.boolean().optional().describe("If true and the number already exists, MERGE the provided fields into it (fields left blank are preserved). Default false = leave an existing record untouched."),
+  }),
+  handler: async (args) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    const { projectNumber, type, number, update, sourceDoc } = args;
+    if (type === "rfi" && (args.stamp || args.comments || args.dateReturned)) {
+      return asText({ error: "stamp/comments/dateReturned are submittal fields — for an RFI use response/dateResponded." });
+    }
+    if (type === "submittal" && (args.response || args.dateResponded || args.title)) {
+      return asText({ error: "response/dateResponded/title are RFI fields — for a submittal use comments/dateReturned/description." });
+    }
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const now = new Date().toISOString();
+    const backload = { by: who.email, at: now, sourceDoc: sourceDoc ?? null };
+
+    let outcome: "created" | "updated" | "exists" = "created";
+    let stored: any = null;
+    try {
+      await updateProjectRecord(pid, (proj) => {
+        const key = caArrKey(type);
+        const arr = Array.isArray(proj[key]) ? proj[key] : [];
+        const existing = arr.find((x: any) => String(x.number) === String(number));
+        if (existing && !update) { outcome = "exists"; stored = existing; return proj; } // idempotent no-op
+        const fields: Record<string, unknown> = {};
+        const set = (k: string, v: unknown) => { if (v !== undefined && v !== "") fields[k] = v; };
+        set("number", number);
+        set("discipline", args.discipline || "Mechanical");
+        set("from", args.from);
+        set("status", args.status || (type === "rfi" ? "Open" : "Received"));
+        set("dateReceived", args.dateReceived);
+        set("dueDate", args.dueDate);
+        set("spFolderUrl", args.spFolderUrl);
+        if (type === "rfi") {
+          set("title", args.title);
+          set("description", args.description);
+          set("response", args.response);
+          set("dateResponded", args.dateResponded);
+        } else {
+          set("description", args.description);
+          set("specSection", args.specSection);
+          set("comments", args.comments);
+          set("dateReturned", args.dateReturned);
+          set("stamp", args.stamp || "—");
+        }
+        if (existing && update) {
+          outcome = "updated";
+          stored = { ...existing, ...fields, backload };
+          const next = arr.map((x: any) => (x === existing ? stored : x));
+          return { ...proj, [key]: next };
+        }
+        // create — start from the array's shape defaults, then apply fields
+        const base = type === "rfi"
+          ? { id: "", number: "", title: "", description: "", from: "", discipline: "Mechanical", assignedTo: [], subAssigned: "", dateReceived: "", dueDate: "", dateResponded: "", response: "", status: "Open", notes: "", spFolderUrl: "", links: [] }
+          : { id: "", number: "", specSection: "", description: "", from: "", discipline: "Mechanical", assignedTo: [], subAssigned: "", dateReceived: "", dueDate: "", dateReturned: "", comments: "", status: "Received", stamp: "—", resubNumber: 0, notes: "", spFolderUrl: "", links: [], registerItemId: "" };
+        outcome = "created";
+        stored = { ...base, ...fields, id: `backload-${type}-${crypto.randomUUID().slice(0, 8)}`, source: "backload", backload };
+        return { ...proj, [key]: [...arr, stored] };
+      });
+    } catch (e) {
+      return asText({ error: `Backfill failed: ${String((e as any)?.message ?? e)}` });
+    }
+    return asText({
+      project: (await getProjectById(pid))?.projectNumber || projectNumber,
+      type, number, outcome, backfilledBy: who.email,
+      item: stored ? { id: stored.id, number: stored.number, status: stored.status, discipline: stored.discipline } : null,
+      note: outcome === "exists"
+        ? "Already logged — left untouched (pass update:true to merge new fields). Now run the review with save_ca_review."
+        : "Logged. Now review it against the current set and specs, then persist with save_ca_review.",
+    });
   },
 });
 
