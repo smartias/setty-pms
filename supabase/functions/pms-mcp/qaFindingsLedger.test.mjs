@@ -75,6 +75,13 @@ assert.ok(
   caMigration.includes("check (kind in ('review','backcheck','comment-log','ca-review'))"),
   "CA-review migration lost the widened kind constraint",
 );
+// save_ca_review keys the ledger on the item's CANONICAL logged number
+// (findCaItem accepts number OR id, so keying on the raw input would let one
+// item accumulate two external_ref spellings and defeat the re-review
+// supersede filter). Both the insert and the supersede filter must use it.
+assert.ok(src.includes("external_ref: itemNumber"), "save_ca_review ledger insert lost the canonical item number");
+assert.ok(src.includes('"&source=eq." + type + "&external_ref=eq." + encodeURIComponent(itemNumber)'), "save_ca_review supersede filter lost the canonical item number");
+assert.ok(!src.includes("external_ref: number,"), "a ledger write regressed to the raw number/id input as external_ref");
 const srcStatuses = src.match(/QA_FINDING_STATUSES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
 assert.equal(srcStatuses, "open,ready_to_backcheck,closed,dismissed");
 const srcSeverities = src.match(/QA_FINDING_SEVERITIES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
