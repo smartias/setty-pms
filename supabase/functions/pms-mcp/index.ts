@@ -710,7 +710,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-12-ca-dedupe-key";
+const BUILD = "2026-09-12-ca-doclinks";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.13.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -6792,14 +6792,23 @@ mcp.tool("save_ca_review", {
       sheets: z.array(z.string()).optional().describe("Sheets/schedules cited, e.g. ['M601 Rev 11','Spec 23 74 00']."),
       action: z.string().optional().describe("Suggested action."),
     })).optional().describe("Cost/scope/coordination red flags. Keep them concrete and grounded in the documents."),
+    docLinks: z.array(z.object({
+      label: z.string().describe("What the link opens, matching how the review cites it: a sheet number ('M601'), a spec section ('23 21 13'), or the set name."),
+      url: z.string().describe("The document's SharePoint webUrl — from get_current_set (per-sheet webUrl and the set folder's webUrl), search_drawings hits, or find_document (spec book). https only; anything else is dropped."),
+      kind: z.enum(["set", "sheet", "spec"]).optional().describe("What the link is: the reviewed set's folder, one drawing sheet, or a spec document. Default 'sheet'."),
+    })).optional().describe("Clickable references for the review panel: the reviewed set folder, each cited sheet, the governing spec. The modal renders the set name, sheet chips, and spec sections as links when a label matches."),
   }),
-  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags }) => {
+  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags, docLinks }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     if (type === "rfi" && suggestedStamp) return asText({ error: "suggestedStamp applies to submittals only — RFIs have no stamp." });
     const pid = await resolveProjectId(projectNumber);
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const flags = redFlags ?? [];
+    // Only https links are stored: these render as anchors in the RFI/Submittal
+    // modal, and dropping anything else here means the UIs never have to trust
+    // a stored scheme.
+    const links = (docLinks ?? []).filter((l) => /^https:\/\//i.test(l.url));
     const now = new Date().toISOString();
     const aiReview = {
       by: who.email, at: now,
@@ -6811,6 +6820,7 @@ mcp.tool("save_ca_review", {
       ...(markedSelection ? { markedSelection } : {}),
       internalNotes: internalNotes ?? null,
       redFlags: flags,
+      ...(links.length ? { docLinks: links } : {}),
     };
 
     // 1) Write the block onto the record (version-guarded). Do this FIRST so a

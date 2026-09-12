@@ -209,6 +209,20 @@ polish**).
   the selection you read before they trust the rest. An unconfirmed selection
   renders as a warning, not an approval.
 
+- **Always pass `docLinks`** — the clickable references the modal and the
+  assignment emails render: one `{label, url, kind}` per document the review
+  leaned on. You already hold the URLs, so this costs nothing: the reviewed
+  set's folder `webUrl` and each cited sheet's `webUrl` come back from
+  `get_current_set` (kind `'set'` / `'sheet'`, label = the sheet number, e.g.
+  `'M601'`), `search_drawings` hits carry a `webUrl` per sheet, and the spec
+  book found via `find_document` gives the spec link (kind `'spec'`, label =
+  the section, e.g. `'23 21 13'`). Label sheets with the bare sheet number so
+  the modal can match them to the flags' sheet citations. https URLs only —
+  anything else is dropped on save. The assign/forward email drafts carry
+  these links (with the suggested response, and — internal assignments only —
+  the internal notes) so the actual reviewer opens the cited sheet in one
+  click.
+
 - It writes an `aiReview` block onto the CA record; the RFI/Submittal modal
   shows it as an **accept/dismiss suggestion** and does NOT change the human's
   response or stamp. The engineer decides.

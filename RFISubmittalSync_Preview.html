@@ -451,9 +451,13 @@ function caBackloadSeatUrl(kind, projName, projNum){
 function caAiPanelHtml(rec, kind){
   const ai=rec&&rec.aiReview; if(!ai) return "";
   const isRFI=kind==="rfi";
+  // Clickable references saved by save_ca_review (https-only, filtered again here).
+  const links=Array.isArray(ai.docLinks)?ai.docLinks.filter(l=>l&&/^https:\/\//i.test(l.url)):[];
+  const linkFor=(label)=>{const t=String(label||"").toLowerCase();const hit=links.find(l=>{const k=String(l.label||"").toLowerCase();return k&&(t===k||t.startsWith(k+" "));});return hit?hit.url:null;};
+  const setUrl=(links.find(l=>l.kind==="set")||{}).url||null;
   let h=`<div id="aiPanel" style="margin:0 18px 4px;border:1px solid var(--accent);border-radius:10px;background:var(--card2);padding:12px 14px">`;
   h+=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-size:13px">🤖 Claude review</strong>`+
-     `<span class="muted" style="font-size:11px">${[ai.by?"by "+esc(ai.by):"",ai.at?esc(String(ai.at).slice(0,10)):"",ai.reviewedAgainstSet?"vs "+esc(ai.reviewedAgainstSet):""].filter(Boolean).join(" · ")}</span>`+
+     `<span class="muted" style="font-size:11px">${[ai.by?"by "+esc(ai.by):"",ai.at?esc(String(ai.at).slice(0,10)):"",ai.reviewedAgainstSet?("vs "+(setUrl?`<a href="${esc(setUrl)}" target="_blank" rel="noreferrer" style="color:var(--accent)">${esc(ai.reviewedAgainstSet)}</a>`:esc(ai.reviewedAgainstSet))):""].filter(Boolean).join(" · ")}</span>`+
      `<span style="flex:1"></span>`+(ai.ledgerReviewId?`<span style="font-size:11px;color:var(--ok)">Tracked in QA</span>`:"")+
      `<button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caDismissAi()">Dismiss</button></div>`;
   h+=`<div class="muted" style="font-size:11px;margin-bottom:10px">Suggestions for your sign-off — accepting copies text into the fields below; nothing was sent, stamped, or returned.</div>`;
@@ -471,7 +475,7 @@ function caAiPanelHtml(rec, kind){
     h+=`<div style="margin-bottom:10px"><div class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Red flags — ${ai.redFlags.length}</div>`;
     for(const f of ai.redFlags){ const col=CA_SEV_COLOR[f.severity]||"var(--line)";
       h+=`<div style="border-left:3px solid ${col};background:var(--card);border-radius:5px;padding:6px 9px;margin-bottom:5px">`+
-         `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">${f.severity?`<span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${col}">${esc(f.severity)}</span>`:""}${Array.isArray(f.sheets)&&f.sheets.length?`<span style="font-size:10px;color:var(--accent)">${esc(f.sheets.join(" · "))}</span>`:""}</div>`+
+         `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">${f.severity?`<span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${col}">${esc(f.severity)}</span>`:""}${Array.isArray(f.sheets)&&f.sheets.length?`<span style="font-size:10px;color:var(--accent)">${f.sheets.map(sh=>{const u=linkFor(sh);return u?`<a href="${esc(u)}" target="_blank" rel="noreferrer" style="color:var(--accent)">${esc(sh)}</a>`:esc(sh);}).join(" · ")}</span>`:""}</div>`+
          `<div style="font-size:12.5px">${esc(f.title)}</div>`+
          (f.evidence?`<div class="muted" style="font-size:11px;margin-top:2px;white-space:pre-wrap">${esc(f.evidence)}</div>`:"")+
          (f.action?`<div class="muted" style="font-size:11px;margin-top:2px">Suggested: ${esc(f.action)}</div>`:"")+`</div>`;
@@ -489,6 +493,7 @@ function caAiPanelHtml(rec, kind){
     h+=`<div style="margin-bottom:4px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px"><span class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Internal notes — verify before returning</span><button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caAcceptNotes()">Append to Internal notes</button></div>`+
        `<div class="muted" style="font-size:12px;white-space:pre-wrap;background:var(--card);border-radius:6px;padding:8px 10px">${esc(ai.internalNotes)}</div></div>`;
   }
+  if(links.length) h+=`<div style="font-size:11px;margin-bottom:6px"><span class="muted" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:10.5px">References</span> ${links.map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noreferrer" style="color:var(--accent);text-decoration:none;margin-left:8px">${esc((l.kind==="spec"?"Spec ":"")+l.label)} ↗</a>`).join("")}</div>`;
   if(ai.coverage) h+=`<div class="muted" style="font-size:10.5px;font-style:italic">Coverage: ${esc(ai.coverage)}</div>`;
   h+=`</div>`; return h;
 }
@@ -571,6 +576,22 @@ function collectEdits(kind){
   return e;
 }
 function mailto(to, subject, body){ window.location.href="mailto:"+(to||"")+"?subject="+encodeURIComponent(subject||"")+"&body="+encodeURIComponent(body||""); }
+/* The review travels with the item when it goes out for review: the assign
+   draft carries Claude's suggestion, the internal notes, and the reference
+   links; the sub forward carries the suggestion and links but NEVER the
+   internal notes (marked not-for-external). The formal response draft is
+   untouched — the human accepts the suggestion into the real fields first. */
+function caAiEmailText(includeInternal){
+  const ai=EDIT&&EDIT.ai; if(!ai) return "";
+  const links=Array.isArray(ai.docLinks)?ai.docLinks.filter(l=>l&&/^https:\/\//i.test(l.url)):[];
+  let t="\n--- Claude review (suggestions pending sign-off in the PMS) ---\n";
+  if(ai.reviewedAgainstSet) t+="Reviewed against: "+ai.reviewedAgainstSet+"\n";
+  if(ai.suggestedResponse) t+="\nSuggested "+(EDIT.kind==="rfi"?"response":"review comments")+":\n"+ai.suggestedResponse+"\n";
+  if(EDIT.kind!=="rfi"&&ai.suggestedStamp) t+="\nSuggested stamp: "+ai.suggestedStamp+"\n";
+  if(includeInternal&&ai.internalNotes) t+="\nInternal notes - verify before returning:\n"+ai.internalNotes+"\n";
+  if(links.length) t+="\nReferences:\n"+links.map(l=>"  "+(l.kind==="spec"?"Spec ":"")+l.label+": "+l.url).join("\n")+"\n";
+  return t;
+}
 function emailAction(kind, which){
   const g=k=>{const e=document.getElementById("f_"+k);return e?e.value:"";};
   const num=g("number"), title=g("title")||g("description"), desc=g("description"), from=g("from"), due=g("dueDate"), resp=g("response"), spec=g("specSection"), comments=g("comments"), stamp=g("stamp");
@@ -578,10 +599,10 @@ function emailAction(kind, which){
   const lbl=(kind==="rfi"?"RFI ":"Submittal ")+num;
   if(which==="assign"){
     const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
-    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n`);
+    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${caAiEmailText(true)}`);
   } else if(which==="sub"){
     const sv=g("subAssigned"); const so=EDIT_SUBS.find(s=>((s&&s.name)||(s&&s.company)||String(s))===sv);
-    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n`);
+    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n${caAiEmailText(false)}`);
   } else {
     mailto("", `RE: ${lbl} — ${title}${proj}`, kind==="rfi" ? `Response to ${lbl}: ${title}\n\n${resp||"[your response]"}\n\nOriginal question:\n${desc}\n` : `Submittal ${num} ${spec} returned${stamp&&stamp!=="—"?" — "+stamp:""}\n\n${comments||"[review comments]"}\n`);
   }

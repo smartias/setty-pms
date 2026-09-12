@@ -10805,6 +10805,35 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     if (!window.confirm("Dismiss Claude's review? The suggested response, internal notes, and red flags on this record will be cleared. Any red flags already tracked in QA Reviews stay there.")) return;
     setF("aiReview", undefined);
   }
+  // Clickable references saved by save_ca_review (docLinks: set folder, cited
+  // sheets, spec sections — https-only, filtered again here before rendering).
+  const aiLinks = Array.isArray(ai?.docLinks) ? ai.docLinks.filter(l => l && /^https:\/\//i.test(l.url)) : [];
+  const aiSetUrl = (aiLinks.find(l => l.kind === "set") || {}).url || null;
+  // A flag cites "M601 Rev 11" while the link is labeled "M601" — match the
+  // label exactly or as the citation's leading token.
+  function aiLinkFor(label) {
+    const t = String(label || "").toLowerCase();
+    const hit = aiLinks.find(l => { const k = String(l.label || "").toLowerCase(); return k && (t === k || t.startsWith(k + " ")); });
+    return hit ? hit.url : null;
+  }
+  // The review travels with the item when it goes out for review: assignment
+  // drafts carry the suggestion, the internal notes, and the reference links;
+  // sub forwards carry the suggestion and links but NEVER the internal notes
+  // (they are marked not-for-external). The formal response/return draft is
+  // untouched — the human accepts the suggestion into the real fields first.
+  function aiEmailSection(includeInternalNotes) {
+    if (!ai) return "";
+    const nl = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+    let h = "<div style='margin-top:16px;border:1px solid #1F3864;border-radius:8px;padding:12px 14px'>"
+      + "<div style='font-weight:700;margin-bottom:6px'>🤖 Claude review — suggestions pending sign-off in the PMS</div>";
+    if (ai.reviewedAgainstSet) h += "<div style='font-size:12px;color:#44546A;margin-bottom:8px'>Reviewed against: " + nl(ai.reviewedAgainstSet) + "</div>";
+    if (ai.suggestedResponse) h += "<div style='margin-bottom:8px'><b>Suggested " + (isRFI ? "response" : "review comments") + ":</b><br>" + nl(ai.suggestedResponse) + "</div>";
+    if (!isRFI && ai.suggestedStamp) h += "<div style='margin-bottom:8px'><b>Suggested stamp:</b> " + nl(ai.suggestedStamp) + "</div>";
+    if (includeInternalNotes && ai.internalNotes) h += "<div style='margin-bottom:8px'><b>Internal notes — verify before returning:</b><br>" + nl(ai.internalNotes) + "</div>";
+    if (aiLinks.length) h += "<div style='font-size:12px'><b>References:</b> " + aiLinks.map(l => "<a href='" + String(l.url).replace(/'/g, "%27") + "'>" + nl((l.kind === "spec" ? "Spec " : "") + l.label) + "</a>").join(" · ") + "</div>";
+    h += "</div>";
+    return h;
+  }
 
   const staffList = project.teamMembers || [];
   const subList = (project.subconsultants || []);
@@ -10832,6 +10861,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + (isRFI && form.description ? "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Question</td><td style='padding:8px 12px'>" + form.description + "</td></tr>" : "")
       + "</table>"
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
+      + aiEmailSection(true)
       + "<p style='font-size:11px;color:#44546A'>Please respond by the due date above. Contact the Project Manager if you have questions.</p></div>";
     try {
       await createOutlookDraft({ subject: typLabel + " Assignment: " + form.number + " — " + (isRFI ? form.title : form.description) + " · " + (project.name || "Project"), bodyHtml });
@@ -10855,6 +10885,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
       + "</table>"
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
+      + aiEmailSection(false)
       + "<p style='font-size:11px;color:#44546A'>Please send your response to this email. Thank you.</p></div>";
     try {
       await createOutlookDraft({ subject: typLabel + " — " + form.number + " — " + (isRFI ? form.title : form.description) + " · Sub Response Requested", bodyHtml });
@@ -11085,7 +11116,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
               <span style={{ fontWeight: 700, fontSize: 13 }}>🤖 Claude review</span>
               <span style={{ fontSize: 10.5, color: P.textDim }}>
-                {ai.by ? "by " + ai.by : ""}{ai.at ? " · " + String(ai.at).slice(0, 10) : ""}{ai.reviewedAgainstSet ? " · vs " + ai.reviewedAgainstSet : ""}
+                {ai.by ? "by " + ai.by : ""}{ai.at ? " · " + String(ai.at).slice(0, 10) : ""}{ai.reviewedAgainstSet ? <span> · vs {aiSetUrl ? <a href={aiSetUrl} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>{ai.reviewedAgainstSet}</a> : ai.reviewedAgainstSet}</span> : ""}
               </span>
               <span style={{ flex: 1 }} />
               {ai.ledgerReviewId && <span style={{ fontSize: 10.5, color: P.green }}>Tracked in QA Reviews</span>}
@@ -11127,7 +11158,14 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                   <div key={i} style={{ borderLeft: "3px solid " + (QA_SEV_COLOR[f.severity] || P.border), background: P.card, borderRadius: 6, padding: "7px 10px", marginBottom: 6 }}>
                     <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 3, flexWrap: "wrap" }}>
                       {f.severity && <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: QA_SEV_COLOR[f.severity] || P.text }}>{f.severity}</span>}
-                      {Array.isArray(f.sheets) && f.sheets.length > 0 && <span style={{ fontSize: 10, color: P.accentLight }}>{f.sheets.join(" · ")}</span>}
+                      {Array.isArray(f.sheets) && f.sheets.length > 0 && (
+                        <span style={{ fontSize: 10, color: P.accentLight }}>
+                          {f.sheets.map((sh, si) => {
+                            const u = aiLinkFor(sh);
+                            return <span key={si}>{si > 0 ? " · " : ""}{u ? <a href={u} target="_blank" rel="noreferrer" style={{ color: P.accentLight }}>{sh}</a> : sh}</span>;
+                          })}
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>{f.title}</div>
                     {f.evidence && <div style={{ fontSize: 11, color: P.textDim, marginTop: 3, whiteSpace: "pre-wrap" }}>{f.evidence}</div>}
@@ -11165,6 +11203,16 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
               </div>
             )}
 
+            {aiLinks.length > 0 && (
+              <div style={{ fontSize: 11, marginBottom: 6 }}>
+                <span style={{ fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em" }}>References </span>
+                {aiLinks.map((l, i) => (
+                  <a key={i} href={l.url} target="_blank" rel="noreferrer" style={{ color: P.accentLight, marginLeft: 8, textDecoration: "none" }}>
+                    {(l.kind === "spec" ? "Spec " : "") + l.label} ↗
+                  </a>
+                ))}
+              </div>
+            )}
             {ai.coverage && <div style={{ fontSize: 10.5, color: P.textDim, fontStyle: "italic" }}>Coverage: {ai.coverage}</div>}
           </div>
         )}
