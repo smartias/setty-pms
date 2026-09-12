@@ -10834,6 +10834,23 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     h += "</div>";
     return h;
   }
+  // Deep link straight to THIS item's modal (#project:<id>:rfi:<number>) — the
+  // assignment email's "Open in PMS" button, so the reviewer never hunts.
+  const caDeepLink = (typeof location !== "undefined" && /^http/.test(location.protocol) && form.number)
+    ? location.origin + location.pathname + "#project:" + project.id + ":" + (isRFI ? "rfi" : "submittal") + ":" + encodeURIComponent(form.number)
+    : "";
+  const caOpenInPmsBtn = caDeepLink
+    ? "<p style='margin-top:8px'><a href='" + caDeepLink.replace(/'/g, "%27") + "' style='background:#1F3864;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📌 Open " + (isRFI ? "RFI" : "Submittal") + " " + form.number + " in the PMS</a></p>"
+    : "";
+  // Reviewers who answer by email stay supported: this seat prompt has Claude
+  // find the emailed reply and file it as the SUGGESTED response citing the
+  // email — the coordinator accepts it with one click; nothing writes the real
+  // response field directly.
+  const pullReplySeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
+    "Pull the reviewer's emailed reply for " + (isRFI ? "RFI" : "submittal") + " " + (form.number || "") + " on " + projLabel + " into the PMS.",
+    "",
+    "Use the Setty PMS connector and the submittal-rfi-review skill's pull-reply mode: search_emails on this project for the newest reply to the assignment email (subject contains \"" + (isRFI ? "RFI" : "Submittal") + " Assignment: " + (form.number || "") + "\" or the item number " + (form.number || "") + "), read it, and save it with save_ca_review as the suggestedResponse — the reviewer's words verbatim, trimmed of quoted history and signatures — with internalNotes naming the sender, date, and subject it came from. Never write the response/comments field directly and never invent content; if no reply is on record yet, say so and save nothing.",
+  ].join("\n"));
 
   const staffList = project.teamMembers || [];
   const subList = (project.subconsultants || []);
@@ -10861,6 +10878,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + (isRFI && form.description ? "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Question</td><td style='padding:8px 12px'>" + form.description + "</td></tr>" : "")
       + "</table>"
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
+      + caOpenInPmsBtn
       + aiEmailSection(true)
       + "<p style='font-size:11px;color:#44546A'>Please respond by the due date above. Contact the Project Manager if you have questions.</p></div>";
     try {
@@ -10885,6 +10903,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
       + "</table>"
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
+      + caOpenInPmsBtn
       + aiEmailSection(false)
       + "<p style='font-size:11px;color:#44546A'>Please send your response to this email. Thank you.</p></div>";
     try {
@@ -11239,6 +11258,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                 color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
               🤖 {ai ? "Re-review with Claude" : "Send to Claude for review"}
             </a>
+            <a href={pullReplySeatUrl} target="_blank" rel="noreferrer"
+              title={"For reviewers who answered by email: opens your Claude seat to find the emailed reply to this " + (isRFI ? "RFI" : "submittal") + " and file it here as the suggested response (citing the email) for one-click accept. Never writes the response field directly."}
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px",
+                border: "1px solid " + P.border, borderRadius: 6, fontSize: 12, fontWeight: 600,
+                color: P.accentLight, textDecoration: "none", whiteSpace: "nowrap" }}>
+              📥 Pull reply from email
+            </a>
             <Btn small variant="ghost" onClick={draftAssignEmail}>✉ Assign Email</Btn>
             {(subList.length > 0 || form.subAssigned) && (
               <Btn small variant="ghost" onClick={draftSubEmail}>✉ Forward to Sub</Btn>
@@ -11268,6 +11294,16 @@ function RFIsView({ project, onChange, staff, clients }) {
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterDisc, setFilterDisc] = useState("All");
   const [search, setSearch] = useState("");
+
+  // Item deep link from an assignment email: open the linked RFI once.
+  React.useEffect(() => {
+    const dl = window.__pmsOpenCaItem;
+    if (dl && dl.type === "rfi" && dl.projectId === project.id) {
+      delete window.__pmsOpenCaItem;
+      const hit = rfis.find(r => String(r.number) === String(dl.number) || String(r.id) === String(dl.number));
+      if (hit) setEditing(hit);
+    }
+  }, []);
 
   function addRFI() {
     const r = newRFI(rfis, project.rfiDueDays || 5);
@@ -11415,6 +11451,16 @@ function SubmittalsView({ project, onChange, staff, clients }) {
   const [filterDisc, setFilterDisc] = useState("All");
   const [search, setSearch] = useState("");
   const [showRegister, setShowRegister] = useState(false);
+
+  // Item deep link from an assignment email: open the linked submittal once.
+  React.useEffect(() => {
+    const dl = window.__pmsOpenCaItem;
+    if (dl && dl.type === "submittal" && dl.projectId === project.id) {
+      delete window.__pmsOpenCaItem;
+      const hit = subs.find(s => String(s.number) === String(dl.number) || String(s.id) === String(dl.number));
+      if (hit) setEditing(hit);
+    }
+  }, []);
   const [newRegItem, setNewRegItem] = useState({ specSection: "", description: "", discipline: "Mechanical" });
 
   function addSubmittal() {
@@ -18364,7 +18410,13 @@ function archiveBlockers(project) {
 }
 
 function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff, projects, onNavigateToProject }) {
-  const [tab, setTab] = useState("Overview");
+  const [tab, setTab] = useState(() => {
+    // An item deep link (#project:<id>:rfi:<number>) lands on the right tab;
+    // the RFIs/Submittals view then opens the item's modal and clears the stash.
+    const dl = window.__pmsOpenCaItem;
+    if (dl && dl.projectId === project.id) return dl.type === "rfi" ? "RFIs" : "Submittals";
+    return "Overview";
+  });
   const [proposalSyncState, setProposalSyncState] = useState(project.proposalCalendarEventId ? "synced" : "idle"); // idle | syncing | synced | error
   const [proposalSyncMsg, setProposalSyncMsg] = useState("");
   const [contractExpSyncState, setContractExpSyncState] = useState("idle");
@@ -31818,9 +31870,20 @@ function App() {
   const [staff, setStaff] = useState([]);
   const [clients, setClients] = useState([]);
   const [view, setView] = useState(() => {
-    // Deep link: read hash on load e.g. #project:SAPX246008.00
+    // Deep link: read hash on load e.g. #project:SAPX246008.00 — or, from an
+    // assignment email, #project:<id>:rfi:<number> / :submittal:<number>,
+    // which also opens that item's modal (stashed here, consumed once by
+    // ProjectDetail / the RFIs-Submittals views).
     const hash = window.location.hash.slice(1);
-    if (hash.startsWith("project:") || ["dashboard","myprojects","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
+    if (hash.startsWith("project:")) {
+      const parts = hash.split(":");
+      if (parts.length >= 4 && (parts[2] === "rfi" || parts[2] === "submittal")) {
+        window.__pmsOpenCaItem = { projectId: parts[1], type: parts[2], number: decodeURIComponent(parts.slice(3).join(":")) };
+        return "project:" + parts[1];
+      }
+      return hash;
+    }
+    if (["dashboard","myprojects","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
       return hash;
     }
     return "dashboard";
@@ -32743,7 +32806,20 @@ function renameCompanyAcrossProjects(oldName, newName) {
   React.useEffect(() => {
     const onHashChange = () => {
       const hash = window.location.hash.slice(1);
-      if (hash.startsWith("project:") || ["dashboard","myprojects","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
+      if (hash.startsWith("project:")) {
+        // Same item deep-link parse as the mount-time initializer, so a link
+        // clicked into an ALREADY-OPEN tab also lands on the item.
+        const parts = hash.split(":");
+        if (parts.length >= 4 && (parts[2] === "rfi" || parts[2] === "submittal")) {
+          window.__pmsOpenCaItem = { projectId: parts[1], type: parts[2], number: decodeURIComponent(parts.slice(3).join(":")) };
+          const short = "project:" + parts[1];
+          setView(v => v === short ? v : short);
+          return;
+        }
+        setView(v => v === hash ? v : hash);
+        return;
+      }
+      if (["dashboard","myprojects","list","staff","clients","teamwbs","cashflow","termcontracts","pendingcos","pipeline","archive"].includes(hash)) {
         setView(v => v === hash ? v : hash);
       }
     };

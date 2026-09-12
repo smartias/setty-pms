@@ -440,6 +440,14 @@ function caReviewSeatUrl(kind, rec, projName, projNum){
     "Use the Setty PMS connector and the submittal-rfi-review skill: identify the project by its number, read the item with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested "+(isRFI?"response":"response and stamp")+", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off."+(isRFI?"":" Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.")+" If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
   ]);
 }
+function caPullReplySeatUrl(kind, rec, projName, projNum){
+  const isRFI=kind==="rfi"; const num=(rec&&rec.number)||"";
+  return caSeatUrl([
+    "Pull the reviewer's emailed reply for "+(isRFI?"RFI":"submittal")+" "+num+" on "+caProjRef(projNum, projName)+" into the PMS.",
+    "",
+    "Use the Setty PMS connector and the submittal-rfi-review skill's pull-reply mode: search_emails on this project for the newest reply to the assignment email (subject contains \""+(isRFI?"RFI":"Submittal")+" "+num+"\" or \"Assigned to you\"), read it, and save it with save_ca_review as the suggestedResponse — the reviewer's words verbatim, trimmed of quoted history and signatures — with internalNotes naming the sender, date, and subject it came from. Never write the response/comments field directly and never invent content; if no reply is on record yet, say so and save nothing.",
+  ]);
+}
 function caBackloadSeatUrl(kind, projName, projNum){
   const isRFI=kind==="rfi";
   return caSeatUrl([
@@ -555,7 +563,8 @@ async function openEditor(kind, id){
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
     // Review only makes sense once the item is in the log (a new record isn't
     // saved yet and carries only a placeholder number) — hide the link until then.
-    (isNew?"":`<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`)+
+    (isNew?"":`<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`+
+      `<a href="${esc(caPullReplySeatUrl(kind, rec, EDIT.projName, EDIT.projNum))}" target="_blank" rel="noreferrer" title="For reviewers who answered by email: opens your Claude seat to find the emailed reply and file it here as the suggested response (citing the email) for one-click accept." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">📥 Pull reply from email</a>`)+
     `<button class="ghost" style="font-size:12px" title="Open a pre-filled draft in Outlook" onclick="emailAction('${kind}','assign')">✉ Assign</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft an email to the subconsultant" onclick="emailAction('${kind}','sub')">✉ Forward to Sub</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft the ${kind==='rfi'?'response':'return'} email" onclick="emailAction('${kind}','respond')">✉ ${kind==='rfi'?'Draft Response':'Draft Return'}</button>`+
@@ -592,17 +601,24 @@ function caAiEmailText(includeInternal){
   if(links.length) t+="\nReferences:\n"+links.map(l=>"  "+(l.kind==="spec"?"Spec ":"")+l.label+": "+l.url).join("\n")+"\n";
   return t;
 }
+// Deep link into the main PMS app's item modal (#project:<id>:rfi:<number>) —
+// both apps are served from the same web root.
+function caItemDeepLink(kind, num){
+  if(!(EDIT&&EDIT.projId&&num)||!/^http/.test(location.protocol)) return "";
+  return location.origin+location.pathname.replace(/[^\/]*$/,"SettyPMS.html")+"#project:"+EDIT.projId+":"+(kind==="rfi"?"rfi":"submittal")+":"+encodeURIComponent(num);
+}
 function emailAction(kind, which){
   const g=k=>{const e=document.getElementById("f_"+k);return e?e.value:"";};
   const num=g("number"), title=g("title")||g("description"), desc=g("description"), from=g("from"), due=g("dueDate"), resp=g("response"), spec=g("specSection"), comments=g("comments"), stamp=g("stamp");
   const proj=(EDIT&&EDIT.projName)?` · ${EDIT.projName}`:"";
   const lbl=(kind==="rfi"?"RFI ":"Submittal ")+num;
+  const dl=caItemDeepLink(kind,num); const dlLine=dl?`\nOpen in PMS: ${dl}\n`:"";
   if(which==="assign"){
     const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
-    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${caAiEmailText(true)}`);
+    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${dlLine}${caAiEmailText(true)}`);
   } else if(which==="sub"){
     const sv=g("subAssigned"); const so=EDIT_SUBS.find(s=>((s&&s.name)||(s&&s.company)||String(s))===sv);
-    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n${caAiEmailText(false)}`);
+    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n${dlLine}${caAiEmailText(false)}`);
   } else {
     mailto("", `RE: ${lbl} — ${title}${proj}`, kind==="rfi" ? `Response to ${lbl}: ${title}\n\n${resp||"[your response]"}\n\nOriginal question:\n${desc}\n` : `Submittal ${num} ${spec} returned${stamp&&stamp!=="—"?" — "+stamp:""}\n\n${comments||"[review comments]"}\n`);
   }
