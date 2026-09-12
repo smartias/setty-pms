@@ -710,7 +710,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-12-mcp-get-405";
+const BUILD = "2026-09-12-ca-dedupe-key";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.13.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -6816,6 +6816,13 @@ mcp.tool("save_ca_review", {
     // 1) Write the block onto the record (version-guarded). Do this FIRST so a
     //    concurrency abort leaves no orphan ledger rows.
     let itemSubject: string | null = null;
+    // The ledger key must be CANONICAL. findCaItem accepts number OR id as a
+    // convenience, but if one review run passed the id and a re-review passes
+    // the number, external_ref would hold two different strings for the same
+    // item and the supersede filter below would miss the earlier run's open
+    // flags — the exact duplicate pile-up it exists to prevent. So resolve to
+    // the item's logged number and key everything on that.
+    let itemNumber: string = String(number);
     try {
       await updateProjectRecord(pid, (proj) => {
         const key = caArrKey(type);
@@ -6823,6 +6830,7 @@ mcp.tool("save_ca_review", {
         const item = findCaItem(arr, number);
         if (!item) throw new Error(`No ${type} "${number}" on this project — run backload_ca_item first to log it.`);
         itemSubject = item.title || item.description || null;
+        itemNumber = String(item.number || number);
         const next = arr.map((x: any) => (x === item ? { ...x, aiReview } : x));
         return { ...proj, [key]: next };
       });
@@ -6849,7 +6857,7 @@ mcp.tool("save_ca_review", {
       if (tracked.length) {
         const review = await sbInsert("pms_qa_reviews", {
           project, set_name: reviewedAgainstSet ?? null, phase: "CA",
-          kind: "ca-review", source_doc: `${type === "rfi" ? "RFI" : "Submittal"} ${number}`,
+          kind: "ca-review", source_doc: `${type === "rfi" ? "RFI" : "Submittal"} ${itemNumber}`,
           coverage: coverage ?? null, run_by: who.email,
         });
         reviewId = review.id;
@@ -6859,7 +6867,7 @@ mcp.tool("save_ca_review", {
             item_id: null, source: type, severity: f.severity,
             title: f.title,
             sheets: f.sheets ?? null, evidence: f.evidence ?? null,
-            action: f.action ?? null, external_ref: number,
+            action: f.action ?? null, external_ref: itemNumber,
             created_by: who.email,
           });
           ids.push(row.id);
@@ -6867,7 +6875,7 @@ mcp.tool("save_ca_review", {
       }
       // Supersede prior open flags for this item (never the just-inserted ids).
       const priorFilter = "pms_qa_findings?project=eq." + encodeURIComponent(project) +
-        "&source=eq." + type + "&external_ref=eq." + encodeURIComponent(number) +
+        "&source=eq." + type + "&external_ref=eq." + encodeURIComponent(itemNumber) +
         "&status=eq.open" + (ids.length ? "&id=not.in.(" + ids.join(",") + ")" : "");
       const prior = await sbGet(priorFilter.replace("pms_qa_findings?", "pms_qa_findings?select=id&"));
       let superseded = 0;
@@ -6900,7 +6908,7 @@ mcp.tool("save_ca_review", {
 
     return asText({
       project,
-      type, number, subject: itemSubject, savedBy: who.email,
+      type, number: itemNumber, subject: itemSubject, savedBy: who.email,
       redFlags: flags.length, ledger,
       note: "The review is on the record as aiReview — the RFI/Submittal modal shows it as an accept/dismiss suggestion; it did NOT change the human's response or stamp. Tracked flags (life-safety/agency/cost) are in the QA Reviews ledger.",
     });
@@ -6959,7 +6967,10 @@ mcp.tool("backload_ca_item", {
       await updateProjectRecord(pid, (proj) => {
         const key = caArrKey(type);
         const arr = Array.isArray(proj[key]) ? proj[key] : [];
-        const existing = arr.find((x: any) => String(x.number) === String(number));
+        // Same number-or-id lookup as save_ca_review, so the pair shares ONE
+        // dedupe key: a caller holding the item's id can't re-create a record
+        // that is already logged under its number.
+        const existing = findCaItem(arr, number);
         if (existing && !update) { outcome = "exists"; stored = existing; return proj; } // idempotent no-op
         // Only fields the caller actually PROVIDED go into `fields` — never a
         // default. On create the `base` template below supplies the defaults
@@ -6969,7 +6980,10 @@ mcp.tool("backload_ca_item", {
         // Received (the P1 the review caught).
         const fields: Record<string, unknown> = {};
         const set = (k: string, v: unknown) => { if (v !== undefined && v !== "") fields[k] = v; };
-        set("number", number);
+        // On update the record keeps its LOGGED number: when the lookup matched
+        // via the id fallback, `number` holds the id, and writing it into the
+        // record would corrupt the log's real number (and the ledger key).
+        if (!existing) set("number", number);
         set("discipline", args.discipline);
         set("from", args.from);
         set("status", args.status);
@@ -7007,7 +7021,7 @@ mcp.tool("backload_ca_item", {
     }
     return asText({
       project: (await getProjectById(pid))?.projectNumber || projectNumber,
-      type, number, outcome, backfilledBy: who.email,
+      type, number: stored?.number || number, outcome, backfilledBy: who.email,
       item: stored ? { id: stored.id, number: stored.number, status: stored.status, discipline: stored.discipline } : null,
       note: outcome === "exists"
         ? "Already logged — left untouched (pass update:true to merge new fields). Now run the review with save_ca_review."
