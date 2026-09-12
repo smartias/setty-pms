@@ -710,9 +710,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-08-prime-mode";
+const BUILD = "2026-09-12-mcp-get-405";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.12.3",
+  name: "setty-pms", version: "1.13.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -7977,6 +7977,15 @@ app.use("/pms-mcp/mcp", async (c, next) => {
   return c.json({ error: "Unauthorized" }, 401);
 });
 
+// mcp-lite's StreamableHttpTransport has no session/SSE adapter, so a GET
+// (the client probing for a server->client SSE stream) fell through to the
+// transport and came back 400 — surfaced as a hard "Failed to open SSE
+// stream: Bad Request" twice per desktop-app connection. The MCP spec's
+// answer for "no server-initiated stream offered" is 405 Method Not
+// Allowed, which mcp-remote and the SDKs treat as normal. Hono matches in
+// registration order, so these must stay ABOVE the app.all catch-all.
+app.get("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
+app.delete("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
 app.get("/pms-mcp/health", (c) => c.json({ ok: true, build: BUILD }));
 
