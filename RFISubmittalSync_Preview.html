@@ -309,6 +309,26 @@ function srPaint(){
   h+=`</div><div class="muted" style="font-size:11px;margin-top:6px">Dashed = suggested from this item's text (✓ confirms, ✕ dismisses; decisions save with the record). ✓ register · ◆ drawing index · ◇ drawing text · ? unvalidated. ${rescan}${restore}</div>`;
   box.innerHTML=h;
 }
+/* "Review ready" watcher: while the editor is open, a light poll (20s) notices
+   a fresh Claude review saved by another session and shows a reload bar —
+   reload happens IN APP (re-fetch project, reopen the same item). */
+function startReviewPoll(){
+  if(!EDIT||EDIT.isNew) return;
+  const {kind,id,projId}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
+  EDIT.reviewPoll=setInterval(async()=>{
+    try{
+      if(!EDIT||EDIT.id!==id) return;
+      const rows=await fetchJson(`pms_projects?id=eq.${projId}&select=items:project->${arrKey}`);
+      const hit=((rows[0]&&rows[0].items)||[]).find(x=>x.id===id);
+      const at=hit&&hit.aiReview&&hit.aiReview.at;
+      if(at&&(!EDIT.ai||at!==EDIT.ai.at)){
+        const b=document.getElementById("aiReadyBar"); if(b) b.style.display="flex";
+        clearInterval(EDIT.reviewPoll);
+      }
+    }catch(e){ /* best-effort */ }
+  },20000);
+}
+async function reloadEditorItem(){ if(!EDIT)return; const {kind,id}=EDIT; closeEditor(); await selectProject(CURRENT.proj.id); openEditor(kind,id); }
 function srDecide(sheet,status){ if(!EDIT)return; const s=SR_SUGG.find(x=>x.sheet===sheet); if(!s)return; EDIT.sheetRefsWork=[...(EDIT.sheetRefsWork||[]),{sheet:s.sheet,discipline:s.discipline,confidence:s.confidence,field:s.field,snippet:s.snippet,status,by:getWho()||null,at:new Date().toISOString()}]; srPaint(); }
 function srUndecide(sheet){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.sheet!==sheet); srPaint(); }
 function srRestore(){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.status==="confirmed"); srPaint(); }
@@ -626,6 +646,7 @@ async function openEditor(kind, id){
   const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName, EDIT.projNum);
   document.getElementById("modal").innerHTML =
     `<div class="mhead"><h3 id="modalTitle">${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
+    `<div id="aiReadyBar" style="display:none;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:0 18px 8px;font-size:12.5px">🤖 A new Claude review was saved for this item. <span style="flex:1"></span><button class="go" onclick="reloadEditorItem()">Reload to view</button></div>`+
     caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
@@ -646,8 +667,9 @@ async function openEditor(kind, id){
   const ff=document.getElementById("modal").querySelector("input,select,textarea");
   if(ff) ff.focus();
   renderSheetRefChips(); // async; degrades to "unavailable" without blocking the editor
+  startReviewPoll();
 }
-function closeEditor(){ document.getElementById("overlay").classList.remove("show"); EDIT=null;
+function closeEditor(){ if(EDIT&&EDIT.reviewPoll) clearInterval(EDIT.reviewPoll); document.getElementById("overlay").classList.remove("show"); EDIT=null;
   if(LAST_FOCUS && LAST_FOCUS.isConnected){ try{ LAST_FOCUS.focus(); }catch(e){} } LAST_FOCUS=null; }
 function collectEdits(kind){
   const fields=kind==="rfi"?RFI_FIELDS:SUB_FIELDS; const e={};

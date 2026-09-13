@@ -10846,6 +10846,31 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // find the emailed reply and file it as the SUGGESTED response citing the
   // email — the coordinator accepts it with one click; nothing writes the real
   // response field directly.
+  // "Review ready" watcher: while the modal is open, a light poll (20s)
+  // notices a fresh Claude review saved by another session and offers a
+  // one-click jump (item deep link + reload) instead of leaving the user
+  // staring at a stale copy. Best-effort: any poll error is swallowed.
+  const [freshReviewAt, setFreshReviewAt] = React.useState(null);
+  React.useEffect(() => {
+    if (!form.number || !project.id || item?.__isNew) return undefined;
+    const key = isRFI ? "rfis" : "submittals";
+    let alive = true;
+    const tick = async () => {
+      try {
+        const rows = await fetchAllAnon("pms_projects?select=items:project->" + key + "&id=eq." + encodeURIComponent(project.id) + "&order=id", "review-ready poll");
+        if (!alive || !rows || !rows[0]) return;
+        const hit = (rows[0].items || []).find(x => String(x.number) === String(form.number) || String(x.id) === String(form.id));
+        const at = hit && hit.aiReview && hit.aiReview.at;
+        if (at && (!ai || at !== ai.at)) setFreshReviewAt(at);
+      } catch (e) { /* poll is best-effort */ }
+    };
+    const iv = setInterval(tick, 20000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [form.id]);
+  function jumpToFreshReview() {
+    window.location.hash = "#project:" + project.id + ":" + (isRFI ? "rfi" : "submittal") + ":" + encodeURIComponent(form.number || "");
+    window.location.reload();
+  }
   const pullReplySeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     "Pull the reviewer's emailed reply for " + (isRFI ? "RFI" : "submittal") + " " + (form.number || "") + " on " + projLabel + " into the PMS.",
     "",
@@ -10969,6 +10994,14 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 3000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 16px", overflowY: "auto" }}>
       <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 14, padding: 28, width: 760, maxWidth: "98vw" }}>
+        {/* Review-ready banner: a fresh Claude review landed while this modal was open */}
+        {freshReviewAt && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, background: P.accentDim, border: "1px solid " + P.accent, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+            <span style={{ fontSize: 12.5 }}>🤖 A new Claude review was saved for this item while it was open here.</span>
+            <span style={{ flex: 1 }} />
+            <Btn small onClick={jumpToFreshReview}>Reload to view</Btn>
+          </div>
+        )}
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
           <div>
@@ -11069,6 +11102,29 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             </select>
           </Field>
 
+          {/* ── QUESTION vs RESPONSE: two different documents, bannered apart so
+              nobody has to guess where the contractor stops and Setty starts.
+              The question reads first (it arrived first), tinted amber; the
+              response follows under its own green banner. ── */}
+          {isRFI && (
+            <div style={{ gridColumn: "1 / -1", marginTop: 4, display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: P.yellow }}>❓ Contractor's Question</span>
+              <span style={{ flex: 1, borderTop: "1px solid " + P.border }} />
+            </div>
+          )}
+          {isRFI && (
+            <Field label="Full question, as asked (from the contractor)" style={{ gridColumn: "1 / -1" }}>
+              <textarea value={form.description || ""} onChange={e => setF("description", e.target.value)}
+                placeholder="Full RFI question text…"
+                style={{ width: "100%", height: 80, resize: "vertical", fontSize: 13, background: P.bg, borderLeft: "3px solid " + P.yellow }} />
+            </Field>
+          )}
+
+          <div style={{ gridColumn: "1 / -1", marginTop: 4, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: P.green }}>✉ {isRFI ? "Setty Response" : "Setty Review Comments"}</span>
+            <span style={{ flex: 1, borderTop: "1px solid " + P.border }} />
+          </div>
+
           {/* Response date */}
           <Field label={isRFI ? "Date Responded" : "Date Returned"}>
             <input type="date" value={isRFI ? (form.dateResponded || "") : (form.dateReturned || "")}
@@ -11077,11 +11133,11 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           </Field>
 
           {/* Response / Comments */}
-          <Field label={isRFI ? "Response / Resolution" : "Review Comments"} style={{ gridColumn: "1 / -1" }}>
+          <Field label={isRFI ? "Response / Resolution (goes back to the contractor)" : "Review Comments (returned with the submittal)"} style={{ gridColumn: "1 / -1" }}>
             <textarea value={isRFI ? (form.response || "") : (form.comments || "")}
               onChange={e => setF(isRFI ? "response" : "comments", e.target.value)}
               placeholder={isRFI ? "Formal response text…" : "Review comments to return with submittal…"}
-              style={{ width: "100%", height: 90, resize: "vertical", fontSize: 13 }} />
+              style={{ width: "100%", height: 90, resize: "vertical", fontSize: 13, borderLeft: "3px solid " + P.green }} />
           </Field>
 
           {/* Referenced drawings (linking Stage 1) */}
@@ -11089,15 +11145,6 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             <SheetRefChips form={form} project={project} type={type}
               onChangeRefs={list => setF("sheetRefs", list)} />
           </Field>
-
-          {/* Description (RFI detailed question) */}
-          {isRFI && (
-            <Field label="Full Question / Description" style={{ gridColumn: "1 / -1" }}>
-              <textarea value={form.description || ""} onChange={e => setF("description", e.target.value)}
-                placeholder="Full RFI question text…"
-                style={{ width: "100%", height: 80, resize: "vertical", fontSize: 13 }} />
-            </Field>
-          )}
 
           {/* Notes */}
           <Field label="Internal Notes" style={{ gridColumn: "1 / -1" }}>
