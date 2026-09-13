@@ -205,10 +205,14 @@ that flow stays supported, and this mode makes the PMS the record anyway:
    email — subject carrying "RFI Assignment: <number>" / "Submittal
    Assignment: <number>" (sync app: "[RFI <number>] Assigned to you"), or the
    item number. `read_email` the hit.
-2. Save via `save_ca_review`: `suggestedResponse` = the reviewer's words
-   VERBATIM (trim quoted history and signatures, change nothing else), and
-   `internalNotes` naming the sender, date, and subject it came from — that
-   provenance is what lets the coordinator trust the one-click accept.
+2. Save via `save_ca_review` **with `merge:true`** — mandatory here: merge
+   preserves the existing review's red flags, docLinks, marked selection and
+   coverage, and leaves the QA ledger untouched (a plain save would REPLACE
+   the block and supersede open flags you never re-evaluated). Pass
+   `suggestedResponse` = the reviewer's words VERBATIM (trim quoted history
+   and signatures, change nothing else), and `internalNotes` naming the
+   sender, date, and subject it came from — that provenance is what lets the
+   coordinator trust the one-click accept.
 3. NEVER write the human response/comments field directly, and NEVER invent
    or paraphrase content. No reply on record → say so and save nothing.
 4. If a prior Claude review exists on the item, keep its `docLinks` and

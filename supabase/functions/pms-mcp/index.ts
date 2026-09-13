@@ -710,7 +710,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-12-ca-doclinks";
+const BUILD = "2026-09-13-ca-merge-pullreply";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.13.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -6797,8 +6797,9 @@ mcp.tool("save_ca_review", {
       url: z.string().describe("The document's SharePoint webUrl — from get_current_set (per-sheet webUrl and the set folder's webUrl), search_drawings hits, or find_document (spec book). https only; anything else is dropped."),
       kind: z.enum(["set", "sheet", "spec"]).optional().describe("What the link is: the reviewed set's folder, one drawing sheet, or a spec document. Default 'sheet'."),
     })).optional().describe("Clickable references for the review panel: the reviewed set folder, each cited sheet, the governing spec. The modal renders the set name, sheet chips, and spec sections as links when a label matches."),
+    merge: z.boolean().optional().describe("MERGE into the item's existing aiReview instead of replacing it: fields you pass overwrite their counterparts; everything else (markedSelection, redFlags, docLinks, coverage, the ledger backlink) is PRESERVED, and the QA ledger is left untouched unless you also pass redFlags. Use for pull-reply capture and other partial updates — a full re-review omits this so stale flags get superseded."),
   }),
-  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags, docLinks }) => {
+  handler: async ({ projectNumber, type, number, reviewedAgainstSet, specSections, coverage, suggestedResponse, suggestedStamp, internalNotes, markedSelection, redFlags, docLinks, merge }) => {
     const who = qaLedgerCaller();
     if (!who.ok) return who.response;
     if (type === "rfi" && suggestedStamp) return asText({ error: "suggestedStamp applies to submittals only — RFIs have no stamp." });
@@ -6810,7 +6811,7 @@ mcp.tool("save_ca_review", {
     // a stored scheme.
     const links = (docLinks ?? []).filter((l) => /^https:\/\//i.test(l.url));
     const now = new Date().toISOString();
-    const aiReview = {
+    const fullBlock = {
       by: who.email, at: now,
       reviewedAgainstSet: reviewedAgainstSet ?? null,
       specSections: specSections ?? null,
@@ -6822,6 +6823,18 @@ mcp.tool("save_ca_review", {
       redFlags: flags,
       ...(links.length ? { docLinks: links } : {}),
     };
+    // merge:true (the pull-reply path) must not erase the document context a
+    // full review saved, nor let the ledger reconciliation below retire flags
+    // the caller never re-evaluated — so only PROVIDED fields overwrite.
+    const providedOnly: Record<string, unknown> = { by: who.email, at: now, suggestedResponse };
+    if (reviewedAgainstSet !== undefined) providedOnly.reviewedAgainstSet = reviewedAgainstSet;
+    if (specSections !== undefined) providedOnly.specSections = specSections;
+    if (coverage !== undefined) providedOnly.coverage = coverage;
+    if (type === "submittal" && suggestedStamp !== undefined) providedOnly.suggestedStamp = suggestedStamp;
+    if (markedSelection !== undefined) providedOnly.markedSelection = markedSelection;
+    if (internalNotes !== undefined) providedOnly.internalNotes = internalNotes;
+    if (redFlags !== undefined) providedOnly.redFlags = flags;
+    if (docLinks !== undefined) providedOnly.docLinks = links;
 
     // 1) Write the block onto the record (version-guarded). Do this FIRST so a
     //    concurrency abort leaves no orphan ledger rows.
@@ -6841,7 +6854,8 @@ mcp.tool("save_ca_review", {
         if (!item) throw new Error(`No ${type} "${number}" on this project — run backload_ca_item first to log it.`);
         itemSubject = item.title || item.description || null;
         itemNumber = String(item.number || number);
-        const next = arr.map((x: any) => (x === item ? { ...x, aiReview } : x));
+        const block = merge && item.aiReview ? { ...item.aiReview, ...providedOnly } : fullBlock;
+        const next = arr.map((x: any) => (x === item ? { ...x, aiReview: block } : x));
         return { ...proj, [key]: next };
       });
     } catch (e) {
@@ -6861,6 +6875,16 @@ mcp.tool("save_ca_review", {
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
     let ledger: any = { mirrored: 0 };
+    // A merge that did not re-evaluate the flags (redFlags omitted) must not
+    // touch the ledger at all — inserting nothing AND superseding nothing.
+    if (merge && redFlags === undefined) {
+      return asText({
+        project, type, number: itemNumber, subject: itemSubject, savedBy: who.email,
+        merged: true,
+        ledger: { mirrored: 0, note: "merge without redFlags — ledger untouched" },
+        note: "Merged into the existing aiReview (fields you passed overwrote their counterparts; everything else preserved). The modal shows it as an accept/dismiss suggestion; the human response/stamp was not changed.",
+      });
+    }
     try {
       let reviewId: number | null = null;
       const ids: number[] = [];

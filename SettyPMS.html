@@ -10849,7 +10849,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const pullReplySeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     "Pull the reviewer's emailed reply for " + (isRFI ? "RFI" : "submittal") + " " + (form.number || "") + " on " + projLabel + " into the PMS.",
     "",
-    "Use the Setty PMS connector and the submittal-rfi-review skill's pull-reply mode: search_emails on this project for the newest reply to the assignment email (subject contains \"" + (isRFI ? "RFI" : "Submittal") + " Assignment: " + (form.number || "") + "\" or the item number " + (form.number || "") + "), read it, and save it with save_ca_review as the suggestedResponse — the reviewer's words verbatim, trimmed of quoted history and signatures — with internalNotes naming the sender, date, and subject it came from. Never write the response/comments field directly and never invent content; if no reply is on record yet, say so and save nothing.",
+    "Use the Setty PMS connector and the submittal-rfi-review skill's pull-reply mode: search_emails on this project for the newest reply to the assignment email (subject contains \"" + (isRFI ? "RFI" : "Submittal") + " Assignment: " + (form.number || "") + "\" or the item number " + (form.number || "") + "), read it, and save it with save_ca_review using merge:true — so the existing review's red flags, references, and marked selection are PRESERVED — as the suggestedResponse (the reviewer's words verbatim, trimmed of quoted history and signatures) with internalNotes naming the sender, date, and subject it came from. Never write the response/comments field directly and never invent content; if no reply is on record yet, say so and save nothing.",
   ].join("\n"));
 
   const staffList = project.teamMembers || [];
@@ -31888,6 +31888,11 @@ function App() {
     }
     return "dashboard";
   });
+  // Bumped when an ITEM deep link arrives in an already-open tab: keyed into
+  // ProjectDetail so it remounts, re-running the tab initializer and the
+  // views' mount effects that consume __pmsOpenCaItem (otherwise the URL
+  // changes but the tab/modal don't).
+  const [caLinkTick, setCaLinkTick] = React.useState(0);
   // Phase 5: re-render when the signed-in user's permissions load or the
   // session changes, so pmsCan()-gated nav/tabs snap to the right shape.
   const [, setPermsTick] = React.useState(0);
@@ -32812,6 +32817,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
         const parts = hash.split(":");
         if (parts.length >= 4 && (parts[2] === "rfi" || parts[2] === "submittal")) {
           window.__pmsOpenCaItem = { projectId: parts[1], type: parts[2], number: decodeURIComponent(parts.slice(3).join(":")) };
+          setCaLinkTick(t => t + 1); // remount ProjectDetail even when already on this project
           const short = "project:" + parts[1];
           setView(v => v === short ? v : short);
           return;
@@ -33063,7 +33069,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
       )}
 
       {viewingProject && (
-        <ProjectDetail project={viewingProject} onUpdate={updateProject} onEagerSave={updateProjectAndFlush} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />
+        <ProjectDetail key={viewingProject.id + ":" + caLinkTick} project={viewingProject} onUpdate={updateProject} onEagerSave={updateProjectAndFlush} onBack={() => setView("list")} termContracts={termContracts} clients={clients} staff={staff} onAddClient={c => setClients(prev => [...prev, c])} onUpdateClient={c => setClients(prev => prev.map(x => x.id === c.id ? c : x))} onAddStaff={s => setStaff(prev => [...prev, s])} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} />
       )}
       </main>
     </div>

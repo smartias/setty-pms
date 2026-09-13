@@ -82,6 +82,11 @@ assert.ok(
 assert.ok(src.includes("external_ref: itemNumber"), "save_ca_review ledger insert lost the canonical item number");
 assert.ok(src.includes('"&source=eq." + type + "&external_ref=eq." + encodeURIComponent(itemNumber)'), "save_ca_review supersede filter lost the canonical item number");
 assert.ok(!src.includes("external_ref: number,"), "a ledger write regressed to the raw number/id input as external_ref");
+// Pull-reply capture depends on merge mode: a merge must preserve the existing
+// aiReview and must not touch the ledger when redFlags were not re-evaluated.
+assert.ok(/merge:\s*z\.boolean\(\)/.test(src), "save_ca_review lost its merge mode");
+assert.ok(src.includes("merge && item.aiReview ? { ...item.aiReview, ...providedOnly }"), "merge mode no longer preserves the existing aiReview");
+assert.ok(src.includes("if (merge && redFlags === undefined)"), "merge without redFlags no longer skips the ledger reconciliation");
 const srcStatuses = src.match(/QA_FINDING_STATUSES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
 assert.equal(srcStatuses, "open,ready_to_backcheck,closed,dismissed");
 const srcSeverities = src.match(/QA_FINDING_SEVERITIES = \[([^\]]+)\]/)[1].replace(/["\s]/g, "");
