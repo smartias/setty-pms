@@ -195,6 +195,30 @@ performance curve, a field dimension), spec paragraphs the engineer should read
 themselves, coordination with another discipline, anything the machine screened
 but a person signs.
 
+## Pull-reply mode — capture a reviewer's emailed answer
+
+When asked to "pull the reply from email" for an item (the modal's 📥 button),
+the reviewer answered the assignment email instead of working in the PMS —
+that flow stays supported, and this mode makes the PMS the record anyway:
+
+1. `search_emails` on the project for the NEWEST reply to the assignment
+   email — subject carrying "RFI Assignment: <number>" / "Submittal
+   Assignment: <number>" (sync app: "[RFI <number>] Assigned to you"), or the
+   item number. `read_email` the hit.
+2. Save via `save_ca_review` **with `merge:true`** — mandatory here: merge
+   preserves the existing review's red flags, docLinks, marked selection and
+   coverage, and leaves the QA ledger untouched (a plain save would REPLACE
+   the block and supersede open flags you never re-evaluated). Pass
+   `suggestedResponse` = the reviewer's words VERBATIM (trim quoted history
+   and signatures, change nothing else), and `internalNotes` naming the
+   sender, date, and subject it came from — that provenance is what lets the
+   coordinator trust the one-click accept.
+3. NEVER write the human response/comments field directly, and NEVER invent
+   or paraphrase content. No reply on record → say so and save nothing.
+4. If a prior Claude review exists on the item, keep its `docLinks` and
+   red-flag context in mind: a reviewer reply that contradicts a red flag is
+   worth an `internalNotes` line, not a silent overwrite of the flag.
+
 ## Step 3 — Persist
 
 Call **`save_ca_review`** with: `reviewedAgainstSet`, `specSections` checked,
@@ -208,6 +232,20 @@ polish**).
   options, and where on the cut sheet it was marked — so the engineer confirms
   the selection you read before they trust the rest. An unconfirmed selection
   renders as a warning, not an approval.
+
+- **Always pass `docLinks`** — the clickable references the modal and the
+  assignment emails render: one `{label, url, kind}` per document the review
+  leaned on. You already hold the URLs, so this costs nothing: the reviewed
+  set's folder `webUrl` and each cited sheet's `webUrl` come back from
+  `get_current_set` (kind `'set'` / `'sheet'`, label = the sheet number, e.g.
+  `'M601'`), `search_drawings` hits carry a `webUrl` per sheet, and the spec
+  book found via `find_document` gives the spec link (kind `'spec'`, label =
+  the section, e.g. `'23 21 13'`). Label sheets with the bare sheet number so
+  the modal can match them to the flags' sheet citations. https URLs only —
+  anything else is dropped on save. The assign/forward email drafts carry
+  these links (with the suggested response, and — internal assignments only —
+  the internal notes) so the actual reviewer opens the cited sheet in one
+  click.
 
 - It writes an `aiReview` block onto the CA record; the RFI/Submittal modal
   shows it as an **accept/dismiss suggestion** and does NOT change the human's

@@ -132,6 +132,13 @@
 <div class="toast" id="toast" role="status"></div>
 <div class="undobar" id="undobar"></div>
 
+<!-- Sheet-reference matcher (same module the main PMS uses; hung on window
+     because this app's inline script is not a module). Failure degrades to
+     "check unavailable" — never blocks the editor. -->
+<script type="module">
+  import * as SheetRefs from "./sheetRefs.js";
+  window.SheetRefs = SheetRefs;
+</script>
 <script src="setty-auth.js"></script>
 <script>
 /* ---- Supabase config (same anon path SettyPMS.html uses, ~line 695) ---- */
@@ -245,6 +252,66 @@ function toSubRecord(it,pid,vendor){ return { id:`sync-forma-${pid}-${it.extNum}
   notes:`Imported from ${vendor} · Submittal #${it.extNum}${it.rev?` (Rev ${it.rev})`:""}`, spFolderUrl:it.spFolder||"", links:[], registerItemId:"", source:"forma", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
 
 async function fetchJson(path){ const r=await fetch(SUPABASE_URL+"/rest/v1/"+path,{headers:H}); if(!r.ok)throw new Error(path+" -> HTTP "+r.status+" "+(await r.text()).slice(0,120)); return r.json(); }
+
+/* ---- Sheet-reference chips (mirror of SettyPMS SheetRefChips: same matcher
+   module, same authenticated RPC lookups, same confirm/dismiss semantics;
+   decisions ride the record's sheetRefs[] on save). ---- */
+const SR_TIER_LABEL={register:"In the transmittal register — this sheet was issued on this project.","drawing-index":"Matches a sheet number parsed from this project's indexed drawings.","drawing-text":"The number appears in this project's indexed drawing text.",unvalidated:"Looks like a sheet number but matches no known sheet — verify before trusting."};
+const SR_TIER_ICON={register:"✓","drawing-index":"◆","drawing-text":"◇",unvalidated:"?"};
+const _srKeysCache=new Map();
+async function srRpc(fn, body){ const r=await fetch(SUPABASE_URL+"/rest/v1/rpc/"+fn,{method:"POST",headers:{...H,"Content-Type":"application/json"},body:JSON.stringify(body)}); if(!r.ok)throw new Error(fn+" HTTP "+r.status); return r.json(); }
+async function srKeys(projId, projNum){
+  if(!projId||!window.SheetRefs) return null;
+  const hit=_srKeysCache.get(projId); if(hit&&Date.now()-hit.at<600000) return hit;
+  const prefix=String(projNum||"").toLowerCase().trim();
+  const [logRows, idxKeys]=await Promise.all([
+    fetchJson("pms_filing_log?select=files&project_id=eq."+encodeURIComponent(projId)+"&operation=eq.transmittal-generated&limit=1000").catch(()=>[]),
+    prefix?srRpc("pms_drawing_sheet_keys",{p_prefix:prefix}).catch(()=>[]):Promise.resolve([]),
+  ]);
+  const entry={at:Date.now(),registerKeys:window.SheetRefs.registerKeysFromRows(logRows),indexKeys:window.SheetRefs.normalizeKeys(idxKeys),textCache:new Map(),prefix};
+  _srKeysCache.set(projId,entry); return entry;
+}
+async function srTextKeys(entry, terms){
+  const out=new Set(); const unknown=[];
+  for(const t of terms){ if(entry.textCache.has(t)){ if(entry.textCache.get(t)) out.add(t); } else unknown.push(t); }
+  if(unknown.length&&entry.prefix){
+    try{ const found=new Set(await srRpc("pms_drawing_text_occurs",{p_prefix:entry.prefix,p_terms:unknown}));
+      for(const t of unknown){ entry.textCache.set(t,found.has(t)); if(found.has(t)) out.add(t); } }catch(e){ /* degrades toward 'unvalidated' */ }
+  }
+  return out;
+}
+let SR_SUGG=[];
+function srItemSnapshot(){ const g=k=>{const e=document.getElementById("f_"+k);return e?e.value:"";}; return {number:g("number"),title:g("title"),description:g("description"),response:g("response"),comments:g("comments"),notes:g("notes")}; }
+async function renderSheetRefChips(){
+  const box=document.getElementById("sheetRefChips"); if(!box||!EDIT) return;
+  try{
+    const S=window.SheetRefs; const entry=await srKeys(EDIT.projId, EDIT.projNum);
+    if(!S||!entry){ box.innerHTML=`<span class="muted" style="font-size:12px">Sheet-reference check unavailable.</span>`; return; }
+    const item=srItemSnapshot();
+    const unknown=S.unknownCandidates(item, EDIT.kind, entry.registerKeys, entry.indexKeys);
+    const textKeys=await srTextKeys(entry, unknown);
+    SR_SUGG=S.computeSuggestions(item, EDIT.kind, {registerKeys:entry.registerKeys, indexKeys:entry.indexKeys, textKeys});
+  }catch(e){ SR_SUGG=[]; }
+  srPaint();
+}
+function srPaint(){
+  const box=document.getElementById("sheetRefChips"); if(!box||!EDIT) return;
+  const stored=EDIT.sheetRefsWork||[]; const decided=new Set(stored.map(x=>x.sheet));
+  const confirmed=stored.filter(x=>x.status==="confirmed"); const dismissed=stored.length-confirmed.length;
+  const sugg=SR_SUGG.filter(s=>!decided.has(s.sheet));
+  const rescan=`<a href="#" onclick="renderSheetRefChips();return false" title="Re-scan this item's text after editing">↻ rescan</a>`;
+  const restore=dismissed?` ${dismissed} dismissed — <a href="#" onclick="srRestore();return false">restore</a>.`:"";
+  if(!confirmed.length&&!sugg.length){ box.innerHTML=`<span class="muted" style="font-size:12px">No sheet numbers detected in this item's text. ${rescan}${restore}</span>`; return; }
+  const chip="display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:4px 10px;border-radius:20px;";
+  let h='<div style="display:flex;flex-wrap:wrap;gap:6px">';
+  for(const c of confirmed) h+=`<span title="${esc(SR_TIER_LABEL[c.confidence]||"")}${c.by?"&#10;Confirmed by "+esc(c.by):""}" style="${chip}background:var(--card);border:1px solid var(--accent);color:var(--accent);font-weight:700">📐 ${esc(c.sheet)} <a href="#" onclick="srUndecide('${esc(c.sheet)}');return false" title="Remove this link (returns to suggested)" style="color:var(--txt);text-decoration:none;font-weight:400">✕</a></span>`;
+  for(const s of sugg) h+=`<span title="${esc(SR_TIER_LABEL[s.confidence]||"")}${s.snippet?"&#10;"+esc(s.snippet):""}&#10;Found in: ${esc(s.field||"")}" style="${chip}background:var(--card2);border:1px dashed ${s.confidence==="unvalidated"?"var(--line)":"var(--accent)"}">${SR_TIER_ICON[s.confidence]||"?"} ${esc(s.sheet)} <a href="#" onclick="srDecide('${esc(s.sheet)}','confirmed');return false" title="Confirm — this item really is about this sheet" style="color:var(--ok);font-weight:700;text-decoration:none">✓</a> <a href="#" onclick="srDecide('${esc(s.sheet)}','dismissed');return false" title="Dismiss — not a drawing reference" style="color:var(--txt);text-decoration:none">✕</a></span>`;
+  h+=`</div><div class="muted" style="font-size:11px;margin-top:6px">Dashed = suggested from this item's text (✓ confirms, ✕ dismisses; decisions save with the record). ✓ register · ◆ drawing index · ◇ drawing text · ? unvalidated. ${rescan}${restore}</div>`;
+  box.innerHTML=h;
+}
+function srDecide(sheet,status){ if(!EDIT)return; const s=SR_SUGG.find(x=>x.sheet===sheet); if(!s)return; EDIT.sheetRefsWork=[...(EDIT.sheetRefsWork||[]),{sheet:s.sheet,discipline:s.discipline,confidence:s.confidence,field:s.field,snippet:s.snippet,status,by:getWho()||null,at:new Date().toISOString()}]; srPaint(); }
+function srUndecide(sheet){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.sheet!==sheet); srPaint(); }
+function srRestore(){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.status==="confirmed"); srPaint(); }
 
 /* =========================== STATE + PICKER =========================== */
 let PROJECTS=[], CURRENT=null, FILTER={type:"all",disc:"all",status:"__open__",text:""};
@@ -440,6 +507,14 @@ function caReviewSeatUrl(kind, rec, projName, projNum){
     "Use the Setty PMS connector and the submittal-rfi-review skill: identify the project by its number, read the item with read_rfi_submittal, review it against the current issued drawing set and the governing spec section, then save the suggested "+(isRFI?"response":"response and stamp")+", internal notes, and cost/scope red flags with save_ca_review so they appear here in the PMS for my sign-off."+(isRFI?"":" Open the submitted cut sheet (render it with view_drawing, or use the pdf-highlighted-selections skill if I attach the PDF) and confirm the MARKED selection — what's circled/highlighted/checked — against the spec and schedule basis of design; the marking is what you're reviewing, not just the notification metadata.")+" If it isn't logged in the PMS yet, backfill it from the filed PDF or notification email first with backload_ca_item.",
   ]);
 }
+function caPullReplySeatUrl(kind, rec, projName, projNum){
+  const isRFI=kind==="rfi"; const num=(rec&&rec.number)||"";
+  return caSeatUrl([
+    "Pull the reviewer's emailed reply for "+(isRFI?"RFI":"submittal")+" "+num+" on "+caProjRef(projNum, projName)+" into the PMS.",
+    "",
+    "Use the Setty PMS connector and the submittal-rfi-review skill's pull-reply mode: search_emails on this project for the newest reply to the assignment email (subject contains \""+(isRFI?"RFI":"Submittal")+" "+num+"\" or \"Assigned to you\"), read it, and save it with save_ca_review using merge:true — so the existing review's red flags, references, and marked selection are PRESERVED — as the suggestedResponse (the reviewer's words verbatim, trimmed of quoted history and signatures) with internalNotes naming the sender, date, and subject it came from. Never write the response/comments field directly and never invent content; if no reply is on record yet, say so and save nothing.",
+  ]);
+}
 function caBackloadSeatUrl(kind, projName, projNum){
   const isRFI=kind==="rfi";
   return caSeatUrl([
@@ -451,9 +526,13 @@ function caBackloadSeatUrl(kind, projName, projNum){
 function caAiPanelHtml(rec, kind){
   const ai=rec&&rec.aiReview; if(!ai) return "";
   const isRFI=kind==="rfi";
+  // Clickable references saved by save_ca_review (https-only, filtered again here).
+  const links=Array.isArray(ai.docLinks)?ai.docLinks.filter(l=>l&&/^https:\/\//i.test(l.url)):[];
+  const linkFor=(label)=>{const t=String(label||"").toLowerCase();const hit=links.find(l=>{const k=String(l.label||"").toLowerCase();return k&&(t===k||t.startsWith(k+" "));});return hit?hit.url:null;};
+  const setUrl=(links.find(l=>l.kind==="set")||{}).url||null;
   let h=`<div id="aiPanel" style="margin:0 18px 4px;border:1px solid var(--accent);border-radius:10px;background:var(--card2);padding:12px 14px">`;
   h+=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><strong style="font-size:13px">🤖 Claude review</strong>`+
-     `<span class="muted" style="font-size:11px">${[ai.by?"by "+esc(ai.by):"",ai.at?esc(String(ai.at).slice(0,10)):"",ai.reviewedAgainstSet?"vs "+esc(ai.reviewedAgainstSet):""].filter(Boolean).join(" · ")}</span>`+
+     `<span class="muted" style="font-size:11px">${[ai.by?"by "+esc(ai.by):"",ai.at?esc(String(ai.at).slice(0,10)):"",ai.reviewedAgainstSet?("vs "+(setUrl?`<a href="${esc(setUrl)}" target="_blank" rel="noreferrer" style="color:var(--accent)">${esc(ai.reviewedAgainstSet)}</a>`:esc(ai.reviewedAgainstSet))):""].filter(Boolean).join(" · ")}</span>`+
      `<span style="flex:1"></span>`+(ai.ledgerReviewId?`<span style="font-size:11px;color:var(--ok)">Tracked in QA</span>`:"")+
      `<button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caDismissAi()">Dismiss</button></div>`;
   h+=`<div class="muted" style="font-size:11px;margin-bottom:10px">Suggestions for your sign-off — accepting copies text into the fields below; nothing was sent, stamped, or returned.</div>`;
@@ -471,7 +550,7 @@ function caAiPanelHtml(rec, kind){
     h+=`<div style="margin-bottom:10px"><div class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Red flags — ${ai.redFlags.length}</div>`;
     for(const f of ai.redFlags){ const col=CA_SEV_COLOR[f.severity]||"var(--line)";
       h+=`<div style="border-left:3px solid ${col};background:var(--card);border-radius:5px;padding:6px 9px;margin-bottom:5px">`+
-         `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">${f.severity?`<span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${col}">${esc(f.severity)}</span>`:""}${Array.isArray(f.sheets)&&f.sheets.length?`<span style="font-size:10px;color:var(--accent)">${esc(f.sheets.join(" · "))}</span>`:""}</div>`+
+         `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">${f.severity?`<span style="font-size:10px;font-weight:700;text-transform:uppercase;color:${col}">${esc(f.severity)}</span>`:""}${Array.isArray(f.sheets)&&f.sheets.length?`<span style="font-size:10px;color:var(--accent)">${f.sheets.map(sh=>{const u=linkFor(sh);return u?`<a href="${esc(u)}" target="_blank" rel="noreferrer" style="color:var(--accent)">${esc(sh)}</a>`:esc(sh);}).join(" · ")}</span>`:""}</div>`+
          `<div style="font-size:12.5px">${esc(f.title)}</div>`+
          (f.evidence?`<div class="muted" style="font-size:11px;margin-top:2px;white-space:pre-wrap">${esc(f.evidence)}</div>`:"")+
          (f.action?`<div class="muted" style="font-size:11px;margin-top:2px">Suggested: ${esc(f.action)}</div>`:"")+`</div>`;
@@ -489,6 +568,7 @@ function caAiPanelHtml(rec, kind){
     h+=`<div style="margin-bottom:4px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px"><span class="muted" style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Internal notes — verify before returning</span><button type="button" class="ghost" style="font-size:11px;padding:3px 8px" onclick="caAcceptNotes()">Append to Internal notes</button></div>`+
        `<div class="muted" style="font-size:12px;white-space:pre-wrap;background:var(--card);border-radius:6px;padding:8px 10px">${esc(ai.internalNotes)}</div></div>`;
   }
+  if(links.length) h+=`<div style="font-size:11px;margin-bottom:6px"><span class="muted" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:10.5px">References</span> ${links.map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noreferrer" style="color:var(--accent);text-decoration:none;margin-left:8px">${esc((l.kind==="spec"?"Spec ":"")+l.label)} ↗</a>`).join("")}</div>`;
   if(ai.coverage) h+=`<div class="muted" style="font-size:10.5px;font-style:italic">Coverage: ${esc(ai.coverage)}</div>`;
   h+=`</div>`; return h;
 }
@@ -516,7 +596,7 @@ async function openEditor(kind, id){
   if(isNew){ rec = kind==="rfi"?blankRFI():blankSub(); rec.number = (kind==="rfi"?"RFI-":"SUB-")+String(list.length+1).padStart(3,"0"); }
   else { rec = list.find(r=>r.id===id); if(!rec) return; }
   const projId = rec.__projId||CURRENT.proj.id;
-  EDIT={kind,isNew,id:rec.id,projId,projName:rec.__projName||CURRENT.proj.name||"",projNum:rec.__projNum||((CURRENT.proj&&CURRENT.proj.number)||""),ai:(rec.aiReview||null),dismissAi:false};
+  EDIT={kind,isNew,id:rec.id,projId,projName:rec.__projName||CURRENT.proj.name||"",projNum:rec.__projNum||((CURRENT.proj&&CURRENT.proj.number)||""),ai:(rec.aiReview||null),dismissAi:false,sheetRefsWork:(rec.sheetRefs||[]).map(x=>({...x}))};
   let team=(CURRENT.teams&&CURRENT.teams[projId])||[], subs=[];
   try{ const pr=await fetchJson(`pms_projects?id=eq.${projId}&select=team:project->teamMembers,subs:project->subconsultants`); if(pr[0]){ team=pr[0].team||team; subs=pr[0].subs||[]; } }catch(e){}
   team=team.filter(t=>t&&(t.name||t.role)); EDIT_TEAM=team; EDIT_SUBS=subs;
@@ -540,6 +620,7 @@ async function openEditor(kind, id){
     `<div class="muted" style="font-size:11px;margin-top:3px">Creating a new folder needs Microsoft sign-in — do that in the main PMS, then paste the link here.</div>`;
   const extra = `<div class="fld full"><label>Assigned to</label><div style="border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--card2)">${asgHtml}</div></div>`+
     `<div class="fld full"><label for="f_subAssigned">Subconsultant (optional)</label>${subHtml}</div>`+
+    `<div class="fld full"><label>Drawing sheet references <span class="muted" style="font-weight:400">(verify the callouts — same checker as the main PMS)</span></label><div id="sheetRefChips"><span class="muted" style="font-size:12px">Checking for drawing references…</span></div></div>`+
     `<div class="fld full"><label for="f_spFolderUrl">SharePoint folder</label>${spHtml}</div>`;
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
   const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName, EDIT.projNum);
@@ -550,7 +631,12 @@ async function openEditor(kind, id){
     `<div class="mfoot">${isNew?"":`<button class="danger" onclick="deleteRecord()">Delete</button>`}`+
     // Review only makes sense once the item is in the log (a new record isn't
     // saved yet and carries only a placeholder number) — hide the link until then.
-    (isNew?"":`<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`)+
+    (isNew?"":`<a href="${esc(reviewUrl)}" target="_blank" rel="noreferrer" title="Opens your Claude seat to review this ${kind==='rfi'?'RFI':'submittal'} against the current set and specs and save a suggestion back here for your sign-off." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--accent);border-radius:8px;color:var(--accent);font-weight:600">🤖 ${rec.aiReview?"Re-review":"Send to Claude"}</a>`+
+      `<a href="${esc(caPullReplySeatUrl(kind, rec, EDIT.projName, EDIT.projNum))}" target="_blank" rel="noreferrer" title="For reviewers who answered by email: opens your Claude seat to find the emailed reply and file it here as the suggested response (citing the email) for one-click accept." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">📥 Pull reply from email</a>`+
+      // Folder creation needs the main PMS's Microsoft sign-in (this app has
+      // none) — the deep link opens the SAME item's modal there, where the
+      // Create Folder button lives. Hidden once a folder URL exists.
+      (rec.spFolderUrl?"":`<a href="${esc(caItemDeepLink(kind, rec.number)||"#")}" target="_blank" rel="noreferrer" title="Opens this exact item in the main PMS, where the Create Folder button generates the SharePoint folder (needs the PMS's Microsoft sign-in). The folder URL saved there shows here after a refresh." style="font-size:12px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--accent);font-weight:600">📁 Create folder in PMS</a>`))+
     `<button class="ghost" style="font-size:12px" title="Open a pre-filled draft in Outlook" onclick="emailAction('${kind}','assign')">✉ Assign</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft an email to the subconsultant" onclick="emailAction('${kind}','sub')">✉ Forward to Sub</button>`+
     `<button class="ghost" style="font-size:12px" title="Draft the ${kind==='rfi'?'response':'return'} email" onclick="emailAction('${kind}','respond')">✉ ${kind==='rfi'?'Draft Response':'Draft Return'}</button>`+
@@ -559,6 +645,7 @@ async function openEditor(kind, id){
   document.getElementById("overlay").classList.add("show");
   const ff=document.getElementById("modal").querySelector("input,select,textarea");
   if(ff) ff.focus();
+  renderSheetRefChips(); // async; degrades to "unavailable" without blocking the editor
 }
 function closeEditor(){ document.getElementById("overlay").classList.remove("show"); EDIT=null;
   if(LAST_FOCUS && LAST_FOCUS.isConnected){ try{ LAST_FOCUS.focus(); }catch(e){} } LAST_FOCUS=null; }
@@ -571,17 +658,40 @@ function collectEdits(kind){
   return e;
 }
 function mailto(to, subject, body){ window.location.href="mailto:"+(to||"")+"?subject="+encodeURIComponent(subject||"")+"&body="+encodeURIComponent(body||""); }
+/* The review travels with the item when it goes out for review: the assign
+   draft carries Claude's suggestion, the internal notes, and the reference
+   links; the sub forward carries the suggestion and links but NEVER the
+   internal notes (marked not-for-external). The formal response draft is
+   untouched — the human accepts the suggestion into the real fields first. */
+function caAiEmailText(includeInternal){
+  const ai=EDIT&&EDIT.ai; if(!ai) return "";
+  const links=Array.isArray(ai.docLinks)?ai.docLinks.filter(l=>l&&/^https:\/\//i.test(l.url)):[];
+  let t="\n--- Claude review (suggestions pending sign-off in the PMS) ---\n";
+  if(ai.reviewedAgainstSet) t+="Reviewed against: "+ai.reviewedAgainstSet+"\n";
+  if(ai.suggestedResponse) t+="\nSuggested "+(EDIT.kind==="rfi"?"response":"review comments")+":\n"+ai.suggestedResponse+"\n";
+  if(EDIT.kind!=="rfi"&&ai.suggestedStamp) t+="\nSuggested stamp: "+ai.suggestedStamp+"\n";
+  if(includeInternal&&ai.internalNotes) t+="\nInternal notes - verify before returning:\n"+ai.internalNotes+"\n";
+  if(links.length) t+="\nReferences:\n"+links.map(l=>"  "+(l.kind==="spec"?"Spec ":"")+l.label+": "+l.url).join("\n")+"\n";
+  return t;
+}
+// Deep link into the main PMS app's item modal (#project:<id>:rfi:<number>) —
+// both apps are served from the same web root.
+function caItemDeepLink(kind, num){
+  if(!(EDIT&&EDIT.projId&&num)||!/^http/.test(location.protocol)) return "";
+  return location.origin+location.pathname.replace(/[^\/]*$/,"SettyPMS.html")+"#project:"+EDIT.projId+":"+(kind==="rfi"?"rfi":"submittal")+":"+encodeURIComponent(num);
+}
 function emailAction(kind, which){
   const g=k=>{const e=document.getElementById("f_"+k);return e?e.value:"";};
   const num=g("number"), title=g("title")||g("description"), desc=g("description"), from=g("from"), due=g("dueDate"), resp=g("response"), spec=g("specSection"), comments=g("comments"), stamp=g("stamp");
   const proj=(EDIT&&EDIT.projName)?` · ${EDIT.projName}`:"";
   const lbl=(kind==="rfi"?"RFI ":"Submittal ")+num;
+  const dl=caItemDeepLink(kind,num); const dlLine=dl?`\nOpen in PMS: ${dl}\n`:"";
   if(which==="assign"){
     const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
-    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n`);
+    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${dlLine}${caAiEmailText(true)}`);
   } else if(which==="sub"){
     const sv=g("subAssigned"); const so=EDIT_SUBS.find(s=>((s&&s.name)||(s&&s.company)||String(s))===sv);
-    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n`);
+    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n${dlLine}${caAiEmailText(false)}`);
   } else {
     mailto("", `RE: ${lbl} — ${title}${proj}`, kind==="rfi" ? `Response to ${lbl}: ${title}\n\n${resp||"[your response]"}\n\nOriginal question:\n${desc}\n` : `Submittal ${num} ${spec} returned${stamp&&stamp!=="—"?" — "+stamp:""}\n\n${comments||"[review comments]"}\n`);
   }
@@ -590,6 +700,7 @@ async function saveEditor(){
   if(!EDIT)return; const {kind,isNew,id}=EDIT; const arrKey=kind==="rfi"?"rfis":"submittals";
   const edits=collectEdits(kind); const who=getWho(); const now=new Date().toISOString();
   edits.syncEditedBy=who||"(unknown)"; edits.syncEditedAt=now;
+  if(EDIT.sheetRefsWork) edits.sheetRefs=EDIT.sheetRefsWork; // chip decisions ride the save
   clearUndoBar(); // any other edit makes a blind import-undo unsafe
   try{
     await writeArray(arrKey, arr=>{
