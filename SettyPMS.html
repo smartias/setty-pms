@@ -10821,11 +10821,21 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // sub forwards carry the suggestion and links but NEVER the internal notes
   // (they are marked not-for-external). The formal response/return draft is
   // untouched — the human accepts the suggestion into the real fields first.
+  const caNl = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+  // The contractor's question gets its own amber callout in the email drafts —
+  // pulled OUT of the details table so it can't run together with the metadata
+  // or with Claude's suggested response below it.
+  function questionEmailBlock() {
+    if (!isRFI || !form.description) return "";
+    return "<div style='margin:14px 0;border-left:4px solid #d4a72c;background:#FFFBEB;padding:10px 14px;border-radius:0 6px 6px 0'>"
+      + "<div style='font-size:11px;font-weight:700;color:#92600A;letter-spacing:1px;margin-bottom:4px'>CONTRACTOR'S QUESTION</div>"
+      + "<div style='font-size:13px'>" + caNl(form.description) + "</div></div>";
+  }
   function aiEmailSection(includeInternalNotes) {
     if (!ai) return "";
-    const nl = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
-    let h = "<div style='margin-top:16px;border:1px solid #1F3864;border-radius:8px;padding:12px 14px'>"
-      + "<div style='font-weight:700;margin-bottom:6px'>🤖 Claude review — suggestions pending sign-off in the PMS</div>";
+    const nl = caNl;
+    let h = "<div style='margin-top:16px;border:1px solid #1F3864;border-left:4px solid #1F3864;border-radius:0 8px 8px 0;background:#F5F8FC;padding:12px 14px'>"
+      + "<div style='font-size:11px;font-weight:700;color:#1F3864;letter-spacing:1px;margin-bottom:6px'>🤖 CLAUDE REVIEW — SUGGESTIONS PENDING SIGN-OFF IN THE PMS</div>";
     if (ai.reviewedAgainstSet) h += "<div style='font-size:12px;color:#44546A;margin-bottom:8px'>Reviewed against: " + nl(ai.reviewedAgainstSet) + "</div>";
     if (ai.suggestedResponse) h += "<div style='margin-bottom:8px'><b>Suggested " + (isRFI ? "response" : "review comments") + ":</b><br>" + nl(ai.suggestedResponse) + "</div>";
     if (!isRFI && ai.suggestedStamp) h += "<div style='margin-bottom:8px'><b>Suggested stamp:</b> " + nl(ai.suggestedStamp) + "</div>";
@@ -10846,6 +10856,34 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // find the emailed reply and file it as the SUGGESTED response citing the
   // email — the coordinator accepts it with one click; nothing writes the real
   // response field directly.
+  // "Review ready" watcher: while the modal is open, a light poll (20s)
+  // notices a fresh Claude review saved by another session and offers a
+  // one-click jump (item deep link + reload) instead of leaving the user
+  // staring at a stale copy. Best-effort: any poll error is swallowed.
+  const [freshReviewAt, setFreshReviewAt] = React.useState(null);
+  React.useEffect(() => {
+    if (!form.number || !project.id || item?.__isNew) return undefined;
+    const key = isRFI ? "rfis" : "submittals";
+    let alive = true;
+    const tick = async () => {
+      try {
+        const rows = await fetchAllAnon("pms_projects?select=items:project->" + key + "&id=eq." + encodeURIComponent(project.id) + "&order=id", "review-ready poll");
+        if (!alive || !rows || !rows[0]) return;
+        const hit = (rows[0].items || []).find(x => String(x.number) === String(form.number) || String(x.id) === String(form.id));
+        const at = hit && hit.aiReview && hit.aiReview.at;
+        if (at && (!ai || at !== ai.at)) { setFreshReviewAt(at); if (iv) clearInterval(iv); }
+      } catch (e) { /* poll is best-effort */ }
+    };
+    let iv = null;
+    iv = setInterval(tick, 20000);
+    return () => { alive = false; if (iv) clearInterval(iv); };
+  }, [form.id]);
+  function jumpToFreshReview() {
+    // Unsaved edits die with the reload — never silently (Codex P1).
+    if (!window.confirm("Reload to view the new Claude review?\n\nAny unsaved edits in this form will be DISCARDED. Cancel to save your edits first.")) return;
+    window.location.hash = "#project:" + project.id + ":" + (isRFI ? "rfi" : "submittal") + ":" + encodeURIComponent(form.number || "");
+    window.location.reload();
+  }
   const pullReplySeatUrl = "https://claude.ai/new?q=" + encodeURIComponent([
     "Pull the reviewer's emailed reply for " + (isRFI ? "RFI" : "submittal") + " " + (form.number || "") + " on " + projLabel + " into the PMS.",
     "",
@@ -10875,8 +10913,8 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr><td style='padding:8px 12px;font-weight:700'>Discipline</td><td style='padding:8px 12px'>" + form.discipline + "</td></tr>"
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Date Received</td><td style='padding:8px 12px'>" + fmtDate(form.dateReceived) + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Due Date</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
-        + (isRFI && form.description ? "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Question</td><td style='padding:8px 12px'>" + form.description + "</td></tr>" : "")
       + "</table>"
+      + questionEmailBlock()
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
       + caOpenInPmsBtn
       + aiEmailSection(true)
@@ -10902,6 +10940,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Description</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
       + "</table>"
+      + questionEmailBlock()
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
       + caOpenInPmsBtn
       + aiEmailSection(false)
@@ -10924,11 +10963,19 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px'>"
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (project.name || "—") + (project.projectNumber ? " (" + project.projectNumber + ")" : "") + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700'>" + typLabel + " #</td><td style='padding:8px 12px'>" + form.number + "</td></tr>"
-        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Question" : "Description") + "</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Subject" : "Description") + "</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
         + (!isRFI ? "<tr><td style='padding:8px 12px;font-weight:700'>Stamp</td><td style='padding:8px 12px;font-weight:700'>" + (form.stamp || "—") + "</td></tr>" : "")
-        + (responseText ? "<tr" + (isRFI ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Response" : "Comments") + "</td><td style='padding:8px 12px'>" + responseText + "</td></tr>" : "")
         + "<tr" + (!isRFI ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700'>Date</td><td style='padding:8px 12px'>" + fmtDate(new Date().toISOString().slice(0,10)) + "</td></tr>"
       + "</table>"
+      // The question and the response are the two texts that must never blur
+      // together: the question rides in its amber callout, the response in its
+      // own green-bannered block — never side by side in one table.
+      + questionEmailBlock()
+      + (responseText
+        ? "<div style='margin:14px 0;border-left:4px solid #2E7D32;background:#F1F8F1;padding:10px 14px;border-radius:0 6px 6px 0'>"
+          + "<div style='font-size:11px;font-weight:700;color:#2E7D32;letter-spacing:1px;margin-bottom:4px'>SETTY " + (isRFI ? "RESPONSE" : "REVIEW COMMENTS") + "</div>"
+          + "<div style='font-size:13px'>" + caNl(responseText) + "</div></div>"
+        : "")
       + "<p style='font-size:11px;color:#44546A'>Please contact us if you have any questions regarding the above.</p></div>";
     try {
       const prefix = isRFI ? "RFI Response" : ("Submittal Return — " + (form.stamp || ""));
@@ -10969,6 +11016,14 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 3000, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px 16px", overflowY: "auto" }}>
       <div style={{ background: P.card, border: `1px solid ${P.accent}`, borderRadius: 14, padding: 28, width: 760, maxWidth: "98vw" }}>
+        {/* Review-ready banner: a fresh Claude review landed while this modal was open */}
+        {freshReviewAt && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, background: P.accentDim, border: "1px solid " + P.accent, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+            <span style={{ fontSize: 12.5 }}>🤖 A new Claude review was saved for this item while it was open here.</span>
+            <span style={{ flex: 1 }} />
+            <Btn small onClick={jumpToFreshReview}>Reload to view</Btn>
+          </div>
+        )}
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
           <div>
@@ -11069,6 +11124,29 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             </select>
           </Field>
 
+          {/* ── QUESTION vs RESPONSE: two different documents, bannered apart so
+              nobody has to guess where the contractor stops and Setty starts.
+              The question reads first (it arrived first), tinted amber; the
+              response follows under its own green banner. ── */}
+          {isRFI && (
+            <div style={{ gridColumn: "1 / -1", marginTop: 4, display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: P.yellow }}>❓ Contractor's Question</span>
+              <span style={{ flex: 1, borderTop: "1px solid " + P.border }} />
+            </div>
+          )}
+          {isRFI && (
+            <Field label="Full question, as asked (from the contractor)" style={{ gridColumn: "1 / -1" }}>
+              <textarea value={form.description || ""} onChange={e => setF("description", e.target.value)}
+                placeholder="Full RFI question text…"
+                style={{ width: "100%", height: 80, resize: "vertical", fontSize: 13, background: P.bg, borderLeft: "3px solid " + P.yellow }} />
+            </Field>
+          )}
+
+          <div style={{ gridColumn: "1 / -1", marginTop: 4, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: P.green }}>✉ {isRFI ? "Setty Response" : "Setty Review Comments"}</span>
+            <span style={{ flex: 1, borderTop: "1px solid " + P.border }} />
+          </div>
+
           {/* Response date */}
           <Field label={isRFI ? "Date Responded" : "Date Returned"}>
             <input type="date" value={isRFI ? (form.dateResponded || "") : (form.dateReturned || "")}
@@ -11077,11 +11155,11 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           </Field>
 
           {/* Response / Comments */}
-          <Field label={isRFI ? "Response / Resolution" : "Review Comments"} style={{ gridColumn: "1 / -1" }}>
+          <Field label={isRFI ? "Response / Resolution (goes back to the contractor)" : "Review Comments (returned with the submittal)"} style={{ gridColumn: "1 / -1" }}>
             <textarea value={isRFI ? (form.response || "") : (form.comments || "")}
               onChange={e => setF(isRFI ? "response" : "comments", e.target.value)}
               placeholder={isRFI ? "Formal response text…" : "Review comments to return with submittal…"}
-              style={{ width: "100%", height: 90, resize: "vertical", fontSize: 13 }} />
+              style={{ width: "100%", height: 90, resize: "vertical", fontSize: 13, borderLeft: "3px solid " + P.green }} />
           </Field>
 
           {/* Referenced drawings (linking Stage 1) */}
@@ -11089,15 +11167,6 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
             <SheetRefChips form={form} project={project} type={type}
               onChangeRefs={list => setF("sheetRefs", list)} />
           </Field>
-
-          {/* Description (RFI detailed question) */}
-          {isRFI && (
-            <Field label="Full Question / Description" style={{ gridColumn: "1 / -1" }}>
-              <textarea value={form.description || ""} onChange={e => setF("description", e.target.value)}
-                placeholder="Full RFI question text…"
-                style={{ width: "100%", height: 80, resize: "vertical", fontSize: 13 }} />
-            </Field>
-          )}
 
           {/* Notes */}
           <Field label="Internal Notes" style={{ gridColumn: "1 / -1" }}>

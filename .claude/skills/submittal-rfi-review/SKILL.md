@@ -235,7 +235,11 @@ polish**).
 
 - **Always pass `docLinks`** — the clickable references the modal and the
   assignment emails render: one `{label, url, kind}` per document the review
-  leaned on. You already hold the URLs, so this costs nothing: the reviewed
+  leaned on. Link EVERY sheet and spec section cited ANYWHERE in the
+  `suggestedResponse`, `internalNotes`, or `redFlags` — not just the flagged
+  ones. A response that says "verify against M506" with no M506 link sends
+  the reviewer back to hunting in SharePoint, which is the exact thing the
+  links exist to prevent. You already hold the URLs, so this costs nothing: the reviewed
   set's folder `webUrl` and each cited sheet's `webUrl` come back from
   `get_current_set` (kind `'set'` / `'sheet'`, label = the sheet number, e.g.
   `'M601'`), `search_drawings` hits carry a `webUrl` per sheet, and the spec
