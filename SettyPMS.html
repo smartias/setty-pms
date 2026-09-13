@@ -10871,13 +10871,16 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         if (!alive || !rows || !rows[0]) return;
         const hit = (rows[0].items || []).find(x => String(x.number) === String(form.number) || String(x.id) === String(form.id));
         const at = hit && hit.aiReview && hit.aiReview.at;
-        if (at && (!ai || at !== ai.at)) setFreshReviewAt(at);
+        if (at && (!ai || at !== ai.at)) { setFreshReviewAt(at); if (iv) clearInterval(iv); }
       } catch (e) { /* poll is best-effort */ }
     };
-    const iv = setInterval(tick, 20000);
-    return () => { alive = false; clearInterval(iv); };
+    let iv = null;
+    iv = setInterval(tick, 20000);
+    return () => { alive = false; if (iv) clearInterval(iv); };
   }, [form.id]);
   function jumpToFreshReview() {
+    // Unsaved edits die with the reload — never silently (Codex P1).
+    if (!window.confirm("Reload to view the new Claude review?\n\nAny unsaved edits in this form will be DISCARDED. Cancel to save your edits first.")) return;
     window.location.hash = "#project:" + project.id + ":" + (isRFI ? "rfi" : "submittal") + ":" + encodeURIComponent(form.number || "");
     window.location.reload();
   }

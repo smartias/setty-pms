@@ -328,7 +328,7 @@ function startReviewPoll(){
     }catch(e){ /* best-effort */ }
   },20000);
 }
-async function reloadEditorItem(){ if(!EDIT)return; const {kind,id}=EDIT; closeEditor(); await selectProject(CURRENT.proj.id); openEditor(kind,id); }
+async function reloadEditorItem(){ if(!EDIT)return; if(!confirm("Reload to view the new Claude review?\n\nAny unsaved edits in this form will be DISCARDED. Cancel to save your edits first."))return; const {kind,id}=EDIT; closeEditor(); await selectProject(CURRENT.proj.id); openEditor(kind,id); }
 function srDecide(sheet,status){ if(!EDIT)return; const s=SR_SUGG.find(x=>x.sheet===sheet); if(!s)return; EDIT.sheetRefsWork=[...(EDIT.sheetRefsWork||[]),{sheet:s.sheet,discipline:s.discipline,confidence:s.confidence,field:s.field,snippet:s.snippet,status,by:getWho()||null,at:new Date().toISOString()}]; srPaint(); }
 function srUndecide(sheet){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.sheet!==sheet); srPaint(); }
 function srRestore(){ if(!EDIT)return; EDIT.sheetRefsWork=(EDIT.sheetRefsWork||[]).filter(x=>x.status==="confirmed"); srPaint(); }
