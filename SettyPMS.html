@@ -10821,11 +10821,21 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // sub forwards carry the suggestion and links but NEVER the internal notes
   // (they are marked not-for-external). The formal response/return draft is
   // untouched — the human accepts the suggestion into the real fields first.
+  const caNl = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+  // The contractor's question gets its own amber callout in the email drafts —
+  // pulled OUT of the details table so it can't run together with the metadata
+  // or with Claude's suggested response below it.
+  function questionEmailBlock() {
+    if (!isRFI || !form.description) return "";
+    return "<div style='margin:14px 0;border-left:4px solid #d4a72c;background:#FFFBEB;padding:10px 14px;border-radius:0 6px 6px 0'>"
+      + "<div style='font-size:11px;font-weight:700;color:#92600A;letter-spacing:1px;margin-bottom:4px'>CONTRACTOR'S QUESTION</div>"
+      + "<div style='font-size:13px'>" + caNl(form.description) + "</div></div>";
+  }
   function aiEmailSection(includeInternalNotes) {
     if (!ai) return "";
-    const nl = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
-    let h = "<div style='margin-top:16px;border:1px solid #1F3864;border-radius:8px;padding:12px 14px'>"
-      + "<div style='font-weight:700;margin-bottom:6px'>🤖 Claude review — suggestions pending sign-off in the PMS</div>";
+    const nl = caNl;
+    let h = "<div style='margin-top:16px;border:1px solid #1F3864;border-left:4px solid #1F3864;border-radius:0 8px 8px 0;background:#F5F8FC;padding:12px 14px'>"
+      + "<div style='font-size:11px;font-weight:700;color:#1F3864;letter-spacing:1px;margin-bottom:6px'>🤖 CLAUDE REVIEW — SUGGESTIONS PENDING SIGN-OFF IN THE PMS</div>";
     if (ai.reviewedAgainstSet) h += "<div style='font-size:12px;color:#44546A;margin-bottom:8px'>Reviewed against: " + nl(ai.reviewedAgainstSet) + "</div>";
     if (ai.suggestedResponse) h += "<div style='margin-bottom:8px'><b>Suggested " + (isRFI ? "response" : "review comments") + ":</b><br>" + nl(ai.suggestedResponse) + "</div>";
     if (!isRFI && ai.suggestedStamp) h += "<div style='margin-bottom:8px'><b>Suggested stamp:</b> " + nl(ai.suggestedStamp) + "</div>";
@@ -10900,8 +10910,8 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr><td style='padding:8px 12px;font-weight:700'>Discipline</td><td style='padding:8px 12px'>" + form.discipline + "</td></tr>"
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Date Received</td><td style='padding:8px 12px'>" + fmtDate(form.dateReceived) + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Due Date</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
-        + (isRFI && form.description ? "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Question</td><td style='padding:8px 12px'>" + form.description + "</td></tr>" : "")
       + "</table>"
+      + questionEmailBlock()
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
       + caOpenInPmsBtn
       + aiEmailSection(true)
@@ -10927,6 +10937,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>Description</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700;color:#C00000'>Response Needed By</td><td style='padding:8px 12px;font-weight:700;color:#C00000'>" + fmtDate(form.dueDate) + "</td></tr>"
       + "</table>"
+      + questionEmailBlock()
       + (form.spFolderUrl ? "<p style='margin-top:16px'><a href='" + form.spFolderUrl + "' style='background:#0078d4;color:#fff;padding:8px 16px;border-radius:5px;text-decoration:none;font-weight:600;font-size:13px'>📁 Open SharePoint Folder</a></p>" : "")
       + caOpenInPmsBtn
       + aiEmailSection(false)
@@ -10949,11 +10960,19 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       + "<table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:16px'>"
         + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700;width:160px'>Project</td><td style='padding:8px 12px'>" + (project.name || "—") + (project.projectNumber ? " (" + project.projectNumber + ")" : "") + "</td></tr>"
         + "<tr><td style='padding:8px 12px;font-weight:700'>" + typLabel + " #</td><td style='padding:8px 12px'>" + form.number + "</td></tr>"
-        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Question" : "Description") + "</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
+        + "<tr style='background:#F1F5F9'><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Subject" : "Description") + "</td><td style='padding:8px 12px'>" + (isRFI ? form.title : form.description) + "</td></tr>"
         + (!isRFI ? "<tr><td style='padding:8px 12px;font-weight:700'>Stamp</td><td style='padding:8px 12px;font-weight:700'>" + (form.stamp || "—") + "</td></tr>" : "")
-        + (responseText ? "<tr" + (isRFI ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700'>" + (isRFI ? "Response" : "Comments") + "</td><td style='padding:8px 12px'>" + responseText + "</td></tr>" : "")
         + "<tr" + (!isRFI ? " style='background:#F1F5F9'" : "") + "><td style='padding:8px 12px;font-weight:700'>Date</td><td style='padding:8px 12px'>" + fmtDate(new Date().toISOString().slice(0,10)) + "</td></tr>"
       + "</table>"
+      // The question and the response are the two texts that must never blur
+      // together: the question rides in its amber callout, the response in its
+      // own green-bannered block — never side by side in one table.
+      + questionEmailBlock()
+      + (responseText
+        ? "<div style='margin:14px 0;border-left:4px solid #2E7D32;background:#F1F8F1;padding:10px 14px;border-radius:0 6px 6px 0'>"
+          + "<div style='font-size:11px;font-weight:700;color:#2E7D32;letter-spacing:1px;margin-bottom:4px'>SETTY " + (isRFI ? "RESPONSE" : "REVIEW COMMENTS") + "</div>"
+          + "<div style='font-size:13px'>" + caNl(responseText) + "</div></div>"
+        : "")
       + "<p style='font-size:11px;color:#44546A'>Please contact us if you have any questions regarding the above.</p></div>";
     try {
       const prefix = isRFI ? "RFI Response" : ("Submittal Return — " + (form.stamp || ""));

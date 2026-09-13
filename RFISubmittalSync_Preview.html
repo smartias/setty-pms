@@ -708,12 +708,15 @@ function emailAction(kind, which){
   const proj=(EDIT&&EDIT.projName)?` · ${EDIT.projName}`:"";
   const lbl=(kind==="rfi"?"RFI ":"Submittal ")+num;
   const dl=caItemDeepLink(kind,num); const dlLine=dl?`\nOpen in PMS: ${dl}\n`:"";
+  // Separators keep the contractor's text visually distinct from the metadata
+  // and from the Claude section that follows in these plain-text drafts.
+  const qBlock=desc?`\n--- Contractor's ${kind==="rfi"?"question":"description"} ---\n${desc}\n---\n`:"";
   if(which==="assign"){
     const to=[...document.querySelectorAll(".asg:checked")].map(c=>{const m=EDIT_TEAM.find(t=>t.id===c.value);return m&&m.email;}).filter(Boolean).join(",");
-    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n\n${desc}\n\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${dlLine}${caAiEmailText(true)}`);
+    mailto(to, `[${lbl}] Assigned to you — ${title}${proj}`, `You've been assigned ${lbl}: ${title}\n${qBlock}\nDue: ${due||"—"}\nFrom: ${from||"—"}\n${dlLine}${caAiEmailText(true)}`);
   } else if(which==="sub"){
     const sv=g("subAssigned"); const so=EDIT_SUBS.find(s=>((s&&s.name)||(s&&s.company)||String(s))===sv);
-    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n\n${desc}\n${dlLine}${caAiEmailText(false)}`);
+    mailto((so&&so.email)||"", `[${lbl}] For your input — ${title}${proj}`, `Please review and advise on ${lbl}: ${title}\n${qBlock}${dlLine}${caAiEmailText(false)}`);
   } else {
     mailto("", `RE: ${lbl} — ${title}${proj}`, kind==="rfi" ? `Response to ${lbl}: ${title}\n\n${resp||"[your response]"}\n\nOriginal question:\n${desc}\n` : `Submittal ${num} ${spec} returned${stamp&&stamp!=="—"?" — "+stamp:""}\n\n${comments||"[review comments]"}\n`);
   }
