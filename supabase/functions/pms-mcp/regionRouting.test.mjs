@@ -94,8 +94,19 @@ has('"pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind,azure_
 // refusal text is one shared constant so every tool says the same true thing.
 has('kind: r.storage_kind === "azure_files" ? "azure_files" : "sharepoint",', "unknown storage kinds fail closed to sharepoint");
 has("const AZURE_LIMITED_NOTE =", "single shared azure-limitation note");
-check((shipped.match(/AZURE_LIMITED_NOTE/g) || []).length >= 7,
-  "the azure gate guards the file tools (drawings, sheets, current set, transmittals, find_document, listing)");
+// 1.16.0: the drawing tools index and read drives, so the gate remains only
+// on what genuinely needs SharePoint — find_document (search index),
+// prepare_transmittal and file_qa_report (writes), and the listing notes.
+check((shipped.match(/AZURE_LIMITED_NOTE/g) || []).length >= 5 && (shipped.match(/AZURE_LIMITED_NOTE/g) || []).length <= 8,
+  "the azure gate guards find_document, transmittal staging and filing (not the drawing tools)");
+has("async function loadPdfBytes(itemId: string, maxBytes: number", "one PDF loader for both storages");
+has("const gate = await azurePathProject(dec.team, dec.relPath);\n    if (!gate.ok) throw new Error(", "the PDF loader runs the visibility gate on az ids");
+has("buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });", "the index builder reads through the shared loader");
+has("buf = await loadPdfBytes(f.itemId, SHEET_MAX_BYTES, { cache: false });", "extract_sheet_index reads through the shared loader");
+has("return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subfolder);", "drive projects get their drawing scope from the shares");
+has("const bytes = await fetchDrawingPdfById(String(chosen.item_id));", "view_drawing opens indexed sheets by id (az or Graph)");
+has("const bytes = await fetchDrawingPdfById(fileId);", "read_drawing_schedule opens by id (az or Graph)");
+has("async function indexDerivedSet(numPrefix: string)", "drive projects compose the current set from the drawing index");
 has('if ((await storageFor(project)).kind !== "sharepoint") {', "gates run on the RESOLVED project (after HIDE)");
 has("sasEnv: s.sas_env ? String(s.sas_env) : null }))",
   "SAS config is an env-var NAME — the token itself never comes from the database");
@@ -135,8 +146,8 @@ check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refus
 // project it names (folder → project → team → projectRefVisible) before any
 // share call, and the share root is never listed for a caller.
 has("async function azurePathProject(team: string, relPath: string)", "share paths earn their own visibility verdict");
-check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 2,
-  "both list_project_documents (az folderId) and read_document (az itemId) run the gate");
+check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 4,
+  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, drawing item meta");
 has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so overrides and team scoping apply");
 has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
 has('error: "The share root is not browsable."', "the share root is never listed for a caller");

@@ -247,7 +247,10 @@ for (const anchor of [
   "function pdfPageTextPut",
   "function pdfTextCacheDrop",
   "const PDF_TEXT_CACHE_MAX_CHARS = 6_000_000;",
-  "const cached = pdfCacheGet(key);",
+  // 1.16.0: the download cache now fronts loadPdfBytes, the one loader for
+  // SharePoint and drive files alike.
+  "if (useCache) { const c = pdfCacheGet(itemId); if (c) return c; }",
+  "if (useCache) pdfCachePut(itemId, bytes);",
   "function pdfiumLibrary",
   "const library = await pdfiumLibrary();",
   "getDocumentProxy(bytes.slice())",

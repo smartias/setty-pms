@@ -632,8 +632,9 @@ async function regionMap(): Promise<Map<string, RegionSite>> {
 // One place, so every tool says the same true thing.
 const AZURE_LIMITED_NOTE =
   "This project's region stores its files on an Azure file share (synced from the office network " +
-  "drive), which supports browsing folders and reading named files only. Search, drawings, photos " +
-  "and transmittal features need the project record in the region's SharePoint site.";
+  "drive). Browsing, reading, and the drawing tools (indexing, search, sheet index, view, schedules, " +
+  "equipment) work there. Finding documents by description, field photos, transmittal staging and " +
+  "filing need the project record in the region's SharePoint site.";
 async function storageFor(projectNumber: string | null | undefined): Promise<RegionSite> {
   return siteForTeam(await teamForProject(projectNumber));
 }
@@ -1029,9 +1030,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-14-dc-folder-layout";
+const BUILD = "2026-09-15-drive-drawing-index";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.15.1",
+  name: "setty-pms", version: "1.16.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -2969,11 +2970,7 @@ mcp.tool("get_current_set", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    // Storage seam: capability gates sit AFTER project resolution so a hidden
-    // project still reads as not-found, never as "exists but on Azure".
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "list_project_documents can browse this region's share once its credentials are configured." });
-    }
+    const onDrive = (await storageFor(project)).kind !== "sharepoint";
     const disc = (discipline ?? "").toLowerCase().trim();
 
     let rows: any[] = [];
@@ -3093,6 +3090,37 @@ mcp.tool("get_current_set", {
     const discNote = disc && rows.length
       ? `The register has ${rows.length} transmittal(s) for this project but none recording discipline "${discipline}". Falling back to folder inference for the set overall.`
       : null;
+    // Drive-based project (1.16.0): no register and no SharePoint folder to
+    // infer from — the drawing index is the basis. The newest indexed set is
+    // "current"; the sheet list is every sheet at its newest revision.
+    if (onDrive) {
+      try {
+        const numPrefix = String(project).toLowerCase().trim();
+        const derived = await indexDerivedSet(numPrefix);
+        const sheets = derived.disciplines.flatMap((d) => d.sheets).filter((s: any) => !disc || String(s.sheetNo).toLowerCase().startsWith(disc));
+        const sets = [...derived.sourceSets].sort((a, b) => String(drawingSetDate(b) || "").localeCompare(String(drawingSetDate(a) || "")));
+        if (!derived.sheetCount) {
+          return asText({
+            project, inferred: true, current: null,
+            reason: derived.coverage.indexedFiles || derived.coverage.filesPending
+              ? "The drawing index has no sheets with parsed title blocks for this project yet."
+              : "No transmittal record (drive-based projects are not issued through the transmittal tool yet) and nothing indexed for this project.",
+            coverage: derived.coverage,
+            nextStep: "Run search_drawings with indexOnly:true to index the project's Outgoing folder, then call again.",
+          });
+        }
+        return asText({
+          project, inferred: true, basis: INDEX_DERIVED_BASIS, confidence: sets[0] && drawingSetDate(sets[0]) ? "dated set folder" : "low — undated set folders",
+          current: { setName: sets[0] ?? null, transmittalNumber: null, issueDate: sets[0] ? drawingSetDate(sets[0]) : null, sheetCount: sheets.length, sheets },
+          sourceSets: sets, coverage: derived.coverage,
+          ...(discNote ? { disciplineNote: discNote } : {}),
+          fullSetHint: "Sheets are listed at their most recent INDEXED revision across all sets; extract_sheet_index gives the same view grouped by discipline.",
+          nextStep: "Issuing sets through the transmittal tool (register-only mode for drive projects) would make this authoritative instead of inferred.",
+        });
+      } catch (e) {
+        return asText({ project, inferred: true, current: null, error: `No transmittal record, and the drawing index could not be read: ${String((e as any)?.message ?? e)}` });
+      }
+    }
     try {
       const driveId = await docDriveId(await teamForProject(String(project)));
       const folder = await findProjectFolderInDrive(driveId, String(project).toLowerCase().trim());
@@ -3933,6 +3961,27 @@ async function subtreeFiles(numPrefix: string, rel: string): Promise<{
   scanned: number;
 }> {
   const relClean = String(rel || "").replace(/^\/+|\/+$/g, "");
+  // Drive-based projects (1.16.0): resolve the subfolder on each share that
+  // holds the project (standard names map to the drive's own names) and walk.
+  {
+    const team = await teamForProject(numPrefix);
+    const region = await siteForTeam(team);
+    if (region.kind !== "sharepoint" && team) {
+      const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
+      const want = cleanRelPath(relClean) ?? "";
+      const out: any[] = []; const resolved: string[] = []; let trunc = false; let scanned = 0;
+      for (const h of hits) {
+        const start = want ? await azureResolveSubfolder(h.ctx, h.folder, want) : h.folder;
+        let probe: { entries: AzEntry[] };
+        try { probe = await azureDirEntries(h.ctx, start); scanned++; } catch { continue; }
+        if (!probe) continue;
+        resolved.push(h.ctx.label + ":");
+        const r = await azureWalkFiles(h.ctx, h.folder, start);
+        out.push(...r.files); trunc = trunc || r.truncated;
+      }
+      return { files: out, truncated: trunc, resolvedIn: resolved, scanned };
+    }
+  }
   const encoded = relClean.split("/").filter(Boolean).map(encodeURIComponent).join("/");
   const drives = await siteDrives(await teamForProject(numPrefix));
   const files: any[] = [];
@@ -4850,8 +4899,29 @@ mcp.tool("extract_sheet_index", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "read_document can read a specific named file once the region's share credentials are configured." });
+    // Drive-based project (1.16.0): no register to fold, so the default view
+    // is composed from the drawing index; a subfolder request reads the PDFs
+    // straight off the share below, exactly as it does for SharePoint.
+    if (!subfolder && (await storageFor(project)).kind !== "sharepoint") {
+      const numPrefix = String(project).toLowerCase().trim();
+      let derived: Awaited<ReturnType<typeof indexDerivedSet>>;
+      try { derived = await indexDerivedSet(numPrefix); }
+      catch (e) { return asText({ project, error: `Could not read the drawing index: ${String((e as any)?.message ?? e)}` }); }
+      if (!derived.sheetCount) {
+        return asText({
+          project, count: 0, disciplines: [], coverage: derived.coverage,
+          reason: derived.coverage.indexedFiles || derived.coverage.filesPending
+            ? "Nothing indexed carries a parsed sheet number yet (title blocks did not parse, or indexing is still running)."
+            : "Nothing is indexed for this project yet. Drive-based projects have no transmittal register, so the sheet index comes from the drawings themselves.",
+          nextStep: "Run search_drawings with indexOnly:true to index the Outgoing folder (repeat until coverage.filesPending is 0), then call again; or pass a set folder as subfolder to read it directly.",
+        });
+      }
+      return asText({
+        project, basis: INDEX_DERIVED_BASIS, mode: "current-full-set (index-derived)",
+        sheetCount: derived.sheetCount, disciplineCount: derived.disciplines.length, disciplines: derived.disciplines,
+        sourceSets: derived.sourceSets, coverage: derived.coverage,
+        note: "Each sheet is shown at its most recent INDEXED issuance. To see what a single set contained instead, pass that set folder as subfolder.",
+      });
     }
 
     // ── DEFAULT: the current full set, composed from the register ────────────
@@ -5029,9 +5099,6 @@ mcp.tool("extract_sheet_index", {
     for (const f of work) {
       if (filesOpened >= fileCap || pagesParsed >= pageCap) break;
       filesConsumed++;
-      const bar = f.itemId.indexOf("|");
-      const drive = f.itemId.slice(0, bar);
-      const realId = f.itemId.slice(bar + 1);
       const big = isBig(f);
       const sizeMB = Math.round(Number(f.size) / 104857.6) / 10;
       if (big) {
@@ -5046,14 +5113,9 @@ mcp.tool("extract_sheet_index", {
         }
         oversizeBytes += Number(f.size);
       }
-      let buf: ArrayBuffer;
+      let buf: Uint8Array;
       try {
-        const res = await fetch(
-          `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
-          { headers: { Authorization: "Bearer " + (await graphToken()) } },
-        );
-        if (!res.ok) { unparsed.push({ file: f.name, reason: `Graph content ${res.status}` }); continue; }
-        buf = await res.arrayBuffer();
+        buf = await loadPdfBytes(f.itemId, SHEET_MAX_BYTES, { cache: false });
       } catch (e) { unparsed.push({ file: f.name, reason: String((e as any)?.message ?? e) }); continue; }
       filesOpened++;
       const sheetsBefore = sheets.length;
@@ -5351,6 +5413,60 @@ function drawingDateKey(d: string | null | undefined): number {
 }
 
 type DrawingRev = { revision: string | null; revisionDate: string | null; revisionDescription?: string | null; set: string };
+// The current full set read off the DRAWING INDEX instead of the transmittal
+// register: every indexed sheet at its newest indexed revision, grouped by
+// discipline. This is what a drive-based project has (no transmittal tool
+// writes a register there yet), so it is the basis extract_sheet_index and
+// get_current_set fall back to for those projects. Only as complete as the
+// index — coverage rides along.
+async function indexDerivedSet(numPrefix: string): Promise<{
+  sheetCount: number; disciplines: Array<{ discipline: string; name: string; sheetCount: number; sheets: any[] }>;
+  sourceSets: string[]; coverage: { indexedFiles: number; filesPending: number; textlessOrUnparsed?: number };
+}> {
+  const rows: any[] = await sbGetAll(
+    "pms_drawing_text?select=item_id,page,file_name,folder_path,web_url,sheet_no,sheet_title,revision,revision_date,revision_description" +
+    "&project_prefix=eq." + encodeURIComponent(numPrefix) + "&sheet_no=not.is.null&order=item_id,page");
+  const best = new Map<string, any>();
+  for (const r of rows) {
+    const key = normSheetToken(r.sheet_no);
+    if (!key) continue;
+    const cur = best.get(key);
+    const rv = (x: any): DrawingRev => ({ revision: x.revision ?? null, revisionDate: x.revision_date ?? null, revisionDescription: x.revision_description ?? null, set: drawingSetOf(x.folder_path) });
+    if (!cur || drawingRevSort(rv(r), rv(cur)) < 0) best.set(key, r);
+  }
+  const byDisc = new Map<string, any[]>();
+  for (const r of best.values()) {
+    const c: any = canonicalSheet(String(r.sheet_no));
+    const disc = String(c?.discipline || String(r.sheet_no).replace(/[^A-Za-z].*$/, "").toUpperCase() || "?");
+    if (!byDisc.has(disc)) byDisc.set(disc, []);
+    byDisc.get(disc)!.push({
+      sheetNo: r.sheet_no, title: r.sheet_title ?? null, revision: r.revision ?? null, revisionDate: r.revision_date ?? null,
+      revisionDescription: r.revision_description ?? null, set: drawingSetOf(r.folder_path),
+      file: r.file_name, itemId: r.item_id, pageInFile: r.page, webUrl: r.web_url ?? null,
+    });
+  }
+  const disciplines = [...byDisc.entries()]
+    .sort((a, b) => disciplineRank(a[0]) - disciplineRank(b[0]) || a[0].localeCompare(b[0]))
+    .map(([discipline, sheets]) => ({
+      discipline, name: DISCIPLINE_NAME[discipline] ?? discipline, sheetCount: sheets.length,
+      sheets: sheets.sort((a: any, b: any) => sheetRank(String(a.sheetNo)) - sheetRank(String(b.sheetNo)) || String(a.sheetNo).localeCompare(String(b.sheetNo))),
+    }));
+  let indexedFiles = 0, filesPending = 0;
+  try {
+    const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
+    indexedFiles = known.filter((k) => k.status === "done").length;
+    filesPending = known.filter((k) => k.status === "pending").length;
+  } catch { /* coverage is advisory */ }
+  return {
+    sheetCount: best.size, disciplines,
+    sourceSets: [...new Set([...best.values()].map((r) => drawingSetOf(r.folder_path)))],
+    coverage: { indexedFiles, filesPending },
+  };
+}
+const INDEX_DERIVED_BASIS =
+  "Composed from the DRAWING INDEX (title blocks parsed off the issued PDFs on the office drive), not the " +
+  "transmittal register: each sheet at its newest indexed revision. Only as complete as the index — run " +
+  "search_drawings with indexOnly:true until coverage.filesPending is 0.";
 const drawingRevKey = (r: { revision: string | null; set: string }) => `${r.revision ?? ""}|${r.set}`;
 const drawingRevSort = (a: DrawingRev, b: DrawingRev) =>
   drawingDateKey(b.revisionDate) - drawingDateKey(a.revisionDate) || String(b.set).localeCompare(String(a.set));
@@ -5535,7 +5651,72 @@ async function crossSiteDeliverables(numPrefix: string): Promise<{
   return out;
 }
 
+// A project's drive files, walked from one folder down: the drive-based
+// counterpart of subtreeFiles. Rows carry az: ids so every drawing tool can
+// open them; folderPath is relative to the PROJECT folder so drawingSetOf
+// finds the set folder the same way it does for SharePoint (the DC Outgoing
+// folder is "99-<number>_OUTGOING", which still contains "outgoing"). The
+// link is the UNC path. Bounded like the SharePoint walks.
+const AZ_WALK_MAX_LISTINGS = 120;
+async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: string): Promise<{ files: TreeFile[]; truncated: boolean }> {
+  const files: TreeFile[] = [];
+  let listings = 0, truncated = false;
+  const relOf = (full: string) => full.startsWith(projectRel + "/") ? full.slice(projectRel.length + 1) : (full === projectRel ? "" : full);
+  const queue: string[] = [startRel];
+  while (queue.length) {
+    if (listings >= AZ_WALK_MAX_LISTINGS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
+    const dir = queue.shift()!;
+    let r: { entries: AzEntry[]; truncated: boolean };
+    try { r = await azureDirEntries(ctx, dir); listings++; } catch { continue; }
+    if (r.truncated) truncated = true;
+    for (const e of r.entries) {
+      const full = joinRel(dir, e.name);
+      if (e.type === "folder") queue.push(full);
+      else if (files.length < TREE_MAX_FILES) {
+        files.push({
+          itemId: encodeAzId(ctx.team, full, ctx.label), name: e.name, library: ctx.label + ":",
+          folderPath: relOf(dir) || "/", webUrl: sharePathOf(ctx.share, full),
+          modified: e.modified ?? null, size: e.size ?? 0, ext: extOf(e.name),
+        });
+      } else truncated = true;
+    }
+  }
+  return { files, truncated };
+}
+// The drawing scope on a drive: every share of the region that holds the
+// project is searched; the default scope is the project's Outgoing folder
+// (resolved by its standard name, so DC's prefixed name works), an explicit
+// subfolder is resolved the same way. Cross-site deliverables are a
+// SharePoint feature and do not apply.
+async function azureDrawingScope(team: string, numPrefix: string, subfolder?: string): Promise<DrawingScope> {
+  const { hits } = await azureProjectHits(team, numPrefix);
+  const want = cleanRelPath(subfolder || "") ?? "";
+  let files: TreeFile[] = []; let truncated = false; const paths: string[] = [];
+  for (const h of hits) {
+    let start: string | null = null;
+    if (want) start = await azureResolveSubfolder(h.ctx, h.folder, want);
+    else {
+      try { const out = resolveChildFolder((await azureDirEntries(h.ctx, h.folder)).entries, "outgoing"); if (out) start = joinRel(h.folder, out); }
+      catch { /* a folder that will not list is reported as unresolved */ }
+    }
+    if (!start) continue;
+    const r = await azureWalkFiles(h.ctx, h.folder, start);
+    if (!want && !r.files.length && !r.truncated) { /* resolved but empty is still resolved */ }
+    files = files.concat(r.files.filter((f) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath)));
+    truncated = truncated || r.truncated;
+    paths.push(h.ctx.label + ": " + start.slice(h.folder.length + 1));
+  }
+  if (!paths.length) return { files: [], scopePath: want || "Outgoing", truncated: false, resolved: false };
+  return { files, scopePath: paths.join(" + "), truncated, resolved: true };
+}
+
 async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<DrawingScope> {
+  // Drive-based projects (1.16.0): the scope comes off the region's shares.
+  {
+    const team = await teamForProject(numPrefix);
+    const region = await siteForTeam(team);
+    if (region.kind !== "sharepoint" && team) return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subfolder);
+  }
   let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
   const explicitSubfolder = !!rel;
   if (!rel) {
@@ -5604,7 +5785,9 @@ mcp.tool("search_drawings", {
     "This reads text layers only: a scanned or image-only sheet indexes as empty and is reported under " +
     "coverage.textlessFiles. Projects whose issued sets live on the NYSharesite site (reached through a " +
     "'Setty Deliverables (NYSharesite)' shortcut in the project folder) are crawled there automatically — " +
-    "coverage.scope names the site when that happens. Nothing here writes to the transmittal register.",
+    "coverage.scope names the site when that happens. Projects whose files live on an office network drive " +
+    "(DC) are indexed the same way from the drive's Outgoing folder; their file ids start 'az:' and open with " +
+    "view_drawing / read_drawing_schedule / read_document. Nothing here writes to the transmittal register.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR project name."),
     query: z.string().optional().describe("What to look for on the sheets, e.g. 'perchloric fume hood', 'FCU-11', '\"emergency generator\" 208V'. Required unless indexOnly is true."),
@@ -5618,9 +5801,6 @@ mcp.tool("search_drawings", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Drawing search needs the drawing set filed in the region's SharePoint site (Outgoing)." });
-    }
     const numPrefix = String(project).toLowerCase().trim();
     const patterns = drawingQueryPatterns(query || "");
     if (!indexOnly && !patterns.length) {
@@ -5633,7 +5813,7 @@ mcp.tool("search_drawings", {
     try {
       scope = await drawingScopeFiles(numPrefix, subfolder);
     } catch (e) {
-      return asText({ project, error: `Could not read SharePoint folders: ${String((e as any)?.message ?? e)}` });
+      return asText({ project, error: `Could not read the project's folders: ${String((e as any)?.message ?? e)}` });
     }
     if (!scope.resolved) {
       return asText({
@@ -5642,7 +5822,7 @@ mcp.tool("search_drawings", {
           ? `No folder "${subfolder}" exists under this project.`
           : (/NYSharesite shortcut found/.test(scope.scopePath)
             ? "This project's issued sets live on the NYSharesite site, but the shortcut could not be crawled: " + scope.scopePath
-            : "No Outgoing folder was found under this project (and no NYSharesite deliverables shortcut), so there are no issued drawings to index."),
+            : "No Outgoing folder was found under this project (in SharePoint: nor a NYSharesite deliverables shortcut; on a drive: no folder named Outgoing or NN-<number>_OUTGOING), so there are no issued drawings to index."),
         nextStep: "Confirm the path with list_project_documents and pass it as subfolder, exactly as printed.",
       });
     }
@@ -5703,17 +5883,9 @@ mcp.tool("search_drawings", {
         return asText({ project, error: `Could not write to the drawing index: ${String((e as any)?.message ?? e)}` });
       }
       opened++;
-      const bar = f.itemId.indexOf("|");
-      const drive = f.itemId.slice(0, bar);
-      const realId = f.itemId.slice(bar + 1);
-      let buf: ArrayBuffer;
+      let buf: Uint8Array;
       try {
-        const res = await fetch(
-          `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
-          { headers: { Authorization: "Bearer " + (await graphToken()) } },
-        );
-        if (!res.ok) throw new Error(`Graph content ${res.status}`);
-        buf = await res.arrayBuffer();
+        buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });
       } catch (e) {
         const msg = String((e as any)?.message ?? e);
         failedNow.push({ file: f.name, reason: msg });
@@ -6266,22 +6438,68 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
   }
 }
 
-async function fetchDrawingPdf(drive: string, realId: string): Promise<Uint8Array> {
-  const key = drive + "|" + realId;
-  const cached = pdfCacheGet(key);
-  if (cached) return cached;
-  const res = await fetch(
-    `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
-    { headers: { Authorization: "Bearer " + (await graphToken()) } },
-  );
-  if (!res.ok) throw new Error(`Graph content ${res.status}`);
-  const buf = await res.arrayBuffer();
-  if (buf.byteLength > VIEW_DRAWING_MAX_PDF_BYTES) {
-    throw new Error(`the file is ${(buf.byteLength / 1048576).toFixed(0)}MB — over the ${VIEW_DRAWING_MAX_PDF_BYTES / 1048576}MB render limit`);
+// One way to get a PDF's bytes whatever the storage (drive-based drawing
+// index, 1.16.0): a SharePoint 'driveId|itemId' composite through Graph, or
+// an 'az:' id through the region's share — gated exactly as read_document
+// gates it, so a crafted id cannot read past project visibility. Sizes are
+// checked before the download where the storage tells us (HEAD on a share)
+// and after it where it does not. Cached by id unless the caller says not to
+// (the indexers stream a file once and never need it again).
+async function loadPdfBytes(itemId: string, maxBytes: number, opts: { cache?: boolean } = {}): Promise<Uint8Array> {
+  const useCache = opts.cache !== false;
+  const tooBig = (n: number) => new Error(`the file is ${(n / 1048576).toFixed(0)}MB — over the ${maxBytes / 1048576}MB limit`);
+  if (useCache) { const c = pdfCacheGet(itemId); if (c) return c; }
+  let bytes: Uint8Array;
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) throw new Error(az.error);
+    const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
+    if (props.size > maxBytes) throw tooBig(props.size);
+    const res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
+    bytes = new Uint8Array(await res.arrayBuffer());
+  } else {
+    const bar = itemId.indexOf("|");
+    const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
+    const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+      { headers: { Authorization: "Bearer " + (await graphToken()) } },
+    );
+    if (!res.ok) throw new Error(`Graph content ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > maxBytes) throw tooBig(buf.byteLength);
+    bytes = new Uint8Array(buf);
   }
-  const bytes = new Uint8Array(buf);
-  pdfCachePut(key, bytes);
+  if (useCache) pdfCachePut(itemId, bytes);
   return bytes;
+}
+async function fetchDrawingPdf(drive: string, realId: string): Promise<Uint8Array> {
+  return loadPdfBytes(drive + "|" + realId, VIEW_DRAWING_MAX_PDF_BYTES);
+}
+async function fetchDrawingPdfById(itemId: string): Promise<Uint8Array> {
+  return loadPdfBytes(itemId, VIEW_DRAWING_MAX_PDF_BYTES);
+}
+// name / size / a link for one file id, from whichever storage holds it. On a
+// share the "link" is the UNC path people already know from the mapped drive.
+async function drawingItemMeta(itemId: string): Promise<{ name: string; size: number; webUrl: string | null }> {
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) throw new Error(az.error);
+    const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
+    return { name: dec.relPath.split("/").pop() || "", size: props.size, webUrl: sharePathOf(az.ctx.share, dec.relPath) };
+  }
+  const bar = itemId.indexOf("|");
+  if (bar <= 0) throw new Error("itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it, or an 'az:' drive id.");
+  const meta = await graphGet(`/drives/${itemId.slice(0, bar)}/items/${encodeURIComponent(itemId.slice(bar + 1))}?$select=id,name,size,webUrl,file`);
+  return { name: String(meta?.name || ""), size: Number(meta?.size || 0), webUrl: meta?.webUrl ?? null };
 }
 
 mcp.tool("view_drawing", {
@@ -6312,12 +6530,9 @@ mcp.tool("view_drawing", {
 
     // ── Direct mode: render any PDF by itemId, no index required ───────────
     if (itemId?.trim()) {
-      const bar = itemId.indexOf("|");
-      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
-      const drive = itemId.slice(0, bar), realId = itemId.slice(bar + 1);
-      let meta: any;
+      let meta: { name: string; size: number; webUrl: string | null };
       try {
-        meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,webUrl,file`);
+        meta = await drawingItemMeta(itemId.trim());
       } catch (e) {
         return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
       }
@@ -6329,7 +6544,7 @@ mcp.tool("view_drawing", {
       }
       const pageInFile = Math.max(1, Math.round(page ?? 1));
       try {
-        const bytes = await fetchDrawingPdf(drive, realId);
+        const bytes = await fetchDrawingPdfById(itemId.trim());
         const out = await renderDrawingPage(bytes, pageInFile, reg);
         const summary = {
           file: meta.name, pageInFile, ...(out.pageCount != null ? { pagesInFile: out.pageCount } : {}),
@@ -6349,10 +6564,8 @@ mcp.tool("view_drawing", {
     if (!picked.ok) return picked.response;
     const { project, chosen, otherRevisions } = picked;
 
-    const bar = String(chosen.item_id).indexOf("|");
-    if (bar <= 0) return asText({ project, error: "The index row carries a malformed file id — re-index with search_drawings indexOnly:true." });
     try {
-      const bytes = await fetchDrawingPdf(chosen.item_id.slice(0, bar), chosen.item_id.slice(bar + 1));
+      const bytes = await fetchDrawingPdfById(String(chosen.item_id));
       const out = await renderDrawingPage(bytes, Number(chosen.page), reg);
       const summary = {
         project, sheet: chosen.sheet_no, sheetTitle: chosen.sheet_title ?? null,
@@ -6404,9 +6617,6 @@ async function resolveIndexedSheet(projectNumber: string | undefined, sheet: str
   if (!pid) return fail({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
   const p = await getProjectById(pid);
   const project = p?.projectNumber || projectNumber;
-  if ((await storageFor(project)).kind !== "sharepoint") {
-    return fail({ error: AZURE_LIMITED_NOTE, nextStep: "This needs the drawing set filed in the region's SharePoint site (Outgoing)." });
-  }
   const numPrefix = String(project).toLowerCase().trim();
   const sheetNorm = normSheetToken(sheet);
   if (!sheetNorm) return fail({ error: `"${sheet}" is not a sheet number.` });
@@ -6595,21 +6805,18 @@ mcp.tool("read_drawing_schedule", {
     page: z.number().optional().describe("Direct mode: 1-based page (default 1). Ignored in sheet mode."),
   }),
   handler: async ({ projectNumber, sheet, revision, set, match, itemId, page }) => {
-    let drive = "", realId = "", pageInFile = 1;
+    let fileId = "", pageInFile = 1;
     let source: Record<string, unknown> = {};
     if (itemId?.trim()) {
-      const bar = itemId.indexOf("|");
-      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
-      drive = itemId.slice(0, bar); realId = itemId.slice(bar + 1);
+      fileId = itemId.trim();
+      if (!isAzId(fileId) && fileId.indexOf("|") <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it, or an 'az:' drive id." });
       pageInFile = Math.max(1, Math.round(page ?? 1));
       source = { pageInFile };
     } else {
       const picked = await resolveIndexedSheet(projectNumber, sheet, revision, set);
       if (!picked.ok) return picked.response;
       const c = picked.chosen;
-      const bar = String(c.item_id).indexOf("|");
-      if (bar <= 0) return asText({ project: picked.project, error: "The index row carries a malformed file id — re-index with search_drawings indexOnly:true." });
-      drive = c.item_id.slice(0, bar); realId = c.item_id.slice(bar + 1);
+      fileId = String(c.item_id);
       pageInFile = Number(c.page);
       source = {
         project: picked.project, sheet: c.sheet_no, sheetTitle: c.sheet_title ?? null,
@@ -6623,7 +6830,7 @@ mcp.tool("read_drawing_schedule", {
 
     let items: SheetTextItem[];
     try {
-      const bytes = await fetchDrawingPdf(drive, realId);
+      const bytes = await fetchDrawingPdfById(fileId);
       const { getDocumentProxy } = await import("unpdf");
       // pdf.js may take ownership of the buffer it is handed — feed it a copy
       // so the cached bytes stay intact for the next call.
@@ -6715,9 +6922,6 @@ mcp.tool("find_equipment", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "The registry reads the drawing index, which needs the sets filed in SharePoint (Outgoing)." });
-    }
     const numPrefix = String(project).toLowerCase().trim();
 
     let indexedFiles = 0, filesPending = 0;
