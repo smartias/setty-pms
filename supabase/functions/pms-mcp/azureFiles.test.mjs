@@ -223,4 +223,22 @@ console.log(failures ? `\n${failures} of ${total} assertions FAILED` : `\nall ${
     "RFK PMO Energy", "falls back to the project folder's own remainder");
   eq(projectNameFromFolders("SAPX256015.00", "SAPX256015.00", []), null, "nothing to read → null");
 }
+
+// ── CA folders on a drive (1.18.0) ──────────────────────────────────────────
+{
+  const { caKindFolders, isDisciplineFolder, folderMentionsNumber } = await import("./azureFiles.ts");
+  const f = (n) => ({ type: "folder", name: n });
+  const NEW_DC = [f("00-SIPX262012.00"), f("SIPX262012.00_Load Forecasting"), f("99-SIPX262012.00_OUTGOING")];
+  check(resolveChildFolder(NEW_DC, "CA") === null, "'CA' does not contains-match 'Load Forecasting' (word boundary)");
+  eq(resolveChildFolder([...NEW_DC, f("70-SIPX262012.00_CA")], "CA"), "70-SIPX262012.00_CA", "'CA' resolves to the prefixed DC folder");
+  eq(resolveChildFolder([f("Construction Administration"), f("Outgoing")], "ca"), "Construction Administration", "'ca' resolves via alias to the spelled-out folder");
+  const CA = [f("1. CA Admin"), f("4. Submittal Schedule"), f("8. RFIs"), f("9. Submittals"), f("RFI"), { type: "file", name: "Submittal Response.doc" }];
+  eq(caKindFolders(CA, "rfi"), ["8. RFIs", "RFI"], "RFI folders: the numbered one and the bare legacy one");
+  eq(caKindFolders(CA, "submittal"), ["9. Submittals"], "submittal folder, not the submittal SCHEDULE or the template file");
+  check(["E", "FA", "FP", "M", "P", "Misc", "misc"].every(isDisciplineFolder) && !isDisciplineFolder("004 Duct sizes") && !isDisciplineFolder("RFI 12"), "discipline folders vs item folders");
+  check(folderMentionsNumber("RFI 004 - Duct sizes", "004") && folderMentionsNumber("RFI-4 duct", "004") && folderMentionsNumber("004_Duct sizes", "4"), "RFI number with and without leading zeros");
+  check(folderMentionsNumber("260513-001-0 VAV boxes", "260513-001-0") && folderMentionsNumber("260513-001-0 VAV boxes", "260513"), "submittal number and its spec section");
+  check(!folderMentionsNumber("RFI 014 - Fans", "004") && !folderMentionsNumber("Misc", "1") && !folderMentionsNumber("x", ""), "no false matches on other numbers or empty");
+}
+console.log(failures ? `\n${failures} of ${total} assertions FAILED` : `\nall ${total} assertions pass (incl. CA)`);
 process.exit(failures ? 1 : 0);

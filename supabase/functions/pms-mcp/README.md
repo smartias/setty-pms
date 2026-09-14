@@ -438,6 +438,28 @@ share URL must not carry the token (the console refuses one that does).
 `azureFiles.test.mjs` covers the pure parts over a stub fetch;
 `regionRouting.test.mjs` pins the wiring in `index.ts`.
 
+## RFIs and submittals on a drive (1.18.0)
+
+The record stays in the PMS; the filed documents on a drive live under
+`<project>/70-<number>_CA/` → `8. RFIs` or `9. Submittals` → a folder per
+discipline (`E`, `FA`, `FP`, `M`, `P`, `Misc`) → a folder per item (older
+jobs also have a bare `RFI` folder, and some skip the discipline level).
+`azureCaItems()` walks that on every share of the project's region (drive-only
+regions and SharePoint regions with a drive annex alike, capped at
+`CA_MAX_LISTINGS` listings), and:
+
+- `read_rfi_submittal` adds `driveFiled`: the item folder(s) whose name
+  carries the item's number or spec section (`folderMentionsNumber`, leading
+  zeros ignored), each with its files as `az:` ids for `read_document`. When
+  folders exist but none match, `driveNote` names the CA folder ids to browse.
+- `search_rfis_submittals` with a project adds `driveOnly`: CA item folders
+  no log entry matches, so they can be logged with `backload_ca_item`
+  (its `spFolderUrl` accepts the folder's UNC path).
+
+`resolveChildFolder`'s last-resort contains-match is word-bounded since
+1.18.0: `CA` used to resolve to `SIPX262012.00_Load Forecasting` on a job
+with no CA folder yet.
+
 ## Drive discovery (`POST /pms-mcp/admin/discover-projects`, 1.17.0)
 
 A project folder on a region's drive with no `pms_projects` record is
