@@ -19,6 +19,13 @@ import {
   SHEET_NO_RE, canonicalSheet, encodeSpUrl, DISCIPLINE_ORDER, DISCIPLINE_NAME,
   disciplineRank, sheetRank, composeCurrentSet,
 } from "./currentSet.ts";
+// Storage seam, slice B: the Azure Files browse/read provider behind every
+// region's network-drive annex. Pure + injectable-fetch; see azureFiles.ts.
+import {
+  type AzureShare, type AzEntry, parseShareUrl, normalizeSas, cleanRelPath, joinRel,
+  encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf,
+  findProjectFolderName, projectForFolderName, extOf,
+} from "./azureFiles.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -569,8 +576,11 @@ async function graphGet(path: string): Promise<any> {
 // current hybrid: people still save to network drives while migration to
 // SharePoint happens region by region. Tools that need search, thumbnails,
 // or library semantics check the kind up front and say what the storage
-// can't do instead of failing confusingly. The provider itself lands in
-// slice B; until a row says 'azure_files', nothing routes there.
+// can't do instead of failing confusingly. Slice B (2026-09-14) is the
+// provider itself: list_project_documents browses a share (an azure_files
+// region's whole record, or the drive ANNEX of a sharepoint region) and
+// read_document opens `az:` ids from it — see azureFiles.ts and the
+// azureCtxForTeam block below.
 type StorageKind = "sharepoint" | "azure_files";
 type RegionSite = {
   siteId: string; docLibrary: string; kind: StorageKind;
@@ -624,6 +634,105 @@ async function teamForProject(projectNumber: string | null | undefined): Promise
   const p = all.find((x) => String(x.projectNumber || "").toLowerCase() === num) ??
     all.find((x) => String(x.projectNumber || "").toLowerCase().startsWith(num));
   return p?.team ?? null;
+}
+
+// ── Slice B: a region's drive share, resolved to something readable ─────────
+// The row names the share (azure_share_url) and the SECRET (azure_sas_env)
+// that holds its read-only SAS; the token is read from the function's env
+// here and nowhere else. Every failure is spelled out in terms of what the
+// admin can fix, because "not configured" was the whole of slice A's answer.
+type AzureCtx = { team: string; share: AzureShare; sas: string; region: RegionSite };
+type AzureResolve = { ok: true; ctx: AzureCtx } | { ok: false; error: string; nextStep: string };
+async function azureCtxForTeam(team: string | null | undefined): Promise<AzureResolve> {
+  const t = String(team || "").toUpperCase().trim();
+  const region = await siteForTeam(t);
+  if (!t || !region.azureShareUrl) {
+    return { ok: false, error: `No network-drive share is registered for ${t ? "region " + t : "this project's region"}.`,
+      nextStep: "An admin can register the share in Admin → Regions (share URL + SAS secret name)." };
+  }
+  const share = parseShareUrl(region.azureShareUrl);
+  if (!share) {
+    return { ok: false, error: `The share URL registered for region ${t} is malformed.`,
+      nextStep: "Fix it in Admin → Regions: https://<account>.file.core.windows.net/<share>[/folder]." };
+  }
+  const secretName = region.azureSasEnv || "";
+  const sas = normalizeSas(secretName ? Deno.env.get(secretName) : null);
+  if (!sas) {
+    return { ok: false,
+      error: secretName
+        ? `The read credential for region ${t}'s share is not loaded: Edge Function secret ${secretName} is missing or is not a SAS token.`
+        : `Region ${t}'s share has no SAS secret name on its row.`,
+      nextStep: "IT loads a read-only SAS (read + list on the share) under that secret name — Admin → Regions shows the steps. The connector picks it up on its next cold start; a redeploy forces it." };
+  }
+  return { ok: true, ctx: { team: t, share, sas, region } };
+}
+// The share root is where project folders live, named by number like the
+// SharePoint library root. Cached per region on the 300s clock: one listing
+// serves every "which folder is project X" question in that window.
+const _azRoot = new Map<string, { at: number; entries: AzEntry[]; truncated: boolean }>();
+async function azureRootEntries(ctx: AzureCtx): Promise<{ entries: AzEntry[]; truncated: boolean }> {
+  const hit = _azRoot.get(ctx.team);
+  if (hit && (Date.now() - hit.at) < 300000) return hit;
+  const r = await listDirectory(ctx.share, "", ctx.sas);
+  const v = { at: Date.now(), entries: r.entries, truncated: r.truncated };
+  _azRoot.set(ctx.team, v);
+  return v;
+}
+async function azureProjectFolder(ctx: AzureCtx, num: string): Promise<string | null> {
+  return findProjectFolderName((await azureRootEntries(ctx)).entries, num);
+}
+const AZURE_ITEM_NOTE =
+  "These files come from the office network drive (Azure Files share). read_document opens any file " +
+  "here by its itemId; search, drawings, photos and transmittals need the project record in SharePoint.";
+async function azureListing(ctx: AzureCtx, folderRel: string): Promise<Record<string, unknown>> {
+  const r = await listDirectory(ctx.share, folderRel, ctx.sas);
+  const items = r.entries.map((e) => ({
+    itemId: encodeAzId(ctx.team, joinRel(folderRel, e.name)), name: e.name, type: e.type, storage: "drive",
+    size: e.size, modified: e.modified, ext: e.type === "file" ? extOf(e.name) : undefined,
+  }));
+  return {
+    storage: "azure_files", region: ctx.team, folderId: encodeAzId(ctx.team, folderRel),
+    sharePath: sharePathOf(ctx.share, folderRel), path: "/" + folderRel, count: items.length, items,
+    ...(r.truncated ? { truncated: true, coverageWarning: "This folder holds more entries than one listing walks. Treat it as a PARTIAL listing — open a subfolder to narrow it." } : {}),
+    note: AZURE_ITEM_NOTE,
+  };
+}
+// For a SharePoint region with a drive annex: does this project also have a
+// legacy folder on the drive? A pointer, not a listing — the caller opens it.
+async function azureAnnexFor(team: string | null, num: string): Promise<Record<string, unknown>> {
+  const az = await azureCtxForTeam(team);
+  if (!az.ok) return { available: false, reason: az.error, nextStep: az.nextStep };
+  try {
+    const folder = await azureProjectFolder(az.ctx, num);
+    if (!folder) return { available: false, reason: `No folder starting with "${num}" at the root of region ${az.ctx.team}'s drive share.` };
+    return {
+      available: true, projectFolder: folder, folderId: encodeAzId(az.ctx.team, folder),
+      sharePath: sharePathOf(az.ctx.share, folder),
+      note: "Legacy documents on the office network drive. Call list_project_documents with this folderId to browse them; read_document opens any file by its id. Search, drawings, photos and transmittals need SharePoint.",
+    };
+  } catch (e) { return { available: false, reason: String((e as any)?.message ?? e) }; }
+}
+// Visibility for share paths (Codex P1 on #260). A SharePoint id is
+// unguessable and only ever comes from a listing the HIDE wrapper screened;
+// an `az:` id is a PATH anyone can type, so it earns its own verdict here:
+// the first segment must be a registered project's folder (longest project
+// number prefixing the name), that project must belong to the id's team (the
+// share is that team's), and the caller must be allowed to see it — exactly
+// projectRefVisible, so overrides and team scoping apply unchanged. Any miss
+// returns the wrapper's not-found shape, never "exists but hidden". The
+// share root is never listed for a caller; it is only walked internally to
+// find a folder by number.
+async function azurePathProject(team: string, relPath: string): Promise<{ ok: true; projectNumber: string } | { ok: false; res: any }> {
+  const first = relPath.split("/")[0] || "";
+  if (!first) {
+    return { ok: false, res: asText({ error: "The share root is not browsable.", nextStep: "Call list_project_documents with a projectNumber; it returns that project's folder id." }) };
+  }
+  const notFound = { ok: false as const, res: asText({ error: `No project matching "${first}".`, nextStep: "search_projects finds projects by number or name; list_project_documents with projectNumber returns browsable ids." }) };
+  const p = projectForFolderName(first, await getProjectsUnfiltered());
+  if (!p) return notFound;
+  if (String(p.team || "").toUpperCase().trim() !== team) return notFound;
+  if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;
+  return { ok: true, projectNumber: String(p.projectNumber) };
 }
 
 // A region row may carry the site as a plain URL (what an admin pastes into
@@ -802,9 +911,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-14-pdf-cache";
+const BUILD = "2026-09-14-azure-files-slice-b";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.13.0",
+  name: "setty-pms", version: "1.14.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3186,6 +3295,9 @@ mcp.tool("trace_references", {
 
 mcp.tool("list_project_documents", {
   description:
+    "Browse a project's folders. Regions whose files still live on the office network drive (Azure Files share) are " +
+    "browsed the same way; their ids look like 'az:TEAM:path' and open with read_document. A SharePoint region with a " +
+    "drive annex reports it as `driveAnnex` in the default result (pass its folderId here to browse legacy documents). " +
     "List a project's SharePoint files/folders across ALL document libraries on the site. THREE modes: " +
     "(1) projectNumber (default) — finds the project's folder by NUMBER in each library (works for the main " +
     "Project Document Library + Documents: drawings and specs; the EMAIL folder holds attachments received " +
@@ -3212,14 +3324,39 @@ mcp.tool("list_project_documents", {
   }),
   handler: async ({ projectNumber, subfolder, library, folderMatch, folderId }) => {
     try {
+      // Slice B: an `az:` folderId opens a folder on a region's drive share.
+      if (isAzId(folderId)) {
+        const dec = decodeAzId(folderId);
+        if (!dec) return asText({ error: "Malformed drive folder id.", nextStep: "Pass a folderId exactly as a prior listing returned it (az:TEAM:path)." });
+        const gate = await azurePathProject(dec.team, dec.relPath);
+        if (!gate.ok) return gate.res;
+        const az = await azureCtxForTeam(dec.team);
+        if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
+        const relIn = cleanRelPath(subfolder || "");
+        if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
+        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, joinRel(dec.relPath, relIn))) }); }
+        catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
+      }
       const team = await teamForProject(projectNumber);
-      // Slice B lands the Azure Files browse/read provider here; until a
-      // region's credentials are configured there is nothing to list.
-      if ((await siteForTeam(team)).kind !== "sharepoint") {
-        return asText({
-          error: AZURE_LIMITED_NOTE,
-          note: "Browsing this region's Azure share is not enabled yet — its read credentials are not configured. Ask Sara Arias.",
-        });
+      const region = await siteForTeam(team);
+      // An azure_files region: the share IS the project record. Find the
+      // project folder at the share root by number and list it.
+      if (region.kind !== "sharepoint") {
+        const num = String(projectNumber || "").toLowerCase().trim();
+        if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE });
+        const az = await azureCtxForTeam(team);
+        if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep, note: AZURE_LIMITED_NOTE });
+        const relIn = cleanRelPath(subfolder || "");
+        if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
+        try {
+          const folder = await azureProjectFolder(az.ctx, num);
+          if (!folder) {
+            return asText({ project: projectNumber, storage: "azure_files", region: az.ctx.team, sharePath: sharePathOf(az.ctx.share, ""),
+              error: `No folder starting with "${projectNumber}" at the root of region ${az.ctx.team}'s share.`,
+              nextStep: "Confirm the number with search_projects; the project folder must sit at the share's registered root, named by number." });
+          }
+          return asText({ project: projectNumber, projectFolder: folder, ...(await azureListing(az.ctx, joinRel(folder, relIn))) });
+        } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: az.ctx.team }); }
       }
       const drives = await siteDrives(team);
       const rel = subfolder && subfolder.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "").split("/").map(encodeURIComponent).join("/") : "";
@@ -3282,10 +3419,16 @@ mcp.tool("list_project_documents", {
       const found = per.filter(Boolean) as Array<{ name: string; truncated: boolean; items: any[] }>;
       const items = found.flatMap((f) => f.items);
       const partialLibs = found.filter((f) => f.truncated).map((f) => f.name);
+      // Hybrid region: say whether the project also has a legacy folder on
+      // the drive annex, so "nothing in SharePoint" is never the last word.
+      const annex = region.azureShareUrl ? await azureAnnexFor(team, num) : null;
       return asText({
         project: projectNumber, path: subfolder || "/",
         availableLibraries: drives.map((d) => d.name), librariesWithProject: found.map((f) => f.name),
         count: items.length, items,
+        ...(annex ? { driveAnnex: annex } : {}),
+        ...(annex && (annex as any).available && !items.length
+          ? { note: "Nothing for this project in SharePoint yet, but its legacy folder exists on the office drive — browse driveAnnex.folderId." } : {}),
         ...(partialLibs.length ? { truncated: true, coverageWarning: `Listing stopped at ${MAX_FOLDER_PAGES * 200} entries in ${partialLibs.join(", ")}. Treat it as a PARTIAL listing — open a subfolder to narrow it.` } : {}),
         hint: "Proposals/Contract libraries are named by project/client NAME, not number. To reach this project's proposal or contract folder, call again with folderMatch:'<distinctive word from the project name>' + library:'Proposals' (or 'Contract Library'), then folderId to open it.",
       });
@@ -3297,7 +3440,8 @@ mcp.tool("list_project_documents", {
 
 mcp.tool("read_document", {
   description:
-    "Extract the text of one SharePoint document by its itemId (from list_project_documents). " +
+    "Extract the text of one document by its itemId from list_project_documents — a SharePoint item, or a file on a " +
+    "region's network-drive share (ids starting 'az:'). " +
     "Handles PDF, Word (.docx), Excel (.xlsx/.xls — each sheet rendered as rows), and " +
     "plain-text/HTML/CSV. For LARGE PDFs (spec books / project manuals) extraction is " +
     "page-bounded from page 1 — pass find:'keyword' (e.g. a spec section '15230') to jump to " +
@@ -3310,33 +3454,61 @@ mcp.tool("read_document", {
     "exports — read them in full and note the specific comments and their responses. Large files and other " +
     "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl.",
   inputSchema: z.object({
-    itemId: z.string().describe("driveItem id from list_project_documents (may be a 'driveId|itemId' composite spanning libraries)"),
+    itemId: z.string().describe("Item id from list_project_documents: a SharePoint 'driveId|itemId' composite, or an 'az:TEAM:path' id for a file on the region's network-drive share"),
     find: z.string().optional().describe("PDF only: jump to the page(s) whose text contains this keyword/phrase (case-insensitive), e.g. a spec section number '15230' or a term like 'DIRECT-BURIED'. The best way to reach a specific section of a large manual."),
     pages: z.string().optional().describe("PDF only: extract an explicit page range, e.g. '120-140' or '75'. Use after seeing totalPages, or to read around a find hit."),
   }),
   handler: async ({ itemId, find, pages }) => {
     try {
-      const bar = itemId.indexOf("|");
-      // Composite ids carry their own driveId (any region); a bare id is a
-      // legacy form that only ever came from the default region's library.
-      const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
-      const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
-      const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl`);
-      const name = meta.name || "";
-      const ext = (name.split(".").pop() || "").toLowerCase();
-      const size = meta.size ?? 0;
-      const base = { itemId, name, size, webUrl: meta.webUrl };
-      if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl." });
-      const pdfCacheKey = drive + "|" + realId;
-      let pdfBytes: Uint8Array | null = ext === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
+      let name = "";
       let res: Response | null = null;
-      if (!pdfBytes) {
-        res = await fetch(
-          `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
-          { headers: { Authorization: "Bearer " + (await graphToken()) } },
-        );
-        if (!res.ok) return asText({ ...base, error: `Graph content ${res.status}` });
+      let base: Record<string, unknown>;
+      // PDF bytes are cached by item id across review calls (main, Sep 14);
+      // both sources honour the cache: a hit skips the download entirely.
+      let pdfCacheKey = "";
+      let pdfBytes: Uint8Array | null = null;
+      if (isAzId(itemId)) {
+        // Slice B: an `az:` id names a file on a region's drive share. Size
+        // first (HEAD), then the bytes; the extractors below are shared.
+        const dec = decodeAzId(itemId);
+        // A file is always inside a project folder: at least "<folder>/<file>".
+        if (!dec || !dec.relPath.includes("/")) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM:project-folder/path/to/file)." });
+        const gate = await azurePathProject(dec.team, dec.relPath);
+        if (!gate.ok) return gate.res;
+        const az = await azureCtxForTeam(dec.team);
+        if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
+        name = dec.relPath.split("/").pop() || "";
+        base = { itemId, name, storage: "azure_files", region: dec.team, sharePath: sharePathOf(az.ctx.share, dec.relPath) };
+        try {
+          const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
+          base.size = props.size; base.modified = props.modified;
+          if (props.size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open it from the mapped drive at sharePath." });
+          pdfCacheKey = itemId;
+          pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
+          if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
+        } catch (e) { return asText({ ...base, error: String((e as any)?.message ?? e) }); }
+      } else {
+        const bar = itemId.indexOf("|");
+        // Composite ids carry their own driveId (any region); a bare id is a
+        // legacy form that only ever came from the default region's library.
+        const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
+        const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
+        const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl`);
+        name = meta.name || "";
+        const size = meta.size ?? 0;
+        base = { itemId, name, size, webUrl: meta.webUrl };
+        if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl." });
+        pdfCacheKey = drive + "|" + realId;
+        pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
+        if (!pdfBytes) {
+          res = await fetch(
+            `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+            { headers: { Authorization: "Bearer " + (await graphToken()) } },
+          );
+          if (!res.ok) return asText({ ...base, error: `Graph content ${res.status}` });
+        }
       }
+      const ext = (name.split(".").pop() || "").toLowerCase();
       let text = "";
       if (ext === "pdf") {
         try {

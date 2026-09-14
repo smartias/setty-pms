@@ -177,6 +177,16 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v18 (14 Sep 2026) — Regions tab hardening after the first real onboarding
+// pass (Nikhil, 10 Sep) produced rows keyed by DRIVE LETTERS ('I:', 'W:',
+// 'K:') instead of PMS team codes, secret names with punctuation, and the bare
+// SharePoint sites root as a site. None of those can route a project or load
+// a secret, and the form accepted all of them. Saving now validates: team =
+// the PMS Team field (letters/digits), site = a real site URL or Graph id,
+// share = an Azure Files URL with NO query string (a pasted SAS would land in
+// the database), secret name = a legal env-var name. Adds a notes field,
+// a Delete action (the only way to retire a mis-keyed row, since re-keying
+// upserts a new one), and guidance that one drive may back several teams.
 // v17 (6 Sep 2026) — brings the Claude/MCP tab and guide current with the
 // late-Aug/early-Sep server work: 32 tools (was 23 — companies/contacts,
 // term contracts, trace_references, prepare_transmittal, search_drawings,
@@ -905,18 +915,60 @@ async function renderFiling() {
 }
 
 // ── Regions (multi-region SharePoint routing for the PMS connector) ──────────
-// One row per office team ('NY', 'DC', ...). The Claude connector routes each
-// project's file access to its region's site through this table and picks up
-// changes within ~5 minutes — no deploy. The site can be pasted as a plain
+// One row per PMS TEAM CODE ('NY', 'DC', ...) — the value in a project's Team
+// field, never a drive letter or an office nickname: the connector matches
+// rows to projects by that code and nothing else. A network drive shared by
+// several offices is entered once per team that uses it. The connector picks
+// up changes within ~5 minutes — no deploy. The site can be pasted as a plain
 // SharePoint URL: the console tries to resolve it to a Graph site id via the
 // admin's Microsoft session; if that scope isn't granted the URL is stored
 // as-is and the connector resolves it server-side. SAS tokens for
 // azure_files regions NEVER go through this page — the form stores only the
 // NAME of the Edge Function secret that holds the token.
-const REGION_FIELDS = "team,region_name,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env,enabled,updated_at";
+const REGION_FIELDS = "team,region_name,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env,enabled,notes,updated_at";
 function regionBlank() {
   return { team: "", region_name: "", sharepoint_site_id: "", doc_library: "Project Document Library",
-           storage_kind: "sharepoint", azure_share_url: "", azure_sas_env: "", enabled: true, _isNew: true };
+           storage_kind: "sharepoint", azure_share_url: "", azure_sas_env: "", enabled: true, notes: "", _isNew: true };
+}
+// A PMS team code: what the project's Team field holds ('NY', 'DC'). Letters
+// and digits only — 'I:' or 'W:' is a drive letter, not a team.
+const REGION_TEAM_RE = /^[A-Z][A-Z0-9]{1,5}$/;
+// The Graph composite site id the connector stores after resolving a URL.
+const GRAPH_SITE_ID_RE = /^[a-z0-9.-]+\.sharepoint\.com,[0-9a-f-]{36},[0-9a-f-]{36}$/i;
+// An Edge Function secret name must be a legal environment-variable name.
+const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+function regionTeamClean(v) { return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6); }
+function sasNameFor(team) { return "AZURE_SAS_" + (regionTeamClean(team) || "XX"); }
+// Every reason a row could never work, checked BEFORE it is saved — the
+// connector cannot route on a bad team code, resolve the sites root as a
+// site, or load a secret whose name is not a legal env-var name; and a SAS
+// pasted into the share URL would put the token into the database.
+function regionProblem(ed) {
+  const team = String(ed.team || "").toUpperCase().trim();
+  if (!team) return "Team code is required — the project's Team field in the PMS (e.g. DC).";
+  if (!REGION_TEAM_RE.test(team)) return "Team code must be the PMS team code (letters and digits, e.g. NY, DC, BT). A drive letter like I: or W: is not a team — add one row per team that uses that drive.";
+  const site = String(ed.sharepoint_site_id || "").trim();
+  if (!site) return "SharePoint site URL (or Graph site id) is required.";
+  if (/^https?:\/\//i.test(site)) {
+    let u; try { u = new URL(site); } catch (_) { return "SharePoint site is not a valid URL."; }
+    const segs = u.pathname.split("/").filter(Boolean);
+    if (!/\.sharepoint\.com$/i.test(u.hostname)) return "SharePoint site must be on setty.sharepoint.com (e.g. https://setty.sharepoint.com/sites/DCProjects).";
+    if (segs.length < 2 || !/^(sites|teams)$/i.test(segs[0])) return "SharePoint site must name a specific site, e.g. https://setty.sharepoint.com/sites/DCProjects — the bare /sites/ root is not a site.";
+  } else if (!GRAPH_SITE_ID_RE.test(site)) {
+    return "SharePoint site must be a site URL (https://setty.sharepoint.com/sites/…) or a Graph site id (host,siteGuid,webGuid).";
+  }
+  if (!String(ed.doc_library || "").trim()) return "Document library name is required (normally 'Project Document Library').";
+  const share = String(ed.azure_share_url || "").trim();
+  const sas = String(ed.azure_sas_env || "").trim();
+  const azureOnly = ed.storage_kind === "azure_files";
+  if (azureOnly && !share) return "'Azure share only' storage needs the Azure share URL.";
+  if (share) {
+    if (/[?#]|sig=|sv=/i.test(share)) return "The share URL must not carry a SAS token or query string — the token goes into Edge Function secrets, never this form.";
+    if (!/^https:\/\/[a-z0-9]+\.file\.core\.windows\.net\/[^\s/]+(\/[^\s]*)?$/i.test(share)) return "Azure share URL must look like https://<account>.file.core.windows.net/<share>[/folder].";
+    if (!sas) return "An Azure share needs the SAS secret NAME (e.g. " + sasNameFor(team) + ").";
+  }
+  if (sas && !SECRET_NAME_RE.test(sas)) return "SAS secret name must be a legal secret name: capital letters, digits and underscores, starting with a letter (e.g. " + sasNameFor(team) + "). Punctuation such as ':' is not allowed.";
+  return null;
 }
 async function renderRegions() {
   const v = $("view");
@@ -929,9 +981,9 @@ async function renderRegions() {
   const rows = state.regions.map((r, i) => `
     <tr style="${r.enabled ? "" : "opacity:.55"}">
       <td><b>${esc(r.team)}</b></td><td>${esc(r.region_name)}</td>
-      <td><span class="pill ${r.storage_kind === "sharepoint" ? "ok" : "warn"}">${
+      <td><span class="pill ${r.storage_kind === "sharepoint" ? "ok" : "warn"}" title="${esc(r.azure_share_url || "")}">${
         r.storage_kind !== "sharepoint" ? "Azure share" : r.azure_share_url ? "SharePoint + drive annex" : "SharePoint"
-      }</span></td>
+      }</span>${r.notes ? ` <span style="color:var(--muted);font-size:11px" title="${esc(r.notes)}">📝</span>` : ""}</td>
       <td style="font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.sharepoint_site_id)}">${esc(r.sharepoint_site_id)}</td>
       <td style="font-size:12px">${esc(r.doc_library)}</td>
       <td>${r.enabled ? '<span class="pill ok">on</span>' : '<span class="pill bad">off</span>'}</td>
@@ -946,9 +998,9 @@ async function renderRegions() {
     <div class="card" style="border-color:var(--accent)">
       <div style="color:var(--muted);font-size:12px;margin-bottom:8px">${ed._isNew ? "ADD REGION" : "EDIT REGION — " + esc(ed.team)}</div>
       <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
-        <label style="font-size:12px">Team code<br><input id="rgTeam" value="${esc(ed.team)}" ${ed._isNew ? "" : "disabled"} placeholder="DC" style="width:70px" oninput="state.regionEdit.team=this.value.toUpperCase()"></label>
+        <label style="font-size:12px">Team code<br><input id="rgTeam" value="${esc(ed.team)}" ${ed._isNew ? "" : "disabled"} placeholder="DC" style="width:70px" oninput="this.value=regionTeamClean(this.value);state.regionEdit.team=this.value" title="The project's Team field in the PMS — letters and digits only"></label>
         <label style="font-size:12px">Region name<br><input id="rgName" value="${esc(ed.region_name)}" placeholder="Washington DC" style="width:160px" oninput="state.regionEdit.region_name=this.value"></label>
-        <label style="font-size:12px">Storage<br><select id="rgKind" onchange="state.regionEdit.storage_kind=this.value; if(this.value==='azure_files'&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env='AZURE_SAS_'+(state.regionEdit.team||'XX');} render()">
+        <label style="font-size:12px">Storage<br><select id="rgKind" onchange="state.regionEdit.storage_kind=this.value; if(this.value==='azure_files'&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env=sasNameFor(state.regionEdit.team);} render()">
           <option value="sharepoint" ${!azure ? "selected" : ""}>SharePoint (full features)</option>
           <option value="azure_files" ${azure ? "selected" : ""}>Azure share only (browse/read)</option>
         </select></label>
@@ -958,12 +1010,14 @@ async function renderRegions() {
       </div>
       <div style="margin-top:10px;color:var(--muted);font-size:12px">NETWORK-DRIVE ANNEX (optional, any region) — legacy documents on the office drive stay browsable/readable while migration to SharePoint happens folder by folder; whatever is filed in SharePoint keeps the full feature set.</div>
       <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:4px">
-        <label style="font-size:12px;flex:1;min-width:260px">Azure share URL<br><input id="rgAzUrl" value="${esc(ed.azure_share_url || "")}" placeholder="https://<account>.file.core.windows.net/<share>" style="width:100%" oninput="state.regionEdit.azure_share_url=this.value; if(this.value&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env='AZURE_SAS_'+(state.regionEdit.team||'XX');render()}"></label>
-        <label style="font-size:12px">SAS secret name<br><input id="rgAzEnv" value="${esc(ed.azure_sas_env || "")}" placeholder="AZURE_SAS_DC" style="width:140px" oninput="state.regionEdit.azure_sas_env=this.value"></label>
+        <label style="font-size:12px;flex:1;min-width:260px">Azure share URL<br><input id="rgAzUrl" value="${esc(ed.azure_share_url || "")}" placeholder="https://<account>.file.core.windows.net/<share>" style="width:100%" oninput="state.regionEdit.azure_share_url=this.value; if(this.value&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env=sasNameFor(state.regionEdit.team);render()}"></label>
+        <label style="font-size:12px">SAS secret name<br><input id="rgAzEnv" value="${esc(ed.azure_sas_env || "")}" placeholder="AZURE_SAS_DC" style="width:140px" oninput="state.regionEdit.azure_sas_env=this.value.toUpperCase()"></label>
       </div>
+      <label style="display:block;font-size:12px;margin-top:8px">Notes (admin-only; e.g. which offices share this drive, who owns the SAS rotation)<br><textarea id="rgNotes" rows="2" style="width:100%;max-width:720px" oninput="state.regionEdit.notes=this.value">${esc(ed.notes || "")}</textarea></label>
       <div style="margin-top:10px">
         <button class="btn btn-primary" onclick="saveRegion()">Save region</button>
         <button class="btn" onclick="state.regionEdit=null;render()">Cancel</button>
+        ${ed._isNew ? "" : `<button class="btn" style="color:var(--bad,#c33)" onclick="deleteRegion('${esc(ed.team)}')">Delete region</button>`}
         <span id="rgNote" style="color:var(--muted);font-size:12px;margin-left:8px"></span>
       </div>
       ${annex ? `
@@ -971,8 +1025,8 @@ async function renderRegions() {
         <b>Where the SAS token goes (never into this page, chat, or email):</b><br>
         1&nbsp;· In Azure, generate a <b>read-only</b> SAS for the share, with an expiry (rotate on a calendar).<br>
         2&nbsp;· In the Supabase dashboard → project <b>khxmgjilwhdguuepbhne</b> → Edge Functions → Secrets, add a secret named
-        <code>${esc(ed.azure_sas_env || "AZURE_SAS_" + (ed.team || "XX"))}</code> with the token as its value
-        (CLI alternative: <code>npx supabase secrets set ${esc(ed.azure_sas_env || "AZURE_SAS_" + (ed.team || "XX"))}=… --project-ref khxmgjilwhdguuepbhne</code>).<br>
+        <code>${esc(ed.azure_sas_env || sasNameFor(ed.team))}</code> with the token as its value
+        (CLI alternative: <code>npx supabase secrets set ${esc(ed.azure_sas_env || sasNameFor(ed.team))}=… --project-ref khxmgjilwhdguuepbhne</code>).<br>
         3&nbsp;· The connector reads the secret by this name at runtime. This form stores only the name.
       </div>` : ""}
     </div>`;
@@ -982,7 +1036,7 @@ async function renderRegions() {
       <div class="stat"><b>${state.regions.filter(r => r.enabled).length}</b><span>enabled</span></div>
       <button class="btn btn-primary" onclick="state.regionEdit=regionBlank();render()">＋ Add region</button>
       <button class="btn" onclick="state.regions=null;state.regionEdit=null;render()">↻ Refresh</button>
-      <span style="color:var(--muted);font-size:12px">The Claude connector picks up changes within ~5 minutes. Projects route by their PMS <b>team</b>; a team without an enabled row falls back to NY.</span>
+      <span style="color:var(--muted);font-size:12px">The Claude connector picks up changes within ~5 minutes. Projects route by their PMS <b>team code</b> (the project's Team field: NY, DC, …); a team without an enabled row falls back to NY.</span>
     </div>
     ${form}
     <div class="card">
@@ -993,7 +1047,11 @@ async function renderRegions() {
         with the standard subfolders (Outgoing, Emails, Photos, …). Regions can run HYBRID during migration:
         the SharePoint site carries the project record (full features) while a registered drive annex keeps
         legacy documents browsable/readable — moving a folder into SharePoint is what upgrades it to
-        search, drawings, photos and transmittals.
+        search, drawings, photos and transmittals.<br>
+        <b>Keying:</b> the Team code is the project's Team field in the PMS, never a drive letter. One office
+        drive used by several teams (e.g. the I: drive for DC and Fairfax) is registered once per team, each
+        pointing at the same share URL and secret name. Shared knowledge or intranet drives are not regions —
+        no project routes to them.
       </div>
     </div>`;
 }
@@ -1017,11 +1075,8 @@ async function saveRegion() {
   const ed = state.regionEdit;
   if (!ed) return;
   const team = String(ed.team || "").toUpperCase().trim();
-  if (!team) { toast("Team code is required (matches the PMS team, e.g. DC).", "error"); return; }
-  if (!String(ed.sharepoint_site_id || "").trim()) { toast("SharePoint site URL (or id) is required.", "error"); return; }
-  if ((ed.storage_kind === "azure_files" || String(ed.azure_share_url || "").trim()) && !String(ed.azure_sas_env || "").trim()) {
-    toast("An Azure share needs the SAS secret NAME (e.g. AZURE_SAS_" + team + ").", "error"); return;
-  }
+  const problem = regionProblem(ed);
+  if (problem) { toast(problem, "error"); return; }
   const note = $("rgNote"); if (note) note.textContent = "Saving…";
   const siteRef = await resolveSiteUrl(String(ed.sharepoint_site_id).trim());
   const row = {
@@ -1031,6 +1086,7 @@ async function saveRegion() {
     storage_kind: ed.storage_kind === "azure_files" ? "azure_files" : "sharepoint",
     azure_share_url: String(ed.azure_share_url || "").trim() || null,
     azure_sas_env: String(ed.azure_sas_env || "").trim() || null,
+    notes: String(ed.notes || "").trim() || null,
     enabled: !!ed.enabled, updated_at: new Date().toISOString(),
   };
   try {
@@ -1038,6 +1094,18 @@ async function saveRegion() {
     toast("Region " + team + " saved" + (siteRef !== ed.sharepoint_site_id ? " (site URL resolved to its Graph id)" : "") + ". The connector picks it up within ~5 minutes.", "success");
     state.regions = null; state.regionEdit = null; render();
   } catch (e) { toast("Save failed: " + e.message, "error"); if (note) note.textContent = ""; }
+}
+// Re-keying a row is an upsert on the NEW team code, so a mis-keyed row can
+// only leave the table this way. Projects whose team loses its row fall back
+// to the NY site within ~5 minutes; nothing else is touched.
+async function deleteRegion(team) {
+  if (!team) return;
+  if (!confirm("Delete region " + team + "? Projects with team " + team + " will route to the NY site (fallback) within ~5 minutes. The share and its secret are not touched.")) return;
+  try {
+    await sb("DELETE", "/rest/v1/pms_regions?team=eq." + encodeURIComponent(team));
+    toast("Region " + team + " deleted.", "success");
+    state.regions = null; state.regionEdit = null; render();
+  } catch (e) { toast("Delete failed: " + e.message, "error"); }
 }
 
 // ── Integration (PMS ↔ SETTYfy billing loop) ─────────────────────────────────
