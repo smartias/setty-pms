@@ -10,7 +10,7 @@
 import {
   parseShareUrl, cleanRelPath, joinRel, encodeAzId, decodeAzId, isAzId, normalizeSas, azureUrl,
   sharePathOf, parseListXml, describeAzureError, listDirectory, fileProps, getFile,
-  findProjectFolderName, projectForFolderName, extOf, AzureFilesError, AZ_API_VERSION,
+  findProjectFolderName, projectForFolderName, extOf, AzureFilesError, AZ_API_VERSION, shareLabelClean,
 } from "./azureFiles.ts";
 
 let total = 0, failures = 0;
@@ -45,9 +45,15 @@ eq(joinRel("SAP", ""), "SAP", "joinRel with empty path");
 
 // ── 3. Ids ──────────────────────────────────────────────────────────────────
 const id = encodeAzId("ny", "SAPX256015.00 Tabler/Outgoing/file:1.pdf");
-eq(id, "az:NY:SAPX256015.00 Tabler/Outgoing/file:1.pdf", "encode upper-cases the team");
-eq(decodeAzId(id), { team: "NY", relPath: "SAPX256015.00 Tabler/Outgoing/file:1.pdf" }, "decode splits on the FIRST colon after the team (paths may contain colons)");
-eq(decodeAzId("az:DC:"), { team: "DC", relPath: "" }, "an id with an empty path is the share root");
+eq(id, "az:NY:SAPX256015.00 Tabler/Outgoing/file:1.pdf", "encode upper-cases the team (no label: the region's first share)");
+eq(decodeAzId(id), { team: "NY", label: null, relPath: "SAPX256015.00 Tabler/Outgoing/file:1.pdf" }, "decode splits on the FIRST colon after the team (paths may contain colons)");
+eq(decodeAzId("az:DC:"), { team: "DC", label: null, relPath: "" }, "an id with an empty path is the share root");
+eq(encodeAzId("dc", "SIPX262012.00 RFK/Outgoing", "w"), "az:DC.W:SIPX262012.00 RFK/Outgoing", "a share label rides after the team, upper-cased");
+eq(decodeAzId("az:DC.W:SIPX262012.00 RFK/Outgoing"), { team: "DC", label: "W", relPath: "SIPX262012.00 RFK/Outgoing" }, "decode returns the share label");
+eq(decodeAzId("az:dc.sap:x"), { team: "DC", label: "SAP", relPath: "x" }, "team and label are case-insensitive");
+check(decodeAzId("az:DC.:x") === null && decodeAzId("az:DC.W-1:x") === null && decodeAzId("az:DC.TOOLONGLABEL13:x") === null, "an empty, punctuated or over-long label is rejected");
+eq(shareLabelClean("w:"), "W", "shareLabelClean strips punctuation (a drive letter becomes its label)");
+eq(encodeAzId("DC", "x", ""), "az:DC:x", "an empty label is omitted");
 check(isAzId("az:NY:x") && !isAzId("b!abc|123") && !isAzId(null), "isAzId tells az ids from Graph composites");
 check(decodeAzId("az:I::x") === null, "a drive-letter team ('I:') is not a valid team");
 check(decodeAzId("az:NY") === null, "an id without the second colon is malformed");

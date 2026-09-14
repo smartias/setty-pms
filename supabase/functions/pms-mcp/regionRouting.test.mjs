@@ -86,7 +86,7 @@ check(siteUrlToGraphPath("") === null, "empty ref is not a URL");
 // ── 4. Drift checks against the shipped source ─────────────────────────────
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED from this test's copy`);
+const has = (needle, label, times = 1) => check((shipped.split(needle).length - 1) >= times, `${label} has DRIFTED from this test's copy`);
 has('"pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env&enabled=eq.true"',
   "region rows query (enabled only, storage seam columns)");
 // Storage seam (slice A): 'azure_files' regions are gated to browse/read
@@ -97,8 +97,16 @@ has("const AZURE_LIMITED_NOTE =", "single shared azure-limitation note");
 check((shipped.match(/AZURE_LIMITED_NOTE/g) || []).length >= 7,
   "the azure gate guards the file tools (drawings, sheets, current set, transmittals, find_document, listing)");
 has('if ((await storageFor(project)).kind !== "sharepoint") {', "gates run on the RESOLVED project (after HIDE)");
-has("azureSasEnv: r.azure_sas_env ? String(r.azure_sas_env) : null,",
+has("sasEnv: s.sas_env ? String(s.sas_env) : null }))",
   "SAS config is an env-var NAME — the token itself never comes from the database");
+// Region shares (1.15.0): a region carries N drives from pms_region_shares;
+// the legacy single-share columns only serve a team the table has no rows
+// for, so an older row keeps working until it is migrated.
+has('"pms_region_shares?select=team,label,share_url,sas_env,sort_order&enabled=eq.true&order=sort_order.asc,label.asc"', "region shares query (enabled, ordered)");
+has('shares = [{ label: "DRIVE", url: String(r.azure_share_url), sasEnv: r.azure_sas_env ? String(r.azure_sas_env) : null }];', "legacy single-share columns are the fallback, not a second source");
+has("async function azureCtxForTeam(team: string | null | undefined, label?: string | null): Promise<AzureResolve> {", "a share is resolved by team + label");
+has("const az = await azureCtxForTeam(dec.team, dec.label);", "both az: entry points resolve the share the id names", 2);
+has("const { hits, problems, labels } = await azureProjectHits(t, num);", "azure-only listing and the hybrid annex search EVERY share of the region", 2);
 has("return `/sites/${u.hostname}:${path || \"/\"}`;", "URL-form site refs resolve via hostname:path");
 has("/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name", "drive lookups resolve URL-form site refs");
 has("async function docDriveId(team?: string | null): Promise<string> {", "docDriveId is region-aware");
@@ -119,7 +127,7 @@ has('} from "./azureFiles.ts";', "the provider module is imported");
 has("const sas = normalizeSas(secretName ? Deno.env.get(secretName) : null);", "the SAS comes from the env secret named on the row");
 has("if (isAzId(folderId)) {", "list_project_documents opens az: folder ids");
 has('if (region.kind !== "sharepoint") {\n        const num = String(projectNumber || "").toLowerCase().trim();', "azure_files regions are browsed by project number, not refused");
-has("const annex = region.azureShareUrl ? await azureAnnexFor(team, num) : null;", "sharepoint regions with a share report their drive annex");
+has("const annex = region.shares.length ? await azureAnnexFor(team, num) : null;", "sharepoint regions with shares report their drive annexes");
 has("if (isAzId(itemId)) {", "read_document opens az: file ids");
 has("if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);", "read_document reads share bytes through the provider (PDF cache honoured)");
 check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refusal is gone");
