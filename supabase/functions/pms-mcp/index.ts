@@ -435,6 +435,60 @@ const MAX_DOC_BYTES = 20 * 1024 * 1024;
 const SHEET_MAX_BYTES = 64 * 1024 * 1024;
 const SHEET_OVERSIZE_BUDGET = 96 * 1024 * 1024;
 
+// ── Per-isolate PDF caches (2026-09-14) ─────────────────────────────────────
+// A CA review hammers the same files back to back: view_drawing full page,
+// then region zooms, then another page of the same cut sheet; read_document
+// find:'23 21 13' on the spec book, then pages:'X-Y' around the hit;
+// read_drawing_schedule then a view_drawing sanity zoom on the same sheet.
+// Each of those used to re-download a multi-MB PDF from Graph (and re-extract
+// its text) per call. A warm isolate serves a whole session, so a small TTL'd
+// LRU makes every repeat call skip the download. The TTL bounds staleness: a
+// file re-uploaded mid-review is picked up within 5 minutes, which is tighter
+// than the drawing index's own latency. Scoped to view_drawing /
+// read_drawing_schedule / read_document repeats — the batch indexers walk each
+// file once and would only churn the cache.
+const PDF_CACHE_TTL_MS = 5 * 60 * 1000;
+const PDF_CACHE_MAX_BYTES = 48 * 1024 * 1024; // ~a combined book + a cut sheet
+const pdfByteCache = new Map<string, { bytes: Uint8Array; at: number }>();
+function pdfCacheGet(key: string): Uint8Array | null {
+  const hit = pdfByteCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > PDF_CACHE_TTL_MS) { pdfByteCache.delete(key); return null; }
+  pdfByteCache.delete(key); pdfByteCache.set(key, hit); // re-insert = LRU touch
+  return hit.bytes;
+}
+function pdfCachePut(key: string, bytes: Uint8Array): void {
+  if (bytes.byteLength > PDF_CACHE_MAX_BYTES) return;
+  pdfByteCache.delete(key);
+  pdfByteCache.set(key, { bytes, at: Date.now() });
+  let total = 0;
+  for (const v of pdfByteCache.values()) total += v.bytes.byteLength;
+  for (const k of pdfByteCache.keys()) {
+    if (total <= PDF_CACHE_MAX_BYTES) break;
+    total -= pdfByteCache.get(k)!.bytes.byteLength;
+    pdfByteCache.delete(k);
+  }
+}
+// Extracted page text per file: pdf.js text extraction over an 800-page spec
+// book costs tens of seconds, and the find-then-pages pattern extracts the
+// same pages twice. Text is tiny next to the bytes, so this is capped by file
+// count, not size, on the same TTL.
+const PDF_TEXT_CACHE_MAX_FILES = 8;
+const pdfTextCache = new Map<string, { at: number; pages: Map<number, string> }>();
+function pdfPageTexts(key: string): Map<number, string> {
+  const hit = pdfTextCache.get(key);
+  if (hit && Date.now() - hit.at <= PDF_CACHE_TTL_MS) {
+    pdfTextCache.delete(key); pdfTextCache.set(key, hit);
+    return hit.pages;
+  }
+  const fresh = { at: Date.now(), pages: new Map<number, string>() };
+  pdfTextCache.delete(key); pdfTextCache.set(key, fresh);
+  while (pdfTextCache.size > PDF_TEXT_CACHE_MAX_FILES) {
+    pdfTextCache.delete(pdfTextCache.keys().next().value as string);
+  }
+  return fresh.pages;
+}
+
 let _graphTok: { token: string; exp: number } | null = null;
 async function graphToken(): Promise<string> {
   if (!GRAPH_TENANT || !GRAPH_CLIENT || !GRAPH_SECRET) {
@@ -710,7 +764,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-13-ca-merge-pullreply";
+const BUILD = "2026-09-14-pdf-cache";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.13.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3235,22 +3289,35 @@ mcp.tool("read_document", {
       const size = meta.size ?? 0;
       const base = { itemId, name, size, webUrl: meta.webUrl };
       if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl." });
-      const res = await fetch(
-        `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
-        { headers: { Authorization: "Bearer " + (await graphToken()) } },
-      );
-      if (!res.ok) return asText({ ...base, error: `Graph content ${res.status}` });
+      const pdfCacheKey = drive + "|" + realId;
+      let pdfBytes: Uint8Array | null = ext === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
+      let res: Response | null = null;
+      if (!pdfBytes) {
+        res = await fetch(
+          `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+          { headers: { Authorization: "Bearer " + (await graphToken()) } },
+        );
+        if (!res.ok) return asText({ ...base, error: `Graph content ${res.status}` });
+      }
       let text = "";
       if (ext === "pdf") {
         try {
           const { getDocumentProxy } = await import("unpdf");
-          const pdf: any = await getDocumentProxy(new Uint8Array(await res.arrayBuffer()));
+          if (!pdfBytes) { pdfBytes = new Uint8Array(await res!.arrayBuffer()); pdfCachePut(pdfCacheKey, pdfBytes); }
+          // pdf.js may take ownership of the buffer it is handed — feed it a
+          // copy so the cached bytes stay intact for the next call.
+          const pdf: any = await getDocumentProxy(pdfBytes.slice());
           const total: number = pdf.numPages;
           const MAX_PAGES = 50;
+          const pagesMemo = pdfPageTexts(pdfCacheKey);
           const pageText = async (i: number): Promise<string> => {
+            const memo = pagesMemo.get(i);
+            if (memo !== undefined) return memo;
             const pg = await pdf.getPage(i);
             const tc = await pg.getTextContent();
-            return (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+            const t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
+            pagesMemo.set(i, t);
+            return t;
           };
           const capPdf = (t: string) => t.length > MAX_DOC_CHARS ? t.slice(0, MAX_DOC_CHARS) + "\n…[truncated]" : t;
           if (find && String(find).trim()) {
@@ -3290,13 +3357,13 @@ mcp.tool("read_document", {
           return asText({ ...base, error: "PDF text extraction failed: " + String((e as any)?.message ?? e) });
         }
       } else if (["txt", "csv", "md", "json", "xml"].includes(ext)) {
-        text = await res.text();
+        text = await res!.text();
       } else if (ext === "html" || ext === "htm") {
-        text = htmlToText(await res.text());
+        text = htmlToText(await res!.text());
       } else if (ext === "docx") {
         try {
           const { unzipSync, strFromU8 } = await import("npm:fflate@0.8.2");
-          const zip = unzipSync(new Uint8Array(await res.arrayBuffer()));
+          const zip = unzipSync(new Uint8Array(await res!.arrayBuffer()));
           const docXml = zip["word/document.xml"];
           if (!docXml) return asText({ ...base, note: "DOCX had no readable document.xml — open via webUrl." });
           text = strFromU8(docXml)
@@ -3310,7 +3377,7 @@ mcp.tool("read_document", {
         try {
           const mod: any = await import("npm:xlsx@0.18.5");
           const XLSX: any = mod.read ? mod : mod.default;
-          const wb = XLSX.read(new Uint8Array(await res.arrayBuffer()), { type: "array" });
+          const wb = XLSX.read(new Uint8Array(await res!.arrayBuffer()), { type: "array" });
           const parts: string[] = [];
           for (const sheetName of (wb.SheetNames || [])) {
             const csv = XLSX.utils.sheet_to_csv(wb.Sheets[sheetName], { blankrows: false });
@@ -5803,10 +5870,24 @@ function drawingRenderScale(wPt: number, hPt: number, box: { fw: number; fh: num
   return Math.min(target, cap);
 }
 
+// PDFium's WASM init costs real time and is pure setup — one instance serves
+// the whole isolate. A failed init clears the memo so the next call retries
+// instead of caching the error forever.
+let _pdfiumLib: Promise<any> | null = null;
+function pdfiumLibrary(): Promise<any> {
+  if (!_pdfiumLib) {
+    _pdfiumLib = (async () => {
+      const { PDFiumLibrary } = await import("@hyzyla/pdfium") as any;
+      return await PDFiumLibrary.init();
+    })();
+    _pdfiumLib.catch(() => { _pdfiumLib = null; });
+  }
+  return _pdfiumLib;
+}
+
 async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
-  const { PDFiumLibrary } = await import("@hyzyla/pdfium") as any;
   const { Image } = await import("imagescript") as any;
-  const library = await PDFiumLibrary.init();
+  const library = await pdfiumLibrary();
   let doc: any = null;
   try {
     doc = await library.loadDocument(pdfBytes);
@@ -5844,11 +5925,14 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
     return { b64: b64FromBuffer(bytes), mimeType, width: img.width, height: img.height, pageCount };
   } finally {
     try { doc?.destroy?.(); } catch { /* best-effort teardown */ }
-    try { library.destroy?.(); } catch { /* ditto */ }
+    // The library itself is the per-isolate singleton — never destroyed here.
   }
 }
 
 async function fetchDrawingPdf(drive: string, realId: string): Promise<Uint8Array> {
+  const key = drive + "|" + realId;
+  const cached = pdfCacheGet(key);
+  if (cached) return cached;
   const res = await fetch(
     `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
     { headers: { Authorization: "Bearer " + (await graphToken()) } },
@@ -5858,7 +5942,9 @@ async function fetchDrawingPdf(drive: string, realId: string): Promise<Uint8Arra
   if (buf.byteLength > VIEW_DRAWING_MAX_PDF_BYTES) {
     throw new Error(`the file is ${(buf.byteLength / 1048576).toFixed(0)}MB — over the ${VIEW_DRAWING_MAX_PDF_BYTES / 1048576}MB render limit`);
   }
-  return new Uint8Array(buf);
+  const bytes = new Uint8Array(buf);
+  pdfCachePut(key, bytes);
+  return bytes;
 }
 
 mcp.tool("view_drawing", {
@@ -6202,7 +6288,9 @@ mcp.tool("read_drawing_schedule", {
     try {
       const bytes = await fetchDrawingPdf(drive, realId);
       const { getDocumentProxy } = await import("unpdf");
-      const pdf: any = await getDocumentProxy(bytes);
+      // pdf.js may take ownership of the buffer it is handed — feed it a copy
+      // so the cached bytes stay intact for the next call.
+      const pdf: any = await getDocumentProxy(bytes.slice());
       if (pageInFile < 1 || pageInFile > pdf.numPages) {
         return asText({ ...source, error: `Page ${pageInFile} is out of range — the file has ${pdf.numPages} page(s).` });
       }

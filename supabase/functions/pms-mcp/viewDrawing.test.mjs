@@ -95,6 +95,48 @@ const revs = dedupeRevs([
 ]);
 assert.equal(revs.length, 2);
 
+// ── PDF byte cache (copy of pdfCacheGet/pdfCachePut) ────────────────────────
+// TTL bounds staleness; the byte-budget LRU evicts oldest-first; a hit is an
+// LRU touch; an over-budget file is never cached at all.
+const PDF_CACHE_TTL_MS = 5 * 60 * 1000;
+const PDF_CACHE_MAX_BYTES = 48 * 1024 * 1024;
+const pdfByteCache = new Map();
+let _now = 1_000_000;
+const now = () => _now;
+function pdfCacheGet(key) {
+  const hit = pdfByteCache.get(key);
+  if (!hit) return null;
+  if (now() - hit.at > PDF_CACHE_TTL_MS) { pdfByteCache.delete(key); return null; }
+  pdfByteCache.delete(key); pdfByteCache.set(key, hit);
+  return hit.bytes;
+}
+function pdfCachePut(key, bytes) {
+  if (bytes.byteLength > PDF_CACHE_MAX_BYTES) return;
+  pdfByteCache.delete(key);
+  pdfByteCache.set(key, { bytes, at: now() });
+  let total = 0;
+  for (const v of pdfByteCache.values()) total += v.bytes.byteLength;
+  for (const k of pdfByteCache.keys()) {
+    if (total <= PDF_CACHE_MAX_BYTES) break;
+    total -= pdfByteCache.get(k).bytes.byteLength;
+    pdfByteCache.delete(k);
+  }
+}
+const MB = 1024 * 1024;
+const fake = (mb) => ({ byteLength: mb * MB });
+pdfCachePut("a", fake(20));
+pdfCachePut("b", fake(20));
+assert.equal(pdfCacheGet("a")?.byteLength, 20 * MB);      // hit
+assert.equal(pdfCacheGet("a")?.byteLength, 20 * MB);      // hit touches, not evicts
+pdfCachePut("c", fake(20));                               // 60MB > 48MB: evict LRU = b
+assert.equal(pdfCacheGet("b"), null);
+assert.equal(pdfCacheGet("a")?.byteLength, 20 * MB);      // the touched entry survived
+_now += PDF_CACHE_TTL_MS + 1;
+assert.equal(pdfCacheGet("a"), null);                     // TTL expiry
+pdfCachePut("big", fake(49));                             // over budget: never stored
+assert.equal(pdfCacheGet("big"), null);
+assert.ok(!pdfByteCache.has("big"));
+
 // ── drift anchors: the shipped source still matches what these tests pin ────
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "index.ts"), "utf8");
@@ -115,9 +157,26 @@ for (const anchor of [
   'storageFor(project)).kind !== "sharepoint"',
   // b64FromBuffer accepts the encoder's Uint8Array directly.
   "function b64FromBuffer(buf: ArrayBuffer | Uint8Array): string",
+  // Review-speed caches (2026-09-14): the download cache fronts fetchDrawingPdf
+  // (view_drawing, read_drawing_schedule) and read_document, PDFium boots once
+  // per isolate, and consumers hand pdf.js a COPY so the cached bytes survive
+  // its buffer-ownership games.
+  "function pdfCacheGet",
+  "function pdfCachePut",
+  "function pdfPageTexts",
+  "const cached = pdfCacheGet(key);",
+  "function pdfiumLibrary",
+  "const library = await pdfiumLibrary();",
+  "getDocumentProxy(bytes.slice())",
+  "getDocumentProxy(pdfBytes.slice())",
 ] ) {
   assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
 }
+// A failed PDFium init must not be memoized, and the render teardown must not
+// destroy the shared library (that would kill every later render in the
+// isolate).
+assert.ok(src.includes("_pdfiumLib = null;"), "a failed PDFium init would be cached forever");
+assert.ok(!src.includes("library.destroy"), "renderDrawingPage went back to destroying the shared PDFium library");
 for (const anchor of ['"@hyzyla/pdfium": "npm:@hyzyla/pdfium"', '"imagescript": "https://deno.land/x/imagescript@1.2.17/mod.ts"']) {
   assert.ok(denoJson.includes(anchor), `deno.json lost anchor: ${anchor}`);
 }
