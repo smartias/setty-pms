@@ -1030,9 +1030,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-drive-drawing-index";
+const BUILD = "2026-09-15-register-only-mode";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.16.0",
+  name: "setty-pms", version: "1.16.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3050,6 +3050,9 @@ mcp.tool("get_current_set", {
           // Stored decoded; encoded here or a set named "Addendum #2" renders
           // a link that truncates at the '#'. Same helper the fold uses.
           webUrl: encodeSpUrl(latest.sp_folder_url),
+          // A drive project's set has no SharePoint URL; the register carries
+          // the drive path the transmittal tool recorded (register-only mode).
+          ...(f.driveFolder ? { driveFolder: f.driveFolder, storage: "drive" } : {}),
           // A backfilled row is a set reconstructed after the fact. Authoritative,
           // but not a live send, and the difference matters if anyone audits it.
           backfilled: f.backfilled === true,
@@ -3078,7 +3081,7 @@ mcp.tool("get_current_set", {
             "list is not available here — open the folder link to see the contents.",
         }),
         ...(priorSets.length ? { priorSets } : {}),
-        ...(latest.sp_folder_url ? {} : {
+        ...(latest.sp_folder_url || f.driveFolder ? {} : {
           linkNote: "No folder link was recorded on this transmittal. Use list_project_documents with subfolder:'Outgoing' to locate it.",
         }),
       });

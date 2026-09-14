@@ -44,7 +44,8 @@ Both storage accounts accept traffic from outside the corporate network
 | #261 | `pms_region_shares`: a region carries N drives; ids become `az:<TEAM>.<LABEL>:<path>` | 1.15.0 |
 | #262 | Regions tab: atomic save (`pms_region_save`), no silent empty share list; **drive layouts**: year folders (DC), entity + year (NY N: drive), DC's `NN-<number>_NAME` subfolders resolve by standard name | 1.15.1 |
 | #263 | README deploy command; "What works where" matrix on the Regions tab | — |
-| this PR | **Drive-based drawing index**: `search_drawings` indexes a drive project's Outgoing; `view_drawing`, `read_drawing_schedule`, `find_equipment`, `trace_references` work off it; `extract_sheet_index` and `get_current_set` compose the set from the index when there is no register | 1.16.0 |
+| #264 | **Drive-based drawing index**: `search_drawings` indexes a drive project's Outgoing; `view_drawing`, `read_drawing_schedule`, `find_equipment`, `trace_references` work off it; `extract_sheet_index` and `get_current_set` compose the set from the index when there is no register | 1.16.0 |
+| next | **Transmittal tool, register-only mode** (`transmittal.html` v19): a drive project's set is read off the mapped drive through the OS picker (names + title blocks), nothing is uploaded, the register row carries `files.driveFolder` instead of `sp_folder_url`; attachment is the only email delivery; `get_current_set` surfaces `driveFolder` | 1.16.1 |
 
 Verified end to end on 14 Sep: `list_project_documents` on SIPX262012.00
 (DC) found the project under `I:\2026`, resolved "Outgoing" to
@@ -79,28 +80,41 @@ Regions tab.
 
 ## Not done yet, in the order I would do it
 
-1. **Transmittal tool, register-only mode for drive projects.**
-   `transmittal.html` uploads a set into SharePoint Outgoing through Graph
-   and then writes the register (`pms_filing_log`, `operation =
-   'transmittal-generated'`). For a drive project it should skip the upload
-   (people copy the set into `99-…_OUTGOING` themselves), record the
-   transmittal and its sheet list, and reference files by drive path. That
-   makes `get_current_set` authoritative instead of index-inferred. Do NOT put
-   a SAS in the browser: any drive write would have to go through the
-   connector, and writes are off the table until Nikhil issues a write token.
-2. **`find_document` on a drive.** SharePoint's search index has no drive
+1. **Projects that exist on a drive but not in the PMS** (none of the other
+   regions' projects have PMS records yet). Everything routes on the PMS
+   project (team → region → share; the visibility gate needs a registered
+   number), so an unregistered drive folder is invisible by design. Build a
+   **discovery queue**: an admin action that walks each region's shares
+   (root → entity → year), lists folders whose names start with a project
+   number, diffs them against `pms_projects`, and writes candidates to a
+   `pms_project_candidates` table (number, name from the folder, team from
+   the region, year from the number, drive path, first seen). Sara reviews
+   them in the Admin console and creates the PMS record with one click
+   (`pms_projects` insert via the existing app conventions); never auto-create
+   silently — a project record drives fees, milestones and visibility.
+2. **Region filter in the PMS app** (`SettyPMS.html`). Projects now carry a
+   `team` code, but only the Admin console reads it: the app's project list,
+   Pipeline view and Dashboard filter on PM / QA-QC / status / contract only,
+   and `loadProjects` does not select `team`. Add a Region dropdown (NY / DC /
+   BT / untagged, options from `pms_regions`) to the shared filter bar next
+   to the status filter, apply it in the same `useMemo` that drives the list
+   and Pipeline, and scope the Dashboard's cards and workload to the chosen
+   region. Remember the choice per browser (`localStorage`) so a DC PM opens
+   to DC. Once the discovery queue (item 1) starts registering DC and NY
+   projects the unfiltered views get noisy, so do this before or with it.
+3. **`find_document` on a drive.** SharePoint's search index has no drive
    equivalent; the replacement is a walk of the project tree ranking file
    names against the description (`scoreDocument` is already pure and
    reusable). `projectTree()` needs a drive branch like `subtreeFiles` got.
-3. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
+4. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
    `search_field_photos` cannot (sessions are app uploads to SharePoint).
-4. **Drop the legacy single-share columns** on `pms_regions`
+5. **Drop the legacy single-share columns** on `pms_regions`
    (`azure_share_url`, `azure_sas_env`) once every environment runs ≥ 1.15.0.
    The console still writes the first share into them for compatibility.
-5. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
+6. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
    a policy decision first (write-capable SAS widens what a leaked secret can
    do), then Azure Files `PUT`/create-directory in `azureFiles.ts`.
-6. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
+7. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
    Library before the first project is tagged BT.
 
 ## Known limits worth remembering
