@@ -26,6 +26,7 @@ import {
   encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf,
   findProjectFolderName, projectForFolderName, extOf, shareLabelClean,
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
+  projectNumberOfFolder, projectNameFromFolders,
 } from "./azureFiles.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -208,6 +209,21 @@ async function sbInsert(table: string, row: Record<string, unknown>): Promise<an
   if (!res.ok) throw new Error(`Supabase insert ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const rows = await res.json();
   return Array.isArray(rows) ? rows[0] : rows;
+}
+
+// Upsert rows on a conflict column (drive discovery). return=minimal: the
+// caller re-reads what it needs.
+async function sbUpsert(table: string, onConflict: string, rows: Record<string, unknown>[]): Promise<void> {
+  if (!rows.length) return;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${onConflict}`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) throw new Error(`Supabase upsert ${res.status}: ${(await res.text()).slice(0, 300)}`);
 }
 
 // PostgREST caps responses at 1000 rows; page past it.
@@ -1030,9 +1046,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-register-only-mode";
+const BUILD = "2026-09-15-drive-discovery";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.16.1",
+  name: "setty-pms", version: "1.17.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -8696,5 +8712,135 @@ app.get("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST"
 app.delete("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
 app.get("/pms-mcp/health", (c) => c.json({ ok: true, build: BUILD }));
+
+// ── Drive discovery (Admin console → connector) ─────────────────────────────
+// Project folders on a region's drives that have no PMS record. The console
+// cannot list a share (it holds no SAS, by design), so it asks the connector,
+// which walks one share per call along the known layouts (root, year folders,
+// entity → year folders), diffs the project-number folders against
+// pms_projects and upserts the misses into pms_project_candidates. The
+// console then shows them for review; NOTHING is created here.
+//
+// Auth: the console's Supabase session JWT. It is checked by asking Postgres
+// is_pms_admin() AS THAT USER (apikey + the user's bearer), the same
+// predicate every admin RLS policy uses, so there is no second admin list.
+const DISCOVERY_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+const DISCOVERY_MAX_LISTINGS = 120;   // uncached directory listings per call; the console loops while `more`
+async function isAdminSupabaseJwt(jwt: string): Promise<boolean> {
+  if (!jwt || jwt.split(".").length !== 3) return false;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/is_pms_admin`, {
+    method: "POST",
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!res.ok) return false;
+  return (await res.json()) === true;
+}
+type DiscoveryHit = { num: string; folder: string; dir: string; year: string | null };
+async function discoverDriveProjects(team: string, label: string, fromYear: string | null): Promise<Record<string, unknown>> {
+  const az = await azureCtxForTeam(team, label);
+  if (!az.ok) throw new Error(az.error);
+  const ctx = az.ctx;
+  let listings = 0; let exhausted = false;
+  // Only listings that actually hit the share count against the budget; the
+  // 300 s cache makes a re-scan of an unchanged tree free.
+  const list = async (rel: string): Promise<AzEntry[] | null> => {
+    const key = ctx.team + "." + ctx.label + ":" + rel;
+    const cached = _azDir.get(key);
+    if (!(cached && (Date.now() - cached.at) < 300000)) {
+      if (listings >= DISCOVERY_MAX_LISTINGS) { exhausted = true; return null; }
+      listings++;
+    }
+    try { return (await azureDirEntries(ctx, rel)).entries; } catch { return null; }
+  };
+  const yearOk = (y: string) => !fromYear || y >= fromYear;
+  // 1. The directories that hold project folders.
+  const root = await list("");
+  if (!root) throw new Error(`Could not list the root of share ${label}`);
+  const dirs: Array<{ rel: string; year: string | null }> = [{ rel: "", year: null }];
+  const folders = root.filter((e) => e.type === "folder").map((e) => e.name);
+  for (const y of folders.filter((n) => YEAR_SEG_RE.test(n)).sort().reverse()) if (yearOk(y)) dirs.push({ rel: y, year: y });
+  for (const ent of folders.filter((n) => ENTITY_SEG_RE.test(n)).sort()) {
+    const inside = await list(ent);
+    if (!inside) continue;
+    for (const y of inside.filter((e) => e.type === "folder" && YEAR_SEG_RE.test(e.name)).map((e) => e.name).sort().reverse()) {
+      if (yearOk(y)) dirs.push({ rel: joinRel(ent, y), year: y });
+    }
+  }
+  // 2. Every project-number folder in them.
+  const hits = new Map<string, DiscoveryHit>();
+  let dirsScanned = 0;
+  for (const d of dirs) {
+    const entries = d.rel === "" ? root : await list(d.rel);
+    if (!entries) continue;
+    dirsScanned++;
+    for (const e of entries) {
+      if (e.type !== "folder") continue;
+      const num = projectNumberOfFolder(e.name);
+      if (!num || hits.has(num)) continue;
+      hits.set(num, { num, folder: e.name, dir: d.rel, year: d.year ?? yearOfProjectNumber(num) });
+    }
+  }
+  // 3. Diff against the PMS (every project, archived included: an archived
+  // job is still a record) and against what the queue already holds.
+  const known = new Set((await getProjectsUnfiltered()).map((p) => String(p?.projectNumber || "").toUpperCase().trim()).filter(Boolean));
+  const existing = new Map<string, any>();
+  for (const r of await sbGetAll("pms_project_candidates?select=project_number,status,name_from_folder,created_project_id&team=eq." + encodeURIComponent(team))) {
+    existing.set(String(r.project_number), r);
+  }
+  const now = new Date().toISOString();
+  const rows: Record<string, unknown>[] = [];
+  let created = 0, fresh = 0, seenAgain = 0, namesPending = 0;
+  for (const h of hits.values()) {
+    const prev = existing.get(h.num);
+    if (known.has(h.num)) {
+      // Registered since (here or in the PMS directly): close the candidate.
+      if (prev && prev.status !== "created") { rows.push({ project_number: h.num, team, share_label: label, drive_path: sharePathOf(ctx.share, joinRel(h.dir, h.folder)), folder_name: h.folder, status: "created", last_seen: now }); created++; }
+      continue;
+    }
+    const rel = joinRel(h.dir, h.folder);
+    const row: Record<string, unknown> = {
+      project_number: h.num, team, share_label: label, drive_path: sharePathOf(ctx.share, rel),
+      folder_name: h.folder, year: h.year, last_seen: now,
+    };
+    // The name lives on the "00-<number> <NAME>" child: one listing per new
+    // candidate, so it is read only once and within the budget.
+    if (!prev || (prev.status === "new" && !prev.name_from_folder)) {
+      const children = await list(rel);
+      if (children) row.name_from_folder = projectNameFromFolders(h.folder, h.num, children);
+      else namesPending++;
+    }
+    if (prev) seenAgain++; else fresh++;
+    rows.push(row);
+  }
+  for (let i = 0; i < rows.length; i += 200) await sbUpsert("pms_project_candidates", "project_number", rows.slice(i, i + 200));
+  return {
+    team, label, fromYear, directories: dirs.length, directoriesScanned: dirsScanned, foldersFound: hits.size,
+    newCandidates: fresh, seenAgain, closedAsCreated: created, namesPending, listings,
+    more: exhausted || namesPending > 0,
+    note: exhausted ? "Listing budget spent — call again to continue (already-listed folders are cached)." : "Complete.",
+  };
+}
+app.options("/pms-mcp/admin/discover-projects", (c) => c.body(null, 204, DISCOVERY_CORS));
+app.post("/pms-mcp/admin/discover-projects", async (c) => {
+  const auth = c.req.header("Authorization") || "";
+  const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!(await isAdminSupabaseJwt(jwt))) return c.json({ error: "Admins only (Supabase session required)." }, 403, DISCOVERY_CORS);
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* empty body */ }
+  const team = String(body?.team || "").toUpperCase().trim();
+  const label = String(body?.label || "").toUpperCase().trim();
+  const fromYear = /^(19|20)\d{2}$/.test(String(body?.fromYear || "")) ? String(body.fromYear) : null;
+  if (!team || !label) return c.json({ error: "team and label are required" }, 400, DISCOVERY_CORS);
+  try {
+    return c.json(await discoverDriveProjects(team, label, fromYear), 200, DISCOVERY_CORS);
+  } catch (e) {
+    return c.json({ error: String((e as any)?.message ?? e) }, 500, DISCOVERY_CORS);
+  }
+});
 
 Deno.serve(app.fetch);

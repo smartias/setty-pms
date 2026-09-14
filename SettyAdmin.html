@@ -177,6 +177,12 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v22 (15 Sep 2026) — "Drive discovery" tab: project folders on a region's
+// network drives that have no PMS record. Scan runs in the connector (the
+// console holds no share credential), candidates land in
+// pms_project_candidates, and an admin creates the record or dismisses the
+// folder here. Names are read from the "00-<number> <NAME>" folder; a
+// project already in the PMS keeps its PMS name (drive names can differ).
 // v21 (14 Sep 2026, night) — Regions tab gains "What works where": every
 // connector tool and skill with its SharePoint / drive support, the same
 // matrix as the team explainer, collapsed under the regions list.
@@ -267,6 +273,7 @@ const TABS = [
   { key: "filing",  label: "📨 Filing Log" },
   { key: "integration", label: "🔗 Integration" },
   { key: "regions", label: "🌎 Regions" },
+  { key: "discovery", label: "📥 Drive discovery" },
   { key: "library", label: "📚 Proposal Library" },
   { key: "guide", label: "📖 System Guide" },
   { key: "mcp",   label: "🤖 Claude / MCP" },
@@ -277,6 +284,7 @@ const state = { tab: "signins", roster: null, staffCount: null, roles: null, bac
                 permCatalog: null, permMatrix: null, permOverrides: null,
                 teamProjects: null, mcpAudit: null,
                 regions: null, regionEdit: null,
+                cands: null, candFilter: "new", candTeam: "", candEdit: {}, discoScan: {},
                 lib: null, libEditKey: null, libNew: false, libClients: null, libClientQ: "", libClientSel: null,
                 myRole: undefined };   // undefined = not checked · "pending" · "none" · or a ROLES value
 
@@ -458,7 +466,7 @@ function render() {
   $("tabs").innerHTML = TABS.map(t =>
     `<button type="button" class="tab ${state.tab === t.key ? "active" : ""}" onclick="setTab('${t.key}')">${t.label}</button>`).join("");
   ({ signins: renderSignins, roles: renderRoles, backups: renderBackups, filing: renderFiling, integration: renderIntegration,
-     regions: renderRegions, library: renderLibrary, guide: renderGuide, mcp: renderMcp })[state.tab]();
+     regions: renderRegions, discovery: renderDiscovery, library: renderLibrary, guide: renderGuide, mcp: renderMcp })[state.tab]();
   // Restore focus/caret if the focused element was rebuilt (cached renderers
   // set #view synchronously, so the replacement element exists by now).
   if (_focusId) {
@@ -1265,6 +1273,188 @@ async function deleteRegion(team) {
 }
 
 // ── Integration (PMS ↔ SETTYfy billing loop) ─────────────────────────────────
+// ── Drive discovery (v22) ────────────────────────────────────────────────────
+// Projects that exist on a drive but not in the PMS are invisible to every
+// tool (routing and the visibility gate start from the PMS record), so the
+// connector finds them and this tab turns them into records — one at a time,
+// with a person choosing the name and status. Nothing is created on scan.
+const DISCOVER_URL = SUPABASE_URL + "/functions/v1/pms-mcp/admin/discover-projects";
+const CAND_FIELDS = "project_number,team,share_label,drive_path,folder_name,name_from_folder,year,status,created_project_id,note,first_seen,last_seen,reviewed_at,reviewed_by";
+const CAND_STATUSES = ["Not Started", "In Progress", "In for Review", "On Hold", "Top Priority", "In Construction Administration", "Completed"];
+async function loadCandidates() {
+  state.cands = await sb("GET", "/rest/v1/pms_project_candidates?select=" + CAND_FIELDS + "&order=team,year.desc,project_number");
+}
+async function renderDiscovery() {
+  const v = $("view");
+  if (!state.regions || !state.cands) {
+    v.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const [regions, shares] = await Promise.all([
+        sb("GET", "/rest/v1/pms_regions?select=" + REGION_FIELDS + "&order=team"),
+        sb("GET", "/rest/v1/pms_region_shares?select=" + SHARE_FIELDS + "&order=team,sort_order,label"),
+      ]);
+      state.regions = (regions || []).map((r) => ({ ...r, shares: (shares || []).filter((s) => s.team === r.team) }));
+      await loadCandidates();
+    } catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
+  }
+  const thisYear = new Date().getFullYear();
+  const shareRows = state.regions.flatMap((r) => (r.shares || []).filter((s) => s.enabled !== false).map((s) => {
+    const k = r.team + "." + s.label;
+    const sc = state.discoScan[k] || {};
+    const last = sc.result ? `${sc.result.foldersFound} project folder(s) in ${sc.result.directoriesScanned} director${sc.result.directoriesScanned === 1 ? "y" : "ies"} · ${sc.result.newCandidates} new · ${sc.result.seenAgain} seen again · ${sc.result.closedAsCreated} now in the PMS${sc.result.more ? " · more to read" : ""}` : (sc.error ? "✗ " + sc.error : "");
+    return `<tr>
+      <td><b>${esc(r.team)}</b> <span style="color:var(--muted)">${esc(r.region_name)}</span></td>
+      <td>${esc(s.label)}: <span style="font-size:11px;color:var(--muted)">${esc(s.share_url)}</span></td>
+      <td><input type="number" id="fy_${esc(k)}" value="${esc(sc.fromYear || (thisYear - 1))}" min="2000" max="${thisYear + 1}" style="width:80px" title="Skip year folders before this (root and entity folders are always read)"></td>
+      <td><button class="btn btn-primary" id="scan_${esc(k)}" onclick="scanShare('${esc(r.team)}','${esc(s.label)}',this)" ${sc.running ? "disabled" : ""}>${sc.running ? "scanning…" : "Scan"}</button></td>
+      <td style="font-size:12px;color:${sc.error ? "var(--red)" : "var(--dim)"}">${esc(last)}</td>
+    </tr>`;
+  }));
+  const teams = [...new Set(state.cands.map((c) => c.team))].sort();
+  const cands = state.cands.filter((c) => (state.candFilter === "all" || c.status === state.candFilter) && (!state.candTeam || c.team === state.candTeam));
+  const counts = { new: 0, dismissed: 0, created: 0 };
+  for (const c of state.cands) counts[c.status] = (counts[c.status] || 0) + 1;
+  const candRows = cands.map((c) => {
+    const ed = state.candEdit[c.project_number] || {};
+    const name = ed.name != null ? ed.name : (c.name_from_folder || "");
+    const status = ed.status || "In Progress";
+    const pill = c.status === "new" ? "warn" : c.status === "created" ? "ok" : "info";
+    const act = c.status === "new" ? `
+        <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
+          <input value="${esc(name)}" placeholder="Project name (from the 00 folder, edit as needed)" style="min-width:260px;flex:1" oninput="candEdit('${esc(c.project_number)}','name',this.value)">
+          <select onchange="candEdit('${esc(c.project_number)}','status',this.value)">${CAND_STATUSES.map((o) => `<option ${o === status ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
+          <button class="btn btn-primary" onclick="createFromCandidate('${esc(c.project_number)}',this)">Create project</button>
+          <button class="btn" onclick="setCandidateStatus('${esc(c.project_number)}','dismissed',this)" title="Not a project to track (test folder, duplicate, out of scope). Stays listed under Dismissed.">Dismiss</button>
+        </div>`
+      : c.status === "dismissed" ? `<button class="btn" onclick="setCandidateStatus('${esc(c.project_number)}','new',this)">Undo dismiss</button>`
+      : `<span style="font-size:12px;color:var(--muted)">record ${esc(c.created_project_id || "")}${c.reviewed_by ? " · by " + esc(c.reviewed_by) : ""}</span>`;
+    return `<tr>
+      <td><b>${esc(c.project_number)}</b><div style="font-size:11px;color:var(--muted)">${esc(c.team)} · ${esc(c.share_label)}: · ${esc(c.year || "")}</div></td>
+      <td style="font-size:12px"><div>${esc(c.folder_name)}</div><div style="color:var(--muted);font-size:11px;word-break:break-all" title="${esc(c.drive_path)}">${esc(c.drive_path)}</div></td>
+      <td><span class="pill ${pill}">${esc(c.status)}</span><div style="font-size:11px;color:var(--muted)">seen ${rel(c.last_seen)}</div></td>
+      <td>${act}</td>
+    </tr>`;
+  }).join("");
+  v.innerHTML = `
+    <div class="card">
+      <h3 style="margin:0 0 4px">Drive discovery</h3>
+      <div style="color:var(--dim);font-size:12.5px;line-height:1.5;margin-bottom:10px">
+        Project folders on a region's network drives that have <b>no record in the PMS</b>. A project without a record is invisible to Claude
+        (every tool routes from the PMS record: team → region → drive, and the visibility gate needs a registered number). Scanning reads
+        the share through the connector — this page never holds a drive credential — and lists the misses below. Nothing is created until
+        you click <b>Create project</b>; a project already in the PMS keeps its PMS name even when the drive folder says otherwise.
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Region</th><th>Drive</th><th>From year</th><th></th><th>Last scan</th></tr></thead>
+      <tbody>${shareRows.join("") || '<tr><td colspan="5" class="empty">No drive shares are registered — add them on the Regions tab.</td></tr>'}</tbody></table></div>
+    </div>
+    <div class="card">
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <b>Candidates</b>
+        <select onchange="state.candFilter=this.value;render()">
+          <option value="new" ${state.candFilter === "new" ? "selected" : ""}>To review (${counts.new || 0})</option>
+          <option value="dismissed" ${state.candFilter === "dismissed" ? "selected" : ""}>Dismissed (${counts.dismissed || 0})</option>
+          <option value="created" ${state.candFilter === "created" ? "selected" : ""}>Created (${counts.created || 0})</option>
+          <option value="all" ${state.candFilter === "all" ? "selected" : ""}>All (${state.cands.length})</option>
+        </select>
+        <select onchange="state.candTeam=this.value;render()">
+          <option value="">Every region</option>
+          ${teams.map((t) => `<option value="${esc(t)}" ${state.candTeam === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
+        </select>
+        <button class="btn" onclick="state.cands=null;render()">↻ Refresh</button>
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Number</th><th>Folder on the drive</th><th>Status</th><th>Review</th></tr></thead>
+      <tbody>${candRows || '<tr><td colspan="4" class="empty">Nothing here. Scan a drive above.</td></tr>'}</tbody></table></div>
+    </div>`;
+}
+function candEdit(num, field, value) { state.candEdit[num] = { ...(state.candEdit[num] || {}), [field]: value }; }
+async function scanShare(team, label, btn) {
+  const k = team + "." + label;
+  const fy = ($("fy_" + k) || {}).value || "";
+  state.discoScan[k] = { running: true, fromYear: fy };
+  render();
+  try {
+    // Loop while the connector reports more to read (its listing budget is
+    // per call); each pass is cheap because listed folders are cached.
+    let result = null;
+    for (let pass = 0; pass < 8; pass++) {
+      const res = await fetch(DISCOVER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": "Bearer " + settyAuth.token() },
+        body: JSON.stringify({ team, label, fromYear: fy }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || ("HTTP " + res.status));
+      result = j;
+      if (!j.more) break;
+    }
+    state.discoScan[k] = { running: false, fromYear: fy, result };
+    toast(`Scanned ${team} ${label}: — ${result.newCandidates} new candidate(s)`, "success");
+  } catch (e) {
+    state.discoScan[k] = { running: false, fromYear: fy, error: e.message };
+    toast("Scan failed: " + e.message, "error");
+  }
+  state.cands = null;
+  render();
+}
+async function setCandidateStatus(num, status, btn) {
+  await withBtn(btn, "saving…", "saved", async () => {
+    await sb("PATCH", "/rest/v1/pms_project_candidates?project_number=eq." + encodeURIComponent(num),
+      { status, reviewed_at: new Date().toISOString(), reviewed_by: settyAuth.email() });
+    state.cands = null; render();
+  });
+}
+// The PMS record, shaped like the app's own newProject() so every screen
+// finds the fields it expects. Fees, schedule and contacts stay empty for
+// the PM to fill in; status defaults to "In Progress" because a folder on a
+// drive is a job that exists, not a pursuit.
+function candidateProjectBlob(c, name, status) {
+  const id = Math.random().toString(36).slice(2, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  const uid = () => Math.random().toString(36).slice(2, 10);
+  return {
+    id, name, projectNumber: c.project_number, projectManager: "", deputyProjectManager: "", prime: "",
+    projectAddress: "", projectCity: "", projectState: "", status, proposalDueDate: "", probability: 100,
+    clientName: "", clientContact: "", projectContacts: { proposal: [], pm: [], contract: [], accounting: [] },
+    contractStatus: "Waiting for NTP/Contract", contractNotes: "", feeType: "Lump Sum", primeProjectNumber: "",
+    contractNumber: "", contractDate: "", contractFolderUrl: "", projectFolderUrl: "", proposalFolderUrl: "",
+    feeCalculatorSubs: [], rfis: [], submittals: [], submittalRegister: [], rfiDueDays: 5, submittalDueDays: 10,
+    phaseSubFees: {}, contractExpirationDate: "", archived: false, checklists: [], buildingCategory: "Office",
+    squareFootage: 0, manualConstructionCost: 0, projectType: "Type II New Construction", disciplinePercentOverrides: {},
+    phases: [], feeScheduleFinalized: false,
+    teamMembers: [{ id: uid(), name: "", role: "Project Manager", rate: 0 }, { id: uid(), name: "", role: "Deputy Project Manager", rate: 0 }],
+    milestones: [], changeOrders: [], emails: [], invoices: [], startDate: today, isTaskOrder: false,
+    taskOrderTermContractId: "", taskOrderNumber: "", relatedGroup: "", relatedRole: "", scopeContent: "", scopeLocked: false,
+    scopeAuditLog: [], proposalFinalized: null, notes: [], oneNoteUrl: "", oneNoteNotebookUrl: "", oneNoteNotebookId: "",
+    teamsOneNoteNotebookId: "", teamsOneNoteUrl: "", teamsChannelFolderUrl: "",
+    externalLinks: [{ id: uid(), label: "Project folder (" + c.share_label + ": drive)", url: c.drive_path }],
+    clientUploadsFolderUrl: "", settyDeliverablesFolderUrl: "", reimbursableBudget: 0, reimbursables: [],
+    createdFrom: { source: "drive-discovery", drivePath: c.drive_path, at: new Date().toISOString(), by: settyAuth.email() },
+  };
+}
+async function createFromCandidate(num, btn) {
+  const c = state.cands.find((x) => x.project_number === num);
+  if (!c) return;
+  const ed = state.candEdit[num] || {};
+  const name = String(ed.name != null ? ed.name : (c.name_from_folder || "")).trim();
+  if (!name) { toast("Give the project a name first (the drive folder did not carry one).", "error"); return; }
+  const status = ed.status || "In Progress";
+  await withBtn(btn, "creating…", "created", async () => {
+    // Guard against a record created elsewhere since the scan.
+    const dup = await sb("GET", "/rest/v1/pms_projects?select=id&project->>projectNumber=eq." + encodeURIComponent(num) + "&limit=1");
+    let projectId;
+    if (dup && dup.length) projectId = dup[0].id;
+    else {
+      const blob = candidateProjectBlob(c, name, status);
+      await sb("POST", "/rest/v1/pms_projects", { id: blob.id, project: blob, version: 1, updated_at: new Date().toISOString(), team: c.team });
+      projectId = blob.id;
+    }
+    await sb("PATCH", "/rest/v1/pms_project_candidates?project_number=eq." + encodeURIComponent(num),
+      { status: "created", created_project_id: projectId, reviewed_at: new Date().toISOString(), reviewed_by: settyAuth.email() });
+    toast((dup && dup.length ? "Already in the PMS — linked " : "Created ") + num + " · " + name + " (" + c.team + ")", "success");
+    state.cands = null; render();
+  });
+}
+
 async function renderIntegration() {
   const v = $("view");
   if (!state.integ) {
