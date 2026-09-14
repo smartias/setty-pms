@@ -8746,6 +8746,7 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
   if (!az.ok) throw new Error(az.error);
   const ctx = az.ctx;
   let listings = 0; let exhausted = false;
+  const failed: string[] = [];   // directories that would not list (after one retry): the scan is incomplete
   // Only listings that actually hit the share count against the budget; the
   // 300 s cache makes a re-scan of an unchanged tree free.
   const list = async (rel: string): Promise<AzEntry[] | null> => {
@@ -8755,7 +8756,11 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
       if (listings >= DISCOVERY_MAX_LISTINGS) { exhausted = true; return null; }
       listings++;
     }
-    try { return (await azureDirEntries(ctx, rel)).entries; } catch { return null; }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { return (await azureDirEntries(ctx, rel)).entries; }
+      catch (e) { if (attempt) failed.push(`${rel || "/"}: ${String((e as any)?.message ?? e).slice(0, 120)}`); }
+    }
+    return null;
   };
   const yearOk = (y: string) => !fromYear || y >= fromYear;
   // 1. The directories that hold project folders.
@@ -8821,8 +8826,12 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
   return {
     team, label, fromYear, directories: dirs.length, directoriesScanned: dirsScanned, foldersFound: hits.size,
     newCandidates: fresh, seenAgain, closedAsCreated: created, namesPending, listings,
+    ...(failed.length ? { failedListings: failed } : {}),
+    complete: !exhausted && namesPending === 0 && failed.length === 0,
     more: exhausted || namesPending > 0,
-    note: exhausted ? "Listing budget spent — call again to continue (already-listed folders are cached)." : "Complete.",
+    note: exhausted ? "Listing budget spent — call again to continue (already-listed folders are cached)."
+      : failed.length ? `Incomplete: ${failed.length} director${failed.length === 1 ? "y" : "ies"} could not be listed (see failedListings); scan again later.`
+      : "Complete.",
   };
 }
 app.options("/pms-mcp/admin/discover-projects", (c) => c.body(null, 204, DISCOVERY_CORS));

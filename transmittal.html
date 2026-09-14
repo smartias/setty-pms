@@ -691,6 +691,7 @@ let folderUrl = "";
 // SharePoint URL. No SAS, no upload, no Graph for the files.
 let driveMode = false;
 let driveFolderPath = "";          // what the person pasted, verbatim (backslashes kept)
+let drivePrefillFor = "";          // project number the drive path input was last prefilled for
 let localBlobs = new Map();        // file name -> File, from the picker
 let pmsRegions = [];               // { team, storage_kind, enabled }
 let pmsRegionShares = [];          // { team, label, share_url }
@@ -1657,7 +1658,13 @@ function enterDriveMode(proj) {
   const first = (pmsRegionShares || []).find(s => String(s.team || "").toUpperCase().trim() === team);
   const letter = first ? first.label + ":" : "I:";
   const input = document.getElementById("driveFolderInput");
-  if (!input.value && num && year) input.value = letter + "\\" + year + "\\" + num + "\\99-" + num + "_OUTGOING\\";
+  // The path belongs to ONE project: switching projects replaces it (Codex
+  // P1 on #265), otherwise the second project's register could record the
+  // first project's folder, date and set name.
+  if (num !== drivePrefillFor) {
+    input.value = (num && year) ? letter + "\\" + year + "\\" + num + "\\99-" + num + "_OUTGOING\\" : "";
+    drivePrefillFor = num;
+  }
   onDriveFolderInput(input.value);
   // SharePoint-only controls step aside.
   document.getElementById("loadFolderBtn").style.display = "none";
@@ -2688,6 +2695,11 @@ async function addBackfillMilestone(projId, dueDate, folderSeg) {
     notes: "",
   };
   if (folderUrl) milestone.outgoingFolderUrl = folderUrl;
+  // Drive project: the set folder's drive path is the idempotency key the
+  // RPC dedupes on (it only guards non-null outgoingFolderUrl), so
+  // re-logging the same set to correct its register row cannot add a second
+  // completed milestone. storage marks it as a path, not a SharePoint link.
+  else if (driveMode && driveFolderPath) { milestone.outgoingFolderUrl = driveFolderPath; milestone.storage = "drive"; }
   const res = await fetch(SUPABASE_URL + "/rest/v1/rpc/pms_append_milestone", {
     method: "POST",
     headers: {

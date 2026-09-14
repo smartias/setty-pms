@@ -1301,13 +1301,13 @@ async function renderDiscovery() {
   const shareRows = state.regions.flatMap((r) => (r.shares || []).filter((s) => s.enabled !== false).map((s) => {
     const k = r.team + "." + s.label;
     const sc = state.discoScan[k] || {};
-    const last = sc.result ? `${sc.result.foldersFound} project folder(s) in ${sc.result.directoriesScanned} director${sc.result.directoriesScanned === 1 ? "y" : "ies"} · ${sc.result.newCandidates} new · ${sc.result.seenAgain} seen again · ${sc.result.closedAsCreated} now in the PMS${sc.result.more ? " · more to read" : ""}` : (sc.error ? "✗ " + sc.error : "");
+    const last = sc.result ? `${sc.result.foldersFound} project folder(s) in ${sc.result.directoriesScanned} director${sc.result.directoriesScanned === 1 ? "y" : "ies"} · ${sc.result.newCandidates} new · ${sc.result.seenAgain} seen again · ${sc.result.closedAsCreated} now in the PMS${sc.result.more ? " · more to read" : ""}${sc.result.failedListings ? " · ⚠ " + sc.result.failedListings.length + " folder(s) could not be listed — scan again later" : ""}` : (sc.error ? "✗ " + sc.error : "");
     return `<tr>
       <td><b>${esc(r.team)}</b> <span style="color:var(--muted)">${esc(r.region_name)}</span></td>
       <td>${esc(s.label)}: <span style="font-size:11px;color:var(--muted)">${esc(s.share_url)}</span></td>
       <td><input type="number" id="fy_${esc(k)}" value="${esc(sc.fromYear || (thisYear - 1))}" min="2000" max="${thisYear + 1}" style="width:80px" title="Skip year folders before this (root and entity folders are always read)"></td>
       <td><button class="btn btn-primary" id="scan_${esc(k)}" onclick="scanShare('${esc(r.team)}','${esc(s.label)}',this)" ${sc.running ? "disabled" : ""}>${sc.running ? "scanning…" : "Scan"}</button></td>
-      <td style="font-size:12px;color:${sc.error ? "var(--red)" : "var(--dim)"}">${esc(last)}</td>
+      <td style="font-size:12px;color:${sc.error || (sc.result && sc.result.failedListings) ? "var(--red)" : "var(--dim)"}" title="${esc((sc.result && sc.result.failedListings || []).join("\n"))}">${esc(last)}</td>
     </tr>`;
   }));
   const teams = [...new Set(state.cands.map((c) => c.team))].sort();
