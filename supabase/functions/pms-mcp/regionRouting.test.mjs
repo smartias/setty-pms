@@ -140,6 +140,14 @@ check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPa
 has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so overrides and team scoping apply");
 has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
 has('error: "The share root is not browsable."', "the share root is never listed for a caller");
+// DC layout (1.15.1): a year folder may precede the project folder (the gate
+// skips at most two year segments), the project folder is found under the
+// year read off the number, and subfolder names resolve against the drive.
+has("while (i < segs.length && i < 2 && isGroupingSegment(segs[i])) i++;", "the gate skips at most two leading grouping folders (year / entity)");
+has("for (const ent of entities) { if (guess) dirs.push(joinRel(ent, guess)); dirs.push(ent); }", "entity folders are searched with the guessed year");
+has("const guess = yearOfProjectNumber(num);", "the project folder is looked for under the year the number encodes");
+has("await azureResolveSubfolder(az.ctx, dec.relPath, relIn)", "az folderId listings resolve subfolder names on the drive");
+has("await azureResolveSubfolder(first.ctx, first.folder, relIn)", "azure-only default listings resolve subfolder names on the drive");
 const azSeg = shipped.slice(shipped.indexOf("async function azureCtxForTeam"), shipped.indexOf("async function azureProjectFolder"));
 check(azSeg.includes("300000"), "the share-root folder index refreshes on the 300s clock");
 

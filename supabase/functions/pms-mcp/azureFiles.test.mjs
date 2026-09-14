@@ -11,6 +11,7 @@ import {
   parseShareUrl, cleanRelPath, joinRel, encodeAzId, decodeAzId, isAzId, normalizeSas, azureUrl,
   sharePathOf, parseListXml, describeAzureError, listDirectory, fileProps, getFile,
   findProjectFolderName, projectForFolderName, extOf, AzureFilesError, AZ_API_VERSION, shareLabelClean,
+  YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
 } from "./azureFiles.ts";
 
 let total = 0, failures = 0;
@@ -157,6 +158,35 @@ eq(findProjectFolderName(root, "SAPX256015.00"), "sapx256015.00 Tabler", "case-i
 eq(findProjectFolderName(root, "sapx256015.01"), "SAPX256015.01 Tabler Ph2", "the phase suffix picks the right folder");
 check(findProjectFolderName(root, "SAPX9") === null && findProjectFolderName(root, "") === null, "no match / empty prefix yields null");
 eq([extOf("A.PDF"), extOf("noext"), extOf(".hidden"), extOf("a.b.docx")], ["pdf", "", "", "docx"], "extOf");
+
+// ── 11. DC layout: year folders and prefixed subfolders ─────────────────────
+eq([yearOfProjectNumber("SIPX262012.00"), yearOfProjectNumber("sapx256015.01"), yearOfProjectNumber("nope"), yearOfProjectNumber("")],
+  ["2026", "2025", null, null], "the year is read off digits 5-6 of the project number");
+check(YEAR_SEG_RE.test("2026") && YEAR_SEG_RE.test("1999") && !YEAR_SEG_RE.test("2026 Projects") && !YEAR_SEG_RE.test("26"), "a year folder is exactly four digits");
+check(ENTITY_SEG_RE.test("SAP") && ENTITY_SEG_RE.test("SAIG") && ENTITY_SEG_RE.test("sag") && !ENTITY_SEG_RE.test("SAPQ256919.01") && !ENTITY_SEG_RE.test("Outgoing"),
+  "an entity folder is a short letter code; project folders and standard folders are not");
+check(isGroupingSegment("2025") && isGroupingSegment("SAP") && !isGroupingSegment("SAPQ256919.01 Tabler") && !isGroupingSegment(""), "grouping = year or entity");
+eq([entityPrefixScore("SAP", "SAPQ256919.01"), entityPrefixScore("SAIG", "SAPQ256919.01"), entityPrefixScore("SAG", "SAPQ256919.01"), entityPrefixScore("SAP", "SIPX262012.00")],
+  [3, 2, 2, 1], "entities rank by common prefix with the number: SAP first for a SAPQ job");
+eq(standardFolderName("99-SIPX262012.00_OUTGOING"), "OUTGOING", "the DC prefix is stripped to the plain name");
+eq(standardFolderName("00-SIPX262012.00 DC RFK PMO Energy"), "DC RFK PMO Energy", "space-separated prefix too");
+eq(standardFolderName("Outgoing"), "Outgoing", "a standard name passes through");
+eq(standardFolderName("60-SIPX262012.00_QA-QC"), "QA-QC", "hyphenated names survive");
+const DC = ["00-SIPX262012.00 DC RFK PMO Energy", "01-SIPX262012.00_INCOMING", "02-SIPX262012.00_PM", "05-SIPX262012.00_PHOTOS",
+  "22-SIPX262012.00_P", "23-SIPX262012.00_M", "26-SIPX262012.00_E", "28-SIPX262012.00_FA", "30-SIPX262012.00_REPORTS",
+  "60-SIPX262012.00_QA-QC", "99-SIPX262012.00_OUTGOING"].map((name) => ({ name, type: "folder" }));
+DC.push({ name: "readme.txt", type: "file" });
+eq(resolveChildFolder(DC, "Outgoing"), "99-SIPX262012.00_OUTGOING", "'Outgoing' resolves to the prefixed DC folder");
+eq(resolveChildFolder(DC, "Emails"), "01-SIPX262012.00_INCOMING", "'Emails' (the SharePoint name) resolves to INCOMING via alias");
+eq(resolveChildFolder(DC, "photos"), "05-SIPX262012.00_PHOTOS", "case-insensitive");
+eq(resolveChildFolder(DC, "QA/QC"), "60-SIPX262012.00_QA-QC", "alias with punctuation");
+eq(resolveChildFolder(DC, "99-SIPX262012.00_OUTGOING"), "99-SIPX262012.00_OUTGOING", "the literal drive name still works");
+eq(resolveChildFolder(DC, "M"), "23-SIPX262012.00_M", "single-letter discipline folders resolve exactly, not by contains");
+check(resolveChildFolder(DC, "readme.txt") === null, "a file is not a folder");
+check(resolveChildFolder(DC, "nothing here") === null && resolveChildFolder(DC, "") === null, "no match / empty wanted is null");
+const NYF = [{ name: "Outgoing", type: "folder" }, { name: "Emails", type: "folder" }, { name: "Photos", type: "folder" }];
+eq(resolveChildFolder(NYF, "outgoing"), "Outgoing", "standard layout: exact case-insensitive match");
+eq(resolveChildFolder(NYF, "incoming"), "Emails", "standard layout: 'incoming' means Emails");
 
 // ── 10. Folder → project (the visibility gate's first step) ─────────────────
 const PROJECTS = [
