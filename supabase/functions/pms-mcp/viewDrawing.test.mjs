@@ -137,6 +137,86 @@ pdfCachePut("big", fake(49));                             // over budget: never 
 assert.equal(pdfCacheGet("big"), null);
 assert.ok(!pdfByteCache.has("big"));
 
+// ── PDF text cache (copy of pdfPageTexts/pdfPageTextPut/pdfTextCacheDrop) ───
+// Codex P2 on #259: file count alone doesn't bound extracted text — a find:
+// scan can retain an 800-page manual's full text. The char budget evicts
+// oldest files, and a single file that busts the budget alone is DETACHED:
+// the in-flight call keeps its memo, the cache forgets it and stops counting.
+const PDF_TEXT_CACHE_MAX_FILES = 8;
+const PDF_TEXT_CACHE_MAX_CHARS = 6_000_000;
+let pdfTextCacheChars = 0;
+const pdfTextCache = new Map();
+function pdfTextCacheDrop(key) {
+  const v = pdfTextCache.get(key);
+  if (!v) return;
+  pdfTextCacheChars -= v.chars;
+  v.chars = 0;
+  v.detached = true;
+  pdfTextCache.delete(key);
+}
+function pdfPageTexts(key) {
+  const hit = pdfTextCache.get(key);
+  if (hit && now() - hit.at <= PDF_CACHE_TTL_MS) {
+    pdfTextCache.delete(key); pdfTextCache.set(key, hit);
+    return hit;
+  }
+  pdfTextCacheDrop(key);
+  const fresh = { at: now(), chars: 0, detached: false, pages: new Map() };
+  pdfTextCache.set(key, fresh);
+  while (pdfTextCache.size > PDF_TEXT_CACHE_MAX_FILES) {
+    pdfTextCacheDrop(pdfTextCache.keys().next().value);
+  }
+  return fresh;
+}
+function pdfPageTextPut(entry, page, text) {
+  if (entry.pages.has(page)) return;
+  entry.pages.set(page, text);
+  if (entry.detached) return;
+  entry.chars += text.length;
+  pdfTextCacheChars += text.length;
+  while (pdfTextCacheChars > PDF_TEXT_CACHE_MAX_CHARS) {
+    const oldestKey = pdfTextCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    if (pdfTextCache.get(oldestKey) === entry) {
+      pdfTextCacheChars -= entry.chars;
+      entry.chars = 0;
+      entry.detached = true;
+      pdfTextCache.delete(oldestKey);
+      break;
+    }
+    pdfTextCacheDrop(oldestKey);
+  }
+}
+const page = (chars) => "x".repeat(chars);
+// Two files fill most of the budget; a third pushes past it and evicts the oldest.
+const tA = pdfPageTexts("specA");
+pdfPageTextPut(tA, 1, page(2_500_000));
+const tB = pdfPageTexts("specB");
+pdfPageTextPut(tB, 1, page(2_500_000));
+const tC = pdfPageTexts("specC");
+pdfPageTextPut(tC, 1, page(2_500_000));                    // 7.5M > 6M: A evicted
+assert.ok(!pdfTextCache.has("specA"));
+assert.ok(tA.detached && tA.chars === 0);                  // A's in-flight memo detached
+assert.equal(pdfTextCacheChars, 5_000_000);
+assert.ok(pdfTextCache.has("specB") && pdfTextCache.has("specC"));
+// A single file that alone busts the budget detaches itself but keeps serving.
+pdfTextCacheDrop("specB"); pdfTextCacheDrop("specC");
+const tHuge = pdfPageTexts("huge");
+pdfPageTextPut(tHuge, 1, page(4_000_000));
+pdfPageTextPut(tHuge, 2, page(4_000_000));                 // 8M alone: detach, not loop
+assert.ok(tHuge.detached);
+assert.ok(!pdfTextCache.has("huge"));
+assert.equal(pdfTextCacheChars, 0);
+assert.equal(tHuge.pages.size, 2);                         // the call still has its memo
+pdfPageTextPut(tHuge, 3, page(1000));                      // detached puts stop counting
+assert.equal(pdfTextCacheChars, 0);
+// Same-page double put is idempotent on the counter.
+const tD = pdfPageTexts("d");
+pdfPageTextPut(tD, 1, page(100));
+pdfPageTextPut(tD, 1, page(100));
+assert.equal(pdfTextCacheChars, 100);
+pdfTextCacheDrop("d");
+
 // ── drift anchors: the shipped source still matches what these tests pin ────
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "index.ts"), "utf8");
@@ -164,6 +244,9 @@ for (const anchor of [
   "function pdfCacheGet",
   "function pdfCachePut",
   "function pdfPageTexts",
+  "function pdfPageTextPut",
+  "function pdfTextCacheDrop",
+  "const PDF_TEXT_CACHE_MAX_CHARS = 6_000_000;",
   "const cached = pdfCacheGet(key);",
   "function pdfiumLibrary",
   "const library = await pdfiumLibrary();",

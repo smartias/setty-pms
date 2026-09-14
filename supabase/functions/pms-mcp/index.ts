@@ -471,22 +471,60 @@ function pdfCachePut(key: string, bytes: Uint8Array): void {
 }
 // Extracted page text per file: pdf.js text extraction over an 800-page spec
 // book costs tens of seconds, and the find-then-pages pattern extracts the
-// same pages twice. Text is tiny next to the bytes, so this is capped by file
-// count, not size, on the same TTL.
+// same pages twice. Bounded two ways — file count AND total characters
+// (a find: scan can retain the full text of an 800-page manual, which the
+// 20MB compressed-PDF limit does not bound). A file whose own text busts the
+// char budget is detached: the in-flight call keeps its memo, the cache
+// forgets it.
 const PDF_TEXT_CACHE_MAX_FILES = 8;
-const pdfTextCache = new Map<string, { at: number; pages: Map<number, string> }>();
-function pdfPageTexts(key: string): Map<number, string> {
+const PDF_TEXT_CACHE_MAX_CHARS = 6_000_000; // ~12MB of string data across files
+type PdfTextEntry = { at: number; chars: number; detached: boolean; pages: Map<number, string> };
+let pdfTextCacheChars = 0;
+const pdfTextCache = new Map<string, PdfTextEntry>();
+function pdfTextCacheDrop(key: string): void {
+  const v = pdfTextCache.get(key);
+  if (!v) return;
+  pdfTextCacheChars -= v.chars;
+  // An in-flight call may still hold this entry as its local memo: detach it
+  // so its later puts stop counting toward the shared budget.
+  v.chars = 0;
+  v.detached = true;
+  pdfTextCache.delete(key);
+}
+function pdfPageTexts(key: string): PdfTextEntry {
   const hit = pdfTextCache.get(key);
   if (hit && Date.now() - hit.at <= PDF_CACHE_TTL_MS) {
-    pdfTextCache.delete(key); pdfTextCache.set(key, hit);
-    return hit.pages;
+    pdfTextCache.delete(key); pdfTextCache.set(key, hit); // re-insert = LRU touch
+    return hit;
   }
-  const fresh = { at: Date.now(), pages: new Map<number, string>() };
-  pdfTextCache.delete(key); pdfTextCache.set(key, fresh);
+  pdfTextCacheDrop(key);
+  const fresh: PdfTextEntry = { at: Date.now(), chars: 0, detached: false, pages: new Map() };
+  pdfTextCache.set(key, fresh);
   while (pdfTextCache.size > PDF_TEXT_CACHE_MAX_FILES) {
-    pdfTextCache.delete(pdfTextCache.keys().next().value as string);
+    pdfTextCacheDrop(pdfTextCache.keys().next().value as string);
   }
-  return fresh.pages;
+  return fresh;
+}
+function pdfPageTextPut(entry: PdfTextEntry, page: number, text: string): void {
+  if (entry.pages.has(page)) return;
+  entry.pages.set(page, text);
+  if (entry.detached) return;
+  entry.chars += text.length;
+  pdfTextCacheChars += text.length;
+  while (pdfTextCacheChars > PDF_TEXT_CACHE_MAX_CHARS) {
+    const oldestKey = pdfTextCache.keys().next().value as string | undefined;
+    if (oldestKey === undefined) break; // entry was evicted mid-call by another request
+    if (pdfTextCache.get(oldestKey) === entry) {
+      // This file alone busts the budget: keep serving the in-flight call
+      // from its local memo, but stop counting and caching it.
+      pdfTextCacheChars -= entry.chars;
+      entry.chars = 0;
+      entry.detached = true;
+      pdfTextCache.delete(oldestKey);
+      break;
+    }
+    pdfTextCacheDrop(oldestKey);
+  }
 }
 
 let _graphTok: { token: string; exp: number } | null = null;
@@ -3309,14 +3347,14 @@ mcp.tool("read_document", {
           const pdf: any = await getDocumentProxy(pdfBytes.slice());
           const total: number = pdf.numPages;
           const MAX_PAGES = 50;
-          const pagesMemo = pdfPageTexts(pdfCacheKey);
+          const textEntry = pdfPageTexts(pdfCacheKey);
           const pageText = async (i: number): Promise<string> => {
-            const memo = pagesMemo.get(i);
+            const memo = textEntry.pages.get(i);
             if (memo !== undefined) return memo;
             const pg = await pdf.getPage(i);
             const tc = await pg.getTextContent();
             const t = (tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim();
-            pagesMemo.set(i, t);
+            pdfPageTextPut(textEntry, i, t);
             return t;
           };
           const capPdf = (t: string) => t.length > MAX_DOC_CHARS ? t.slice(0, MAX_DOC_CHARS) + "\n…[truncated]" : t;
