@@ -121,7 +121,7 @@ has("if (isAzId(folderId)) {", "list_project_documents opens az: folder ids");
 has('if (region.kind !== "sharepoint") {\n        const num = String(projectNumber || "").toLowerCase().trim();', "azure_files regions are browsed by project number, not refused");
 has("const annex = region.azureShareUrl ? await azureAnnexFor(team, num) : null;", "sharepoint regions with a share report their drive annex");
 has("if (isAzId(itemId)) {", "read_document opens az: file ids");
-has("res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);", "read_document reads share bytes through the provider");
+has("if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);", "read_document reads share bytes through the provider (PDF cache honoured)");
 check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refusal is gone");
 // Codex P1 on #260: an az: id is a typed PATH, so both tools gate it on the
 // project it names (folder → project → team → projectRefVisible) before any
