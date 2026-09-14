@@ -177,6 +177,10 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v23 (15 Sep 2026, later) — Drive discovery shows the closest PMS record for
+// a folder that is not in the PMS exactly (a longer number such as
+// SAPQ226904.04.01 for folder SAPQ226904.04, or sibling task orders under the
+// same base number) and offers "Link to it" instead of a blank Create.
 // v22 (15 Sep 2026) — "Drive discovery" tab: project folders on a region's
 // network drives that have no PMS record. Scan runs in the connector (the
 // console holds no share credential), candidates land in
@@ -1279,7 +1283,7 @@ async function deleteRegion(team) {
 // connector finds them and this tab turns them into records — one at a time,
 // with a person choosing the name and status. Nothing is created on scan.
 const DISCOVER_URL = SUPABASE_URL + "/functions/v1/pms-mcp/admin/discover-projects";
-const CAND_FIELDS = "project_number,team,share_label,drive_path,folder_name,name_from_folder,year,status,created_project_id,note,first_seen,last_seen,reviewed_at,reviewed_by";
+const CAND_FIELDS = "project_number,team,share_label,drive_path,folder_name,name_from_folder,year,status,created_project_id,note,first_seen,last_seen,reviewed_at,reviewed_by,pms_match_number,pms_match_name,pms_match_id,pms_match_kind,siblings";
 const CAND_STATUSES = ["Not Started", "In Progress", "In for Review", "On Hold", "Top Priority", "In Construction Administration", "Completed"];
 async function loadCandidates() {
   state.cands = await sb("GET", "/rest/v1/pms_project_candidates?select=" + CAND_FIELDS + "&order=team,year.desc,project_number");
@@ -1301,7 +1305,7 @@ async function renderDiscovery() {
   const shareRows = state.regions.flatMap((r) => (r.shares || []).filter((s) => s.enabled !== false).map((s) => {
     const k = r.team + "." + s.label;
     const sc = state.discoScan[k] || {};
-    const last = sc.result ? `${sc.result.foldersFound} project folder(s) in ${sc.result.directoriesScanned} director${sc.result.directoriesScanned === 1 ? "y" : "ies"} · ${sc.result.newCandidates} new · ${sc.result.seenAgain} seen again · ${sc.result.closedAsCreated} now in the PMS${sc.result.more ? " · more to read" : ""}${sc.result.failedListings ? " · ⚠ " + sc.result.failedListings.length + " folder(s) could not be listed — scan again later" : ""}` : (sc.error ? "✗ " + sc.error : "");
+    const last = sc.result ? `${sc.result.foldersFound} project folder(s) in ${sc.result.directoriesScanned} director${sc.result.directoriesScanned === 1 ? "y" : "ies"} · ${sc.result.newCandidates} new · ${sc.result.seenAgain} seen again · ${sc.result.closedAsCreated} now in the PMS${sc.result.likelyInPms ? " · " + sc.result.likelyInPms + " likely already in the PMS under a longer number" : ""}${sc.result.more ? " · more to read" : ""}${sc.result.failedListings ? " · ⚠ " + sc.result.failedListings.length + " folder(s) could not be listed — scan again later" : ""}` : (sc.error ? "✗ " + sc.error : "");
     return `<tr>
       <td><b>${esc(r.team)}</b> <span style="color:var(--muted)">${esc(r.region_name)}</span></td>
       <td>${esc(s.label)}: <span style="font-size:11px;color:var(--muted)">${esc(s.share_url)}</span></td>
@@ -1319,7 +1323,16 @@ async function renderDiscovery() {
     const name = ed.name != null ? ed.name : (c.name_from_folder || "");
     const status = ed.status || "In Progress";
     const pill = c.status === "new" ? "warn" : c.status === "created" ? "ok" : "info";
-    const act = c.status === "new" ? `
+    // A close relative in the PMS: the same folder under a longer number
+    // (SAPQ226904.04 → SAPQ226904.04.01) is offered as a LINK first; sibling
+    // task orders under the same base number are shown as context.
+    const match = c.pms_match_number ? `
+        <div style="font-size:12px;margin-bottom:6px;padding:6px 8px;border:1px solid var(--accent);border-radius:6px;background:var(--accent-dim)">
+          Likely already in the PMS as <b>${esc(c.pms_match_number)}</b> — ${esc(c.pms_match_name || "")}
+          <button class="btn btn-primary" style="margin-left:8px" onclick="linkCandidate('${esc(c.project_number)}',this)" title="Mark this folder as that PMS record. No new project is created; the PMS keeps its number and name.">Link to it</button>
+        </div>` : "";
+    const sibs = c.siblings ? `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">Same base number in the PMS: ${esc(c.siblings)}</div>` : "";
+    const act = c.status === "new" ? match + sibs + `
         <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center">
           <input value="${esc(name)}" placeholder="Project name (from the 00 folder, edit as needed)" style="min-width:260px;flex:1" oninput="candEdit('${esc(c.project_number)}','name',this.value)">
           <select onchange="candEdit('${esc(c.project_number)}','status',this.value)">${CAND_STATUSES.map((o) => `<option ${o === status ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
@@ -1327,7 +1340,7 @@ async function renderDiscovery() {
           <button class="btn" onclick="setCandidateStatus('${esc(c.project_number)}','dismissed',this)" title="Not a project to track (test folder, duplicate, out of scope). Stays listed under Dismissed.">Dismiss</button>
         </div>`
       : c.status === "dismissed" ? `<button class="btn" onclick="setCandidateStatus('${esc(c.project_number)}','new',this)">Undo dismiss</button>`
-      : `<span style="font-size:12px;color:var(--muted)">record ${esc(c.created_project_id || "")}${c.reviewed_by ? " · by " + esc(c.reviewed_by) : ""}</span>`;
+      : `<span style="font-size:12px;color:var(--muted)">${c.note ? esc(c.note) + " · " : ""}record ${esc(c.created_project_id || "")}${c.reviewed_by ? " · by " + esc(c.reviewed_by) : ""}</span>`;
     return `<tr>
       <td><b>${esc(c.project_number)}</b><div style="font-size:11px;color:var(--muted)">${esc(c.team)} · ${esc(c.share_label)}: · ${esc(c.year || "")}</div></td>
       <td style="font-size:12px"><div>${esc(c.folder_name)}</div><div style="color:var(--muted);font-size:11px;word-break:break-all" title="${esc(c.drive_path)}">${esc(c.drive_path)}</div></td>
@@ -1395,6 +1408,17 @@ async function scanShare(team, label, btn) {
   }
   state.cands = null;
   render();
+}
+async function linkCandidate(num, btn) {
+  const c = state.cands.find((x) => x.project_number === num);
+  if (!c || !c.pms_match_id) return;
+  await withBtn(btn, "linking…", "linked", async () => {
+    await sb("PATCH", "/rest/v1/pms_project_candidates?project_number=eq." + encodeURIComponent(num),
+      { status: "created", created_project_id: c.pms_match_id, note: "Linked to existing PMS record " + c.pms_match_number,
+        reviewed_at: new Date().toISOString(), reviewed_by: settyAuth.email() });
+    toast("Linked " + num + " to " + c.pms_match_number + " (no new record)", "success");
+    state.cands = null; render();
+  });
 }
 async function setCandidateStatus(num, status, btn) {
   await withBtn(btn, "saving…", "saved", async () => {

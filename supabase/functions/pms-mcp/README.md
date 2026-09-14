@@ -457,6 +457,13 @@ on its own.
   300 s directory cache makes the follow-up passes cheap.
 - A candidate already registered (in the PMS directly, or from the tab) is
   closed as `created` on the next scan. Dismissed ones stay dismissed.
+- A folder whose number is not in the PMS exactly but has a close relative
+  is flagged (1.17.1): a PMS number that extends it (`SAPQ226904.04.01` for
+  folder `SAPQ226904.04`) or a bare base record for a `.00` folder is stored
+  as `pms_match_*` and the console offers **Link to it** (the candidate
+  closes as `created` against that record; nothing is written to
+  `pms_projects`). Sibling task orders under the same base number are
+  listed in `siblings` as context.
 - The console creates the record with a `newProject()`-shaped blob, the
   `team` column set from the region, and an external link to the drive path.
   A project already in the PMS keeps its PMS name; discovery never writes to

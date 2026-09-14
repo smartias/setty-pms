@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-08-pms-v150-qa-attribution";
+    window.__appVersion = "2026-09-15-pms-v151-region-filter";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -174,6 +174,20 @@ const LOSS_REASONS = [
 
 function isPipeline(p) { return PIPELINE_STATUSES.includes(p.status); }
 function isAwarded(p)  { return !isPipeline(p); }
+
+// Region filter (v151). A project's region is pms_projects.team (NY, DC, BT…),
+// tagged on the Admin console's Teams card or by drive discovery. The same
+// selector sits on the project list, the Pipeline and the Dashboard, and the
+// choice is remembered per browser (localStorage "pmsRegionFilter").
+const NO_REGION = "__none__";
+function RegionSelect({ filter, style }) {
+  if (!filter) return null;
+  return (
+    <select value={filter.value} onChange={e => filter.onChange(e.target.value)} aria-label="Filter by region" style={style}>
+      {filter.options.map(o => <option key={o} value={o}>{o === "All" ? "All Regions" : o === NO_REGION ? "No region set" : o}</option>)}
+    </select>
+  );
+}
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -1417,12 +1431,15 @@ async function loadStateV2() {
   // Parallel fetch all three tables — saves ~200ms on slower networks.
   const [projectRows, clientRows, metaRows] = await Promise.all([
     // Page projects + clients past the 1000-row cap; meta is a single row.
-    sbFetchAllV2("/rest/v1/pms_projects_slim?select=id,project,version,updated_at&order=id.asc"),
+    sbFetchAllV2("/rest/v1/pms_projects_slim?select=id,project,version,updated_at,team&order=id.asc"),
     sbFetchAllV2("/rest/v1/pms_clients?select=id,client,version,updated_at&order=id.asc"),
     sbFetchV2("GET", "/rest/v1/pms_meta?id=eq.app_meta&select=data,updated_at"),
   ]);
 
-  const projects = (projectRows || []).map(r => r.project).filter(Boolean);
+  // team is a real column on pms_projects (set by the Admin console's Teams
+  // card and by drive discovery), never a blob key. It rides on the in-memory
+  // project for the Region filter and is stripped again in saveProjectV2.
+  const projects = (projectRows || []).map(r => r.project ? { ...r.project, team: r.team || null } : null).filter(Boolean);
   const clients  = (clientRows  || []).map(r => r.client).filter(Boolean);
   const meta     = metaRows?.[0]?.data || {};
 
@@ -1467,10 +1484,12 @@ async function saveProjectV2(project, expectedVersion) {
       project = { ...project, projectNumber: cleaned };
     }
   }
+  // The region code lives in the `team` column, not the blob (see loadV2).
+  const { team: _team, ...blob } = project;
   const path = "/rest/v1/pms_projects?id=eq." + encodeURIComponent(project.id) +
                "&version=eq." + (expectedVersion ?? 1);
   const result = await sbFetchV2("PATCH", path, {
-    project,
+    project: blob,
     version: (expectedVersion ?? 1) + 1,
     updated_at: new Date().toISOString(),
   });
@@ -1481,7 +1500,7 @@ async function saveProjectV2(project, expectedVersion) {
     if (!cloud || cloud.length === 0) {
       // First-time save — INSERT
       await sbFetchV2("POST", "/rest/v1/pms_projects", {
-        id: project.id, project, version: 1, updated_at: new Date().toISOString(),
+        id: project.id, project: blob, version: 1, updated_at: new Date().toISOString(),
       });
       return 1;
     }
@@ -21750,7 +21769,7 @@ function DashMilestoneSpBtn({ milestone, project, onSave }) {
 }
 
 
-function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSaveProject, staff }) {
+function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProject, onEagerSaveProject, staff }) {
   // Once-per-day Dashboard greeting — pulls from time-of-day pools (with a
   // Friday afternoon "go home" variant). Slight delay so the toast appears
   // after the dashboard has rendered, not concurrently with the loading state.
@@ -22151,6 +22170,10 @@ function Dashboard({ projects, onNavigateToProject, onUpdateProject, onEagerSave
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
         <div style={{ color: P.textMuted, fontSize: 13 }}>Setty & Associates, LTD, PC – Project Management System</div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          {regionFilter && regionFilter.options.length > 2 && <>
+            <span style={{ fontSize: 12, color: P.textDim }}>Region:</span>
+            <RegionSelect filter={regionFilter} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6 }} />
+          </>}
           <span style={{ fontSize: 12, color: P.textDim }}>Filter by PM:</span>
           <select value={dashPMFilter} onChange={e => setDashPMFilter(e.target.value)}
             style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6 }}>
@@ -31045,7 +31068,7 @@ function LostPursuitModal({ project, onCancel, onConfirm }) {
 }
 
 // ─── PIPELINE DASHBOARD ───────────────────────────────────────────────────────
-function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpdateProject }) {
+function PipelineDashboard({ projects, regionFilter, onNavigateToProject, onAddProject, onUpdateProject }) {
   const pipeline = projects.filter(p => !p.archived && isPipeline(p));
   const now = new Date();
 
@@ -31167,6 +31190,7 @@ function PipelineDashboard({ projects, onNavigateToProject, onAddProject, onUpda
           <div style={{ color: P.textMuted, fontSize: 13 }}>Proposals & projects pending award</div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {regionFilter && regionFilter.options.length > 2 && <RegionSelect filter={regionFilter} />}
           <div style={{ position: "relative" }}>
             <input value={q} onChange={e => setQ(e.target.value)}
               aria-label="Search pipeline"
@@ -31990,6 +32014,11 @@ function App() {
   const [filterQAQC, setFilterQAQC] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterContract, setFilterContract] = useState("All");
+  // Region (pms_projects.team): one choice shared by the list, Pipeline and
+  // Dashboard, remembered per browser so a DC PM opens to DC. "All" or a team
+  // code; NO_REGION is projects with no team yet.
+  const [filterRegion, setFilterRegionState] = useState(() => { try { return localStorage.getItem("pmsRegionFilter") || "All"; } catch (_) { return "All"; } });
+  const setFilterRegion = v => { setFilterRegionState(v); try { localStorage.setItem("pmsRegionFilter", v); } catch (_) {} };
   const [appStatus, setAppStatus] = useState("loading"); // loading | idle | saving | saved | error
   const [lastSaved, setLastSaved] = useState(null);
   const [saveErrorDetail, setSaveErrorDetail] = useState("");
@@ -32846,9 +32875,20 @@ function renameCompanyAcrossProjects(oldName, newName) {
     return ["All", ...names];
   }, [projects]);
 
+  const regionOptions = useMemo(() => {
+    const codes = [...new Set(projects.map(p => (p.team || "").toUpperCase().trim()).filter(Boolean))].sort();
+    const untagged = projects.some(p => !(p.team || "").trim());
+    return ["All", ...codes, ...(untagged ? [NO_REGION] : [])];
+  }, [projects]);
+  const inRegion = p => filterRegion === "All" ? true
+    : filterRegion === NO_REGION ? !(p.team || "").trim()
+    : (p.team || "").toUpperCase().trim() === filterRegion;
+  const regionProjects = useMemo(() => filterRegion === "All" ? projects : projects.filter(inRegion), [projects, filterRegion]);
+  const regionFilter = { value: filterRegion, options: regionOptions, onChange: setFilterRegion };
   const displayedProjects = useMemo(() => {
     const archived = view === "archive";
     return projects.filter(p => {
+      if (!inRegion(p)) return false;
       if (view === "pipeline") return !p.archived && isPipeline(p);
       if (p.archived !== archived) return false;
       if (!archived && !isAwarded(p)) return false; // awarded-only in list view
@@ -32864,7 +32904,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
       if (filterContract !== "All" && p.contractStatus !== filterContract) return false;
       return true;
     });
-  }, [projects, view, search, filterPM, filterQAQC, filterStatus, filterContract]);
+  }, [projects, view, search, filterPM, filterQAQC, filterStatus, filterContract, filterRegion]);
 
   const viewingProject = view.startsWith("project:") ? projects.find(p => p.id === view.split(":")[1]) : null;
 
@@ -33081,7 +33121,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
       <main id="pms-main">
       {loadErrorBanner}
 
-      {view === "dashboard" && <Dashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} staff={staff} />}
+      {view === "dashboard" && <Dashboard projects={regionProjects} regionFilter={regionFilter} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} onEagerSaveProject={updateProjectAndFlush} staff={staff} />}
       {view === "staff" && <StaffDirectoryView staff={staff} onUpdateStaff={setStaff} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
       {view === "myprojects" && <MyProjectsView projects={projects} staff={staff} onUpdateStaff={setStaff} onUpdateProject={updateProject} onNavigateToProject={id => setView(`project:${id}`)} />}
       {view === "clients" && <ClientDirectoryView clients={clients} onUpdateClients={setClients} projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onRenameCompany={renameCompanyAcrossProjects} />}
@@ -33091,7 +33131,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
       {view === "pendingcos" && <PendingCOsView projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onUpdateProject={updateProject} />}
 
       {view === "pipeline" && (
-        <PipelineDashboard projects={projects} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={addProject} onUpdateProject={updateProject} />
+        <PipelineDashboard projects={regionProjects} regionFilter={regionFilter} onNavigateToProject={id => setView(`project:${id}`)} onAddProject={addProject} onUpdateProject={updateProject} />
       )}
 
       {showNewProjectModal && (
@@ -33117,6 +33157,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
             <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} aria-label="Filter by project status">
               {["All", ...PIPELINE_STATUSES, ...PROJECT_STATUSES].map(s => <option key={s}>{s}</option>)}
             </select>
+            <RegionSelect filter={regionFilter} />
             {view === "list" && (
               <select value={filterContract} onChange={e => setFilterContract(e.target.value)} aria-label="Filter by contract status">
                 <option value="All">All Contract Statuses</option>
