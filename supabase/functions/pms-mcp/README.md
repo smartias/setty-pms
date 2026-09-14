@@ -373,20 +373,25 @@ the Admin console's Regions tab) maps a project's PMS **team code** to:
 - `sharepoint_site_id` + `doc_library` — the region's site (full features);
 - `storage_kind` — `sharepoint` (default) or `azure_files` (the share IS the
   project record: browse/read only);
-- `azure_share_url` + `azure_sas_env` — the share and the NAME of the Edge
-  Function secret holding its read-only SAS. Any region may carry these as a
-  drive **annex**, whatever its storage kind.
+- its drive shares, in `pms_region_shares` (one row per drive: `label` such as
+  `I`, `W` or `SAP`, `share_url`, and `sas_env`, the NAME of the Edge Function
+  secret holding that share's read-only SAS). A region may carry any number
+  of shares as drive **annexes**, whatever its storage kind — DC has its I:
+  and W: drives. The legacy single-share columns on `pms_regions` are a
+  fallback for a team the table has no rows for (one release, then dropped).
 
 Slice A (Sep 6) cut the seam: tools that need search, thumbnails or library
 semantics refuse `azure_files` regions with one shared note. Slice B (Sep 14)
 is the provider, in `azureFiles.ts`:
 
-- `list_project_documents` on an `azure_files` region finds the project folder
-  at the share root by number (same startsWith rule as SharePoint) and lists
-  it; on a `sharepoint` region with a share it adds `driveAnnex` to the default
-  result (a pointer to the legacy folder, if one exists). Items on a share
-  carry ids of the form `az:<TEAM>:<rel/path>`; pass one as `folderId` to
-  browse it.
+- `list_project_documents` on an `azure_files` region searches every share of
+  the region for the project folder at the share root by number (same
+  startsWith rule as SharePoint), lists the first hit and points at the others
+  (`alsoOn`); on a `sharepoint` region with shares it adds `driveAnnex.folders`
+  to the default result (one pointer per drive the project has a folder on).
+  Items on a share carry ids of the form `az:<TEAM>.<LABEL>:<rel/path>`; pass
+  one as `folderId` to browse it. An id without a label means the region's
+  first share (the 1.14.0 form).
 - `read_document` accepts `az:` ids: HEAD for size, GET for bytes, then the
   same extractors as SharePoint content.
 - The SAS is read from `Deno.env.get(azure_sas_env)` and nowhere else. Missing

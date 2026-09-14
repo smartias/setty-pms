@@ -18,10 +18,13 @@
 // exercises the real code without a share. index.ts owns the region lookup,
 // the secret read (Deno.env), caching, and the tool surfaces.
 //
-// Identity scheme: items on a share are addressed as `az:<TEAM>:<rel/path>`
+// Identity scheme: items on a share are addressed as `az:<TEAM>.<LABEL>:<rel/path>`
 // so list_project_documents and read_document can tell them from the
-// `driveId|itemId` composites SharePoint uses. TEAM names the region row
-// (hence the share and the secret); the path is relative to the share prefix.
+// `driveId|itemId` composites SharePoint uses. TEAM names the region row,
+// LABEL the share within it ('I', 'W', 'SAP' — a region may carry several
+// drives, each with its own secret); the path is relative to the share
+// prefix. An id without a label (`az:<TEAM>:<path>`, the 1.14.0 form) means
+// the region's first share.
 
 export type AzureShare = {
   account: string;   // storage account, e.g. filestoragesetty
@@ -39,6 +42,10 @@ export type AzEntry = {
 
 export const AZ_ID_PREFIX = "az:";
 const TEAM_RE = /^[A-Z][A-Z0-9]{1,5}$/;
+const LABEL_RE = /^[A-Z0-9]{1,12}$/;
+export function shareLabelClean(v: string | null | undefined): string {
+  return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+}
 // Service version the requests are pinned to. Anything from 2020-04-08 up
 // returns timestamps in listings; 2023-11-03 is the newest widely documented.
 export const AZ_API_VERSION = "2023-11-03";
@@ -80,24 +87,29 @@ export function joinRel(a: string, b: string): string {
   return [a, b].filter((x) => x && x.length).join("/");
 }
 
-export function encodeAzId(team: string, relPath: string): string {
-  return AZ_ID_PREFIX + String(team).toUpperCase() + ":" + (relPath || "");
+export function encodeAzId(team: string, relPath: string, label?: string | null): string {
+  const l = shareLabelClean(label);
+  return AZ_ID_PREFIX + String(team).toUpperCase() + (l ? "." + l : "") + ":" + (relPath || "");
 }
 
 export function isAzId(id: string | null | undefined): boolean {
   return typeof id === "string" && id.startsWith(AZ_ID_PREFIX);
 }
 
-export function decodeAzId(id: string | null | undefined): { team: string; relPath: string } | null {
+export function decodeAzId(id: string | null | undefined): { team: string; label: string | null; relPath: string } | null {
   if (!isAzId(id)) return null;
   const rest = String(id).slice(AZ_ID_PREFIX.length);
   const colon = rest.indexOf(":");
   if (colon < 0) return null;
-  const team = rest.slice(0, colon).toUpperCase().trim();
+  const head = rest.slice(0, colon).toUpperCase().trim();
+  const dot = head.indexOf(".");
+  const team = dot < 0 ? head : head.slice(0, dot);
+  const label = dot < 0 ? null : head.slice(dot + 1);
   if (!TEAM_RE.test(team)) return null;
+  if (label !== null && !LABEL_RE.test(label)) return null;
   const relPath = cleanRelPath(rest.slice(colon + 1));
   if (relPath === null) return null;
-  return { team, relPath };
+  return { team, label, relPath };
 }
 
 // The secret is whatever IT pasted: a bare query string, one with a leading

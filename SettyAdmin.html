@@ -177,6 +177,12 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v19 (14 Sep 2026, later) — a region carries N drive shares. DC keeps
+// project folders on both its I: and W: drives, and one share per region
+// could not say so. Shares now live in pms_region_shares (label, share URL,
+// secret name, each validated as before) and the form edits them as a list;
+// the legacy single-share columns keep receiving the first share so an
+// older connector build keeps working until it is redeployed.
 // v18 (14 Sep 2026) — Regions tab hardening after the first real onboarding
 // pass (Nikhil, 10 Sep) produced rows keyed by DRIVE LETTERS ('I:', 'W:',
 // 'K:') instead of PMS team codes, secret names with punctuation, and the bare
@@ -926,23 +932,42 @@ async function renderFiling() {
 // azure_files regions NEVER go through this page — the form stores only the
 // NAME of the Edge Function secret that holds the token.
 const REGION_FIELDS = "team,region_name,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env,enabled,notes,updated_at";
+const SHARE_FIELDS = "id,team,label,share_url,sas_env,enabled,sort_order,notes";
 function regionBlank() {
   return { team: "", region_name: "", sharepoint_site_id: "", doc_library: "Project Document Library",
-           storage_kind: "sharepoint", azure_share_url: "", azure_sas_env: "", enabled: true, notes: "", _isNew: true };
+           storage_kind: "sharepoint", enabled: true, notes: "", shares: [], _isNew: true };
 }
+function shareBlank() { return { label: "", share_url: "", sas_env: "", enabled: true }; }
 // A PMS team code: what the project's Team field holds ('NY', 'DC'). Letters
 // and digits only — 'I:' or 'W:' is a drive letter, not a team.
 const REGION_TEAM_RE = /^[A-Z][A-Z0-9]{1,5}$/;
+// A share label: what people call the drive ('I', 'W', 'SAP'). It rides in
+// every item id, so letters and digits only.
+const SHARE_LABEL_RE = /^[A-Z0-9]{1,12}$/;
 // The Graph composite site id the connector stores after resolving a URL.
 const GRAPH_SITE_ID_RE = /^[a-z0-9.-]+\.sharepoint\.com,[0-9a-f-]{36},[0-9a-f-]{36}$/i;
 // An Edge Function secret name must be a legal environment-variable name.
 const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 function regionTeamClean(v) { return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6); }
-function sasNameFor(team) { return "AZURE_SAS_" + (regionTeamClean(team) || "XX"); }
-// Every reason a row could never work, checked BEFORE it is saved — the
-// connector cannot route on a bad team code, resolve the sites root as a
-// site, or load a secret whose name is not a legal env-var name; and a SAS
-// pasted into the share URL would put the token into the database.
+function shareLabelClean(v) { return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12); }
+function sasNameFor(team, label) { return "AZURE_SAS_" + (shareLabelClean(label) || regionTeamClean(team) || "XX"); }
+// Every reason a share row could never work: the connector cannot address a
+// share without a legal label, resolve a malformed URL, or load a secret
+// whose name is not a legal env-var name; and a SAS pasted into the URL
+// would put the token into the database.
+function shareProblem(sh, n, team) {
+  const label = shareLabelClean(sh.label);
+  if (!label) return "Share " + n + " needs a label — what people call the drive (I, W, SAP). Letters and digits only.";
+  const url = String(sh.share_url || "").trim();
+  if (!url) return "Share " + label + " needs its Azure share URL.";
+  if (/[?#]|sig=|sv=/i.test(url)) return "Share " + label + ": the share URL must not carry a SAS token or query string — the token goes into Edge Function secrets, never this form.";
+  if (!/^https:\/\/[a-z0-9]+\.file\.core\.windows\.net\/[^\s/]+(\/[^\s]*)?$/i.test(url)) return "Share " + label + ": the URL must look like https://<account>.file.core.windows.net/<share>[/folder].";
+  const sas = String(sh.sas_env || "").trim();
+  if (!sas) return "Share " + label + " needs the SAS secret NAME (e.g. " + sasNameFor(team, label) + ").";
+  if (!SECRET_NAME_RE.test(sas)) return "Share " + label + ": the SAS secret name must be a legal secret name — capital letters, digits and underscores, starting with a letter (e.g. " + sasNameFor(team, label) + "). Punctuation such as ':' is not allowed.";
+  return null;
+}
+// Every reason a region row could never work, checked BEFORE it is saved.
 function regionProblem(ed) {
   const team = String(ed.team || "").toUpperCase().trim();
   if (!team) return "Team code is required — the project's Team field in the PMS (e.g. DC).";
@@ -958,82 +983,98 @@ function regionProblem(ed) {
     return "SharePoint site must be a site URL (https://setty.sharepoint.com/sites/…) or a Graph site id (host,siteGuid,webGuid).";
   }
   if (!String(ed.doc_library || "").trim()) return "Document library name is required (normally 'Project Document Library').";
-  const share = String(ed.azure_share_url || "").trim();
-  const sas = String(ed.azure_sas_env || "").trim();
-  const azureOnly = ed.storage_kind === "azure_files";
-  if (azureOnly && !share) return "'Azure share only' storage needs the Azure share URL.";
-  if (share) {
-    if (/[?#]|sig=|sv=/i.test(share)) return "The share URL must not carry a SAS token or query string — the token goes into Edge Function secrets, never this form.";
-    if (!/^https:\/\/[a-z0-9]+\.file\.core\.windows\.net\/[^\s/]+(\/[^\s]*)?$/i.test(share)) return "Azure share URL must look like https://<account>.file.core.windows.net/<share>[/folder].";
-    if (!sas) return "An Azure share needs the SAS secret NAME (e.g. " + sasNameFor(team) + ").";
+  const shares = Array.isArray(ed.shares) ? ed.shares : [];
+  const seen = new Set();
+  for (let i = 0; i < shares.length; i++) {
+    const p = shareProblem(shares[i], i + 1, team);
+    if (p) return p;
+    const label = shareLabelClean(shares[i].label);
+    if (seen.has(label)) return "Two shares are labelled " + label + " — labels must be unique within a region.";
+    seen.add(label);
   }
-  if (sas && !SECRET_NAME_RE.test(sas)) return "SAS secret name must be a legal secret name: capital letters, digits and underscores, starting with a letter (e.g. " + sasNameFor(team) + "). Punctuation such as ':' is not allowed.";
+  if (ed.storage_kind === "azure_files" && !shares.some((s) => s.enabled !== false)) return "'Azure share only' storage needs at least one enabled drive share.";
   return null;
 }
 async function renderRegions() {
   const v = $("view");
   if (!state.regions) {
     v.innerHTML = '<div class="empty">Loading regions…</div>';
-    try { state.regions = await sb("GET", "/rest/v1/pms_regions?select=" + REGION_FIELDS + "&order=team") || []; }
+    try {
+      const [regions, shares] = await Promise.all([
+        sb("GET", "/rest/v1/pms_regions?select=" + REGION_FIELDS + "&order=team"),
+        sb("GET", "/rest/v1/pms_region_shares?select=" + SHARE_FIELDS + "&order=team,sort_order,label").catch(() => []),
+      ]);
+      state.regions = (regions || []).map((r) => ({ ...r, shares: (shares || []).filter((s) => s.team === r.team) }));
+    }
     catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
   }
   const ed = state.regionEdit;
-  const rows = state.regions.map((r, i) => `
+  const rows = state.regions.map((r, i) => {
+    const n = r.shares.length;
+    const title = r.shares.map((s) => s.label + " → " + s.share_url).join("\n");
+    const pill = r.storage_kind !== "sharepoint" ? `Azure share${n === 1 ? "" : "s"} (${n})` : n ? `SharePoint + ${n} drive annex${n === 1 ? "" : "es"}` : "SharePoint";
+    return `
     <tr style="${r.enabled ? "" : "opacity:.55"}">
       <td><b>${esc(r.team)}</b></td><td>${esc(r.region_name)}</td>
-      <td><span class="pill ${r.storage_kind === "sharepoint" ? "ok" : "warn"}" title="${esc(r.azure_share_url || "")}">${
-        r.storage_kind !== "sharepoint" ? "Azure share" : r.azure_share_url ? "SharePoint + drive annex" : "SharePoint"
-      }</span>${r.notes ? ` <span style="color:var(--muted);font-size:11px" title="${esc(r.notes)}">📝</span>` : ""}</td>
+      <td><span class="pill ${r.storage_kind === "sharepoint" ? "ok" : "warn"}" title="${esc(title)}">${pill}</span>${r.notes ? ` <span style="color:var(--muted);font-size:11px" title="${esc(r.notes)}">📝</span>` : ""}</td>
       <td style="font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.sharepoint_site_id)}">${esc(r.sharepoint_site_id)}</td>
       <td style="font-size:12px">${esc(r.doc_library)}</td>
       <td>${r.enabled ? '<span class="pill ok">on</span>' : '<span class="pill bad">off</span>'}</td>
       <td><button class="btn" onclick="editRegion(${i})">Edit</button></td>
-    </tr>`).join("");
+    </tr>`; }).join("");
   const azure = ed && ed.storage_kind === "azure_files";
-  // Hybrid: the Azure share is an optional readable ANNEX on any region, not
-  // an either/or with SharePoint — a migrating region keeps full features for
-  // everything filed in SharePoint while its legacy drive stays readable.
-  const annex = ed && (azure || ed.azure_share_url || ed.azure_sas_env);
+  // Hybrid: drive shares are optional readable ANNEXES on any region, not an
+  // either/or with SharePoint — a migrating region keeps full features for
+  // everything filed in SharePoint while its legacy drives stay readable.
+  const shareRows = !ed ? "" : (ed.shares || []).map((sh, i) => `
+        <tr>
+          <td><input value="${esc(sh.label || "")}" placeholder="I" style="width:70px" title="What people call the drive — letters and digits" oninput="this.value=shareLabelClean(this.value);state.regionEdit.shares[${i}].label=this.value;if(this.value&&!state.regionEdit.shares[${i}].sas_env){state.regionEdit.shares[${i}].sas_env=sasNameFor(state.regionEdit.team,this.value);render()}"></td>
+          <td><input value="${esc(sh.share_url || "")}" placeholder="https://<account>.file.core.windows.net/<share>/<folder>" style="width:100%;min-width:280px" oninput="state.regionEdit.shares[${i}].share_url=this.value"></td>
+          <td><input value="${esc(sh.sas_env || "")}" placeholder="${esc(sasNameFor(ed.team, sh.label))}" style="width:150px" oninput="state.regionEdit.shares[${i}].sas_env=this.value.toUpperCase()"></td>
+          <td><input type="checkbox" ${sh.enabled !== false ? "checked" : ""} onchange="state.regionEdit.shares[${i}].enabled=this.checked"></td>
+          <td><button class="btn" title="Remove this share from the region (its secret is not touched)" onclick="state.regionEdit.shares.splice(${i},1);render()">✕</button></td>
+        </tr>`).join("");
   const form = !ed ? "" : `
     <div class="card" style="border-color:var(--accent)">
       <div style="color:var(--muted);font-size:12px;margin-bottom:8px">${ed._isNew ? "ADD REGION" : "EDIT REGION — " + esc(ed.team)}</div>
       <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
         <label style="font-size:12px">Team code<br><input id="rgTeam" value="${esc(ed.team)}" ${ed._isNew ? "" : "disabled"} placeholder="DC" style="width:70px" oninput="this.value=regionTeamClean(this.value);state.regionEdit.team=this.value" title="The project's Team field in the PMS — letters and digits only"></label>
         <label style="font-size:12px">Region name<br><input id="rgName" value="${esc(ed.region_name)}" placeholder="Washington DC" style="width:160px" oninput="state.regionEdit.region_name=this.value"></label>
-        <label style="font-size:12px">Storage<br><select id="rgKind" onchange="state.regionEdit.storage_kind=this.value; if(this.value==='azure_files'&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env=sasNameFor(state.regionEdit.team);} render()">
+        <label style="font-size:12px">Storage<br><select id="rgKind" onchange="state.regionEdit.storage_kind=this.value; if(this.value==='azure_files'&&!state.regionEdit.shares.length){state.regionEdit.shares.push(shareBlank());} render()">
           <option value="sharepoint" ${!azure ? "selected" : ""}>SharePoint (full features)</option>
-          <option value="azure_files" ${azure ? "selected" : ""}>Azure share only (browse/read)</option>
+          <option value="azure_files" ${azure ? "selected" : ""}>Azure shares only (browse/read)</option>
         </select></label>
         <label style="font-size:12px;flex:1;min-width:260px">SharePoint site URL (or Graph site id)<br><input id="rgSite" value="${esc(ed.sharepoint_site_id)}" placeholder="https://setty.sharepoint.com/sites/DCProjects" style="width:100%" oninput="state.regionEdit.sharepoint_site_id=this.value"></label>
         <label style="font-size:12px">Document library<br><input id="rgLib" value="${esc(ed.doc_library)}" style="width:180px" oninput="state.regionEdit.doc_library=this.value"></label>
         <label style="font-size:12px"><input type="checkbox" ${ed.enabled ? "checked" : ""} onchange="state.regionEdit.enabled=this.checked"> enabled</label>
       </div>
-      <div style="margin-top:10px;color:var(--muted);font-size:12px">NETWORK-DRIVE ANNEX (optional, any region) — legacy documents on the office drive stay browsable/readable while migration to SharePoint happens folder by folder; whatever is filed in SharePoint keeps the full feature set.</div>
-      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:4px">
-        <label style="font-size:12px;flex:1;min-width:260px">Azure share URL<br><input id="rgAzUrl" value="${esc(ed.azure_share_url || "")}" placeholder="https://<account>.file.core.windows.net/<share>" style="width:100%" oninput="state.regionEdit.azure_share_url=this.value; if(this.value&&!state.regionEdit.azure_sas_env){state.regionEdit.azure_sas_env=sasNameFor(state.regionEdit.team);render()}"></label>
-        <label style="font-size:12px">SAS secret name<br><input id="rgAzEnv" value="${esc(ed.azure_sas_env || "")}" placeholder="AZURE_SAS_DC" style="width:140px" oninput="state.regionEdit.azure_sas_env=this.value.toUpperCase()"></label>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px">NETWORK-DRIVE SHARES (any number, any region) — each office drive the region's project folders live on, with its own label, share URL (the folder that holds project folders named by number) and SAS secret name. Legacy documents stay browsable/readable while migration to SharePoint happens folder by folder; whatever is filed in SharePoint keeps the full feature set.</div>
+      <div style="overflow-x:auto;margin-top:4px">
+      <table><thead><tr><th>Label</th><th>Azure share URL</th><th>SAS secret name</th><th>on</th><th></th></tr></thead>
+      <tbody>${shareRows || '<tr><td colspan="5" class="empty" style="font-size:12px">No drive shares — this region is SharePoint only.</td></tr>'}</tbody></table>
       </div>
-      <label style="display:block;font-size:12px;margin-top:8px">Notes (admin-only; e.g. which offices share this drive, who owns the SAS rotation)<br><textarea id="rgNotes" rows="2" style="width:100%;max-width:720px" oninput="state.regionEdit.notes=this.value">${esc(ed.notes || "")}</textarea></label>
+      <button class="btn" style="margin-top:6px" onclick="state.regionEdit.shares.push(shareBlank());render()">＋ Add drive share</button>
+      <label style="display:block;font-size:12px;margin-top:8px">Notes (admin-only; e.g. which offices share this drive, who owns the SAS rotation, token expiry dates)<br><textarea id="rgNotes" rows="2" style="width:100%;max-width:720px" oninput="state.regionEdit.notes=this.value">${esc(ed.notes || "")}</textarea></label>
       <div style="margin-top:10px">
         <button class="btn btn-primary" onclick="saveRegion()">Save region</button>
         <button class="btn" onclick="state.regionEdit=null;render()">Cancel</button>
         ${ed._isNew ? "" : `<button class="btn" style="color:var(--bad,#c33)" onclick="deleteRegion('${esc(ed.team)}')">Delete region</button>`}
         <span id="rgNote" style="color:var(--muted);font-size:12px;margin-left:8px"></span>
       </div>
-      ${annex ? `
+      ${(ed.shares || []).length ? `
       <div style="margin-top:10px;padding:10px;background:var(--panel2,rgba(125,125,125,.08));border-radius:8px;font-size:12.5px;line-height:1.5">
-        <b>Where the SAS token goes (never into this page, chat, or email):</b><br>
-        1&nbsp;· In Azure, generate a <b>read-only</b> SAS for the share, with an expiry (rotate on a calendar).<br>
-        2&nbsp;· In the Supabase dashboard → project <b>khxmgjilwhdguuepbhne</b> → Edge Functions → Secrets, add a secret named
-        <code>${esc(ed.azure_sas_env || sasNameFor(ed.team))}</code> with the token as its value
-        (CLI alternative: <code>npx supabase secrets set ${esc(ed.azure_sas_env || sasNameFor(ed.team))}=… --project-ref khxmgjilwhdguuepbhne</code>).<br>
-        3&nbsp;· The connector reads the secret by this name at runtime. This form stores only the name.
+        <b>Where each SAS token goes (never into this page, chat, or email):</b><br>
+        1&nbsp;· In Azure, generate a <b>read-only</b> SAS with <b>read + list</b> for the share (account SAS: service f, resource types c and o), with an expiry — note the date for rotation. One account-level token can serve every share on that storage account.<br>
+        2&nbsp;· In the Supabase dashboard → project <b>khxmgjilwhdguuepbhne</b> → Edge Functions → Secrets, add one secret per share, named exactly as its row says:
+        ${(ed.shares || []).map((s) => `<code>${esc(String(s.sas_env || sasNameFor(ed.team, s.label)))}</code>`).join(", ")} — the value is the token's query string (everything after the <code>?</code>, on one line).<br>
+        3&nbsp;· The connector reads each secret by name at runtime. This form stores only the names.
       </div>` : ""}
     </div>`;
   v.innerHTML = `
     <div class="card row">
       <div class="stat"><b>${state.regions.length}</b><span>regions configured</span></div>
       <div class="stat"><b>${state.regions.filter(r => r.enabled).length}</b><span>enabled</span></div>
+      <div class="stat"><b>${state.regions.reduce((n, r) => n + r.shares.length, 0)}</b><span>drive shares</span></div>
       <button class="btn btn-primary" onclick="state.regionEdit=regionBlank();render()">＋ Add region</button>
       <button class="btn" onclick="state.regions=null;state.regionEdit=null;render()">↻ Refresh</button>
       <span style="color:var(--muted);font-size:12px">The Claude connector picks up changes within ~5 minutes. Projects route by their PMS <b>team code</b> (the project's Team field: NY, DC, …); a team without an enabled row falls back to NY.</span>
@@ -1045,17 +1086,17 @@ async function renderRegions() {
       <div style="color:var(--muted);font-size:12px;margin-top:6px">
         Regional sites must follow the NY filing standard: project folders at the library root named by project number,
         with the standard subfolders (Outgoing, Emails, Photos, …). Regions can run HYBRID during migration:
-        the SharePoint site carries the project record (full features) while a registered drive annex keeps
+        the SharePoint site carries the project record (full features) while registered drive shares keep
         legacy documents browsable/readable — moving a folder into SharePoint is what upgrades it to
         search, drawings, photos and transmittals.<br>
-        <b>Keying:</b> the Team code is the project's Team field in the PMS, never a drive letter. One office
-        drive used by several teams (e.g. the I: drive for DC and Fairfax) is registered once per team, each
-        pointing at the same share URL and secret name. Shared knowledge or intranet drives are not regions —
-        no project routes to them.
+        <b>Keying:</b> the Team code is the project's Team field in the PMS, never a drive letter. A region may
+        list several drives (DC: its I: and W: drives), each labelled by what people call it; the connector searches
+        all of them for a project's folder. One office drive used by several teams is listed under each team
+        that uses it. Shared knowledge or intranet drives are not regions — no project routes to them.
       </div>
     </div>`;
 }
-function editRegion(i) { state.regionEdit = { ...state.regions[i] }; render(); }
+function editRegion(i) { const r = state.regions[i]; state.regionEdit = { ...r, shares: (r.shares || []).map((s) => ({ ...s })) }; render(); }
 // Best effort: turn a pasted site URL into the Graph composite id using the
 // admin's Microsoft session. Falls back to storing the URL — the connector
 // resolves URLs server-side with its own app credentials.
@@ -1079,28 +1120,39 @@ async function saveRegion() {
   if (problem) { toast(problem, "error"); return; }
   const note = $("rgNote"); if (note) note.textContent = "Saving…";
   const siteRef = await resolveSiteUrl(String(ed.sharepoint_site_id).trim());
+  const shares = (ed.shares || []).map((s, i) => ({
+    team, label: shareLabelClean(s.label), share_url: String(s.share_url || "").trim(),
+    sas_env: String(s.sas_env || "").trim(), enabled: s.enabled !== false, sort_order: i,
+    notes: s.notes || null, updated_at: new Date().toISOString(),
+  }));
+  // The legacy single-share columns receive the first enabled share so a
+  // connector build older than 1.15.0 keeps working until it is redeployed.
+  const first = shares.find((s) => s.enabled) || null;
   const row = {
     team, region_name: String(ed.region_name || team).trim(),
     sharepoint_site_id: siteRef,
     doc_library: String(ed.doc_library || "Project Document Library").trim(),
     storage_kind: ed.storage_kind === "azure_files" ? "azure_files" : "sharepoint",
-    azure_share_url: String(ed.azure_share_url || "").trim() || null,
-    azure_sas_env: String(ed.azure_sas_env || "").trim() || null,
+    azure_share_url: first ? first.share_url : null,
+    azure_sas_env: first ? first.sas_env : null,
     notes: String(ed.notes || "").trim() || null,
     enabled: !!ed.enabled, updated_at: new Date().toISOString(),
   };
   try {
     await sb("POST", "/rest/v1/pms_regions?on_conflict=team", row, "resolution=merge-duplicates");
-    toast("Region " + team + " saved" + (siteRef !== ed.sharepoint_site_id ? " (site URL resolved to its Graph id)" : "") + ". The connector picks it up within ~5 minutes.", "success");
+    // Shares are replaced as a set: delete the team's rows, insert the list.
+    await sb("DELETE", "/rest/v1/pms_region_shares?team=eq." + encodeURIComponent(team));
+    if (shares.length) await sb("POST", "/rest/v1/pms_region_shares", shares);
+    toast("Region " + team + " saved (" + shares.length + " drive share" + (shares.length === 1 ? "" : "s") + ")" + (siteRef !== ed.sharepoint_site_id ? " — site URL resolved to its Graph id" : "") + ". The connector picks it up within ~5 minutes.", "success");
     state.regions = null; state.regionEdit = null; render();
   } catch (e) { toast("Save failed: " + e.message, "error"); if (note) note.textContent = ""; }
 }
 // Re-keying a row is an upsert on the NEW team code, so a mis-keyed row can
 // only leave the table this way. Projects whose team loses its row fall back
-// to the NY site within ~5 minutes; nothing else is touched.
+// to the NY site within ~5 minutes; its share rows go with it (FK cascade).
 async function deleteRegion(team) {
   if (!team) return;
-  if (!confirm("Delete region " + team + "? Projects with team " + team + " will route to the NY site (fallback) within ~5 minutes. The share and its secret are not touched.")) return;
+  if (!confirm("Delete region " + team + " and its drive-share rows? Projects with team " + team + " will route to the NY site (fallback) within ~5 minutes. The shares and their secrets are not touched.")) return;
   try {
     await sb("DELETE", "/rest/v1/pms_regions?team=eq." + encodeURIComponent(team));
     toast("Region " + team + " deleted.", "success");
