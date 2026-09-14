@@ -393,6 +393,11 @@ is the provider, in `azureFiles.ts`:
   secret, malformed share URL, expired token, and a storage-account firewall
   each produce a distinct, actionable error rather than a generic failure.
 - The share root listing is cached per region for 300s, like the region map.
+- Visibility: an `az:` id is a typed path, not an unguessable Graph id, so
+  both tools gate it before any share call — the first segment must be a
+  registered project's folder (longest project-number prefix), on that
+  project's own team, and `projectRefVisible` for the caller; otherwise the
+  HIDE not-found shape. The share root is never listed for a caller.
 
 Gotchas: the storage account must allow traffic from outside the tenant
 (Supabase's egress is not on the corporate network), the SAS needs `r` and

@@ -260,6 +260,22 @@ export function findProjectFolderName(entries: AzEntry[], numPrefix: string): st
   return hit ? hit.name : null;
 }
 
+// The reverse of findProjectFolderName: which registered project does a
+// folder name belong to? The LONGEST project number that prefixes the name
+// wins, so "SAPX256015.00 Tabler" resolves to SAPX256015.00 even when a
+// SAPX256015 exists. Null when no project claims the folder — and a folder
+// no project claims has no visibility basis, so it is not served.
+export function projectForFolderName<T extends { projectNumber?: string | null }>(folderName: string, projects: T[]): T | null {
+  const lower = String(folderName || "").toLowerCase().trim();
+  if (!lower) return null;
+  let best: T | null = null, bestLen = 0;
+  for (const p of projects) {
+    const num = String(p?.projectNumber || "").toLowerCase().trim();
+    if (num && lower.startsWith(num) && num.length > bestLen) { best = p; bestLen = num.length; }
+  }
+  return best;
+}
+
 export function extOf(name: string): string {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1).toLowerCase() : "";

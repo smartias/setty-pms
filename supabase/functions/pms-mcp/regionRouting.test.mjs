@@ -123,6 +123,15 @@ has("const annex = region.azureShareUrl ? await azureAnnexFor(team, num) : null;
 has("if (isAzId(itemId)) {", "read_document opens az: file ids");
 has("res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);", "read_document reads share bytes through the provider");
 check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refusal is gone");
+// Codex P1 on #260: an az: id is a typed PATH, so both tools gate it on the
+// project it names (folder → project → team → projectRefVisible) before any
+// share call, and the share root is never listed for a caller.
+has("async function azurePathProject(team: string, relPath: string)", "share paths earn their own visibility verdict");
+check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 2,
+  "both list_project_documents (az folderId) and read_document (az itemId) run the gate");
+has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so overrides and team scoping apply");
+has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
+has('error: "The share root is not browsable."', "the share root is never listed for a caller");
 const azSeg = shipped.slice(shipped.indexOf("async function azureCtxForTeam"), shipped.indexOf("async function azureProjectFolder"));
 check(azSeg.includes("300000"), "the share-root folder index refreshes on the 300s clock");
 

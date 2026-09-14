@@ -24,7 +24,7 @@ import {
 import {
   type AzureShare, type AzEntry, parseShareUrl, normalizeSas, cleanRelPath, joinRel,
   encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf,
-  findProjectFolderName, extOf,
+  findProjectFolderName, projectForFolderName, extOf,
 } from "./azureFiles.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -619,6 +619,28 @@ async function azureAnnexFor(team: string | null, num: string): Promise<Record<s
       note: "Legacy documents on the office network drive. Call list_project_documents with this folderId to browse them; read_document opens any file by its id. Search, drawings, photos and transmittals need SharePoint.",
     };
   } catch (e) { return { available: false, reason: String((e as any)?.message ?? e) }; }
+}
+// Visibility for share paths (Codex P1 on #260). A SharePoint id is
+// unguessable and only ever comes from a listing the HIDE wrapper screened;
+// an `az:` id is a PATH anyone can type, so it earns its own verdict here:
+// the first segment must be a registered project's folder (longest project
+// number prefixing the name), that project must belong to the id's team (the
+// share is that team's), and the caller must be allowed to see it — exactly
+// projectRefVisible, so overrides and team scoping apply unchanged. Any miss
+// returns the wrapper's not-found shape, never "exists but hidden". The
+// share root is never listed for a caller; it is only walked internally to
+// find a folder by number.
+async function azurePathProject(team: string, relPath: string): Promise<{ ok: true; projectNumber: string } | { ok: false; res: any }> {
+  const first = relPath.split("/")[0] || "";
+  if (!first) {
+    return { ok: false, res: asText({ error: "The share root is not browsable.", nextStep: "Call list_project_documents with a projectNumber; it returns that project's folder id." }) };
+  }
+  const notFound = { ok: false as const, res: asText({ error: `No project matching "${first}".`, nextStep: "search_projects finds projects by number or name; list_project_documents with projectNumber returns browsable ids." }) };
+  const p = projectForFolderName(first, await getProjectsUnfiltered());
+  if (!p) return notFound;
+  if (String(p.team || "").toUpperCase().trim() !== team) return notFound;
+  if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;
+  return { ok: true, projectNumber: String(p.projectNumber) };
 }
 
 // A region row may carry the site as a plain URL (what an admin pastes into
@@ -3214,11 +3236,13 @@ mcp.tool("list_project_documents", {
       if (isAzId(folderId)) {
         const dec = decodeAzId(folderId);
         if (!dec) return asText({ error: "Malformed drive folder id.", nextStep: "Pass a folderId exactly as a prior listing returned it (az:TEAM:path)." });
+        const gate = await azurePathProject(dec.team, dec.relPath);
+        if (!gate.ok) return gate.res;
         const az = await azureCtxForTeam(dec.team);
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
-        try { return asText(await azureListing(az.ctx, joinRel(dec.relPath, relIn))); }
+        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, joinRel(dec.relPath, relIn))) }); }
         catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
       }
       const team = await teamForProject(projectNumber);
@@ -3351,7 +3375,10 @@ mcp.tool("read_document", {
         // Slice B: an `az:` id names a file on a region's drive share. Size
         // first (HEAD), then the bytes; the extractors below are shared.
         const dec = decodeAzId(itemId);
-        if (!dec || !dec.relPath) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM:path/to/file)." });
+        // A file is always inside a project folder: at least "<folder>/<file>".
+        if (!dec || !dec.relPath.includes("/")) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM:project-folder/path/to/file)." });
+        const gate = await azurePathProject(dec.team, dec.relPath);
+        if (!gate.ok) return gate.res;
         const az = await azureCtxForTeam(dec.team);
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         name = dec.relPath.split("/").pop() || "";

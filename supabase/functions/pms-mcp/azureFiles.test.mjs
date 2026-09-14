@@ -10,7 +10,7 @@
 import {
   parseShareUrl, cleanRelPath, joinRel, encodeAzId, decodeAzId, isAzId, normalizeSas, azureUrl,
   sharePathOf, parseListXml, describeAzureError, listDirectory, fileProps, getFile,
-  findProjectFolderName, extOf, AzureFilesError, AZ_API_VERSION,
+  findProjectFolderName, projectForFolderName, extOf, AzureFilesError, AZ_API_VERSION,
 } from "./azureFiles.ts";
 
 let total = 0, failures = 0;
@@ -151,6 +151,17 @@ eq(findProjectFolderName(root, "SAPX256015.00"), "sapx256015.00 Tabler", "case-i
 eq(findProjectFolderName(root, "sapx256015.01"), "SAPX256015.01 Tabler Ph2", "the phase suffix picks the right folder");
 check(findProjectFolderName(root, "SAPX9") === null && findProjectFolderName(root, "") === null, "no match / empty prefix yields null");
 eq([extOf("A.PDF"), extOf("noext"), extOf(".hidden"), extOf("a.b.docx")], ["pdf", "", "", "docx"], "extOf");
+
+// ── 10. Folder → project (the visibility gate's first step) ─────────────────
+const PROJECTS = [
+  { projectNumber: "SAPX256015", team: "NY" }, { projectNumber: "SAPX256015.00", team: "NY" },
+  { projectNumber: "SAPX256015.01", team: "DC" }, { projectNumber: null, team: "NY" },
+];
+check(projectForFolderName("SAPX256015.00 Tabler", PROJECTS)?.projectNumber === "SAPX256015.00", "the LONGEST project number prefixing the folder wins");
+check(projectForFolderName("sapx256015.01 tabler ph2", PROJECTS)?.projectNumber === "SAPX256015.01", "case-insensitive");
+check(projectForFolderName("SAPX256015 misc", PROJECTS)?.projectNumber === "SAPX256015", "a bare-number folder resolves to the bare-number project");
+check(projectForFolderName("Old Scans", PROJECTS) === null, "a folder no project claims resolves to nothing (and is not served)");
+check(projectForFolderName("", PROJECTS) === null && projectForFolderName("x", []) === null, "empty name / no projects");
 
 console.log(failures ? `\n${failures} of ${total} assertions FAILED` : `\nall ${total} assertions pass`);
 process.exit(failures ? 1 : 0);
