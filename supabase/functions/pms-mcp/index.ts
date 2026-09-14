@@ -3101,7 +3101,18 @@ mcp.tool("get_current_set", {
         const numPrefix = String(project).toLowerCase().trim();
         const derived = await indexDerivedSet(numPrefix);
         const sheets = derived.disciplines.flatMap((d) => d.sheets).filter((s: any) => !disc || String(s.sheetNo).toLowerCase().startsWith(disc));
-        const sets = [...derived.sourceSets].sort((a, b) => String(drawingSetDate(b) || "").localeCompare(String(drawingSetDate(a) || "")));
+        // The set metadata must come from the sheets actually returned: with a
+        // discipline filter, the newest set overall may be another discipline's
+        // bulletin, and naming it here would mislabel the sheets below it.
+        const sets = [...new Set(sheets.map((s: any) => String(s.set)))].sort((a, b) => String(drawingSetDate(b) || "").localeCompare(String(drawingSetDate(a) || "")));
+        if (derived.sheetCount && disc && !sheets.length) {
+          return asText({
+            project, inferred: true, current: null, coverage: derived.coverage,
+            reason: `The drawing index has ${derived.sheetCount} sheet(s) for this project but none in discipline "${discipline}".`,
+            sourceSets: derived.sourceSets,
+            nextStep: "Call without a discipline for the whole set, or run search_drawings with indexOnly:true if that discipline's PDFs are not indexed yet.",
+          });
+        }
         if (!derived.sheetCount) {
           return asText({
             project, inferred: true, current: null,
@@ -5424,7 +5435,7 @@ type DrawingRev = { revision: string | null; revisionDate: string | null; revisi
 // index — coverage rides along.
 async function indexDerivedSet(numPrefix: string): Promise<{
   sheetCount: number; disciplines: Array<{ discipline: string; name: string; sheetCount: number; sheets: any[] }>;
-  sourceSets: string[]; coverage: { indexedFiles: number; filesPending: number; textlessOrUnparsed?: number };
+  sourceSets: string[]; coverage: { indexedFiles: number; filesPending: number; skipped?: number; givenUp?: number; textlessOrUnparsed?: number };
 }> {
   const rows: any[] = await sbGetAll(
     "pms_drawing_text?select=item_id,page,file_name,folder_path,web_url,sheet_no,sheet_title,revision,revision_date,revision_description" +
@@ -5454,16 +5465,24 @@ async function indexDerivedSet(numPrefix: string): Promise<{
       discipline, name: DISCIPLINE_NAME[discipline] ?? discipline, sheetCount: sheets.length,
       sheets: sheets.sort((a: any, b: any) => sheetRank(String(a.sheetNo)) - sheetRank(String(b.sheetNo)) || String(a.sheetNo).localeCompare(String(b.sheetNo))),
     }));
-  let indexedFiles = 0, filesPending = 0;
+  // Same accounting as search_drawings: a failed row that still has attempts
+  // left is pending (the next indexing pass retries it); one out of attempts
+  // is given up; oversized PDFs are skipped. filesPending === 0 must mean
+  // "nothing more will be read", or a partial set reads as complete.
+  let indexedFiles = 0, filesPending = 0, skipped = 0, givenUp = 0;
   try {
-    const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
-    indexedFiles = known.filter((k) => k.status === "done").length;
-    filesPending = known.filter((k) => k.status === "pending").length;
+    const known: any[] = await sbGetAll("pms_drawing_index_files?select=status,attempts&project_prefix=eq." + encodeURIComponent(numPrefix));
+    for (const k of known) {
+      if (k.status === "done") indexedFiles++;
+      else if (k.status === "skipped") skipped++;
+      else if (Number(k.attempts || 0) >= DRAWING_INDEX_MAX_ATTEMPTS) givenUp++;
+      else filesPending++;
+    }
   } catch { /* coverage is advisory */ }
   return {
     sheetCount: best.size, disciplines,
     sourceSets: [...new Set([...best.values()].map((r) => drawingSetOf(r.folder_path)))],
-    coverage: { indexedFiles, filesPending },
+    coverage: { indexedFiles, filesPending, ...(skipped ? { skipped } : {}), ...(givenUp ? { givenUp } : {}) },
   };
 }
 const INDEX_DERIVED_BASIS =
@@ -5661,9 +5680,9 @@ async function crossSiteDeliverables(numPrefix: string): Promise<{
 // folder is "99-<number>_OUTGOING", which still contains "outgoing"). The
 // link is the UNC path. Bounded like the SharePoint walks.
 const AZ_WALK_MAX_LISTINGS = 120;
-async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: string): Promise<{ files: TreeFile[]; truncated: boolean }> {
+async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: string): Promise<{ files: TreeFile[]; truncated: boolean; started: boolean }> {
   const files: TreeFile[] = [];
-  let listings = 0, truncated = false;
+  let listings = 0, truncated = false, started = false;
   const relOf = (full: string) => full.startsWith(projectRel + "/") ? full.slice(projectRel.length + 1) : (full === projectRel ? "" : full);
   const queue: string[] = [startRel];
   while (queue.length) {
@@ -5671,6 +5690,7 @@ async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: strin
     const dir = queue.shift()!;
     let r: { entries: AzEntry[]; truncated: boolean };
     try { r = await azureDirEntries(ctx, dir); listings++; } catch { continue; }
+    if (dir === startRel) started = true;
     if (r.truncated) truncated = true;
     for (const e of r.entries) {
       const full = joinRel(dir, e.name);
@@ -5684,7 +5704,7 @@ async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: strin
       } else truncated = true;
     }
   }
-  return { files, truncated };
+  return { files, truncated, started };
 }
 // The drawing scope on a drive: every share of the region that holds the
 // project is searched; the default scope is the project's Outgoing folder
@@ -5704,7 +5724,10 @@ async function azureDrawingScope(team: string, numPrefix: string, subfolder?: st
     }
     if (!start) continue;
     const r = await azureWalkFiles(h.ctx, h.folder, start);
-    if (!want && !r.files.length && !r.truncated) { /* resolved but empty is still resolved */ }
+    // An explicit subfolder that does not exist keeps its literal name through
+    // azureResolveSubfolder and 404s on the first listing: that is "No folder",
+    // not an empty scope, so it must not count as resolved (and be cached).
+    if (!r.started) continue;
     files = files.concat(r.files.filter((f) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath)));
     truncated = truncated || r.truncated;
     paths.push(h.ctx.label + ": " + start.slice(h.folder.length + 1));
@@ -6451,13 +6474,18 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
 async function loadPdfBytes(itemId: string, maxBytes: number, opts: { cache?: boolean } = {}): Promise<Uint8Array> {
   const useCache = opts.cache !== false;
   const tooBig = (n: number) => new Error(`the file is ${(n / 1048576).toFixed(0)}MB — over the ${maxBytes / 1048576}MB limit`);
-  if (useCache) { const c = pdfCacheGet(itemId); if (c) return c; }
-  let bytes: Uint8Array;
+  // A drive id is a typed path, so the visibility gate runs BEFORE the cache:
+  // a hit left by an authorized caller must not serve a caller who cannot see
+  // the project. SharePoint ids are unguessable, so the cache alone is fine.
+  const dec = isAzId(itemId) ? decodeAzId(itemId) : null;
   if (isAzId(itemId)) {
-    const dec = decodeAzId(itemId);
     if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
     const gate = await azurePathProject(dec.team, dec.relPath);
     if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+  }
+  if (useCache) { const c = pdfCacheGet(itemId); if (c) return c; }
+  let bytes: Uint8Array;
+  if (dec) {
     const az = await azureCtxForTeam(dec.team, dec.label);
     if (!az.ok) throw new Error(az.error);
     const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
