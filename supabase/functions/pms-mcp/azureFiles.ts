@@ -288,6 +288,69 @@ export function projectForFolderName<T extends { projectNumber?: string | null }
   return best;
 }
 
+// ── Drive layouts that differ from the NY standard ─────────────────────────
+// DC files projects under a YEAR folder (I:\2026\SIPX262012.00), and its
+// subfolders carry a numbered prefix ("99-SIPX262012.00_OUTGOING" where NY
+// has "Outgoing"). Both are recognised here so the tools keep speaking the
+// standard vocabulary ("Outgoing", "Emails", "Photos") on every drive.
+
+// Grouping folders that may sit between the share root and a project folder:
+// a YEAR (DC: I:\2026\…) or an ENTITY code then a year (the N: drive:
+// N:\SAP\2025\SAPQ256919.01, with SAIG and SAG beside SAP). A project folder
+// never looks like either (its name starts with a 10+ character number).
+export const YEAR_SEG_RE = /^(19|20)\d{2}$/;
+export const ENTITY_SEG_RE = /^[A-Z]{2,5}$/i;
+export function isGroupingSegment(s: string): boolean { return YEAR_SEG_RE.test(s) || ENTITY_SEG_RE.test(s); }
+// How well an entity folder name prefixes a project number: SAP → SAPQ256919
+// scores 3, SAIG scores 2, SAG scores 2. Used to try the likeliest first.
+export function entityPrefixScore(entity: string, num: string): number {
+  const a = String(entity || "").toUpperCase(), b = String(num || "").toUpperCase();
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i;
+}
+// Project numbers encode the year in digits 5-6: SIPX262012.00 → 2026.
+export function yearOfProjectNumber(num: string | null | undefined): string | null {
+  const m = /^[A-Z]{4}(\d{2})\d{4}/i.exec(String(num || "").trim());
+  return m ? "20" + m[1] : null;
+}
+// The plain name behind a DC-style "NN-<number>_NAME" folder; other names
+// pass through untouched.
+export function standardFolderName(name: string): string {
+  const s = String(name || "").replace(/^\d{2}-[A-Z]{4}\d{6}\.\d{2}[_ -]*/i, "").trim();
+  return s || String(name || "");
+}
+// What people (and the SharePoint tools) call each standard subfolder, and
+// the names it goes by on the drives.
+const FOLDER_ALIASES: Record<string, string[]> = {
+  outgoing: ["outgoing", "out"],
+  emails: ["emails", "email", "incoming", "in"],
+  incoming: ["incoming", "emails", "email", "in"],
+  photos: ["photos", "photo", "pictures"],
+  pm: ["pm", "project management", "project mgmt"],
+  reports: ["reports", "report", "narratives"],
+  "qa-qc": ["qa-qc", "qaqc", "qa qc", "qa/qc", "qa"],
+};
+function norm(s: string): string { return String(s || "").toLowerCase().replace(/[_\s]+/g, " ").trim(); }
+// Which child folder a caller means by `wanted`: the exact name first, then
+// the same name behind a DC prefix, then a known alias, then a unique
+// contains-match. Null when nothing fits (the caller then reports 404).
+export function resolveChildFolder(entries: AzEntry[], wanted: string): string | null {
+  const w = norm(wanted);
+  if (!w) return null;
+  const folders = entries.filter((e) => e.type === "folder");
+  const exact = folders.find((e) => norm(e.name) === w);
+  if (exact) return exact.name;
+  const std = folders.find((e) => norm(standardFolderName(e.name)) === w);
+  if (std) return std.name;
+  // Any spelling in a group finds a folder carrying any other spelling in it.
+  const group = Object.values(FOLDER_ALIASES).find((g) => g.includes(w)) ?? [];
+  const byAlias = folders.find((e) => group.includes(norm(standardFolderName(e.name))));
+  if (byAlias) return byAlias.name;
+  const contains = folders.filter((e) => norm(standardFolderName(e.name)).includes(w));
+  return contains.length === 1 ? contains[0].name : null;
+}
+
 export function extOf(name: string): string {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1).toLowerCase() : "";

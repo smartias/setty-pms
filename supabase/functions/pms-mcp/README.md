@@ -398,6 +398,17 @@ is the provider, in `azureFiles.ts`:
   secret, malformed share URL, expired token, and a storage-account firewall
   each produce a distinct, actionable error rather than a generic failure.
 - The share root listing is cached per region for 300s, like the region map.
+- Drive layouts (1.15.1): a project folder may sit under a **year** folder
+  (DC: `I:\2026\SIPX262012.00`) or under an **entity** code then a year (NY:
+  `N:\SAP\2025\SAPQ256919.01`, with `SAIG` and `SAG` beside `SAP`); the
+  connector tries the year encoded in the project number (digits 5-6), then
+  other year folders, then entity folders ranked by how well they prefix the
+  number. Register the share at the folder that holds the grouping folders
+  (for NY, the share root, not `/SAP`). DC subfolders
+  are `NN-<number>_NAME` (`99-SIPX262012.00_OUTGOING`); listings report the
+  plain name as `aka`, and a `subfolder` argument resolves by exact name, plain
+  name, alias (`Emails` ↔ `INCOMING`, `QA/QC` ↔ `QA-QC`), or unique contains.
+  The visibility gate skips at most two leading year segments.
 - Visibility: an `az:` id is a typed path, not an unguessable Graph id, so
   both tools gate it before any share call — the first segment must be a
   registered project's folder (longest project-number prefix), on that

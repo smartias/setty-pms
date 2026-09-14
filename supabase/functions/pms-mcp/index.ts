@@ -25,6 +25,7 @@ import {
   type AzureShare, type AzEntry, parseShareUrl, normalizeSas, cleanRelPath, joinRel,
   encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf,
   findProjectFolderName, projectForFolderName, extOf, shareLabelClean,
+  YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
 } from "./azureFiles.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -718,28 +719,89 @@ function azureFolderPointer(h: { ctx: AzureCtx; folder: string }): Record<string
 // The share root is where project folders live, named by number like the
 // SharePoint library root. Cached per region on the 300s clock: one listing
 // serves every "which folder is project X" question in that window.
-const _azRoot = new Map<string, { at: number; entries: AzEntry[]; truncated: boolean }>();
-async function azureRootEntries(ctx: AzureCtx): Promise<{ entries: AzEntry[]; truncated: boolean }> {
-  const key = ctx.team + "." + ctx.label;
-  const hit = _azRoot.get(key);
+const _azDir = new Map<string, { at: number; entries: AzEntry[]; truncated: boolean }>();
+async function azureDirEntries(ctx: AzureCtx, rel: string): Promise<{ entries: AzEntry[]; truncated: boolean }> {
+  const key = ctx.team + "." + ctx.label + ":" + rel;
+  const hit = _azDir.get(key);
   if (hit && (Date.now() - hit.at) < 300000) return hit;
-  const r = await listDirectory(ctx.share, "", ctx.sas);
+  const r = await listDirectory(ctx.share, rel, ctx.sas);
   const v = { at: Date.now(), entries: r.entries, truncated: r.truncated };
-  _azRoot.set(key, v);
+  _azDir.set(key, v);
   return v;
 }
+// Where a project's folder is on this share, as a path relative to the share
+// prefix. Layouts seen so far:
+//   <root>/<project>                 the SharePoint-standard layout
+//   <root>/<year>/<project>          DC:  I:\2026\SIPX262012.00
+//   <root>/<entity>/<year>/<project> NY:  N:\SAP\2025\SAPQ256919.01 (SAIG, SAG beside SAP)
+// The search is ordered by likelihood and bounded: the year read off the
+// number first, other year folders newest first; entities ranked by how well
+// they prefix the number, each with the guessed year, and the best-ranked
+// entity's other years as a last resort. Every directory listing is cached.
+const _azProjPath = new Map<string, { at: number; rel: string | null }>();
 async function azureProjectFolder(ctx: AzureCtx, num: string): Promise<string | null> {
-  return findProjectFolderName((await azureRootEntries(ctx)).entries, num);
+  const key = ctx.team + "." + ctx.label + ":" + num.toLowerCase();
+  const hit = _azProjPath.get(key);
+  if (hit && (Date.now() - hit.at) < 300000 && hit.rel) return hit.rel;
+  const root = await azureDirEntries(ctx, "");
+  let rel: string | null = findProjectFolderName(root.entries, num);
+  if (!rel) {
+    const folders = root.entries.filter((e) => e.type === "folder").map((e) => e.name);
+    const years = folders.filter((n) => YEAR_SEG_RE.test(n)).sort().reverse();
+    const entities = folders.filter((n) => ENTITY_SEG_RE.test(n))
+      .sort((a, b) => entityPrefixScore(b, num) - entityPrefixScore(a, num) || a.localeCompare(b));
+    const guess = yearOfProjectNumber(num);
+    const dirs: string[] = [];
+    if (guess && years.includes(guess)) dirs.push(guess);
+    for (const y of years) if (y !== guess) dirs.push(y);
+    for (const ent of entities) { if (guess) dirs.push(joinRel(ent, guess)); dirs.push(ent); }
+    const lookIn = async (dir: string): Promise<string | null> => {
+      try { const folder = findProjectFolderName((await azureDirEntries(ctx, dir)).entries, num); return folder ? joinRel(dir, folder) : null; }
+      catch { return null; /* a grouping folder that will not list is skipped, not fatal */ }
+    };
+    for (const dir of dirs.slice(0, 40)) { rel = await lookIn(dir); if (rel) break; }
+    // Last resort: the likeliest entity's OTHER year folders (a number whose
+    // year digits do not match the filing year).
+    if (!rel && entities.length && entityPrefixScore(entities[0], num) >= 3) {
+      try {
+        const sub = (await azureDirEntries(ctx, entities[0])).entries.filter((e) => e.type === "folder" && YEAR_SEG_RE.test(e.name) && e.name !== guess)
+          .map((e) => e.name).sort().reverse().slice(0, 15);
+        for (const y of sub) { rel = await lookIn(joinRel(entities[0], y)); if (rel) break; }
+      } catch { /* ignore */ }
+    }
+  }
+  _azProjPath.set(key, { at: Date.now(), rel });
+  return rel;
+}
+// Resolve a caller's subfolder path ("Outgoing", "Outgoing/2026-09-01 DD")
+// segment by segment against what is really on the drive, so the standard
+// names work on a drive whose folders are "99-<number>_OUTGOING". A segment
+// that resolves to nothing is kept literally; the listing then 404s with the
+// share's own message.
+async function azureResolveSubfolder(ctx: AzureCtx, baseRel: string, relIn: string): Promise<string> {
+  let rel = baseRel;
+  for (const seg of relIn.split("/").filter(Boolean)) {
+    let pick = seg;
+    try { pick = resolveChildFolder((await azureDirEntries(ctx, rel)).entries, seg) ?? seg; } catch { /* keep literal */ }
+    rel = joinRel(rel, pick);
+  }
+  return rel;
 }
 const AZURE_ITEM_NOTE =
   "These files come from the office network drive (Azure Files share). read_document opens any file " +
-  "here by its itemId; search, drawings, photos and transmittals need the project record in SharePoint.";
+  "here by its itemId; search, drawings, photos and transmittals need the project record in SharePoint. " +
+  "Folders listed with an `aka` are the standard folders under a drive-specific name (e.g. " +
+  "'99-<number>_OUTGOING' is Outgoing); pass either name as subfolder.";
 async function azureListing(ctx: AzureCtx, folderRel: string): Promise<Record<string, unknown>> {
   const r = await listDirectory(ctx.share, folderRel, ctx.sas);
-  const items = r.entries.map((e) => ({
-    itemId: encodeAzId(ctx.team, joinRel(folderRel, e.name), ctx.label), name: e.name, type: e.type, storage: "drive",
-    size: e.size, modified: e.modified, ext: e.type === "file" ? extOf(e.name) : undefined,
-  }));
+  const items = r.entries.map((e) => {
+    const aka = e.type === "folder" ? standardFolderName(e.name) : e.name;
+    return {
+      itemId: encodeAzId(ctx.team, joinRel(folderRel, e.name), ctx.label), name: e.name, type: e.type, storage: "drive",
+      ...(aka !== e.name ? { aka } : {}),
+      size: e.size, modified: e.modified, ext: e.type === "file" ? extOf(e.name) : undefined,
+    };
+  });
   return {
     storage: "azure_files", region: ctx.team, share: ctx.label, folderId: encodeAzId(ctx.team, folderRel, ctx.label),
     sharePath: sharePathOf(ctx.share, folderRel), path: "/" + folderRel, count: items.length, items,
@@ -774,7 +836,12 @@ async function azureAnnexFor(team: string | null, num: string): Promise<Record<s
 // share root is never listed for a caller; it is only walked internally to
 // find a folder by number.
 async function azurePathProject(team: string, relPath: string): Promise<{ ok: true; projectNumber: string } | { ok: false; res: any }> {
-  const first = relPath.split("/")[0] || "";
+  // Grouping folders may sit ahead of the project folder (DC: 2026/SIPX…;
+  // NY: SAP/2025/SAPQ…). They are never browsable targets on their own.
+  const segs = relPath.split("/").filter(Boolean);
+  let i = 0;
+  while (i < segs.length && i < 2 && isGroupingSegment(segs[i])) i++;
+  const first = segs[i] || "";
   if (!first) {
     return { ok: false, res: asText({ error: "The share root is not browsable.", nextStep: "Call list_project_documents with a projectNumber; it returns that project's folder id." }) };
   }
@@ -962,9 +1029,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-14-region-shares";
+const BUILD = "2026-09-14-dc-folder-layout";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.15.0",
+  name: "setty-pms", version: "1.15.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3386,7 +3453,7 @@ mcp.tool("list_project_documents", {
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
-        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, joinRel(dec.relPath, relIn))) }); }
+        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, await azureResolveSubfolder(az.ctx, dec.relPath, relIn))) }); }
         catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
       }
       const team = await teamForProject(projectNumber);
@@ -3413,7 +3480,7 @@ mcp.tool("list_project_documents", {
         const [first, ...others] = hits;
         try {
           return asText({ project: projectNumber, projectFolder: first.folder,
-            ...(await azureListing(first.ctx, joinRel(first.folder, relIn))),
+            ...(await azureListing(first.ctx, await azureResolveSubfolder(first.ctx, first.folder, relIn))),
             ...(others.length ? { alsoOn: others.map(azureFolderPointer), alsoOnNote: "This project also has a folder on the region's other drive(s); pass one of these folderIds to browse it." } : {}),
             ...(problems.length ? { problems } : {}) });
         } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: t, share: first.ctx.label }); }

@@ -177,6 +177,11 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v20 (14 Sep 2026, evening) — Regions tab data-safety (Codex P1s on #261):
+// the share list no longer degrades to "empty" when its request fails (a
+// save from that state would have wiped a region's drives), and saving goes
+// through pms_region_save, one transaction for the region row and its share
+// set, instead of upsert + DELETE + POST as three calls.
 // v19 (14 Sep 2026, later) — a region carries N drive shares. DC keeps
 // project folders on both its I: and W: drives, and one share per region
 // could not say so. Shares now live in pms_region_shares (label, share URL,
@@ -1002,7 +1007,10 @@ async function renderRegions() {
     try {
       const [regions, shares] = await Promise.all([
         sb("GET", "/rest/v1/pms_regions?select=" + REGION_FIELDS + "&order=team"),
-        sb("GET", "/rest/v1/pms_region_shares?select=" + SHARE_FIELDS + "&order=team,sort_order,label").catch(() => []),
+        // No fallback to [] here (Codex P1 on #261): a failed share load must
+        // fail the view, because "no shares" rendered from a transient error
+        // would be persisted by the next save and erase a region's drives.
+        sb("GET", "/rest/v1/pms_region_shares?select=" + SHARE_FIELDS + "&order=team,sort_order,label"),
       ]);
       state.regions = (regions || []).map((r) => ({ ...r, shares: (shares || []).filter((s) => s.team === r.team) }));
     }
@@ -1125,8 +1133,8 @@ async function saveRegion() {
     sas_env: String(s.sas_env || "").trim(), enabled: s.enabled !== false, sort_order: i,
     notes: s.notes || null, updated_at: new Date().toISOString(),
   }));
-  // The legacy single-share columns receive the first enabled share so a
-  // connector build older than 1.15.0 keeps working until it is redeployed.
+  // The legacy single-share columns are derived inside pms_region_save from
+  // the first enabled share; sent here too so the payload reads as the row.
   const first = shares.find((s) => s.enabled) || null;
   const row = {
     team, region_name: String(ed.region_name || team).trim(),
@@ -1139,10 +1147,11 @@ async function saveRegion() {
     enabled: !!ed.enabled, updated_at: new Date().toISOString(),
   };
   try {
-    await sb("POST", "/rest/v1/pms_regions?on_conflict=team", row, "resolution=merge-duplicates");
-    // Shares are replaced as a set: delete the team's rows, insert the list.
-    await sb("DELETE", "/rest/v1/pms_region_shares?team=eq." + encodeURIComponent(team));
-    if (shares.length) await sb("POST", "/rest/v1/pms_region_shares", shares);
+    // One transaction (pms_region_save, Codex P1 on #261): the region upsert
+    // and the share-set replacement land together or not at all — a dropped
+    // connection can no longer erase the old shares before the new ones
+    // arrive. The function also writes the legacy single-share columns.
+    await sb("POST", "/rest/v1/rpc/pms_region_save", { p_region: row, p_shares: shares });
     toast("Region " + team + " saved (" + shares.length + " drive share" + (shares.length === 1 ? "" : "s") + ")" + (siteRef !== ed.sharepoint_site_id ? " — site URL resolved to its Graph id" : "") + ". The connector picks it up within ~5 minutes.", "success");
     state.regions = null; state.regionEdit = null; render();
   } catch (e) { toast("Save failed: " + e.message, "error"); if (note) note.textContent = ""; }
