@@ -177,6 +177,9 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v21 (14 Sep 2026, night) — Regions tab gains "What works where": every
+// connector tool and skill with its SharePoint / drive support, the same
+// matrix as the team explainer, collapsed under the regions list.
 // v20 (14 Sep 2026, evening) — Regions tab data-safety (Codex P1s on #261):
 // the share list no longer degrades to "empty" when its request fails (a
 // save from that state would have wiped a region's drives), and saving goes
@@ -1102,6 +1105,98 @@ async function renderRegions() {
         all of them for a project's folder. One office drive used by several teams is listed under each team
         that uses it. Shared knowledge or intranet drives are not regions — no project routes to them.
       </div>
+    </div>
+    ${renderCapabilityMatrix()}`;
+}
+// ── What works where: every connector tool and skill, SharePoint vs drive ───
+// The same matrix as the team explainer "Where Project Files Live". "PMS
+// only" = the tool reads the PMS record and never touches SharePoint or a
+// drive, so the region's storage makes no difference. Keep this in step with
+// the tool list in pms-mcp/index.ts (43 tools as of v1.15.1).
+const CAP_ROWS = [
+  ["Projects, people and the portfolio"],
+  ["search_projects", "Find projects by number, name, status, agency, client or type"],
+  ["get_project", "The full PMS record for one project: milestones, phases, team, contacts", "yes", "yes", "The record is PMS data; the meeting-minutes pointers it harvests come from SharePoint."],
+  ["project_briefing", "One-call orientation: status, next milestone, open items, recent activity", "yes", "yes", "Its \"read these minutes next\" list comes from SharePoint; on a drive, name the minutes file."],
+  ["list_milestones", "A project's billable and non-billable milestones with dates and status"],
+  ["list_action_items", "Open action items across all projects or one"],
+  ["firm_overview", "Portfolio rollup: counts by status, open RFIs, submittals, action items"],
+  ["find_contact", "A person and their contact details, outside directory and Setty staff"],
+  ["search_companies", "The outside-company directory by what they do and are certified as"],
+  ["list_term_contracts", "Term contracts and master agreements with their task orders"],
+  ["Correspondence and notes"],
+  ["search_emails", "Full-text search of the filed project email log"],
+  ["read_email", "One filed email in full"],
+  ["summarize_project_emails", "The newest filed emails for a project with full bodies"],
+  ["search_notes", "Project and meeting notes captured to OneNote, plus logged action items"],
+  ["read_note", "One note or OneNote page in full"],
+  ["Construction administration"],
+  ["search_rfis_submittals", "RFIs and submittals in the log, including imported Newforma records"],
+  ["read_rfi_submittal", "One RFI or submittal in full"],
+  ["save_ca_review", "Write Claude's suggested response and stamp onto a CA record"],
+  ["backload_ca_item", "Create a log entry for an item not yet in the PMS from its filed PDF or email", "yes", "part", "The entry is created either way; the PDF is fetched from SharePoint. On a drive, read the file by name first."],
+  ["trace_references", "Which drawing sheets an RFI or submittal refers to, validated against the register", "yes", "part", "The register check works; validating against drawing text needs the SharePoint index."],
+  ["Project files"],
+  ["list_project_documents", "Browse a project's folders and subfolders", "yes", "yes"],
+  ["read_document", "Read a PDF, Word, Excel, CSV or text file; large PDFs page by page with keyword jump", "yes", "yes"],
+  ["find_document", "Find a document by describing it in plain language", "yes", "no", "You name the folder and file instead."],
+  ["Drawings"],
+  ["extract_sheet_index", "The drawing sheet index and the current full set", "yes", "no"],
+  ["get_current_set", "The authoritative current set from the transmittal register", "yes", "no"],
+  ["search_drawings", "Search the text on the drawings: tags, keynotes, room names, schedules", "yes", "no"],
+  ["view_drawing", "Render one sheet as an image to look at", "yes", "no"],
+  ["read_drawing_schedule", "Read the schedules on a sheet as structured rows", "yes", "no"],
+  ["find_equipment", "The equipment tag registry derived from the drawing text", "yes", "no"],
+  ["prepare_transmittal", "Stage a transmittal for an Outgoing set without issuing it", "yes", "no"],
+  ["Field photos"],
+  ["search_field_photos", "Photo upload sessions from the Field Photos app and Site Report", "yes", "no", "Sessions are SharePoint uploads."],
+  ["view_photos", "Look at field photos and image files", "yes", "no"],
+  ["QA reviews"],
+  ["get_qa_checklist", "The firm's QA Deliverables Checklist by section"],
+  ["record_qa_findings", "Write review findings or ingested external comments into the ledger"],
+  ["list_qa_findings", "Read the QA findings ledger with live status"],
+  ["update_qa_finding", "Move one finding's status with who and why"],
+  ["file_qa_report", "File a QA report, back-check or narrative into the project record", "yes", "no", "Drives are read-only to Claude."],
+  ["ensure_qaqc_folders", "Create the project's standard QAQC folder set", "yes", "no", "Drives are read-only to Claude."],
+  ["Knowledge and templates"],
+  ["search_knowledge", "Reviewed project knowledge: findings, decisions, constraints, lessons"],
+  ["save_knowledge", "Save a durable finding to the shared knowledge record"],
+  ["search_agency_preferences", "How each client agency works: verified process rules and preferences"],
+  ["get_letterhead_template", "Setty's letterhead and formal document format"],
+  ["get_add_service_template", "The additional services agreement template"],
+  ["get_template", "Firm document templates, read live from the NY templates library", "yes", "yes", "Templates live in the New York library and serve every office."],
+  ["Skills"],
+  ["", "<b>Email response</b>: reconstruct a thread and draft a reply", "yes", "yes", "Minutes on a drive are read by naming the file."],
+  ["", "<b>Open items and assumptions log</b>: the coordination log for a deliverable", "yes", "yes"],
+  ["", "<b>Submittal and RFI review</b>: log entry, cut-sheet reading, comparison with the issued set", "yes", "part", "The log and a cut sheet you name work; comparison with the issued drawings needs the SharePoint set."],
+  ["", "<b>Design narrative</b>: basis of design from drawings, minutes, emails and prior narratives", "yes", "part", "Minutes, emails and a prior narrative you name work; the drawing index does not."],
+  ["", "<b>QA coordination review</b>: the issued set against the checklist and open items", "yes", "no", "Needs the sheet index and drawing text."],
+];
+function renderCapabilityMatrix() {
+  const mark = (v) => v === "yes" ? '<span class="pill ok">Yes</span>' : v === "part" ? '<span class="pill warn">Partly</span>' : '<span class="pill bad">No</span>';
+  const rows = CAP_ROWS.map((r) => {
+    if (r.length === 1) return `<tr><td colspan="4" style="background:var(--panel2,rgba(125,125,125,.08));font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding-top:10px"><b>${esc(r[0])}</b></td></tr>`;
+    const [tool, what, sp, dr, note] = r;
+    const right = sp === undefined
+      ? '<td colspan="2" style="color:var(--muted)"><b>PMS only</b></td>'
+      : `<td>${mark(sp)}</td><td>${mark(dr)}${note ? `<div style="color:var(--muted);font-size:11.5px;margin-top:2px">${esc(note)}</div>` : ""}</td>`;
+    return `<tr><td style="white-space:nowrap">${tool ? `<code>${esc(tool)}</code>` : ""}</td><td style="font-size:12.5px">${what}</td>${right}</tr>`;
+  }).join("");
+  return `
+    <div class="card">
+      <details>
+        <summary style="cursor:pointer;font-weight:600">What works where — every connector tool and skill, SharePoint vs network drive</summary>
+        <div style="color:var(--muted);font-size:12px;margin:8px 0 10px">
+          <b>PMS only</b> means the tool reads the PMS record and never touches SharePoint or a drive, so an office's storage makes
+          no difference. The two right-hand columns only matter for tools that read project files. A drive gives Claude folders and
+          files; SharePoint adds the search index, item ids, thumbnails and the filing log that the drawing and transmittal tools
+          are built on — and Claude never writes to a drive.
+        </div>
+        <div style="overflow-x:auto">
+        <table><thead><tr><th>Tool</th><th>What it does</th><th>SharePoint</th><th>Drive</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+        </div>
+      </details>
     </div>`;
 }
 function editRegion(i) { const r = state.regions[i]; state.regionEdit = { ...r, shares: (r.shares || []).map((s) => ({ ...s })) }; render(); }

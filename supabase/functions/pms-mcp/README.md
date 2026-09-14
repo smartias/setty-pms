@@ -426,15 +426,30 @@ share URL must not carry the token (the console refuses one that does).
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
 
-```bash
+```powershell
+cd C:\path\to\setty-pms          # the REPO ROOT — the folder that contains supabase\
+git checkout main; git pull origin main
 $env:SUPABASE_ACCESS_TOKEN = "sbp_..."
 npx supabase functions deploy pms-mcp `
   --project-ref khxmgjilwhdguuepbhne `
-  --no-verify-jwt `
-  --import-map supabase/functions/pms-mcp/deno.json
+  --no-verify-jwt
 ```
 
-Run it from the repo root. `--no-verify-jwt` is required: the function does its own auth, and dropping the flag would put Supabase's JWT gate in front of the MCP endpoint and break every client.
+Notes, each learned the hard way (14 Sep 2026):
+
+- **Run it from the repo root**, not from `supabase\`. From inside `supabase\` the CLI
+  looks for `supabase\supabase\functions\…` and fails with "Entrypoint path does not
+  exist" / "no such file or directory".
+- **No `--import-map` flag.** The CLI picks up `supabase/functions/pms-mcp/deno.json`
+  on its own; passing the flag resolves the path relative to `supabase\` and fails
+  with `ENOENT … supabase\supabase\functions\pms-mcp\deno.json`.
+- `--no-verify-jwt` is required: the function does its own auth, and dropping the
+  flag would put Supabase's JWT gate in front of the MCP endpoint and break every client.
+- "WARNING: Docker is not running" is harmless — without Docker the CLI uploads the
+  sources and Supabase bundles them.
+- Edge Function **secrets** (e.g. the `AZURE_SAS_*` tokens) are set in the dashboard
+  under Edge Functions → Secrets, not by this command; a new secret is picked up on the
+  function's next cold start, and a redeploy forces it.
 
 ## After every deploy
 
