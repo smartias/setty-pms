@@ -200,4 +200,27 @@ check(projectForFolderName("Old Scans", PROJECTS) === null, "a folder no project
 check(projectForFolderName("", PROJECTS) === null && projectForFolderName("x", []) === null, "empty name / no projects");
 
 console.log(failures ? `\n${failures} of ${total} assertions FAILED` : `\nall ${total} assertions pass`);
+
+// ── Discovery helpers (1.17.0) ───────────────────────────────────────────────
+{
+  const { projectNumberOfFolder, folderNameRemainder, projectNameFromFolders } = await import("./azureFiles.ts");
+  eq(projectNumberOfFolder("SAPQ256918.06"), "SAPQ256918.06", "bare number folder");
+  eq(projectNumberOfFolder("sipx262012.00 RFK PMO"), "SIPX262012.00", "number + name, uppercased");
+  eq(projectNumberOfFolder("SAPX256015"), "SAPX256015", "number without suffix");
+  eq(projectNumberOfFolder("SAPX256015.001"), null, "three-digit suffix is not a project number");
+  eq(projectNumberOfFolder("2026"), null, "year folder is not a project");
+  eq(projectNumberOfFolder("SAP"), null, "entity folder is not a project");
+  eq(projectNumberOfFolder("00-SAPQ256918.06_INCOMING"), null, "prefixed subfolder is not a project folder");
+  eq(folderNameRemainder("SAPX256015.00 Tabler", "SAPX256015.00"), "Tabler", "remainder after the number");
+  eq(folderNameRemainder("SAPX256015.00_Tabler Hall", "SAPX256015.00"), "Tabler Hall", "underscore separator");
+  eq(folderNameRemainder("SAPX256015.00", "SAPX256015.00"), "", "bare number has no remainder");
+  const f = (n) => ({ type: "folder", name: n });
+  eq(projectNameFromFolders("SAPQ256918.06", "SAPQ256918.06", [f("00-SAPQ256918.06 NYCSCA K328 Energy Model"), f("01-SAPQ256918.06_INCOMING")]),
+    "NYCSCA K328 Energy Model", "name from the 00 folder (NY N: drive)");
+  eq(projectNameFromFolders("SIPX262012.00", "SIPX262012.00", [f("00-SIPX262012.00"), f("99-SIPX262012.00_OUTGOING")]),
+    null, "DC bare 00 folder → no name");
+  eq(projectNameFromFolders("SIPX262012.00 RFK PMO Energy", "SIPX262012.00", [f("00-SIPX262012.00")]),
+    "RFK PMO Energy", "falls back to the project folder's own remainder");
+  eq(projectNameFromFolders("SAPX256015.00", "SAPX256015.00", []), null, "nothing to read → null");
+}
 process.exit(failures ? 1 : 0);

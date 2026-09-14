@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty — Sheet List & Transmittal Generator</title>
   <script>
-    window.__appVersion = "2026-08-23-transmittal-v18-register-write-hardening";
+    window.__appVersion = "2026-09-15-transmittal-v19-drive-register-only";
 
     // Auto-update check (same pattern as SettyFieldPhotos.html)
     async function _checkForUpdate() {
@@ -379,6 +379,27 @@
       <div class="status" id="browseStatus" role="status"></div>
     </div>
 
+    <!-- Drive projects (v19, register-only mode). Offices still on network
+         drives (DC: I:/W:) have no SharePoint folder to browse or upload to,
+         and this page holds no drive credential — by design. The set is
+         copied into the drive's Outgoing folder by hand; here we READ it
+         through the OS folder picker (names + title blocks, nothing leaves
+         the machine) and write the transmittal REGISTER entry, which is what
+         makes get_current_set / the Current Set panel authoritative. -->
+    <div id="driveSetPanel" style="display:none;margin-bottom:14px;border:1px solid var(--border,#30363d);border-radius:8px;padding:10px 12px">
+      <div style="font-size:12.5px;line-height:1.5;margin-bottom:8px">
+        <b>This project's files live on the office drive</b> (<span id="driveSetDrives"></span>), not SharePoint.
+        Copy the issued set into the project's <code>99-…_OUTGOING</code> folder yourself, then:
+      </div>
+      <label for="driveFolderInput">1 · Set folder on the drive (paste from Explorer's address bar)</label>
+      <input type="text" id="driveFolderInput" placeholder="I:\2026\SIPX262012.00\99-SIPX262012.00_OUTGOING\2026-09-15_DD Submission" oninput="onDriveFolderInput(this.value)"/>
+      <div style="font-size:11.5px;color:var(--muted,#8b949e);margin:4px 0 10px">The issue date and set name are read from the LAST folder in the path, so name it <code>YYYY-MM-DD_Set name</code>.</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button type="button" class="btn btn-primary" id="drivePickBtn" title="Opens the OS folder picker. Only the file names and title blocks are read; nothing is uploaded anywhere.">2 · 📂 Read the set folder from the drive…</button>
+        <span style="font-size:11.5px;color:var(--muted,#8b949e)">Pick the same folder. Nothing is uploaded — the register entry is the record.</span>
+      </div>
+    </div>
+
     <details style="margin-bottom:14px">
       <summary style="cursor:pointer;font-size:12.5px;color:var(--muted,#8b949e)">Or paste a SharePoint folder URL</summary>
       <div style="display:flex;gap:10px;align-items:flex-end;margin-top:8px">
@@ -665,6 +686,14 @@ settyAuth.mountPill();
 let msalApp = null;
 let msalAccount = null;
 let folderUrl = "";
+// Drive projects (v19): the set is read off the mapped drive through the OS
+// picker and the register is written with the drive path instead of a
+// SharePoint URL. No SAS, no upload, no Graph for the files.
+let driveMode = false;
+let driveFolderPath = "";          // what the person pasted, verbatim (backslashes kept)
+let localBlobs = new Map();        // file name -> File, from the picker
+let pmsRegions = [];               // { team, storage_kind, enabled }
+let pmsRegionShares = [];          // { team, label, share_url }
 let resolvedDriveId = null;
 let resolvedFolderPath = null;
 let folderFiles = []; // raw Graph driveItems for the drawings in this folder (used for ZIP packaging)
@@ -700,23 +729,28 @@ let pmsMilestoneId = "";
 // Old rows are MARKED, never deleted. This register is the only record of what
 // went out and when, so a correction should leave a trail rather than erase
 // one — and a mistaken supersede stays recoverable.
-async function supersedePriorRegisterRows(projId, folderUrlDecoded, newTransmittalNo) {
-  if (!projId || !folderUrlDecoded) return { superseded: 0, ids: [] };
+async function supersedePriorRegisterRows(projId, folderUrlDecoded, newTransmittalNo, driveFolder) {
+  if (!projId || (!folderUrlDecoded && !driveFolder)) return { superseded: 0, ids: [] };
   const headers = {
     "apikey": SUPABASE_ANON,
     "Authorization": "Bearer " + settyAuth.token(),
     "Content-Type": "application/json",
   };
+  // A drive project's rows carry no sp_folder_url; they are keyed by the
+  // drive path in files.driveFolder, matched client-side (case-insensitive,
+  // slashes either way) over the project's own rows.
   const url = SUPABASE_URL + "/rest/v1/pms_filing_log?select=id,files" +
     "&project_id=eq." + encodeURIComponent(projId) +
     "&operation=eq.transmittal-generated" +
-    "&sp_folder_url=eq." + encodeURIComponent(folderUrlDecoded);
+    (driveFolder ? "" : "&sp_folder_url=eq." + encodeURIComponent(folderUrlDecoded));
   const res = await fetch(url, { headers });
   if (!res.ok) throw new Error("lookup " + res.status);
   // Filtered here rather than in the query: a jsonb null-vs-absent filter is
   // easy to get subtly wrong in PostgREST, and this list is only ever a handful
   // of rows for one folder.
-  const prior = (await res.json()).filter(r => r && r.files && r.files.superseded !== true);
+  const normPath = p => String(p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const prior = (await res.json()).filter(r => r && r.files && r.files.superseded !== true &&
+    (!driveFolder || normPath(r.files.driveFolder) === normPath(driveFolder)));
   const ids = [];
   for (const r of prior) {
     const files = Object.assign({}, r.files);
@@ -756,9 +790,13 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
     project_id:    projId,
     msg_id:        pmsMilestoneId ? ("milestone:" + pmsMilestoneId) : null,
     operation:     "transmittal-generated",
-    sp_folder_url: folderUrlDecoded || null,
+    sp_folder_url: driveMode ? null : (folderUrlDecoded || null),
     files:         {
-      distributionKind, // "save-sp" | "zip" | "send-email"
+      distributionKind, // "save-sp" | "zip" | "send-email" | "backfill"
+      // Drive projects (v19): the set folder is a path on the office drive,
+      // recorded verbatim; there is no SharePoint URL and nothing was
+      // uploaded. get_current_set / the Current Set panel read this.
+      ...(driveMode ? { storage: "drive", driveFolder: driveFolderPath } : {}),
       transmittalNumber: document.getElementById("transmittalNo")?.value || "",
       generatedAt: new Date().toISOString(),
       // Prefer the dated ancestor ("2025-04-10_Bulletin #1") over the leaf,
@@ -825,7 +863,7 @@ async function logTransmittalGenerated(distributionKind, extra = {}, opts = {}) 
   // still goes ahead: losing the record of a transmittal entirely is worse than
   // leaving a stale row behind, and the stale row is visible in the register.
   try {
-    const sup = await supersedePriorRegisterRows(projId, folderUrlDecoded, row.files.transmittalNumber);
+    const sup = await supersedePriorRegisterRows(projId, folderUrlDecoded, row.files.transmittalNumber, driveMode ? driveFolderPath : null);
     if (sup.superseded) row.files.replaces = sup.ids;
   } catch (e) {
     console.warn("[transmittal] could not supersede prior register rows:", e.message);
@@ -941,14 +979,20 @@ async function loadPmsData() {
     // the backup-button issue.
     let pRows = [], cRows = [];
     try {
-      const [pRes, cRes] = await Promise.all([
-        fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project", { headers }),
+      const [pRes, cRes, rRes, sRes] = await Promise.all([
+        fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=project,team", { headers }),
         fetch(SUPABASE_URL + "/rest/v1/pms_clients?select=client",   { headers }),
+        // Regions decide whether a project is browsed in SharePoint or read
+        // off a drive. Both are readable by every signed-in user (RLS).
+        fetch(SUPABASE_URL + "/rest/v1/pms_regions?select=team,storage_kind,enabled", { headers }).catch(() => null),
+        fetch(SUPABASE_URL + "/rest/v1/pms_region_shares?select=team,label,share_url&enabled=eq.true&order=sort_order", { headers }).catch(() => null),
       ]);
       if (pRes.ok && cRes.ok) {
         pRows = await pRes.json();
         cRows = await cRes.json();
       }
+      try { pmsRegions = (rRes && rRes.ok) ? await rRes.json() : []; } catch (_) { pmsRegions = []; }
+      try { pmsRegionShares = (sRes && sRes.ok) ? await sRes.json() : []; } catch (_) { pmsRegionShares = []; }
     } catch (e) {
       console.warn("[TX] V2 load failed, falling back to legacy:", e.message);
     }
@@ -965,7 +1009,8 @@ async function loadPmsData() {
       pmsClients = rawClients;
       pmsProjects = rawProjects.filter(p => !p.archived);
     } else {
-      pmsProjects = pRows.map(r => r.project).filter(p => p && !p.archived);
+      // Carry the team column onto the project blob: routing keys on it.
+      pmsProjects = pRows.map(r => r.project ? Object.assign({}, r.project, { team: r.team || r.project.team || null }) : null).filter(p => p && !p.archived);
       pmsClients  = (cRows || []).map(r => r.client).filter(Boolean);
     }
 
@@ -1574,10 +1619,127 @@ document.getElementById("folderUpBtn").onclick = async function () {
   await refreshFolderBrowser(true);
 };
 
+// A project is drive-based when its team's region says so. Mirrors the
+// connector's storage seam (pms_regions.storage_kind = 'azure_files').
+function projectIsDriveBased(proj) {
+  const team = String((proj && proj.team) || "").toUpperCase().trim();
+  if (!team) return false;
+  const r = (pmsRegions || []).find(x => String(x.team || "").toUpperCase().trim() === team);
+  return !!(r && r.enabled !== false && r.storage_kind === "azure_files");
+}
+// Project numbers encode the year in digits 5-6 (SIPX262012 → 2026); the
+// DC drive files projects under that year. Same rule as the connector.
+function yearOfProjectNumber(num) {
+  const m = /^[A-Z]{4}(\d{2})\d{4}/i.exec(String(num || "").trim());
+  return m ? "20" + m[1] : "";
+}
+function driveLettersFor(team) {
+  const labels = (pmsRegionShares || []).filter(s => String(s.team || "").toUpperCase().trim() === team).map(s => s.label + ":");
+  return labels.length ? labels.join(", ") : "network drive";
+}
+function onDriveFolderInput(v) {
+  driveFolderPath = String(v || "").trim();
+  resolvedFolderPath = driveFolderPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  document.getElementById("folderUrlDisplay").textContent = driveFolderPath || "Set folder on the drive — paste the path above.";
+  prefillBackfillDate();
+}
+function enterDriveMode(proj) {
+  driveMode = true;
+  folderUrl = ""; resolvedDriveId = null; folderFiles = []; localBlobs = new Map();
+  const team = String(proj.team || "").toUpperCase().trim();
+  document.getElementById("folderBrowser").style.display = "none";
+  const panel = document.getElementById("driveSetPanel");
+  panel.style.display = "block";
+  document.getElementById("driveSetDrives").textContent = driveLettersFor(team);
+  // Prefill the DC layout up to the Outgoing folder; the person appends the set.
+  const num = String(proj.projectNumber || "").trim();
+  const year = yearOfProjectNumber(num);
+  const first = (pmsRegionShares || []).find(s => String(s.team || "").toUpperCase().trim() === team);
+  const letter = first ? first.label + ":" : "I:";
+  const input = document.getElementById("driveFolderInput");
+  if (!input.value && num && year) input.value = letter + "\\" + year + "\\" + num + "\\99-" + num + "_OUTGOING\\";
+  onDriveFolderInput(input.value);
+  // SharePoint-only controls step aside.
+  document.getElementById("loadFolderBtn").style.display = "none";
+  document.getElementById("localUploadBtn").style.display = "none";
+  document.getElementById("localUploadFilesBtn").style.display = "none";
+  const sp = document.getElementById("saveToSpBtn");
+  if (sp) { sp.disabled = true; sp.title = "Drive project: save the generated .docx into the set folder on the drive yourself."; }
+  setStatus("loadStatus", "info", "Drive project — paste the set folder's path, then read the folder from the drive. Nothing is uploaded; the register entry is the record.");
+  syncDeliveryModeUI();
+}
+function leaveDriveMode() {
+  if (!driveMode) return;
+  driveMode = false; driveFolderPath = ""; localBlobs = new Map();
+  document.getElementById("driveSetPanel").style.display = "none";
+  document.getElementById("loadFolderBtn").style.display = "";
+  document.getElementById("localUploadBtn").style.display = "";
+  document.getElementById("localUploadFilesBtn").style.display = "";
+  const sp = document.getElementById("saveToSpBtn");
+  if (sp) { sp.disabled = false; sp.title = ""; }
+  syncDeliveryModeUI();
+}
+document.getElementById("drivePickBtn").onclick = () => {
+  if (!driveFolderPath) {
+    setStatus("loadStatus", "error", "✗ Paste the set folder's drive path first — it is what the register records.");
+    document.getElementById("driveFolderInput").focus();
+    return;
+  }
+  document.getElementById("localUploadInput").click();
+};
+// Read the picked folder as the set: names and (via readTitleBlocks) title
+// blocks. folderFiles takes the same shape loadFolder() builds from Graph,
+// minus ids, so every downstream step works unchanged; local:true routes
+// byte reads to the File objects instead of Graph.
+async function loadLocalSet(picked) {
+  const candidates = picked.filter(f => UPLOADABLE_FILE_RE.test(f.name));
+  const seen = new Set(); const files = [];
+  for (const f of candidates) { const k = f.name.toLowerCase(); if (seen.has(k)) continue; seen.add(k); files.push(f); }
+  if (!files.length) {
+    setStatus("loadStatus", "warn", "⚠ No drawing or document files in that folder. Only PDF, Word, Excel, DWG, RVT, DGN and DXF files are read.");
+    return;
+  }
+  // The picker never reveals the path, but it does give the picked folder's
+  // NAME; append it when the pasted path stops at Outgoing.
+  const top = (files[0].webkitRelativePath || "").split("/")[0];
+  const input = document.getElementById("driveFolderInput");
+  if (top && input.value && /_OUTGOING[\\/]*$/i.test(input.value)) {
+    input.value = input.value.replace(/[\\/]*$/, "") + "\\" + top;
+    onDriveFolderInput(input.value);
+  }
+  localBlobs = new Map(files.map(f => [f.name, f]));
+  folderFiles = files.map(f => ({
+    id: null, local: true, name: f.name, size: f.size,
+    lastModifiedDateTime: new Date(f.lastModified || Date.now()).toISOString(), webUrl: null,
+  }));
+  sheets = folderFiles.map(f => parseFilename(f.name, f.lastModifiedDateTime)).filter(Boolean);
+  if (!sheets.length) sheets = [emptyRow(), emptyRow(), emptyRow()];
+  renderTable();
+  document.getElementById("sheetListCard").style.display = "block";
+  prefillBackfillDate();
+  setStatus("loadStatus", "success", "✓ Read " + files.length + " file" + (files.length === 1 ? "" : "s") + " from the drive folder. Nothing was uploaded.");
+  void maybeAutoReadTitleBlocks();
+}
+// Bytes for one listed file: the picked File on a drive project, Graph otherwise.
+async function fileBytes(f, token) {
+  if (f.local) {
+    const blob = localBlobs.get(f.name);
+    if (!blob) throw new Error("the picked file is no longer available — read the folder again");
+    return blob;
+  }
+  const resp = await fetch(
+    "https://graph.microsoft.com/v1.0/drives/" + resolvedDriveId + "/items/" + f.id + "/content",
+    { headers: { Authorization: "Bearer " + token } });
+  if (!resp.ok) throw new Error("download " + resp.status);
+  return await resp.blob();
+}
+
 async function startBrowsingProject(proj) {
   document.getElementById("projectName").value   = proj.name || "";
   document.getElementById("projectNumber").value = proj.projectNumber || "";
   if (typeof updateRecipientFromProject === "function") { try { updateRecipientFromProject(); } catch (e) {} }
+  if (projectIsDriveBased(proj)) { enterDriveMode(proj); return; }
+  leaveDriveMode();
   const root = libraryPathFromUrl(proj.projectFolderUrl || "");
   if (!root) {
     document.getElementById("folderBrowser").style.display = "none";
@@ -1732,7 +1894,8 @@ document.getElementById("localUploadFilesBtn").onclick = () => promptLocalUpload
 function onLocalPick(e) {
   const picked = Array.from(e.target.files || []);
   e.target.value = ""; // so re-picking the same folder/files fires change again
-  if (picked.length) void uploadLocalFiles(picked);
+  if (!picked.length) return;
+  if (driveMode) void loadLocalSet(picked); else void uploadLocalFiles(picked);
 }
 document.getElementById("localUploadInput").onchange = onLocalPick;
 document.getElementById("localUploadFilesInput").onchange = onLocalPick;
@@ -2063,7 +2226,7 @@ async function readTitleBlocks() {
   }
   titleBlockRunning = true;
   btn.disabled = true;
-  const token = await getToken();
+  const token = driveMode ? null : await getToken();
   let lib;
   try {
     lib = await loadPdfJs();
@@ -2086,12 +2249,8 @@ async function readTitleBlocks() {
     const f = pdfs[n];
     setStatus("loadStatus", "info", "⏳ Reading title blocks — file " + (n + 1) + " of " + pdfs.length + " (" + f.name + ")…");
     try {
-      const res = await fetch(
-        "https://graph.microsoft.com/v1.0/drives/" + resolvedDriveId + "/items/" + f.id + "/content",
-        { headers: { Authorization: "Bearer " + token } },
-      );
-      if (!res.ok) throw new Error("download " + res.status);
-      const doc = await lib.getDocument({ data: new Uint8Array(await res.arrayBuffer()) }).promise;
+      const blob = await fileBytes(f, token);
+      const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
       let fileTb = 0, fileList = 0;
       for (let p = 1; p <= doc.numPages; p++) {
         const page = await doc.getPage(p);
@@ -2624,7 +2783,7 @@ async function packageAsZip() {
 
     // Auth-based /content endpoint — never expires, unlike @microsoft.graph.downloadUrl
     // which is a pre-signed CDN URL with a ~1-hour TTL that goes stale silently.
-    const downloadToken = await getToken();
+    const downloadToken = driveMode ? null : await getToken();
     // Restrict the zip to files whose sheet row is still checked. Without this,
     // unchecking (or X'ing) a row would remove it from the cover docx but leave
     // it in the package — confusing because the checkbox label implies the file
@@ -2640,12 +2799,7 @@ async function packageAsZip() {
     let done = 0;
     for (const f of filesToZip) {
       setStatus("zipStatus", "info", `⏳ Adding ${f.name} (${done + 1}/${filesToZip.length})…`);
-      const resp = await fetch(
-        `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${f.id}/content`,
-        { headers: { "Authorization": "Bearer " + downloadToken } }
-      );
-      if (!resp.ok) throw new Error(`Failed to download ${f.name}: HTTP ${resp.status}`);
-      zip.file(f.name, await resp.blob());
+      zip.file(f.name, await fileBytes(f, downloadToken));
       done++;
     }
 
@@ -2992,6 +3146,7 @@ async function generateDocx() {
 
 // ─── SAVE TO SHAREPOINT ───────────────────────────────────────────────────────
 async function saveToSharePoint() {
+  if (driveMode) { setStatus("generateStatus", "warn", "Drive project: save the downloaded .docx into the set folder on the drive yourself — this page holds no drive credential."); return; }
   if (!generatedBlob) { setStatus("generateStatus", "error", "Generate the transmittal first."); return; }
   if (!resolvedDriveId || !resolvedFolderPath) { setStatus("generateStatus", "error", "Load the folder first."); return; }
 
@@ -3054,7 +3209,15 @@ function currentProjectPortalUrl() {
 // folders, pick a sensible default (portal when available, else attachment)
 // until the user makes their own choice, and refresh the hint line.
 function syncDeliveryModeUI() {
-  const hasPortal = !!currentProjectPortalUrl();
+  // Drive projects: attachment is the only delivery that needs no SharePoint.
+  const zipRadio = document.getElementById("dmZip");
+  if (zipRadio) {
+    zipRadio.disabled = !!driveMode;
+    const zl = zipRadio.closest("label");
+    if (zl) { zl.style.opacity = driveMode ? "0.5" : "1"; zl.title = driveMode ? "Drive project: the zip link is a SharePoint share." : ""; }
+    if (driveMode && zipRadio.checked) document.getElementById("dmAttach").checked = true;
+  }
+  const hasPortal = !driveMode && !!currentProjectPortalUrl();
   const portalRadio = document.getElementById("dmPortal");
   const portalLabel = portalRadio ? portalRadio.closest("label") : null;
   if (portalRadio) {
@@ -3122,7 +3285,7 @@ async function sendToClient() {
     // the latter is a pre-signed CDN URL that expires ~1 hour after the folder was
     // loaded, which silently broke sends triggered later in the same session.
     let totalBytes = 0;
-    const downloadToken = await getToken();
+    const downloadToken = driveMode ? null : await getToken();
 
     // Same include-filter the download-ZIP path uses — keep the package in
     // sync with the cover docx. See the comment in zipFiles() for the why.
@@ -3136,12 +3299,7 @@ async function sendToClient() {
     for (let i = 0; i < filesToSend.length; i++) {
       const f = filesToSend[i];
       setStatus("sendStatus", "info", `⏳ Reading ${f.name} (${i + 1}/${filesToSend.length})…`);
-      const resp = await fetch(
-        `https://graph.microsoft.com/v1.0/drives/${resolvedDriveId}/items/${f.id}/content`,
-        { headers: { "Authorization": "Bearer " + downloadToken } }
-      );
-      if (!resp.ok) throw new Error(`Download failed for ${f.name}: HTTP ${resp.status}`);
-      const blob = await resp.blob();
+      const blob = await fileBytes(f, downloadToken);
       totalBytes += blob.size;
       fileBlobs.push({ name: f.name, blob });
     }
@@ -3153,6 +3311,9 @@ async function sendToClient() {
     //   zip    → bundle + upload + 30-day anonymous link
     const deliveryMode = selectedDeliveryMode();
     const portalUrl = currentProjectPortalUrl();
+    if (driveMode && deliveryMode !== "attach") {
+      throw new Error("Drive project: the portal and zip-link deliveries need SharePoint. Use 'Email as attachment'.");
+    }
 
     let linkUrl = null, linkLabel = null, expiryIso = null, packageName, attachments = null;
 
@@ -3574,7 +3735,7 @@ async function loadTransmittalHistory() {
         // second query. They were already in this payload and thrown away.
         sheets: sheetRows,
         fields: {
-          MilestoneName:   f.milestoneName || (r.sp_folder_url || "").split("/").pop() || "",
+          MilestoneName:   f.milestoneName || (r.sp_folder_url || "").split("/").pop() || String(f.driveFolder || "").split(/[\\/]/).pop() || "",
           RecipientEmails: [f.recipientEmail, (f.ccEmails || []).length ? "CC: " + f.ccEmails.join(", ") : ""]
                              .filter(Boolean).join("\n"),
           FileCount:       sheetCount == null ? "\u2014" : sheetCount,

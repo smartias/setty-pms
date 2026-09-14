@@ -26,6 +26,7 @@ import {
   encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf,
   findProjectFolderName, projectForFolderName, extOf, shareLabelClean,
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
+  projectNumberOfFolder, projectNameFromFolders,
 } from "./azureFiles.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -208,6 +209,21 @@ async function sbInsert(table: string, row: Record<string, unknown>): Promise<an
   if (!res.ok) throw new Error(`Supabase insert ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const rows = await res.json();
   return Array.isArray(rows) ? rows[0] : rows;
+}
+
+// Upsert rows on a conflict column (drive discovery). return=minimal: the
+// caller re-reads what it needs.
+async function sbUpsert(table: string, onConflict: string, rows: Record<string, unknown>[]): Promise<void> {
+  if (!rows.length) return;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${onConflict}`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify(rows),
+  });
+  if (!res.ok) throw new Error(`Supabase upsert ${res.status}: ${(await res.text()).slice(0, 300)}`);
 }
 
 // PostgREST caps responses at 1000 rows; page past it.
@@ -1030,9 +1046,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-drive-drawing-index";
+const BUILD = "2026-09-15-drive-discovery";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.16.0",
+  name: "setty-pms", version: "1.17.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3050,6 +3066,9 @@ mcp.tool("get_current_set", {
           // Stored decoded; encoded here or a set named "Addendum #2" renders
           // a link that truncates at the '#'. Same helper the fold uses.
           webUrl: encodeSpUrl(latest.sp_folder_url),
+          // A drive project's set has no SharePoint URL; the register carries
+          // the drive path the transmittal tool recorded (register-only mode).
+          ...(f.driveFolder ? { driveFolder: f.driveFolder, storage: "drive" } : {}),
           // A backfilled row is a set reconstructed after the fact. Authoritative,
           // but not a live send, and the difference matters if anyone audits it.
           backfilled: f.backfilled === true,
@@ -3078,7 +3097,7 @@ mcp.tool("get_current_set", {
             "list is not available here — open the folder link to see the contents.",
         }),
         ...(priorSets.length ? { priorSets } : {}),
-        ...(latest.sp_folder_url ? {} : {
+        ...(latest.sp_folder_url || f.driveFolder ? {} : {
           linkNote: "No folder link was recorded on this transmittal. Use list_project_documents with subfolder:'Outgoing' to locate it.",
         }),
       });
@@ -3098,7 +3117,18 @@ mcp.tool("get_current_set", {
         const numPrefix = String(project).toLowerCase().trim();
         const derived = await indexDerivedSet(numPrefix);
         const sheets = derived.disciplines.flatMap((d) => d.sheets).filter((s: any) => !disc || String(s.sheetNo).toLowerCase().startsWith(disc));
-        const sets = [...derived.sourceSets].sort((a, b) => String(drawingSetDate(b) || "").localeCompare(String(drawingSetDate(a) || "")));
+        // The set metadata must come from the sheets actually returned: with a
+        // discipline filter, the newest set overall may be another discipline's
+        // bulletin, and naming it here would mislabel the sheets below it.
+        const sets = [...new Set(sheets.map((s: any) => String(s.set)))].sort((a, b) => String(drawingSetDate(b) || "").localeCompare(String(drawingSetDate(a) || "")));
+        if (derived.sheetCount && disc && !sheets.length) {
+          return asText({
+            project, inferred: true, current: null, coverage: derived.coverage,
+            reason: `The drawing index has ${derived.sheetCount} sheet(s) for this project but none in discipline "${discipline}".`,
+            sourceSets: derived.sourceSets,
+            nextStep: "Call without a discipline for the whole set, or run search_drawings with indexOnly:true if that discipline's PDFs are not indexed yet.",
+          });
+        }
         if (!derived.sheetCount) {
           return asText({
             project, inferred: true, current: null,
@@ -5421,7 +5451,7 @@ type DrawingRev = { revision: string | null; revisionDate: string | null; revisi
 // index — coverage rides along.
 async function indexDerivedSet(numPrefix: string): Promise<{
   sheetCount: number; disciplines: Array<{ discipline: string; name: string; sheetCount: number; sheets: any[] }>;
-  sourceSets: string[]; coverage: { indexedFiles: number; filesPending: number; textlessOrUnparsed?: number };
+  sourceSets: string[]; coverage: { indexedFiles: number; filesPending: number; skipped?: number; givenUp?: number; textlessOrUnparsed?: number };
 }> {
   const rows: any[] = await sbGetAll(
     "pms_drawing_text?select=item_id,page,file_name,folder_path,web_url,sheet_no,sheet_title,revision,revision_date,revision_description" +
@@ -5451,16 +5481,24 @@ async function indexDerivedSet(numPrefix: string): Promise<{
       discipline, name: DISCIPLINE_NAME[discipline] ?? discipline, sheetCount: sheets.length,
       sheets: sheets.sort((a: any, b: any) => sheetRank(String(a.sheetNo)) - sheetRank(String(b.sheetNo)) || String(a.sheetNo).localeCompare(String(b.sheetNo))),
     }));
-  let indexedFiles = 0, filesPending = 0;
+  // Same accounting as search_drawings: a failed row that still has attempts
+  // left is pending (the next indexing pass retries it); one out of attempts
+  // is given up; oversized PDFs are skipped. filesPending === 0 must mean
+  // "nothing more will be read", or a partial set reads as complete.
+  let indexedFiles = 0, filesPending = 0, skipped = 0, givenUp = 0;
   try {
-    const known: any[] = await sbGetAll("pms_drawing_index_files?select=status&project_prefix=eq." + encodeURIComponent(numPrefix));
-    indexedFiles = known.filter((k) => k.status === "done").length;
-    filesPending = known.filter((k) => k.status === "pending").length;
+    const known: any[] = await sbGetAll("pms_drawing_index_files?select=status,attempts&project_prefix=eq." + encodeURIComponent(numPrefix));
+    for (const k of known) {
+      if (k.status === "done") indexedFiles++;
+      else if (k.status === "skipped") skipped++;
+      else if (Number(k.attempts || 0) >= DRAWING_INDEX_MAX_ATTEMPTS) givenUp++;
+      else filesPending++;
+    }
   } catch { /* coverage is advisory */ }
   return {
     sheetCount: best.size, disciplines,
     sourceSets: [...new Set([...best.values()].map((r) => drawingSetOf(r.folder_path)))],
-    coverage: { indexedFiles, filesPending },
+    coverage: { indexedFiles, filesPending, ...(skipped ? { skipped } : {}), ...(givenUp ? { givenUp } : {}) },
   };
 }
 const INDEX_DERIVED_BASIS =
@@ -5658,9 +5696,9 @@ async function crossSiteDeliverables(numPrefix: string): Promise<{
 // folder is "99-<number>_OUTGOING", which still contains "outgoing"). The
 // link is the UNC path. Bounded like the SharePoint walks.
 const AZ_WALK_MAX_LISTINGS = 120;
-async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: string): Promise<{ files: TreeFile[]; truncated: boolean }> {
+async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: string): Promise<{ files: TreeFile[]; truncated: boolean; started: boolean }> {
   const files: TreeFile[] = [];
-  let listings = 0, truncated = false;
+  let listings = 0, truncated = false, started = false;
   const relOf = (full: string) => full.startsWith(projectRel + "/") ? full.slice(projectRel.length + 1) : (full === projectRel ? "" : full);
   const queue: string[] = [startRel];
   while (queue.length) {
@@ -5668,6 +5706,7 @@ async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: strin
     const dir = queue.shift()!;
     let r: { entries: AzEntry[]; truncated: boolean };
     try { r = await azureDirEntries(ctx, dir); listings++; } catch { continue; }
+    if (dir === startRel) started = true;
     if (r.truncated) truncated = true;
     for (const e of r.entries) {
       const full = joinRel(dir, e.name);
@@ -5681,7 +5720,7 @@ async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: strin
       } else truncated = true;
     }
   }
-  return { files, truncated };
+  return { files, truncated, started };
 }
 // The drawing scope on a drive: every share of the region that holds the
 // project is searched; the default scope is the project's Outgoing folder
@@ -5701,7 +5740,10 @@ async function azureDrawingScope(team: string, numPrefix: string, subfolder?: st
     }
     if (!start) continue;
     const r = await azureWalkFiles(h.ctx, h.folder, start);
-    if (!want && !r.files.length && !r.truncated) { /* resolved but empty is still resolved */ }
+    // An explicit subfolder that does not exist keeps its literal name through
+    // azureResolveSubfolder and 404s on the first listing: that is "No folder",
+    // not an empty scope, so it must not count as resolved (and be cached).
+    if (!r.started) continue;
     files = files.concat(r.files.filter((f) => f.ext === "pdf" && !NON_SHEET_FOLDER.test(f.folderPath)));
     truncated = truncated || r.truncated;
     paths.push(h.ctx.label + ": " + start.slice(h.folder.length + 1));
@@ -6448,13 +6490,18 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
 async function loadPdfBytes(itemId: string, maxBytes: number, opts: { cache?: boolean } = {}): Promise<Uint8Array> {
   const useCache = opts.cache !== false;
   const tooBig = (n: number) => new Error(`the file is ${(n / 1048576).toFixed(0)}MB — over the ${maxBytes / 1048576}MB limit`);
-  if (useCache) { const c = pdfCacheGet(itemId); if (c) return c; }
-  let bytes: Uint8Array;
+  // A drive id is a typed path, so the visibility gate runs BEFORE the cache:
+  // a hit left by an authorized caller must not serve a caller who cannot see
+  // the project. SharePoint ids are unguessable, so the cache alone is fine.
+  const dec = isAzId(itemId) ? decodeAzId(itemId) : null;
   if (isAzId(itemId)) {
-    const dec = decodeAzId(itemId);
     if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
     const gate = await azurePathProject(dec.team, dec.relPath);
     if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+  }
+  if (useCache) { const c = pdfCacheGet(itemId); if (c) return c; }
+  let bytes: Uint8Array;
+  if (dec) {
     const az = await azureCtxForTeam(dec.team, dec.label);
     if (!az.ok) throw new Error(az.error);
     const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
@@ -8665,5 +8712,135 @@ app.get("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST"
 app.delete("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
 app.get("/pms-mcp/health", (c) => c.json({ ok: true, build: BUILD }));
+
+// ── Drive discovery (Admin console → connector) ─────────────────────────────
+// Project folders on a region's drives that have no PMS record. The console
+// cannot list a share (it holds no SAS, by design), so it asks the connector,
+// which walks one share per call along the known layouts (root, year folders,
+// entity → year folders), diffs the project-number folders against
+// pms_projects and upserts the misses into pms_project_candidates. The
+// console then shows them for review; NOTHING is created here.
+//
+// Auth: the console's Supabase session JWT. It is checked by asking Postgres
+// is_pms_admin() AS THAT USER (apikey + the user's bearer), the same
+// predicate every admin RLS policy uses, so there is no second admin list.
+const DISCOVERY_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+const DISCOVERY_MAX_LISTINGS = 120;   // uncached directory listings per call; the console loops while `more`
+async function isAdminSupabaseJwt(jwt: string): Promise<boolean> {
+  if (!jwt || jwt.split(".").length !== 3) return false;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/is_pms_admin`, {
+    method: "POST",
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!res.ok) return false;
+  return (await res.json()) === true;
+}
+type DiscoveryHit = { num: string; folder: string; dir: string; year: string | null };
+async function discoverDriveProjects(team: string, label: string, fromYear: string | null): Promise<Record<string, unknown>> {
+  const az = await azureCtxForTeam(team, label);
+  if (!az.ok) throw new Error(az.error);
+  const ctx = az.ctx;
+  let listings = 0; let exhausted = false;
+  // Only listings that actually hit the share count against the budget; the
+  // 300 s cache makes a re-scan of an unchanged tree free.
+  const list = async (rel: string): Promise<AzEntry[] | null> => {
+    const key = ctx.team + "." + ctx.label + ":" + rel;
+    const cached = _azDir.get(key);
+    if (!(cached && (Date.now() - cached.at) < 300000)) {
+      if (listings >= DISCOVERY_MAX_LISTINGS) { exhausted = true; return null; }
+      listings++;
+    }
+    try { return (await azureDirEntries(ctx, rel)).entries; } catch { return null; }
+  };
+  const yearOk = (y: string) => !fromYear || y >= fromYear;
+  // 1. The directories that hold project folders.
+  const root = await list("");
+  if (!root) throw new Error(`Could not list the root of share ${label}`);
+  const dirs: Array<{ rel: string; year: string | null }> = [{ rel: "", year: null }];
+  const folders = root.filter((e) => e.type === "folder").map((e) => e.name);
+  for (const y of folders.filter((n) => YEAR_SEG_RE.test(n)).sort().reverse()) if (yearOk(y)) dirs.push({ rel: y, year: y });
+  for (const ent of folders.filter((n) => ENTITY_SEG_RE.test(n)).sort()) {
+    const inside = await list(ent);
+    if (!inside) continue;
+    for (const y of inside.filter((e) => e.type === "folder" && YEAR_SEG_RE.test(e.name)).map((e) => e.name).sort().reverse()) {
+      if (yearOk(y)) dirs.push({ rel: joinRel(ent, y), year: y });
+    }
+  }
+  // 2. Every project-number folder in them.
+  const hits = new Map<string, DiscoveryHit>();
+  let dirsScanned = 0;
+  for (const d of dirs) {
+    const entries = d.rel === "" ? root : await list(d.rel);
+    if (!entries) continue;
+    dirsScanned++;
+    for (const e of entries) {
+      if (e.type !== "folder") continue;
+      const num = projectNumberOfFolder(e.name);
+      if (!num || hits.has(num)) continue;
+      hits.set(num, { num, folder: e.name, dir: d.rel, year: d.year ?? yearOfProjectNumber(num) });
+    }
+  }
+  // 3. Diff against the PMS (every project, archived included: an archived
+  // job is still a record) and against what the queue already holds.
+  const known = new Set((await getProjectsUnfiltered()).map((p) => String(p?.projectNumber || "").toUpperCase().trim()).filter(Boolean));
+  const existing = new Map<string, any>();
+  for (const r of await sbGetAll("pms_project_candidates?select=project_number,status,name_from_folder,created_project_id&team=eq." + encodeURIComponent(team))) {
+    existing.set(String(r.project_number), r);
+  }
+  const now = new Date().toISOString();
+  const rows: Record<string, unknown>[] = [];
+  let created = 0, fresh = 0, seenAgain = 0, namesPending = 0;
+  for (const h of hits.values()) {
+    const prev = existing.get(h.num);
+    if (known.has(h.num)) {
+      // Registered since (here or in the PMS directly): close the candidate.
+      if (prev && prev.status !== "created") { rows.push({ project_number: h.num, team, share_label: label, drive_path: sharePathOf(ctx.share, joinRel(h.dir, h.folder)), folder_name: h.folder, status: "created", last_seen: now }); created++; }
+      continue;
+    }
+    const rel = joinRel(h.dir, h.folder);
+    const row: Record<string, unknown> = {
+      project_number: h.num, team, share_label: label, drive_path: sharePathOf(ctx.share, rel),
+      folder_name: h.folder, year: h.year, last_seen: now,
+    };
+    // The name lives on the "00-<number> <NAME>" child: one listing per new
+    // candidate, so it is read only once and within the budget.
+    if (!prev || (prev.status === "new" && !prev.name_from_folder)) {
+      const children = await list(rel);
+      if (children) row.name_from_folder = projectNameFromFolders(h.folder, h.num, children);
+      else namesPending++;
+    }
+    if (prev) seenAgain++; else fresh++;
+    rows.push(row);
+  }
+  for (let i = 0; i < rows.length; i += 200) await sbUpsert("pms_project_candidates", "project_number", rows.slice(i, i + 200));
+  return {
+    team, label, fromYear, directories: dirs.length, directoriesScanned: dirsScanned, foldersFound: hits.size,
+    newCandidates: fresh, seenAgain, closedAsCreated: created, namesPending, listings,
+    more: exhausted || namesPending > 0,
+    note: exhausted ? "Listing budget spent — call again to continue (already-listed folders are cached)." : "Complete.",
+  };
+}
+app.options("/pms-mcp/admin/discover-projects", (c) => c.body(null, 204, DISCOVERY_CORS));
+app.post("/pms-mcp/admin/discover-projects", async (c) => {
+  const auth = c.req.header("Authorization") || "";
+  const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  if (!(await isAdminSupabaseJwt(jwt))) return c.json({ error: "Admins only (Supabase session required)." }, 403, DISCOVERY_CORS);
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* empty body */ }
+  const team = String(body?.team || "").toUpperCase().trim();
+  const label = String(body?.label || "").toUpperCase().trim();
+  const fromYear = /^(19|20)\d{2}$/.test(String(body?.fromYear || "")) ? String(body.fromYear) : null;
+  if (!team || !label) return c.json({ error: "team and label are required" }, 400, DISCOVERY_CORS);
+  try {
+    return c.json(await discoverDriveProjects(team, label, fromYear), 200, DISCOVERY_CORS);
+  } catch (e) {
+    return c.json({ error: String((e as any)?.message ?? e) }, 500, DISCOVERY_CORS);
+  }
+});
 
 Deno.serve(app.fetch);

@@ -433,6 +433,35 @@ share URL must not carry the token (the console refuses one that does).
 `azureFiles.test.mjs` covers the pure parts over a stub fetch;
 `regionRouting.test.mjs` pins the wiring in `index.ts`.
 
+## Drive discovery (`POST /pms-mcp/admin/discover-projects`, 1.17.0)
+
+A project folder on a region's drive with no `pms_projects` record is
+invisible to every tool: routing (team → region → share) and the
+`azurePathProject` visibility gate both start from the PMS record. The Admin
+console's **Drive discovery** tab closes that gap without creating anything
+on its own.
+
+- The console posts `{ team, label, fromYear }` with the admin's Supabase
+  session JWT. The route checks it by calling `is_pms_admin()` **as that
+  user** (apikey + the user's bearer), the same predicate the admin RLS
+  policies use.
+- `discoverDriveProjects()` lists the share root, the year folders
+  (`fromYear` and later) and each entity folder's year folders, collects
+  every folder whose name starts with a project number
+  (`PROJECT_FOLDER_RE`), diffs against `getProjectsUnfiltered()` (archived
+  included) and upserts the misses into `pms_project_candidates`. The name
+  is read from the `00-<number> <NAME>` child folder
+  (`projectNameFromFolders`), one listing per new candidate.
+- The listing budget is `DISCOVERY_MAX_LISTINGS` uncached listings per call;
+  the response says `more: true` when it ran out and the console loops. The
+  300 s directory cache makes the follow-up passes cheap.
+- A candidate already registered (in the PMS directly, or from the tab) is
+  closed as `created` on the next scan. Dismissed ones stay dismissed.
+- The console creates the record with a `newProject()`-shaped blob, the
+  `team` column set from the region, and an external link to the drive path.
+  A project already in the PMS keeps its PMS name; discovery never writes to
+  `pms_projects` rows that exist.
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.

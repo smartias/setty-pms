@@ -355,3 +355,34 @@ export function extOf(name: string): string {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1).toLowerCase() : "";
 }
+
+// ── Discovery: project folders that have no PMS record ─────────────────────
+// A project folder is named by its number, optionally followed by a name
+// ("SAPQ256918.06", "SAPX256015.00 Tabler"). Inside, the first standard
+// subfolder carries the project name on the drives that use numbered
+// prefixes: "00-SAPQ256918.06 NYCSCA K328 Energy Model" (NY N:, DC I:/W:).
+export const PROJECT_FOLDER_RE = /^([A-Z]{4}\d{6}(?:\.\d{2})?)(?![A-Za-z0-9.])/i;
+export function projectNumberOfFolder(name: string): string | null {
+  const m = PROJECT_FOLDER_RE.exec(String(name || "").trim());
+  return m ? m[1].toUpperCase() : null;
+}
+// What is left of a folder name once the number (and the separator after it)
+// is removed; "" when the folder is the bare number.
+export function folderNameRemainder(name: string, num: string): string {
+  const s = String(name || "").trim();
+  if (!num || !s.toUpperCase().startsWith(num.toUpperCase())) return "";
+  return s.slice(num.length).replace(/^[\s_\-–:.]+/, "").trim();
+}
+// The project name as the drive states it: the "00-<number> <NAME>" child
+// folder first, then whatever follows the number on the project folder
+// itself; null when neither carries a name (DC's bare "00-<number>" folders).
+export function projectNameFromFolders(projectFolder: string, num: string, children: AzEntry[]): string | null {
+  const zero = children.find((e) => e.type === "folder" && /^00[-_ ]/.test(e.name));
+  if (zero) {
+    const stripped = standardFolderName(zero.name);
+    const rem = stripped === zero.name ? folderNameRemainder(zero.name.replace(/^00[-_ ]+/, ""), num) : stripped;
+    if (rem && !/^\d{2}-/.test(rem)) return rem;
+  }
+  const own = folderNameRemainder(projectFolder, num);
+  return own || null;
+}
