@@ -1157,7 +1157,7 @@ const CAP_ROWS = [
   ["Project files"],
   ["list_project_documents", "Browse a project's folders and subfolders", "yes", "yes"],
   ["read_document", "Read a PDF, Word, Excel, CSV or text file; large PDFs page by page with keyword jump", "yes", "yes"],
-  ["find_document", "Find a document by describing it in plain language", "yes", "no", "You name the folder and file instead."],
+  ["find_document", "Find a document by describing it in plain language", "yes", "yes", "On a drive it ranks file and folder names from a bounded walk of the project folder (no full-text index); results carry the UNC path."],
   ["Drawings"],
   ["extract_sheet_index", "The drawing sheet index and the current full set", "yes", "yes", "On a drive it is composed from the drawing index (each sheet at its newest indexed revision) when there is no register entry."],
   ["get_current_set", "The authoritative current set from the transmittal register", "yes", "yes", "Authoritative once the set was logged with the transmittal tool's register-only mode; inferred from the drawing index before that."],
@@ -2399,8 +2399,9 @@ function renderMcp() {
         reads the text layer of issued sheets, lazily indexed per project) and traces sheet references out of RFI/submittal text
         (<code>trace_references</code>); <code>prepare_transmittal</code> is pre-flight only — issuing stays in the transmittal app.
         Every drawing tool works on a network drive as well as SharePoint since 1.16.0: the index is built from the project's Outgoing
-        folder on the share (<code>search_drawings</code> with <code>indexOnly</code> first). What a drive cannot do: full-text
-        <code>find_document</code>, photo sessions, and any write — Claude's share credentials are read-only. The Regions tab's
+        folder on the share (<code>search_drawings</code> with <code>indexOnly</code> first), and <code>find_document</code> ranks a
+        bounded walk of the project folder (1.17.2). What a drive cannot do: photo sessions, and any write — Claude's share
+        credentials are read-only. The Regions tab's
         "What works where" table is the per-tool reference.</p>
     </div>
 

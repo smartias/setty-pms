@@ -417,9 +417,14 @@ is the provider, in `azureFiles.ts`:
   and `trace_references` then work unchanged. `extract_sheet_index` (default
   mode) and `get_current_set` have no register on a drive, so they compose the
   set from the drawing index instead (`basis` says so; `coverage` rides along).
-  Still SharePoint-only: `find_document` (search index), `prepare_transmittal`
-  and `file_qa_report` (writes), field photos. The transmittal tool does not
-  yet write a register for drive projects (register-only mode is the follow-up).
+  Still SharePoint-only: `prepare_transmittal` and `file_qa_report` (writes),
+  field photos. `find_document` works on a drive since 1.17.2: `projectTree()`
+  has a drive branch (breadth-first walk of the project folder on each share,
+  same caps and the same `pms_mcp_tree_cache` row as the SharePoint walk), so
+  the ranking, phase filter and register-based supersession status all apply;
+  what a drive lacks is SharePoint's full-text index, so matches are on file
+  and folder names. The transmittal tool writes the register for drive
+  projects in register-only mode (v19).
 - Visibility: an `az:` id is a typed path, not an unguessable Graph id, so
   both tools gate it before any share call — the first segment must be a
   registered project's folder (longest project-number prefix), on that

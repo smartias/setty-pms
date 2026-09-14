@@ -1046,9 +1046,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-discovery-matches";
+const BUILD = "2026-09-15-find-document-drives";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.17.1",
+  name: "setty-pms", version: "1.17.2",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3891,6 +3891,30 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
   const shared = await treeFromDb(numPrefix);
   if (shared) { _treeCache.set(numPrefix, shared); return shared; }
 
+  // Drive-based project (1.17.2): the tree is a breadth-first walk of the
+  // project folder on each share that holds it, bounded like the SharePoint
+  // walk (AZ_WALK_MAX_LISTINGS listings, TREE_MAX_FILES files) and cached the
+  // same way, so find_document ranks the same TreeFile rows on either storage.
+  {
+    const team = await teamForProject(numPrefix);
+    const region = await siteForTeam(team);
+    if (region.kind !== "sharepoint" && team) {
+      const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
+      const files: TreeFile[] = []; const libraries: string[] = []; let truncated = false;
+      for (const h of hits) {
+        const r = await azureWalkFiles(h.ctx, h.folder, h.folder);
+        if (!r.started) continue;
+        libraries.push(h.ctx.label + ":");
+        for (const f of r.files) { if (files.length >= TREE_MAX_FILES) { truncated = true; break; } files.push(f); }
+        truncated = truncated || r.truncated;
+      }
+      const out = { at: Date.now(), files, libraries, truncated };
+      _treeCache.set(numPrefix, out);
+      await treeToDb(numPrefix, out);
+      return out;
+    }
+  }
+
   const drives = await siteDrives(await teamForProject(numPrefix));
   const files: any[] = [];
   const libraries: string[] = [];
@@ -4192,7 +4216,8 @@ mcp.tool("find_document", {
   description:
     "Find a project document by describing it in plain language, e.g. 'current phase 3 fire protection " +
     "narrative' or 'Bulletin 13 electrical drawings'. Returns ranked matches, each with its library, " +
-    "folder path, and a clickable webUrl. THIS IS THE FASTEST WAY to get to a specific document when you " +
+    "folder path, and a clickable webUrl (on a network-drive project: the drive letter and the UNC path, " +
+    "ranked on file and folder names). THIS IS THE FASTEST WAY to get to a specific document when you " +
     "know roughly what it is but not where it lives; use list_project_documents instead when you want to " +
     "browse a known folder, and read_document to open a result (pass the itemId returned here). " +
     "Ranking favours filename matches, the Outgoing folder (sets we issued), and recency. Each result " +
@@ -4217,9 +4242,9 @@ mcp.tool("find_document", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "list_project_documents can browse this region's share once its credentials are configured." });
-    }
+    // Drive-based projects (1.17.2) go through the same walk-and-rank path:
+    // projectTree has a drive branch, and the rows carry az: ids and UNC paths.
+    const onDrive = (await storageFor(project)).kind !== "sharepoint";
 
     let tree;
     try {
@@ -4227,7 +4252,7 @@ mcp.tool("find_document", {
     } catch (e) {
       return asText({
         project, query,
-        error: `Could not read this project's SharePoint folders: ${String((e as any)?.message ?? e)}`,
+        error: `Could not read this project's ${onDrive ? "drive" : "SharePoint"} folders: ${String((e as any)?.message ?? e)}`,
         nextStep: "This is a lookup failure, not an empty project. Retry, or browse with list_project_documents.",
       });
     }
@@ -4236,7 +4261,9 @@ mcp.tool("find_document", {
         project, query, count: 0, results: [],
         reason: tree.libraries.length
           ? `Found this project's folder in ${tree.libraries.join(", ")} but it contains no files.`
-          : "No folder for this project in any SharePoint library — it is most likely not provisioned yet.",
+          : onDrive
+            ? "No folder for this project on its region's drive shares (checked the share root, year and entity folders)."
+            : "No folder for this project in any SharePoint library — it is most likely not provisioned yet.",
         nextStep: "Confirm with list_project_documents. If the project is new, the folders may not exist yet.",
       });
     }

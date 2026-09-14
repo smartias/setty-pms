@@ -47,7 +47,8 @@ Both storage accounts accept traffic from outside the corporate network
 | #264 | **Drive-based drawing index**: `search_drawings` indexes a drive project's Outgoing; `view_drawing`, `read_drawing_schedule`, `find_equipment`, `trace_references` work off it; `extract_sheet_index` and `get_current_set` compose the set from the index when there is no register | 1.16.0 |
 | #265 | **Transmittal register-only mode** for drive projects (`transmittal.html` v19); Codex fixes on #264 | 1.16.1 |
 | #265/#266 | **Drive discovery queue**: Admin console "Drive discovery" tab scans a share through the connector (`POST /admin/discover-projects`), lists project folders with no PMS record in `pms_project_candidates`, and creates the record (or dismisses the folder) on review. Names come from the `00-<number> <NAME>` folder; existing PMS names are never changed | 1.17.0 |
-| this PR | **Region filter** in the PMS app (list, Pipeline, Dashboard; `pms_projects_slim` carries `team`); discovery records the closest PMS record for near-miss numbers and offers **Link to it** | 1.17.1 |
+| #267/#268 | **Region filter** in the PMS app (list, Pipeline, Dashboard; `pms_projects_slim` carries `team`); discovery records the closest PMS record for near-miss numbers and offers **Link to it** | 1.17.1 |
+| this PR | **`find_document` on a drive**: `projectTree()` walks the project folder on the share; ranking, phase filter and supersession status unchanged | 1.17.2 |
 | next | **Transmittal tool, register-only mode** (`transmittal.html` v19): a drive project's set is read off the mapped drive through the OS picker (names + title blocks), nothing is uploaded, the register row carries `files.driveFolder` instead of `sp_folder_url`; attachment is the only email delivery; `get_current_set` surfaces `driveFolder` | 1.16.1 |
 
 Verified end to end on 14 Sep: `list_project_documents` on SIPX262012.00
@@ -98,19 +99,15 @@ Regions tab.
    and `8. RFIs/<disc>`, and list each item folder as one submittal/RFI with
    its files by `az:` id; `read_document` already opens them. Pairing with
    the PMS ledger stays by number in the folder name.
-2. **`find_document` on a drive.** SharePoint's search index has no drive
-   equivalent; the replacement is a walk of the project tree ranking file
-   names against the description (`scoreDocument` is already pure and
-   reusable). `projectTree()` needs a drive branch like `subtreeFiles` got.
-3. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
+2. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
    `search_field_photos` cannot (sessions are app uploads to SharePoint).
-4. **Drop the legacy single-share columns** on `pms_regions`
+3. **Drop the legacy single-share columns** on `pms_regions`
    (`azure_share_url`, `azure_sas_env`) once every environment runs ≥ 1.15.0.
    The console still writes the first share into them for compatibility.
-5. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
+4. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
    a policy decision first (write-capable SAS widens what a leaked secret can
    do), then Azure Files `PUT`/create-directory in `azureFiles.ts`.
-6. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
+5. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
    Library before the first project is tagged BT.
 
 ## Known limits worth remembering
