@@ -160,6 +160,12 @@ const CA_STATUS = "In Construction Administration";
 const VENDORS = [
   { match:/procoretech/i, vendor:"Procore",        kind:"rfi",       arrKey:"rfis",       parse:parseProcore },
   { match:/forma/i,       vendor:"Autodesk Forma", kind:"submittal", arrKey:"submittals", parse:parseForma   },
+  // Newforma cutover: notifications often arrive FORWARDED by a person
+  // ("RFI Forwarded: ... - RFI:214:xxxx" / "Submittal Forwarded: <title> -
+  // <proj> - Submittal:232113-012-1:xxxx"), so the sender address says
+  // nothing — these vendors gate on the parser (subject shape), not sender.
+  { match:/./, vendor:"Newforma", kind:"rfi",       arrKey:"rfis",       parse:parseNewformaFwdRfi },
+  { match:/./, vendor:"Newforma", kind:"submittal", arrKey:"submittals", parse:parseNewformaFwdSub },
 ];
 
 /* ---- enums (mirror SettyPMS.html) ---- */
@@ -210,6 +216,23 @@ function parseForma(email){ const subj=email.subject||"",body=(email.body_text||
   return { extNum:String(+sm[1]), date:email.email_date, isRev, rev:im&&im[1]?+im[1]:0, title:(im?im[2]:"").trim(),
     specSection:label(details,"Sub Spec Section")||label(details,"Spec Section"), formaStatus:(label(details,"Status")||"").trim(),
     dueDate:normDate(label(details,"Due Date")), ballInCourt:label(details,"Ball in court"), recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
+// Newforma "RFI Forwarded:" — subject carries the number and title; the body
+// varies too much to trust, so only subject-derived fields are filled.
+function parseNewformaFwdRfi(email){ const subj=email.subject||""; if(!/RFI\s*Forwarded\s*:/i.test(subj)) return null;
+  const nm=subj.match(/-\s*RFI:(\d+)/i)||subj.match(/RFI:(\d+)\s*:?\w*$/i); if(!nm) return null;
+  const tm=subj.match(/RFI\s*Forwarded:\s*(.+?)\s*-\s*RFI:/i); const segs=tm?tm[1].split(" - "):[];
+  const title=(segs.length?segs[segs.length-1]:"").trim();
+  return { extNum:String(+nm[1]), date:email.email_date, event:"New RFI", title, dueDate:"", askedBy:email.from_name||"",
+    question:"", dateInit:dayOf(email.email_date), recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
+// Newforma "Submittal Forwarded:" — the id IS the log's spec-based number
+// (232113-012, optional trailing -rev), so matching runs on the full id.
+function parseNewformaFwdSub(email){ const subj=email.subject||""; if(!/Submittal\s*Forwarded\s*:/i.test(subj)) return null;
+  const nm=subj.match(/Submittal:\s*([\d.]+(?:-\d+)+)/i); if(!nm) return null;
+  const raw=nm[1]; const rm=raw.match(/^([\d.]+-\d+)-(\d+)$/); const baseId=rm?rm[1]:raw; const rev=rm?+rm[2]:0;
+  const tm=subj.match(/Submittal\s*Forwarded:\s*(.+?)\s*-\s*\d/i); // title ends where the numeric project segment begins
+  return { extNum:baseId, date:email.email_date, isRev:rev>0, rev, title:(tm?tm[1]:"").trim(),
+    specSection:(baseId.match(/^\d{6}/)||[""])[0], formaStatus:"", dueDate:"", ballInCourt:email.from_name||"",
+    recordId:email.record_id, spFolder:email.sp_folder_url||"" }; }
 function collapse(events, kind){ const by={}; for(const e of events){ (by[e.extNum]=by[e.extNum]||[]).push(e); }
   return Object.entries(by).map(([num,evs])=>{ evs.sort((a,b)=>new Date(a.date)-new Date(b.date)); const last=evs[evs.length-1],first=evs[0];
     if(kind==="rfi") return { extNum:num, title:last.title||first.title, status:RFI_STATUS[last.event]||"Open", dueDate:last.dueDate||first.dueDate,
@@ -217,12 +240,25 @@ function collapse(events, kind){ const by={}; for(const e of events){ (by[e.extN
     const rev=Math.max(...evs.map(e=>e.rev));
     return { extNum:num, title:last.title, specSection:last.specSection, rev, status:last.isRev?SUB_REVISION_STATUS:(SUB_STATUS[(last.formaStatus||"").toLowerCase()]||"Received"),
       dueDate:last.dueDate, ballInCourt:last.ballInCourt, lastDate:dayOf(last.date), recordId:last.recordId, spFolder:last.spFolder };
-  }).sort((a,b)=>(+a.extNum)-(+b.extNum)); }
+  }).sort((a,b)=>{ const x=+a.extNum, y=+b.extNum; return (isNaN(x)||isNaN(y)) ? String(a.extNum).localeCompare(String(b.extNum)) : x-y; }); }
 const digits  = s => (String(s||"").match(/\d+/)||[""])[0].replace(/^0+/,"")||"0";
 const itemSeg = s => { const m=String(s||"").match(/-(\d+)-\d+$/); return m?String(+m[1]):null; };
 const revSeg  = s => { const m=String(s||"").match(/-(\d+)$/); return m?+m[1]:0; };
 function matchRFI(extNum,title,logged){ const t=(title||"").toLowerCase().trim(); return logged.find(r=>digits(r.number)===extNum)||logged.find(r=>t&&(r.title||"").toLowerCase().includes(t))||null; }
-function matchSub(extNum,logged){ const h=logged.filter(s=>itemSeg(s.number)===extNum); return h.length?{row:h[0],maxRev:Math.max(...h.map(s=>revSeg(s.number)))}:null; }
+function matchSub(extNum,logged){
+  // Newforma ids are the full spec-based number ("232113-012") — match by
+  // prefix on the logged number; bare numeric ids keep the Forma item-segment rule.
+  if(/[-.]/.test(String(extNum))){
+    const base=String(extNum);
+    // Only the base itself or base-<rev> count (never base+extra digits), and
+    // the revision is RELATIVE to the base: a bare logged "232113-012" is rev 0
+    // (revSeg would misread its item segment "-012" as rev 12 — Codex P1).
+    const h=logged.filter(s=>{const n=String(s.number||""); return n===base||n.startsWith(base+"-");});
+    if(!h.length) return null;
+    const relRev=n=>{ n=String(n||""); if(n===base) return 0; const m=n.slice(base.length).match(/^-(\d+)$/); return m?+m[1]:0; };
+    return {row:h[0],maxRev:Math.max(...h.map(s=>relRev(s.number)))};
+  }
+  const h=logged.filter(s=>itemSeg(s.number)===extNum); return h.length?{row:h[0],maxRev:Math.max(...h.map(s=>revSeg(s.number)))}:null; }
 /* ---- discipline inference: spec division first, title/question keywords second, "" (unclassified) when unsure ---- */
 const DISC_BY_DIV = { "03":"Structural","04":"Structural","05":"Structural","08":"Architectural","09":"Architectural",
   "21":"Fire Protection","22":"Plumbing","23":"Mechanical","26":"Electrical","27":"Technology","28":"Technology",
@@ -246,7 +282,7 @@ function toRfiRecord(it,pid,vendor){ return { id:`sync-procore-${pid}-${it.extNu
   description:(it.question||"").replace(/\s+/g," ").trim().slice(0,200), from:it.from||"", discipline:inferDiscipline(it,"rfi"), assignedTo:[], subAssigned:"",
   dateReceived:it.dateReceived||"", dueDate:it.dueDate||"", dateResponded:(it.status==="Responded"||it.status==="Closed")?it.lastDate:"", response:"",
   status:it.status, notes:`Imported from ${vendor} · RFI #${it.extNum}`, spFolderUrl:it.spFolder||"", links:[], source:"procore", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
-function toSubRecord(it,pid,vendor){ return { id:`sync-forma-${pid}-${it.extNum}`, number:`SUB-${String(it.extNum).padStart(3,"0")}`, specSection:it.specSection||"",
+function toSubRecord(it,pid,vendor){ const nf=/[-.]/.test(String(it.extNum)); return { id:`sync-${nf?"nf":"forma"}-${pid}-${it.extNum}`, number:nf?`${it.extNum}-${it.rev||0}`:`SUB-${String(it.extNum).padStart(3,"0")}`, specSection:it.specSection||"",
   description:(it.title||"").slice(0,200), from:it.ballInCourt||"", discipline:inferDiscipline(it,"submittal"), assignedTo:[], subAssigned:"", dateReceived:"", dueDate:it.dueDate||"",
   dateReturned:it.status==="Returned"?it.lastDate:"", comments:"", status:it.status, stamp:"—", resubNumber:it.rev||0,
   notes:`Imported from ${vendor} · Submittal #${it.extNum}${it.rev?` (Rev ${it.rev})`:""}`, spFolderUrl:it.spFolder||"", links:[], registerItemId:"", source:"forma", extNumber:String(it.extNum), sourceEmailId:it.recordId||"" }; }
@@ -344,7 +380,7 @@ async function init(){
   try{
     const [projRows, actRows] = await Promise.all([
       fetchJson(`pms_projects?select=id,name:project->>name,number:project->>projectNumber,status:project->>status&order=id.asc`),
-      fetchJson(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*)&select=project_id`),
+      fetchJson(`pms_project_emails?or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*)&select=project_id`),
     ]);
     const active=new Set((actRows||[]).map(r=>r.project_id));
     PROJECTS=(projRows||[]).filter(p=>(p.status||"")===CA_STATUS).map(p=>({id:p.id,name:p.name||"(unnamed)",number:p.number||"",activity:active.has(p.id)}))
@@ -382,18 +418,23 @@ async function selectProject(pid){
   try{
     const [projRows, emails]=await Promise.all([
       fetchJson(`pms_projects?id=eq.${pid}&select=rfis:project->rfis,submittals:project->submittals,team:project->teamMembers`),
-      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
+      fetchJson(`pms_project_emails?project_id=eq.${pid}&or=(from_address.ilike.*procoretech*,from_address.ilike.*forma*,subject.ilike.*RFI%20Forwarded*,subject.ilike.*Submittal%20Forwarded*)&select=record_id,subject,from_name,email_date,body_text,sp_folder_url,from_address&order=email_date.asc`),
     ]);
     const logged=projRows[0]||{}; const loggedRFIs=logged.rfis||[], loggedSubs=logged.submittals||[];
     const inbox={rfi:[],submittal:[]};
     for(const v of VENDORS){
-      const parsed=emails.filter(e=>v.match.test(e.from_address||"")).map(v.parse).filter(Boolean); if(!parsed.length)continue;
+      // The parser is the real gate (each returns null unless the subject has
+      // its vendor's shape), so forwarded notifications parse regardless of
+      // who forwarded them; v.match keeps the sender fast-path for the
+      // direct-notification vendors.
+      const pool=v.match.source==="."?emails:emails.filter(e=>v.match.test(e.from_address||"")||v.match.test(e.subject||""));
+      const parsed=pool.map(v.parse).filter(Boolean); if(!parsed.length)continue;
       const items=collapse(parsed,v.kind);
       for(const it of items){
         if(v.kind==="rfi"){ it.match=matchRFI(it.extNum,it.title,loggedRFIs); it.verdict=it.match?"matched":"new"; it.record=toRfiRecord(it,pid,v.vendor); }
         else { const m=matchSub(it.extNum,loggedSubs); it.match=m&&m.row; it.loggedRev=m?m.maxRev:null; it.verdict=!m?"new":(it.rev>m.maxRev?"update":"matched"); it.record=toSubRecord(it,pid,v.vendor); }
       }
-      inbox[v.kind]=items;
+      inbox[v.kind]=[...(inbox[v.kind]||[]),...items]; // vendors of the same kind merge, never overwrite
     }
     CURRENT={ proj, rfis:loggedRFIs, submittals:loggedSubs, inbox, teams:{[pid]:(logged.team||[])} };
     renderProject();
