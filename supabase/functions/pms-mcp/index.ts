@@ -1046,9 +1046,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-drive-discovery";
+const BUILD = "2026-09-15-discovery-matches";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.17.0",
+  name: "setty-pms", version: "1.17.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -8792,7 +8792,30 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
   }
   // 3. Diff against the PMS (every project, archived included: an archived
   // job is still a record) and against what the queue already holds.
-  const known = new Set((await getProjectsUnfiltered()).map((p) => String(p?.projectNumber || "").toUpperCase().trim()).filter(Boolean));
+  const pmsAll = (await getProjectsUnfiltered()).map((p) => ({ pid: String(p?.pid || ""), num: String(p?.projectNumber || "").toUpperCase().trim(), name: String(p?.name || "") })).filter((p) => p.num);
+  const known = new Set(pmsAll.map((p) => p.num));
+  // A folder not in the PMS exactly may still BE a PMS project: the PMS
+  // carries SAPQ226904.04.01 where the drive says SAPQ226904.04 (an extra
+  // suffix segment), and task orders under one base number are siblings
+  // (SAPQ256918.06 on the drive, SAPQ256918.09 in the PMS). Both are recorded
+  // so the console can offer "link to the existing record" and show context;
+  // nothing in the PMS is rewritten.
+  const baseOf = (n: string) => n.split(".")[0];
+  const relatedTo = (num: string) => {
+    const extends_ = pmsAll.filter((p) => p.num.startsWith(num + "."));
+    const sibs = pmsAll.filter((p) => baseOf(p.num) === baseOf(num) && p.num !== num && !extends_.includes(p));
+    let match: { pid: string; num: string; name: string; kind: "extends" | "base" } | null = null;
+    if (extends_.length === 1) match = { ...extends_[0], kind: "extends" };
+    else if (!extends_.length) {
+      // A base-number record with no suffix at all (SAPQ256918) claims the ".00" folder.
+      const bare = pmsAll.find((p) => p.num === baseOf(num) && num.endsWith(".00"));
+      if (bare) match = { ...bare, kind: "base" };
+    }
+    return {
+      match,
+      siblings: [...extends_.filter((p) => p.num !== match?.num), ...sibs].slice(0, 6).map((p) => `${p.num} ${p.name}`.trim()).join("; ") || null,
+    };
+  };
   const existing = new Map<string, any>();
   for (const r of await sbGetAll("pms_project_candidates?select=project_number,status,name_from_folder,created_project_id&team=eq." + encodeURIComponent(team))) {
     existing.set(String(r.project_number), r);
@@ -8808,9 +8831,12 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
       continue;
     }
     const rel = joinRel(h.dir, h.folder);
+    const rel8 = relatedTo(h.num);
     const row: Record<string, unknown> = {
       project_number: h.num, team, share_label: label, drive_path: sharePathOf(ctx.share, rel),
       folder_name: h.folder, year: h.year, last_seen: now,
+      pms_match_number: rel8.match?.num ?? null, pms_match_name: rel8.match?.name ?? null,
+      pms_match_id: rel8.match?.pid ?? null, pms_match_kind: rel8.match?.kind ?? null, siblings: rel8.siblings,
     };
     // The name lives on the "00-<number> <NAME>" child: one listing per new
     // candidate, so it is read only once and within the budget.
@@ -8826,6 +8852,7 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
   return {
     team, label, fromYear, directories: dirs.length, directoriesScanned: dirsScanned, foldersFound: hits.size,
     newCandidates: fresh, seenAgain, closedAsCreated: created, namesPending, listings,
+    likelyInPms: rows.filter((r) => r.pms_match_number).length,
     ...(failed.length ? { failedListings: failed } : {}),
     complete: !exhausted && namesPending === 0 && failed.length === 0,
     more: exhausted || namesPending > 0,

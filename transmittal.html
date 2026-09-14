@@ -692,6 +692,11 @@ let folderUrl = "";
 let driveMode = false;
 let driveFolderPath = "";          // what the person pasted, verbatim (backslashes kept)
 let drivePrefillFor = "";          // project number the drive path input was last prefilled for
+// One spelling for a drive path: backslashes, single separators, no trailing
+// separator, whitespace trimmed. driveKey folds case for comparison (Windows
+// paths are case-insensitive) without rewriting what people typed.
+function canonicalDrivePath(p) { return String(p || "").trim().replace(/\//g, "\\").replace(/\\{2,}/g, "\\").replace(/\\+$/, ""); }
+function driveKey(p) { return canonicalDrivePath(p).toLowerCase(); }
 let localBlobs = new Map();        // file name -> File, from the picker
 let pmsRegions = [];               // { team, storage_kind, enabled }
 let pmsRegionShares = [];          // { team, label, share_url }
@@ -2694,19 +2699,30 @@ async function addBackfillMilestone(projId, dueDate, folderSeg) {
     dueDateManual: true,
     notes: "",
   };
+  const headers = {
+    "apikey": SUPABASE_ANON,
+    "Authorization": "Bearer " + settyAuth.token(),
+    "Content-Type": "application/json",
+  };
   if (folderUrl) milestone.outgoingFolderUrl = folderUrl;
-  // Drive project: the set folder's drive path is the idempotency key the
-  // RPC dedupes on (it only guards non-null outgoingFolderUrl), so
-  // re-logging the same set to correct its register row cannot add a second
-  // completed milestone. storage marks it as a path, not a SharePoint link.
-  else if (driveMode && driveFolderPath) { milestone.outgoingFolderUrl = driveFolderPath; milestone.storage = "drive"; }
+  else if (driveMode && driveFolderPath) {
+    // Drive project (Codex on #266): the path stays OUT of outgoingFolderUrl —
+    // the PMS renders that field as a web link and hands it back to this page
+    // as a SharePoint folder. It is stored canonically in driveFolder, and
+    // the dedupe happens here (pms_append_milestone only guards
+    // outgoingFolderUrl): same folder in any case / slash direction / with a
+    // trailing separator is the same milestone.
+    const canon = canonicalDrivePath(driveFolderPath);
+    milestone.driveFolder = canon; milestone.storage = "drive";
+    const r = await fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=ms:project->milestones&id=eq." + encodeURIComponent(projId), { headers });
+    if (!r.ok) throw new Error("schedule read failed (" + r.status + ")");
+    const rows = await r.json().catch(() => []);
+    const ms = (rows && rows[0] && Array.isArray(rows[0].ms)) ? rows[0].ms : [];
+    if (ms.some(m => m && m.driveFolder && driveKey(m.driveFolder) === driveKey(canon))) return { added: false, name };
+  }
   const res = await fetch(SUPABASE_URL + "/rest/v1/rpc/pms_append_milestone", {
     method: "POST",
-    headers: {
-      "apikey": SUPABASE_ANON,
-      "Authorization": "Bearer " + settyAuth.token(),
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({ p_project_id: projId, p_milestone: milestone }),
   });
   if (!res.ok) throw new Error("schedule write failed (" + res.status + ")");
