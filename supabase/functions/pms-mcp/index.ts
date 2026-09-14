@@ -8792,7 +8792,9 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
   }
   // 3. Diff against the PMS (every project, archived included: an archived
   // job is still a record) and against what the queue already holds.
-  const pmsAll = (await getProjectsUnfiltered()).map((p) => ({ pid: String(p?.pid || ""), num: String(p?.projectNumber || "").toUpperCase().trim(), name: String(p?.name || "") })).filter((p) => p.num);
+  // getProjectsUnfiltered maps the row to { id, name, projectNumber, … } (id
+  // is the pms_projects.id the console links a candidate to).
+  const pmsAll = (await getProjectsUnfiltered()).map((p) => ({ pid: String(p?.id || ""), num: String(p?.projectNumber || "").toUpperCase().trim(), name: String(p?.name || "") })).filter((p) => p.num && p.pid);
   const known = new Set(pmsAll.map((p) => p.num));
   // A folder not in the PMS exactly may still BE a PMS project: the PMS
   // carries SAPQ226904.04.01 where the drive says SAPQ226904.04 (an extra

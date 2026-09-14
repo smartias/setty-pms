@@ -695,7 +695,12 @@ let drivePrefillFor = "";          // project number the drive path input was la
 // One spelling for a drive path: backslashes, single separators, no trailing
 // separator, whitespace trimmed. driveKey folds case for comparison (Windows
 // paths are case-insensitive) without rewriting what people typed.
-function canonicalDrivePath(p) { return String(p || "").trim().replace(/\//g, "\\").replace(/\\{2,}/g, "\\").replace(/\\+$/, ""); }
+function canonicalDrivePath(p) {
+  let s = String(p || "").trim().replace(/\//g, "\\");
+  const unc = s.startsWith("\\\\");                 // \\server\share\… keeps its two leading separators
+  s = s.replace(/\\{2,}/g, "\\").replace(/\\+$/, "");
+  return unc ? "\\" + s : s;
+}
 function driveKey(p) { return canonicalDrivePath(p).toLowerCase(); }
 let localBlobs = new Map();        // file name -> File, from the picker
 let pmsRegions = [];               // { team, storage_kind, enabled }
@@ -2712,13 +2717,10 @@ async function addBackfillMilestone(projId, dueDate, folderSeg) {
     // the dedupe happens here (pms_append_milestone only guards
     // outgoingFolderUrl): same folder in any case / slash direction / with a
     // trailing separator is the same milestone.
-    const canon = canonicalDrivePath(driveFolderPath);
-    milestone.driveFolder = canon; milestone.storage = "drive";
-    const r = await fetch(SUPABASE_URL + "/rest/v1/pms_projects?select=ms:project->milestones&id=eq." + encodeURIComponent(projId), { headers });
-    if (!r.ok) throw new Error("schedule read failed (" + r.status + ")");
-    const rows = await r.json().catch(() => []);
-    const ms = (rows && rows[0] && Array.isArray(rows[0].ms)) ? rows[0].ms : [];
-    if (ms.some(m => m && m.driveFolder && driveKey(m.driveFolder) === driveKey(canon))) return { added: false, name };
+    // pms_append_milestone dedupes on driveFolder itself (case-folded, in the
+    // same statement as the append), so two people logging the same folder at
+    // once cannot both add a milestone. The RPC returns null on a duplicate.
+    milestone.driveFolder = canonicalDrivePath(driveFolderPath); milestone.storage = "drive";
   }
   const res = await fetch(SUPABASE_URL + "/rest/v1/rpc/pms_append_milestone", {
     method: "POST",
