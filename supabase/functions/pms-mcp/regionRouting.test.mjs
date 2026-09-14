@@ -112,6 +112,19 @@ has('const proj = await findProjectFolderInDrive(driveId, "sapx26xxx");', "templ
 // region map would make adding a region silently require a redeploy.
 const seg = shipped.slice(shipped.indexOf("async function regionMap"), shipped.indexOf("async function siteForTeam"));
 check(seg.includes("300000"), "region map refreshes on the 300s clock");
+// Storage seam slice B (2026-09-14): the Azure Files provider is wired in.
+// The SAS is read from the function's env by the NAME on the row, the two
+// browse/read tools accept `az:` ids, and hybrid regions report the annex.
+has('} from "./azureFiles.ts";', "the provider module is imported");
+has("const sas = normalizeSas(secretName ? Deno.env.get(secretName) : null);", "the SAS comes from the env secret named on the row");
+has("if (isAzId(folderId)) {", "list_project_documents opens az: folder ids");
+has('if (region.kind !== "sharepoint") {\n        const num = String(projectNumber || "").toLowerCase().trim();', "azure_files regions are browsed by project number, not refused");
+has("const annex = region.azureShareUrl ? await azureAnnexFor(team, num) : null;", "sharepoint regions with a share report their drive annex");
+has("if (isAzId(itemId)) {", "read_document opens az: file ids");
+has("res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);", "read_document reads share bytes through the provider");
+check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refusal is gone");
+const azSeg = shipped.slice(shipped.indexOf("async function azureCtxForTeam"), shipped.indexOf("async function azureProjectFolder"));
+check(azSeg.includes("300000"), "the share-root folder index refreshes on the 300s clock");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`

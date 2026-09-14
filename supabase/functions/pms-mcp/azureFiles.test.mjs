@@ -1,0 +1,156 @@
+// Tests for azureFiles.ts — storage seam slice B, the Azure Files browse/read
+// provider behind every region's network-drive annex.
+//
+//   node supabase/functions/pms-mcp/azureFiles.test.mjs
+//
+// The module is pure apart from fetch, which it takes injected, so this test
+// imports the real Edge source (Node strips the types) and drives the REST
+// calls with stub responses: no share, no secret, no network.
+
+import {
+  parseShareUrl, cleanRelPath, joinRel, encodeAzId, decodeAzId, isAzId, normalizeSas, azureUrl,
+  sharePathOf, parseListXml, describeAzureError, listDirectory, fileProps, getFile,
+  findProjectFolderName, extOf, AzureFilesError, AZ_API_VERSION,
+} from "./azureFiles.ts";
+
+let total = 0, failures = 0;
+const check = (ok, label) => { total++; if (!ok) { failures++; console.error("✗ " + label); } };
+const eq = (a, b, label) => check(JSON.stringify(a) === JSON.stringify(b), `${label}\n    got  ${JSON.stringify(a)}\n    want ${JSON.stringify(b)}`);
+
+// ── 1. Share URLs (what the Admin console stores) ────────────────────────────
+const NY = parseShareUrl("https://filestoragesetty.file.core.windows.net/newyorkstorage/SAP");
+eq(NY, { account: "filestoragesetty", share: "newyorkstorage", prefix: "SAP", base: "https://filestoragesetty.file.core.windows.net/newyorkstorage" },
+  "NY share URL: account, share, one-level prefix");
+const FFX = parseShareUrl("https://ffxfilestorage.file.core.windows.net/ffxfileshare/SAi_Projects/Sub Dir/");
+eq(FFX && [FFX.share, FFX.prefix], ["ffxfileshare", "SAi_Projects/Sub Dir"], "multi-level prefix keeps its segments; trailing slash trimmed");
+check(parseShareUrl("https://Acct.file.core.windows.net/share")?.account === "acct", "account is lower-cased");
+check(parseShareUrl("https://filestoragesetty.file.core.windows.net/")?.share === undefined, "a share URL without a share is rejected");
+check(parseShareUrl("http://filestoragesetty.file.core.windows.net/s") === null, "http is rejected (SAS rides https only)");
+check(parseShareUrl("https://filestoragesetty.file.core.windows.net/s?sv=1&sig=x") === null, "a URL carrying a query string (a pasted SAS) is rejected");
+check(parseShareUrl("https://filestoragesetty.blob.core.windows.net/s") === null, "blob endpoints are not file shares");
+check(parseShareUrl("") === null && parseShareUrl(null) === null, "empty/null share URL is null");
+check(parseShareUrl("https://a.file.core.windows.net/s/../x")?.share === "x", "URL parsing resolves dot segments before the prefix is read, so no traversal survives");
+
+// ── 2. Relative paths (ride inside ids: hostile by definition) ──────────────
+eq(cleanRelPath(""), "", "empty is the root");
+eq(cleanRelPath("/a//b/"), "a/b", "slashes are normalised");
+eq(cleanRelPath("a\\b\\c.pdf"), "a/b/c.pdf", "backslashes become slashes");
+check(cleanRelPath("a/../b") === null, "'..' is rejected");
+check(cleanRelPath("./a") === null, "'.' is rejected");
+check(cleanRelPath("a/ b") === null, "a segment with surrounding whitespace is rejected");
+check(cleanRelPath("a/b\u0007") === null, "control characters are rejected");
+eq(joinRel("SAP", "X/Y"), "SAP/X/Y", "joinRel joins");
+eq(joinRel("", "X"), "X", "joinRel with empty prefix");
+eq(joinRel("SAP", ""), "SAP", "joinRel with empty path");
+
+// ── 3. Ids ──────────────────────────────────────────────────────────────────
+const id = encodeAzId("ny", "SAPX256015.00 Tabler/Outgoing/file:1.pdf");
+eq(id, "az:NY:SAPX256015.00 Tabler/Outgoing/file:1.pdf", "encode upper-cases the team");
+eq(decodeAzId(id), { team: "NY", relPath: "SAPX256015.00 Tabler/Outgoing/file:1.pdf" }, "decode splits on the FIRST colon after the team (paths may contain colons)");
+eq(decodeAzId("az:DC:"), { team: "DC", relPath: "" }, "an id with an empty path is the share root");
+check(isAzId("az:NY:x") && !isAzId("b!abc|123") && !isAzId(null), "isAzId tells az ids from Graph composites");
+check(decodeAzId("az:I::x") === null, "a drive-letter team ('I:') is not a valid team");
+check(decodeAzId("az:NY") === null, "an id without the second colon is malformed");
+check(decodeAzId("az:NY:../etc") === null, "traversal in an id is rejected");
+check(decodeAzId("b!abc|123") === null, "a Graph composite is not an az id");
+
+// ── 4. SAS normalisation (whatever IT pasted into the secret) ───────────────
+eq(normalizeSas("?sv=2024-05-04&ss=f&sp=rl&sig=abc%3D"), "sv=2024-05-04&ss=f&sp=rl&sig=abc%3D", "leading '?' is stripped");
+eq(normalizeSas("sv=2024-05-04&sig=abc"), "sv=2024-05-04&sig=abc", "a bare query string passes through");
+eq(normalizeSas("https://a.file.core.windows.net/share?sv=1&sig=zz"), "sv=1&sig=zz", "a full URL with the SAS attached reduces to its query");
+check(normalizeSas("sv=1&ss=f") === null, "a token without sig= is not a SAS");
+check(normalizeSas("") === null && normalizeSas(undefined) === null, "empty/undefined is null");
+
+// ── 5. URLs and display paths ───────────────────────────────────────────────
+eq(azureUrl(NY, "SAPX256015.00 Tabler/Outgoing/A#1 50%.pdf", "sv=1&sig=x", { restype: "directory", comp: "list" }),
+  "https://filestoragesetty.file.core.windows.net/newyorkstorage/SAP/SAPX256015.00%20Tabler/Outgoing/A%231%2050%25.pdf?restype=directory&comp=list&sv=1&sig=x",
+  "prefix + path, each segment encoded, request params before the SAS");
+eq(azureUrl({ account: "a", share: "s", prefix: "", base: "https://a.file.core.windows.net/s" }, "", "sig=x"),
+  "https://a.file.core.windows.net/s?sig=x", "root of a prefix-less share");
+eq(sharePathOf(NY, "SAPX256015.00 Tabler/Outgoing"), "\\\\filestoragesetty.file.core.windows.net\\newyorkstorage\\SAP\\SAPX256015.00 Tabler\\Outgoing",
+  "display path is the UNC form people recognise, never a credentialed URL");
+
+// ── 6. Listing XML ──────────────────────────────────────────────────────────
+const XML = `<?xml version="1.0" encoding="utf-8"?>
+<EnumerationResults ServiceEndpoint="https://filestoragesetty.file.core.windows.net/" ShareName="newyorkstorage" DirectoryPath="SAP">
+  <Entries>
+    <Directory><Name>SAPX256015.00 Tabler &amp; Sons</Name><Properties><Last-Modified>Tue, 02 Sep 2026 14:03:11 GMT</Last-Modified></Properties></Directory>
+    <File><Name Encoded="true">Spec%20%C2%A7%2015230.pdf</Name><Properties><Content-Length>123456</Content-Length><Last-Modified>Mon, 01 Sep 2026 10:00:00 GMT</Last-Modified></Properties></File>
+    <File><Name>notes.txt</Name><Properties><Content-Length>12</Content-Length></Properties></File>
+    <Directory><Name>Emails</Name></Directory>
+  </Entries>
+  <NextMarker>abc&amp;def</NextMarker>
+</EnumerationResults>`;
+const parsed = parseListXml(XML);
+eq(parsed.entries.map((e) => [e.name, e.type, e.size ?? null]), [
+  ["SAPX256015.00 Tabler & Sons", "folder", null],
+  ["Spec § 15230.pdf", "file", 123456],
+  ["notes.txt", "file", 12],
+  ["Emails", "folder", null],
+], "directories and files in order, XML-escaped and URL-encoded names decoded, sizes parsed");
+eq(parsed.entries[0].modified, "2026-09-02T14:03:11.000Z", "Last-Modified becomes an ISO stamp");
+check(parsed.entries[2].modified === undefined, "no Last-Modified, no modified field");
+eq(parsed.nextMarker, "abc&def", "NextMarker is unescaped");
+eq(parseListXml("<EnumerationResults><Entries/><NextMarker/></EnumerationResults>"), { entries: [], nextMarker: "" }, "empty listing");
+
+// ── 7. Error wording (what the admin can fix) ───────────────────────────────
+check(/SAS token is expired|firewall/.test(describeAzureError(403, "<Error><Code>AuthorizationFailure</Code></Error>")), "403 names the SAS and the firewall");
+check(/AuthenticationFailed/.test(describeAzureError(403, "<Error><Code>AuthenticationFailed</Code></Error>")), "the service's error code is carried through");
+check(/does not exist as spelled/.test(describeAzureError(404, "")), "404 is a spelling/path problem");
+check(/malformed/.test(describeAzureError(400, "<Error><Code>InvalidUri</Code></Error>")), "400 is a malformed URL or token");
+check(/HTTP 503/.test(describeAzureError(503, "")), "other statuses are reported plainly");
+
+// ── 8. REST calls over a stub fetch ─────────────────────────────────────────
+const calls = [];
+const page = (entries, marker) => `<EnumerationResults><Entries>${entries.map((n) => `<Directory><Name>${n}</Name></Directory>`).join("")}</Entries><NextMarker>${marker}</NextMarker></EnumerationResults>`;
+const stub = (routes) => async (url, init) => {
+  calls.push({ url, method: init?.method || "GET", headers: init?.headers || {} });
+  const u = new URL(url);
+  const marker = u.searchParams.get("marker") || "";
+  const r = routes(u, marker, init);
+  return r instanceof Response ? r : new Response(r.body ?? "", { status: r.status ?? 200, headers: r.headers ?? {} });
+};
+
+const two = await listDirectory(NY, "", "sv=1&sig=x", { fetchImpl: stub((u, marker) => ({ body: marker ? page(["SAPX2", "SAPX3"], "") : page(["SAPX1"], "m2") })) });
+eq(two.entries.map((e) => e.name), ["SAPX1", "SAPX2", "SAPX3"], "listDirectory follows the continuation marker");
+check(two.truncated === false, "a listing that ends is not truncated");
+check(calls.length === 2 && new URL(calls[1].url).searchParams.get("marker") === "m2", "the second request carries the marker");
+check(new URL(calls[0].url).searchParams.get("restype") === "directory" && new URL(calls[0].url).searchParams.get("comp") === "list",
+  "listing uses restype=directory&comp=list");
+check(new URL(calls[0].url).searchParams.get("sig") === "x", "the SAS rides the query string");
+check(calls[0].headers["x-ms-version"] === AZ_API_VERSION, "requests pin the service version");
+check(!new URL(calls[0].url).searchParams.has("marker"), "the first page has no marker");
+
+calls.length = 0;
+const capped = await listDirectory(NY, "X", "sig=x", { fetchImpl: stub(() => ({ body: page(["a"], "again") })), maxPages: 3 });
+check(capped.truncated === true && capped.entries.length === 3 && calls.length === 3, "a never-ending listing stops at maxPages and reports truncated");
+
+let thrown = null;
+try { await listDirectory(NY, "", "sig=x", { fetchImpl: stub(() => ({ status: 403, body: "<Error><Code>AuthenticationFailed</Code><Message>Signature expired</Message></Error>" })) }); }
+catch (e) { thrown = e; }
+check(thrown instanceof AzureFilesError && thrown.status === 403 && /AuthenticationFailed/.test(thrown.message), "a refused listing throws AzureFilesError with the honest message");
+
+calls.length = 0;
+const props = await fileProps(NY, "SAPX1/Outgoing/a.pdf", "sig=x", stub(() => ({ status: 200, headers: { "content-length": "4096", "last-modified": "Mon, 01 Sep 2026 10:00:00 GMT", "content-type": "application/pdf" } })));
+eq(props, { size: 4096, modified: "2026-09-01T10:00:00.000Z", contentType: "application/pdf" }, "fileProps reads size/modified/type from the HEAD");
+check(calls[0].method === "HEAD" && new URL(calls[0].url).pathname === "/newyorkstorage/SAP/SAPX1/Outgoing/a.pdf", "fileProps is a HEAD on the file path under the prefix");
+
+calls.length = 0;
+const res = await getFile(NY, "SAPX1/notes.txt", "sig=x", stub(() => ({ status: 200, body: "hello" })));
+check((await res.text()) === "hello" && calls[0].method === "GET", "getFile returns the response for the shared extractors");
+let notFound = null;
+try { await getFile(NY, "SAPX1/missing.txt", "sig=x", stub(() => ({ status: 404, body: "<Error><Code>ResourceNotFound</Code></Error>" }))); } catch (e) { notFound = e; }
+check(notFound instanceof AzureFilesError && notFound.status === 404, "a missing file throws a 404 AzureFilesError");
+
+// ── 9. Project folder match mirrors SharePoint's rule ───────────────────────
+const root = [
+  { name: "sapx256015.00 Tabler", type: "folder" }, { name: "SAPX256015.00 notes.txt", type: "file" },
+  { name: "SAPX256015.01 Tabler Ph2", type: "folder" },
+];
+eq(findProjectFolderName(root, "SAPX256015.00"), "sapx256015.00 Tabler", "case-insensitive startsWith, folders only");
+eq(findProjectFolderName(root, "sapx256015.01"), "SAPX256015.01 Tabler Ph2", "the phase suffix picks the right folder");
+check(findProjectFolderName(root, "SAPX9") === null && findProjectFolderName(root, "") === null, "no match / empty prefix yields null");
+eq([extOf("A.PDF"), extOf("noext"), extOf(".hidden"), extOf("a.b.docx")], ["pdf", "", "", "docx"], "extOf");
+
+console.log(failures ? `\n${failures} of ${total} assertions FAILED` : `\nall ${total} assertions pass`);
+process.exit(failures ? 1 : 0);

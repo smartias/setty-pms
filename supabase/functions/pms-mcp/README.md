@@ -363,6 +363,44 @@ number is left alone unless `update:true`), stamped with source/provenance. Both
 signed-in-only (`qaLedgerCaller`); neither touches SharePoint or the transmittal
 register.
 
+## Regions and the network-drive annex (`azureFiles.ts`)
+
+The firm runs hybrid while offices migrate to SharePoint region by region:
+project records move into each region's SharePoint site, and the office
+network drives are synced into Azure Files shares. `pms_regions` (managed in
+the Admin console's Regions tab) maps a project's PMS **team code** to:
+
+- `sharepoint_site_id` + `doc_library` — the region's site (full features);
+- `storage_kind` — `sharepoint` (default) or `azure_files` (the share IS the
+  project record: browse/read only);
+- `azure_share_url` + `azure_sas_env` — the share and the NAME of the Edge
+  Function secret holding its read-only SAS. Any region may carry these as a
+  drive **annex**, whatever its storage kind.
+
+Slice A (Sep 6) cut the seam: tools that need search, thumbnails or library
+semantics refuse `azure_files` regions with one shared note. Slice B (Sep 14)
+is the provider, in `azureFiles.ts`:
+
+- `list_project_documents` on an `azure_files` region finds the project folder
+  at the share root by number (same startsWith rule as SharePoint) and lists
+  it; on a `sharepoint` region with a share it adds `driveAnnex` to the default
+  result (a pointer to the legacy folder, if one exists). Items on a share
+  carry ids of the form `az:<TEAM>:<rel/path>`; pass one as `folderId` to
+  browse it.
+- `read_document` accepts `az:` ids: HEAD for size, GET for bytes, then the
+  same extractors as SharePoint content.
+- The SAS is read from `Deno.env.get(azure_sas_env)` and nowhere else. Missing
+  secret, malformed share URL, expired token, and a storage-account firewall
+  each produce a distinct, actionable error rather than a generic failure.
+- The share root listing is cached per region for 300s, like the region map.
+
+Gotchas: the storage account must allow traffic from outside the tenant
+(Supabase's egress is not on the corporate network), the SAS needs `r` and
+`l` on the share (account SAS: service `f`, resource types `sco`), and the
+share URL must not carry the token (the console refuses one that does).
+`azureFiles.test.mjs` covers the pure parts over a stub fetch;
+`regionRouting.test.mjs` pins the wiring in `index.ts`.
+
 ## Deploying
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
