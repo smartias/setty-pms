@@ -177,6 +177,10 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v24 (15 Sep 2026, later) — "What works where" and the Claude/MCP tab brought
+// current with connector 1.17.1: drawing tools work on drives (1.16.0), the
+// transmittal tool's register-only mode, drive discovery, 43 tools, and the
+// real deploy command (repo root, no --import-map, pull main first).
 // v23 (15 Sep 2026, later) — Drive discovery shows the closest PMS record for
 // a folder that is not in the PMS exactly (a longer number such as
 // SAPQ226904.04.01 for folder SAPQ226904.04, or sibling task orders under the
@@ -1124,7 +1128,9 @@ async function renderRegions() {
 // The same matrix as the team explainer "Where Project Files Live". "PMS
 // only" = the tool reads the PMS record and never touches SharePoint or a
 // drive, so the region's storage makes no difference. Keep this in step with
-// the tool list in pms-mcp/index.ts (43 tools as of v1.15.1).
+// the tool list in pms-mcp/index.ts (43 tools as of v1.17.1). Drive rows
+// reflect 1.16.0+: the drawing index is built off the drive's Outgoing folder,
+// so the drawing tools work on both storages once search_drawings has run.
 const CAP_ROWS = [
   ["Projects, people and the portfolio"],
   ["search_projects", "Find projects by number, name, status, agency, client or type"],
@@ -1147,19 +1153,19 @@ const CAP_ROWS = [
   ["read_rfi_submittal", "One RFI or submittal in full"],
   ["save_ca_review", "Write Claude's suggested response and stamp onto a CA record"],
   ["backload_ca_item", "Create a log entry for an item not yet in the PMS from its filed PDF or email", "yes", "part", "The entry is created either way; the PDF is fetched from SharePoint. On a drive, read the file by name first."],
-  ["trace_references", "Which drawing sheets an RFI or submittal refers to, validated against the register", "yes", "part", "The register check works; validating against drawing text needs the SharePoint index."],
+  ["trace_references", "Which drawing sheets an RFI or submittal refers to, validated against the register", "yes", "yes", "On a drive the check runs against the drawing index; run search_drawings first."],
   ["Project files"],
   ["list_project_documents", "Browse a project's folders and subfolders", "yes", "yes"],
   ["read_document", "Read a PDF, Word, Excel, CSV or text file; large PDFs page by page with keyword jump", "yes", "yes"],
   ["find_document", "Find a document by describing it in plain language", "yes", "no", "You name the folder and file instead."],
   ["Drawings"],
-  ["extract_sheet_index", "The drawing sheet index and the current full set", "yes", "no"],
-  ["get_current_set", "The authoritative current set from the transmittal register", "yes", "no"],
-  ["search_drawings", "Search the text on the drawings: tags, keynotes, room names, schedules", "yes", "no"],
-  ["view_drawing", "Render one sheet as an image to look at", "yes", "no"],
-  ["read_drawing_schedule", "Read the schedules on a sheet as structured rows", "yes", "no"],
-  ["find_equipment", "The equipment tag registry derived from the drawing text", "yes", "no"],
-  ["prepare_transmittal", "Stage a transmittal for an Outgoing set without issuing it", "yes", "no"],
+  ["extract_sheet_index", "The drawing sheet index and the current full set", "yes", "yes", "On a drive it is composed from the drawing index (each sheet at its newest indexed revision) when there is no register entry."],
+  ["get_current_set", "The authoritative current set from the transmittal register", "yes", "yes", "Authoritative once the set was logged with the transmittal tool's register-only mode; inferred from the drawing index before that."],
+  ["search_drawings", "Search the text on the drawings: tags, keynotes, room names, schedules", "yes", "yes", "Indexes the project's Outgoing folder on the drive (99-<number>_OUTGOING on DC). Run with indexOnly first on a new project; the index refreshes on demand, not on file changes."],
+  ["view_drawing", "Render one sheet as an image to look at", "yes", "yes"],
+  ["read_drawing_schedule", "Read the schedules on a sheet as structured rows", "yes", "yes"],
+  ["find_equipment", "The equipment tag registry derived from the drawing text", "yes", "yes"],
+  ["prepare_transmittal", "Stage a transmittal for an Outgoing set without issuing it", "yes", "no", "Drives are read-only to Claude: copy the set into Outgoing yourself and log it with the transmittal tool (register-only mode)."],
   ["Field photos"],
   ["search_field_photos", "Photo upload sessions from the Field Photos app and Site Report", "yes", "no", "Sessions are SharePoint uploads."],
   ["view_photos", "Look at field photos and image files", "yes", "no"],
@@ -1180,12 +1186,16 @@ const CAP_ROWS = [
   ["Skills"],
   ["", "<b>Email response</b>: reconstruct a thread and draft a reply", "yes", "yes", "Minutes on a drive are read by naming the file."],
   ["", "<b>Open items and assumptions log</b>: the coordination log for a deliverable", "yes", "yes"],
-  ["", "<b>Submittal and RFI review</b>: log entry, cut-sheet reading, comparison with the issued set", "yes", "part", "The log and a cut sheet you name work; comparison with the issued drawings needs the SharePoint set."],
-  ["", "<b>Design narrative</b>: basis of design from drawings, minutes, emails and prior narratives", "yes", "part", "Minutes, emails and a prior narrative you name work; the drawing index does not."],
-  ["", "<b>QA coordination review</b>: the issued set against the checklist and open items", "yes", "no", "Needs the sheet index and drawing text."],
+  ["", "<b>Submittal and RFI review</b>: log entry, cut-sheet reading, comparison with the issued set", "yes", "yes", "Name the cut sheet file on a drive (no search); comparison with the issued drawings needs the drawing index built first."],
+  ["", "<b>Design narrative</b>: basis of design from drawings, minutes, emails and prior narratives", "yes", "yes", "Minutes, emails and a prior narrative are read by name; the drawing index works once search_drawings has run."],
+  ["", "<b>QA coordination review</b>: the issued set against the checklist and open items", "yes", "yes", "Index the set first (search_drawings with indexOnly); the QA report is not filed onto a drive."],
+  ["Apps that touch project files"],
+  ["", "<b>Transmittal tool</b> (transmittal.html): issue a set, generate the transmittal, write the register", "yes", "part", "Drive projects run in register-only mode: you copy the set into Outgoing, the page reads it from the drive through the folder picker, sends by attachment and writes the register. No upload, no portal link, no Save to SharePoint."],
+  ["", "<b>Drive discovery</b> (this console): project folders on a drive with no PMS record", "n/a", "yes", "Scans a share through the connector; you create or link the PMS record here."],
+  ["", "<b>Field Photos / Site Report</b> apps: photo sessions", "yes", "no", "Uploads go to SharePoint only."],
 ];
 function renderCapabilityMatrix() {
-  const mark = (v) => v === "yes" ? '<span class="pill ok">Yes</span>' : v === "part" ? '<span class="pill warn">Partly</span>' : '<span class="pill bad">No</span>';
+  const mark = (v) => v === "yes" ? '<span class="pill ok">Yes</span>' : v === "part" ? '<span class="pill warn">Partly</span>' : v === "n/a" ? '<span class="pill info">n/a</span>' : '<span class="pill bad">No</span>';
   const rows = CAP_ROWS.map((r) => {
     if (r.length === 1) return `<tr><td colspan="4" style="background:var(--panel2,rgba(125,125,125,.08));font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding-top:10px"><b>${esc(r[0])}</b></td></tr>`;
     const [tool, what, sp, dr, note] = r;
@@ -1201,8 +1211,10 @@ function renderCapabilityMatrix() {
         <div style="color:var(--muted);font-size:12px;margin:8px 0 10px">
           <b>PMS only</b> means the tool reads the PMS record and never touches SharePoint or a drive, so an office's storage makes
           no difference. The two right-hand columns only matter for tools that read project files. A drive gives Claude folders and
-          files; SharePoint adds the search index, item ids, thumbnails and the filing log that the drawing and transmittal tools
-          are built on — and Claude never writes to a drive.
+          files, and since connector 1.16.0 the drawing index too (built off the project's Outgoing folder, refreshed on demand);
+          SharePoint adds full-text search, stable item ids, thumbnails, photo sessions and every write the tools do — Claude never
+          writes to a drive. Projects on a drive need a PMS record with the right Team before any tool can find them: see the
+          Drive discovery tab.
         </div>
         <div style="overflow-x:auto">
         <table><thead><tr><th>Tool</th><th>What it does</th><th>SharePoint</th><th>Drive</th></tr></thead>
@@ -2038,7 +2050,7 @@ function renderGuide() {
              own Edge Function.</p>
           <div class="src">Edge Functions pms-user-emails · unsubscribe</div></div>
         <div class="appcard"><h4>🤖 Claude / MCP server</h4>
-          <p>Connector that lets the team's enterprise Claude accounts search and read PMS data — 32 tools. Read-first: the one write tool, <code>save_knowledge</code>, saves project knowledge to the intelligence tables and cannot touch project data. Full runbook on the Claude/MCP tab.</p>
+          <p>Connector that lets the team's enterprise Claude accounts search and read PMS data — 43 tools. Read-first: the write tools are scoped (<code>save_knowledge</code>, the QA findings ledger, <code>save_ca_review</code> / <code>backload_ca_item</code>, <code>file_qa_report</code>, <code>ensure_qaqc_folders</code>) and none of them can edit a project record, the register, or email. Full runbook on the Claude/MCP tab.</p>
           <div class="src">Edge Function pms-mcp</div></div>
       </div>
     </div>
@@ -2323,7 +2335,7 @@ function renderMcp() {
       <div class="sechead">Current status: 6 Sep 2026</div>
       <table><thead><tr><th>Item</th><th>State</th></tr></thead><tbody>
         <tr><td>Discovery proxy (<code>mcp-proxy/</code>)</td><td><b>Live, and it is the URL to give Claude.</b> Verified end to end on 5 Aug: 14/14 checks on the full discovery chain, plus passthrough to the Edge Function confirmed. This is what unblocked org-wide sign-in after weeks of <code>{"error":"requested path is invalid"}</code>. A rate limiter is live on the proxied path (25 requests/10s per client, 429 + Retry-After, fail-open), added after a real client was observed retrying a dozen times in half a minute during an auth failure. Still on a <code>workers.dev</code> subdomain, so move it to a custom domain before firm-wide rollout (see the note above).</td></tr>
-        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Live. Build <code>2026-09-04-doc-style-guidance</code> as of this writing, 32 tools.</b> The health link above echoes the live build string, so "is my change live?" is answerable without diffing source — trust the health link over this row if they ever disagree. Recent additions: drawings search and reference tracing, transmittal pre-flight, company/contact lookups, field-photo viewing, and the knowledge pair (full list below). The 25 Jul OAuth discovery fix remains in place: the advertised resource matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures.</td></tr>
+        <tr><td>Server (<code>pms-mcp</code> Edge Function)</td><td><b>Live. Build <code>2026-09-15-discovery-matches</code> (connector 1.17.1) as of this writing, 43 tools.</b> Since 1.14.0 the connector reads the network drives too (Azure Files shares registered on the Regions tab; DC is drive-only, NY and BT keep a drive annex beside SharePoint), and since 1.16.0 the drawing tools index and read sets off a drive. The health link above echoes the live build string, so "is my change live?" is answerable without diffing source — trust the health link over this row if they ever disagree. Recent additions: drawings search and reference tracing, transmittal pre-flight, company/contact lookups, field-photo viewing, and the knowledge pair (full list below). The 25 Jul OAuth discovery fix remains in place: the advertised resource matches the requested scope, which was the cause of the Entra <b>9010010</b> sign-in failures.</td></tr>
         <tr><td>Knowledge write-back (1 Sep 2026)</td><td><b>Live.</b> <code>save_knowledge</code> is the connector's first and only write tool, scoped to the intelligence tables. Publishing is scoped by reach: a <b>project-scoped</b> entry publishes immediately as approved (the person telling Claude "save that" is the review; edit or remove it in the console), while <b>firm- or agency-wide</b> entries queue as suggested for review. Connector-saved entries show a 💬 badge in the project brief.</td></tr>
         <tr><td>OAuth sign-in, end to end</td><td><b>WORKS. First confirmed 5 Aug 2026, ~2:50 PM.</b> A real user signed in with a Setty
             Microsoft account through the proxy and pulled live data: full handshake on the wire (initialize 200, tools/list 200, 23 tools),
@@ -2366,25 +2378,30 @@ function renderMcp() {
             enforcer, RLS is not in that path. Read-first: the single write tool, <code>save_knowledge</code> (1 Sep), writes only the
             intelligence tables under its own capability and RLS — no project data, email, or register write path exists.</li>
         <li><b>Source of truth — changed since v31:</b> the function source is now <b>committed to the repo</b> at <code>supabase/functions/pms-mcp/</code>. It used to live only on the deployed function, so the old rule here was "pull the live source before editing." <b>That rule is retired for <code>pms-mcp</code>:</b> edit the repo copy and deploy from disk. (It still applies to <code>pms-user-emails</code> and <code>weekly-digest</code>, which have not been reconciled yet.)</li>
-        <li><b>Deploys:</b> from the repo root via <code>supabase functions deploy --no-verify-jwt pms-mcp</code> (always pass the deno.json import map). Bump the <code>BUILD</code> constant in <code>index.ts</code> in the same change, then confirm the new string comes back from the health link above — that is the deploy check.</li>
+        <li><b>Deploys:</b> from the repo root via <code>npx supabase functions deploy pms-mcp --project-ref khxmgjilwhdguuepbhne --no-verify-jwt</code> — no <code>--import-map</code> flag (the function's deno.json is picked up on its own; passing the flag fails with ENOENT), and <code>git pull</code> main first or the deploy ships stale code. Bump the <code>BUILD</code> constant in <code>index.ts</code> in the same change, then confirm the new string comes back from the health link above — that is the deploy check.</li>
       </ul>
-      <div class="sechead" style="margin-top:14px">The 32 tools</div>
+      <div class="sechead" style="margin-top:14px">The 43 tools</div>
       <table><thead><tr><th>Group</th><th>Tools</th></tr></thead><tbody>
         <tr><td>Projects</td><td><code>search_projects</code> · <code>get_project</code> · <code>firm_overview</code> · <code>list_milestones</code> · <code>list_action_items</code> · <code>project_briefing</code></td></tr>
         <tr><td>Directory</td><td><code>search_companies</code> · <code>find_contact</code> · <code>list_term_contracts</code></td></tr>
         <tr><td>Emails</td><td><code>search_emails</code> · <code>read_email</code> · <code>summarize_project_emails</code></td></tr>
-        <tr><td>Notes &amp; CA</td><td><code>search_notes</code> · <code>read_note</code> · <code>search_rfis_submittals</code> · <code>read_rfi_submittal</code></td></tr>
+        <tr><td>Notes &amp; CA</td><td><code>search_notes</code> · <code>read_note</code> · <code>search_rfis_submittals</code> · <code>read_rfi_submittal</code> · <code>save_ca_review</code> · <code>backload_ca_item</code></td></tr>
         <tr><td>Field</td><td><code>search_field_photos</code> · <code>view_photos</code></td></tr>
         <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code> · <code>find_document</code></td></tr>
-        <tr><td>Drawings</td><td><code>get_current_set</code> · <code>extract_sheet_index</code> · <code>search_drawings</code> · <code>trace_references</code> · <code>prepare_transmittal</code></td></tr>
-        <tr><td>Knowledge</td><td><code>search_agency_preferences</code> · <code>search_knowledge</code> · <code>save_knowledge</code> <span style="color:var(--muted)">(the one write tool)</span></td></tr>
+        <tr><td>Drawings</td><td><code>get_current_set</code> · <code>extract_sheet_index</code> · <code>search_drawings</code> · <code>view_drawing</code> · <code>read_drawing_schedule</code> · <code>find_equipment</code> · <code>trace_references</code> · <code>prepare_transmittal</code></td></tr>
+        <tr><td>QA</td><td><code>get_qa_checklist</code> · <code>record_qa_findings</code> · <code>list_qa_findings</code> · <code>update_qa_finding</code> · <code>file_qa_report</code> · <code>ensure_qaqc_folders</code></td></tr>
+        <tr><td>Knowledge</td><td><code>search_agency_preferences</code> · <code>search_knowledge</code> · <code>save_knowledge</code></td></tr>
         <tr><td>Templates</td><td><code>get_template</code> · <code>get_add_service_template</code> · <code>get_letterhead_template</code></td></tr>
       </tbody></table>
       <p style="font-size:12.5px;margin-top:8px;color:var(--muted)"><code>project_briefing</code> is still the one to know about:
         it answers "what is going on with this job" by returning the project record <i>plus</i> the meeting minutes and review comments, rather than
         reciting fields anyone can read off the PMS web app. The drawings group now searches drawing <i>content</i> (<code>search_drawings</code>
         reads the text layer of issued sheets, lazily indexed per project) and traces sheet references out of RFI/submittal text
-        (<code>trace_references</code>); <code>prepare_transmittal</code> is pre-flight only — issuing stays in the transmittal app.</p>
+        (<code>trace_references</code>); <code>prepare_transmittal</code> is pre-flight only — issuing stays in the transmittal app.
+        Every drawing tool works on a network drive as well as SharePoint since 1.16.0: the index is built from the project's Outgoing
+        folder on the share (<code>search_drawings</code> with <code>indexOnly</code> first). What a drive cannot do: full-text
+        <code>find_document</code>, photo sessions, and any write — Claude's share credentials are read-only. The Regions tab's
+        "What works where" table is the per-tool reference.</p>
     </div>
 
     <div class="card doc">
