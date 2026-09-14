@@ -248,7 +248,16 @@ function matchRFI(extNum,title,logged){ const t=(title||"").toLowerCase().trim()
 function matchSub(extNum,logged){
   // Newforma ids are the full spec-based number ("232113-012") — match by
   // prefix on the logged number; bare numeric ids keep the Forma item-segment rule.
-  if(/[-.]/.test(String(extNum))){ const h=logged.filter(s=>String(s.number||"").startsWith(String(extNum))); return h.length?{row:h[0],maxRev:Math.max(...h.map(s=>revSeg(s.number)))}:null; }
+  if(/[-.]/.test(String(extNum))){
+    const base=String(extNum);
+    // Only the base itself or base-<rev> count (never base+extra digits), and
+    // the revision is RELATIVE to the base: a bare logged "232113-012" is rev 0
+    // (revSeg would misread its item segment "-012" as rev 12 — Codex P1).
+    const h=logged.filter(s=>{const n=String(s.number||""); return n===base||n.startsWith(base+"-");});
+    if(!h.length) return null;
+    const relRev=n=>{ n=String(n||""); if(n===base) return 0; const m=n.slice(base.length).match(/^-(\d+)$/); return m?+m[1]:0; };
+    return {row:h[0],maxRev:Math.max(...h.map(s=>relRev(s.number)))};
+  }
   const h=logged.filter(s=>itemSeg(s.number)===extNum); return h.length?{row:h[0],maxRev:Math.max(...h.map(s=>revSeg(s.number)))}:null; }
 /* ---- discipline inference: spec division first, title/question keywords second, "" (unclassified) when unsure ---- */
 const DISC_BY_DIV = { "03":"Structural","04":"Structural","05":"Structural","08":"Architectural","09":"Architectural",
