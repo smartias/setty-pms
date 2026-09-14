@@ -409,6 +409,17 @@ is the provider, in `azureFiles.ts`:
   plain name as `aka`, and a `subfolder` argument resolves by exact name, plain
   name, alias (`Emails` ↔ `INCOMING`, `QA/QC` ↔ `QA-QC`), or unique contains.
   The visibility gate skips at most two leading year segments.
+- Drawing tools on a drive (1.16.0): `search_drawings` indexes a drive
+  project's Outgoing folder (resolved by standard name, so DC's
+  `99-<number>_OUTGOING` works) exactly as it indexes SharePoint — rows in
+  `pms_drawing_text` / `pms_drawing_index_files` carry `az:` ids, `web_url`
+  holds the UNC path. `view_drawing`, `read_drawing_schedule`, `find_equipment`
+  and `trace_references` then work unchanged. `extract_sheet_index` (default
+  mode) and `get_current_set` have no register on a drive, so they compose the
+  set from the drawing index instead (`basis` says so; `coverage` rides along).
+  Still SharePoint-only: `find_document` (search index), `prepare_transmittal`
+  and `file_qa_report` (writes), field photos. The transmittal tool does not
+  yet write a register for drive projects (register-only mode is the follow-up).
 - Visibility: an `az:` id is a typed path, not an unguessable Graph id, so
   both tools gate it before any share call — the first segment must be a
   registered project's folder (longest project-number prefix), on that
