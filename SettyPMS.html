@@ -24921,7 +24921,11 @@ function filterClauseHtmlByPhase(html, codes) {
 function filterClauseHtmlByPrime(html, isPrime, primeOnlyKeys) {
   const s = String(html || "");
   if (isPrime) return s;
-  const keys = (primeOnlyKeys && primeOnlyKeys.size) ? primeOnlyKeys : null;
+  // Any supplied Set is authoritative, including an EMPTY one (every primeOnly
+  // tag was cleared): keyed wrappers are then decided by the set, not by a stale
+  // marker. null is reserved for an unresolved lookup (stamp time or the library
+  // was unreachable), where the stored markers are the only fallback.
+  const keys = primeOnlyKeys instanceof Set ? primeOnlyKeys : null;
   if (!/data-prime-only/.test(s) && !(keys && /data-clause=/.test(s))) return s;
   try {
     const doc = new DOMParser().parseFromString(s, "text/html");
