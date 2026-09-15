@@ -24912,9 +24912,12 @@ function filterClauseHtmlByPhase(html, codes) {
 // list left empty by that. Two ways in: <li data-prime-only> line items (a
 // single exclusion menu carries hazmat/permit-application items inline and sheds
 // them on a sub's proposal), and whole stamped clauses whose data-clause key is
-// in primeOnlyKeys. The key set is resolved against the LIVE library at export,
-// so a whole prime-only clause is dropped even when its stored wrapper predates
-// the tag and never received data-prime-only at insert time.
+// prime-only per the LIVE library. When the resolved key set is supplied (the
+// export path), it is AUTHORITATIVE for keyed clauses: the wrapper's stored
+// data-prime-only marker is ignored, so a tag added OR removed after the clause
+// was stamped is honored (a cleared tag brings the clause back; a newly added
+// one drops it even though the old wrapper never got the marker). Unkeyed line
+// items have no library entry, so they fall back to their own marker.
 function filterClauseHtmlByPrime(html, isPrime, primeOnlyKeys) {
   const s = String(html || "");
   if (isPrime) return s;
@@ -24922,11 +24925,17 @@ function filterClauseHtmlByPrime(html, isPrime, primeOnlyKeys) {
   if (!/data-prime-only/.test(s) && !(keys && /data-clause=/.test(s))) return s;
   try {
     const doc = new DOMParser().parseFromString(s, "text/html");
-    doc.body.querySelectorAll("[data-prime-only]").forEach(el => el.remove());
     if (keys) {
+      // Whole stamped clauses: the live key set decides, marker or not.
       doc.body.querySelectorAll("[data-clause]").forEach(el => {
         if (keys.has(el.getAttribute("data-clause"))) el.remove();
       });
+      // Unkeyed prime-only line items keep their own marker as the signal.
+      doc.body.querySelectorAll("[data-prime-only]:not([data-clause])").forEach(el => el.remove());
+    } else {
+      // No live key set (stamp time, or the library was unreachable): fall back
+      // to the stored markers on line items and any freshly stamped wrapper.
+      doc.body.querySelectorAll("[data-prime-only]").forEach(el => el.remove());
     }
     doc.body.querySelectorAll("ul,ol").forEach(l => { if (!l.children.length) l.remove(); });
     return doc.body.innerHTML;
