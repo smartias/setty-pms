@@ -97,8 +97,10 @@ has("const AZURE_LIMITED_NOTE =", "single shared azure-limitation note");
 // 1.16.0: the drawing tools index and read drives, so the gate remains only
 // on what genuinely needs SharePoint — find_document (search index),
 // prepare_transmittal and file_qa_report (writes), and the listing notes.
-check((shipped.match(/AZURE_LIMITED_NOTE/g) || []).length >= 5 && (shipped.match(/AZURE_LIMITED_NOTE/g) || []).length <= 8,
-  "the azure gate guards find_document, transmittal staging and filing (not the drawing tools)");
+check((shipped.match(/AZURE_LIMITED_NOTE/g) || []).length >= 4 && (shipped.match(/AZURE_LIMITED_NOTE/g) || []).length <= 7,
+  "the azure gate guards transmittal staging and filing only (not the drawing tools, not find_document since 1.17.2)");
+check(/Drive-based project \(1\.17\.2\): the tree is a breadth-first walk/.test(shipped),
+  "projectTree walks the project folder on a drive, so find_document ranks drive files");
 has("async function loadPdfBytes(itemId: string, maxBytes: number", "one PDF loader for both storages");
 has("const gate = await azurePathProject(dec.team, dec.relPath);\n    if (!gate.ok) throw new Error(", "the PDF loader runs the visibility gate on az ids");
 has("buf = await loadPdfBytes(f.itemId, DRAWING_INDEX_MAX_BYTES, { cache: false });", "the index builder reads through the shared loader");

@@ -417,9 +417,14 @@ is the provider, in `azureFiles.ts`:
   and `trace_references` then work unchanged. `extract_sheet_index` (default
   mode) and `get_current_set` have no register on a drive, so they compose the
   set from the drawing index instead (`basis` says so; `coverage` rides along).
-  Still SharePoint-only: `find_document` (search index), `prepare_transmittal`
-  and `file_qa_report` (writes), field photos. The transmittal tool does not
-  yet write a register for drive projects (register-only mode is the follow-up).
+  Still SharePoint-only: `prepare_transmittal` and `file_qa_report` (writes),
+  field photos. `find_document` works on a drive since 1.17.2: `projectTree()`
+  has a drive branch (breadth-first walk of the project folder on each share,
+  same caps and the same `pms_mcp_tree_cache` row as the SharePoint walk), so
+  the ranking, phase filter and register-based supersession status all apply;
+  what a drive lacks is SharePoint's full-text index, so matches are on file
+  and folder names. The transmittal tool writes the register for drive
+  projects in register-only mode (v19).
 - Visibility: an `az:` id is a typed path, not an unguessable Graph id, so
   both tools gate it before any share call — the first segment must be a
   registered project's folder (longest project-number prefix), on that
@@ -432,6 +437,28 @@ Gotchas: the storage account must allow traffic from outside the tenant
 share URL must not carry the token (the console refuses one that does).
 `azureFiles.test.mjs` covers the pure parts over a stub fetch;
 `regionRouting.test.mjs` pins the wiring in `index.ts`.
+
+## RFIs and submittals on a drive (1.18.0)
+
+The record stays in the PMS; the filed documents on a drive live under
+`<project>/70-<number>_CA/` → `8. RFIs` or `9. Submittals` → a folder per
+discipline (`E`, `FA`, `FP`, `M`, `P`, `Misc`) → a folder per item (older
+jobs also have a bare `RFI` folder, and some skip the discipline level).
+`azureCaItems()` walks that on every share of the project's region (drive-only
+regions and SharePoint regions with a drive annex alike, capped at
+`CA_MAX_LISTINGS` listings), and:
+
+- `read_rfi_submittal` adds `driveFiled`: the item folder(s) whose name
+  carries the item's number or spec section (`folderMentionsNumber`, leading
+  zeros ignored), each with its files as `az:` ids for `read_document`. When
+  folders exist but none match, `driveNote` names the CA folder ids to browse.
+- `search_rfis_submittals` with a project adds `driveOnly`: CA item folders
+  no log entry matches, so they can be logged with `backload_ca_item`
+  (its `spFolderUrl` accepts the folder's UNC path).
+
+`resolveChildFolder`'s last-resort contains-match is word-bounded since
+1.18.0: `CA` used to resolve to `SIPX262012.00_Load Forecasting` on a job
+with no CA folder yet.
 
 ## Drive discovery (`POST /pms-mcp/admin/discover-projects`, 1.17.0)
 

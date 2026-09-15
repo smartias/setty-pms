@@ -26,7 +26,7 @@ import {
   encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf,
   findProjectFolderName, projectForFolderName, extOf, shareLabelClean,
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
-  projectNumberOfFolder, projectNameFromFolders,
+  projectNumberOfFolder, projectNameFromFolders, caKindFolders, isDisciplineFolder, folderMentionsNumber,
 } from "./azureFiles.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -1046,9 +1046,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-discovery-matches";
+const BUILD = "2026-09-15-ca-on-drives";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.17.1",
+  name: "setty-pms", version: "1.18.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -2560,13 +2560,73 @@ mcp.tool("list_milestones", {
   },
 });
 
+// ── CA items filed on a drive (1.18.0) ───────────────────────────────────────
+// The RFI / submittal RECORD is PMS data; the filed documents for a drive (or
+// drive-annex) project sit under <project>/CA/8. RFIs|9. Submittals/<disc>/<item>.
+// This lists the item folders so read_rfi_submittal can hand back the files and
+// search_rfis_submittals can show what is filed without a record yet.
+type DriveCaItem = { name: string; discipline: string | null; folderId: string; sharePath: string; modified: string | null; share: string; rel: string; ctx: AzureCtx };
+const CA_MAX_LISTINGS = 30;
+async function azureCaItems(team: string, num: string, kind: "rfi" | "submittal"): Promise<{ items: DriveCaItem[]; caFolders: Array<{ share: string; folderId: string; sharePath: string }>; truncated: boolean }> {
+  const { hits } = await azureProjectHits(team, num);
+  const items: DriveCaItem[] = []; const caFolders: Array<{ share: string; folderId: string; sharePath: string }> = [];
+  let listings = 0; let truncated = false;
+  const list = async (ctx: AzureCtx, rel: string): Promise<AzEntry[] | null> => {
+    if (listings >= CA_MAX_LISTINGS) { truncated = true; return null; }
+    listings++;
+    try { return (await azureDirEntries(ctx, rel)).entries; } catch { return null; }
+  };
+  for (const h of hits) {
+    const root = await list(h.ctx, h.folder); if (!root) continue;
+    const caName = resolveChildFolder(root, "ca"); if (!caName) continue;
+    const caRel = joinRel(h.folder, caName);
+    caFolders.push({ share: h.ctx.label + ":", folderId: encodeAzId(h.ctx.team, caRel, h.ctx.label), sharePath: sharePathOf(h.ctx.share, caRel) });
+    const ca = await list(h.ctx, caRel); if (!ca) continue;
+    for (const kindName of caKindFolders(ca, kind)) {
+      const kindRel = joinRel(caRel, kindName);
+      const inside = await list(h.ctx, kindRel); if (!inside) continue;
+      const push = (e: AzEntry, rel: string, disc: string | null) => items.push({
+        name: e.name, discipline: disc, folderId: encodeAzId(h.ctx.team, rel, h.ctx.label), sharePath: sharePathOf(h.ctx.share, rel),
+        modified: e.modified ?? null, share: h.ctx.label + ":", rel, ctx: h.ctx,
+      });
+      for (const e of inside) {
+        if (e.type !== "folder") continue;
+        const rel = joinRel(kindRel, e.name);
+        if (isDisciplineFolder(e.name)) {
+          const sub = await list(h.ctx, rel); if (!sub) continue;
+          for (const it of sub) if (it.type === "folder") push(it, joinRel(rel, it.name), e.name.toUpperCase());
+        } else push(e, rel, null);
+      }
+    }
+  }
+  return { items, caFolders, truncated };
+}
+async function driveCaItemFiles(it: DriveCaItem): Promise<Array<Record<string, unknown>>> {
+  try {
+    const r = await azureDirEntries(it.ctx, it.rel);
+    return r.entries.filter((e) => e.type === "file").slice(0, 40).map((e) => ({
+      name: e.name, itemId: encodeAzId(it.ctx.team, joinRel(it.rel, e.name), it.ctx.label), ext: extOf(e.name), size: e.size ?? null, modified: e.modified ?? null,
+    }));
+  } catch { return []; }
+}
+const driveCaItemRow = (it: DriveCaItem) => ({ folder: it.name, discipline: it.discipline, share: it.share, folderId: it.folderId, sharePath: it.sharePath, modified: it.modified });
+// A region with any drive share (drive-only, or SharePoint with an annex) may
+// hold CA folders on the drive.
+async function teamWithShares(projectNumber: string | null | undefined): Promise<string | null> {
+  const team = await teamForProject(projectNumber);
+  if (!team) return null;
+  return (await siteForTeam(team)).shares.length ? String(team).toUpperCase().trim() : null;
+}
+
 mcp.tool("search_rfis_submittals", {
   description:
     "Search Construction Administration RFIs and submittals (including historical / Newforma- " +
     "imported records). Filter by project, type (rfi/submittal), status, discipline, or keyword " +
     "(matches number, subject, discipline, spec section, and the full question/response/comments " +
     "text). Returns compact rows with a snippet — call read_rfi_submittal for the full text. With " +
-    "no project, searches firm-wide.",
+    "no project, searches firm-wide. For a project whose files live on the office network drive, the " +
+    "result also lists item folders filed under the CA folder on the drive that have NO log entry yet " +
+    "(`driveOnly`), so they can be logged with backload_ca_item.",
   inputSchema: z.object({
     projectNumber: z.string().optional().describe("Scope to one project (number, id, or name)"),
     type: z.enum(["rfi", "submittal"]).optional().describe("Limit to RFIs or submittals"),
@@ -2612,14 +2672,39 @@ mcp.tool("search_rfis_submittals", {
       if (type !== "rfi") for (const s of (p.submittals ?? [])) add(s, "submittal");
     }
     out.sort((a, b) => String(b.received ?? b.dueDate ?? "").localeCompare(String(a.received ?? a.dueDate ?? "")));
-    return asText({ count: out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim) });
+    // Drive (1.18.0): item folders under CA on the drive with no record behind them.
+    let driveOnly: Array<Record<string, unknown>> = []; let driveNote: string | null = null;
+    if (pid && projects[0]) {
+      try {
+        const p0 = projects[0]; const team = await teamWithShares(p0.projectNumber);
+        if (team) {
+          const kinds: Array<"rfi" | "submittal"> = type ? [type] : ["rfi", "submittal"];
+          let trunc = false;
+          for (const k of kinds) {
+            const r = await azureCaItems(team, String(p0.projectNumber).toLowerCase().trim(), k);
+            trunc = trunc || r.truncated;
+            const logged = (k === "rfi" ? (p0.rfis ?? []) : (p0.submittals ?? [])).map((x: any) => String(x.number || ""));
+            for (const it of r.items) {
+              if (logged.some((n: string) => n && folderMentionsNumber(it.name, n))) continue;
+              if (q && !it.name.toLowerCase().includes(q)) continue;
+              driveOnly.push({ type: k, ...driveCaItemRow(it) });
+            }
+          }
+          driveOnly = driveOnly.slice(0, 50);
+          if (driveOnly.length) driveNote = "Filed under the CA folder on the office drive with no log entry matching the folder name. Open one with list_project_documents (folderId) and log it with backload_ca_item." + (trunc ? " The drive walk hit its listing cap." : "");
+        }
+      } catch (e) { driveNote = `Drive CA folders not read: ${String((e as any)?.message ?? e)}`; }
+    }
+    return asText({ count: out.length, returned: Math.min(out.length, lim), items: out.slice(0, lim), ...(driveOnly.length ? { driveOnly } : {}), ...(driveNote ? { driveNote } : {}) });
   },
 });
 
 mcp.tool("read_rfi_submittal", {
   description:
     "Read one RFI or submittal in full — the complete question and response (RFI) or description " +
-    "and review comments (submittal), plus metadata. Identify it by project + number.",
+    "and review comments (submittal), plus metadata. Identify it by project + number. For a project " +
+    "whose files live on the office network drive, `driveFiled` lists the item's folder(s) under CA on " +
+    "the drive with their files (open any with read_document).",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     type: z.enum(["rfi", "submittal"]).describe("Whether it's an RFI or a submittal"),
@@ -2649,6 +2734,24 @@ mcp.tool("read_rfi_submittal", {
           ...(linkedFrom.length ? { linkedFrom, linkedFromNote: LINKED_FROM_NOTE } : {}),
         };
       })(),
+      // Drive (1.18.0): the filed documents for this item under CA on the drive.
+      ...(await (async () => {
+        try {
+          const team = await teamWithShares(p?.projectNumber);
+          if (!team) return {};
+          const r = await azureCaItems(team, String(p.projectNumber).toLowerCase().trim(), type);
+          const keys = [String(item.number || ""), String(item.specSection || "")].filter((k) => k.trim().length >= 2);
+          const matched = r.items.filter((it) => keys.some((k) => folderMentionsNumber(it.name, k))).slice(0, 3);
+          if (matched.length) {
+            const driveFiled = [];
+            for (const it of matched) driveFiled.push({ ...driveCaItemRow(it), files: await driveCaItemFiles(it) });
+            return { driveFiled };
+          }
+          if (r.items.length) return { driveNote: `${r.items.length} ${type} folder(s) under CA on the drive, none named with "${item.number}". Browse with list_project_documents: ${r.caFolders.map((c) => c.folderId).join(", ")}.` };
+          if (r.caFolders.length) return { driveNote: `No ${type} folders under CA on the drive yet (${r.caFolders.map((c) => c.share + " " + c.sharePath).join("; ")}).` };
+          return {};
+        } catch (e) { return { driveNote: `Drive CA folders not read: ${String((e as any)?.message ?? e)}` }; }
+      })()),
     });
   },
 });
@@ -3891,6 +3994,30 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
   const shared = await treeFromDb(numPrefix);
   if (shared) { _treeCache.set(numPrefix, shared); return shared; }
 
+  // Drive-based project (1.17.2): the tree is a breadth-first walk of the
+  // project folder on each share that holds it, bounded like the SharePoint
+  // walk (AZ_WALK_MAX_LISTINGS listings, TREE_MAX_FILES files) and cached the
+  // same way, so find_document ranks the same TreeFile rows on either storage.
+  {
+    const team = await teamForProject(numPrefix);
+    const region = await siteForTeam(team);
+    if (region.kind !== "sharepoint" && team) {
+      const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
+      const files: TreeFile[] = []; const libraries: string[] = []; let truncated = false;
+      for (const h of hits) {
+        const r = await azureWalkFiles(h.ctx, h.folder, h.folder);
+        if (!r.started) continue;
+        libraries.push(h.ctx.label + ":");
+        for (const f of r.files) { if (files.length >= TREE_MAX_FILES) { truncated = true; break; } files.push(f); }
+        truncated = truncated || r.truncated;
+      }
+      const out = { at: Date.now(), files, libraries, truncated };
+      _treeCache.set(numPrefix, out);
+      await treeToDb(numPrefix, out);
+      return out;
+    }
+  }
+
   const drives = await siteDrives(await teamForProject(numPrefix));
   const files: any[] = [];
   const libraries: string[] = [];
@@ -4192,7 +4319,8 @@ mcp.tool("find_document", {
   description:
     "Find a project document by describing it in plain language, e.g. 'current phase 3 fire protection " +
     "narrative' or 'Bulletin 13 electrical drawings'. Returns ranked matches, each with its library, " +
-    "folder path, and a clickable webUrl. THIS IS THE FASTEST WAY to get to a specific document when you " +
+    "folder path, and a clickable webUrl (on a network-drive project: the drive letter and the UNC path, " +
+    "ranked on file and folder names). THIS IS THE FASTEST WAY to get to a specific document when you " +
     "know roughly what it is but not where it lives; use list_project_documents instead when you want to " +
     "browse a known folder, and read_document to open a result (pass the itemId returned here). " +
     "Ranking favours filename matches, the Outgoing folder (sets we issued), and recency. Each result " +
@@ -4217,9 +4345,9 @@ mcp.tool("find_document", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "list_project_documents can browse this region's share once its credentials are configured." });
-    }
+    // Drive-based projects (1.17.2) go through the same walk-and-rank path:
+    // projectTree has a drive branch, and the rows carry az: ids and UNC paths.
+    const onDrive = (await storageFor(project)).kind !== "sharepoint";
 
     let tree;
     try {
@@ -4227,7 +4355,7 @@ mcp.tool("find_document", {
     } catch (e) {
       return asText({
         project, query,
-        error: `Could not read this project's SharePoint folders: ${String((e as any)?.message ?? e)}`,
+        error: `Could not read this project's ${onDrive ? "drive" : "SharePoint"} folders: ${String((e as any)?.message ?? e)}`,
         nextStep: "This is a lookup failure, not an empty project. Retry, or browse with list_project_documents.",
       });
     }
@@ -4236,7 +4364,9 @@ mcp.tool("find_document", {
         project, query, count: 0, results: [],
         reason: tree.libraries.length
           ? `Found this project's folder in ${tree.libraries.join(", ")} but it contains no files.`
-          : "No folder for this project in any SharePoint library — it is most likely not provisioned yet.",
+          : onDrive
+            ? "No folder for this project on its region's drive shares (checked the share root, year and entity folders)."
+            : "No folder for this project in any SharePoint library — it is most likely not provisioned yet.",
         nextStep: "Confirm with list_project_documents. If the project is new, the folders may not exist yet.",
       });
     }
@@ -8792,7 +8922,9 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
   }
   // 3. Diff against the PMS (every project, archived included: an archived
   // job is still a record) and against what the queue already holds.
-  const pmsAll = (await getProjectsUnfiltered()).map((p) => ({ pid: String(p?.pid || ""), num: String(p?.projectNumber || "").toUpperCase().trim(), name: String(p?.name || "") })).filter((p) => p.num);
+  // getProjectsUnfiltered maps the row to { id, name, projectNumber, … } (id
+  // is the pms_projects.id the console links a candidate to).
+  const pmsAll = (await getProjectsUnfiltered()).map((p) => ({ pid: String(p?.id || ""), num: String(p?.projectNumber || "").toUpperCase().trim(), name: String(p?.name || "") })).filter((p) => p.num && p.pid);
   const known = new Set(pmsAll.map((p) => p.num));
   // A folder not in the PMS exactly may still BE a PMS project: the PMS
   // carries SAPQ226904.04.01 where the drive says SAPQ226904.04 (an extra

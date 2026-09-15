@@ -32883,6 +32883,11 @@ function renameCompanyAcrossProjects(oldName, newName) {
   const inRegion = p => filterRegion === "All" ? true
     : filterRegion === NO_REGION ? !(p.team || "").trim()
     : (p.team || "").toUpperCase().trim() === filterRegion;
+  // A remembered region whose last project was retagged or removed would
+  // otherwise filter everything out while the selector shows "All Regions".
+  useEffect(() => {
+    if (projects.length && filterRegion !== "All" && !regionOptions.includes(filterRegion)) setFilterRegion("All");
+  }, [projects.length, regionOptions, filterRegion]);
   const regionProjects = useMemo(() => filterRegion === "All" ? projects : projects.filter(inRegion), [projects, filterRegion]);
   const regionFilter = { value: filterRegion, options: regionOptions, onChange: setFilterRegion };
   const displayedProjects = useMemo(() => {

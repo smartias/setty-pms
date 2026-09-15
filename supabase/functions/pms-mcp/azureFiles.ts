@@ -330,6 +330,7 @@ const FOLDER_ALIASES: Record<string, string[]> = {
   pm: ["pm", "project management", "project mgmt"],
   reports: ["reports", "report", "narratives"],
   "qa-qc": ["qa-qc", "qaqc", "qa qc", "qa/qc", "qa"],
+  ca: ["ca", "construction administration", "construction admin", "constr admin"],
 };
 function norm(s: string): string { return String(s || "").toLowerCase().replace(/[_\s]+/g, " ").trim(); }
 // Which child folder a caller means by `wanted`: the exact name first, then
@@ -347,8 +348,39 @@ export function resolveChildFolder(entries: AzEntry[], wanted: string): string |
   const group = Object.values(FOLDER_ALIASES).find((g) => g.includes(w)) ?? [];
   const byAlias = folders.find((e) => group.includes(norm(standardFolderName(e.name))));
   if (byAlias) return byAlias.name;
-  const contains = folders.filter((e) => norm(standardFolderName(e.name)).includes(w));
+  // Contains-match on WORD boundaries: "ca" must not find "Load Forecasting"
+  // (it did, on a 2026 DC job with no CA folder yet).
+  const wordRe = new RegExp("(^|[^a-z0-9])" + w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "([^a-z0-9]|$)");
+  const contains = folders.filter((e) => wordRe.test(norm(standardFolderName(e.name))));
   return contains.length === 1 ? contains[0].name : null;
+}
+
+// ── Construction administration on a drive ──────────────────────────────────
+// Layout (NY N: and DC alike): <project>/70-<number>_CA/ holds numbered
+// subfolders ("8. RFIs", "9. Submittals", older jobs also a bare "RFI"); under
+// the RFI and submittal folders a folder per discipline (E, FA, FP, M, P,
+// Misc) and under those a folder per item. Some jobs skip the discipline
+// level, so a non-discipline folder directly under the kind folder is an item.
+// The kind word must END the name: "9. Submittals" is the folder, "4.
+// Submittal Schedule" and "Submittal Response.doc" are not.
+const CA_KIND_RE: Record<"rfi" | "submittal", RegExp> = { rfi: /(^|[^a-z])rfis?\s*$/i, submittal: /(^|[^a-z])submittals?\s*$/i };
+export function caKindFolders(entries: AzEntry[], kind: "rfi" | "submittal"): string[] {
+  return entries.filter((e) => e.type === "folder" && CA_KIND_RE[kind].test(e.name.replace(/^\d+[.)\-\s]+/, ""))).map((e) => e.name);
+}
+const DISCIPLINE_FOLDER_RE = /^(e|fa|fp|m|p|t|asc|misc|arch|s|c|gen|general)$/i;
+export function isDisciplineFolder(name: string): boolean { return DISCIPLINE_FOLDER_RE.test(String(name || "").trim()); }
+// Does an item folder's name carry this RFI / submittal number? Compared on
+// the alphanumerics only, and with leading zeros dropped from each numeric
+// run, so "RFI 004", "RFI-4" and "004_Duct sizes" all match number "004", and
+// "260513-001-0 VAV boxes" matches "260513-001-0".
+const alnum = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const dropZeros = (v: string) => v.replace(/\b0+(\d)/g, "$1");
+export function folderMentionsNumber(folderName: string, number: string): boolean {
+  const num = dropZeros(alnum(number)); if (!num || num.length < 1) return false;
+  const name = dropZeros(alnum(folderName));
+  const compact = num.replace(/\s+/g, "");
+  if (compact.length >= 3 && name.replace(/\s+/g, "").includes(compact)) return true;
+  return new RegExp("(^|\\s)" + num.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\s|$)").test(name);
 }
 
 export function extOf(name: string): string {

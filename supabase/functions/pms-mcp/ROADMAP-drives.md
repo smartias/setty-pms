@@ -47,7 +47,9 @@ Both storage accounts accept traffic from outside the corporate network
 | #264 | **Drive-based drawing index**: `search_drawings` indexes a drive project's Outgoing; `view_drawing`, `read_drawing_schedule`, `find_equipment`, `trace_references` work off it; `extract_sheet_index` and `get_current_set` compose the set from the index when there is no register | 1.16.0 |
 | #265 | **Transmittal register-only mode** for drive projects (`transmittal.html` v19); Codex fixes on #264 | 1.16.1 |
 | #265/#266 | **Drive discovery queue**: Admin console "Drive discovery" tab scans a share through the connector (`POST /admin/discover-projects`), lists project folders with no PMS record in `pms_project_candidates`, and creates the record (or dismisses the folder) on review. Names come from the `00-<number> <NAME>` folder; existing PMS names are never changed | 1.17.0 |
-| this PR | **Region filter** in the PMS app (list, Pipeline, Dashboard; `pms_projects_slim` carries `team`); discovery records the closest PMS record for near-miss numbers and offers **Link to it** | 1.17.1 |
+| #267/#268 | **Region filter** in the PMS app (list, Pipeline, Dashboard; `pms_projects_slim` carries `team`); discovery records the closest PMS record for near-miss numbers and offers **Link to it** | 1.17.1 |
+| #268 | **`find_document` on a drive**: `projectTree()` walks the project folder on the share; ranking, phase filter and supersession status unchanged | 1.17.2 |
+| #268 | **RFIs and submittals on a drive**: `read_rfi_submittal` returns the item's folder and files under `CA/8. RFIs` or `9. Submittals` (discipline folders in between), `search_rfis_submittals` lists CA item folders with no log entry (`driveOnly`); works on drive-only and drive-annex regions. `resolveChildFolder` contains-match is word-bounded ("CA" no longer finds "Load Forecasting") | 1.18.0 |
 | next | **Transmittal tool, register-only mode** (`transmittal.html` v19): a drive project's set is read off the mapped drive through the OS picker (names + title blocks), nothing is uploaded, the register row carries `files.driveFolder` instead of `sp_folder_url`; attachment is the only email delivery; `get_current_set` surfaces `driveFolder` | 1.16.1 |
 
 Verified end to end on 14 Sep: `list_project_documents` on SIPX262012.00
@@ -71,7 +73,12 @@ Regions tab.
   folders ranked by prefix match with the guessed year → the best entity's
   other years. Bounded, every listing cached 300 s.
 - **Subfolder names** (`resolveChildFolder`): exact → plain name behind the
-  DC prefix → alias group (Emails↔INCOMING, QA/QC↔QA-QC) → unique contains.
+  DC prefix → alias group (Emails↔INCOMING, QA/QC↔QA-QC, CA↔Construction
+  Administration) → unique word-bounded contains.
+- **CA on a drive** (`azureCaItems`): `CA` → folders ending in "RFIs" /
+  "Submittals" (plus a bare legacy "RFI") → discipline folders (E, FA, FP, M,
+  P, Misc; skipped when absent) → one folder per item, matched to the PMS
+  record by number or spec section in the folder name.
 - **Bytes** (`loadPdfBytes`): one loader for both storages, HEAD-then-GET on
   a share, size-capped, cached by id.
 - **Drawing index on a drive**: `azureDrawingScope` walks the resolved Outgoing
@@ -83,34 +90,15 @@ Regions tab.
 
 ## Not done yet, in the order I would do it
 
-1. **RFIs and submittals on a drive.** `search_rfis_submittals` /
-   `read_rfi_submittal` read the PMS ledger and SharePoint; on the drives the
-   record is the CA folder. Layout (Sara, 15 Sep, NY N: drive; DC matches):
-   `70-<number>_CA` → numbered subfolders (`1. CA Admin`, `2. Record (Bid)
-   Docs`, `3. Construction Schedule`, `4. Submittal Schedule`, `5. OAC Mtg
-   Minutes`, `6. Site Visit Reports`, `7. DWG Updates`, `8. RFIs`,
-   `9. Submittals`, `10. Post Design Changes`, `11. CA Project Closeout`,
-   `12. CA POST Construction Follow-up`; older projects also have a bare
-   `RFI` folder) → inside `8. RFIs` and `9. Submittals` a folder per
-   discipline (`E`, `FA`, `FP`, `M`, `P`, `Misc`) → a folder per submittal
-   or RFI. A drive branch would resolve `CA` by standard name (the
-   `NN-<number>_` prefix is already stripped), walk `9. Submittals/<disc>`
-   and `8. RFIs/<disc>`, and list each item folder as one submittal/RFI with
-   its files by `az:` id; `read_document` already opens them. Pairing with
-   the PMS ledger stays by number in the folder name.
-2. **`find_document` on a drive.** SharePoint's search index has no drive
-   equivalent; the replacement is a walk of the project tree ranking file
-   names against the description (`scoreDocument` is already pure and
-   reusable). `projectTree()` needs a drive branch like `subtreeFiles` got.
-3. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
+1. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
    `search_field_photos` cannot (sessions are app uploads to SharePoint).
-4. **Drop the legacy single-share columns** on `pms_regions`
+2. **Drop the legacy single-share columns** on `pms_regions`
    (`azure_share_url`, `azure_sas_env`) once every environment runs ≥ 1.15.0.
    The console still writes the first share into them for compatibility.
-5. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
+3. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
    a policy decision first (write-capable SAS widens what a leaked secret can
    do), then Azure Files `PUT`/create-directory in `azureFiles.ts`.
-6. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
+4. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
    Library before the first project is tagged BT.
 
 ## Known limits worth remembering
