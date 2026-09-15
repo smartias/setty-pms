@@ -23426,13 +23426,18 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   // the live-library lookup failed (transient network error). Surfaced as a
   // warning below rather than silently shipping an unverified scope.
   let primeKeysUnresolved = false;
+  // An unset Prime is an unknown role, not a confirmed subconsultant: warn below
+  // rather than silently filtering prime-only clauses out of the document.
+  const primeUnset = !String(project.prime || "").trim();
   // Stamped clauses keep their data-phase / data-discipline tags, so the
   // filters re-run at export time: turning a phase or discipline off AFTER
   // the scope was built still drops the tagged line items from the document.
   {
     const disc = scopeDisciplinesOf(project);
     const codes = activePhaseCodes(project);
-    const isPrime = isSettyFirm(project.prime || "");
+    // Only gate as a sub when the Prime is set and is not Setty; an unset Prime
+    // keeps everything (see primeUnset warning below).
+    const isPrime = primeUnset || isSettyFirm(project.prime);
     // Resolve stamped clause keys against the live library so whole prime-only
     // clauses drop on a sub's export even if their stored wrapper predates the tag.
     let primeKeys = null;
@@ -23545,6 +23550,9 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   }
   if (primeKeysUnresolved) {
     warnings.push("Could not reach the clause library to confirm prime-only clauses (Setty is a subconsultant here); re-run the export, and verify no prime-only exclusions (e.g. hazardous materials) remain in the scope");
+  }
+  if (primeUnset && /data-(prime-only|clause=)/.test(Object.values(secs).join(""))) {
+    warnings.push("Prime / contracting role is not set (Overview tab), so prime-only exclusions were left in; set the Prime so the sub/prime gate can confirm whether Setty is prime or a subconsultant");
   }
   return { ...built, fileBase, warnings };
 }
@@ -25165,8 +25173,10 @@ function ScopeView({ project, onChange, clients = [] }) {
   const discTokens = disciplineTokens(activeDisc);
   // Prime vs subconsultant, from the top-of-chain Prime field. Drives the
   // prime-only clause/line-item gate (hazmat surveys, permit applications):
-  // those belong to the prime, not to Setty when we are a sub.
-  const isSettyPrime = isSettyFirm(project.prime || "");
+  // those belong to the prime, not to Setty when we are a sub. An UNSET prime
+  // is an unknown role, not a confirmed sub, so it must not trigger the gate
+  // (which would silently hide/drop prime-only clauses); treat it as keep-all.
+  const isSettyPrime = !String(project.prime || "").trim() || isSettyFirm(project.prime);
   // "None selected" is a supported scope state (a job outside the standard
   // M/E/P/FP design disciplines). Tell the generator that explicitly rather
   // than defaulting to "MEP/FP", which would invite MEP/FP narrative the
