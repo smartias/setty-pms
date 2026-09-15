@@ -177,6 +177,9 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v25 (15 Sep 2026) — the legacy single-share columns on pms_regions
+// (azure_share_url, azure_sas_env) are gone; the Regions tab reads and saves
+// drives through pms_region_shares only.
 // v24 (15 Sep 2026, later) — "What works where" and the Claude/MCP tab brought
 // current with connector 1.17.1: drawing tools work on drives (1.16.0), the
 // transmittal tool's register-only mode, drive discovery, 43 tools, and the
@@ -955,7 +958,7 @@ async function renderFiling() {
 // as-is and the connector resolves it server-side. SAS tokens for
 // azure_files regions NEVER go through this page — the form stores only the
 // NAME of the Edge Function secret that holds the token.
-const REGION_FIELDS = "team,region_name,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env,enabled,notes,updated_at";
+const REGION_FIELDS = "team,region_name,sharepoint_site_id,doc_library,storage_kind,enabled,notes,updated_at";
 const SHARE_FIELDS = "id,team,label,share_url,sas_env,enabled,sort_order,notes";
 function regionBlank() {
   return { team: "", region_name: "", sharepoint_site_id: "", doc_library: "Project Document Library",
@@ -1252,16 +1255,11 @@ async function saveRegion() {
     sas_env: String(s.sas_env || "").trim(), enabled: s.enabled !== false, sort_order: i,
     notes: s.notes || null, updated_at: new Date().toISOString(),
   }));
-  // The legacy single-share columns are derived inside pms_region_save from
-  // the first enabled share; sent here too so the payload reads as the row.
-  const first = shares.find((s) => s.enabled) || null;
   const row = {
     team, region_name: String(ed.region_name || team).trim(),
     sharepoint_site_id: siteRef,
     doc_library: String(ed.doc_library || "Project Document Library").trim(),
     storage_kind: ed.storage_kind === "azure_files" ? "azure_files" : "sharepoint",
-    azure_share_url: first ? first.share_url : null,
-    azure_sas_env: first ? first.sas_env : null,
     notes: String(ed.notes || "").trim() || null,
     enabled: !!ed.enabled, updated_at: new Date().toISOString(),
   };
@@ -1269,7 +1267,7 @@ async function saveRegion() {
     // One transaction (pms_region_save, Codex P1 on #261): the region upsert
     // and the share-set replacement land together or not at all — a dropped
     // connection can no longer erase the old shares before the new ones
-    // arrive. The function also writes the legacy single-share columns.
+    // arrive. (The legacy single-share columns were dropped in 1.18.1.)
     await sb("POST", "/rest/v1/rpc/pms_region_save", { p_region: row, p_shares: shares });
     toast("Region " + team + " saved (" + shares.length + " drive share" + (shares.length === 1 ? "" : "s") + ")" + (siteRef !== ed.sharepoint_site_id ? " — site URL resolved to its Graph id" : "") + ". The connector picks it up within ~5 minutes.", "success");
     state.regions = null; state.regionEdit = null; render();

@@ -3,8 +3,8 @@
 //
 // The firm runs hybrid: office network drives are synced into Azure Files
 // shares (Nikhil's mapping) while project records migrate into SharePoint
-// region by region. A region row in pms_regions may carry an azure_share_url
-// (the share, optionally with a folder prefix) and azure_sas_env, the NAME of
+// region by region. A region's pms_region_shares rows carry a share_url
+// (the share, optionally with a folder prefix) and sas_env, the NAME of
 // the Edge Function secret holding a read-only SAS for it. This module turns
 // that pair into two capabilities and nothing more:
 //

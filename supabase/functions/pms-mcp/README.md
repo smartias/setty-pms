@@ -394,7 +394,7 @@ is the provider, in `azureFiles.ts`:
   first share (the 1.14.0 form).
 - `read_document` accepts `az:` ids: HEAD for size, GET for bytes, then the
   same extractors as SharePoint content.
-- The SAS is read from `Deno.env.get(azure_sas_env)` and nowhere else. Missing
+- The SAS is read from `Deno.env.get(<share row's sas_env>)` and nowhere else. Missing
   secret, malformed share URL, expired token, and a storage-account firewall
   each produce a distinct, actionable error rather than a generic failure.
 - The share root listing is cached per region for 300s, like the region map.
