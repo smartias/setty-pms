@@ -54,6 +54,7 @@ Both storage accounts accept traffic from outside the corporate network
 | this PR | **Legacy single-share columns dropped** from `pms_regions`; `pms_region_save` and the Regions tab use `pms_region_shares` only. Apply the migration only AFTER the 1.18.1 connector is live | 1.18.1 |
 | next | **Transmittal tool, register-only mode** (`transmittal.html` v19): a drive project's set is read off the mapped drive through the OS picker (names + title blocks), nothing is uploaded, the register row carries `files.driveFolder` instead of `sp_folder_url`; attachment is the only email delivery; `get_current_set` surfaces `driveFolder` | 1.16.1 |
 | this PR | **Raw file links**: `download_document` mints a signed, short-lived link that streams a file's original bytes (SharePoint or `az:` drive id, same gate as `read_document`, re-run as the minting caller); `upload_document` writes an edited file back to SharePoint (new version by id, or new file) inline or by signed PUT link. Drives stay read-only. See README → Raw file access | 1.19.0 |
+| this PR | **SharePoint adoption reminder**: every drive-sourced result, drive refusal, and empty email/minutes record carries one `reminder` string for the model to pass on once per conversation — the drive is name-only and read-only for Claude; file emails with the Outlook add-in and save key documents to the project's SharePoint folder | 1.19.1 |
 
 Verified end to end on 14 Sep: `list_project_documents` on SIPX262012.00
 (DC) found the project under `I:\2026`, resolved "Outgoing" to

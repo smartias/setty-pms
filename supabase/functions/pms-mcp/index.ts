@@ -651,6 +651,19 @@ async function regionMap(): Promise<Map<string, RegionSite>> {
   _regions = { at: Date.now(), map };
   return map;
 }
+// Adoption nudge (Sara, 2026-09-15). The office drive is a name-only,
+// read-only window for Claude: no full-text search, no emails, no photos, no
+// filing, nothing written back. Everything the connector does well needs the
+// record in SharePoint, and people will only move when they feel that at the
+// moment it costs them. So a result that came off a drive, or a project with
+// nothing filed, carries this reminder for the person. It is written to be
+// relayed, and paced by the model (once per conversation), not repeated on
+// every call. One string, so every tool says the same thing.
+const SHAREPOINT_NUDGE =
+  "Pass this on to the person once per conversation: the office drive is a limited, read-only view for Claude — " +
+  "files are found by name only, emails kept there are invisible, and nothing can be filed or written back. " +
+  "Filing project emails with the Setty PMS Outlook add-in and saving minutes, comment logs, narratives and other " +
+  "key documents to the project's SharePoint folder makes them searchable, readable in full and editable here.";
 // The honest refusal for capabilities Azure Files storage cannot provide.
 // One place, so every tool says the same true thing.
 const AZURE_LIMITED_NOTE =
@@ -1053,9 +1066,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-raw-file-links";
+const BUILD = "2026-09-15-sharepoint-nudge";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.19.0",
+  name: "setty-pms", version: "1.19.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -2293,6 +2306,9 @@ mcp.tool("project_briefing", {
       ...(related ? { relatedProjects: related } : {}),
       construction,
       meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
+      // A briefing with no minutes or no emails to draw on is the moment the
+      // gap is felt: say where the record should live.
+      ...(!docs.items.length || !mail.length ? { reminder: SHAREPOINT_NUDGE } : {}),
       reviewComments: mail.filter((m: any) => m.reviewComments.length),
       recentEmails: mail.slice(0, 10).map((m: any) =>
         ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),
@@ -2413,6 +2429,10 @@ mcp.tool("search_emails", {
     }
     return asText({
       count: rows.length,
+      ...(!rows.length && projectNumber ? {
+        note: "No filed emails matched. This log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
+        reminder: SHAREPOINT_NUDGE,
+      } : {}),
       emails: rows.map((r: any) => ({
         recordId: r.record_id, project: r.project_id, date: r.email_date, direction: r.direction,
         from: r.from_name || r.from_address, to: r.to_addresses, subject: r.subject, preview: r.preview,
@@ -2460,6 +2480,10 @@ mcp.tool("summarize_project_emails", {
     );
     return asText({
       project: projectNumber, returned: rows.length,
+      ...(!rows.length ? {
+        note: "No emails are filed for this project. The log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
+        reminder: SHAREPOINT_NUDGE,
+      } : {}),
       emails: rows.map((r: any) => ({
         date: r.email_date, direction: r.direction, from: r.from_name || r.from_address, to: r.to_addresses,
         subject: r.subject, hasAttachments: r.has_attachments, attachments: r.attachment_names, body: emailBody(r),
@@ -3621,7 +3645,7 @@ mcp.tool("list_project_documents", {
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
-        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, await azureResolveSubfolder(az.ctx, dec.relPath, relIn))) }); }
+        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, await azureResolveSubfolder(az.ctx, dec.relPath, relIn))), reminder: SHAREPOINT_NUDGE }); }
         catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
       }
       const team = await teamForProject(projectNumber);
@@ -3630,7 +3654,7 @@ mcp.tool("list_project_documents", {
       // project folder at the share root by number and list it.
       if (region.kind !== "sharepoint") {
         const num = String(projectNumber || "").toLowerCase().trim();
-        if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE });
+        if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE });
         const t = String(team || "").toUpperCase().trim();
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
@@ -3643,12 +3667,13 @@ mcp.tool("list_project_documents", {
             error: allFailed ? problems.join(" | ") : `No folder starting with "${projectNumber}" at the root of region ${t}'s drive share${labels.length === 1 ? "" : "s"} (${labels.join(", ")}).`,
             ...(problems.length && !allFailed ? { problems } : {}),
             nextStep: allFailed ? "Fix the share credentials in Admin → Regions / Edge Function secrets." : "Confirm the number with search_projects; the project folder must sit at a registered share's root, named by number.",
-            note: AZURE_LIMITED_NOTE });
+            note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE });
         }
         const [first, ...others] = hits;
         try {
           return asText({ project: projectNumber, projectFolder: first.folder,
             ...(await azureListing(first.ctx, await azureResolveSubfolder(first.ctx, first.folder, relIn))),
+            reminder: SHAREPOINT_NUDGE,
             ...(others.length ? { alsoOn: others.map(azureFolderPointer), alsoOnNote: "This project also has a folder on the region's other drive(s); pass one of these folderIds to browse it." } : {}),
             ...(problems.length ? { problems } : {}) });
         } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: t, share: first.ctx.label }); }
@@ -3722,6 +3747,7 @@ mcp.tool("list_project_documents", {
         availableLibraries: drives.map((d) => d.name), librariesWithProject: found.map((f) => f.name),
         count: items.length, items,
         ...(annex ? { driveAnnex: annex } : {}),
+        ...(annex && (annex as any).available ? { reminder: SHAREPOINT_NUDGE } : {}),
         ...(annex && (annex as any).available && !items.length
           ? { note: "Nothing for this project in SharePoint yet, but its legacy folder exists on the office drive — browse a folderId from driveAnnex.folders." } : {}),
         ...(partialLibs.length ? { truncated: true, coverageWarning: `Listing stopped at ${MAX_FOLDER_PAGES * 200} entries in ${partialLibs.join(", ")}. Treat it as a PARTIAL listing — open a subfolder to narrow it.` } : {}),
@@ -3775,7 +3801,7 @@ mcp.tool("read_document", {
         const az = await azureCtxForTeam(dec.team, dec.label);
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         name = dec.relPath.split("/").pop() || "";
-        base = { itemId, name, storage: "azure_files", region: dec.team, share: az.ctx.label, sharePath: sharePathOf(az.ctx.share, dec.relPath) };
+        base = { itemId, name, storage: "azure_files", region: dec.team, share: az.ctx.label, sharePath: sharePathOf(az.ctx.share, dec.relPath), reminder: SHAREPOINT_NUDGE };
         try {
           const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
           base.size = props.size; base.modified = props.modified;
@@ -4118,7 +4144,7 @@ mcp.tool("upload_document", {
       return asText({ error: "Writing a file needs a signed-in Setty user behind it — the shared-secret lane cannot upload.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
     }
     if (isAzId(itemId)) {
-      return asText({ error: "Drives are read-only to Claude (the share tokens are read-only by policy), so this file cannot be written back.", nextStep: "Hand the edited file to the person to save on the drive, or save it under the project's SharePoint record if it has one." });
+      return asText({ error: "Drives are read-only to Claude (the share tokens are read-only by policy), so this file cannot be written back.", nextStep: "Hand the edited file to the person to save on the drive, or save it under the project's SharePoint record if it has one.", reminder: SHAREPOINT_NUDGE });
     }
     let target: FileMeta;
     try {
@@ -4793,6 +4819,7 @@ mcp.tool("find_document", {
       statusCounts: counts,
       statusNote,
       ...(tree.truncated ? { coverageWarning: `The folder walk hit its cap after ${tree.files.length} files, so results may be incomplete.` } : {}),
+      ...(onDrive ? { reminder: SHAREPOINT_NUDGE } : {}),
     });
   },
 });
@@ -5181,7 +5208,7 @@ mcp.tool("prepare_transmittal", {
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
     if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site." });
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site.", reminder: SHAREPOINT_NUDGE });
     }
 
     let rows: any[] = [];
@@ -8230,7 +8257,7 @@ mcp.tool("file_qa_report", {
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
     if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint." });
+      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint.", reminder: SHAREPOINT_NUDGE });
     }
     const day = (date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) ? date.trim() : new Date().toISOString().slice(0, 10);
     const clean = (s: string) => s.replace(/[\\/:*?"<>|#%]/g, "-").replace(/\s+/g, " ").trim();

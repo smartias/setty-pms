@@ -432,6 +432,22 @@ is the provider, in `azureFiles.ts`:
   project's own team, and `projectRefVisible` for the caller; otherwise the
   HIDE not-found shape. The share root is never listed for a caller.
 
+**Adoption reminder (1.19.1).** The drive is a name-only, read-only window,
+and people move to SharePoint when they feel that at the moment it costs them.
+So one string, `SHAREPOINT_NUDGE`, rides as `reminder` on every result that
+came off a drive (`list_project_documents` listings and drive refusals, a
+SharePoint project's drive annex, `read_document` on an `az:` id,
+`find_document` on a drive project), on the SharePoint-only writes when they
+are refused on a drive (`prepare_transmittal`, `file_qa_report`,
+`upload_document`), and on the moments the record is simply empty
+(`search_emails` / `summarize_project_emails` with nothing filed, a
+`project_briefing` with no minutes or no emails). It tells the model to pass
+on, once per conversation, that the drive is limited and that filing emails
+with the Setty PMS Outlook add-in and saving minutes, comment logs and
+narratives to the project's SharePoint folder makes them searchable, readable
+in full and editable. Successful SharePoint paths never carry it.
+`sharePointNudge.test.mjs` pins the text and the sites.
+
 Gotchas: the storage account must allow traffic from outside the tenant
 (Supabase's egress is not on the corporate network), the SAS needs `r` and
 `l` on the share (account SAS: service `f`, resource types `sco`), and the
