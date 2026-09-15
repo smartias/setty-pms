@@ -23429,8 +23429,12 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
     const disc = scopeDisciplinesOf(project);
     const codes = activePhaseCodes(project);
     const isPrime = isSettyFirm(project.prime || "");
+    // Resolve stamped clause keys against the live library so whole prime-only
+    // clauses drop on a sub's export even if their stored wrapper predates the tag.
+    if (!isPrime) await ensureClauseParams();
+    const primeKeys = isPrime ? null : primeOnlyClauseKeys();
     Object.keys(secs).forEach(k => {
-      secs[k] = filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(filterClauseHtmlByPrime(secs[k], isPrime), disc), codes);
+      secs[k] = filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(filterClauseHtmlByPrime(secs[k], isPrime, primeKeys), disc), codes);
     });
   }
   const fields = proposalDocxFields(project);
@@ -24150,6 +24154,29 @@ async function ensureTermsDefault() {
   } catch (_) { /* fallback constant stays in force */ }
   return termsDefaultHtml();
 }
+// Approved clause params, keyed by clause_key, cached at library load. The
+// export path resolves a stamped clause's data-clause key back to its live
+// metadata, so a whole prime-only clause is dropped on a subconsultant export
+// even when its stored wrapper predates the primeOnly tag (inserted before the
+// tag existed, or before this build stamped data-prime-only at insert time).
+let _clauseParamsByKey = null;
+function rememberClauseLibrary(rows) {
+  const map = {};
+  (rows || []).forEach(c => { if (c && c.clause_key) map[c.clause_key] = c.params || {}; });
+  _clauseParamsByKey = map;
+}
+async function ensureClauseParams() {
+  if (_clauseParamsByKey) return _clauseParamsByKey;
+  try {
+    const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,params");
+    rememberClauseLibrary(rows);
+  } catch (_) { _clauseParamsByKey = {}; }
+  return _clauseParamsByKey;
+}
+function primeOnlyClauseKeys() {
+  const m = _clauseParamsByKey || {};
+  return new Set(Object.keys(m).filter(k => m[k] && m[k].primeOnly));
+}
 
 function printTermsAndConditions(project) {
   if (proposalThemeIsClassic(project)) return printTermsAndConditionsClassic(project);
@@ -24861,16 +24888,26 @@ function filterClauseHtmlByPhase(html, codes) {
   }
 }
 
-// Drop <li data-prime-only> line items when Setty is a subconsultant, not the
-// prime, and any list left empty by that. Mirrors the discipline/phase filters:
-// a single exclusion menu can carry the prime-only items (hazmat, permit
-// applications) inline and shed them on a sub's proposal.
-function filterClauseHtmlByPrime(html, isPrime) {
+// Drop prime-only content when Setty is a subconsultant, not the prime, and any
+// list left empty by that. Two ways in: <li data-prime-only> line items (a
+// single exclusion menu carries hazmat/permit-application items inline and sheds
+// them on a sub's proposal), and whole stamped clauses whose data-clause key is
+// in primeOnlyKeys. The key set is resolved against the LIVE library at export,
+// so a whole prime-only clause is dropped even when its stored wrapper predates
+// the tag and never received data-prime-only at insert time.
+function filterClauseHtmlByPrime(html, isPrime, primeOnlyKeys) {
   const s = String(html || "");
-  if (isPrime || !/data-prime-only/.test(s)) return s;
+  if (isPrime) return s;
+  const keys = (primeOnlyKeys && primeOnlyKeys.size) ? primeOnlyKeys : null;
+  if (!/data-prime-only/.test(s) && !(keys && /data-clause=/.test(s))) return s;
   try {
     const doc = new DOMParser().parseFromString(s, "text/html");
     doc.body.querySelectorAll("[data-prime-only]").forEach(el => el.remove());
+    if (keys) {
+      doc.body.querySelectorAll("[data-clause]").forEach(el => {
+        if (keys.has(el.getAttribute("data-clause"))) el.remove();
+      });
+    }
     doc.body.querySelectorAll("ul,ol").forEach(l => { if (!l.children.length) l.remove(); });
     return doc.body.innerHTML;
   } catch (_) {
@@ -25075,6 +25112,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     // The terms ride along in the same read; the T&C default is assembled
     // from them, so the print/preview/editor paths get library wording.
     rememberTermsLibrary(rows);
+    rememberClauseLibrary(rows);
     setClauseLib(rows || []);
     return rows || [];
   }
