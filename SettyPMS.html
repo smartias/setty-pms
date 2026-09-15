@@ -23498,13 +23498,24 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
       warnings.push("Alternate " + JSON.stringify(String(a.name || "(unnamed)")) + " has no fee — it will print as priced upon request (set the fee in the Alternates panel)");
     }
   });
+  // Every client-facing text block that lands in the Word document: the scope
+  // boxes, plus each named alternate's scope and pricing note (both render under
+  // the fee table). The leftover-discipline and wrong-entity scans below run
+  // over all of them, so a stray mention in an alternate is caught too.
+  const clientText = [];
+  SCOPE_SECTIONS.forEach(s => { if (!s.internal) clientText.push({ label: s.label, text: scopeHtmlToText(secs[s.key] || "") }); });
+  projAlts.forEach(a => {
+    clientText.push({
+      label: "Alternate " + JSON.stringify(String(a.name || "(unnamed)")),
+      text: scopeHtmlToText(a.scope || "") + " " + String(a.pricingNote || ""),
+    });
+  });
   if (offWords.length) {
-    SCOPE_SECTIONS.forEach(s => {
-      if (s.internal) return;
-      const text = scopeHtmlToText(secs[s.key] || "").toLowerCase();
+    clientText.forEach(({ label, text }) => {
+      const lower = text.toLowerCase();
       offWords.forEach(w => {
-        const n = text.split(w.toLowerCase()).length - 1;
-        if (n) warnings.push(s.label + " still mentions “" + w + "” " + (n > 1 ? n + " times" : "once") + " (switched off for this proposal)");
+        const n = lower.split(w.toLowerCase()).length - 1;
+        if (n) warnings.push(label + " still mentions “" + w + "” " + (n > 1 ? n + " times" : "once") + " (switched off for this proposal)");
       });
     });
   }
@@ -23512,10 +23523,9 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   // entity comes from project.proposalEntity, but hand- or AI-written prose can
   // name the wrong one; flag it so a NY/VA proposal never says "International".
   if ((project.proposalEntity || "sa-ny") !== "sai-dc") {
-    SCOPE_SECTIONS.forEach(s => {
-      if (s.internal) return;
-      if (/setty\s*&\s*associates\s+international/i.test(scopeHtmlToText(secs[s.key] || ""))) {
-        warnings.push(s.label + " names “Setty & Associates International” (the DC entity); this proposal's entity is " + proposalEntity(project).legalName + "; refer to the firm as “Setty”");
+    clientText.forEach(({ label, text }) => {
+      if (/setty\s*&\s*associates\s+international/i.test(text)) {
+        warnings.push(label + " names “Setty & Associates International” (the DC entity); this proposal's entity is " + proposalEntity(project).legalName + "; refer to the firm as “Setty”");
       }
     });
   }
@@ -25139,8 +25149,12 @@ function ScopeView({ project, onChange, clients = [] }) {
   // Wraps a filled clause in a div stamped with its key + library version, so
   // the finalize snapshot can enumerate exactly which governed clauses (at
   // which version) are in the document. contenteditable keeps the attributes.
+  // A whole prime-only clause carries data-prime-only on the wrapper so the
+  // export re-filter can drop it if the project flips to a subconsultant after
+  // the scope was built (the clause body alone has no marker to match on).
   function stampClause(clause, values) {
-    return '<div data-clause="' + clause.clause_key + '" data-clause-v="' + (clause.version || 1) + '">'
+    const primeAttr = (clause.params && clause.params.primeOnly) ? " data-prime-only" : "";
+    return '<div data-clause="' + clause.clause_key + '" data-clause-v="' + (clause.version || 1) + '"' + primeAttr + ">"
       + substituteClauseTokens(clause, values) + "</div>";
   }
 
