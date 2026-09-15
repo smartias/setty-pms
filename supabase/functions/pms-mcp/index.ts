@@ -588,7 +588,7 @@ async function graphGet(path: string): Promise<any> {
 // storage_kind is the SEAM between tools and storage (slice A, 2026-09-06):
 // 'sharepoint' regions get every file capability through Graph as always;
 // 'azure_files' regions (shares synced into Azure Files, read via a SAS
-// token named by azure_sas_env — the secret itself lives in the function's
+// token named by the share row's sas_env — the secret itself lives in the function's
 // env, never the database) are the browse-and-read bridge for the firm's
 // current hybrid: people still save to network drives while migration to
 // SharePoint happens region by region. Tools that need search, thumbnails,
@@ -616,22 +616,23 @@ async function regionMap(): Promise<Map<string, RegionSite>> {
   if (_regions && (Date.now() - _regions.at) < 300000) return _regions.map;
   const map = new Map<string, RegionSite>();
   try {
-    const rows = await sbGet("pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env&enabled=eq.true");
+    const rows = await sbGet("pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind&enabled=eq.true");
+    // A region's drives live in pms_region_shares (1.15.0+); the single-share
+    // columns on pms_regions were dropped in 1.18.1. A failed share read is
+    // logged and leaves every region without drives for this 300 s window
+    // rather than taking region routing down with it.
     let shareRows: any[] = [];
     try {
       const sr = await sbGet("pms_region_shares?select=team,label,share_url,sas_env,sort_order&enabled=eq.true&order=sort_order.asc,label.asc");
       shareRows = Array.isArray(sr) ? sr : [];
-    } catch { shareRows = []; /* table not there yet: the legacy columns carry the one share */ }
+    } catch (e) { shareRows = []; console.warn("[regions] share rows not read:", String((e as any)?.message ?? e)); }
     for (const r of (Array.isArray(rows) ? rows : [])) {
       if (r?.team && r?.sharepoint_site_id) {
         const team = String(r.team).toUpperCase().trim();
-        let shares: AzureShareRef[] = shareRows
+        const shares: AzureShareRef[] = shareRows
           .filter((s) => String(s?.team || "").toUpperCase().trim() === team && s?.label && s?.share_url)
           .map((s) => ({ label: shareLabelClean(s.label), url: String(s.share_url), sasEnv: s.sas_env ? String(s.sas_env) : null }))
           .filter((s) => s.label);
-        if (!shares.length && r.azure_share_url) {
-          shares = [{ label: "DRIVE", url: String(r.azure_share_url), sasEnv: r.azure_sas_env ? String(r.azure_sas_env) : null }];
-        }
         map.set(team, {
           siteId: String(r.sharepoint_site_id),
           docLibrary: String(r.doc_library || DOC_LIBRARY),
@@ -671,7 +672,7 @@ async function teamForProject(projectNumber: string | null | undefined): Promise
 }
 
 // ── Slice B: a region's drive share, resolved to something readable ─────────
-// The row names the share (azure_share_url) and the SECRET (azure_sas_env)
+// The share row names the share (share_url) and the SECRET (sas_env)
 // that holds its read-only SAS; the token is read from the function's env
 // here and nowhere else. Every failure is spelled out in terms of what the
 // admin can fix, because "not configured" was the whole of slice A's answer.
@@ -1046,9 +1047,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-ca-on-drives";
+const BUILD = "2026-09-15-drop-legacy-share-columns";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.18.0",
+  name: "setty-pms", version: "1.18.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });

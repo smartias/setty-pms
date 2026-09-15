@@ -17,6 +17,7 @@ tab (`SettyAdmin.html`):
 
 - `pms_regions` — one row per PMS **team code** (NY, DC, BT): the SharePoint
   site, document library, and `storage_kind` (`sharepoint` or `azure_files`).
+  (The single-share columns it once carried were dropped in 1.18.1.)
 - `pms_region_shares` — one row per drive a region's projects live on:
   `label` (I, W, N, SAOP), `share_url`, `sas_env` (the NAME of the Edge
   Function secret holding that share's SAS). Saves go through
@@ -50,6 +51,7 @@ Both storage accounts accept traffic from outside the corporate network
 | #267/#268 | **Region filter** in the PMS app (list, Pipeline, Dashboard; `pms_projects_slim` carries `team`); discovery records the closest PMS record for near-miss numbers and offers **Link to it** | 1.17.1 |
 | #268 | **`find_document` on a drive**: `projectTree()` walks the project folder on the share; ranking, phase filter and supersession status unchanged | 1.17.2 |
 | #268 | **RFIs and submittals on a drive**: `read_rfi_submittal` returns the item's folder and files under `CA/8. RFIs` or `9. Submittals` (discipline folders in between), `search_rfis_submittals` lists CA item folders with no log entry (`driveOnly`); works on drive-only and drive-annex regions. `resolveChildFolder` contains-match is word-bounded ("CA" no longer finds "Load Forecasting") | 1.18.0 |
+| this PR | **Legacy single-share columns dropped** from `pms_regions`; `pms_region_save` and the Regions tab use `pms_region_shares` only. Apply the migration only AFTER the 1.18.1 connector is live | 1.18.1 |
 | next | **Transmittal tool, register-only mode** (`transmittal.html` v19): a drive project's set is read off the mapped drive through the OS picker (names + title blocks), nothing is uploaded, the register row carries `files.driveFolder` instead of `sp_folder_url`; attachment is the only email delivery; `get_current_set` surfaces `driveFolder` | 1.16.1 |
 
 Verified end to end on 14 Sep: `list_project_documents` on SIPX262012.00
@@ -92,13 +94,10 @@ Regions tab.
 
 1. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
    `search_field_photos` cannot (sessions are app uploads to SharePoint).
-2. **Drop the legacy single-share columns** on `pms_regions`
-   (`azure_share_url`, `azure_sas_env`) once every environment runs ≥ 1.15.0.
-   The console still writes the first share into them for compatibility.
-3. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
+2. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
    a policy decision first (write-capable SAS widens what a leaked secret can
    do), then Azure Files `PUT`/create-directory in `azureFiles.ts`.
-4. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
+3. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
    Library before the first project is tagged BT.
 
 ## Known limits worth remembering

@@ -87,8 +87,9 @@ check(siteUrlToGraphPath("") === null, "empty ref is not a URL");
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (needle, label, times = 1) => check((shipped.split(needle).length - 1) >= times, `${label} has DRIFTED from this test's copy`);
-has('"pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind,azure_share_url,azure_sas_env&enabled=eq.true"',
-  "region rows query (enabled only, storage seam columns)");
+has('"pms_regions?select=team,sharepoint_site_id,doc_library,storage_kind&enabled=eq.true"',
+  "region rows query (enabled only; the legacy single-share columns are gone since 1.18.1)");
+check(!/azure_share_url|azure_sas_env/.test(shipped), "nothing in the connector still names the dropped single-share columns");
 // Storage seam (slice A): 'azure_files' regions are gated to browse/read
 // semantics, the gates sit AFTER project resolution (HIDE must win), and the
 // refusal text is one shared constant so every tool says the same true thing.
@@ -116,7 +117,7 @@ has("sasEnv: s.sas_env ? String(s.sas_env) : null }))",
 // the legacy single-share columns only serve a team the table has no rows
 // for, so an older row keeps working until it is migrated.
 has('"pms_region_shares?select=team,label,share_url,sas_env,sort_order&enabled=eq.true&order=sort_order.asc,label.asc"', "region shares query (enabled, ordered)");
-has('shares = [{ label: "DRIVE", url: String(r.azure_share_url), sasEnv: r.azure_sas_env ? String(r.azure_sas_env) : null }];', "legacy single-share columns are the fallback, not a second source");
+has('console.warn("[regions] share rows not read:"', "a failed share read is logged, not fatal to region routing");
 has("async function azureCtxForTeam(team: string | null | undefined, label?: string | null): Promise<AzureResolve> {", "a share is resolved by team + label");
 has("const az = await azureCtxForTeam(dec.team, dec.label);", "both az: entry points resolve the share the id names", 2);
 has("const { hits, problems, labels } = await azureProjectHits(t, num);", "azure-only listing and the hybrid annex search EVERY share of the region", 2);
