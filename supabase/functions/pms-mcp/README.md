@@ -566,6 +566,11 @@ pins the wiring in `index.ts`.
 
 ## Deploying
 
+One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD
+constant, deploys, and polls `/health` until that build answers (see the header
+of the script). A pending deploy, when there is one, is described in
+`DEPLOY-NEXT.md` beside it. The manual steps follow.
+
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
 
 ```powershell
