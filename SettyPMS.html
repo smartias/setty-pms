@@ -23437,7 +23437,8 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
     // clauses drop on a sub's export even if their stored wrapper predates the tag.
     let primeKeys = null;
     if (!isPrime) {
-      const params = await ensureClauseParams();
+      // Refresh on a sub export so a primeOnly tag changed mid-session is seen.
+      const params = await ensureClauseParams(true);
       if (params) primeKeys = primeOnlyClauseKeys();
       else if (/data-clause=/.test(Object.values(secs).join(""))) primeKeysUnresolved = true;
     }
@@ -23519,7 +23520,8 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   projAlts.forEach(a => {
     clientText.push({
       label: "Alternate " + JSON.stringify(String(a.name || "(unnamed)")),
-      text: scopeHtmlToText(a.scope || "") + " " + String(a.pricingNote || ""),
+      // The alternate name also renders in the document, so scan it too.
+      text: String(a.name || "") + " " + scopeHtmlToText(a.scope || "") + " " + String(a.pricingNote || ""),
     });
   });
   if (offWords.length) {
@@ -24176,15 +24178,18 @@ function rememberClauseLibrary(rows) {
   (rows || []).forEach(c => { if (c && c.clause_key) map[c.clause_key] = c.params || {}; });
   _clauseParamsByKey = map;
 }
-async function ensureClauseParams() {
-  if (_clauseParamsByKey) return _clauseParamsByKey;
+// forceRefresh bypasses the session cache. A subconsultant export passes it so
+// a primeOnly tag an administrator added mid-session is seen; a stale cache
+// could otherwise let a legacy data-clause wrapper survive the export.
+async function ensureClauseParams(forceRefresh) {
+  if (_clauseParamsByKey && !forceRefresh) return _clauseParamsByKey;
   try {
     const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,params");
     rememberClauseLibrary(rows); // sets the cache to a real map (possibly empty, a valid result)
     return _clauseParamsByKey;
   } catch (_) {
-    // Leave the cache null so a later export retries instead of treating a
-    // transient failure as an authoritative empty library.
+    // Return null so the caller treats keys as unresolved (retry / warn) rather
+    // than trusting a transient failure or a now-stale cache.
     return null;
   }
 }
