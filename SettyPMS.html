@@ -25096,6 +25096,11 @@ function ScopeView({ project, onChange, clients = [] }) {
   // prime-only clause/line-item gate (hazmat surveys, permit applications):
   // those belong to the prime, not to Setty when we are a sub.
   const isSettyPrime = isSettyFirm(project.prime || "");
+  // "None selected" is a supported scope state (a job outside the standard
+  // M/E/P/FP design disciplines). Tell the generator that explicitly rather
+  // than defaulting to "MEP/FP", which would invite MEP/FP narrative the
+  // import filter cannot strip.
+  const NO_DISC_NOTE = "none selected (name only the disciplines the RFP calls for; do not assume MEP/FP)";
   // Standard/Alternate provision choices, per project (see variantPairs).
   // What is in force: hand choices, with driven pairs (Fee Structure follows
   // feeType) laid over the top. Everything downstream reads THIS, never the
@@ -25356,7 +25361,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (project.prime && project.prime !== project.clientName) facts.push("- Prime / architect: " + project.prime);
     if (project.owner) facts.push("- Owner / agency: " + project.owner);
     if (project.projectAddress) facts.push("- Location: " + project.projectAddress);
-    facts.push("- Disciplines in this proposal: " + (discOn.join(", ") || "MEP/FP"));
+    facts.push("- Disciplines in this proposal: " + (discOn.join(", ") || NO_DISC_NOTE));
     facts.push("- Setty's role: " + (isSettyPrime ? "PRIME (top of the contracting chain)" : "SUBCONSULTANT" + (project.prime ? " to " + project.prime : "")));
     const phaseNames = ((project.phases && project.phases.length) ? project.phases : DEFAULT_PHASES)
       .map(p => p.name + " (" + p.code + ")");
@@ -25496,7 +25501,7 @@ function ScopeView({ project, onChange, clients = [] }) {
         project.prime ? "Prime: " + project.prime : "",
         project.num ? "Project #: " + project.num : "",
         project.projectAddress ? "Location: " + project.projectAddress : "",
-        "Disciplines in this proposal: " + (genDiscOn.join(", ") || "MEP/FP"),
+        "Disciplines in this proposal: " + (genDiscOn.join(", ") || NO_DISC_NOTE),
         "Setty's role: " + (isSettyPrime ? "PRIME (top of the contracting chain)" : "SUBCONSULTANT" + (project.prime ? " to " + project.prime : "")),
       ].filter(Boolean).join("\n");
       const d = await genFetch({ rfpText: rfp, projectContext: context });
