@@ -23551,8 +23551,23 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   if (primeKeysUnresolved) {
     warnings.push("Could not reach the clause library to confirm prime-only clauses (Setty is a subconsultant here); re-run the export, and verify no prime-only exclusions (e.g. hazardous materials) remain in the scope");
   }
-  if (primeUnset && /data-(prime-only|clause=)/.test(Object.values(secs).join(""))) {
-    warnings.push("Prime / contracting role is not set (Overview tab), so prime-only exclusions were left in; set the Prime so the sub/prime gate can confirm whether Setty is prime or a subconsultant");
+  if (primeUnset) {
+    // Warn only when the scope actually carries prime-only content: a
+    // data-prime-only line item, or a stamped clause the live library marks
+    // primeOnly. Otherwise every routine blank-Prime export (all clauses carry
+    // data-clause) would warn misleadingly.
+    const joined = Object.values(secs).join("");
+    let hasPrimeOnly = /data-prime-only/.test(joined);
+    if (!hasPrimeOnly && /data-clause=/.test(joined)) {
+      const params = await ensureClauseParams();
+      if (params) {
+        const keys = primeOnlyClauseKeys();
+        hasPrimeOnly = keys.size > 0 && [...joined.matchAll(/data-clause="([^"]+)"/g)].some(m => keys.has(m[1]));
+      }
+    }
+    if (hasPrimeOnly) {
+      warnings.push("Prime / contracting role is not set (Overview tab), so prime-only exclusions were left in; set the Prime to confirm whether Setty is prime or a subconsultant");
+    }
   }
   return { ...built, fileBase, warnings };
 }
@@ -25177,6 +25192,12 @@ function ScopeView({ project, onChange, clients = [] }) {
   // is an unknown role, not a confirmed sub, so it must not trigger the gate
   // (which would silently hide/drop prime-only clauses); treat it as keep-all.
   const isSettyPrime = !String(project.prime || "").trim() || isSettyFirm(project.prime);
+  // The clause gate above is two-state (keep-all unless a KNOWN sub). The role
+  // reported to the generator is three-state: an unset Prime is "unknown", never
+  // reported as PRIME, so the model is not invited to author prime-only scope.
+  const settyRoleLabel = !String(project.prime || "").trim()
+    ? "unknown (Prime not set; do not assume prime-only or sub-only scope, name only what the RFP calls for)"
+    : (isSettyFirm(project.prime) ? "PRIME (top of the contracting chain)" : "SUBCONSULTANT" + (project.prime ? " to " + project.prime : ""));
   // "None selected" is a supported scope state (a job outside the standard
   // M/E/P/FP design disciplines). Tell the generator that explicitly rather
   // than defaulting to "MEP/FP", which would invite MEP/FP narrative the
@@ -25443,7 +25464,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (project.owner) facts.push("- Owner / agency: " + project.owner);
     if (project.projectAddress) facts.push("- Location: " + project.projectAddress);
     facts.push("- Disciplines in this proposal: " + (discOn.join(", ") || NO_DISC_NOTE));
-    facts.push("- Setty's role: " + (isSettyPrime ? "PRIME (top of the contracting chain)" : "SUBCONSULTANT" + (project.prime ? " to " + project.prime : "")));
+    facts.push("- Setty's role: " + settyRoleLabel);
     const phaseNames = ((project.phases && project.phases.length) ? project.phases : DEFAULT_PHASES)
       .map(p => p.name + " (" + p.code + ")");
     facts.push("- Design phases in this proposal: " + phaseNames.join(", ") + ". The scope ENDS at the last phase listed.");
@@ -25583,7 +25604,7 @@ function ScopeView({ project, onChange, clients = [] }) {
         project.num ? "Project #: " + project.num : "",
         project.projectAddress ? "Location: " + project.projectAddress : "",
         "Disciplines in this proposal: " + (genDiscOn.join(", ") || NO_DISC_NOTE),
-        "Setty's role: " + (isSettyPrime ? "PRIME (top of the contracting chain)" : "SUBCONSULTANT" + (project.prime ? " to " + project.prime : "")),
+        "Setty's role: " + settyRoleLabel,
       ].filter(Boolean).join("\n");
       const d = await genFetch({ rfpText: rfp, projectContext: context });
       if (d && d.status === "not_configured") { setGenConfigured(false); return; }
