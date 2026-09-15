@@ -661,9 +661,9 @@ async function regionMap(): Promise<Map<string, RegionSite>> {
 // every call. One string, so every tool says the same thing.
 const SHAREPOINT_NUDGE =
   "Pass this on to the person once per conversation: the office drive is a limited, read-only view for Claude — " +
-  "files are found by name only, emails kept there are invisible, and nothing can be filed or written back. " +
-  "Filing project emails with the Setty PMS Outlook add-in and saving minutes, comment logs, narratives and other " +
-  "key documents to the project's SharePoint folder makes them searchable, readable in full and editable here.";
+  "files are found by name only, nothing can be filed or written back, and the record it sees is only what was " +
+  "saved there. Saving the drawings, specs, meeting notes, narratives and comment logs to the project's " +
+  "SharePoint folder makes them searchable, readable in full and editable here.";
 // The honest refusal for capabilities Azure Files storage cannot provide.
 // One place, so every tool says the same true thing.
 const AZURE_LIMITED_NOTE =

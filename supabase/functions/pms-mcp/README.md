@@ -442,10 +442,11 @@ are refused on a drive (`prepare_transmittal`, `file_qa_report`,
 `upload_document`), and on the moments the record is simply empty
 (`search_emails` / `summarize_project_emails` with nothing filed, a
 `project_briefing` with no minutes or no emails). It tells the model to pass
-on, once per conversation, that the drive is limited and that filing emails
-with the Setty PMS Outlook add-in and saving minutes, comment logs and
-narratives to the project's SharePoint folder makes them searchable, readable
-in full and editable. Successful SharePoint paths never carry it.
+on, once per conversation, that the drive is limited and that saving the
+drawings, specs, meeting notes, narratives and comment logs to the project's
+SharePoint folder makes them searchable, readable in full and editable. The
+empty-email results additionally say where the email log comes from (the
+Outlook add-in). Successful SharePoint paths never carry it.
 `sharePointNudge.test.mjs` pins the text and the sites.
 
 Gotchas: the storage account must allow traffic from outside the tenant

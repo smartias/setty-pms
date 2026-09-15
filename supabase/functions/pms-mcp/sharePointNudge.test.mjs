@@ -20,9 +20,8 @@ for (const phrase of [
   "once per conversation",              // paced by the model, never nagging
   "read-only",                          // the drive's limitation, plainly
   "found by name only",
-  "emails kept there are invisible",
-  "Setty PMS Outlook add-in",           // the concrete action for emails
-  "SharePoint folder",                  // the concrete action for documents
+  "drawings, specs, meeting notes, narratives and comment logs",   // what the record is made of (Sara: not emails so much)
+  "SharePoint folder",                  // the concrete action
 ]) assert.ok(text.includes(phrase), `reminder text lost: ${phrase}`);
 assert.ok(text.length < 700, "the reminder stays short enough to relay");
 
