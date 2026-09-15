@@ -23428,8 +23428,9 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   {
     const disc = scopeDisciplinesOf(project);
     const codes = activePhaseCodes(project);
+    const isPrime = isSettyFirm(project.prime || "");
     Object.keys(secs).forEach(k => {
-      secs[k] = filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(secs[k], disc), codes);
+      secs[k] = filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(filterClauseHtmlByPrime(secs[k], isPrime), disc), codes);
     });
   }
   const fields = proposalDocxFields(project);
@@ -23505,6 +23506,17 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
         const n = text.split(w.toLowerCase()).length - 1;
         if (n) warnings.push(s.label + " still mentions “" + w + "” " + (n > 1 ? n + " times" : "once") + " (switched off for this proposal)");
       });
+    });
+  }
+  // "Setty & Associates International" is the Washington, DC entity. The signing
+  // entity comes from project.proposalEntity, but hand- or AI-written prose can
+  // name the wrong one; flag it so a NY/VA proposal never says "International".
+  if ((project.proposalEntity || "sa-ny") !== "sai-dc") {
+    SCOPE_SECTIONS.forEach(s => {
+      if (s.internal) return;
+      if (/setty\s*&\s*associates\s+international/i.test(scopeHtmlToText(secs[s.key] || ""))) {
+        warnings.push(s.label + " names “Setty & Associates International” (the DC entity) — this proposal's entity is " + proposalEntity(project).legalName + "; refer to the firm as “Setty”");
+      }
     });
   }
   return { ...built, fileBase, warnings };
@@ -23744,6 +23756,12 @@ function exportProposalDocx(project, opts = {}) {
         (omit.length ? "Left out " + omit.length + " section" + (omit.length > 1 ? "s" : "") + "." : "Full document.") +
         (scopeBlocks ? " Scope inserted as " + scopeBlocks + " paragraph" + (scopeBlocks > 1 ? "s" : "") + "."
                      : " Scope NOT inserted: " + (scopeNote || "unknown reason") + ".") +
+        // A single section can fail to insert (an empty box after filtering, or
+        // a template missing that section's anchor) while other sections
+        // succeed. That once printed only when the WHOLE scope failed, so a
+        // dropped Additional Services section went out silently. Surface the
+        // per-section note whenever there is one.
+        (scopeBlocks && scopeNote ? " ⚠ " + scopeNote + "." : "") +
         (unfilled.length ? " " + unfilled.length + " placeholder(s) still to fill: " + unfilled.map((u) => u.replace(/[{}]/g, "")).join(", ") + "." : "") +
         ((warnings || []).length ? " ⚠ " + warnings.join("; ") + " — edit the box and regenerate." : "");
 
@@ -24688,6 +24706,16 @@ function clauseAppliesToDisciplines(clause, active) {
   if (not.some(k => active[k])) return false;
   return true;
 }
+// Prime-vs-subconsultant gate. A clause tagged params.primeOnly:true belongs
+// only in a proposal where Setty is the PRIME (top of the contracting chain).
+// When Setty is a subconsultant the prime carries whole-project exclusions and
+// terms (hazardous-materials surveys, permit applications, etc.), so those
+// clauses are dropped from our proposal. Undeclared clauses are always kept.
+function clauseAppliesToPrime(clause, isPrime) {
+  const p = (clause && clause.params) || {};
+  if (p.primeOnly && !isPrime) return false;
+  return true;
+}
 // Human tag for a hidden clause: "needs Fire Protection" / "hidden when Lighting is on".
 function clauseDisciplineTag(clause, active) {
   const p = (clause && clause.params) || {};
@@ -24816,6 +24844,23 @@ function filterClauseHtmlByPhase(html, codes) {
       const keep = (!need.length || need.some(k => codes.has(k))) && !not.some(k => codes.has(k));
       if (!keep) el.remove();
     });
+    doc.body.querySelectorAll("ul,ol").forEach(l => { if (!l.children.length) l.remove(); });
+    return doc.body.innerHTML;
+  } catch (_) {
+    return s;
+  }
+}
+
+// Drop <li data-prime-only> line items when Setty is a subconsultant, not the
+// prime, and any list left empty by that. Mirrors the discipline/phase filters:
+// a single exclusion menu can carry the prime-only items (hazmat, permit
+// applications) inline and shed them on a sub's proposal.
+function filterClauseHtmlByPrime(html, isPrime) {
+  const s = String(html || "");
+  if (isPrime || !/data-prime-only/.test(s)) return s;
+  try {
+    const doc = new DOMParser().parseFromString(s, "text/html");
+    doc.body.querySelectorAll("[data-prime-only]").forEach(el => el.remove());
     doc.body.querySelectorAll("ul,ol").forEach(l => { if (!l.children.length) l.remove(); });
     return doc.body.innerHTML;
   } catch (_) {
@@ -25037,6 +25082,10 @@ function ScopeView({ project, onChange, clients = [] }) {
   // line-item filtering and the reserved DISCIPLINE_* tokens.
   const activeDisc = scopeDisciplinesOf(project);
   const discTokens = disciplineTokens(activeDisc);
+  // Prime vs subconsultant, from the top-of-chain Prime field. Drives the
+  // prime-only clause/line-item gate (hazmat surveys, permit applications):
+  // those belong to the prime, not to Setty when we are a sub.
+  const isSettyPrime = isSettyFirm(project.prime || "");
   // Standard/Alternate provision choices, per project (see variantPairs).
   // What is in force: hand choices, with driven pairs (Fee Structure follows
   // feeType) laid over the top. Everything downstream reads THIS, never the
@@ -25054,10 +25103,12 @@ function ScopeView({ project, onChange, clients = [] }) {
   React.useEffect(() => { ensureClauseLib().catch(() => {}); }, []);
   // One gate for "should this clause be offered / inserted right now".
   function clauseApplies(c) {
-    return clauseAppliesToDisciplines(c, activeDisc) && clauseAppliesToVariants(c, proposalVariants);
+    return clauseAppliesToDisciplines(c, activeDisc) && clauseAppliesToPrime(c, isSettyPrime) && clauseAppliesToVariants(c, proposalVariants);
   }
   function clauseHiddenTag(c) {
-    return clauseDisciplineTag(c, activeDisc) || clauseVariantTag(c, clauseLib, proposalVariants);
+    return clauseDisciplineTag(c, activeDisc)
+      || (c && c.params && c.params.primeOnly && !isSettyPrime ? "prime-only (Setty is a subconsultant here)" : "")
+      || clauseVariantTag(c, clauseLib, proposalVariants);
   }
   function setDiscipline(key, on) {
     if (scopeLocked) return;
@@ -25080,7 +25131,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       const decl = (clause.params || {})[tok];
       return (decl && decl.default != null) ? decl.default : m;
     });
-    return filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(filled, activeDisc), activePhaseCodes(project));
+    return filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(filterClauseHtmlByPrime(filled, isSettyPrime), activeDisc), activePhaseCodes(project));
   }
   function fillClauseParams(clause) {
     return substituteClauseTokens(clause, clauseParams[clause.clause_key] || {});
@@ -25107,6 +25158,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     lib.forEach(c => { byKey[c.clause_key] = c; });
     const unknownKeys = [];
     const disciplineDropped = [];
+    const primeDropped = [];
     const variantSwapped = [];
     const duplicatesDropped = [];
     // A clause named in clauses[] AND again in exclusions/assumptions
@@ -25121,6 +25173,9 @@ function ScopeView({ project, onChange, clients = [] }) {
       // The draft may pick a clause for a discipline this proposal does not
       // cover (fire suppression on an M/E-only job). Drop it and say so.
       if (!clauseAppliesToDisciplines(clause, activeDisc)) { disciplineDropped.push(key); return null; }
+      // A prime-only clause (hazmat, permit applications) picked for a proposal
+      // where Setty is a subconsultant: drop it and say so.
+      if (!clauseAppliesToPrime(clause, isSettyPrime)) { primeDropped.push(key); return null; }
       // A draft may pick the wrong side of a Standard/Alternate pair. The
       // project's choice wins: swap to the one in force and say so.
       const sk = variantStandardKeyOf(clause);
@@ -25232,6 +25287,7 @@ function ScopeView({ project, onChange, clients = [] }) {
       hasInternalNotes: !!internalNotes,
       unknownKeys,
       disciplineDropped,
+      primeDropped,
       variantSwapped,
       duplicatesDropped,
       flagged: (Array.isArray(d.flaggedForReview) ? d.flaggedForReview : [])
@@ -25287,6 +25343,7 @@ function ScopeView({ project, onChange, clients = [] }) {
     if (project.owner) facts.push("- Owner / agency: " + project.owner);
     if (project.projectAddress) facts.push("- Location: " + project.projectAddress);
     facts.push("- Disciplines in this proposal: " + (discOn.join(", ") || "MEP/FP"));
+    facts.push("- Setty's role: " + (isSettyPrime ? "PRIME (top of the contracting chain)" : "SUBCONSULTANT" + (project.prime ? " to " + project.prime : "")));
     const phaseNames = ((project.phases && project.phases.length) ? project.phases : DEFAULT_PHASES)
       .map(p => p.name + " (" + p.code + ")");
     facts.push("- Design phases in this proposal: " + phaseNames.join(", ") + ". The scope ENDS at the last phase listed.");
@@ -25323,7 +25380,11 @@ function ScopeView({ project, onChange, clients = [] }) {
       "- Select, don't paraphrase. Only write authoredScope items for work the catalog does not cover (surveys, studies, assessments, Cx, agency-specific deliverables).",
       "- Written sections stay short: understanding 1 to 3 paragraphs, approach 3 to 6 short paragraphs or a compact list, each custom assumption one sentence.",
       "- Plain paragraphs only in understanding and approach: no bold run-in titles at the start of a paragraph (write \"Setty will attend the scope meeting…\", not \"<strong>Scope Report Phase.</strong> Setty will…\").",
-      "- Name ONLY the disciplines listed in the project facts above, everywhere in the narrative. If plumbing is not in the list, no sentence mentions plumbing (and write M/E/FP, never MEP/FP). This applies to understanding, approach, custom assumptions and open items alike.",
+      "- Name ONLY the disciplines listed in the project facts above, everywhere in the narrative. If plumbing is not in the list, no sentence mentions plumbing (and write M/E/FP, never MEP/FP). This applies to understanding, approach, custom assumptions and open items alike. Discipline testing must match too: on an electrical scope, do not describe TAB, water flow, or system balancing (those are mechanical/plumbing).",
+      "- Refer to the firm as \"Setty\" throughout the narrative. Never write a specific legal entity name in prose (not \"Setty & Associates International\", not \"Setty & Associates, Ltd. PC\"): the PMS stamps the correct signing entity. \"Setty & Associates International\" is the Washington, DC entity only and must not appear on a proposal outside DC.",
+      "- Setty's role is in the project facts. When Setty is a SUBCONSULTANT, do not select or author prime-only items: exclusions and assumptions the prime carries for the whole project (hazardous-materials surveys and abatement, permit applications, owner-agency process the prime runs) belong to the prime, not to us. The PMS drops prime-only library clauses on a sub's proposal; do not re-add them as custom items.",
+      "- Keep the scope sections to what Setty will DO. Reliance and terms language (relying on existing or record drawings and owner-provided information, remobilization after a hold, turnaround times, fee basis) is boilerplate: select the matching provision clauses, do not restate it as an included service, an authoredScope item, or a custom assumption. Do not select two clauses that say nearly the same thing.",
+      "- openItems are questions for the OWNER or client to answer, phrased outward to them (\"Confirm whether occupied-building phasing applies to this space\"). Never put internal notes there: no references to the PMS, \"this draft\", catalog default counts, another firm's draft, or your own reasoning. All of that goes in internalNotes.",
       "- A named, separately priced alternate the RFP invites (add alternates, optional services with their own price line) goes in alternates[] with its name, its own scope description, and a pricingNote saying how it would be priced. Never wedge an alternate into exclusions, and never invent its price: the PM sets the amount in the PMS and it renders under the fee table.",
       "- Deliverables must match the RFP and the phase list in the project facts EXACTLY. Never describe submissions or services for a phase this proposal does not carry: no construction documents packages, bid phase or construction administration on a job that stops at design development. When in doubt, list fewer deliverables and put the question in openItems.",
       "- Name each clause key ONCE in the whole draft. Exclusion clauses go only in exclusions.clauseKeys and assumption clauses only in assumptions.clauseKeys, never repeated in clauses[].",
@@ -25414,11 +25475,15 @@ function ScopeView({ project, onChange, clients = [] }) {
     setGenBusy(true);
     setGenError("");
     try {
+      const genDiscOn = SCOPE_DISCIPLINES.filter(d => activeDisc[d.key]).map(d => d.core ? d.label : d.label.replace(/ \(.*$/, ""));
       const context = [
         project.name ? "Project: " + project.name : "",
         project.clientName ? "Client: " + project.clientName : "",
         project.prime ? "Prime: " + project.prime : "",
         project.num ? "Project #: " + project.num : "",
+        project.projectAddress ? "Location: " + project.projectAddress : "",
+        "Disciplines in this proposal: " + (genDiscOn.join(", ") || "MEP/FP"),
+        "Setty's role: " + (isSettyPrime ? "PRIME (top of the contracting chain)" : "SUBCONSULTANT" + (project.prime ? " to " + project.prime : "")),
       ].filter(Boolean).join("\n");
       const d = await genFetch({ rfpText: rfp, projectContext: context });
       if (d && d.status === "not_configured") { setGenConfigured(false); return; }
@@ -26346,6 +26411,9 @@ function ScopeView({ project, onChange, clients = [] }) {
                   )}
                   {(r.disciplineDropped || []).length > 0 && (
                     <li style={{ color: P.yellow }}>⚠ Skipped for disciplines this proposal does not cover: {r.disciplineDropped.join(", ")} <span style={{ color: P.textDim }}>(switch the discipline on above and validate again if that is wrong)</span></li>
+                  )}
+                  {(r.primeDropped || []).length > 0 && (
+                    <li style={{ color: P.yellow }}>⚠ Skipped because Setty is a subconsultant here, not the prime: {r.primeDropped.join(", ")} <span style={{ color: P.textDim }}>(these are prime-only clauses; set the Prime to Setty on the Overview tab and validate again if that is wrong)</span></li>
                   )}
                   {(r.variantSwapped || []).length > 0 && (
                     <li>↔ Swapped to this proposal's Standard/Alternate choice: {r.variantSwapped.join(", ")} <span style={{ color: P.textDim }}>(change the choice above and validate again if the draft had it right)</span></li>
