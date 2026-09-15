@@ -19,7 +19,7 @@ instead of literal text:
 
 Line items can also be tagged so they drop when they do not apply:
 `data-discipline="mechanical plumbing"` (needs one of those on),
-`data-discipline-not="lowVoltage"` (hidden when that is on), and — new —
+`data-discipline-not="lowVoltage"` (hidden when that is on), and, new,
 `data-prime-only` (hidden when Setty is a subconsultant, not the prime).
 
 ---
@@ -28,13 +28,13 @@ Line items can also be tagged so they drop when they do not apply:
 
 Replace the literal discipline wording in these clause bodies with the tokens.
 
-- **`inc-design-support`** — "…regarding the mechanical, electrical, plumbing,
+- **`inc-design-support`**: "…regarding the mechanical, electrical, plumbing,
   and fire protection (MEP/FP) systems." → "…regarding the
   `{{DISCIPLINE_LIST}}` (`{{DISCIPLINE_MEP}}`) systems."
-- **`inc-ca`** (Construction Administration Support) — three spots read
+- **`inc-ca`** (Construction Administration Support): three spots read
   "M/E/P/FP": the CA assistance sentence, the Submittal Review sentence, and the
   Site Observations sentence. Change each "M/E/P/FP" → `{{DISCIPLINE_ABBR}}`.
-- **`exc-bim-ca-modeling`** — "The MEP/FP model is delivered…" → "The
+- **`exc-bim-ca-modeling`**: "The MEP/FP model is delivered…" → "The
   `{{DISCIPLINE_MEP}}` model is delivered…".
 - Sweep every remaining clause body for the literal strings `MEP/FP`,
   `M/E/P/FP`, and `mechanical, electrical, plumbing, and fire protection` and
@@ -79,7 +79,7 @@ hazmat items so they appear only on prime proposals:
   menu, tag that item `data-prime-only`.
 - Same treatment for any other whole-project exclusion the prime carries, e.g.
   permit **applications**/expediting, if the firm wants those to be prime-only
-  too. (Confirm before tagging — some owners expect the sub to carry them.)
+  too. (Confirm before tagging; some owners expect the sub to carry them.)
 
 ## 5. Repetitive provisions b and c (fixes "provisions b and c seem repetitive")
 
@@ -104,7 +104,7 @@ Owner-provided record documents", "may rely on existing drawings") lives in the
 
 ---
 
-### Not a library edit — the standalone skill
+### Not a library edit: the standalone skill
 
 The manual drafting path (`proposal-draft` skill run from a PM's own Claude
 seat) is a third generator surface maintained outside this repo. Apply the same

@@ -23515,7 +23515,7 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
     SCOPE_SECTIONS.forEach(s => {
       if (s.internal) return;
       if (/setty\s*&\s*associates\s+international/i.test(scopeHtmlToText(secs[s.key] || ""))) {
-        warnings.push(s.label + " names “Setty & Associates International” (the DC entity) — this proposal's entity is " + proposalEntity(project).legalName + "; refer to the firm as “Setty”");
+        warnings.push(s.label + " names “Setty & Associates International” (the DC entity); this proposal's entity is " + proposalEntity(project).legalName + "; refer to the firm as “Setty”");
       }
     });
   }
