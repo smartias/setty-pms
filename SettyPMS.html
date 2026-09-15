@@ -23422,6 +23422,10 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
   // legacy single-blob project arrives with everything in `included` via the
   // scopeSectionHtml fallback.
   const secs = scopeSectionsOf(project);
+  // A subconsultant export could not confirm whole prime-only clauses because
+  // the live-library lookup failed (transient network error). Surfaced as a
+  // warning below rather than silently shipping an unverified scope.
+  let primeKeysUnresolved = false;
   // Stamped clauses keep their data-phase / data-discipline tags, so the
   // filters re-run at export time: turning a phase or discipline off AFTER
   // the scope was built still drops the tagged line items from the document.
@@ -23431,8 +23435,12 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
     const isPrime = isSettyFirm(project.prime || "");
     // Resolve stamped clause keys against the live library so whole prime-only
     // clauses drop on a sub's export even if their stored wrapper predates the tag.
-    if (!isPrime) await ensureClauseParams();
-    const primeKeys = isPrime ? null : primeOnlyClauseKeys();
+    let primeKeys = null;
+    if (!isPrime) {
+      const params = await ensureClauseParams();
+      if (params) primeKeys = primeOnlyClauseKeys();
+      else if (/data-clause=/.test(Object.values(secs).join(""))) primeKeysUnresolved = true;
+    }
     Object.keys(secs).forEach(k => {
       secs[k] = filterClauseHtmlByPhase(filterClauseHtmlByDiscipline(filterClauseHtmlByPrime(secs[k], isPrime, primeKeys), disc), codes);
     });
@@ -23532,6 +23540,9 @@ async function assembleProposalDocx(project, { source, omit = [], honorific = ""
         warnings.push(label + " names “Setty & Associates International” (the DC entity); this proposal's entity is " + proposalEntity(project).legalName + "; refer to the firm as “Setty”");
       }
     });
+  }
+  if (primeKeysUnresolved) {
+    warnings.push("Could not reach the clause library to confirm prime-only clauses (Setty is a subconsultant here); re-run the export, and verify no prime-only exclusions (e.g. hazardous materials) remain in the scope");
   }
   return { ...built, fileBase, warnings };
 }
@@ -24169,9 +24180,13 @@ async function ensureClauseParams() {
   if (_clauseParamsByKey) return _clauseParamsByKey;
   try {
     const rows = await sbFetchV2("GET", "/rest/v1/pms_proposal_clauses?status=eq.approved&select=clause_key,params");
-    rememberClauseLibrary(rows);
-  } catch (_) { _clauseParamsByKey = {}; }
-  return _clauseParamsByKey;
+    rememberClauseLibrary(rows); // sets the cache to a real map (possibly empty, a valid result)
+    return _clauseParamsByKey;
+  } catch (_) {
+    // Leave the cache null so a later export retries instead of treating a
+    // transient failure as an authoritative empty library.
+    return null;
+  }
 }
 function primeOnlyClauseKeys() {
   const m = _clauseParamsByKey || {};
