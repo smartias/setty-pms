@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-16-pms-v153-rfi-folder-persist";
+    window.__appVersion = "2026-09-16-pms-v154-ca-review-feedback";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -10785,6 +10785,25 @@ function SheetRefChips({ form, project, type, onChangeRefs }) {
   );
 }
 
+// Outcome of a Claude CA-review suggestion once the reviewer saves the record:
+// where the FINAL response landed relative to the SUGGESTED one. Pure; sliced
+// out and unit-tested by aiReviewFeedback.test.mjs. 'edited' covers light
+// edits and text wrapped around the suggestion; 'replaced' means the reviewer
+// wrote their own answer (fewer than half the suggestion's words survive).
+function classifyAiReviewOutcome(suggested, final) {
+  const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+  const a = norm(suggested), b = norm(final);
+  if (!a || !b) return "replaced";
+  if (a === b) return "accepted";
+  if (b.includes(a)) return "edited";
+  const words = s => new Set(s.toLowerCase().match(/[a-z0-9][a-z0-9.'-]{2,}/g) || []);
+  const wa = words(a), wb = words(b);
+  if (!wa.size) return "replaced";
+  let kept = 0;
+  wa.forEach(w => { if (wb.has(w)) kept++; });
+  return kept / wa.size >= 0.5 ? "edited" : "replaced";
+}
+
 function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }) {
   const [form, setForm] = useState({ ...item });
   const [emailStatus, setEmailStatus] = useState("idle");
@@ -10817,6 +10836,44 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const respKey = isRFI ? "response" : "comments";
   const responseApplied = !!(ai?.suggestedResponse && (form[respKey] || "").includes(ai.suggestedResponse.trim()));
   const notesApplied = !!(ai?.internalNotes && (form.notes || "").includes(ai.internalNotes.trim()));
+  // Feedback loop (pms_ca_review_feedback): on Save, record the suggested vs
+  // the final text, the stamps, and the reviewer's optional one-line "why",
+  // so the review skill can read what gets edited (search_review_feedback).
+  // Stamped server-side with the caller's JWT; fire-and-forget, never blocks
+  // the save; one row per aiReview.at, re-saves update it.
+  const [aiWhy, setAiWhy] = React.useState("");
+  const aiFeedbackSig = React.useRef("");
+  function recordAiReviewFeedback(outcome, f) {
+    if (!ai || !ai.suggestedResponse) return;
+    const body = {
+      p_project: project.projectNumber || project.name || "",
+      p_project_name: project.name || null,
+      p_item_type: isRFI ? "rfi" : "submittal",
+      p_item_number: String(f.number || ""),
+      p_item_subject: (isRFI ? f.title : f.description) || null,
+      p_discipline: f.discipline || null,
+      p_ai_at: ai.at ? String(ai.at) : "",
+      p_ai_by: ai.by || null,
+      p_suggested_response: ai.suggestedResponse,
+      p_final_response: f[respKey] || "",
+      p_suggested_stamp: isRFI ? null : (ai.suggestedStamp || null),
+      p_final_stamp: isRFI ? null : (f.stamp || null),
+      p_outcome: outcome,
+      p_why: aiWhy.trim() || null,
+    };
+    if (!body.p_project || !body.p_item_number) return;
+    const sig = JSON.stringify([outcome, body.p_final_response, body.p_final_stamp, body.p_why]);
+    if (sig === aiFeedbackSig.current) return;
+    aiFeedbackSig.current = sig;
+    sbFetchV2("POST", "/rest/v1/rpc/pms_ca_review_feedback_record", body)
+      .catch(e => console.warn("[aiReview feedback] not recorded:", e && e.message));
+  }
+  function saveWithFeedback() {
+    if (ai && ai.suggestedResponse && (form[respKey] || "").trim()) {
+      recordAiReviewFeedback(classifyAiReviewOutcome(ai.suggestedResponse, form[respKey]), form);
+    }
+    onSave(form); onClose();
+  }
   function acceptAiResponse() {
     if (!ai?.suggestedResponse || responseApplied) return;
     const cur = (form[respKey] || "").trim();
@@ -10830,6 +10887,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   }
   function dismissAiReview() {
     if (!window.confirm("Dismiss Claude's review? The suggested response, internal notes, and red flags on this record will be cleared. Any red flags already tracked in QA Reviews stay there.")) return;
+    recordAiReviewFeedback("dismissed", form);
     setF("aiReview", undefined);
   }
   // Clickable references saved by save_ca_review (docLinks: set folder, cited
@@ -11339,6 +11397,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
               </div>
             )}
 
+            {ai.suggestedResponse && (
+              <div style={{ marginBottom: 12 }}>
+                <input value={aiWhy} onChange={e => setAiWhy(e.target.value)} style={{ width: "100%", fontSize: 12 }}
+                  placeholder="What did you change and why? (optional - recorded on Save; the review skill reads it before the next draft)" />
+              </div>
+            )}
+
             {!isRFI && ai.suggestedStamp && (
               <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em" }}>Suggested stamp</span>
@@ -11413,7 +11478,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           )}
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-            <Btn onClick={() => { onSave(form); onClose(); }}>Save</Btn>
+            <Btn onClick={saveWithFeedback}>Save</Btn>
           </div>
         </div>
       </div>

@@ -146,6 +146,15 @@ response wording on any contested RFI or rejected submittal.
      (CN 2-314 sits squarely over the electrical room). The renderer failure
      of September 2026 is fixed in pms-mcp 1.18.2; `/pms-mcp/health?probe=
      render` tells you whether it works on the current build.
+6. **What reviewers did with earlier suggestions.** `search_review_feedback`
+   BEFORE drafting: first for this project, then (if the project has no rows)
+   for the discipline and item type. Each row is a prior suggestion and what
+   the engineer saved instead — accepted / edited / replaced / dismissed — with
+   the sentences they cut, the sentences they added, and their one-line "why"
+   from the modal. Do not repeat a pattern that was cut last time (a preface,
+   a request for a sketch the plans already show, a firm name used as a
+   person, a "no work shall proceed" paragraph). It shapes the draft; it is
+   never evidence to cite, and one reviewer's edit is not another's rule.
 
 ## Step 1.5 — Read the SUBMITTED cut sheet and confirm the MARKED selection (submittals)
 
@@ -262,6 +271,18 @@ say once what you could not and why, and make every remaining bullet a real
 judgment call for the engineer — not a chore you skipped (open the attachment
 yourself) and not doubt about what the plans plainly show.
 
+**Filing gaps are findings, not footnotes.** When a document could not be
+opened because of WHERE or HOW it is filed — a structural set that exists only
+on the N: drive as 40–100 MB combined volumes, a model export sitting in an
+INCOMING folder, an Outgoing set issued only as one merged PDF — say so in one
+line and put the fix on its own line in the internal notes, labelled FILING:
+save it to the project's SharePoint folder, and split it into individual sheet
+PDFs wherever possible. For Setty's own Outgoing sets that is the rule, not a
+wish: individual sheet files beside the combined volume, so every sheet is
+linkable in `docLinks` and readable by the connector. A reviewer who reads
+"could not be opened" three reviews in a row on the same set has been told the
+symptom three times and the cure never.
+
 ## Pull-reply mode — capture a reviewer's emailed answer
 
 When asked to "pull the reply from email" for an item (the modal's 📥 button),
@@ -327,6 +348,12 @@ polish**).
   instead of being buried in one submittal. Set severities deliberately: a
   substitution with change-order exposure is `cost`; a submission the reviewing
   agency will bounce is `agency`.
+- **The loop closes in the modal, not here.** When the engineer saves the
+  record, the PMS writes the suggested vs. final text, the stamps, the outcome
+  and their optional "why" line to `pms_ca_review_feedback`; that is what
+  `search_review_feedback` (Step 1, item 6) reads next time. Nothing for you
+  to write — but it is the reason the suggestion must be a clean, complete
+  draft: a reviewer who has to rewrite it teaches the loop only "replaced".
 
 Then present the review in the chat exactly as you saved it, lead with the red
 flags and the suggested stamp/response, and tell the engineer it is waiting in

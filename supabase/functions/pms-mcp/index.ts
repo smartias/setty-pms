@@ -1047,9 +1047,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-16-pdfium-single-use-page";
+const BUILD = "2026-09-16-review-feedback";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.18.2",
+  name: "setty-pms", version: "1.19.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -7820,6 +7820,106 @@ mcp.tool("save_ca_review", {
       type, number: itemNumber, subject: itemSubject, savedBy: who.email,
       redFlags: flags.length, ledger,
       note: "The review is on the record as aiReview — the RFI/Submittal modal shows it as an accept/dismiss suggestion; it did NOT change the human's response or stamp. Tracked flags (life-safety/agency/cost) are in the QA Reviews ledger.",
+    });
+  },
+});
+
+// ── search_review_feedback: what reviewers did with earlier suggestions ──────
+// The read side of pms_ca_review_feedback (migration 20260916120000): one row
+// per Claude suggestion on a CA item and what the engineer SAVED in its place
+// (accepted / edited / replaced / dismissed), plus the reviewer's own one-line
+// "why" typed in the modal. The submittal-rfi-review skill reads these BEFORE
+// drafting, so the next suggestion already avoids what was cut last time.
+// Project-scoped rows follow project visibility, as knowledge does.
+function splitSentences(s: string): string[] {
+  return String(s || "").replace(/\s+/g, " ")
+    .split(/(?<=[.;:!?])\s+(?=[A-Z0-9"(])/)
+    .map((x) => x.trim()).filter((x) => x.length > 2);
+}
+// Sentence-level delta: what the reviewer cut from the suggestion and what
+// they added. Punctuation/case-insensitive so a re-wrapped sentence is "kept".
+function feedbackDelta(suggested: string, final: string): { removed: string[]; added: string[] } {
+  const a = splitSentences(suggested), b = splitSentences(final);
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
+  const sa = new Set(a.map(norm)), sb = new Set(b.map(norm));
+  return { removed: a.filter((x) => !sb.has(norm(x))), added: b.filter((x) => !sa.has(norm(x))) };
+}
+
+mcp.tool("search_review_feedback", {
+  description:
+    "What Setty's engineers DID with earlier Claude suggestions on RFIs and submittals: for each save_ca_review " +
+    "suggestion that a reviewer then saved over, the outcome (accepted / edited / replaced / dismissed), the " +
+    "sentences they cut and added, the stamp they chose, and their own one-line 'why' from the modal. Read it " +
+    "BEFORE drafting a review (submittal-rfi-review skill, Step 1) — first for the same project, then for the " +
+    "discipline and item type — so the next draft avoids what was cut last time. It shapes the draft; it is " +
+    "not evidence to cite in a response. Rows follow project visibility.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("Limit to one project (number or name)"),
+    type: z.enum(["rfi", "submittal"]).optional().describe("Item type"),
+    discipline: z.string().optional().describe("Discipline filter (substring), e.g. 'Plumbing'"),
+    outcome: z.enum(["accepted", "edited", "replaced", "dismissed"]).optional().describe("Only rows with this outcome"),
+    reviewer: z.string().optional().describe("Reviewer email (substring)"),
+    limit: z.number().int().min(1).max(50).optional().describe("Newest N rows to return (default 15)"),
+    full: z.boolean().optional().describe("Return the full suggested and final texts instead of the sentence delta and an excerpt"),
+  }),
+  handler: async ({ projectNumber, type, discipline, outcome, reviewer, limit, full }) => {
+    let pn: string | null = null;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber.trim());
+      const p = pid ? await getProjectById(pid) : null;
+      if (!p) return asText({ error: `No project matching "${projectNumber}"` });
+      pn = p.projectNumber || null;
+    }
+    const cap = Math.min(Math.max(limit ?? 15, 1), 50);
+    let q =
+      "pms_ca_review_feedback?select=id,project,project_name,item_type,item_number,item_subject,discipline," +
+      "ai_at,ai_by,suggested_response,final_response,suggested_stamp,final_stamp,outcome,why,reviewer,updated_at" +
+      "&order=updated_at.desc&limit=200";
+    if (pn) q += "&project=eq." + encodeURIComponent(pn);
+    if (type) q += "&item_type=eq." + type;
+    if (outcome) q += "&outcome=eq." + outcome;
+    if (discipline?.trim()) q += "&discipline=ilike." + encodeURIComponent("*" + discipline.trim() + "*");
+    if (reviewer?.trim()) q += "&reviewer=ilike." + encodeURIComponent("*" + reviewer.trim() + "*");
+    const rows: any[] = await sbGet(q);
+
+    // Same visibility rule as search_knowledge: a row from a job the caller
+    // cannot see is part of that job's record and stays hidden with it.
+    const caps = await resolveCaps();
+    let visible = rows;
+    if (!caps.isAdmin) {
+      const projs = await getProjects();
+      const ok = new Set(projs.map((p: any) => p.projectNumber).filter(Boolean));
+      visible = rows.filter((r: any) => ok.has(r.project));
+    }
+
+    const outcomes: Record<string, number> = {};
+    for (const r of visible) outcomes[r.outcome] = (outcomes[r.outcome] || 0) + 1;
+
+    const feedback = visible.slice(0, cap).map((r: any) => {
+      const base: Record<string, unknown> = {
+        id: r.id,
+        project: r.project, projectName: r.project_name || undefined,
+        item: `${String(r.item_type).toUpperCase()} ${r.item_number}`, subject: r.item_subject || undefined,
+        discipline: r.discipline || undefined,
+        outcome: r.outcome, why: r.why || undefined,
+        reviewer: r.reviewer, suggestedBy: r.ai_by || undefined, updatedAt: r.updated_at,
+        ...(r.suggested_stamp || r.final_stamp ? { suggestedStamp: r.suggested_stamp || undefined, finalStamp: r.final_stamp || undefined } : {}),
+      };
+      if (full) return { ...base, suggestedResponse: r.suggested_response || "", finalResponse: r.final_response || "" };
+      const d = feedbackDelta(r.suggested_response || "", r.final_response || "");
+      return {
+        ...base,
+        cutFromSuggestion: d.removed.slice(0, 12),
+        addedByReviewer: d.added.slice(0, 12),
+        finalExcerpt: String(r.final_response || "").slice(0, 400),
+      };
+    });
+
+    return asText({
+      count: feedback.length, totalMatching: visible.length, outcomes, feedback,
+      note: feedback.length
+        ? "Shape the next draft with this (what got cut, what got added, the reviewer's why); never quote it in a response, and never assume a project's earlier edit applies to a different reviewer without checking their rows."
+        : "No recorded feedback for this filter yet — rows appear when an engineer saves a record that carries a Claude review.",
     });
   },
 });
