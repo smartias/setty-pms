@@ -16,8 +16,11 @@ against what is already logged on the project by item number, and writes:
 
 It never deletes and never touches assignedTo / links / aiReview / spFolderUrl.
 
+Handles both Newforma logs: the Submittal Log (default) and the RFI Log (--type rfi), which
+maps onto the PMS rfis[] array (title / description = question / response = answer).
+
 Usage:
-  import_newforma_submittals.py REPORT.xlsx --targets targets.json --existing existing.json --out plan/
+  import_newforma_submittals.py REPORT.xlsx --targets targets.json --existing existing.json --out plan/ [--type rfi]
      targets.json  : { "<report project number>": {"id": "<pms row id>", "projectNumber": "<pms number>"} }
      existing.json : snapshot of the logged submittals per PMS project number (see README for the SQL)
      plan/         : one .sql per project (version-guarded UPDATE) plus summary.json
@@ -40,11 +43,24 @@ STAMP_BY_ACTION = {
 DISCIPLINES = {"mechanical": "Mechanical", "hvac": "Mechanical", "electrical": "Electrical",
                "plumbing": "Plumbing", "fire protection": "Fire Protection", "structural": "Structural",
                "architectural": "Architectural", "civil": "Civil", "technology": "Technology"}
-# Fields Newforma owns on a Newforma-origin record (overwritten on refresh).
-OWNED = ["description", "specSection", "from", "discipline", "status", "stamp",
-         "dateReceived", "dueDate", "dateReturned", "resubNumber", "source"]
-BLANK_FLAG = {"D": "description", "S": "specSection", "F": "from", "I": "discipline", "T": "status",
-              "M": "stamp", "R": "dateReceived", "U": "dueDate", "E": "dateReturned", "C": "comments", "N": "notes"}
+RFI_DISCIPLINES = {"mechanical": "Mechanical", "hvac": "Mechanical", "electrical": "Electrical",
+                   "plumbing": "Plumbing", "fire protection": "Fire Protection", "technology": "Technology"}
+# Fields Newforma owns on a Newforma-origin record (overwritten on refresh), per log type.
+OWNED = {
+    "submittal": ["description", "specSection", "from", "discipline", "status", "stamp",
+                  "dateReceived", "dueDate", "dateReturned", "resubNumber", "source"],
+    "rfi": ["title", "description", "from", "discipline", "status", "dateReceived", "dueDate", "dateResponded", "source"],
+}
+# The reviewed text field: only overwritten when Newforma actually has one.
+REVIEW_TEXT = {"submittal": "comments", "rfi": "response"}
+# Blank-field flags in the existing.json snapshot (see README). "H" = human-edited (fill only).
+BLANK_FLAG = {
+    "submittal": {"D": "description", "S": "specSection", "F": "from", "I": "discipline", "T": "status",
+                  "M": "stamp", "R": "dateReceived", "U": "dueDate", "E": "dateReturned", "C": "comments", "N": "notes"},
+    "rfi": {"L": "title", "D": "description", "F": "from", "I": "discipline", "T": "status",
+            "R": "dateReceived", "U": "dueDate", "E": "dateResponded", "C": "response", "N": "notes"},
+}
+LOG_TYPE = "submittal"  # set from --type
 
 
 def d(v):
@@ -67,19 +83,37 @@ def forma_key(number):
     return None
 
 
+def rfi_alias_key(number):
+    """'RFI-026', 'CI00026' and '026' are one RFI when the hand-logged / synced record carries the
+    conventional prefix. Only used to match NON-Newforma records (fill mode), never to merge two
+    Newforma ids."""
+    m = re.fullmatch(r"(?:RFI-|CI)0*(\d+)", clean_number(number).upper())
+    return ("rfi-alias", int(m.group(1))) if m else None
+
+
 def norm_key(number):
     """'232113-012-1', '232113-12-01', '232113-012-1.' and '232113-012-1 ' all collapse to one key."""
     parts = clean_number(number).lower().split("-")
     head = parts[0]
     tail = tuple(int(p) if p.isdigit() else p for p in parts[1:])
+    if LOG_TYPE == "rfi" and head.isdigit(): head = int(head)   # '011' == '11'
     return (head,) + tail
+
+
+def clean_text(v):
+    """Newforma's Excel export leaks CR markers (_x000D_) and record separators into long text."""
+    t = str(v or "").replace("_x000D_", "").replace("_x001E_", "").replace("\xa0", " ")
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
 
 
 def map_discipline(raw):
     s = str(raw or "").strip().lower()
     if not s: return "Other"
     names = [x.strip() for x in s.split(",") if x.strip()]
-    mapped = [DISCIPLINES.get(n) for n in names]
+    table = RFI_DISCIPLINES if LOG_TYPE == "rfi" else DISCIPLINES
+    mapped = [table.get(n) for n in names]
     if len(mapped) == 1 and mapped[0]: return mapped[0]
     if len(mapped) > 1 and all(mapped): return "Multi-Discipline"
     return "Other"
@@ -104,14 +138,54 @@ def parse_report(path):
         # workflow rows reuse the header columns positionally:
         # Project Number=ID, Project Manager=Type, ID=Action, Sender ID=Date, Package ID=From, Spec Section=To, Subject=Due, Discipline=Remarks
         typ = rec.get("Project Manager")
-        if typ in ("Received", "Forwarded", "Review Response", "Closed", "Sent", "Expected", "Pending", "Responded"):
+        if typ in ("Received", "Forwarded", "Review Response", "Closed", "Sent", "Expected", "Pending", "Responded",
+                   "Responded and Closed", "Sent and Closed", "Reopened"):
             cur["workflow"].append({"type": typ, "action": rec.get("ID"), "date": d(rec.get("Sender ID")),
                                     "from": rec.get("Package ID"), "to": rec.get("Spec Section"),
                                     "remarks": rec.get("Discipline")})
     return subs
 
 
+def to_rfi_record(sub, report_project_number):
+    h, wf = sub["head"], sub["workflow"]
+    number = clean_number(h.get("ID"))
+    nf_status = str(h.get("Status") or "").strip()
+    last_action = str(h.get("Last Action") or "").strip()
+    reviews = [w for w in wf if w["type"] == "Review Response"]
+    low = nf_status.lower()
+    if low.startswith("closed"):
+        status = "Void" if "void" in last_action.lower() else "Closed"
+    elif low.startswith(("pending", "expected")):
+        status = "Pending Sub Response"
+    elif reviews or clean_text(h.get("Answer")):
+        status = "Responded"
+    else:
+        status = "Open"
+    notes = ["Imported from Newforma", f"Newforma status: {nf_status}"]
+    if h.get("Type"): notes.append(f"Type: {h['Type']}")
+    if last_action: notes.append(f"Last action: {last_action}")
+    if h.get("Related Items"): notes.append(f"Related: {h['Related Items']}")
+    if h.get("Forwarded To"): notes.append(f"Reviewers: {h['Forwarded To']}")
+    if h.get("Internal Notes"): notes.append(f"Internal notes: {clean_text(h['Internal Notes'])}")
+    notes.append(f"Source: {SOURCE_FILE}")
+    return {
+        "id": f"nf-rfi-{report_project_number}-{number}",
+        "number": number,
+        "title": str(h.get("Subject") or "").strip(),
+        "description": clean_text(h.get("Question")),
+        "from": str(h.get("From") or h.get("Originated By") or "").strip(),
+        "discipline": map_discipline(h.get("Discipline")),
+        "assignedTo": [], "subAssigned": "",
+        "dateReceived": d(h.get("Received")), "dueDate": d(h.get("Due Date")),
+        "dateResponded": d(h.get("Response Date")) or (reviews[-1]["date"] if reviews else ""),
+        "response": clean_text(h.get("Answer")), "status": status,
+        "notes": "\n".join(notes), "spFolderUrl": "", "links": [],
+        "source": "newforma",
+    }
+
+
 def to_record(sub, pms_project_number, report_project_number):
+    if LOG_TYPE == "rfi": return to_rfi_record(sub, report_project_number)
     h, wf = sub["head"], sub["workflow"]
     number = clean_number(h.get("ID"))
     nf_status = str(h.get("Status") or "").strip()
@@ -184,27 +258,42 @@ def build_plan(subs, targets, existing):
         ex_rows = existing.get(pms_num, [])
         ex_by_key = collections.defaultdict(list)
         for e in ex_rows:
+            nf_origin = e["id"].startswith("nf-") or e.get("source") == "newforma"
+            # A June-import id carries the REPORT project it came from (nf-rfi-SAPX226021.00-019).
+            # Two Newforma projects routed onto one PMS project can share a number, so a record
+            # tagged with a different report project is never a match for this one.
+            m = re.match(r"^nf-(?:rfi|sub)-(SAP[A-Z]\d+\.\d+)-", e["id"])
+            if m and m.group(1) != rep_num: continue
             ex_by_key[norm_key(e["number"])].append(e)
             if e.get("source") == "forma" and str(e.get("ext", "")).isdigit():
                 ex_by_key[("forma", int(e["ext"]), int(e.get("rev") or 0))].append(e)
+            # A scratch record someone made to try the form ("Just testing") is never a match.
+            if LOG_TYPE == "rfi" and not nf_origin and not re.match(r"(just )?test", e.get("notes22", ""), re.I):
+                ak = rfi_alias_key(e.get("ext") or "") or rfi_alias_key(e["number"])
+                if ak: ex_by_key[ak].append(e)
         ids = [e["id"] for e in ex_rows]
         assert len(ids) == len(set(ids)), f"{pms_num}: duplicate submittal ids in the PMS, refusing to patch by id"
         patches, news, stats = {}, [], collections.Counter()
         for key, r in recs.items():
             matches = ex_by_key.get(key) or ex_by_key.get(forma_key(r["number"]))
+            if not matches and LOG_TYPE == "rfi" and isinstance(key[0], int) and len(key) == 1:
+                matches = ex_by_key.get(("rfi-alias", key[0]))
             if not matches:
                 news.append(r); stats["new"] += 1; continue
             for e in matches:
-                nf_origin = e["id"].startswith("nf-sub-") or e.get("source") == "newforma"
-                if nf_origin:
-                    p = {k: r[k] for k in OWNED}
-                    if r["comments"]: p["comments"] = r["comments"]
+                nf_origin = e["id"].startswith("nf-") or e.get("source") == "newforma"
+                human_edited = "H" in e.get("blank", "")
+                if nf_origin and not human_edited:
+                    p = {k: r[k] for k in OWNED[LOG_TYPE]}
+                    rt = REVIEW_TEXT[LOG_TYPE]
+                    if r[rt]: p[rt] = r[rt]
                     n22 = e.get("notes22", "")
                     if not n22 or n22.startswith("Imported from Newforma"): p["notes"] = r["notes"]
                     patches[e["id"]] = p; stats["refreshed"] += 1
                 else:
                     blanks = set(e.get("blank", ""))
-                    p = {BLANK_FLAG[f]: r[BLANK_FLAG[f]] for f in blanks if f in BLANK_FLAG and f != "N" and r.get(BLANK_FLAG[f]) not in ("", "—")}
+                    flags = BLANK_FLAG[LOG_TYPE]
+                    p = {flags[f]: r[flags[f]] for f in blanks if f in flags and f != "N" and r.get(flags[f]) not in ("", "—")}
                     if p: patches[e["id"]] = p; stats["filled"] += 1
                     else: stats["unchanged"] += 1
         plan[rep_num] = {"target": tgt, "patches": patches, "news": news}
@@ -220,17 +309,18 @@ def sql_literal(obj):
 
 def to_sql(rep_num, entry):
     t = entry["target"]
+    arr = "rfis" if LOG_TYPE == "rfi" else "submittals"
     guard = f" and t.version = {int(t['version'])}" if t.get("version") is not None else ""
-    return f"""-- Newforma refresh {rep_num} -> {t['projectNumber']} ({len(entry['patches'])} patched, {len(entry['news'])} appended)
+    return f"""-- Newforma {arr} refresh {rep_num} -> {t['projectNumber']} ({len(entry['patches'])} patched, {len(entry['news'])} appended)
 with p as (select {sql_literal(entry['patches'])} as patches), n as (select {sql_literal(entry['news'])} as items)
 update pms_projects t set
-  project = jsonb_set(t.project, '{{submittals}}',
+  project = jsonb_set(t.project, '{{{arr}}}',
     (select coalesce(jsonb_agg(case when (select patches from p) ? (s->>'id') then s || ((select patches from p)->(s->>'id')) else s end order by ord), '[]'::jsonb)
-       from jsonb_array_elements(coalesce(t.project->'submittals', '[]'::jsonb)) with ordinality x(s, ord))
+       from jsonb_array_elements(coalesce(t.project->'{arr}', '[]'::jsonb)) with ordinality x(s, ord))
     || (select items from n)),
   version = t.version + 1, updated_at = now()
 where t.id = '{t['id']}'{guard}
-returning t.id, t.project->>'projectNumber' as project, t.version, jsonb_array_length(t.project->'submittals') as submittals;
+returning t.id, t.project->>'projectNumber' as project, t.version, jsonb_array_length(t.project->'{arr}') as {arr};
 """
 
 
@@ -242,14 +332,15 @@ def apply_rest(plan):
         req = urllib.request.Request(f"{url}/rest/v1/pms_projects?select=id,project,version&id=eq.{rid}", headers=hdr)
         row = json.load(urllib.request.urlopen(req))[0]
         proj, ver = row["project"], row["version"]
-        arr = [dict(s, **entry["patches"][s["id"]]) if s.get("id") in entry["patches"] else s for s in proj.get("submittals", [])]
-        proj["submittals"] = arr + entry["news"]
+        key = "rfis" if LOG_TYPE == "rfi" else "submittals"
+        arr = [dict(s, **entry["patches"][s["id"]]) if s.get("id") in entry["patches"] else s for s in proj.get(key, [])]
+        proj[key] = arr + entry["news"]
         body = json.dumps({"project": proj, "version": ver + 1, "updated_at": datetime.datetime.utcnow().isoformat() + "Z"}).encode()
         req = urllib.request.Request(f"{url}/rest/v1/pms_projects?id=eq.{rid}&version=eq.{ver}", data=body, method="PATCH",
                                      headers={**hdr, "Prefer": "return=representation"})
         back = json.load(urllib.request.urlopen(req))
         if not back: sys.exit(f"{rep_num}: version race — project changed since read; re-run")
-        print(f"{rep_num}: wrote {len(proj['submittals'])} submittals (v{ver}->v{ver+1})")
+        print(f"{rep_num}: wrote {len(proj[key])} {key} (v{ver}->v{ver+1})")
 
 
 def mgmt_query(ref, token, query):
@@ -277,15 +368,17 @@ def apply_mgmt(plan, ref, token):
 
 
 def main():
-    global SOURCE_FILE
+    global SOURCE_FILE, LOG_TYPE
     ap = argparse.ArgumentParser()
     ap.add_argument("report")
     ap.add_argument("--targets", required=True)
     ap.add_argument("--existing", required=True)
     ap.add_argument("--out", default="plan")
+    ap.add_argument("--type", choices=["submittal", "rfi"], default="submittal", help="which Newforma log the report is")
     ap.add_argument("--apply", action="store_true", help="write via PostgREST (SUPABASE_URL + SUPABASE_SERVICE_KEY)")
     ap.add_argument("--apply-mgmt", metavar="PROJECT_REF", help="write via the management API (SUPABASE_ACCESS_TOKEN)")
     a = ap.parse_args()
+    LOG_TYPE = a.type
     SOURCE_FILE = re.sub(r"^[0-9a-f]{8}-", "", os.path.basename(a.report))
     subs = parse_report(a.report)
     targets = json.load(open(a.targets))
