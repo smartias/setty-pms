@@ -259,6 +259,17 @@ both proven by the `pdf-render-test` probe function and loaded lazily like unpdf
   (24M px) bounds memory; oversized PNGs re-encode as JPEG so the response stays shippable.
 - Read-only, one PDF download per call, 40MB file cap. Index pages are 1-based, PDFium 0-based —
   the `- 1` at `getPage` is pinned by a drift anchor.
+- **Page objects are single-use (1.18.2).** In `@hyzyla/pdfium`, `page.render()` closes the PDFium
+  page on its way out, so any later call on the same object (a second render, `getSize`) dies in
+  the wasm with "null function" / "null function or function signature mismatch". 1.18.1 rendered
+  once to learn the size and then re-rendered the same page whenever the size accessor was
+  missing — and 2.1.11+ of the package made `getSize()` private and throwing, so once a deploy
+  picked up the newer package every production render took that path and failed. Now: the
+  package is pinned at 2.1.9 (deno.json + deno.lock), the size is read without rendering
+  (`getSize` on 2.1.9, `getOriginalSize` on 2.1.11+), a page object is rendered at most once (the
+  size-unknown re-render uses a fresh `getPage`), a wasm-level failure re-initializes the shared
+  library and retries once, and every failure is logged. `GET /pms-mcp/health?probe=render`
+  renders an embedded PDF twice through the real path and reports `render.ok`/`ms`.
 
 ```bash
 node supabase/functions/pms-mcp/viewDrawing.test.mjs
