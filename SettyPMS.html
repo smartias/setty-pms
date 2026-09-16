@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-16-pms-v152-rfi-folder-fix";
+    window.__appVersion = "2026-09-16-pms-v153-rfi-folder-persist";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -10790,6 +10790,8 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const [emailStatus, setEmailStatus] = useState("idle");
   const [emailMsg, setEmailMsg] = useState("");
   const [spStatus, setSpStatus] = useState("idle");
+  // Latest form for async handlers (createSpFolder persists after awaits).
+  const formRef = React.useRef(form); formRef.current = form;
   const isRFI = type === "rfi";
   const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
 
@@ -11043,7 +11045,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
       }
       const fullUrl = item?.webUrl
         || (projectFolderUrl + "/" + encodeURIComponent(typLabel) + "/" + encodeURIComponent(safeName));
-      setF("spFolderUrl", fullUrl);
+      // Persist NOW. The folder exists in SharePoint from this point, so the
+      // link must not depend on the user pressing Save afterwards: closing
+      // with ✕ or Cancel used to drop it and the record reopened without a
+      // folder. Saves the form as it stands (same as pressing Save).
+      const next = { ...formRef.current, spFolderUrl: fullUrl };
+      setForm(next);
+      if (onSave) onSave(next);
       setSpStatus("done");
     } catch(e) { setSpStatus("error: " + e.message); }
   }
@@ -11247,7 +11255,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
               ) : (
                 <>
                   <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>
-                    {spStatus === "creating" ? "⏳ Creating folder…" : spStatus === "done" ? "✓ Created" : typeof spStatus === "string" && spStatus.startsWith("error") ? "✗ " + spStatus.slice(7) : "No folder created yet"}
+                    {spStatus === "creating" ? "⏳ Creating folder…" : spStatus === "done" ? "✓ Created & saved" : typeof spStatus === "string" && spStatus.startsWith("error") ? "✗ " + spStatus.slice(7) : "No folder created yet"}
                   </span>
                   <Btn small variant="ghost" onClick={createSpFolder} disabled={spStatus === "creating"}>📁 Create SP Folder</Btn>
                 </>

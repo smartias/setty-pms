@@ -686,7 +686,11 @@ async function openEditor(kind, id){
   const by = (rec.syncEditedBy||rec.loggedBy) ? `Last touched by ${esc(rec.syncEditedBy||rec.loggedBy)}${rec.syncEditedAt?" · "+esc((rec.syncEditedAt||"").slice(0,10)):""}` : (rec.source?`Imported from ${esc(rec.source)}`:"");
   const reviewUrl = caReviewSeatUrl(kind, rec, EDIT.projName, EDIT.projNum);
   document.getElementById("modal").innerHTML =
-    `<div class="mhead"><h3 id="modalTitle">${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3><button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
+    `<div class="mhead"><h3 id="modalTitle">${isNew?"Add":"Edit"} ${kind==="rfi"?"RFI":"Submittal"}</h3>`+
+    // Project reference (mirrors the main PMS modal): the tracker lists every
+    // CA job, so say which project this item belongs to.
+    ((EDIT.projNum||EDIT.projName)?`<span title="Project" style="margin-left:12px;font-size:12px;color:var(--muted)">${EDIT.projNum?`<b>${esc(EDIT.projNum)}</b>`:""}${EDIT.projNum&&EDIT.projName?" · ":""}${esc(EDIT.projName||"")}</span>`:"")+
+    `<button type="button" class="x" aria-label="Close editor" onclick="closeEditor()">✕</button></div>`+
     `<div id="aiReadyBar" style="display:none;align-items:center;gap:10px;background:var(--card2);border:1px solid var(--accent);border-radius:8px;padding:8px 12px;margin:0 18px 8px;font-size:12.5px">🤖 A new Claude review was saved for this item. <span style="flex:1"></span><button class="go" onclick="reloadEditorItem()">Reload to view</button></div>`+
     caAiPanelHtml(rec, kind)+
     `<div class="grid">${grid}${extra}</div>`+
