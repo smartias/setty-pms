@@ -263,9 +263,52 @@ for (const anchor of [
 // isolate).
 assert.ok(src.includes("_pdfiumLib = null;"), "a failed PDFium init would be cached forever");
 assert.ok(!src.includes("library.destroy"), "renderDrawingPage went back to destroying the shared PDFium library");
-for (const anchor of ['"@hyzyla/pdfium": "npm:@hyzyla/pdfium"', '"imagescript": "https://deno.land/x/imagescript@1.2.17/mod.ts"']) {
+// 1.18.2: @hyzyla/pdfium page objects are single-use (render() closes the
+// page), so the size is read without rendering and a page is rendered at most
+// once; a re-render after the 1x probe must use a FRESH page object. The
+// package is pinned because 2.1.11+ changed the size accessor and turned the
+// probe-and-re-render path into the default, which failed every render.
+for (const anchor of [
+  "function drawingPageSize",
+  "function renderDrawingPageOnce",
+  "const PDFIUM_RUNTIME_FAILURE = ",
+  "doc.getPage(pageInFile - 1).render({ scale: s, render: \"bitmap\" })",
+  "const RENDER_PROBE_PDF_B64 = ",
+  'c.req.query("probe") === "render"',
+]) {
+  assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
+}
+assert.ok(!/rendered = await pg\.render\([^;]*;\s*const s = drawingRenderScale[^;]*;\s*if \([^)]*\) rendered = await pg\.render/.test(src),
+  "renderDrawingPage renders twice on the same page object again (PDFium closes the page after render)");
+for (const anchor of ['"@hyzyla/pdfium": "npm:@hyzyla/pdfium@2.1.9"', '"imagescript": "https://deno.land/x/imagescript@1.2.17/mod.ts"']) {
   assert.ok(denoJson.includes(anchor), `deno.json lost anchor: ${anchor}`);
 }
+const denoLock = readFileSync(join(here, "deno.lock"), "utf8");
+assert.ok(denoLock.includes('"npm:@hyzyla/pdfium@2.1.9": "2.1.9"'), "deno.lock does not pin @hyzyla/pdfium");
+
+// drawingPageSize copy: 2.1.9 (public getSize), 2.1.11+ (getOriginalSize,
+// getSize private and throwing), and a page that answers neither.
+function drawingPageSize(pg) {
+  try {
+    const o = pg?.getOriginalSize?.();
+    const w = Number(o?.originalWidth ?? o?.width ?? 0), h = Number(o?.originalHeight ?? o?.height ?? 0);
+    if (w > 0 && h > 0) return { wPt: w, hPt: h };
+  } catch { /* not this build of the lib */ }
+  try {
+    const sz = pg?.getSize?.();
+    const w = Number(sz?.width ?? 0), h = Number(sz?.height ?? 0);
+    if (w > 0 && h > 0) return { wPt: w, hPt: h };
+  } catch { /* 2.1.11+: getSize is private and throws without render options */ }
+  return { wPt: 0, hPt: 0 };
+}
+assert.deepStrictEqual(drawingPageSize({ getSize: () => ({ width: 2160, height: 3024 }) }), { wPt: 2160, hPt: 3024 }, "2.1.9 page size");
+assert.deepStrictEqual(drawingPageSize({ getOriginalSize: () => ({ originalWidth: 612, originalHeight: 792 }), getSize: () => { throw new Error("Cannot destructure property 'scale'"); } }), { wPt: 612, hPt: 792 }, "2.1.13 page size");
+assert.deepStrictEqual(drawingPageSize({ getSize: () => { throw new Error("null function"); } }), { wPt: 0, hPt: 0 }, "unknown size falls back to the 1x probe");
+assert.deepStrictEqual(drawingPageSize({}), { wPt: 0, hPt: 0 }, "no accessors at all");
+const PDFIUM_RUNTIME_FAILURE = /null function|signature mismatch|memory access out of bounds|unreachable|RuntimeError|table index is out of bounds/i;
+assert.ok(PDFIUM_RUNTIME_FAILURE.test("null function or function signature mismatch"), "prod wording triggers the retry");
+assert.ok(PDFIUM_RUNTIME_FAILURE.test("RuntimeError: null function"), "local wording triggers the retry");
+assert.ok(!PDFIUM_RUNTIME_FAILURE.test("page 3 is out of range — the file has 1 page(s)"), "an ordinary error does not rebuild the library");
 // The copies above match the shipped implementations.
 for (const fn of ["function sheetLoosePattern", "function drawingRegionBox", "function drawingRenderScale", "function dedupeRevs"]) {
   assert.ok(src.includes(fn), `index.ts lost helper: ${fn}`);
