@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-15-pms-v151-region-filter";
+    window.__appVersion = "2026-09-16-pms-v152-rfi-folder-fix";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -33509,9 +33509,12 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
   <!-- JSX boot + transpile cache: blocks above are text/x-pms-jsx so Babel does
        NOT auto-run them. Transpile each once, cache (pako-deflated) in
-       localStorage keyed by __appVersion so a deploy auto-invalidates; later
-       loads skip the ~1.5MB in-browser transpile. Any failure falls back to a
-       fresh transpile - never worse than before. -->
+       localStorage keyed by __appVersion AND a hash of each block's source, so
+       a deploy auto-invalidates even when __appVersion was not bumped (a
+       forgotten bump once left browsers running the previous build's compiled
+       code after a fix shipped); later loads skip the ~1.5MB in-browser
+       transpile. Any failure falls back to a fresh transpile - never worse
+       than before. -->
   <script>
   (function () {
 "use strict";
@@ -33519,22 +33522,29 @@ var TYPE = 'text/x-pms-jsx';
 var KEY = 'pmsJsx:' + (window.__appVersion || 'dev') + ':';
 function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
 function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
-try { for (var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i);
-  if (k && k.indexOf('pmsJsx:')===0 && k.indexOf(KEY)!==0) localStorage.removeItem(k); } } catch(e){}
+// FNV-1a over the block source (~1.8MB: a few ms). Length is folded in too.
+function srcHash(str){ var h=0x811c9dc5; for (var i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,0x01000193); }
+  return (h>>>0).toString(36) + '-' + str.length.toString(36); }
+function cacheKey(src, idx){ return KEY + idx + ':' + srcHash(src); }
+function sweep(keep){ try { for (var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i);
+  if (k && k.indexOf('pmsJsx:')===0 && keep.indexOf(k)<0) localStorage.removeItem(k); } } catch(e){} }
 function inflate(b64){ var s=atob(b64), a=new Uint8Array(s.length);
   for (var i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return pako.inflate(a,{to:'string'}); }
 function deflate(str){ var d=pako.deflate(str), s='';
   for (var i=0;i<d.length;i++) s+=String.fromCharCode(d[i]); return btoa(s); }
 function compile(src, idx){
-  if (window.pako){ var c=lsGet(KEY+idx); if (c){ try { return inflate(c); } catch(e){} } }
+  var key = cacheKey(src, idx);
+  if (window.pako){ var c=lsGet(key); if (c){ try { return inflate(c); } catch(e){} } }
   var code = Babel.transform(src, { presets: ['react'] }).code;
-  if (window.pako){ try { lsSet(KEY+idx, deflate(code)); } catch(e){} }
+  if (window.pako){ try { lsSet(key, deflate(code)); } catch(e){} }
   return code;
 }
 function exec(code){ var s=document.createElement('script'); s.text=code; document.head.appendChild(s); }
 function run(){
   try {
     var b=document.querySelectorAll('script[type="'+TYPE+'"]');
+    var keep=[]; for (var j=0;j<b.length;j++) keep.push(cacheKey(b[j].textContent, j));
+    sweep(keep);
     for (var i=0;i<b.length;i++) exec(compile(b[i].textContent, i));
   } catch(e){ console.error('[pms-boot] failed to start app:', e); throw e; }
 }
