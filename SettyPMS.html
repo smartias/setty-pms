@@ -11069,6 +11069,15 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           <div>
             <div style={{ fontSize: 11, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>{isRFI ? "RFI" : "Submittal"}</div>
             <div style={{ fontWeight: 800, fontSize: 18 }}>{form.number}{odLabel && <span style={{ color: P.red, fontSize: 12, marginLeft: 10 }}>{odLabel}</span>}</div>
+            {/* Project reference — the modal floats over whichever tab opened
+                it, so say which project this item belongs to. */}
+            {(project?.projectNumber || project?.name) && (
+              <div style={{ fontSize: 12, color: P.textMuted, marginTop: 4 }} title="Project">
+                {project.projectNumber && <span style={{ fontWeight: 700, color: P.text }}>{project.projectNumber}</span>}
+                {project.projectNumber && project.name && <span> · </span>}
+                {project.name && <span>{project.name}</span>}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <select value={form.status} onChange={e => setF("status", e.target.value)}
