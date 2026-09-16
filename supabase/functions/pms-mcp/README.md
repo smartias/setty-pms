@@ -374,6 +374,18 @@ number is left alone unless `update:true`), stamped with source/provenance. Both
 signed-in-only (`qaLedgerCaller`); neither touches SharePoint or the transmittal
 register.
 
+**The feedback loop (1.19.0).** When an engineer saves an RFI/submittal record that
+carries an `aiReview` block, the PMS modal records the suggested vs. final response,
+the stamps, an outcome (`accepted` / `edited` / `replaced` / `dismissed`) and the
+reviewer's optional one-line "why" into `pms_ca_review_feedback` (migration
+`20260916120000_ca_review_feedback.sql`; one row per `(project, item, aiReview.at)`,
+written through the `SECURITY DEFINER` RPC `pms_ca_review_feedback_record`, which
+stamps the reviewer from the JWT). `search_review_feedback` is the read side: newest
+rows by project / type / discipline / outcome / reviewer, each with a sentence-level
+delta (`cutFromSuggestion`, `addedByReviewer`) or, with `full:true`, both texts. The
+submittal-rfi-review skill reads it in Step 1 before drafting. Rows follow project
+visibility like knowledge does; the connector never writes this table.
+
 ## Regions and the network-drive annex (`azureFiles.ts`)
 
 The firm runs hybrid while offices migrate to SharePoint region by region:
