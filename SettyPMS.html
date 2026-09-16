@@ -3361,6 +3361,51 @@ function safeDecodeFolderUrl(u) {
   });
 }
 
+// Per-segment encoding for Graph path addressing ("root:/A/B:/children").
+// Encoding the whole path with one encodeURIComponent turns the "/" into %2F.
+function encodeSpPath(p) {
+  return p.split("/").map(seg => encodeURIComponent(seg)).join("/");
+}
+
+// Create-or-get a subfolder under a drive-root-relative parent path and return
+// the child path. Safer than conflictBehavior:"replace", which on newer Graph
+// API can delete-and-recreate folders with their child contents, and safer
+// than a swallowed catch, which hid the underlying cause. GET first; create
+// with conflictBehavior:"fail"; re-GET on conflict (race); otherwise throw an
+// error that says what actually went wrong. Note graphFetch turns a 404 into
+// null rather than throwing, so a POST against a missing parent comes back
+// null — that is caught by the recheck and reported as a missing parent.
+async function ensureSpSubfolder(driveId, parentPath, folderName) {
+  const childPath = parentPath + "/" + folderName;
+  const childUrl = "/drives/" + driveId + "/root:/" + encodeSpPath(childPath);
+  try {
+    const existing = await graphFetch("GET", childUrl);
+    if (existing?.id) return childPath;
+  } catch (getErr) {
+    // Other errors propagate via the create path below.
+  }
+  let createErr = null;
+  try {
+    const created = await graphFetch("POST",
+      "/drives/" + driveId + "/root:/" + encodeSpPath(parentPath) + ":/children",
+      { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
+    if (created?.id) return childPath;
+  } catch (e) { createErr = e; }
+  // Conflict (someone created it between our GET and POST) or a 404 swallowed
+  // by graphFetch: one more GET to confirm before surfacing an error.
+  try {
+    const recheck = await graphFetch("GET", childUrl);
+    if (recheck?.id) return childPath;
+  } catch { /* fall through */ }
+  const em = (createErr && createErr.message) || "";
+  const msg = em.includes("Graph 403")
+    ? "Permission denied creating '" + folderName + "' under '" + parentPath + "'. Check that you have edit access to the project folder in SharePoint."
+    : (!createErr || em.includes("Graph 404"))
+    ? "Parent folder '" + parentPath + "' was not found in SharePoint. The Overview-tab folder URL may be stale — re-create or re-link it."
+    : "Failed to create '" + folderName + "': " + (em || "unknown error");
+  throw new Error(msg);
+}
+
 async function createMilestoneSpFolder(project, milestone) {
   const { driveId } = await resolveSpIds();
   const projectFolderUrl = (project.projectFolderUrl || "").trim();
@@ -3385,45 +3430,8 @@ async function createMilestoneSpFolder(project, milestone) {
   const safeName = (datePrefix + (milestone.name || "Milestone")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
   if (!safeName) throw new Error("Milestone name is empty after sanitization.");
 
-  const encodePath = p => p.split("/").map(seg => encodeURIComponent(seg)).join("/");
-
-  // Safer create-or-get pattern. Previous code used conflictBehavior:"replace"
-  // which on newer Graph API can delete-and-recreate folders with their child
-  // contents — and threw silent errors that the catch swallowed without
-  // surfacing the underlying cause. Now: fail on conflict, GET to verify, only
-  // throw if neither create nor lookup succeeds. Errors carry context so the
-  // button can show a meaningful tooltip.
-  async function ensureF(parentPath, folderName) {
-    const childUrl = "/drives/" + driveId + "/root:/" + encodePath(parentPath + "/" + folderName);
-    // Try GET first — if folder already exists, no write needed.
-    try {
-      const existing = await graphFetch("GET", childUrl);
-      if (existing?.id) return parentPath + "/" + folderName;
-    } catch (getErr) {
-      // 404 expected if folder missing; other errors propagate via the create path.
-    }
-    // Doesn't exist — create it. conflictBehavior:fail so we don't accidentally
-    // overwrite something with the same name (e.g., a file).
-    try {
-      await graphFetch("POST",
-        "/drives/" + driveId + "/root:/" + encodePath(parentPath) + ":/children",
-        { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
-      return parentPath + "/" + folderName;
-    } catch (createErr) {
-      // Race condition: someone else created it between our GET and POST.
-      // One more GET to confirm. If that also fails, surface the real error.
-      try {
-        const recheck = await graphFetch("GET", childUrl);
-        if (recheck?.id) return parentPath + "/" + folderName;
-      } catch { /* fall through */ }
-      const msg = (createErr.message || "").includes("Graph 403")
-        ? "Permission denied creating '" + folderName + "' under '" + parentPath + "'. Check that you have edit access to the project folder in SharePoint."
-        : (createErr.message || "").includes("Graph 404")
-        ? "Parent folder '" + parentPath + "' was not found in SharePoint. The Overview-tab folder URL may be stale — re-create or re-link it."
-        : "Failed to create '" + folderName + "': " + (createErr.message || "unknown error");
-      throw new Error(msg);
-    }
-  }
+  const encodePath = encodeSpPath;
+  const ensureF = (parentPath, folderName) => ensureSpSubfolder(driveId, parentPath, folderName);
 
   const outgoingPath = await ensureF(projFolderName, "Outgoing");
   const docSetPath = await ensureF(outgoingPath, safeName);
@@ -11011,19 +11019,32 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     setSpStatus("creating");
     try {
       const { driveId } = await resolveSpIds();
-      const urlParts = project.projectFolderUrl.split("/");
-      const projFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]);
+      const projectFolderUrl = String(project.projectFolderUrl).trim().replace(/\/+$/, "");
+      const urlParts = projectFolderUrl.split("/");
+      const projFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]).trim();
+      if (!projFolderName) throw new Error("Could not parse project folder name from URL: " + projectFolderUrl);
       const typLabel = isRFI ? "RFIs" : "Submittals";
       const itemName = form.number + (isRFI ? " " + form.title : " " + form.description);
       const safeName = itemName.replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
-      async function ensureF(parent, name) {
-        try { await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodeURIComponent(parent) + ":/children", { name, folder: {}, "@microsoft.graph.conflictBehavior": "replace" }); } catch(e) {}
-        return parent + "/" + name;
-      }
-      const typeFolder = await ensureF(projFolderName, typLabel);
-      const itemFolder = await ensureF(typeFolder, safeName);
+      if (!safeName) throw new Error("Folder name is empty after sanitization.");
+      // Shared create-or-get helper: never conflictBehavior:"replace" (can wipe
+      // an existing folder's contents) and never a swallowed error (used to
+      // report "✓ Created" when nothing was created).
+      const typeFolder = await ensureSpSubfolder(driveId, projFolderName, typLabel);
+      const itemFolder = await ensureSpSubfolder(driveId, typeFolder, safeName);
       await writeSharePointMetadataSidecar(driveId, itemFolder, buildPmsMetadata(project, isRFI ? PMS_DOC_TYPES.RFI : PMS_DOC_TYPES.SUBMITTAL));
-      const fullUrl = project.projectFolderUrl.split("/").slice(0, -1).join("/") + "/" + typLabel + "/" + encodeURIComponent(safeName);
+      // Take the link from Graph rather than assembling it by hand. The old
+      // code chopped the project folder off projectFolderUrl and appended
+      // "/RFIs/<name>", which pointed one level too high and opened SharePoint's
+      // "404 NOT FOUND" page. Fall back to a correctly built URL only if Graph
+      // withholds webUrl.
+      let item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(itemFolder));
+      if (!item?.webUrl) {
+        await new Promise(r => setTimeout(r, 800));
+        item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(itemFolder));
+      }
+      const fullUrl = item?.webUrl
+        || (projectFolderUrl + "/" + encodeURIComponent(typLabel) + "/" + encodeURIComponent(safeName));
       setF("spFolderUrl", fullUrl);
       setSpStatus("done");
     } catch(e) { setSpStatus("error: " + e.message); }
@@ -11204,6 +11225,17 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                     style={{ background: "#0078d4", color: "#fff", borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
                     📁 Open
                   </a>
+                  {/* Re-resolve the link from Graph. Items saved before the
+                      fix carry a URL one level too high (SharePoint "404 NOT
+                      FOUND"); createSpFolder is create-or-get, so this only
+                      rewrites the link when the folder already exists. */}
+                  <Btn small variant="ghost" onClick={createSpFolder} disabled={spStatus === "creating"}
+                    title="Re-resolve this link from SharePoint (fixes a link that opens 404)">
+                    {spStatus === "creating" ? "⏳" : "↻ Re-link"}
+                  </Btn>
+                  {typeof spStatus === "string" && spStatus.startsWith("error") && (
+                    <span style={{ fontSize: 11, color: P.red, whiteSpace: "nowrap" }}>✗ {spStatus.slice(7)}</span>
+                  )}
                 </>
               ) : (
                 <>
