@@ -3,11 +3,11 @@
 **Read this first in any Claude session, on either computer or account.**
 Last updated 2026-09-17 14:10 UTC from a cloud session.
 
-**Where the code is (corrected 2026-09-17):** the uncommitted slice is in the
-Cowork sandbox on the WORK computer (Windows profile `sara.arias`), at
-`~/repos/setty-pms` *inside Cowork's Linux sandbox*. It is not on `C:\` and not
-on the home laptop (profile `arias`). PowerShell cannot see it; only a Cowork
-session started in the OneDrive `PMS` folder on the work computer can.
+**Where the code is (confirmed 2026-09-17 14:30 UTC):** the uncommitted slice
+is in the clone at **`C:\Users\sara.arias\repos\setty-pms`** on the WORK
+computer. `~/repos/setty-pms` in the memory note is that same folder (`~` is
+the Windows profile). It is not on the home laptop (profile `arias`). Plain
+PowerShell in that folder is enough; no Cowork session needed.
 
 This file is committed to the repo on purpose. The repo is the only place both
 computers and both Claude accounts can see. Anything that lives only on one
@@ -17,7 +17,7 @@ combinations, which is how the plot got lost.
 Update the checklist at the bottom whenever a step is done, commit, push.
 Delete this file in the same commit that finishes the last step.
 
-## What changed on 2026-09-17 (read this before the push from Cowork)
+## What changed on 2026-09-17 (read this before the push from the work computer)
 
 Overnight, another session merged 13 commits to `main` (PRs up to #280) and
 deployed them. Two consequences:
@@ -31,13 +31,13 @@ deployed them. Two consequences:
    `pms_region_shares` rows (BT, DC x2, NY) are intact. That step is done.
 
 2. **Version collision.** `main` already carries a connector **1.19.0**
-   (`search_review_feedback`, PR #280) and SettyPMS **v154**. The Cowork clone's
+   (`search_review_feedback`, PR #280) and SettyPMS **v154**. The work-computer clone's
    uncommitted slice is also numbered 1.19.0 and v152. They are different
-   changes. The Cowork slice must be renumbered before it lands:
+   changes. The work-computer slice must be renumbered before it lands:
    - connector `version` → **1.20.0**, `BUILD` → a fresh 2026-09-xx string
    - `window.__appVersion` in `SettyPMS.html` → **v155** (see `CLAUDE.md`
      rule 1; the file is CRLF, rule 2)
-   - do not let the Cowork clone's `index.ts` overwrite main's: main's 1.19.0
+   - do not let the work-computer clone's `index.ts` overwrite main's: main's 1.19.0
      added `search_review_feedback`, `reviewFeedback.test.mjs`, the
      `20260916120000_ca_review_feedback.sql` migration, and the 1.18.2
      `view_drawing` PDFium fix. Merge, do not replace.
@@ -46,17 +46,17 @@ deployed them. Two consequences:
 
 | Where | What it has | What it cannot see |
 |---|---|---|
-| Work computer (`sara.arias`), Cowork sandbox clone at `~/repos/setty-pms` | The built and tested comment-responses slice, **uncommitted**, plus the full `HANDOFF-2026-09-16-comment-responses.md` in the clone root. Memory notes in OneDrive `PMS\.claude-memory` | Nothing from cloud sessions until it is pushed |
+| Work computer, clone at `C:\Users\sara.arias\repos\setty-pms` | The built and tested comment-responses slice, **uncommitted**, plus the full `HANDOFF-2026-09-16-comment-responses.md` in the clone root. Memory notes in OneDrive `PMS\.claude-memory` | Nothing from cloud sessions until it is pushed |
 | Home laptop (`arias`) | Nothing relevant. No clone. | Everything |
-| Cloud sessions (either Claude account) | Only what is on GitHub | The Cowork sandbox, the OneDrive memory notes |
+| Cloud sessions (either Claude account) | Only what is on GitHub | The work-computer clone, the OneDrive memory notes |
 | GitHub `smartias/setty-pms` | `main` at connector 1.19.0 / PMS v154; this branch = main + this file | The comment-responses slice, until step 0 |
-| Supabase `ProjectManagement` (`khxmgjilwhdguuepbhne`) | Live connector 1.19.0 `2026-09-16-review-feedback`; legacy columns dropped | Nothing from the Cowork clone |
+| Supabase `ProjectManagement` (`khxmgjilwhdguuepbhne`) | Live connector 1.19.0 `2026-09-16-review-feedback`; legacy columns dropped | Nothing from the work-computer clone |
 
 Rule going forward: **never end a session with uncommitted work.** Push to any
 branch, even a scratch one, before switching machines or accounts. A handoff
 note goes in the repo, not on disk.
 
-## What was built in the work-computer Cowork clone (uncommitted, per the memory note)
+## What was built in the work-computer clone (uncommitted, per the memory note)
 
 - Connector with the `save_comment_responses` tool (renumber to 1.20.0)
 - Migration `supabase/migrations/20260916000000_qa_comment_responses.sql`
@@ -75,26 +75,25 @@ note goes in the repo, not on disk.
 | `origin/main` connector source | 1.19.0, same build string |
 | Comment-response columns on `pms_qa_findings` | Applied (`ai_response`, `response`, `response_disposition`, `response_by`, `response_at`) |
 | `azure_share_url`, `azure_sas_env` on `pms_regions` | **Dropped 2026-09-17.** Done. |
-| `proposal-draft` Edge Function | Version 5 on Supabase; Cowork-clone change not deployed |
+| `proposal-draft` Edge Function | Version 5 on Supabase; work-computer change not deployed |
 | SettyAdmin "Live" row | Stale: still says build `2026-09-15-ca-on-drives` (1.18.0) |
 
 ## Steps, in order
 
-### Step 0. Work computer, in Cowork: get the code onto GitHub (the only blocking step)
+### Step 0. Work computer, PowerShell: get the code onto GitHub (the only blocking step)
 
-Open the Claude desktop app on the work computer, start a Cowork session in
-`OneDrive - Setty and Associates\PMS`, and have it run the following in
-`~/repos/setty-pms`. Commit first so nothing can be lost. The simplest safe
-move is to push to a scratch branch and let a cloud session do the merge:
+In PowerShell, in `C:\Users\sara.arias\repos\setty-pms`. Commit first so
+nothing can be lost. The simplest safe move is to push to a scratch branch and
+let a cloud session do the merge:
 
 ```
-git -C ~/repos/setty-pms status
-git -C ~/repos/setty-pms add -A
-git -C ~/repos/setty-pms commit -m "Review-comment responses: connector save_comment_responses, migration, skill, PMS QA Reviews UI"
-git -C ~/repos/setty-pms push origin HEAD:laptop/comment-responses
+git status
+git add -A
+git commit -m "Review-comment responses: connector save_comment_responses, migration, skill, PMS QA Reviews UI"
+git push origin HEAD:laptop/comment-responses
 ```
 
-If you would rather finish the merge in Cowork, bring in this branch before
+If you would rather finish the merge locally, bring in this branch before
 pushing, because `index.ts` and `SettyPMS.html` will conflict:
 
 ```
@@ -153,7 +152,7 @@ Send IT the six skill zips from `PMS\Skill Uploads` dated 2026-09-16.
 
 ## Checklist
 
-- [ ] 0. Work computer (Cowork): commit and push to `laptop/comment-responses`; cloud session merges and renumbers to 1.20.0 / v155
+- [ ] 0. Work computer (PowerShell): commit and push to `laptop/comment-responses`; cloud session merges and renumbers to 1.20.0 / v155
 - [ ] 1. Tests pass; version, BUILD, and both new tools confirmed in the diff
 - [ ] 2a. `pms-mcp` deployed; health link shows the new build
 - [ ] 2b. `proposal-draft` deployed
