@@ -17,7 +17,7 @@ combinations, which is how the plot got lost.
 Update the checklist at the bottom whenever a step is done, commit, push.
 Delete this file in the same commit that finishes the last step.
 
-## What changed on 2026-09-17 (read this before the laptop push)
+## What changed on 2026-09-17 (read this before the push from Cowork)
 
 Overnight, another session merged 13 commits to `main` (PRs up to #280) and
 deployed them. Two consequences:
@@ -31,13 +31,13 @@ deployed them. Two consequences:
    `pms_region_shares` rows (BT, DC x2, NY) are intact. That step is done.
 
 2. **Version collision.** `main` already carries a connector **1.19.0**
-   (`search_review_feedback`, PR #280) and SettyPMS **v154**. The laptop's
+   (`search_review_feedback`, PR #280) and SettyPMS **v154**. The Cowork clone's
    uncommitted slice is also numbered 1.19.0 and v152. They are different
-   changes. The laptop slice must be renumbered before it lands:
+   changes. The Cowork slice must be renumbered before it lands:
    - connector `version` → **1.20.0**, `BUILD` → a fresh 2026-09-xx string
    - `window.__appVersion` in `SettyPMS.html` → **v155** (see `CLAUDE.md`
      rule 1; the file is CRLF, rule 2)
-   - do not let the laptop's `index.ts` overwrite main's: main's 1.19.0
+   - do not let the Cowork clone's `index.ts` overwrite main's: main's 1.19.0
      added `search_review_feedback`, `reviewFeedback.test.mjs`, the
      `20260916120000_ca_review_feedback.sql` migration, and the 1.18.2
      `view_drawing` PDFium fix. Merge, do not replace.
@@ -50,7 +50,7 @@ deployed them. Two consequences:
 | Home laptop (`arias`) | Nothing relevant. No clone. | Everything |
 | Cloud sessions (either Claude account) | Only what is on GitHub | The Cowork sandbox, the OneDrive memory notes |
 | GitHub `smartias/setty-pms` | `main` at connector 1.19.0 / PMS v154; this branch = main + this file | The comment-responses slice, until step 0 |
-| Supabase `ProjectManagement` (`khxmgjilwhdguuepbhne`) | Live connector 1.19.0 `2026-09-16-review-feedback`; legacy columns dropped | Nothing from the laptop |
+| Supabase `ProjectManagement` (`khxmgjilwhdguuepbhne`) | Live connector 1.19.0 `2026-09-16-review-feedback`; legacy columns dropped | Nothing from the Cowork clone |
 
 Rule going forward: **never end a session with uncommitted work.** Push to any
 branch, even a scratch one, before switching machines or accounts. A handoff
@@ -75,7 +75,7 @@ note goes in the repo, not on disk.
 | `origin/main` connector source | 1.19.0, same build string |
 | Comment-response columns on `pms_qa_findings` | Applied (`ai_response`, `response`, `response_disposition`, `response_by`, `response_at`) |
 | `azure_share_url`, `azure_sas_env` on `pms_regions` | **Dropped 2026-09-17.** Done. |
-| `proposal-draft` Edge Function | Version 5 on Supabase; laptop change not deployed |
+| `proposal-draft` Edge Function | Version 5 on Supabase; Cowork-clone change not deployed |
 | SettyAdmin "Live" row | Stale: still says build `2026-09-15-ca-on-drives` (1.18.0) |
 
 ## Steps, in order
