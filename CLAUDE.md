@@ -63,3 +63,37 @@ browser (PMS pages) or from the connector (app permissions).
   summaries of the change.
 - Keep PRs to one concern; a version bump rides with the JSX change it
   belongs to.
+
+## Proposal pipeline (Word export + AI drafting)
+
+- `setty-docx.js` renders the proposal .docx from the SharePoint tokenized
+  template and REPAIRS template defects at render time (numbering restarts,
+  heading spacing, stale office address/FPID, fee fill, trailing blank
+  pages). Its contract lives in `setty-docx.proposal.test.mjs` — a
+  self-contained fixture reproducing the real template's structures
+  (split runs, pPr paragraph-mark rPr, CRLF-era quirks). Run it on any
+  change; extend the fixture when a new template structure bites.
+- Word paragraph properties are ORDER-SENSITIVE inside `<w:pPr>`: insert via
+  `withPPr`/`pPrInsert`, never by appending before `</w:pPr>` (elements after
+  the paragraph-mark `<w:rPr>` are silently ignored by Word).
+- Template text is fragmented across runs (rsid splits): replace values via
+  `replaceInParagraph` (character-stream mapping), never by writing into
+  runs by position.
+- Scope boxes hold stamped clause HTML with `data-clause`, `data-discipline`,
+  `data-phase` and prime tags; filters re-run at BOTH stamp time and Word
+  export (`assembleProposalDocx`), so toggling disciplines/phases after
+  import still adjusts the document.
+- The drafting rules live in TWO places that must stay in sync:
+  `buildClaudeDraftPrompt` (SettyPMS.html) and
+  `supabase/functions/proposal-draft/index.ts`. The edge function only
+  updates on `deploy_edge_function` / `supabase functions deploy` — a repo
+  merge alone does not ship it.
+- Clause library = `pms_proposal_clauses` (Supabase). UPDATEs auto-archive
+  and bump `version` via trigger; the Admin Console PATCHes rows directly,
+  so targeted SQL edits are equivalent. Per-phase deliverables clauses are
+  `inc-deliv-*`; the combined `inc-deliverables` bullets filter by phase
+  codes from `project.phases` (PMs rename/reuse codes, so selection-by-key
+  is the intent signal, tags are only guards).
+- `pms_projects` rows use optimistic concurrency (`version` column): any
+  direct SQL edit must bump `version` and the user must refresh open PMS
+  tabs afterward or they'll hit save conflicts.
