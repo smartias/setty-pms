@@ -1,0 +1,23 @@
+{
+  "region": "NY",
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "clientId": "00000000-0000-0000-0000-000000000000",
+  "clientSecretEnv": "SETTY_SYNC_CLIENT_SECRET",
+  "siteUrl": "https://setty.sharepoint.com/sites/NYCProjects",
+  "docLibrary": "Project Document Library",
+  "sources": ["N:\\SAP", "N:\\SAIG", "N:\\SAG"],
+  "projectFolderPattern": "^[A-Z]{3,5}\\d{6}\\.\\d{2}",
+  "yearFolderPattern": "^\\d{4}$",
+  "outgoingMatch": "outgoing",
+  "sinceDays": 7,
+  "overlapHours": 2,
+  "maxFilesPerRun": 500,
+  "maxFileBytes": 2147483648,
+  "skipPatterns": ["~$*", "*.tmp", "Thumbs.db", "desktop.ini", ".DS_Store", "*.lock", "*.crdownload", "*.partial"],
+  "createOutgoingIfMissing": true,
+  "preserveTimestamps": true,
+  "stateDir": "C:\\ProgramData\\SettyPMS\\n-drive-sync",
+  "projectOverrides": {
+    "SAPQ256919.01": "SAPQ256919.01 - Example folder whose SharePoint name does not start with the number"
+  }
+}
