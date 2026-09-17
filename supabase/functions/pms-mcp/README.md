@@ -403,6 +403,15 @@ the Admin console's Regions tab) maps a project's PMS **team code** to:
   and W: drives. The legacy single-share columns on `pms_regions` are a
   fallback for a team the table has no rows for (one release, then dropped).
 
+**Storage rule: every office but NY is drive-first.** DC and Baltimore work
+from their network drives, so their region rows are `storage_kind =
+azure_files`: the drive is the record and the connector never consults the
+region's SharePoint site. SharePoint-as-record (`sharepoint`, drives as
+annexes) is the NY exception. The Admin console's Regions tab defaults a new
+region to drive-first since v27; BT had been saved SharePoint-first by the
+old default, which is how Tivoly ended up at a Graph 403 with its SAOP folder
+in reach the whole time.
+
 **A region's SharePoint site needs its own Graph grant.** The connector reads
 SharePoint app-only with `Sites.Selected`, which IT (Nikhil) grants one site
 at a time to the "Setty PMS - Claude Connector" app registration

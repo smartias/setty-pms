@@ -81,9 +81,11 @@ export function regionAccessError(team: string | null | undefined, siteRef: stri
         `for the "${CONNECTOR_APP_NAME}" app yet, or the region row names the wrong site. Every SharePoint tool on ` +
         `${where}'s projects fails the same way until one of those is fixed.`,
       nextStep:
-        `Either IT (Nikhil) grants the "${CONNECTOR_APP_NAME}" app registration (client id ${CONNECTOR_APP_ID_PREFIX}…) read access on ` +
-        `${site} through Sites.Selected, or an admin points ${where} at the site the project folders actually live on ` +
-        `(Admin console → Regions). GET /pms-mcp/health?probe=regions shows which region sites the connector can reach. ` +
+        `If this office works from the network drive (every office but NY does), an admin sets ${where}'s Storage to ` +
+        `"Azure share" in Admin console → Regions: the drive becomes the record and this site is not consulted at all. ` +
+        `If SharePoint is meant to be the record here, either IT (Nikhil) grants the "${CONNECTOR_APP_NAME}" app registration ` +
+        `(client id ${CONNECTOR_APP_ID_PREFIX}…) read access on ${site} through Sites.Selected, or the region is pointed at the site ` +
+        `the project folders actually live on. GET /pms-mcp/health?probe=regions shows which region sites the connector can reach. ` +
         `Meanwhile a region with network-drive shares registered is served from them: browsing, reading, the drawing index, ` +
         `sheet index and current set work off the drive (results carry a \`sharepoint\` block with this error); search by ` +
         `description, photos, transmittal staging and filing wait for the site.`,

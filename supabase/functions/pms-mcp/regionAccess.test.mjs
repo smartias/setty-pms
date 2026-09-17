@@ -35,7 +35,9 @@ check(/region BT/i.test(e403.message) && e403.message.includes(BT_SITE), "the me
 check(e403.message.includes("Sites.Selected") && e403.message.includes(CONNECTOR_APP_NAME), "…and says the grant is per site, for the connector app");
 check(/Every SharePoint tool on region BT/.test(e403.message), "…and that every SharePoint tool on the region fails the same way (not a broken project)");
 check(e403.nextStep.includes(CONNECTOR_APP_ID_PREFIX) && /Admin console → Regions/.test(e403.nextStep) && e403.nextStep.includes("health?probe=regions"),
-  "nextStep names the app id, the Regions tab alternative, and the probe");
+  "nextStep names the app id, the Regions tab, and the probe");
+check(e403.nextStep.indexOf('Storage to "Azure share"') < e403.nextStep.indexOf("Sites.Selected") && /every office but NY/.test(e403.nextStep),
+  "nextStep leads with making the drive the record (the rule for every office but NY), before the IT grant");
 check(/served from them/.test(e403.nextStep) && /drawing index/.test(e403.nextStep), "nextStep says the region's drives serve the project meanwhile");
 check(regionAccessError("bt", BT_SITE, DENIED).team === "BT", "team is normalised");
 check(/default \(NY\) region/.test(regionAccessError(null, "ny-site-id", DENIED).message), "no team reads as the default region");

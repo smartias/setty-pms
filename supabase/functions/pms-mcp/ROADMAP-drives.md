@@ -32,7 +32,7 @@ single-share columns on `pms_regions` are gone):
 | Team | Storage | Drives (label → share) | Secret |
 |---|---|---|---|
 | NY | SharePoint + annex | N → `newyorkstorage` root (SAP, SAIG, SAG entity folders, then year) | `AZURE_SAS_NY` |
-| BT | SharePoint + annex | SAOP → `saoperation` | `AZURE_SAS_BT` |
+| BT | SharePoint + annex (should be Azure only, like DC: see "Not done yet" 3) | SAOP → `saoperation` | `AZURE_SAS_BT` |
 | DC | Azure only | I → `ffxfileshare/SAi_Projects`; W → `ffxfileshare/SA_Private_Projects` | `AZURE_SAS_I`, `AZURE_SAS_W` |
 
 The ffxfilestorage token expires **31 March 2028**. The filestoragesetty
@@ -120,13 +120,15 @@ matrix is on the Regions tab. Live connector as of 17 Sep: build
    `Graph 403 accessDenied` on `/sites/<BT site>/drives`: the app's
    `Sites.Selected` grant covers NYCProjects, not the Baltimore site. Its PMS
    record's `projectFolderUrl` is on NYCProjects anyway (the PMS app creates
-   every folder on its hardcoded drive). Two ways out, either one unblocks
-   every tool on BT: (a) IT grants the "Setty PMS - Claude Connector" app
-   read on the Baltimore site, then confirm it has a Project Document
-   Library and move/create the folder there; or (b) point region BT at
-   NYCProjects in Admin → Regions until Baltimore's site is ready (no grant
-   needed). `GET /pms-mcp/health?probe=regions` (1.19.1) shows the live
-   answer per region. The SAOP annex was never the problem: the SharePoint
+   every folder on its hardcoded drive). **The fix is the row**: Baltimore
+   works from its drive like DC, so set BT's Storage to "Network drive is
+   the record" in Admin → Regions (SAOP stays the one share). That takes
+   effect on the LIVE connector within 5 minutes, no deploy, and the
+   Baltimore site is not consulted at all. Only if Baltimore is meant to
+   move its record into SharePoint: IT grants the "Setty PMS - Claude
+   Connector" app read on that site, confirm it has a Project Document
+   Library, then flip Storage back. `GET /pms-mcp/health?probe=regions`
+   (1.19.1) shows the live answer per region. The SAOP annex was never the problem: the SharePoint
    call failed first and hid it; since 1.19.1 a refused region with drive
    shares is served from them (Tivoly browses, reads and indexes off SAOP,
    with the site refusal reported alongside) until the site is fixed.
