@@ -177,6 +177,12 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v26 (17 Sep 2026) — Claude/MCP tab gains a "Skill library sync" card:
+// the three repo skills (qa-coordination-review, submittal-rfi-review,
+// design-narrative) with the PMS button that launches each, and the rule
+// that a claude.ai/new chat-button session only loads a skill if it is in
+// the firm's claude.ai skill library, never from this repo. Tracks item 5
+// of the QA review schedule (ROADMAP), which needs an org Owner.
 // v25 (15 Sep 2026) — the legacy single-share columns on pms_regions
 // (azure_share_url, azure_sas_env) are gone; the Regions tab reads and saves
 // drives through pms_region_shares only.
@@ -2327,6 +2333,33 @@ function renderMcp() {
         service lane (Claude Code / scripts via the shared secret) or a call from before identity landed. An <b>empty</b>
         outcome is the number to watch: it is a person who asked and got nothing, and it sends them back to the N: drive.</p>
       <div id="mcpAuditBox"><div class="empty">Loading usage…</div></div>
+    </div>
+
+    <div class="card doc">
+      <div class="sechead">🧩 Skill library sync — do the chat buttons land on the skills?</div>
+      <p style="font-size:12.5px;color:var(--muted);margin-top:2px">The PMS buttons that open a Claude seat
+        (<code>claude.ai/new?q=…</code>) name a skill in the prompt, and a chat session loads skills only from the
+        firm's <b>claude.ai skill library</b>, never from this repo. The skills are versioned under
+        <code>.claude/skills/&lt;name&gt;/SKILL.md</code>, so every change there has to be re-uploaded to the library or
+        the buttons keep running the old text (or none). Adding to the library is an <b>Organization Owner</b> step
+        (Organization settings → Capabilities / Skills), like the org-wide connector row below. Item 5 of the QA
+        review schedule in <code>pms-mcp/ROADMAP.md</code>.</p>
+      <table><thead><tr><th>Skill</th><th>Launched from</th><th>Repo source</th><th>In the library?</th></tr></thead><tbody>
+        <tr><td><code>qa-coordination-review</code></td><td>PMS → project QA tab → <b>Run Coordination Review</b></td>
+            <td><code>.claude/skills/qa-coordination-review/SKILL.md</code></td>
+            <td><span class="pill warn">Needs Owner</span> <span style="color:var(--muted);font-size:11.5px">upload once, re-upload after every skill PR</span></td></tr>
+        <tr><td><code>submittal-rfi-review</code></td><td>PMS → RFI / Submittal modal → <b>Send to Claude for review</b>, <b>Pull reply from email</b>, and the log's <b>Backload from PDF/email</b> links</td>
+            <td><code>.claude/skills/submittal-rfi-review/SKILL.md</code></td>
+            <td><span class="pill warn">Needs Owner</span> <span style="color:var(--muted);font-size:11.5px">reviewer feedback (search_review_feedback, 1.19.0) is read by the skill, so stale copies miss it</span></td></tr>
+        <tr><td><code>design-narrative</code></td><td>No PMS button yet; asked for by name in chat</td>
+            <td><code>.claude/skills/design-narrative/SKILL.md</code></td>
+            <td><span class="pill warn">Needs Owner</span></td></tr>
+      </tbody></table>
+      <p style="font-size:12px;color:var(--muted)"><b>How to check:</b> open a fresh claude.ai chat, type <code>/</code> and look
+        for the skill name; or press a PMS button and confirm the session follows the skill's steps (checklist by item id, ledger
+        writes) instead of improvising. Claude Code sessions on the repo are unaffected: they read the skills from disk. Until the
+        library carries them, the buttons still work because the prompts spell out the tools to call, but the tiers, evidence rules
+        and ripple analysis live only in the skill text. Mark a row done here when the upload is confirmed.</p>
     </div>
 
     <div class="card doc">
