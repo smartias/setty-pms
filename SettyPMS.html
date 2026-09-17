@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-15-pms-v151-region-filter";
+    window.__appVersion = "2026-09-16-pms-v154-ca-review-feedback";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -3361,6 +3361,51 @@ function safeDecodeFolderUrl(u) {
   });
 }
 
+// Per-segment encoding for Graph path addressing ("root:/A/B:/children").
+// Encoding the whole path with one encodeURIComponent turns the "/" into %2F.
+function encodeSpPath(p) {
+  return p.split("/").map(seg => encodeURIComponent(seg)).join("/");
+}
+
+// Create-or-get a subfolder under a drive-root-relative parent path and return
+// the child path. Safer than conflictBehavior:"replace", which on newer Graph
+// API can delete-and-recreate folders with their child contents, and safer
+// than a swallowed catch, which hid the underlying cause. GET first; create
+// with conflictBehavior:"fail"; re-GET on conflict (race); otherwise throw an
+// error that says what actually went wrong. Note graphFetch turns a 404 into
+// null rather than throwing, so a POST against a missing parent comes back
+// null — that is caught by the recheck and reported as a missing parent.
+async function ensureSpSubfolder(driveId, parentPath, folderName) {
+  const childPath = parentPath + "/" + folderName;
+  const childUrl = "/drives/" + driveId + "/root:/" + encodeSpPath(childPath);
+  try {
+    const existing = await graphFetch("GET", childUrl);
+    if (existing?.id) return childPath;
+  } catch (getErr) {
+    // Other errors propagate via the create path below.
+  }
+  let createErr = null;
+  try {
+    const created = await graphFetch("POST",
+      "/drives/" + driveId + "/root:/" + encodeSpPath(parentPath) + ":/children",
+      { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
+    if (created?.id) return childPath;
+  } catch (e) { createErr = e; }
+  // Conflict (someone created it between our GET and POST) or a 404 swallowed
+  // by graphFetch: one more GET to confirm before surfacing an error.
+  try {
+    const recheck = await graphFetch("GET", childUrl);
+    if (recheck?.id) return childPath;
+  } catch { /* fall through */ }
+  const em = (createErr && createErr.message) || "";
+  const msg = em.includes("Graph 403")
+    ? "Permission denied creating '" + folderName + "' under '" + parentPath + "'. Check that you have edit access to the project folder in SharePoint."
+    : (!createErr || em.includes("Graph 404"))
+    ? "Parent folder '" + parentPath + "' was not found in SharePoint. The Overview-tab folder URL may be stale — re-create or re-link it."
+    : "Failed to create '" + folderName + "': " + (em || "unknown error");
+  throw new Error(msg);
+}
+
 async function createMilestoneSpFolder(project, milestone) {
   const { driveId } = await resolveSpIds();
   const projectFolderUrl = (project.projectFolderUrl || "").trim();
@@ -3385,45 +3430,8 @@ async function createMilestoneSpFolder(project, milestone) {
   const safeName = (datePrefix + (milestone.name || "Milestone")).replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
   if (!safeName) throw new Error("Milestone name is empty after sanitization.");
 
-  const encodePath = p => p.split("/").map(seg => encodeURIComponent(seg)).join("/");
-
-  // Safer create-or-get pattern. Previous code used conflictBehavior:"replace"
-  // which on newer Graph API can delete-and-recreate folders with their child
-  // contents — and threw silent errors that the catch swallowed without
-  // surfacing the underlying cause. Now: fail on conflict, GET to verify, only
-  // throw if neither create nor lookup succeeds. Errors carry context so the
-  // button can show a meaningful tooltip.
-  async function ensureF(parentPath, folderName) {
-    const childUrl = "/drives/" + driveId + "/root:/" + encodePath(parentPath + "/" + folderName);
-    // Try GET first — if folder already exists, no write needed.
-    try {
-      const existing = await graphFetch("GET", childUrl);
-      if (existing?.id) return parentPath + "/" + folderName;
-    } catch (getErr) {
-      // 404 expected if folder missing; other errors propagate via the create path.
-    }
-    // Doesn't exist — create it. conflictBehavior:fail so we don't accidentally
-    // overwrite something with the same name (e.g., a file).
-    try {
-      await graphFetch("POST",
-        "/drives/" + driveId + "/root:/" + encodePath(parentPath) + ":/children",
-        { name: folderName, folder: {}, "@microsoft.graph.conflictBehavior": "fail" });
-      return parentPath + "/" + folderName;
-    } catch (createErr) {
-      // Race condition: someone else created it between our GET and POST.
-      // One more GET to confirm. If that also fails, surface the real error.
-      try {
-        const recheck = await graphFetch("GET", childUrl);
-        if (recheck?.id) return parentPath + "/" + folderName;
-      } catch { /* fall through */ }
-      const msg = (createErr.message || "").includes("Graph 403")
-        ? "Permission denied creating '" + folderName + "' under '" + parentPath + "'. Check that you have edit access to the project folder in SharePoint."
-        : (createErr.message || "").includes("Graph 404")
-        ? "Parent folder '" + parentPath + "' was not found in SharePoint. The Overview-tab folder URL may be stale — re-create or re-link it."
-        : "Failed to create '" + folderName + "': " + (createErr.message || "unknown error");
-      throw new Error(msg);
-    }
-  }
+  const encodePath = encodeSpPath;
+  const ensureF = (parentPath, folderName) => ensureSpSubfolder(driveId, parentPath, folderName);
 
   const outgoingPath = await ensureF(projFolderName, "Outgoing");
   const docSetPath = await ensureF(outgoingPath, safeName);
@@ -5939,7 +5947,7 @@ async function teamsNotify(oldProject, updated) {
 
 // ── Save email + attachments to SharePoint /Emails subfolder ──────────────────
 async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = null) {
-  const folderUrl = project.projectFolderUrl;
+  const folderUrl = String(project.projectFolderUrl || "").trim().replace(/\/+$/, "");
   if (!folderUrl) throw new Error("No SharePoint project folder. Create one on the Overview tab first.");
   const { driveId } = await resolveSpIds();
 
@@ -5954,22 +5962,16 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
 
   // Get project folder name from stored URL
   const urlParts = folderUrl.split("/");
-  const projectFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]);
+  const projectFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]).trim();
+  if (!projectFolderName) throw new Error("Could not parse project folder name from URL: " + folderUrl);
 
-  // Ensure folder exists (POST with conflictBehavior:replace is idempotent)
-  async function ensureFolder(parentPath, name) {
-    try {
-      await graphFetch("POST",
-        "/drives/" + driveId + "/root:/" + encodeURIComponent(parentPath) + ":/children",
-        { name, folder: {}, "@microsoft.graph.conflictBehavior": "replace" }
-      );
-    } catch(e) { /* 409 conflict = already exists, fine */ }
-    return parentPath + "/" + name;
-  }
-
-  const emailsFolder = await ensureFolder(projectFolderName, "Emails");
-  await ensureFolder(emailsFolder, emailFolderName);
-  const targetPath = emailsFolder + "/" + emailFolderName;
+  // Shared create-or-get helper (same as milestone and RFI/Submittal folders):
+  // never conflictBehavior:"replace", which can delete-and-recreate an
+  // existing "Emails" folder with everything in it, and never a swallowed
+  // error — a stale project folder URL now fails here with a clear message
+  // instead of as an opaque "Upload failed (404)" further down.
+  const emailsFolder = await ensureSpSubfolder(driveId, projectFolderName, "Emails");
+  const targetPath = await ensureSpSubfolder(driveId, emailsFolder, emailFolderName);
 
   if (metadata) await writeSharePointMetadataSidecar(driveId, targetPath, metadata);
 
@@ -5978,7 +5980,7 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
   async function uploadFile(fileName, fileContent, mimeType) {
     const safeName = fileName.replace(/[\\/:*?"<>|]/g, "-").trim();
     const path = "/drives/" + driveId + "/root:/" +
-      encodeURIComponent(targetPath) + "/" + encodeURIComponent(safeName) + ":/content";
+      encodeSpPath(targetPath) + "/" + encodeURIComponent(safeName) + ":/content";
     const resp = await fetch("https://graph.microsoft.com/v1.0" + path, {
       method: "PUT",
       headers: { Authorization: "Bearer " + token, "Content-Type": mimeType },
@@ -6023,9 +6025,13 @@ async function saveEmailToSharePoint(email, project, liveBodyHtml, metadata = nu
       }
     } catch(e) { /* non-fatal */ }
   }
-  // Build the web URL for the email subfolder
-  const baseSpUrl = "https://setty.sharepoint.com/sites/NYCProjects/Project%20Document%20Library";
-  const folderWebUrl = baseSpUrl + "/" + encodeURIComponent(projectFolderName) + "/Emails/" + encodeURIComponent(emailFolderName);
+  // Web URL for the email subfolder: take it from Graph rather than a
+  // hardcoded site path; fall back to the project's own folder URL.
+  let folderItem = null;
+  try { folderItem = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(targetPath), undefined, token); }
+  catch (e) { /* fall back below */ }
+  const folderWebUrl = folderItem?.webUrl
+    || (folderUrl + "/Emails/" + encodeURIComponent(emailFolderName));
   return { folderName: emailFolderName, attachCount, folderWebUrl };
 }
 
@@ -10779,11 +10785,32 @@ function SheetRefChips({ form, project, type, onChangeRefs }) {
   );
 }
 
+// Outcome of a Claude CA-review suggestion once the reviewer saves the record:
+// where the FINAL response landed relative to the SUGGESTED one. Pure; sliced
+// out and unit-tested by aiReviewFeedback.test.mjs. 'edited' covers light
+// edits and text wrapped around the suggestion; 'replaced' means the reviewer
+// wrote their own answer (fewer than half the suggestion's words survive).
+function classifyAiReviewOutcome(suggested, final) {
+  const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+  const a = norm(suggested), b = norm(final);
+  if (!a || !b) return "replaced";
+  if (a === b) return "accepted";
+  if (b.includes(a)) return "edited";
+  const words = s => new Set(s.toLowerCase().match(/[a-z0-9][a-z0-9.'-]{2,}/g) || []);
+  const wa = words(a), wb = words(b);
+  if (!wa.size) return "replaced";
+  let kept = 0;
+  wa.forEach(w => { if (wb.has(w)) kept++; });
+  return kept / wa.size >= 0.5 ? "edited" : "replaced";
+}
+
 function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }) {
   const [form, setForm] = useState({ ...item });
   const [emailStatus, setEmailStatus] = useState("idle");
   const [emailMsg, setEmailMsg] = useState("");
   const [spStatus, setSpStatus] = useState("idle");
+  // Latest form for async handlers (createSpFolder persists after awaits).
+  const formRef = React.useRef(form); formRef.current = form;
   const isRFI = type === "rfi";
   const dueDays = isRFI ? (project.rfiDueDays || 5) : (project.submittalDueDays || 10);
 
@@ -10809,6 +10836,44 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   const respKey = isRFI ? "response" : "comments";
   const responseApplied = !!(ai?.suggestedResponse && (form[respKey] || "").includes(ai.suggestedResponse.trim()));
   const notesApplied = !!(ai?.internalNotes && (form.notes || "").includes(ai.internalNotes.trim()));
+  // Feedback loop (pms_ca_review_feedback): on Save, record the suggested vs
+  // the final text, the stamps, and the reviewer's optional one-line "why",
+  // so the review skill can read what gets edited (search_review_feedback).
+  // Stamped server-side with the caller's JWT; fire-and-forget, never blocks
+  // the save; one row per aiReview.at, re-saves update it.
+  const [aiWhy, setAiWhy] = React.useState("");
+  const aiFeedbackSig = React.useRef("");
+  function recordAiReviewFeedback(outcome, f) {
+    if (!ai || !ai.suggestedResponse) return;
+    const body = {
+      p_project: project.projectNumber || project.name || "",
+      p_project_name: project.name || null,
+      p_item_type: isRFI ? "rfi" : "submittal",
+      p_item_number: String(f.number || ""),
+      p_item_subject: (isRFI ? f.title : f.description) || null,
+      p_discipline: f.discipline || null,
+      p_ai_at: ai.at ? String(ai.at) : "",
+      p_ai_by: ai.by || null,
+      p_suggested_response: ai.suggestedResponse,
+      p_final_response: f[respKey] || "",
+      p_suggested_stamp: isRFI ? null : (ai.suggestedStamp || null),
+      p_final_stamp: isRFI ? null : (f.stamp || null),
+      p_outcome: outcome,
+      p_why: aiWhy.trim() || null,
+    };
+    if (!body.p_project || !body.p_item_number) return;
+    const sig = JSON.stringify([outcome, body.p_final_response, body.p_final_stamp, body.p_why]);
+    if (sig === aiFeedbackSig.current) return;
+    aiFeedbackSig.current = sig;
+    sbFetchV2("POST", "/rest/v1/rpc/pms_ca_review_feedback_record", body)
+      .catch(e => console.warn("[aiReview feedback] not recorded:", e && e.message));
+  }
+  function saveWithFeedback() {
+    if (ai && ai.suggestedResponse && (form[respKey] || "").trim()) {
+      recordAiReviewFeedback(classifyAiReviewOutcome(ai.suggestedResponse, form[respKey]), form);
+    }
+    onSave(form); onClose();
+  }
   function acceptAiResponse() {
     if (!ai?.suggestedResponse || responseApplied) return;
     const cur = (form[respKey] || "").trim();
@@ -10822,6 +10887,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   }
   function dismissAiReview() {
     if (!window.confirm("Dismiss Claude's review? The suggested response, internal notes, and red flags on this record will be cleared. Any red flags already tracked in QA Reviews stay there.")) return;
+    recordAiReviewFeedback("dismissed", form);
     setF("aiReview", undefined);
   }
   // Clickable references saved by save_ca_review (docLinks: set folder, cited
@@ -11011,20 +11077,39 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
     setSpStatus("creating");
     try {
       const { driveId } = await resolveSpIds();
-      const urlParts = project.projectFolderUrl.split("/");
-      const projFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]);
+      const projectFolderUrl = String(project.projectFolderUrl).trim().replace(/\/+$/, "");
+      const urlParts = projectFolderUrl.split("/");
+      const projFolderName = safeDecodeFolderUrl(urlParts[urlParts.length - 1]).trim();
+      if (!projFolderName) throw new Error("Could not parse project folder name from URL: " + projectFolderUrl);
       const typLabel = isRFI ? "RFIs" : "Submittals";
       const itemName = form.number + (isRFI ? " " + form.title : " " + form.description);
       const safeName = itemName.replace(/[\\/:*?"<>|]/g, "-").trim().slice(0, 80);
-      async function ensureF(parent, name) {
-        try { await graphFetch("POST", "/drives/" + driveId + "/root:/" + encodeURIComponent(parent) + ":/children", { name, folder: {}, "@microsoft.graph.conflictBehavior": "replace" }); } catch(e) {}
-        return parent + "/" + name;
-      }
-      const typeFolder = await ensureF(projFolderName, typLabel);
-      const itemFolder = await ensureF(typeFolder, safeName);
+      if (!safeName) throw new Error("Folder name is empty after sanitization.");
+      // Shared create-or-get helper: never conflictBehavior:"replace" (can wipe
+      // an existing folder's contents) and never a swallowed error (used to
+      // report "✓ Created" when nothing was created).
+      const typeFolder = await ensureSpSubfolder(driveId, projFolderName, typLabel);
+      const itemFolder = await ensureSpSubfolder(driveId, typeFolder, safeName);
       await writeSharePointMetadataSidecar(driveId, itemFolder, buildPmsMetadata(project, isRFI ? PMS_DOC_TYPES.RFI : PMS_DOC_TYPES.SUBMITTAL));
-      const fullUrl = project.projectFolderUrl.split("/").slice(0, -1).join("/") + "/" + typLabel + "/" + encodeURIComponent(safeName);
-      setF("spFolderUrl", fullUrl);
+      // Take the link from Graph rather than assembling it by hand. The old
+      // code chopped the project folder off projectFolderUrl and appended
+      // "/RFIs/<name>", which pointed one level too high and opened SharePoint's
+      // "404 NOT FOUND" page. Fall back to a correctly built URL only if Graph
+      // withholds webUrl.
+      let item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(itemFolder));
+      if (!item?.webUrl) {
+        await new Promise(r => setTimeout(r, 800));
+        item = await graphFetch("GET", "/drives/" + driveId + "/root:/" + encodeSpPath(itemFolder));
+      }
+      const fullUrl = item?.webUrl
+        || (projectFolderUrl + "/" + encodeURIComponent(typLabel) + "/" + encodeURIComponent(safeName));
+      // Persist NOW. The folder exists in SharePoint from this point, so the
+      // link must not depend on the user pressing Save afterwards: closing
+      // with ✕ or Cancel used to drop it and the record reopened without a
+      // folder. Saves the form as it stands (same as pressing Save).
+      const next = { ...formRef.current, spFolderUrl: fullUrl };
+      setForm(next);
+      if (onSave) onSave(next);
       setSpStatus("done");
     } catch(e) { setSpStatus("error: " + e.message); }
   }
@@ -11048,6 +11133,15 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           <div>
             <div style={{ fontSize: 11, color: P.textDim, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 4 }}>{isRFI ? "RFI" : "Submittal"}</div>
             <div style={{ fontWeight: 800, fontSize: 18 }}>{form.number}{odLabel && <span style={{ color: P.red, fontSize: 12, marginLeft: 10 }}>{odLabel}</span>}</div>
+            {/* Project reference — the modal floats over whichever tab opened
+                it, so say which project this item belongs to. */}
+            {(project?.projectNumber || project?.name) && (
+              <div style={{ fontSize: 12, color: P.textMuted, marginTop: 4 }} title="Project">
+                {project.projectNumber && <span style={{ fontWeight: 700, color: P.text }}>{project.projectNumber}</span>}
+                {project.projectNumber && project.name && <span> · </span>}
+                {project.name && <span>{project.name}</span>}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <select value={form.status} onChange={e => setF("status", e.target.value)}
@@ -11204,11 +11298,22 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
                     style={{ background: "#0078d4", color: "#fff", borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
                     📁 Open
                   </a>
+                  {/* Re-resolve the link from Graph. Items saved before the
+                      fix carry a URL one level too high (SharePoint "404 NOT
+                      FOUND"); createSpFolder is create-or-get, so this only
+                      rewrites the link when the folder already exists. */}
+                  <Btn small variant="ghost" onClick={createSpFolder} disabled={spStatus === "creating"}
+                    title="Re-resolve this link from SharePoint (fixes a link that opens 404)">
+                    {spStatus === "creating" ? "⏳" : "↻ Re-link"}
+                  </Btn>
+                  {typeof spStatus === "string" && spStatus.startsWith("error") && (
+                    <span style={{ fontSize: 11, color: P.red, whiteSpace: "nowrap" }}>✗ {spStatus.slice(7)}</span>
+                  )}
                 </>
               ) : (
                 <>
                   <span style={{ fontSize: 12, color: P.textDim, flex: 1 }}>
-                    {spStatus === "creating" ? "⏳ Creating folder…" : spStatus === "done" ? "✓ Created" : typeof spStatus === "string" && spStatus.startsWith("error") ? "✗ " + spStatus.slice(7) : "No folder created yet"}
+                    {spStatus === "creating" ? "⏳ Creating folder…" : spStatus === "done" ? "✓ Created & saved" : typeof spStatus === "string" && spStatus.startsWith("error") ? "✗ " + spStatus.slice(7) : "No folder created yet"}
                   </span>
                   <Btn small variant="ghost" onClick={createSpFolder} disabled={spStatus === "creating"}>📁 Create SP Folder</Btn>
                 </>
@@ -11292,6 +11397,13 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
               </div>
             )}
 
+            {ai.suggestedResponse && (
+              <div style={{ marginBottom: 12 }}>
+                <input value={aiWhy} onChange={e => setAiWhy(e.target.value)} style={{ width: "100%", fontSize: 12 }}
+                  placeholder="What did you change and why? (optional - recorded on Save; the review skill reads it before the next draft)" />
+              </div>
+            )}
+
             {!isRFI && ai.suggestedStamp && (
               <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: P.textMuted, textTransform: "uppercase", letterSpacing: ".05em" }}>Suggested stamp</span>
@@ -11366,7 +11478,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
           )}
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-            <Btn onClick={() => { onSave(form); onClose(); }}>Save</Btn>
+            <Btn onClick={saveWithFeedback}>Save</Btn>
           </div>
         </div>
       </div>
@@ -33470,9 +33582,12 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
   <!-- JSX boot + transpile cache: blocks above are text/x-pms-jsx so Babel does
        NOT auto-run them. Transpile each once, cache (pako-deflated) in
-       localStorage keyed by __appVersion so a deploy auto-invalidates; later
-       loads skip the ~1.5MB in-browser transpile. Any failure falls back to a
-       fresh transpile - never worse than before. -->
+       localStorage keyed by __appVersion AND a hash of each block's source, so
+       a deploy auto-invalidates even when __appVersion was not bumped (a
+       forgotten bump once left browsers running the previous build's compiled
+       code after a fix shipped); later loads skip the ~1.5MB in-browser
+       transpile. Any failure falls back to a fresh transpile - never worse
+       than before. -->
   <script>
   (function () {
 "use strict";
@@ -33480,22 +33595,29 @@ var TYPE = 'text/x-pms-jsx';
 var KEY = 'pmsJsx:' + (window.__appVersion || 'dev') + ':';
 function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
 function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
-try { for (var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i);
-  if (k && k.indexOf('pmsJsx:')===0 && k.indexOf(KEY)!==0) localStorage.removeItem(k); } } catch(e){}
+// FNV-1a over the block source (~1.8MB: a few ms). Length is folded in too.
+function srcHash(str){ var h=0x811c9dc5; for (var i=0;i<str.length;i++){ h^=str.charCodeAt(i); h=Math.imul(h,0x01000193); }
+  return (h>>>0).toString(36) + '-' + str.length.toString(36); }
+function cacheKey(src, idx){ return KEY + idx + ':' + srcHash(src); }
+function sweep(keep){ try { for (var i=localStorage.length-1;i>=0;i--){ var k=localStorage.key(i);
+  if (k && k.indexOf('pmsJsx:')===0 && keep.indexOf(k)<0) localStorage.removeItem(k); } } catch(e){} }
 function inflate(b64){ var s=atob(b64), a=new Uint8Array(s.length);
   for (var i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return pako.inflate(a,{to:'string'}); }
 function deflate(str){ var d=pako.deflate(str), s='';
   for (var i=0;i<d.length;i++) s+=String.fromCharCode(d[i]); return btoa(s); }
 function compile(src, idx){
-  if (window.pako){ var c=lsGet(KEY+idx); if (c){ try { return inflate(c); } catch(e){} } }
+  var key = cacheKey(src, idx);
+  if (window.pako){ var c=lsGet(key); if (c){ try { return inflate(c); } catch(e){} } }
   var code = Babel.transform(src, { presets: ['react'] }).code;
-  if (window.pako){ try { lsSet(KEY+idx, deflate(code)); } catch(e){} }
+  if (window.pako){ try { lsSet(key, deflate(code)); } catch(e){} }
   return code;
 }
 function exec(code){ var s=document.createElement('script'); s.text=code; document.head.appendChild(s); }
 function run(){
   try {
     var b=document.querySelectorAll('script[type="'+TYPE+'"]');
+    var keep=[]; for (var j=0;j<b.length;j++) keep.push(cacheKey(b[j].textContent, j));
+    sweep(keep);
     for (var i=0;i<b.length;i++) exec(compile(b[i].textContent, i));
   } catch(e){ console.error('[pms-boot] failed to start app:', e); throw e; }
 }

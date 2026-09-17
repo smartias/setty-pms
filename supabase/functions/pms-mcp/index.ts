@@ -1047,9 +1047,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-drop-legacy-share-columns";
+const BUILD = "2026-09-16-review-feedback";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.18.1",
+  name: "setty-pms", version: "1.19.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -6567,8 +6567,55 @@ function pdfiumLibrary(): Promise<any> {
   return _pdfiumLib;
 }
 
+// @hyzyla/pdfium page objects are SINGLE-USE. render() closes the PDFium page
+// (FPDF_ClosePage) on its way out, so any later call on the same object — a
+// second render, or getSize — dies inside the wasm with "null function" /
+// "null function or function signature mismatch" (V8 wording varies). 1.18.1
+// learned the page size by rendering once and then re-rendered on the same
+// object whenever the size accessor was missing, which is exactly what
+// @hyzyla/pdfium 2.1.11+ made the default path (getSize() went private and
+// throws without arguments), so every production render failed after the
+// deploy that picked up the newer package. Rules from here on: the package is
+// pinned; the size is read WITHOUT rendering (getSize on 2.1.9, getOriginalSize
+// on 2.1.11+); a page object is rendered at most once; and a wasm-level
+// failure rebuilds the shared library and retries exactly once.
+function drawingPageSize(pg: any): { wPt: number; hPt: number } {
+  try {
+    const o = pg?.getOriginalSize?.();
+    const w = Number(o?.originalWidth ?? o?.width ?? 0), h = Number(o?.originalHeight ?? o?.height ?? 0);
+    if (w > 0 && h > 0) return { wPt: w, hPt: h };
+  } catch { /* not this build of the lib */ }
+  try {
+    const sz = pg?.getSize?.();
+    const w = Number(sz?.width ?? 0), h = Number(sz?.height ?? 0);
+    if (w > 0 && h > 0) return { wPt: w, hPt: h };
+  } catch { /* 2.1.11+: getSize is private and throws without render options */ }
+  return { wPt: 0, hPt: 0 };
+}
+
+const PDFIUM_RUNTIME_FAILURE = /null function|signature mismatch|memory access out of bounds|unreachable|RuntimeError|table index is out of bounds/i;
+
 async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
   const { Image } = await import("imagescript") as any;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await renderDrawingPageOnce(pdfBytes, pageInFile, region, Image);
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e);
+      if (attempt === 1 && PDFIUM_RUNTIME_FAILURE.test(msg)) {
+        // The shared wasm instance is no longer trustworthy: drop it so the
+        // next pdfiumLibrary() call boots a fresh one (~50ms), and try once more.
+        console.error(`[view_drawing] PDFium runtime failure (page ${pageInFile}, ${region}): ${msg.slice(0, 160)} — re-initializing and retrying once`);
+        _pdfiumLib = null;
+        continue;
+      }
+      console.error(`[view_drawing] render failed (page ${pageInFile}, ${region}, attempt ${attempt}): ${msg.slice(0, 200)}`);
+      throw e;
+    }
+  }
+}
+
+async function renderDrawingPageOnce(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion, Image: any): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
   const library = await pdfiumLibrary();
   let doc: any = null;
   try {
@@ -6578,19 +6625,21 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
     if (pageCount != null && (pageInFile < 1 || pageInFile > pageCount)) {
       throw new Error(`page ${pageInFile} is out of range — the file has ${pageCount} page(s)`);
     }
-    const pg = doc.getPage(pageInFile - 1); // index pages are 1-based, PDFium is 0-based
     const box = drawingRegionBox(region);
-    let wPt = 0, hPt = 0;
-    try { const sz = pg.getSize?.(); wPt = Number(sz?.width ?? pg.width ?? 0); hPt = Number(sz?.height ?? pg.height ?? 0); } catch { /* fall through */ }
+    // index pages are 1-based, PDFium is 0-based. Size first (no render), then
+    // ONE render on this page object.
+    const pg = doc.getPage(pageInFile - 1);
+    const { wPt, hPt } = drawingPageSize(pg);
     let rendered: any;
     if (wPt > 0 && hPt > 0) {
       rendered = await pg.render({ scale: drawingRenderScale(wPt, hPt, box), render: "bitmap" });
     } else {
-      // This build of the lib would not say the page size: render at 1x to
-      // learn it, and re-render only when 1x is badly off the target.
+      // Neither size accessor answered: a 1x render tells us the size. If 1x is
+      // badly off the target, render again on a FRESH page object — never on
+      // `pg`, which render() has already closed.
       rendered = await pg.render({ scale: 1, render: "bitmap" });
       const s = drawingRenderScale(rendered.width, rendered.height, box);
-      if (s < 0.9 || s > 1.5) rendered = await pg.render({ scale: s, render: "bitmap" });
+      if (s < 0.9 || s > 1.5) rendered = await doc.getPage(pageInFile - 1).render({ scale: s, render: "bitmap" });
     }
     let img = new Image(rendered.width, rendered.height);
     img.bitmap.set(rendered.data);
@@ -6608,6 +6657,25 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
   } finally {
     try { doc?.destroy?.(); } catch { /* best-effort teardown */ }
     // The library itself is the per-isolate singleton — never destroyed here.
+  }
+}
+
+// A one-page, ~420-byte PDF (blue rectangle + "Render test") for the health
+// probe: /pms-mcp/health?probe=render renders it twice through the real path,
+// which is precisely the sequence that broke in 1.18.1.
+const RENDER_PROBE_PDF_B64 = "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA3NyA+PgpzdHJlYW0KMCAwIDEgUkcgNCB3IDEwMCAxMDAgNDAwIDYwMCByZSBTIEJUIC9GMSAzNiBUZiAxNTAgNDAwIFRkIChSZW5kZXIgdGVzdCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNjggMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MzgKJSVFT0YK";
+
+async function renderProbe(): Promise<{ ok: boolean; ms: number; renders?: string[]; error?: string }> {
+  const t0 = Date.now();
+  try {
+    const bin = atob(RENDER_PROBE_PDF_B64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const a = await renderDrawingPage(bytes, 1, "full");
+    const b = await renderDrawingPage(bytes, 1, "center");
+    return { ok: true, ms: Date.now() - t0, renders: [`${a.width}x${a.height}`, `${b.width}x${b.height}`] };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, error: String((e as any)?.message ?? e).slice(0, 200) };
   }
 }
 
@@ -7756,6 +7824,106 @@ mcp.tool("save_ca_review", {
   },
 });
 
+// ── search_review_feedback: what reviewers did with earlier suggestions ──────
+// The read side of pms_ca_review_feedback (migration 20260916120000): one row
+// per Claude suggestion on a CA item and what the engineer SAVED in its place
+// (accepted / edited / replaced / dismissed), plus the reviewer's own one-line
+// "why" typed in the modal. The submittal-rfi-review skill reads these BEFORE
+// drafting, so the next suggestion already avoids what was cut last time.
+// Project-scoped rows follow project visibility, as knowledge does.
+function splitSentences(s: string): string[] {
+  return String(s || "").replace(/\s+/g, " ")
+    .split(/(?<=[.;:!?])\s+(?=[A-Z0-9"(])/)
+    .map((x) => x.trim()).filter((x) => x.length > 2);
+}
+// Sentence-level delta: what the reviewer cut from the suggestion and what
+// they added. Punctuation/case-insensitive so a re-wrapped sentence is "kept".
+function feedbackDelta(suggested: string, final: string): { removed: string[]; added: string[] } {
+  const a = splitSentences(suggested), b = splitSentences(final);
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
+  const sa = new Set(a.map(norm)), sb = new Set(b.map(norm));
+  return { removed: a.filter((x) => !sb.has(norm(x))), added: b.filter((x) => !sa.has(norm(x))) };
+}
+
+mcp.tool("search_review_feedback", {
+  description:
+    "What Setty's engineers DID with earlier Claude suggestions on RFIs and submittals: for each save_ca_review " +
+    "suggestion that a reviewer then saved over, the outcome (accepted / edited / replaced / dismissed), the " +
+    "sentences they cut and added, the stamp they chose, and their own one-line 'why' from the modal. Read it " +
+    "BEFORE drafting a review (submittal-rfi-review skill, Step 1) — first for the same project, then for the " +
+    "discipline and item type — so the next draft avoids what was cut last time. It shapes the draft; it is " +
+    "not evidence to cite in a response. Rows follow project visibility.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("Limit to one project (number or name)"),
+    type: z.enum(["rfi", "submittal"]).optional().describe("Item type"),
+    discipline: z.string().optional().describe("Discipline filter (substring), e.g. 'Plumbing'"),
+    outcome: z.enum(["accepted", "edited", "replaced", "dismissed"]).optional().describe("Only rows with this outcome"),
+    reviewer: z.string().optional().describe("Reviewer email (substring)"),
+    limit: z.number().int().min(1).max(50).optional().describe("Newest N rows to return (default 15)"),
+    full: z.boolean().optional().describe("Return the full suggested and final texts instead of the sentence delta and an excerpt"),
+  }),
+  handler: async ({ projectNumber, type, discipline, outcome, reviewer, limit, full }) => {
+    let pn: string | null = null;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber.trim());
+      const p = pid ? await getProjectById(pid) : null;
+      if (!p) return asText({ error: `No project matching "${projectNumber}"` });
+      pn = p.projectNumber || null;
+    }
+    const cap = Math.min(Math.max(limit ?? 15, 1), 50);
+    let q =
+      "pms_ca_review_feedback?select=id,project,project_name,item_type,item_number,item_subject,discipline," +
+      "ai_at,ai_by,suggested_response,final_response,suggested_stamp,final_stamp,outcome,why,reviewer,updated_at" +
+      "&order=updated_at.desc&limit=200";
+    if (pn) q += "&project=eq." + encodeURIComponent(pn);
+    if (type) q += "&item_type=eq." + type;
+    if (outcome) q += "&outcome=eq." + outcome;
+    if (discipline?.trim()) q += "&discipline=ilike." + encodeURIComponent("*" + discipline.trim() + "*");
+    if (reviewer?.trim()) q += "&reviewer=ilike." + encodeURIComponent("*" + reviewer.trim() + "*");
+    const rows: any[] = await sbGet(q);
+
+    // Same visibility rule as search_knowledge: a row from a job the caller
+    // cannot see is part of that job's record and stays hidden with it.
+    const caps = await resolveCaps();
+    let visible = rows;
+    if (!caps.isAdmin) {
+      const projs = await getProjects();
+      const ok = new Set(projs.map((p: any) => p.projectNumber).filter(Boolean));
+      visible = rows.filter((r: any) => ok.has(r.project));
+    }
+
+    const outcomes: Record<string, number> = {};
+    for (const r of visible) outcomes[r.outcome] = (outcomes[r.outcome] || 0) + 1;
+
+    const feedback = visible.slice(0, cap).map((r: any) => {
+      const base: Record<string, unknown> = {
+        id: r.id,
+        project: r.project, projectName: r.project_name || undefined,
+        item: `${String(r.item_type).toUpperCase()} ${r.item_number}`, subject: r.item_subject || undefined,
+        discipline: r.discipline || undefined,
+        outcome: r.outcome, why: r.why || undefined,
+        reviewer: r.reviewer, suggestedBy: r.ai_by || undefined, updatedAt: r.updated_at,
+        ...(r.suggested_stamp || r.final_stamp ? { suggestedStamp: r.suggested_stamp || undefined, finalStamp: r.final_stamp || undefined } : {}),
+      };
+      if (full) return { ...base, suggestedResponse: r.suggested_response || "", finalResponse: r.final_response || "" };
+      const d = feedbackDelta(r.suggested_response || "", r.final_response || "");
+      return {
+        ...base,
+        cutFromSuggestion: d.removed.slice(0, 12),
+        addedByReviewer: d.added.slice(0, 12),
+        finalExcerpt: String(r.final_response || "").slice(0, 400),
+      };
+    });
+
+    return asText({
+      count: feedback.length, totalMatching: visible.length, outcomes, feedback,
+      note: feedback.length
+        ? "Shape the next draft with this (what got cut, what got added, the reviewer's why); never quote it in a response, and never assume a project's earlier edit applies to a different reviewer without checking their rows."
+        : "No recorded feedback for this filter yet — rows appear when an engineer saves a record that carries a Claude review.",
+    });
+  },
+});
+
 mcp.tool("backload_ca_item", {
   description:
     "BACKFILL the RFI/submittal log: create a CA record for an item that is not in the PMS yet (the hybrid " +
@@ -8842,7 +9010,12 @@ app.use("/pms-mcp/mcp", async (c, next) => {
 app.get("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.delete("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
-app.get("/pms-mcp/health", (c) => c.json({ ok: true, build: BUILD }));
+app.get("/pms-mcp/health", async (c) => {
+  // ?probe=render exercises the PDFium path end to end (two renders of an
+  // embedded PDF) so "does view_drawing work on this build?" is one GET.
+  if (c.req.query("probe") === "render") return c.json({ ok: true, build: BUILD, render: await renderProbe() });
+  return c.json({ ok: true, build: BUILD });
+});
 
 // ── Drive discovery (Admin console → connector) ─────────────────────────────
 // Project folders on a region's drives that have no PMS record. The console

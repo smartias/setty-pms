@@ -113,6 +113,48 @@ response wording on any contested RFI or rejected submittal.
 4. `search_knowledge` for the project/agency — lessons learned and agency
    preferences that bear on this item (a manufacturer the owner has rejected
    before, a detail this agency always comments on).
+5. **The whole record for THIS question, not only the current set.** Reviewer
+   feedback on 2026-09-16 (Tabler RFI-121.1, BPL RFI-105) traced every weak
+   suggestion to one of these being skipped:
+   - **The RFI folder.** `list_project_documents` with the record's folder
+     (`subfolder: "RFIs/<folder name>"`, or the `spFolderUrl` path) and
+     `read_document` EVERY attachment — the contractor's sketch, BIM
+     screenshot, the RFI form. Never hand the engineer "have not seen the
+     sketch, pull it via read_document" as a to-do: that is your job. A file
+     named like a sketch may be a text form (RFI-121.1); a screenshot may be
+     a scanned image with no text layer — say so in one line and move on.
+   - **Related RFIs on the same location.** `search_rfis_submittals` for the
+     room, fixture tag, sheet or system, and read any earlier response. A
+     follow-up (xxx.1) or a neighbouring RFI often already resolved the
+     routing (BPL RFI-094 sent the kitchenette waste inside a wall, clearing
+     the footing; RFI-105 was drafted as if that never happened).
+   - **Prior coordination during design.** `search_notes`, `search_emails`,
+     `search_knowledge` for the same issue: Setty may already have coordinated
+     it with another discipline (BPL: the footing drops were coordinated with
+     structural a year before the RFI and chased with the architect in CD).
+   - **Other disciplines' sets.** Structural, architectural and civil sets
+     arrive in the Email / incoming folders, not in Outgoing. Look there
+     (`list_project_documents`, `find_document`) before writing "no structural
+     drawings are tracked"; a Setty bulletin is a partial issuance, not a set.
+   - **Record status.** PMS status and dates may be stale from a Newforma
+     import. Before calling an RFI overdue, check the record's notes / last
+     action and the email thread; RFI-105 read as seven weeks overdue in the
+     PMS and had been closed on 7/29.
+   - **Sheets you could not render.** If `view_drawing` errors, say so ONCE in
+     the internal notes and stop; do not turn every unverified geometry into a
+     "verify" bullet, and do not manufacture doubt about what the plans show
+     (CN 2-314 sits squarely over the electrical room). The renderer failure
+     of September 2026 is fixed in pms-mcp 1.18.2; `/pms-mcp/health?probe=
+     render` tells you whether it works on the current build.
+6. **What reviewers did with earlier suggestions.** `search_review_feedback`
+   BEFORE drafting: first for this project, then (if the project has no rows)
+   for the discipline and item type. Each row is a prior suggestion and what
+   the engineer saved instead — accepted / edited / replaced / dismissed — with
+   the sentences they cut, the sentences they added, and their one-line "why"
+   from the modal. Do not repeat a pattern that was cut last time (a preface,
+   a request for a sketch the plans already show, a firm name used as a
+   person, a "no work shall proceed" paragraph). It shapes the draft; it is
+   never evidence to cite, and one reviewer's edit is not another's rule.
 
 ## Step 1.5 — Read the SUBMITTED cut sheet and confirm the MARKED selection (submittals)
 
@@ -188,12 +230,58 @@ without giving away scope?
 - Draft the suggested response in Setty's voice (engineering-judgment skill):
   direct, grounded in first principles, owner as the ultimate audience, no
   admission of fault.
+- **Read the intent.** A contractor reporting a conflict IN the contract
+  documents is not asking permission to deviate. "Installed as indicated"
+  misses the question and, if they then build it as drawn, the problem is
+  ours. Answer the conflict.
+- **Solve it before you route it.** Propose an alternate the contractor did
+  not: an offset inside the wet wall, extending the chase, a wall route (as
+  RFI-094 did), a pumped alternate. Show that Setty thought about the geometry
+  — a footing conflict is vertical AND horizontal, so "offset horizontally
+  around the footing" is not an answer — instead of restating spec minimums
+  that were never in question. Coordination with structure or the architect
+  is Setty's to drive, never to disclaim: coordinating our piping with the
+  structure is exactly our scope, and disciplines not involved (FP on a
+  plumbing RFI) do not get mentioned.
+- **Kill dead options in one sentence.** If a proposed "out" does not work (a
+  bottom-outlet water closet still lands over the electrical room), reject it
+  with the reason; do not keep it alive in one paragraph and negate it in the
+  next. Cite the governing rule crisply: NEC 110.26(E) dedicated space forbids
+  foreign systems above the equipment, and a drip pan is not a permitted way
+  to route over it.
+- **Ask only for what the record lacks.** Requesting a sketch of what the
+  contract drawings already show makes Setty look uninformed. Ask for the NEW
+  conflict (structure vs. rough-in) only when it is not in the attachments.
+- **No preface, no boilerplate.** Do not open by summarizing the prior RFI.
+  Do not add "no work shall proceed" / "no additional cost is authorized"
+  paragraphs — those are the General Notations already on every RFI. Keep
+  the response specific and consistent with the prior direction on the same
+  location.
+- **Names.** "The Structural Engineer", "the Architect" — not a firm name used
+  as if it were a person. Never assign titles or credentials to Setty staff
+  (a reviewer was called a PE who is not one); use names as the record has
+  them.
 
 **Internal notes** — for BOTH: what must a human verify before this goes out?
 Values you could not confirm from the text (the physical cut sheet, a
 performance curve, a field dimension), spec paragraphs the engineer should read
 themselves, coordination with another discipline, anything the machine screened
-but a person signs.
+but a person signs. Do not manufacture uncertainty: state what you verified,
+say once what you could not and why, and make every remaining bullet a real
+judgment call for the engineer — not a chore you skipped (open the attachment
+yourself) and not doubt about what the plans plainly show.
+
+**Filing gaps are findings, not footnotes.** When a document could not be
+opened because of WHERE or HOW it is filed — a structural set that exists only
+on the N: drive as 40–100 MB combined volumes, a model export sitting in an
+INCOMING folder, an Outgoing set issued only as one merged PDF — say so in one
+line and put the fix on its own line in the internal notes, labelled FILING:
+save it to the project's SharePoint folder, and split it into individual sheet
+PDFs wherever possible. For Setty's own Outgoing sets that is the rule, not a
+wish: individual sheet files beside the combined volume, so every sheet is
+linkable in `docLinks` and readable by the connector. A reviewer who reads
+"could not be opened" three reviews in a row on the same set has been told the
+symptom three times and the cure never.
 
 ## Pull-reply mode — capture a reviewer's emailed answer
 
@@ -260,6 +348,12 @@ polish**).
   instead of being buried in one submittal. Set severities deliberately: a
   substitution with change-order exposure is `cost`; a submission the reviewing
   agency will bounce is `agency`.
+- **The loop closes in the modal, not here.** When the engineer saves the
+  record, the PMS writes the suggested vs. final text, the stamps, the outcome
+  and their optional "why" line to `pms_ca_review_feedback`; that is what
+  `search_review_feedback` (Step 1, item 6) reads next time. Nothing for you
+  to write — but it is the reason the suggestion must be a clean, complete
+  draft: a reviewer who has to rewrite it teaches the loop only "replaced".
 
 Then present the review in the chat exactly as you saved it, lead with the red
 flags and the suggested stamp/response, and tell the engineer it is waiting in
