@@ -59,7 +59,7 @@ Both storage accounts accept traffic from outside the corporate network
 | #278 | `view_drawing` **renders again**: `@hyzyla/pdfium` page objects are single-use and the package is pinned at 2.1.9; `GET /health?probe=render` proves the render path. Affects every drive-indexed sheet as much as SharePoint ones | 1.18.2 |
 | #280 | `search_review_feedback` reads `pms_ca_review_feedback` (reviewer outcomes on Claude's CA suggestions). The submittal-rfi-review skill now treats **a set that exists only on N: as combined volumes** as a filing gap with the fix stated: save to SharePoint, split into sheet PDFs | 1.19.0 |
 | #281 | Admin console v26: skill library sync card (which repo skills must be uploaded to the claude.ai library) | — |
-| this PR | **Region site access**: a Graph 403/404 while resolving a region's site is rethrown as a `RegionAccessError` naming the site, the per-site `Sites.Selected` grant and the Regions-tab alternative; `list_project_documents` still returns `driveAnnex.folders` and flags a `projectFolderUrl` on another site; `GET /health?probe=regions` checks every region's site | 1.19.1 |
+| this PR | **Region site access + drive fallback**: a Graph 403/404 while resolving a region's site is rethrown as a `RegionAccessError` naming the site, the per-site `Sites.Selected` grant and the Regions-tab alternative; a refused region WITH drive shares is served from them like an `azure_files` region (browse, read, drawing index, sheet index, current set, CA folders), each result carrying a `sharepoint` block with the reason; `list_project_documents` flags a `projectFolderUrl` on another site; `GET /health?probe=regions` checks every region's site | 1.19.1 |
 | `tools/newforma-import` | Newforma submittal / RFI log refresh into the PMS CA log (16 Sep export). Gives drive-era jobs their CA records, which is what the drive CA folder walk matches against | — |
 | next | **Transmittal tool, register-only mode** (`transmittal.html` v19): a drive project's set is read off the mapped drive through the OS picker (names + title blocks), nothing is uploaded, the register row carries `files.driveFolder` instead of `sp_folder_url`; attachment is the only email delivery; `get_current_set` surfaces `driveFolder` | 1.16.1 |
 
@@ -127,8 +127,9 @@ matrix is on the Regions tab. Live connector as of 17 Sep: build
    NYCProjects in Admin → Regions until Baltimore's site is ready (no grant
    needed). `GET /pms-mcp/health?probe=regions` (1.19.1) shows the live
    answer per region. The SAOP annex was never the problem: the SharePoint
-   call failed first and hid it; since 1.19.1 `list_project_documents`
-   returns `driveAnnex.folders` alongside the access error.
+   call failed first and hid it; since 1.19.1 a refused region with drive
+   shares is served from them (Tivoly browses, reads and indexes off SAOP,
+   with the site refusal reported alongside) until the site is fixed.
 
 ## Known limits worth remembering
 

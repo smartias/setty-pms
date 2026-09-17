@@ -36,7 +36,7 @@ check(e403.message.includes("Sites.Selected") && e403.message.includes(CONNECTOR
 check(/Every SharePoint tool on region BT/.test(e403.message), "…and that every SharePoint tool on the region fails the same way (not a broken project)");
 check(e403.nextStep.includes(CONNECTOR_APP_ID_PREFIX) && /Admin console → Regions/.test(e403.nextStep) && e403.nextStep.includes("health?probe=regions"),
   "nextStep names the app id, the Regions tab alternative, and the probe");
-check(/driveAnnex\.folders/.test(e403.nextStep), "nextStep says the drive annex still works");
+check(/served from them/.test(e403.nextStep) && /drawing index/.test(e403.nextStep), "nextStep says the region's drives serve the project meanwhile");
 check(regionAccessError("bt", BT_SITE, DENIED).team === "BT", "team is normalised");
 check(/default \(NY\) region/.test(regionAccessError(null, "ny-site-id", DENIED).message), "no team reads as the default region");
 check(regionAccessError("BT", BT_SITE, e403) === e403, "an already-wrapped error passes through");

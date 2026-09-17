@@ -410,17 +410,33 @@ at a time to the "Setty PMS - Claude Connector" app registration
 EVERY SharePoint tool on that region's projects fail before anything
 project-specific runs (`docDriveId` / `siteDrives` resolve the site's drives
 first), so `list_project_documents`, `get_current_set`, `search_drawings` and
-the rest all report the same failure. Since 1.19.1 that failure is a
-`RegionAccessError` (`regionAccess.ts`) that names the site, the grant and the
-Regions-tab alternative; `list_project_documents` still returns
-`driveAnnex.folders` and, when the PMS record's own `projectFolderUrl` sits
-on a different site, says so (`recordSays`), because the PMS web app creates
-every project folder on its hardcoded NY drive, so a project tagged into a
-new region usually has its folder where the app put it, not on the region's
-site. `GET /pms-mcp/health?probe=regions` asks Graph for every region's
-drives, uncached, and is the check to run BEFORE the first project is tagged
-into a new region. First seen 17 Sep 2026 on Tivoly (SIPX251008.00), the
-first project tagged BT.
+the rest all report the same failure. Since 1.19.1:
+
+- that failure is a `RegionAccessError` (`regionAccess.ts`) naming the site,
+  the grant and the Regions-tab alternative;
+- **a refused region with drive shares is served from its drives.**
+  `storageFor` / `effectiveRegionForTeam` return the EFFECTIVE storage kind:
+  a `sharepoint` region whose site the connector cannot read (403, or 404
+  on the row's site) and which has `pms_region_shares` rows is treated as
+  `azure_files` by every storage-kind gate, so `list_project_documents`,
+  `read_document`, `search_drawings`, `extract_sheet_index`,
+  `get_current_set`, `find_document` and the CA folder walk work off the
+  drive exactly as they do for DC; each drive-served result carries a
+  `sharepoint` block with the refusal and the fix. The refusal is remembered
+  300 s (a grant shows up without a redeploy); a site with drives cached is
+  never re-probed; a network or token failure keeps the declared kind. A
+  refused region WITHOUT shares gets the error alone, and
+  `list_project_documents` adds `recordSays` when the PMS record's own
+  `projectFolderUrl` sits on another site (the PMS web app creates every
+  project folder on its hardcoded NY drive, so a project tagged into a new
+  region usually has its folder where the app put it);
+- `GET /pms-mcp/health?probe=regions` asks Graph for every region's drives,
+  uncached: the check to run BEFORE the first project is tagged into a new
+  region.
+
+First seen 17 Sep 2026 on Tivoly (SIPX251008.00), the first project tagged
+BT: its SAOP folder was there all along, but the SharePoint call failed
+first and hid it.
 
 Slice A (Sep 6) cut the seam: tools that need search, thumbnails or library
 semantics refuse `azure_files` regions with one shared note. Slice B (Sep 14)

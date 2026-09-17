@@ -84,7 +84,9 @@ export function regionAccessError(team: string | null | undefined, siteRef: stri
         `Either IT (Nikhil) grants the "${CONNECTOR_APP_NAME}" app registration (client id ${CONNECTOR_APP_ID_PREFIX}…) read access on ` +
         `${site} through Sites.Selected, or an admin points ${where} at the site the project folders actually live on ` +
         `(Admin console → Regions). GET /pms-mcp/health?probe=regions shows which region sites the connector can reach. ` +
-        `Legacy documents on the region's network-drive annex stay readable meanwhile (list_project_documents → driveAnnex.folders).`,
+        `Meanwhile a region with network-drive shares registered is served from them: browsing, reading, the drawing index, ` +
+        `sheet index and current set work off the drive (results carry a \`sharepoint\` block with this error); search by ` +
+        `description, photos, transmittal staging and filing wait for the site.`,
     });
   }
   if (status === 404) {

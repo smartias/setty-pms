@@ -658,8 +658,8 @@ const AZURE_LIMITED_NOTE =
   "drive). Browsing, reading, and the drawing tools (indexing, search, sheet index, view, schedules, " +
   "equipment) work there. Finding documents by description, field photos, transmittal staging and " +
   "filing need the project record in the region's SharePoint site.";
-async function storageFor(projectNumber: string | null | undefined): Promise<RegionSite> {
-  return siteForTeam(await teamForProject(projectNumber));
+async function storageFor(projectNumber: string | null | undefined): Promise<EffectiveRegion> {
+  return effectiveRegionForTeam(await teamForProject(projectNumber));
 }
 async function siteForTeam(team: string | null | undefined): Promise<RegionSite> {
   if (!team) return DEFAULT_REGION;
@@ -953,6 +953,44 @@ async function siteDrives(team?: string | null): Promise<Array<{ id: string; nam
   const list = await regionDrives(team, region);
   _drivesBySite.set(region.siteId, list);
   return list;
+}
+// The storage a project's tools should actually use. A region declares
+// `sharepoint`, but when the connector cannot read that site (no
+// Sites.Selected grant, or the row names a site Graph cannot find) and the
+// region has drive shares registered, the project is served from its drives
+// exactly as an `azure_files` region would be — browse, read, drawing index,
+// sheet index, current set, CA folders — instead of failing on the first
+// Graph call. The refusal is remembered for 300 s so a grant shows up without
+// a redeploy and the probe is not repeated per tool call; a site proven
+// readable this instance (drives cached) is never re-probed. Any other
+// failure (network, token) keeps the declared kind: the SharePoint path then
+// reports it as it always did. `siteError` tells the tool why it is on the
+// drive so its result can say so.
+type EffectiveRegion = RegionSite & { siteError?: RegionAccessError };
+const _siteRefusal = new Map<string, { err: RegionAccessError; at: number }>();
+const SITE_REFUSAL_TTL = 300000;
+async function effectiveRegionForTeam(team: string | null | undefined): Promise<EffectiveRegion> {
+  const region = await siteForTeam(team);
+  if (region.kind !== "sharepoint" || !region.shares.length) return region;
+  if (_drivesBySite.has(region.siteId)) return region;
+  const bad = _siteRefusal.get(region.siteId);
+  if (bad && (Date.now() - bad.at) < SITE_REFUSAL_TTL) return { ...region, kind: "azure_files", siteError: bad.err };
+  try {
+    await siteDrives(team);
+    return region;
+  } catch (e) {
+    if (!(e instanceof RegionAccessError)) return region;
+    _siteRefusal.set(region.siteId, { err: e, at: Date.now() });
+    return { ...region, kind: "azure_files", siteError: e };
+  }
+}
+// What a drive-served result carries when the drive is a FALLBACK: the site
+// refusal and its fix, so "browsed off SAOP" is never mistaken for "this
+// region has no SharePoint".
+function siteFallbackFields(region: EffectiveRegion): Record<string, unknown> {
+  return region.siteError
+    ? { sharepoint: { ...regionAccessResult(region.siteError), note: "Served from the region's network-drive share because its SharePoint site refused the connector. Search, photos, transmittal staging and filing need the site." } }
+    : {};
 }
 // Find a project's root folder (named by NUMBER, e.g. "<number> - ...") within a drive.
 //
@@ -3109,7 +3147,8 @@ mcp.tool("get_current_set", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    const onDrive = (await storageFor(project)).kind !== "sharepoint";
+    const st = await storageFor(project);
+    const onDrive = st.kind !== "sharepoint";
     const disc = (discipline ?? "").toLowerCase().trim();
 
     let rows: any[] = [];
@@ -3269,6 +3308,7 @@ mcp.tool("get_current_set", {
           ...(discNote ? { disciplineNote: discNote } : {}),
           fullSetHint: "Sheets are listed at their most recent INDEXED revision across all sets; extract_sheet_index gives the same view grouped by discipline.",
           nextStep: "Issuing sets through the transmittal tool (register-only mode for drive projects) would make this authoritative instead of inferred.",
+          ...siteFallbackFields(st),
         });
       } catch (e) {
         return asText({ project, inferred: true, current: null, error: `No transmittal record, and the drawing index could not be read: ${String((e as any)?.message ?? e)}` });
@@ -3638,9 +3678,11 @@ mcp.tool("list_project_documents", {
         catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
       }
       const team = await teamForProject(projectNumber);
-      const region = await siteForTeam(team);
+      const region = await effectiveRegionForTeam(team);
       // An azure_files region: the share IS the project record. Find the
-      // project folder at the share root by number and list it.
+      // project folder at the share root by number and list it. A SharePoint
+      // region whose site refused the connector lands here too (drive
+      // fallback) and says so via `sharepoint`.
       if (region.kind !== "sharepoint") {
         const num = String(projectNumber || "").toLowerCase().trim();
         if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE });
@@ -3656,14 +3698,14 @@ mcp.tool("list_project_documents", {
             error: allFailed ? problems.join(" | ") : `No folder starting with "${projectNumber}" at the root of region ${t}'s drive share${labels.length === 1 ? "" : "s"} (${labels.join(", ")}).`,
             ...(problems.length && !allFailed ? { problems } : {}),
             nextStep: allFailed ? "Fix the share credentials in Admin → Regions / Edge Function secrets." : "Confirm the number with search_projects; the project folder must sit at a registered share's root, named by number.",
-            note: AZURE_LIMITED_NOTE });
+            note: AZURE_LIMITED_NOTE, ...siteFallbackFields(region) });
         }
         const [first, ...others] = hits;
         try {
           return asText({ project: projectNumber, projectFolder: first.folder,
             ...(await azureListing(first.ctx, await azureResolveSubfolder(first.ctx, first.folder, relIn))),
             ...(others.length ? { alsoOn: others.map(azureFolderPointer), alsoOnNote: "This project also has a folder on the region's other drive(s); pass one of these folderIds to browse it." } : {}),
-            ...(problems.length ? { problems } : {}) });
+            ...(problems.length ? { problems } : {}), ...siteFallbackFields(region) });
         } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: t, share: first.ctx.label }); }
       }
       let drives: Array<{ id: string; name: string }>;
@@ -4038,7 +4080,7 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
   // same way, so find_document ranks the same TreeFile rows on either storage.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) {
       const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
       const files: TreeFile[] = []; const libraries: string[] = []; let truncated = false;
@@ -4160,7 +4202,7 @@ async function subtreeFiles(numPrefix: string, rel: string): Promise<{
   // holds the project (standard names map to the drive's own names) and walk.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) {
       const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
       const want = cleanRelPath(relClean) ?? "";
@@ -4385,7 +4427,8 @@ mcp.tool("find_document", {
     const project = p?.projectNumber || projectNumber;
     // Drive-based projects (1.17.2) go through the same walk-and-rank path:
     // projectTree has a drive branch, and the rows carry az: ids and UNC paths.
-    const onDrive = (await storageFor(project)).kind !== "sharepoint";
+    const st = await storageFor(project);
+    const onDrive = st.kind !== "sharepoint";
 
     let tree;
     try {
@@ -4936,8 +4979,12 @@ mcp.tool("prepare_transmittal", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site." });
+    {
+      const st = await storageFor(project);
+      if (st.kind !== "sharepoint") {
+        return asText(st.siteError ? regionAccessResult(st.siteError)
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site." });
+      }
     }
 
     let rows: any[] = [];
@@ -5100,7 +5147,8 @@ mcp.tool("extract_sheet_index", {
     // Drive-based project (1.16.0): no register to fold, so the default view
     // is composed from the drawing index; a subfolder request reads the PDFs
     // straight off the share below, exactly as it does for SharePoint.
-    if (!subfolder && (await storageFor(project)).kind !== "sharepoint") {
+    const st = await storageFor(project);
+    if (!subfolder && st.kind !== "sharepoint") {
       const numPrefix = String(project).toLowerCase().trim();
       let derived: Awaited<ReturnType<typeof indexDerivedSet>>;
       try { derived = await indexDerivedSet(numPrefix); }
@@ -5112,6 +5160,7 @@ mcp.tool("extract_sheet_index", {
             ? "Nothing indexed carries a parsed sheet number yet (title blocks did not parse, or indexing is still running)."
             : "Nothing is indexed for this project yet. Drive-based projects have no transmittal register, so the sheet index comes from the drawings themselves.",
           nextStep: "Run search_drawings with indexOnly:true to index the Outgoing folder (repeat until coverage.filesPending is 0), then call again; or pass a set folder as subfolder to read it directly.",
+          ...siteFallbackFields(st),
         });
       }
       return asText({
@@ -5119,6 +5168,7 @@ mcp.tool("extract_sheet_index", {
         sheetCount: derived.sheetCount, disciplineCount: derived.disciplines.length, disciplines: derived.disciplines,
         sourceSets: derived.sourceSets, coverage: derived.coverage,
         note: "Each sheet is shown at its most recent INDEXED issuance. To see what a single set contained instead, pass that set folder as subfolder.",
+        ...siteFallbackFields(st),
       });
     }
 
@@ -5924,7 +5974,7 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
   // Drive-based projects (1.16.0): the scope comes off the region's shares.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subfolder);
   }
   let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
@@ -8153,8 +8203,12 @@ mcp.tool("file_qa_report", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint." });
+    {
+      const st = await storageFor(project);
+      if (st.kind !== "sharepoint") {
+        return asText(st.siteError ? regionAccessResult(st.siteError)
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint." });
+      }
     }
     const day = (date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) ? date.trim() : new Date().toISOString().slice(0, 10);
     const clean = (s: string) => s.replace(/[\\/:*?"<>|#%]/g, "-").replace(/\s+/g, " ").trim();
@@ -8246,7 +8300,8 @@ mcp.tool("ensure_qaqc_folders", {
     for (const p of page) {
       const num = String(p.projectNumber).toLowerCase().trim();
       try {
-        if ((await storageFor(p.projectNumber)).kind !== "sharepoint") { notProvisioned.push(p.projectNumber + " (non-SharePoint region)"); continue; }
+        const st = await storageFor(p.projectNumber);
+        if (st.kind !== "sharepoint") { notProvisioned.push(p.projectNumber + (st.siteError ? " (region's SharePoint site refused the connector)" : " (non-SharePoint region)")); continue; }
         const drive = await docDriveId(await teamForProject(String(p.projectNumber)));
         const root = await findProjectFolderInDrive(drive, num);
         if (!root) { notProvisioned.push(p.projectNumber); continue; }

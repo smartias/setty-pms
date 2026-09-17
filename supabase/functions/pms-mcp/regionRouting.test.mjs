@@ -110,7 +110,7 @@ has("return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subf
 has("const bytes = await fetchDrawingPdfById(String(chosen.item_id));", "view_drawing opens indexed sheets by id (az or Graph)");
 has("const bytes = await fetchDrawingPdfById(fileId);", "read_drawing_schedule opens by id (az or Graph)");
 has("async function indexDerivedSet(numPrefix: string)", "drive projects compose the current set from the drawing index");
-has('if ((await storageFor(project)).kind !== "sharepoint") {', "gates run on the RESOLVED project (after HIDE)");
+has("const st = await storageFor(project);", "gates run on the RESOLVED project (after HIDE)", 5);
 has("sasEnv: s.sas_env ? String(s.sas_env) : null }))",
   "SAS config is an env-var NAME — the token itself never comes from the database");
 // Region shares (1.15.0): a region carries N drives from pms_region_shares;
@@ -179,6 +179,22 @@ has("recordSays = siteMismatchHint(team, region.siteId, p?.projectFolderUrl);", 
 has("const driveAnnex = num && region.shares.length ? await azureAnnexFor(team, num) : null;", "…and still hands over the drive annex");
 has('if (c.req.query("probe") === "regions")', "the health probe for region sites exists");
 has("const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];", "the probe covers the default region and every mapped one");
+// Drive fallback: a SharePoint region whose site refuses the connector, and
+// which has drive shares, is served from its drives like an azure_files
+// region (browse, read, drawing index, sheet index, current set) instead of
+// dying on the first Graph call. Every storage-kind gate reads the EFFECTIVE
+// kind; the refusal is remembered 300 s; other failures keep the declared kind.
+has("async function effectiveRegionForTeam(team: string | null | undefined): Promise<EffectiveRegion> {", "the effective-storage resolver exists");
+has("return effectiveRegionForTeam(await teamForProject(projectNumber));", "storageFor resolves the EFFECTIVE kind");
+check((shipped.match(/const region = await effectiveRegionForTeam\(team\);/g) || []).length === 4,
+  "list_project_documents, projectTree, subtreeFiles and drawingScopeWalk gate on the effective kind");
+check(!/const region = await siteForTeam\(team\);\n\s*if \(region\.kind !== "sharepoint"(\)| &&)/.test(shipped), "no storage-kind gate still reads the DECLARED kind (only the resolver itself does)");
+has('if (region.kind !== "sharepoint" || !region.shares.length) return region;', "a region without drive shares never falls back (its SharePoint error stands)");
+has("if (!(e instanceof RegionAccessError)) return region;", "a network/token failure keeps the declared kind");
+has("return { ...region, kind: \"azure_files\", siteError: e };", "a refused site flips the region to its drives and carries the reason");
+const effSeg = shipped.slice(shipped.indexOf("const _siteRefusal"), shipped.indexOf("function siteFallbackFields"));
+check(effSeg.includes("300000"), "the refusal is remembered on the 300s clock");
+check((shipped.match(/\.\.\.siteFallbackFields\(/g) || []).length >= 5, "drive-served results say the drive is a fallback and why");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
