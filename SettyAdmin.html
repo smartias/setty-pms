@@ -177,6 +177,13 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v27 (17 Sep 2026, later) — Regions: a NEW region defaults to "Network
+// drive is the record" (every office but NY works from its drive; SharePoint
+// as record is the NY exception), the Storage options say which office is
+// which, and the tab says Graph access is granted per site (Sites.Selected)
+// and points at /pms-mcp/health?probe=regions. After the first BT project
+// (Tivoly) hit Graph 403 on the Baltimore site because BT had been saved
+// SharePoint-first by the old default.
 // v26 (17 Sep 2026) — Claude/MCP tab gains a "Skill library sync" card:
 // the three repo skills (qa-coordination-review, submittal-rfi-review,
 // design-narrative) with the PMS button that launches each, and the rule
@@ -967,8 +974,12 @@ async function renderFiling() {
 const REGION_FIELDS = "team,region_name,sharepoint_site_id,doc_library,storage_kind,enabled,notes,updated_at";
 const SHARE_FIELDS = "id,team,label,share_url,sas_env,enabled,sort_order,notes";
 function regionBlank() {
+  // A new region starts drive-first: every office but NY works from its
+  // network drive, so the drive is the record and SharePoint is the exception
+  // an admin opts into. (The first BT region was saved SharePoint-first by the
+  // old default and sent every tool to a site the connector could not read.)
   return { team: "", region_name: "", sharepoint_site_id: "", doc_library: "Project Document Library",
-           storage_kind: "sharepoint", enabled: true, notes: "", shares: [], _isNew: true };
+           storage_kind: "azure_files", enabled: true, notes: "", shares: [shareBlank()], _isNew: true };
 }
 function shareBlank() { return { label: "", share_url: "", sas_env: "", enabled: true }; }
 // A PMS team code: what the project's Team field holds ('NY', 'DC'). Letters
@@ -1077,8 +1088,8 @@ async function renderRegions() {
         <label style="font-size:12px">Team code<br><input id="rgTeam" value="${esc(ed.team)}" ${ed._isNew ? "" : "disabled"} placeholder="DC" style="width:70px" oninput="this.value=regionTeamClean(this.value);state.regionEdit.team=this.value" title="The project's Team field in the PMS — letters and digits only"></label>
         <label style="font-size:12px">Region name<br><input id="rgName" value="${esc(ed.region_name)}" placeholder="Washington DC" style="width:160px" oninput="state.regionEdit.region_name=this.value"></label>
         <label style="font-size:12px">Storage<br><select id="rgKind" onchange="state.regionEdit.storage_kind=this.value; if(this.value==='azure_files'&&!state.regionEdit.shares.length){state.regionEdit.shares.push(shareBlank());} render()">
-          <option value="sharepoint" ${!azure ? "selected" : ""}>SharePoint (full features)</option>
-          <option value="azure_files" ${azure ? "selected" : ""}>Azure shares only (browse/read)</option>
+          <option value="azure_files" ${azure ? "selected" : ""}>Network drive is the record (DC, Baltimore: browse, read, drawings, CA folders)</option>
+          <option value="sharepoint" ${!azure ? "selected" : ""}>SharePoint is the record (NY: full features; drives are annexes)</option>
         </select></label>
         <label style="font-size:12px;flex:1;min-width:260px">SharePoint site URL (or Graph site id)<br><input id="rgSite" value="${esc(ed.sharepoint_site_id)}" placeholder="https://setty.sharepoint.com/sites/DCProjects" style="width:100%" oninput="state.regionEdit.sharepoint_site_id=this.value"></label>
         <label style="font-size:12px">Document library<br><input id="rgLib" value="${esc(ed.doc_library)}" style="width:180px" oninput="state.regionEdit.doc_library=this.value"></label>
@@ -1125,6 +1136,17 @@ async function renderRegions() {
         the SharePoint site carries the project record (full features) while registered drive shares keep
         legacy documents browsable/readable — moving a folder into SharePoint is what upgrades it to
         search, drawings, photos and transmittals.<br>
+        <b>Storage rule:</b> every office but NY works from its network drive, so a non-NY region's Storage is
+        <i>Network drive is the record</i> and the connector goes to the drive first and only; SharePoint-as-record is the NY
+        exception. A region saved SharePoint-first sends every tool to its site before the drive, and a site the connector
+        cannot read fails them all.<br>
+        <b>Graph access is per site:</b> the connector reads SharePoint app-only with <code>Sites.Selected</code>, which IT grants
+        one site at a time to the "Setty PMS - Claude Connector" app. A region site without that grant fails every SharePoint
+        tool on the region's projects with <code>Graph 403 accessDenied</code> (the site URL saves fine here because the console
+        resolves it with YOUR sign-in, not the connector's). Since connector 1.19.1 such a region is served from its drives
+        anyway, with the refusal reported alongside; the clean fix is the Storage setting above. Before tagging the first
+        project into a new SharePoint-record region, open <code>/pms-mcp/health?probe=regions</code> on the connector: it lists
+        each region's site with ok/403.<br>
         <b>Keying:</b> the Team code is the project's Team field in the PMS, never a drive letter. A region may
         list several drives (DC: its I: and W: drives), each labelled by what people call it; the connector searches
         all of them for a project's folder. One office drive used by several teams is listed under each team
