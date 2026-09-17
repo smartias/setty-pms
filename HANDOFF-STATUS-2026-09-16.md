@@ -1,7 +1,13 @@
 # Handoff status: review-comment responses (P1.4)
 
 **Read this first in any Claude session, on either computer or account.**
-Last updated 2026-09-17 13:20 UTC from the work-computer cloud session.
+Last updated 2026-09-17 14:10 UTC from a cloud session.
+
+**Where the code is (corrected 2026-09-17):** the uncommitted slice is in the
+Cowork sandbox on the WORK computer (Windows profile `sara.arias`), at
+`~/repos/setty-pms` *inside Cowork's Linux sandbox*. It is not on `C:\` and not
+on the home laptop (profile `arias`). PowerShell cannot see it; only a Cowork
+session started in the OneDrive `PMS` folder on the work computer can.
 
 This file is committed to the repo on purpose. The repo is the only place both
 computers and both Claude accounts can see. Anything that lives only on one
@@ -40,8 +46,9 @@ deployed them. Two consequences:
 
 | Where | What it has | What it cannot see |
 |---|---|---|
-| Home laptop, clone at `~/repos/setty-pms`, Claude account A | The built and tested comment-responses slice, **uncommitted**, plus the full `HANDOFF-2026-09-16-comment-responses.md` in the clone root | Nothing done from the work computer until it is pushed |
-| Work computer, OneDrive `PMS` folder, Claude account B (cloud sessions) | Only what is on GitHub | Anything on the laptop disk, the OneDrive `.claude-memory` notes |
+| Work computer (`sara.arias`), Cowork sandbox clone at `~/repos/setty-pms` | The built and tested comment-responses slice, **uncommitted**, plus the full `HANDOFF-2026-09-16-comment-responses.md` in the clone root. Memory notes in OneDrive `PMS\.claude-memory` | Nothing from cloud sessions until it is pushed |
+| Home laptop (`arias`) | Nothing relevant. No clone. | Everything |
+| Cloud sessions (either Claude account) | Only what is on GitHub | The Cowork sandbox, the OneDrive memory notes |
 | GitHub `smartias/setty-pms` | `main` at connector 1.19.0 / PMS v154; this branch = main + this file | The comment-responses slice, until step 0 |
 | Supabase `ProjectManagement` (`khxmgjilwhdguuepbhne`) | Live connector 1.19.0 `2026-09-16-review-feedback`; legacy columns dropped | Nothing from the laptop |
 
@@ -49,7 +56,7 @@ Rule going forward: **never end a session with uncommitted work.** Push to any
 branch, even a scratch one, before switching machines or accounts. A handoff
 note goes in the repo, not on disk.
 
-## What was built on the laptop (uncommitted, per the memory note)
+## What was built in the work-computer Cowork clone (uncommitted, per the memory note)
 
 - Connector with the `save_comment_responses` tool (renumber to 1.20.0)
 - Migration `supabase/migrations/20260916000000_qa_comment_responses.sql`
@@ -73,10 +80,22 @@ note goes in the repo, not on disk.
 
 ## Steps, in order
 
-### Step 0. Home laptop: get the code onto GitHub (the only blocking step)
+### Step 0. Work computer, in Cowork: get the code onto GitHub (the only blocking step)
 
-From `~/repos/setty-pms`. Commit first so nothing can be lost, then bring in
-main before pushing, because `index.ts` and `SettyPMS.html` will conflict:
+Open the Claude desktop app on the work computer, start a Cowork session in
+`OneDrive - Setty and Associates\PMS`, and have it run the following in
+`~/repos/setty-pms`. Commit first so nothing can be lost. The simplest safe
+move is to push to a scratch branch and let a cloud session do the merge:
+
+```
+git -C ~/repos/setty-pms status
+git -C ~/repos/setty-pms add -A
+git -C ~/repos/setty-pms commit -m "Review-comment responses: connector save_comment_responses, migration, skill, PMS QA Reviews UI"
+git -C ~/repos/setty-pms push origin HEAD:laptop/comment-responses
+```
+
+If you would rather finish the merge in Cowork, bring in this branch before
+pushing, because `index.ts` and `SettyPMS.html` will conflict:
 
 ```
 git status                      # confirm the files listed above are there
@@ -97,9 +116,7 @@ node --test supabase/functions/pms-mcp/*.test.mjs
 git push origin HEAD:claude/affectionate-brahmagupta-7cpt7l
 ```
 
-If the merge is more than you want to do on the laptop, push the commit to a
-scratch branch instead (`git push origin HEAD:laptop/comment-responses`) and
-a cloud session will do the merge.
+
 
 ### Step 1. Verify before deploying
 
@@ -136,7 +153,7 @@ Send IT the six skill zips from `PMS\Skill Uploads` dated 2026-09-16.
 
 ## Checklist
 
-- [ ] 0. Laptop: commit, merge this branch, renumber to 1.20.0 / v155, push
+- [ ] 0. Work computer (Cowork): commit and push to `laptop/comment-responses`; cloud session merges and renumbers to 1.20.0 / v155
 - [ ] 1. Tests pass; version, BUILD, and both new tools confirmed in the diff
 - [ ] 2a. `pms-mcp` deployed; health link shows the new build
 - [ ] 2b. `proposal-draft` deployed
