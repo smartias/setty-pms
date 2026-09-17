@@ -28,6 +28,12 @@ import {
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
   projectNumberOfFolder, projectNameFromFolders, caKindFolders, isDisciplineFolder, folderMentionsNumber,
 } from "./azureFiles.ts";
+// A Graph 403/404 while resolving a REGION's site is a configuration fact
+// (Sites.Selected grant missing, or the row names the wrong site), not a
+// project problem; regionAccess.ts turns it into the fix. Pure; see its tests.
+import {
+  RegionAccessError, regionAccessError, regionAccessResult, siteMismatchHint, graphStatusOf, graphErrorCodeOf,
+} from "./regionAccess.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -893,14 +899,28 @@ async function resolveSiteId(ref: string): Promise<string> {
   _siteIdByRef.set(ref, id);
   return id;
 }
+// The drives of a region's site, resolved through Graph. This is the FIRST
+// Graph call every SharePoint tool makes for a project, so it is where a
+// region whose site the connector cannot read fails; the failure is
+// rethrown as a RegionAccessError naming the site and the fix (Sites.Selected
+// is granted per site) instead of a bare "Graph 403: accessDenied" that
+// reads like a broken project. Anything that is not a site-access problem
+// passes through unchanged.
+async function regionDrives(team: string | null | undefined, region: RegionSite): Promise<Array<{ id: string; name: string }>> {
+  try {
+    const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
+    return (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
+  } catch (e) {
+    throw regionAccessError(team, region.siteId, e) ?? e;
+  }
+}
 
 const _docDrive = new Map<string, string>();
 async function docDriveId(team?: string | null): Promise<string> {
   const region = await siteForTeam(team);
   const hit = _docDrive.get(region.siteId);
   if (hit) return hit;
-  const drives = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
-  const list = drives.value || [];
+  const list = await regionDrives(team, region);
   const match = list.find((d: any) => d.name === region.docLibrary) || list[0];
   if (!match) throw new Error("No document library found on the region's site.");
   const id: string = match.id;
@@ -930,8 +950,7 @@ async function siteDrives(team?: string | null): Promise<Array<{ id: string; nam
   const region = await siteForTeam(team);
   const hit = _drivesBySite.get(region.siteId);
   if (hit) return hit;
-  const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
-  const list: Array<{ id: string; name: string }> = (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
+  const list = await regionDrives(team, region);
   _drivesBySite.set(region.siteId, list);
   return list;
 }
@@ -1047,9 +1066,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-16-review-feedback";
+const BUILD = "2026-09-17-region-site-access";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.19.0",
+  name: "setty-pms", version: "1.19.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -3647,7 +3666,25 @@ mcp.tool("list_project_documents", {
             ...(problems.length ? { problems } : {}) });
         } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: t, share: first.ctx.label }); }
       }
-      const drives = await siteDrives(team);
+      let drives: Array<{ id: string; name: string }>;
+      try {
+        drives = await siteDrives(team);
+      } catch (e) {
+        // The region's site refused (or does not exist). Say what that
+        // means and who fixes it, and still hand over what IS reachable:
+        // the drive annex, and the folder URL the PMS record itself carries
+        // (on a different site, it is the row that is wrong, not the grant).
+        if (!(e instanceof RegionAccessError)) throw e;
+        const num = String(projectNumber || "").toLowerCase().trim();
+        let recordSays: string | null = null;
+        try {
+          const pid = num ? await resolveProjectId(num) : null;
+          const p = pid ? await getProjectById(pid) : null;
+          recordSays = siteMismatchHint(team, region.siteId, p?.projectFolderUrl);
+        } catch { /* the hint is a courtesy; the error above is the answer */ }
+        const driveAnnex = num && region.shares.length ? await azureAnnexFor(team, num) : null;
+        return asText({ project: projectNumber ?? null, ...regionAccessResult(e, { recordSays, driveAnnex }) });
+      }
       const rel = subfolder && subfolder.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "").split("/").map(encodeURIComponent).join("/") : "";
       // Mode 3: open a specific folder by composite id.
       if (folderId && String(folderId).trim()) {
@@ -9014,8 +9051,32 @@ app.get("/pms-mcp/health", async (c) => {
   // ?probe=render exercises the PDFium path end to end (two renders of an
   // embedded PDF) so "does view_drawing work on this build?" is one GET.
   if (c.req.query("probe") === "render") return c.json({ ok: true, build: BUILD, render: await renderProbe() });
+  // ?probe=regions asks Graph, uncached, for the drives of every region's
+  // site: the one GET that says whether the connector's Sites.Selected grant
+  // covers a site before the first project is tagged into that region.
+  if (c.req.query("probe") === "regions") return c.json({ ok: true, build: BUILD, regions: await regionsProbe() });
   return c.json({ ok: true, build: BUILD });
 });
+async function regionsProbe(): Promise<Array<Record<string, unknown>>> {
+  const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];
+  const out: Array<Record<string, unknown>> = [];
+  for (const [team, region] of entries) {
+    const row: Record<string, unknown> = {
+      team: team ?? "(default)", storage: region.kind, site: region.siteId, docLibrary: region.docLibrary,
+      driveShares: region.shares.map((s) => s.label),
+    };
+    try {
+      const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
+      const names: string[] = (d.value || []).map((x: any) => String(x.name));
+      out.push({ ...row, ok: true, libraries: names.length, docLibraryFound: names.includes(region.docLibrary) });
+    } catch (e) {
+      const ra = regionAccessError(team, region.siteId, e);
+      out.push({ ...row, ok: false, graphStatus: graphStatusOf(e), graphCode: graphErrorCodeOf(e),
+        error: ra ? ra.message : String((e as any)?.message ?? e).slice(0, 300), ...(ra ? { nextStep: ra.nextStep } : {}) });
+    }
+  }
+  return out;
+}
 
 // ── Drive discovery (Admin console → connector) ─────────────────────────────
 // Project folders on a region's drives that have no PMS record. The console

@@ -403,6 +403,25 @@ the Admin console's Regions tab) maps a project's PMS **team code** to:
   and W: drives. The legacy single-share columns on `pms_regions` are a
   fallback for a team the table has no rows for (one release, then dropped).
 
+**A region's SharePoint site needs its own Graph grant.** The connector reads
+SharePoint app-only with `Sites.Selected`, which IT (Nikhil) grants one site
+at a time to the "Setty PMS - Claude Connector" app registration
+(`b49e795c…`). A `pms_regions` row that names a site without that grant makes
+EVERY SharePoint tool on that region's projects fail before anything
+project-specific runs (`docDriveId` / `siteDrives` resolve the site's drives
+first), so `list_project_documents`, `get_current_set`, `search_drawings` and
+the rest all report the same failure. Since 1.19.1 that failure is a
+`RegionAccessError` (`regionAccess.ts`) that names the site, the grant and the
+Regions-tab alternative; `list_project_documents` still returns
+`driveAnnex.folders` and, when the PMS record's own `projectFolderUrl` sits
+on a different site, says so (`recordSays`), because the PMS web app creates
+every project folder on its hardcoded NY drive, so a project tagged into a
+new region usually has its folder where the app put it, not on the region's
+site. `GET /pms-mcp/health?probe=regions` asks Graph for every region's
+drives, uncached, and is the check to run BEFORE the first project is tagged
+into a new region. First seen 17 Sep 2026 on Tivoly (SIPX251008.00), the
+first project tagged BT.
+
 Slice A (Sep 6) cut the seam: tools that need search, thumbnails or library
 semantics refuse `azure_files` regions with one shared note. Slice B (Sep 14)
 is the provider, in `azureFiles.ts`:

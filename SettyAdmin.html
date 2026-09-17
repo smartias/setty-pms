@@ -177,6 +177,9 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v27 (17 Sep 2026, later) — Regions tab says that Graph access is granted
+// per site (Sites.Selected) and points at /pms-mcp/health?probe=regions,
+// after the first BT project (Tivoly) hit Graph 403 on the Baltimore site.
 // v26 (17 Sep 2026) — Claude/MCP tab gains a "Skill library sync" card:
 // the three repo skills (qa-coordination-review, submittal-rfi-review,
 // design-narrative) with the PMS button that launches each, and the rule
@@ -1125,6 +1128,13 @@ async function renderRegions() {
         the SharePoint site carries the project record (full features) while registered drive shares keep
         legacy documents browsable/readable — moving a folder into SharePoint is what upgrades it to
         search, drawings, photos and transmittals.<br>
+        <b>Graph access is per site:</b> the connector reads SharePoint app-only with <code>Sites.Selected</code>, which IT grants
+        one site at a time to the "Setty PMS - Claude Connector" app. A region site without that grant fails every SharePoint
+        tool on the region's projects with <code>Graph 403 accessDenied</code> (the site URL saves fine here because the console
+        resolves it with YOUR sign-in, not the connector's). Before tagging the first project into a new region, open
+        <code>/pms-mcp/health?probe=regions</code> on the connector: it lists each region's site with ok/403. Until a region's own
+        site is granted and holds the project folders, pointing the region at the site where the PMS app actually created
+        them (NYCProjects) needs no IT grant.<br>
         <b>Keying:</b> the Team code is the project's Team field in the PMS, never a drive letter. A region may
         list several drives (DC: its I: and W: drives), each labelled by what people call it; the connector searches
         all of them for a project's folder. One office drive used by several teams is listed under each team

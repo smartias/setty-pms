@@ -164,6 +164,21 @@ has("await azureResolveSubfolder(az.ctx, dec.relPath, relIn)", "az folderId list
 has("await azureResolveSubfolder(first.ctx, first.folder, relIn)", "azure-only default listings resolve subfolder names on the drive");
 const azSeg = shipped.slice(shipped.indexOf("async function azureCtxForTeam"), shipped.indexOf("async function azureProjectFolder"));
 check(azSeg.includes("300000"), "the share-root folder index refreshes on the 300s clock");
+// Region site access (1.19.1, 2026-09-17): the connector's Sites.Selected
+// grant is per site, so a region row naming an ungranted site made every
+// SharePoint tool fail with a bare "Graph 403: accessDenied" (Tivoly, the
+// first BT project). Both drive lookups go through one wrapper that rethrows
+// it as the configuration fact it is; list_project_documents still returns
+// the drive annex; /health?probe=regions checks every region's site.
+has('} from "./regionAccess.ts";', "the region-access module is imported");
+has("async function regionDrives(team: string | null | undefined, region: RegionSite)", "one wrapper resolves a region's drives");
+has("throw regionAccessError(team, region.siteId, e) ?? e;", "a site-access failure is rethrown with the fix; anything else passes through");
+check((shipped.match(/const list = await regionDrives\(team, region\);/g) || []).length === 2, "docDriveId and siteDrives both go through the wrapper");
+has("if (!(e instanceof RegionAccessError)) throw e;", "list_project_documents catches only region-access failures");
+has("recordSays = siteMismatchHint(team, region.siteId, p?.projectFolderUrl);", "…compares the record's own folder URL with the region's site");
+has("const driveAnnex = num && region.shares.length ? await azureAnnexFor(team, num) : null;", "…and still hands over the drive annex");
+has('if (c.req.query("probe") === "regions")', "the health probe for region sites exists");
+has("const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];", "the probe covers the default region and every mapped one");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
