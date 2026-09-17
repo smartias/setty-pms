@@ -183,7 +183,8 @@ for (const anchor of [
 // (app-only) Entra tokens.
 for (const [anchor, label] of [
   ['role: "service", team: null, isAdmin: false, caps: { "projects.view": true }', "SERVICE_CAPS is least-privilege, never admin"],
-  ['currentCaller().kind === "service" ? "(shared-secret)" : currentCaller().email', "telemetry labels the shared-secret lane"],
+  ['const TELEMETRY_SERVICE_LABEL = "(shared-secret)";', "telemetry labels the shared-secret lane"],
+  ['currentCaller().kind === "service" ? TELEMETRY_SERVICE_LABEL : currentCaller().email', "the label is what the wrapper writes"],
   ["app-only tokens are not accepted", "nameless verified tokens are refused, not served as ghosts"],
   ["if (!caller.email) {", "the refusal keys on a missing user identity"],
 ]) {

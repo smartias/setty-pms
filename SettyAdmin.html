@@ -2329,9 +2329,11 @@ function renderMcp() {
     <div class="card doc">
       <div class="sechead">📊 Usage &amp; audit — who asked what (Phase D)</div>
       <p style="font-size:12.5px;color:var(--muted);margin-top:2px">Every tool call is logged to <code>pms_mcp_telemetry</code>
-        (admin-only RLS) with the signed-in caller's email since 22 Aug (identity Phase A). Empty <i>caller</i> means the
-        service lane (Claude Code / scripts via the shared secret) or a call from before identity landed. An <b>empty</b>
-        outcome is the number to watch: it is a person who asked and got nothing, and it sends them back to the N: drive.</p>
+        (admin-only RLS) with the signed-in caller's email since 22 Aug (identity Phase A). <i>Service</i> is the shared-secret
+        lane (Claude Code / scripts; logged as <code>(shared-secret)</code> since 7 Sep, null before) or a call from before
+        identity landed. An <b>empty</b> outcome is the number to watch: it is a person who asked and got nothing, and it
+        sends them back to the N: drive. <b>hidden</b> is a project the caller's role may not view (answered as not-found,
+        tool not run); it is listed apart from errors so access denials do not read as failures.</p>
       <div id="mcpAuditBox"><div class="empty">Loading usage…</div></div>
     </div>
 
@@ -2642,29 +2644,38 @@ async function fillMcpAudit() {
     box.innerHTML = '<div class="empty">No connector calls in the last 7 days.</div>';
     return;
   }
+  // The connector labels the shared-secret lane "(shared-secret)" (not null)
+  // since 7 Sep; rows from before that, and pre-identity rows, are null. Both
+  // are the service lane here, never a signed-in caller.
+  const SERVICE_LABEL = "(shared-secret)";
+  const isService = (r) => !r.caller_email || r.caller_email === SERVICE_LABEL;
   const by = (key) => {
     const m = new Map();
     for (const r of rows) {
       const k = key(r) || "—";
-      const e = m.get(k) || { n: 0, empty: 0, error: 0 };
-      e.n++; if (r.outcome === "empty") e.empty++; if (r.outcome === "error") e.error++;
+      const e = m.get(k) || { n: 0, empty: 0, error: 0, hidden: 0 };
+      e.n++; if (r.outcome === "empty") e.empty++; if (r.outcome === "error") e.error++; if (r.outcome === "hidden") e.hidden++;
       m.set(k, e);
     }
     return [...m.entries()].sort((a, b) => b[1].n - a[1].n);
   };
-  const callers = by(r => r.caller_email);
+  const callers = by(r => isService(r) ? "—" : r.caller_email);
   const tools = by(r => r.tool).slice(0, 10);
   const empties = rows.filter(r => r.outcome === "empty").length;
   const errors = rows.filter(r => r.outcome === "error").length;
+  const hidden = rows.filter(r => r.outcome === "hidden").length;
   const statPill = (e) => (e.empty ? ` <span class="pill warn">${e.empty} empty</span>` : "") +
-                          (e.error ? ` <span class="pill bad">${e.error} err</span>` : "");
+                          (e.error ? ` <span class="pill bad">${e.error} err</span>` : "") +
+                          (e.hidden ? ` <span class="pill info">${e.hidden} hidden</span>` : "");
+  const outcomePill = (o) => o === "hit" ? "ok" : o === "empty" ? "warn" : o === "hidden" ? "info" : "bad";
   const recent = rows.slice(0, 30);
   box.innerHTML = `
     <div class="row" style="gap:18px;flex-wrap:wrap;margin-bottom:10px">
       <div><b>${rows.length}</b> calls · 7 days${rows.length >= 1000 ? " <span class='pill info'>capped at 1000</span>" : ""}</div>
       <div><b>${callers.filter(([k]) => k !== "—").length}</b> signed-in callers</div>
       <div>${empties ? `<span class="pill warn">${empties} empty</span>` : '<span class="pill ok">0 empty</span>'}
-           ${errors ? ` <span class="pill bad">${errors} errors</span>` : ' <span class="pill ok">0 errors</span>'}</div>
+           ${errors ? ` <span class="pill bad">${errors} errors</span>` : ' <span class="pill ok">0 errors</span>'}
+           ${hidden ? ` <span class="pill info">${hidden} hidden</span>` : ''}</div>
       <button class="btn" onclick="state.mcpAudit = null; fillMcpAudit()">↻ Refresh</button>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap">
@@ -2685,10 +2696,10 @@ async function fillMcpAudit() {
       <thead><tr><th>When</th><th>Caller</th><th>Tool</th><th>Project</th><th>Outcome</th><th>ms</th></tr></thead>
       <tbody>${recent.map(r => `
         <tr><td title="${esc(r.created_at || "")}">${rel(r.created_at)}</td>
-            <td>${r.caller_email ? esc(r.caller_email.split("@")[0]) : '<span style="color:var(--muted)">service</span>'}</td>
+            <td>${isService(r) ? '<span style="color:var(--muted)">service</span>' : esc(r.caller_email.split("@")[0])}</td>
             <td><code>${esc(r.tool)}</code></td>
             <td>${esc(r.project_number || "")}</td>
-            <td><span class="pill ${r.outcome === "hit" ? "ok" : r.outcome === "empty" ? "warn" : "bad"}"
+            <td><span class="pill ${outcomePill(r.outcome)}"
                  title="${esc(r.detail || "")}">${esc(r.outcome)}${r.result_count != null ? " · " + r.result_count : ""}</span></td>
             <td style="color:var(--muted)">${r.latency_ms ?? ""}</td></tr>`).join("")}</tbody>
     </table></div>`;
