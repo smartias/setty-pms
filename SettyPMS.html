@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-17-pms-v155-phase-deliverables-prompt";
+    window.__appVersion = "2026-09-18-pms-v156-realtime-refresh-banner";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -57,6 +57,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <!-- pako: zlib in JS — used to compress email HTML bodies before storing in Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <!-- Realtime "project updated elsewhere" banner (Broadcast) — see
+       supabase/migrations/20260918210000_pms_projects_broadcast_changes.sql.
+       Guarded everywhere it is used: if this fails to load, the app runs
+       exactly as before, the banner feature just silently no-ops. -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <script src="setty-auth.js"></script>
 <!-- Browser .docx pipeline: zip + Word section drops + {{TOKEN}} fill.
      Loaded as a module and hung on window because the app's own code is
@@ -943,6 +948,31 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // settyAuthReady so the stored session is restored before the first read.
 const settyAuthReady = settyAuth.init().catch(() => null);
 settyAuth.mountPill();
+
+// Realtime client for the "project updated elsewhere" banner (Broadcast).
+// Named settyRealtime, not supabase — the supabase-js UMD bundle itself
+// declares a global `var supabase`, and redeclaring that identifier with
+// const throws a SyntaxError at parse time.
+// Guarded: if the CDN script failed to load (network hiccup, blocked),
+// window.supabase is undefined and the whole app must keep working — this
+// feature just silently no-ops rather than breaking anything else.
+let settyRealtime = null;
+try {
+  if (window.supabase) settyRealtime = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+} catch (_) { settyRealtime = null; }
+// Keeps the Realtime channel authorized as the signed-in user (the RLS
+// policy on realtime.messages is scoped to the authenticated role, same
+// population as pms_projects_select) rather than the anon key. Re-run on
+// every auth change so a sign-in after initial load still picks it up.
+function pmsSyncRealtimeAuth() {
+  if (!settyRealtime) return;
+  try {
+    const jwt = settyAuth.token && settyAuth.token();
+    if (jwt) settyRealtime.realtime.setAuth(jwt);
+  } catch (_) { /* banner just won't authorize until a session exists */ }
+}
+settyAuthReady.then(pmsSyncRealtimeAuth);
+if (settyAuth.onChange) settyAuth.onChange(pmsSyncRealtimeAuth);
 
 // ── Phase 5 capability check ─────────────────────────────────────────────────
 // Wraps settyAuth.can() (role×capability matrix + per-project overrides,
@@ -18609,6 +18639,54 @@ function archiveBlockers(project) {
   return parts.length === 1 ? parts[0] : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
 }
 
+// Realtime "this project was updated elsewhere" banner (Broadcast).
+// Subscribes to the per-project topic a database trigger broadcasts to on
+// every pms_projects UPDATE (see the migration referenced above). The
+// first event after subscribing just establishes the baseline version —
+// it is the state as of mount, not a change to flag. Informational only:
+// it does not merge remote changes in, it just prompts a refresh so a
+// second editor finds out sooner than at save-conflict time.
+function subscribePmsProjectUpdates(projectId) {
+  if (!settyRealtime) return () => {};
+  pmsSyncRealtimeAuth();
+  let baselineVersion = null;
+  const channel = settyRealtime
+    .channel("pms_projects:" + projectId, { config: { private: true } })
+    .on("broadcast", { event: "UPDATE" }, (payload) => {
+      const row = payload.payload && payload.payload.record;
+      if (!row) return;
+      if (baselineVersion === null) { baselineVersion = row.version; return; }
+      if (row.version <= baselineVersion) return;
+      showProjectUpdateBanner(row.version);
+    })
+    .subscribe();
+  return () => { try { settyRealtime.removeChannel(channel); } catch (_) {} };
+}
+
+// Mirrors _showUpdateBanner's styling (top of file, app-version banner) so
+// both banners feel like the same feature. Refresh reloads the page —
+// Phase 1 does not attempt to merge fresh server state into in-progress
+// local edits, it only shortens how long a stale view can go unnoticed.
+function showProjectUpdateBanner(version) {
+  if (document.getElementById("__projectUpdateBanner")) return;
+  const banner = document.createElement("div");
+  banner.id = "__projectUpdateBanner";
+  banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+    "background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;" +
+    "padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;" +
+    "display:flex;justify-content:space-between;align-items:center;gap:12px;" +
+    "box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+  banner.innerHTML =
+    '<span>\uD83D\uDD04 This project was updated elsewhere (v' + version + '). Refresh to see the latest changes.</span>' +
+    '<button id="__projectRefreshBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;' +
+    'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Refresh</button>' +
+    '<button id="__projectDismissBtn" style="background:transparent;color:white;border:1px solid white;border-radius:6px;' +
+    'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Dismiss</button>';
+  document.body.appendChild(banner);
+  document.getElementById("__projectRefreshBtn").onclick = () => { window.location.reload(); };
+  document.getElementById("__projectDismissBtn").onclick = () => { banner.remove(); };
+}
+
 function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff, projects, onNavigateToProject }) {
   const [tab, setTab] = useState(() => {
     // An item deep link (#project:<id>:rfi:<number>) lands on the right tab;
@@ -18632,6 +18710,15 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   const [relLinkMsg, setRelLinkMsg] = useState("");
   // Pending "Lost" pick from the status dropdown, awaiting the reason modal.
   const [lostConfirm, setLostConfirm] = useState(false);
+
+  // Realtime "this project was updated elsewhere" banner — see
+  // subscribePmsProjectUpdates above. React already remounts ProjectDetail
+  // on project switch (its key includes project.id), so this subscribes on
+  // mount and unsubscribes on unmount/switch with no extra id-tracking.
+  useEffect(() => {
+    if (!project || !project.id) return;
+    return subscribePmsProjectUpdates(project.id);
+  }, [project.id]);
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
