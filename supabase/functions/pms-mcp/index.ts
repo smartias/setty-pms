@@ -9735,7 +9735,30 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
     if (prev) seenAgain++; else fresh++;
     rows.push(row);
   }
-  for (let i = 0; i < rows.length; i += 200) await sbUpsert("pms_project_candidates", "project_number", rows.slice(i, i + 200));
+  // PostgREST builds one INSERT's column list from the whole POST body, so
+  // every object in a batch must share the same key set. This loop's two
+  // rows.push() call sites above shape rows very differently — closing a
+  // candidate as "created" carries status/last_seen but not the
+  // pms_match_*/year/siblings columns a fresh or re-seen candidate carries,
+  // and name_from_folder itself is only added to SOME of those (only when
+  // it was just resolved or is still genuinely unknown) — so a single POST
+  // covering a large scan's rows got rejected outright the moment two
+  // shapes landed in the same 200-row chunk (reported against a 10TB+ W:
+  // drive scan, 2026-09-18). Group by exact key set first, then chunk each
+  // group, so a POST body never mixes shapes. This only changes how rows
+  // are split into requests, never what gets written in any of them — in
+  // particular it does NOT null-fill status onto candidate rows that omit
+  // it, which would silently revert a human-dismissed candidate back to
+  // "new" on every re-scan.
+  const shapeGroups = new Map<string, Record<string, unknown>[]>();
+  for (const row of rows) {
+    const shape = Object.keys(row).sort().join(",");
+    if (!shapeGroups.has(shape)) shapeGroups.set(shape, []);
+    shapeGroups.get(shape)!.push(row);
+  }
+  for (const group of shapeGroups.values()) {
+    for (let i = 0; i < group.length; i += 200) await sbUpsert("pms_project_candidates", "project_number", group.slice(i, i + 200));
+  }
   return {
     team, label, fromYear, directories: dirs.length, directoriesScanned: dirsScanned, foldersFound: hits.size,
     newCandidates: fresh, seenAgain, closedAsCreated: created, namesPending, listings,
