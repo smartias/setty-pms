@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-19-pms-v157-updated-by-attribution";
+    window.__appVersion = "2026-09-19-pms-v158-n-drive-shortcuts";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -5240,6 +5240,23 @@ function sanitizeShortcutName(s) {
   return (s || "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 70);
 }
 
+// The N: drive UNC path a NY project's legacy files live under, computed
+// from its own project number — the same convention that was previously
+// only ever typed by hand into a "Network Folder" External Link (verified
+// against ~40 existing ones, and against the region's registered N: share
+// on the Admin Console's Regions tab), and the SAME year-extraction rule
+// the connector already uses server-side for this exact drive
+// (azureFiles.ts yearOfProjectNumber): the year is "20" + the two digits
+// right after the 4-letter entity code. Returns "" for a non-NY project or
+// a number that doesn't match the pattern (e.g. no number yet).
+function nDriveFolderPath(project) {
+  if ((project.team || "").trim().toUpperCase() !== "NY") return "";
+  const num = (project.projectNumber || "").trim();
+  const m = /^[A-Z]{4}(\d{2})\d{4}/i.exec(num);
+  if (!m) return "";
+  return "N:\\SAP\\20" + m[1] + "\\" + num;
+}
+
 // Sibling projects in the same Related Projects group (shared relatedGroup
 // name, matched case/whitespace-insensitively — same rule as the header
 // widget). Excludes the project itself and archived siblings: closed-out
@@ -5260,7 +5277,11 @@ function relatedSiblingProjects(project, allProjects) {
 // projects that previously installed an older shortcut set see the
 // "Refresh Shortcuts" button reappear — otherwise their stale fingerprint
 // would still match and they'd never pick up the new entries.
-const SHORTCUT_INSTALL_VERSION = "v4";
+// v5: the N: drive shortcut for NY projects is now always-installed
+// (computed from the project number — see nDriveFolderPath), replacing the
+// ~40 manually-typed "Network Folder" External Links this same change
+// removes. Bumped so every NY project's Refresh button resurfaces once.
+const SHORTCUT_INSTALL_VERSION = "v5";
 function projectShortcutFingerprint(project, allProjects) {
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
@@ -5290,7 +5311,8 @@ function projectShortcutFingerprint(project, allProjects) {
 }
 
 // Install all project shortcuts (OneNote notebook + PMS deep link + tools +
-// every external link) into each of the project's SharePoint folder roots.
+// the N: drive folder (NY) + every external link) into each of the
+// project's SharePoint folder roots.
 // If a separate proposal folder is configured (project.proposalFolderUrl
 // distinct from projectFolderUrl), shortcuts are duplicated into it too —
 // proposal stage users get the same launchpad as project execution users.
@@ -5327,6 +5349,12 @@ async function installProjectShortcuts(project, allProjects) {
     label: "Field Photos",
     icon: 52,
   });
+
+  // N: drive (NY only — see nDriveFolderPath). Computed fresh every install,
+  // so it can never drift from the project's own number the way a
+  // manually-typed External Link could (and repeatedly did).
+  const nDrivePath = nDriveFolderPath(project);
+  if (nDrivePath) shortcuts.push({ name: "🗂 N Drive.url", url: nDrivePath, label: "N Drive", icon: 3 });
 
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
   if (teamsFolderUrl) {
@@ -18827,6 +18855,10 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   })();
   // One-click mode is per device (set up in My Projects → My Settings).
   const explorerOneClick = !!explorerFolderName && localStorage.getItem("pmsExplorerHandler") === "1";
+  // N: drive (NY only): unlike the SharePoint sync folder above, this path
+  // needs no per-device root — N: is the same fixed drive letter for
+  // everyone in the office — so the copy-path button just works, no setup.
+  const nDrivePath = nDriveFolderPath(project);
 
   const pct = projectOverallPct(project);
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
@@ -19277,6 +19309,34 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
               color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
             📂 Explorer Path
+          </button>
+          )}
+          {/* N: drive (NY only). No per-device root needed — N: is the same
+              fixed drive letter for everyone — so the one-click link needs
+              only the same local handler as the SharePoint button above
+              (settypms:ndrive, added alongside settypms:open) and the copy
+              fallback needs no setup prompt at all. */}
+          {nDrivePath && explorerOneClick && (
+            <a href={"settypms:ndrive?path=" + encodeURIComponent(nDrivePath)}
+              title="Open this project's N: drive folder in File Explorer"
+              style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+                color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap",
+                textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+              🗂 Open N: Drive
+            </a>
+          )}
+          {nDrivePath && !explorerOneClick && (
+          <button
+            title="Copy this project's N: drive path for File Explorer. One-click mode (My Projects → My Settings) also opens it directly."
+            onClick={e => {
+              navigator.clipboard.writeText(nDrivePath).then(() => {
+                const btn = e.target.closest ? e.target.closest("button") : null;
+                if (btn) { const orig = btn.textContent; btn.textContent = "✓ Copied — Win+E, paste"; setTimeout(() => btn.textContent = orig, 2500); }
+              }).catch(() => alert("Could not copy — the path is:\n" + nDrivePath));
+            }}
+            style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
+            🗂 N: Drive Path
           </button>
           )}
           {project.status === "On Hold" && (
