@@ -40,12 +40,11 @@ function capFor(res, cap, projectNumber) {
   if (proj && typeof proj[cap] === "boolean") return proj[cap];
   return res.caps?.[cap] === true;
 }
-function projectVisible(caps, projectNumber, team) {
+function projectVisible(caps, projectNumber) {
   if (caps.isAdmin) return true;
   const pn = (projectNumber ?? "").trim();
   const o = pn ? caps.projects?.[pn]?.["projects.view"] : undefined;
   if (typeof o === "boolean") return o;
-  if (caps.team && (team ?? null) !== caps.team) return false;
   return caps.caps?.["projects.view"] === true;
 }
 
@@ -72,32 +71,38 @@ const denied = {
 check(capFor(denied, "projects.view", "ZZTEST-000") === false, "per-project view deny beats firm-level allow");
 check(capFor(denied, "projects.view", "SAPX196006.00") === true, "deny on one project does not leak onto others");
 
-// ── projectVisible: team scoping (Phase C) ──────────────────────────────────
+// ── projectVisible: confidential projects, not team scoping (19 Sep 2026) ───
+// Team-based caller scoping (Phase C, 22 Aug 2026) was dropped — too much
+// cross-office staffing (SME India works every office's projects; admin and
+// accounting work everywhere) for restricting by office to be worth the
+// friction. The only thing that can hide a project now is a per-project
+// projects.view verdict — which, for a "Confidential" project, is computed
+// in SQL (pms_has_cap_for, see the migration) with a staffing exception this
+// copy can't reach; projectVisible itself just consumes the precomputed
+// verdict, same as any other per-project override.
 
 const dmvEngineer = {
   email: "dmv@setty.com", role: "engineer", team: "DMV", isAdmin: false,
   caps: { "projects.view": true },
   projects: {
-    "SAPX111111.00": { "projects.view": true },   // cross-team grant (NY job)
-    "SAPX222222.00": { "projects.view": false },  // per-project lock on own team's job
+    "SAPX111111.00": { "projects.view": true },   // explicit allow (e.g. staffed on a confidential job)
+    "SAPX222222.00": { "projects.view": false },  // confidential and not staffed / not allowed
   },
 };
-check(projectVisible(dmvEngineer, "SAPX300000.00", "DMV") === true, "teamed caller sees own-team project");
-check(projectVisible(dmvEngineer, "SAPX196006.00", null) === false, "teamed caller does NOT see the untagged pool");
-check(projectVisible(dmvEngineer, "SAPX400000.00", "NY") === false, "teamed caller does not see another team's project");
-check(projectVisible(dmvEngineer, "SAPX111111.00", "NY") === true, "explicit per-project allow beats team mismatch (cross-team grant)");
-check(projectVisible(dmvEngineer, "SAPX222222.00", "DMV") === false, "explicit per-project deny beats team match (lock)");
-check(projectVisible(dmvEngineer, null, null) === false, "teamed caller: numberless untagged pipeline project is hidden");
+check(projectVisible(dmvEngineer, "SAPX300000.00") === true, "a teamed caller sees an ordinary project in ANY office, not just their own");
+check(projectVisible(dmvEngineer, "SAPX196006.00") === true, "a teamed caller sees the untagged pool too — team no longer scopes anything");
+check(projectVisible(dmvEngineer, "SAPX111111.00") === true, "explicit per-project allow (e.g. a confidential project's staffing exception)");
+check(projectVisible(dmvEngineer, "SAPX222222.00") === false, "explicit per-project deny still hides a project (the confidential case)");
+check(projectVisible(dmvEngineer, null) === true, "a numberless ref has no per-project verdict to look up, so it falls to the firm-level verdict");
 
 const hqStaff = {
   email: "hq@setty.com", role: "staff", team: null, isAdmin: false,
   caps: { "projects.view": true }, projects: {},
 };
-check(projectVisible(hqStaff, "SAPX196006.00", null) === true, "team-less caller keeps today's world on untagged projects");
-check(projectVisible(hqStaff, "SAPX300000.00", "DMV") === true, "team-less caller also sees tagged projects (scope users, not just projects)");
-check(projectVisible({ ...hqStaff, caps: { "projects.view": false } }, "SAPX196006.00", null) === false,
-  "firm-level view deny still hides everything for a team-less caller");
-check(projectVisible({ isAdmin: true, team: "DMV", caps: {}, projects: {} }, "X", "NY") === true, "admin bypasses team scoping");
+check(projectVisible(hqStaff, "SAPX196006.00") === true, "team-less caller sees everything with no per-project override");
+check(projectVisible({ ...hqStaff, caps: { "projects.view": false } }, "SAPX196006.00") === false,
+  "firm-level view deny still hides everything");
+check(projectVisible({ isAdmin: true, team: "DMV", caps: {}, projects: {} }, "X") === true, "admin bypasses everything, confidential included");
 
 // ── isFeeKey: boundaries ────────────────────────────────────────────────────
 
@@ -188,6 +193,36 @@ for (const [anchor, label] of [
   ["if (!caller.email) {", "the refusal keys on a missing user identity"],
 ]) {
   check(shipped.includes(anchor), label + " has DRIFTED from this test's anchor");
+}
+
+// ── team-based visibility is gone; confidential projects live in SQL (19 Sep 2026) ──
+// The restriction itself (caps.team vs a project's team) lived only in
+// index.ts and is confirmed gone above via the projectVisible body drift
+// check. What's left to anchor: the fast path in projectRefVisible no longer
+// special-cases team-less callers, and the SQL migration that adds the
+// confidential-project staffing exception exists with the right shape —
+// pms_has_cap_for's OTHER precedence (admin > user > role > per-project
+// null-project global row > role matrix) is unchanged by this migration, so
+// there is nothing to re-test there, only to confirm the new exception was
+// added without disturbing it.
+check(!shipped.includes("caps.team"), "no code path still reads caps.team for visibility (drift)");
+check(shipped.includes("if (capFor(caps, \"projects.view\") && !anyViewDeny) return true;"),
+  "projectRefVisible's fast path no longer excludes teamed callers");
+
+const migrationPath = new URL("../../migrations/20260919160000_confidential_projects_drop_team_gate.sql", import.meta.url);
+let migration = "";
+try { migration = readFileSync(migrationPath, "utf8"); }
+catch { check(false, "confidential-projects migration file is missing: " + migrationPath.pathname); }
+if (migration) {
+  for (const [anchor, label] of [
+    ["create or replace function public.pms_has_cap_for(", "the migration replaces pms_has_cap_for in place (same signature)"],
+    ["select allowed, subject_kind into v_over, v_kind", "the winning override row's subject_kind is captured, not just its verdict"],
+    ["if v_over = false and v_kind = 'everyone' and exists (", "the staffing exception applies only to an 'everyone' DENY, never a person/role rule"],
+    ["lower(tm ->> 'email') = v_email", "staffing is matched by email against the project's own teamMembers roster"],
+    ["create index if not exists pms_projects_project_number_idx", "the projectNumber lookup the exception needs is indexed"],
+  ]) {
+    check(migration.includes(anchor), label + " — missing from the migration");
+  }
 }
 
 console.log(failures ? `\n${failures} assertions FAILED` : "\nall assertions pass (caps enforcement)");

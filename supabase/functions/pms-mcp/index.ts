@@ -80,6 +80,15 @@ const currentCaller = (): Caller => callerStore.getStore() ?? UNKNOWN_CALLER;
 //   everywhere; hiding must never confirm existence.
 //   REDACT — fee/billing FIELDS are replaced with a marker for callers without
 //   fees.view, so the model says why instead of hallucinating around a gap.
+//
+// 19 Sep 2026: dropped team-based project visibility (too much cross-office
+// staffing to restrict by office) in favor of "Confidential" projects — an
+// 'everyone'+deny row, same shape the per-project override table already
+// supported, marked from a checkbox on the Admin Console's Teams card. A
+// confidential project's SQL-computed verdict (pms_has_cap_for) is visible
+// to admins, anyone explicitly allowed back in, and anyone the project's own
+// teamMembers roster names as staffed on it — resolved entirely in SQL, per
+// the precedence note above; nothing added here re-implements it.
 type ResolvedCaps = {
   email: string | null; role: string; team: string | null; isAdmin: boolean;
   caps: Record<string, boolean>;
@@ -127,26 +136,29 @@ function capFor(res: ResolvedCaps, cap: string, projectNumber?: string | null): 
   return res.caps?.[cap] === true;
 }
 
-// Phase C team scoping (Sara 2026-08-22). Whether a project EXISTS for the
-// caller. Order matters:
+// Whether a project EXISTS for the caller. Order matters:
 //   1. admin sees everything;
-//   2. an explicit per-project projects.view override wins in EITHER direction
-//      — it is the cross-team collaboration escape hatch (a DMV engineer
-//      granted onto one NY job) and the per-project lock, and it must beat the
-//      team rule to be either;
-//   3. a caller WITH a team sees only projects tagged with that exact team,
-//      NOT the untagged pool, so a new team's user is not drowned in 147
-//      legacy projects;
-//   4. a caller with NO team is today's world: the firm-level verdict over
-//      everything, tagged or not — team-less means HQ/legacy staff, and
-//      hiding new-team work from them was not part of the decision. To scope
-//      someone, put them on a team; tagging projects alone scopes nobody.
-function projectVisible(caps: ResolvedCaps, projectNumber?: string | null, team?: string | null): boolean {
+//   2. an explicit per-project projects.view verdict wins in EITHER direction.
+//      This single lookup already carries the whole confidential-project
+//      story: pms_has_cap_for (SQL, the only place this precedence is
+//      computed) resolves a person/role-level row over an 'everyone' row,
+//      and an 'everyone' DENY — the shape a "Confidential" project carries —
+//      is itself overridden back to visible when the caller is staffed on
+//      the project (present in its own teamMembers roster). None of that
+//      logic is reachable from here; `o` is just the precomputed answer.
+//   3. no per-project row at all: the firm-level verdict, full stop.
+// Team-based scoping (Phase C, 22 Aug 2026: a caller with a team saw only
+// that team's projects) was DROPPED 19 Sep 2026 — cross-office staffing
+// turned out to be the norm (SME India works every office's projects;
+// admin/accounting work everywhere), so restricting by office did more harm
+// than good. A project's own `team` no longer factors into visibility at
+// all (it still routes SharePoint/drive storage, untouched — see
+// teamForProject/siteForTeam).
+function projectVisible(caps: ResolvedCaps, projectNumber?: string | null): boolean {
   if (caps.isAdmin) return true;
   const pn = (projectNumber ?? "").trim();
   const o = pn ? caps.projects?.[pn]?.["projects.view"] : undefined;
   if (typeof o === "boolean") return o;
-  if (caps.team && (team ?? null) !== caps.team) return false;
   return caps.caps?.["projects.view"] === true;
 }
 
@@ -176,17 +188,18 @@ function redactFees(v: any): any {
 }
 
 // Is the project this ref names visible to the caller? Fast path: firm-level
-// view allowed and no per-project view denial exists — true without any lookup,
-// which is every request today (overrides table is near-empty). Slow path only
-// when a denial could apply: resolveProjectId is itself visibility-filtered, so
-// a hidden project resolves to null exactly like a ref that never existed.
+// view allowed and no per-project view denial exists for this caller — true
+// without any lookup. Slow path whenever a denial COULD apply (a confidential
+// project the caller isn't staffed on or explicitly allowed into, or any
+// other per-project deny): resolveProjectId is itself visibility-filtered
+// (via the same precomputed caps.projects map), so a hidden project resolves
+// to null exactly like a ref that never existed — never confirming which
+// case it was.
 async function projectRefVisible(ref: string): Promise<boolean> {
   const caps = await resolveCaps();
   if (caps.isAdmin) return true;
-  // Fast path only for team-less callers: a teamed caller could be denied any
-  // project, so every ref must resolve (resolveProjectId is team-filtered).
   const anyViewDeny = Object.values(caps.projects ?? {}).some((p) => p["projects.view"] === false);
-  if (!caps.team && capFor(caps, "projects.view") && !anyViewDeny) return true;
+  if (capFor(caps, "projects.view") && !anyViewDeny) return true;
   return !!(await resolveProjectId(ref));
 }
 
@@ -259,7 +272,7 @@ async function getProjects(): Promise<any[]> {
   const all = await getProjectsUnfiltered();
   const caps = await resolveCaps();
   if (caps.isAdmin) return all;
-  return all.filter((p) => projectVisible(caps, p?.projectNumber, p?.team));
+  return all.filter((p) => projectVisible(caps, p?.projectNumber));
 }
 
 let _projCache: { at: number; data: any[] } | null = null;
@@ -290,7 +303,9 @@ async function getProjectsUnfiltered(): Promise<any[]> {
     // these, relatedGroup can never be resolved into actual sibling projects.
     "relatedGroup:project->>relatedGroup,relatedRole:project->>relatedRole," +
     // team is a REAL COLUMN (not a blob key — app blob saves would drop an
-    // unknown key); it drives Phase C visibility scoping.
+    // unknown key). No longer a visibility gate (dropped 19 Sep 2026 — see
+    // projectVisible); still routes SharePoint/drive storage and is shown as
+    // office context on a project.
     "team," +
     // changeOrders ride along for the link graph (incomingLinks scans them);
     // they are small next to rfis/submittals and nothing like emails[].
@@ -411,7 +426,7 @@ async function getProjectById(pid: string): Promise<any | null> {
   // A project the caller cannot view does not exist for them — same shape as a
   // genuine miss, so hiding never confirms existence.
   const caps = await resolveCaps();
-  if (!caps.isAdmin && !projectVisible(caps, p?.projectNumber, rows?.[0]?.team ?? null)) return null;
+  if (!caps.isAdmin && !projectVisible(caps, p?.projectNumber)) return null;
   // Surface the team on the record (the column is outside the blob on purpose;
   // see getProjectsUnfiltered).
   p.team = rows?.[0]?.team ?? null;
@@ -423,7 +438,7 @@ async function resolveProjectId(identifier: string): Promise<string | null> {
   const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc");
   const caps = await resolveCaps();
   const visible = caps.isAdmin ? (rows || [])
-    : (rows || []).filter((r: any) => projectVisible(caps, r?.pn, r?.team));
+    : (rows || []).filter((r: any) => projectVisible(caps, r?.pn));
   const hit = visible.find((r: any) =>
     [r.pid, r.pn, r.nm].filter(Boolean).some((f: string) => String(f).toLowerCase() === id));
   return hit?.pid ?? null;
@@ -873,9 +888,10 @@ async function azureAnnexFor(team: string | null, num: string): Promise<Record<s
 // an `az:` id is a PATH anyone can type, so it earns its own verdict here:
 // the first segment must be a registered project's folder (longest project
 // number prefixing the name), that project must belong to the id's team (the
-// share is that team's), and the caller must be allowed to see it — exactly
-// projectRefVisible, so overrides and team scoping apply unchanged. Any miss
-// returns the wrapper's not-found shape, never "exists but hidden". The
+// share is that team's — storage routing, unrelated to caller visibility),
+// and the caller must be allowed to see it — exactly projectRefVisible, so
+// confidential-project and per-project-override rules apply unchanged. Any
+// miss returns the wrapper's not-found shape, never "exists but hidden". The
 // share root is never listed for a caller; it is only walked internally to
 // find a folder by number.
 async function azurePathProject(team: string, relPath: string): Promise<{ ok: true; projectNumber: string } | { ok: false; res: any }> {
@@ -1180,7 +1196,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-19-file-links-with-region-access";
+const BUILD = "2026-09-19-confidential-projects";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.19.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
