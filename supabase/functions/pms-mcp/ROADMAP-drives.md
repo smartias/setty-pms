@@ -1,8 +1,11 @@
 # Regional drives: where the work stands, and what is left
 
-Written 15 Sep 2026 so the thread can be picked up from any session or
-account. Everything below is verifiable in the repo, the live Supabase
-project (`khxmgjilwhdguuepbhne`), or the PRs named.
+Written 15 Sep 2026, brought current 17 Sep, so the thread can be picked up
+from any session or account. Everything below is verifiable in the repo, the
+live Supabase project (`khxmgjilwhdguuepbhne`), or the PRs named. The
+connector's wider capability plan (QA review schedule, CA feedback loop,
+skill library) is `ROADMAP.md` beside this file; this one is only the
+network-drive thread.
 
 ## The situation
 
@@ -23,12 +26,13 @@ tab (`SettyAdmin.html`):
   Function secret holding that share's SAS). Saves go through
   `pms_region_save()` in one transaction.
 
-Live rows as of 15 Sep 2026:
+Live rows as of 17 Sep 2026 (shares confirmed in `pms_region_shares`; the
+single-share columns on `pms_regions` are gone):
 
 | Team | Storage | Drives (label → share) | Secret |
 |---|---|---|---|
 | NY | SharePoint + annex | N → `newyorkstorage` root (SAP, SAIG, SAG entity folders, then year) | `AZURE_SAS_NY` |
-| BT | SharePoint + annex | SAOP → `saoperation` | `AZURE_SAS_BT` |
+| BT | SharePoint + annex (should be Azure only, like DC: see "Not done yet" 3) | SAOP → `saoperation` | `AZURE_SAS_BT` |
 | DC | Azure only | I → `ffxfileshare/SAi_Projects`; W → `ffxfileshare/SA_Private_Projects` | `AZURE_SAS_I`, `AZURE_SAS_W` |
 
 The ffxfilestorage token expires **31 March 2028**. The filestoragesetty
@@ -51,7 +55,12 @@ Both storage accounts accept traffic from outside the corporate network
 | #267/#268 | **Region filter** in the PMS app (list, Pipeline, Dashboard; `pms_projects_slim` carries `team`); discovery records the closest PMS record for near-miss numbers and offers **Link to it** | 1.17.1 |
 | #268 | **`find_document` on a drive**: `projectTree()` walks the project folder on the share; ranking, phase filter and supersession status unchanged | 1.17.2 |
 | #268 | **RFIs and submittals on a drive**: `read_rfi_submittal` returns the item's folder and files under `CA/8. RFIs` or `9. Submittals` (discipline folders in between), `search_rfis_submittals` lists CA item folders with no log entry (`driveOnly`); works on drive-only and drive-annex regions. `resolveChildFolder` contains-match is word-bounded ("CA" no longer finds "Load Forecasting") | 1.18.0 |
-| this PR | **Legacy single-share columns dropped** from `pms_regions`; `pms_region_save` and the Regions tab use `pms_region_shares` only. Apply the migration only AFTER the 1.18.1 connector is live | 1.18.1 |
+| #269 | **Legacy single-share columns dropped** from `pms_regions`; `pms_region_save` and the Regions tab use `pms_region_shares` only. Migration `20260915130000` applied live 16 Sep, after the connector no longer selected them | 1.18.1 |
+| #278 | `view_drawing` **renders again**: `@hyzyla/pdfium` page objects are single-use and the package is pinned at 2.1.9; `GET /health?probe=render` proves the render path. Affects every drive-indexed sheet as much as SharePoint ones | 1.18.2 |
+| #280 | `search_review_feedback` reads `pms_ca_review_feedback` (reviewer outcomes on Claude's CA suggestions). The submittal-rfi-review skill now treats **a set that exists only on N: as combined volumes** as a filing gap with the fix stated: save to SharePoint, split into sheet PDFs | 1.19.0 |
+| #281 | Admin console v26: skill library sync card (which repo skills must be uploaded to the claude.ai library) | — |
+| this PR | **Region site access + drive fallback**: a Graph 403/404 while resolving a region's site is rethrown as a `RegionAccessError` naming the site, the per-site `Sites.Selected` grant and the Regions-tab alternative; a refused region WITH drive shares is served from them like an `azure_files` region (browse, read, drawing index, sheet index, current set, CA folders), each result carrying a `sharepoint` block with the reason; `list_project_documents` flags a `projectFolderUrl` on another site; `GET /health?probe=regions` checks every region's site | 1.19.1 |
+| `tools/newforma-import` | Newforma submittal / RFI log refresh into the PMS CA log (16 Sep export). Gives drive-era jobs their CA records, which is what the drive CA folder walk matches against | — |
 | next | **Transmittal tool, register-only mode** (`transmittal.html` v19): a drive project's set is read off the mapped drive through the OS picker (names + title blocks), nothing is uploaded, the register row carries `files.driveFolder` instead of `sp_folder_url`; attachment is the only email delivery; `get_current_set` surfaces `driveFolder` | 1.16.1 |
 | this PR | **Raw file links**: `download_document` mints a signed, short-lived link that streams a file's original bytes (SharePoint or `az:` drive id, same gate as `read_document`, re-run as the minting caller); `upload_document` writes an edited file back to SharePoint (new version by id, or new file) inline or by signed PUT link. Drives stay read-only. See README → Raw file access | 1.19.0 |
 | this PR | **SharePoint adoption reminder**: every drive-sourced result, drive refusal, and empty email/minutes record carries one `reminder` string for the model to pass on once per conversation — the drive is name-only and read-only for Claude; save the drawings, specs, meeting notes, narratives and comment logs to the project's SharePoint folder | 1.19.1 |
@@ -60,9 +69,11 @@ Verified end to end on 14 Sep: `list_project_documents` on SIPX262012.00
 (DC) found the project under `I:\2026`, resolved "Outgoing" to
 `99-SIPX262012.00_OUTGOING`, and browsed the 20 project folders.
 
-A team explainer, "Where Project Files Live", is published as a Claude
-artifact (private link held by Sara); the same capability matrix is on the
-Regions tab.
+Team explainers published as Claude artifacts (private links held by Sara):
+"Where Project Files Live" (all offices) and "New York Project Files" (NY:
+SharePoint is the record, N: is a read-only annex). The same capability
+matrix is on the Regions tab. Live connector as of 17 Sep: build
+`2026-09-16-review-feedback`, 1.19.0, 44 tools.
 
 ## How it works, in one screen
 
@@ -94,13 +105,35 @@ Regions tab.
 
 ## Not done yet, in the order I would do it
 
+0. **Verify the CA folder matching on a real job.** `azureCaItems` and
+   `folderMentionsNumber` were built from Sara's description and the
+   `SAPX236006.00` CA tree, whose RFI and submittal folders held only the
+   templates. Run `read_rfi_submittal` on a DC or NY job with filed
+   submittals under `9. Submittals/<disc>/` and confirm `driveFiled` comes
+   back; adjust the number matching if item folders are named differently.
 1. **Photos.** `view_photos` could read image bytes from a drive by `az:` id;
    `search_field_photos` cannot (sessions are app uploads to SharePoint).
 2. **Writes to drives** (transmittal staging, QA report filing, QAQC folders):
    a policy decision first (write-capable SAS widens what a leaked secret can
    do), then Azure Files `PUT`/create-directory in `azureFiles.ts`.
-3. **Baltimore**: confirm the BaltimoreTeam site has a Project Document
-   Library before the first project is tagged BT.
+3. **Baltimore**: the first BT project got tagged before this was done.
+   Tivoly EcoVillage MGrid (SIPX251008.00, created 17 Sep from SAOP drive
+   discovery) routes to the BT row's site, and the connector gets
+   `Graph 403 accessDenied` on `/sites/<BT site>/drives`: the app's
+   `Sites.Selected` grant covers NYCProjects, not the Baltimore site. Its PMS
+   record's `projectFolderUrl` is on NYCProjects anyway (the PMS app creates
+   every folder on its hardcoded drive). **The fix is the row**: Baltimore
+   works from its drive like DC, so set BT's Storage to "Network drive is
+   the record" in Admin → Regions (SAOP stays the one share). That takes
+   effect on the LIVE connector within 5 minutes, no deploy, and the
+   Baltimore site is not consulted at all. Only if Baltimore is meant to
+   move its record into SharePoint: IT grants the "Setty PMS - Claude
+   Connector" app read on that site, confirm it has a Project Document
+   Library, then flip Storage back. `GET /pms-mcp/health?probe=regions`
+   (1.19.1) shows the live answer per region. The SAOP annex was never the problem: the SharePoint
+   call failed first and hid it; since 1.19.1 a refused region with drive
+   shares is served from them (Tivoly browses, reads and indexes off SAOP,
+   with the site refusal reported alongside) until the site is fixed.
 
 ## Known limits worth remembering
 
@@ -112,6 +145,11 @@ Regions tab.
 - `deno check` on `index.ts` reports 9 pre-existing implicit-any errors in
   untouched code (sheet-reference helpers, folder provisioning). Deploys do
   not type-check; `node --test` is the gate that matters.
+- `@hyzyla/pdfium` page objects are single-use and the package is pinned
+  (1.18.2). A render failure in production shows up in the function logs
+  and on `GET /pms-mcp/health?probe=render`.
+- Deploy from a checkout that has pulled `main`: a deploy from a stale
+  clone shipped the previous build once (15 Sep) with no error.
 
 ## Deploying and testing
 
@@ -123,4 +161,7 @@ the tool descriptions refresh. Smoke test on DC:
 2. `search_drawings` with `indexOnly: true` until `coverage.filesPending` is 0.
 3. `extract_sheet_index` (no subfolder) → sheets grouped by discipline,
    `basis` naming the drawing index.
-4. `view_drawing` for one sheet → an image.
+4. `view_drawing` for one sheet → an image (or `GET /health?probe=render`
+   to check the render path without a project).
+5. `read_rfi_submittal` on a job with filed submittals → `driveFiled` with
+   the item's folder and files.

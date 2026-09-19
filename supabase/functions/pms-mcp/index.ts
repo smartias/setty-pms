@@ -34,6 +34,12 @@ import {
   type PutTokenPayload, mintFileToken, verifyFileToken, clampTtlMinutes,
   mimeFor, contentDisposition, isWritableName, isOutgoingPath, chunkRanges, UPLOAD_CHUNK_BYTES,
 } from "./fileLinks.ts";
+// A Graph 403/404 while resolving a REGION's site is a configuration fact
+// (Sites.Selected grant missing, or the row names the wrong site), not a
+// project problem; regionAccess.ts turns it into the fix. Pure; see its tests.
+import {
+  RegionAccessError, regionAccessError, regionAccessResult, siteMismatchHint, graphStatusOf, graphErrorCodeOf,
+} from "./regionAccess.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -671,8 +677,8 @@ const AZURE_LIMITED_NOTE =
   "drive). Browsing, reading, and the drawing tools (indexing, search, sheet index, view, schedules, " +
   "equipment) work there. Finding documents by description, field photos, transmittal staging and " +
   "filing need the project record in the region's SharePoint site.";
-async function storageFor(projectNumber: string | null | undefined): Promise<RegionSite> {
-  return siteForTeam(await teamForProject(projectNumber));
+async function storageFor(projectNumber: string | null | undefined): Promise<EffectiveRegion> {
+  return effectiveRegionForTeam(await teamForProject(projectNumber));
 }
 async function siteForTeam(team: string | null | undefined): Promise<RegionSite> {
   if (!team) return DEFAULT_REGION;
@@ -912,14 +918,28 @@ async function resolveSiteId(ref: string): Promise<string> {
   _siteIdByRef.set(ref, id);
   return id;
 }
+// The drives of a region's site, resolved through Graph. This is the FIRST
+// Graph call every SharePoint tool makes for a project, so it is where a
+// region whose site the connector cannot read fails; the failure is
+// rethrown as a RegionAccessError naming the site and the fix (Sites.Selected
+// is granted per site) instead of a bare "Graph 403: accessDenied" that
+// reads like a broken project. Anything that is not a site-access problem
+// passes through unchanged.
+async function regionDrives(team: string | null | undefined, region: RegionSite): Promise<Array<{ id: string; name: string }>> {
+  try {
+    const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
+    return (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
+  } catch (e) {
+    throw regionAccessError(team, region.siteId, e) ?? e;
+  }
+}
 
 const _docDrive = new Map<string, string>();
 async function docDriveId(team?: string | null): Promise<string> {
   const region = await siteForTeam(team);
   const hit = _docDrive.get(region.siteId);
   if (hit) return hit;
-  const drives = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
-  const list = drives.value || [];
+  const list = await regionDrives(team, region);
   const match = list.find((d: any) => d.name === region.docLibrary) || list[0];
   if (!match) throw new Error("No document library found on the region's site.");
   const id: string = match.id;
@@ -949,10 +969,47 @@ async function siteDrives(team?: string | null): Promise<Array<{ id: string; nam
   const region = await siteForTeam(team);
   const hit = _drivesBySite.get(region.siteId);
   if (hit) return hit;
-  const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
-  const list: Array<{ id: string; name: string }> = (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
+  const list = await regionDrives(team, region);
   _drivesBySite.set(region.siteId, list);
   return list;
+}
+// The storage a project's tools should actually use. A region declares
+// `sharepoint`, but when the connector cannot read that site (no
+// Sites.Selected grant, or the row names a site Graph cannot find) and the
+// region has drive shares registered, the project is served from its drives
+// exactly as an `azure_files` region would be — browse, read, drawing index,
+// sheet index, current set, CA folders — instead of failing on the first
+// Graph call. The refusal is remembered for 300 s so a grant shows up without
+// a redeploy and the probe is not repeated per tool call; a site proven
+// readable this instance (drives cached) is never re-probed. Any other
+// failure (network, token) keeps the declared kind: the SharePoint path then
+// reports it as it always did. `siteError` tells the tool why it is on the
+// drive so its result can say so.
+type EffectiveRegion = RegionSite & { siteError?: RegionAccessError };
+const _siteRefusal = new Map<string, { err: RegionAccessError; at: number }>();
+const SITE_REFUSAL_TTL = 300000;
+async function effectiveRegionForTeam(team: string | null | undefined): Promise<EffectiveRegion> {
+  const region = await siteForTeam(team);
+  if (region.kind !== "sharepoint" || !region.shares.length) return region;
+  if (_drivesBySite.has(region.siteId)) return region;
+  const bad = _siteRefusal.get(region.siteId);
+  if (bad && (Date.now() - bad.at) < SITE_REFUSAL_TTL) return { ...region, kind: "azure_files", siteError: bad.err };
+  try {
+    await siteDrives(team);
+    return region;
+  } catch (e) {
+    if (!(e instanceof RegionAccessError)) return region;
+    _siteRefusal.set(region.siteId, { err: e, at: Date.now() });
+    return { ...region, kind: "azure_files", siteError: e };
+  }
+}
+// What a drive-served result carries when the drive is a FALLBACK: the site
+// refusal and its fix, so "browsed off SAOP" is never mistaken for "this
+// region has no SharePoint".
+function siteFallbackFields(region: EffectiveRegion): Record<string, unknown> {
+  return region.siteError
+    ? { sharepoint: { ...regionAccessResult(region.siteError), note: "Served from the region's network-drive share because its SharePoint site refused the connector. Search, photos, transmittal staging and filing need the site." } }
+    : {};
 }
 // Find a project's root folder (named by NUMBER, e.g. "<number> - ...") within a drive.
 //
@@ -1066,7 +1123,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-15-sharepoint-nudge";
+const BUILD = "2026-09-19-file-links-with-region-access";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.19.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -3120,7 +3177,8 @@ mcp.tool("get_current_set", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    const onDrive = (await storageFor(project)).kind !== "sharepoint";
+    const st = await storageFor(project);
+    const onDrive = st.kind !== "sharepoint";
     const disc = (discipline ?? "").toLowerCase().trim();
 
     let rows: any[] = [];
@@ -3280,6 +3338,7 @@ mcp.tool("get_current_set", {
           ...(discNote ? { disciplineNote: discNote } : {}),
           fullSetHint: "Sheets are listed at their most recent INDEXED revision across all sets; extract_sheet_index gives the same view grouped by discipline.",
           nextStep: "Issuing sets through the transmittal tool (register-only mode for drive projects) would make this authoritative instead of inferred.",
+          ...siteFallbackFields(st),
         });
       } catch (e) {
         return asText({ project, inferred: true, current: null, error: `No transmittal record, and the drawing index could not be read: ${String((e as any)?.message ?? e)}` });
@@ -3649,9 +3708,11 @@ mcp.tool("list_project_documents", {
         catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
       }
       const team = await teamForProject(projectNumber);
-      const region = await siteForTeam(team);
+      const region = await effectiveRegionForTeam(team);
       // An azure_files region: the share IS the project record. Find the
-      // project folder at the share root by number and list it.
+      // project folder at the share root by number and list it. A SharePoint
+      // region whose site refused the connector lands here too (drive
+      // fallback) and says so via `sharepoint`.
       if (region.kind !== "sharepoint") {
         const num = String(projectNumber || "").toLowerCase().trim();
         if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE });
@@ -3667,7 +3728,7 @@ mcp.tool("list_project_documents", {
             error: allFailed ? problems.join(" | ") : `No folder starting with "${projectNumber}" at the root of region ${t}'s drive share${labels.length === 1 ? "" : "s"} (${labels.join(", ")}).`,
             ...(problems.length && !allFailed ? { problems } : {}),
             nextStep: allFailed ? "Fix the share credentials in Admin → Regions / Edge Function secrets." : "Confirm the number with search_projects; the project folder must sit at a registered share's root, named by number.",
-            note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE });
+            note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE, ...siteFallbackFields(region) });
         }
         const [first, ...others] = hits;
         try {
@@ -3675,10 +3736,28 @@ mcp.tool("list_project_documents", {
             ...(await azureListing(first.ctx, await azureResolveSubfolder(first.ctx, first.folder, relIn))),
             reminder: SHAREPOINT_NUDGE,
             ...(others.length ? { alsoOn: others.map(azureFolderPointer), alsoOnNote: "This project also has a folder on the region's other drive(s); pass one of these folderIds to browse it." } : {}),
-            ...(problems.length ? { problems } : {}) });
+            ...(problems.length ? { problems } : {}), ...siteFallbackFields(region) });
         } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: t, share: first.ctx.label }); }
       }
-      const drives = await siteDrives(team);
+      let drives: Array<{ id: string; name: string }>;
+      try {
+        drives = await siteDrives(team);
+      } catch (e) {
+        // The region's site refused (or does not exist). Say what that
+        // means and who fixes it, and still hand over what IS reachable:
+        // the drive annex, and the folder URL the PMS record itself carries
+        // (on a different site, it is the row that is wrong, not the grant).
+        if (!(e instanceof RegionAccessError)) throw e;
+        const num = String(projectNumber || "").toLowerCase().trim();
+        let recordSays: string | null = null;
+        try {
+          const pid = num ? await resolveProjectId(num) : null;
+          const p = pid ? await getProjectById(pid) : null;
+          recordSays = siteMismatchHint(team, region.siteId, p?.projectFolderUrl);
+        } catch { /* the hint is a courtesy; the error above is the answer */ }
+        const driveAnnex = num && region.shares.length ? await azureAnnexFor(team, num) : null;
+        return asText({ project: projectNumber ?? null, ...regionAccessResult(e, { recordSays, driveAnnex }) });
+      }
       const rel = subfolder && subfolder.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "").split("/").map(encodeURIComponent).join("/") : "";
       // Mode 3: open a specific folder by composite id.
       if (folderId && String(folderId).trim()) {
@@ -4308,7 +4387,7 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
   // same way, so find_document ranks the same TreeFile rows on either storage.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) {
       const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
       const files: TreeFile[] = []; const libraries: string[] = []; let truncated = false;
@@ -4430,7 +4509,7 @@ async function subtreeFiles(numPrefix: string, rel: string): Promise<{
   // holds the project (standard names map to the drive's own names) and walk.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) {
       const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
       const want = cleanRelPath(relClean) ?? "";
@@ -4655,7 +4734,8 @@ mcp.tool("find_document", {
     const project = p?.projectNumber || projectNumber;
     // Drive-based projects (1.17.2) go through the same walk-and-rank path:
     // projectTree has a drive branch, and the rows carry az: ids and UNC paths.
-    const onDrive = (await storageFor(project)).kind !== "sharepoint";
+    const st = await storageFor(project);
+    const onDrive = st.kind !== "sharepoint";
 
     let tree;
     try {
@@ -5207,8 +5287,12 @@ mcp.tool("prepare_transmittal", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site.", reminder: SHAREPOINT_NUDGE });
+    {
+      const st = await storageFor(project);
+      if (st.kind !== "sharepoint") {
+        return asText(st.siteError ? regionAccessResult(st.siteError)
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site.", reminder: SHAREPOINT_NUDGE });
+      }
     }
 
     let rows: any[] = [];
@@ -5371,7 +5455,8 @@ mcp.tool("extract_sheet_index", {
     // Drive-based project (1.16.0): no register to fold, so the default view
     // is composed from the drawing index; a subfolder request reads the PDFs
     // straight off the share below, exactly as it does for SharePoint.
-    if (!subfolder && (await storageFor(project)).kind !== "sharepoint") {
+    const st = await storageFor(project);
+    if (!subfolder && st.kind !== "sharepoint") {
       const numPrefix = String(project).toLowerCase().trim();
       let derived: Awaited<ReturnType<typeof indexDerivedSet>>;
       try { derived = await indexDerivedSet(numPrefix); }
@@ -5383,6 +5468,7 @@ mcp.tool("extract_sheet_index", {
             ? "Nothing indexed carries a parsed sheet number yet (title blocks did not parse, or indexing is still running)."
             : "Nothing is indexed for this project yet. Drive-based projects have no transmittal register, so the sheet index comes from the drawings themselves.",
           nextStep: "Run search_drawings with indexOnly:true to index the Outgoing folder (repeat until coverage.filesPending is 0), then call again; or pass a set folder as subfolder to read it directly.",
+          ...siteFallbackFields(st),
         });
       }
       return asText({
@@ -5390,6 +5476,7 @@ mcp.tool("extract_sheet_index", {
         sheetCount: derived.sheetCount, disciplineCount: derived.disciplines.length, disciplines: derived.disciplines,
         sourceSets: derived.sourceSets, coverage: derived.coverage,
         note: "Each sheet is shown at its most recent INDEXED issuance. To see what a single set contained instead, pass that set folder as subfolder.",
+        ...siteFallbackFields(st),
       });
     }
 
@@ -6195,7 +6282,7 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
   // Drive-based projects (1.16.0): the scope comes off the region's shares.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subfolder);
   }
   let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
@@ -6875,8 +6962,55 @@ function pdfiumLibrary(): Promise<any> {
   return _pdfiumLib;
 }
 
+// @hyzyla/pdfium page objects are SINGLE-USE. render() closes the PDFium page
+// (FPDF_ClosePage) on its way out, so any later call on the same object — a
+// second render, or getSize — dies inside the wasm with "null function" /
+// "null function or function signature mismatch" (V8 wording varies). 1.18.1
+// learned the page size by rendering once and then re-rendered on the same
+// object whenever the size accessor was missing, which is exactly what
+// @hyzyla/pdfium 2.1.11+ made the default path (getSize() went private and
+// throws without arguments), so every production render failed after the
+// deploy that picked up the newer package. Rules from here on: the package is
+// pinned; the size is read WITHOUT rendering (getSize on 2.1.9, getOriginalSize
+// on 2.1.11+); a page object is rendered at most once; and a wasm-level
+// failure rebuilds the shared library and retries exactly once.
+function drawingPageSize(pg: any): { wPt: number; hPt: number } {
+  try {
+    const o = pg?.getOriginalSize?.();
+    const w = Number(o?.originalWidth ?? o?.width ?? 0), h = Number(o?.originalHeight ?? o?.height ?? 0);
+    if (w > 0 && h > 0) return { wPt: w, hPt: h };
+  } catch { /* not this build of the lib */ }
+  try {
+    const sz = pg?.getSize?.();
+    const w = Number(sz?.width ?? 0), h = Number(sz?.height ?? 0);
+    if (w > 0 && h > 0) return { wPt: w, hPt: h };
+  } catch { /* 2.1.11+: getSize is private and throws without render options */ }
+  return { wPt: 0, hPt: 0 };
+}
+
+const PDFIUM_RUNTIME_FAILURE = /null function|signature mismatch|memory access out of bounds|unreachable|RuntimeError|table index is out of bounds/i;
+
 async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
   const { Image } = await import("imagescript") as any;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await renderDrawingPageOnce(pdfBytes, pageInFile, region, Image);
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e);
+      if (attempt === 1 && PDFIUM_RUNTIME_FAILURE.test(msg)) {
+        // The shared wasm instance is no longer trustworthy: drop it so the
+        // next pdfiumLibrary() call boots a fresh one (~50ms), and try once more.
+        console.error(`[view_drawing] PDFium runtime failure (page ${pageInFile}, ${region}): ${msg.slice(0, 160)} — re-initializing and retrying once`);
+        _pdfiumLib = null;
+        continue;
+      }
+      console.error(`[view_drawing] render failed (page ${pageInFile}, ${region}, attempt ${attempt}): ${msg.slice(0, 200)}`);
+      throw e;
+    }
+  }
+}
+
+async function renderDrawingPageOnce(pdfBytes: Uint8Array, pageInFile: number, region: ViewDrawingRegion, Image: any): Promise<{ b64: string; mimeType: string; width: number; height: number; pageCount: number | null }> {
   const library = await pdfiumLibrary();
   let doc: any = null;
   try {
@@ -6886,19 +7020,21 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
     if (pageCount != null && (pageInFile < 1 || pageInFile > pageCount)) {
       throw new Error(`page ${pageInFile} is out of range — the file has ${pageCount} page(s)`);
     }
-    const pg = doc.getPage(pageInFile - 1); // index pages are 1-based, PDFium is 0-based
     const box = drawingRegionBox(region);
-    let wPt = 0, hPt = 0;
-    try { const sz = pg.getSize?.(); wPt = Number(sz?.width ?? pg.width ?? 0); hPt = Number(sz?.height ?? pg.height ?? 0); } catch { /* fall through */ }
+    // index pages are 1-based, PDFium is 0-based. Size first (no render), then
+    // ONE render on this page object.
+    const pg = doc.getPage(pageInFile - 1);
+    const { wPt, hPt } = drawingPageSize(pg);
     let rendered: any;
     if (wPt > 0 && hPt > 0) {
       rendered = await pg.render({ scale: drawingRenderScale(wPt, hPt, box), render: "bitmap" });
     } else {
-      // This build of the lib would not say the page size: render at 1x to
-      // learn it, and re-render only when 1x is badly off the target.
+      // Neither size accessor answered: a 1x render tells us the size. If 1x is
+      // badly off the target, render again on a FRESH page object — never on
+      // `pg`, which render() has already closed.
       rendered = await pg.render({ scale: 1, render: "bitmap" });
       const s = drawingRenderScale(rendered.width, rendered.height, box);
-      if (s < 0.9 || s > 1.5) rendered = await pg.render({ scale: s, render: "bitmap" });
+      if (s < 0.9 || s > 1.5) rendered = await doc.getPage(pageInFile - 1).render({ scale: s, render: "bitmap" });
     }
     let img = new Image(rendered.width, rendered.height);
     img.bitmap.set(rendered.data);
@@ -6916,6 +7052,25 @@ async function renderDrawingPage(pdfBytes: Uint8Array, pageInFile: number, regio
   } finally {
     try { doc?.destroy?.(); } catch { /* best-effort teardown */ }
     // The library itself is the per-isolate singleton — never destroyed here.
+  }
+}
+
+// A one-page, ~420-byte PDF (blue rectangle + "Render test") for the health
+// probe: /pms-mcp/health?probe=render renders it twice through the real path,
+// which is precisely the sequence that broke in 1.18.1.
+const RENDER_PROBE_PDF_B64 = "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA3NyA+PgpzdHJlYW0KMCAwIDEgUkcgNCB3IDEwMCAxMDAgNDAwIDYwMCByZSBTIEJUIC9GMSAzNiBUZiAxNTAgNDAwIFRkIChSZW5kZXIgdGVzdCkgVGogRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzNjggMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0MzgKJSVFT0YK";
+
+async function renderProbe(): Promise<{ ok: boolean; ms: number; renders?: string[]; error?: string }> {
+  const t0 = Date.now();
+  try {
+    const bin = atob(RENDER_PROBE_PDF_B64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const a = await renderDrawingPage(bytes, 1, "full");
+    const b = await renderDrawingPage(bytes, 1, "center");
+    return { ok: true, ms: Date.now() - t0, renders: [`${a.width}x${a.height}`, `${b.width}x${b.height}`] };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, error: String((e as any)?.message ?? e).slice(0, 200) };
   }
 }
 
@@ -8064,6 +8219,106 @@ mcp.tool("save_ca_review", {
   },
 });
 
+// ── search_review_feedback: what reviewers did with earlier suggestions ──────
+// The read side of pms_ca_review_feedback (migration 20260916120000): one row
+// per Claude suggestion on a CA item and what the engineer SAVED in its place
+// (accepted / edited / replaced / dismissed), plus the reviewer's own one-line
+// "why" typed in the modal. The submittal-rfi-review skill reads these BEFORE
+// drafting, so the next suggestion already avoids what was cut last time.
+// Project-scoped rows follow project visibility, as knowledge does.
+function splitSentences(s: string): string[] {
+  return String(s || "").replace(/\s+/g, " ")
+    .split(/(?<=[.;:!?])\s+(?=[A-Z0-9"(])/)
+    .map((x) => x.trim()).filter((x) => x.length > 2);
+}
+// Sentence-level delta: what the reviewer cut from the suggestion and what
+// they added. Punctuation/case-insensitive so a re-wrapped sentence is "kept".
+function feedbackDelta(suggested: string, final: string): { removed: string[]; added: string[] } {
+  const a = splitSentences(suggested), b = splitSentences(final);
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
+  const sa = new Set(a.map(norm)), sb = new Set(b.map(norm));
+  return { removed: a.filter((x) => !sb.has(norm(x))), added: b.filter((x) => !sa.has(norm(x))) };
+}
+
+mcp.tool("search_review_feedback", {
+  description:
+    "What Setty's engineers DID with earlier Claude suggestions on RFIs and submittals: for each save_ca_review " +
+    "suggestion that a reviewer then saved over, the outcome (accepted / edited / replaced / dismissed), the " +
+    "sentences they cut and added, the stamp they chose, and their own one-line 'why' from the modal. Read it " +
+    "BEFORE drafting a review (submittal-rfi-review skill, Step 1) — first for the same project, then for the " +
+    "discipline and item type — so the next draft avoids what was cut last time. It shapes the draft; it is " +
+    "not evidence to cite in a response. Rows follow project visibility.",
+  inputSchema: z.object({
+    projectNumber: z.string().optional().describe("Limit to one project (number or name)"),
+    type: z.enum(["rfi", "submittal"]).optional().describe("Item type"),
+    discipline: z.string().optional().describe("Discipline filter (substring), e.g. 'Plumbing'"),
+    outcome: z.enum(["accepted", "edited", "replaced", "dismissed"]).optional().describe("Only rows with this outcome"),
+    reviewer: z.string().optional().describe("Reviewer email (substring)"),
+    limit: z.number().int().min(1).max(50).optional().describe("Newest N rows to return (default 15)"),
+    full: z.boolean().optional().describe("Return the full suggested and final texts instead of the sentence delta and an excerpt"),
+  }),
+  handler: async ({ projectNumber, type, discipline, outcome, reviewer, limit, full }) => {
+    let pn: string | null = null;
+    if (projectNumber?.trim()) {
+      const pid = await resolveProjectId(projectNumber.trim());
+      const p = pid ? await getProjectById(pid) : null;
+      if (!p) return asText({ error: `No project matching "${projectNumber}"` });
+      pn = p.projectNumber || null;
+    }
+    const cap = Math.min(Math.max(limit ?? 15, 1), 50);
+    let q =
+      "pms_ca_review_feedback?select=id,project,project_name,item_type,item_number,item_subject,discipline," +
+      "ai_at,ai_by,suggested_response,final_response,suggested_stamp,final_stamp,outcome,why,reviewer,updated_at" +
+      "&order=updated_at.desc&limit=200";
+    if (pn) q += "&project=eq." + encodeURIComponent(pn);
+    if (type) q += "&item_type=eq." + type;
+    if (outcome) q += "&outcome=eq." + outcome;
+    if (discipline?.trim()) q += "&discipline=ilike." + encodeURIComponent("*" + discipline.trim() + "*");
+    if (reviewer?.trim()) q += "&reviewer=ilike." + encodeURIComponent("*" + reviewer.trim() + "*");
+    const rows: any[] = await sbGet(q);
+
+    // Same visibility rule as search_knowledge: a row from a job the caller
+    // cannot see is part of that job's record and stays hidden with it.
+    const caps = await resolveCaps();
+    let visible = rows;
+    if (!caps.isAdmin) {
+      const projs = await getProjects();
+      const ok = new Set(projs.map((p: any) => p.projectNumber).filter(Boolean));
+      visible = rows.filter((r: any) => ok.has(r.project));
+    }
+
+    const outcomes: Record<string, number> = {};
+    for (const r of visible) outcomes[r.outcome] = (outcomes[r.outcome] || 0) + 1;
+
+    const feedback = visible.slice(0, cap).map((r: any) => {
+      const base: Record<string, unknown> = {
+        id: r.id,
+        project: r.project, projectName: r.project_name || undefined,
+        item: `${String(r.item_type).toUpperCase()} ${r.item_number}`, subject: r.item_subject || undefined,
+        discipline: r.discipline || undefined,
+        outcome: r.outcome, why: r.why || undefined,
+        reviewer: r.reviewer, suggestedBy: r.ai_by || undefined, updatedAt: r.updated_at,
+        ...(r.suggested_stamp || r.final_stamp ? { suggestedStamp: r.suggested_stamp || undefined, finalStamp: r.final_stamp || undefined } : {}),
+      };
+      if (full) return { ...base, suggestedResponse: r.suggested_response || "", finalResponse: r.final_response || "" };
+      const d = feedbackDelta(r.suggested_response || "", r.final_response || "");
+      return {
+        ...base,
+        cutFromSuggestion: d.removed.slice(0, 12),
+        addedByReviewer: d.added.slice(0, 12),
+        finalExcerpt: String(r.final_response || "").slice(0, 400),
+      };
+    });
+
+    return asText({
+      count: feedback.length, totalMatching: visible.length, outcomes, feedback,
+      note: feedback.length
+        ? "Shape the next draft with this (what got cut, what got added, the reviewer's why); never quote it in a response, and never assume a project's earlier edit applies to a different reviewer without checking their rows."
+        : "No recorded feedback for this filter yet — rows appear when an engineer saves a record that carries a Claude review.",
+    });
+  },
+});
+
 mcp.tool("backload_ca_item", {
   description:
     "BACKFILL the RFI/submittal log: create a CA record for an item that is not in the PMS yet (the hybrid " +
@@ -8256,8 +8511,12 @@ mcp.tool("file_qa_report", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint.", reminder: SHAREPOINT_NUDGE });
+    {
+      const st = await storageFor(project);
+      if (st.kind !== "sharepoint") {
+        return asText(st.siteError ? regionAccessResult(st.siteError)
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint.", reminder: SHAREPOINT_NUDGE });
+      }
     }
     const day = (date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) ? date.trim() : new Date().toISOString().slice(0, 10);
     const clean = (s: string) => s.replace(/[\\/:*?"<>|#%]/g, "-").replace(/\s+/g, " ").trim();
@@ -8349,7 +8608,8 @@ mcp.tool("ensure_qaqc_folders", {
     for (const p of page) {
       const num = String(p.projectNumber).toLowerCase().trim();
       try {
-        if ((await storageFor(p.projectNumber)).kind !== "sharepoint") { notProvisioned.push(p.projectNumber + " (non-SharePoint region)"); continue; }
+        const st = await storageFor(p.projectNumber);
+        if (st.kind !== "sharepoint") { notProvisioned.push(p.projectNumber + (st.siteError ? " (region's SharePoint site refused the connector)" : " (non-SharePoint region)")); continue; }
         const drive = await docDriveId(await teamForProject(String(p.projectNumber)));
         const root = await findProjectFolderInDrive(drive, num);
         if (!root) { notProvisioned.push(p.projectNumber); continue; }
@@ -9150,7 +9410,36 @@ app.use("/pms-mcp/mcp", async (c, next) => {
 app.get("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.delete("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
-app.get("/pms-mcp/health", (c) => c.json({ ok: true, build: BUILD }));
+app.get("/pms-mcp/health", async (c) => {
+  // ?probe=render exercises the PDFium path end to end (two renders of an
+  // embedded PDF) so "does view_drawing work on this build?" is one GET.
+  if (c.req.query("probe") === "render") return c.json({ ok: true, build: BUILD, render: await renderProbe() });
+  // ?probe=regions asks Graph, uncached, for the drives of every region's
+  // site: the one GET that says whether the connector's Sites.Selected grant
+  // covers a site before the first project is tagged into that region.
+  if (c.req.query("probe") === "regions") return c.json({ ok: true, build: BUILD, regions: await regionsProbe() });
+  return c.json({ ok: true, build: BUILD });
+});
+async function regionsProbe(): Promise<Array<Record<string, unknown>>> {
+  const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];
+  const out: Array<Record<string, unknown>> = [];
+  for (const [team, region] of entries) {
+    const row: Record<string, unknown> = {
+      team: team ?? "(default)", storage: region.kind, site: region.siteId, docLibrary: region.docLibrary,
+      driveShares: region.shares.map((s) => s.label),
+    };
+    try {
+      const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
+      const names: string[] = (d.value || []).map((x: any) => String(x.name));
+      out.push({ ...row, ok: true, libraries: names.length, docLibraryFound: names.includes(region.docLibrary) });
+    } catch (e) {
+      const ra = regionAccessError(team, region.siteId, e);
+      out.push({ ...row, ok: false, graphStatus: graphStatusOf(e), graphCode: graphErrorCodeOf(e),
+        error: ra ? ra.message : String((e as any)?.message ?? e).slice(0, 300), ...(ra ? { nextStep: ra.nextStep } : {}) });
+    }
+  }
+  return out;
+}
 
 // ── Raw file links (download_document / upload_document, 1.19.0) ─────────────
 // Bearer-less by design: the token is the credential (signed, minutes-lived,

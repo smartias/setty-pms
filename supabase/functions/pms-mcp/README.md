@@ -259,6 +259,17 @@ both proven by the `pdf-render-test` probe function and loaded lazily like unpdf
   (24M px) bounds memory; oversized PNGs re-encode as JPEG so the response stays shippable.
 - Read-only, one PDF download per call, 40MB file cap. Index pages are 1-based, PDFium 0-based —
   the `- 1` at `getPage` is pinned by a drift anchor.
+- **Page objects are single-use (1.18.2).** In `@hyzyla/pdfium`, `page.render()` closes the PDFium
+  page on its way out, so any later call on the same object (a second render, `getSize`) dies in
+  the wasm with "null function" / "null function or function signature mismatch". 1.18.1 rendered
+  once to learn the size and then re-rendered the same page whenever the size accessor was
+  missing — and 2.1.11+ of the package made `getSize()` private and throwing, so once a deploy
+  picked up the newer package every production render took that path and failed. Now: the
+  package is pinned at 2.1.9 (deno.json + deno.lock), the size is read without rendering
+  (`getSize` on 2.1.9, `getOriginalSize` on 2.1.11+), a page object is rendered at most once (the
+  size-unknown re-render uses a fresh `getPage`), a wasm-level failure re-initializes the shared
+  library and retries once, and every failure is logged. `GET /pms-mcp/health?probe=render`
+  renders an embedded PDF twice through the real path and reports `render.ok`/`ms`.
 
 ```bash
 node supabase/functions/pms-mcp/viewDrawing.test.mjs
@@ -363,6 +374,18 @@ number is left alone unless `update:true`), stamped with source/provenance. Both
 signed-in-only (`qaLedgerCaller`); neither touches SharePoint or the transmittal
 register.
 
+**The feedback loop (1.19.0).** When an engineer saves an RFI/submittal record that
+carries an `aiReview` block, the PMS modal records the suggested vs. final response,
+the stamps, an outcome (`accepted` / `edited` / `replaced` / `dismissed`) and the
+reviewer's optional one-line "why" into `pms_ca_review_feedback` (migration
+`20260916120000_ca_review_feedback.sql`; one row per `(project, item, aiReview.at)`,
+written through the `SECURITY DEFINER` RPC `pms_ca_review_feedback_record`, which
+stamps the reviewer from the JWT). `search_review_feedback` is the read side: newest
+rows by project / type / discipline / outcome / reviewer, each with a sentence-level
+delta (`cutFromSuggestion`, `addedByReviewer`) or, with `full:true`, both texts. The
+submittal-rfi-review skill reads it in Step 1 before drafting. Rows follow project
+visibility like knowledge does; the connector never writes this table.
+
 ## Regions and the network-drive annex (`azureFiles.ts`)
 
 The firm runs hybrid while offices migrate to SharePoint region by region:
@@ -379,6 +402,50 @@ the Admin console's Regions tab) maps a project's PMS **team code** to:
   of shares as drive **annexes**, whatever its storage kind — DC has its I:
   and W: drives. The legacy single-share columns on `pms_regions` are a
   fallback for a team the table has no rows for (one release, then dropped).
+
+**Storage rule: every office but NY is drive-first.** DC and Baltimore work
+from their network drives, so their region rows are `storage_kind =
+azure_files`: the drive is the record and the connector never consults the
+region's SharePoint site. SharePoint-as-record (`sharepoint`, drives as
+annexes) is the NY exception. The Admin console's Regions tab defaults a new
+region to drive-first since v27; BT had been saved SharePoint-first by the
+old default, which is how Tivoly ended up at a Graph 403 with its SAOP folder
+in reach the whole time.
+
+**A region's SharePoint site needs its own Graph grant.** The connector reads
+SharePoint app-only with `Sites.Selected`, which IT (Nikhil) grants one site
+at a time to the "Setty PMS - Claude Connector" app registration
+(`b49e795c…`). A `pms_regions` row that names a site without that grant makes
+EVERY SharePoint tool on that region's projects fail before anything
+project-specific runs (`docDriveId` / `siteDrives` resolve the site's drives
+first), so `list_project_documents`, `get_current_set`, `search_drawings` and
+the rest all report the same failure. Since 1.19.1:
+
+- that failure is a `RegionAccessError` (`regionAccess.ts`) naming the site,
+  the grant and the Regions-tab alternative;
+- **a refused region with drive shares is served from its drives.**
+  `storageFor` / `effectiveRegionForTeam` return the EFFECTIVE storage kind:
+  a `sharepoint` region whose site the connector cannot read (403, or 404
+  on the row's site) and which has `pms_region_shares` rows is treated as
+  `azure_files` by every storage-kind gate, so `list_project_documents`,
+  `read_document`, `search_drawings`, `extract_sheet_index`,
+  `get_current_set`, `find_document` and the CA folder walk work off the
+  drive exactly as they do for DC; each drive-served result carries a
+  `sharepoint` block with the refusal and the fix. The refusal is remembered
+  300 s (a grant shows up without a redeploy); a site with drives cached is
+  never re-probed; a network or token failure keeps the declared kind. A
+  refused region WITHOUT shares gets the error alone, and
+  `list_project_documents` adds `recordSays` when the PMS record's own
+  `projectFolderUrl` sits on another site (the PMS web app creates every
+  project folder on its hardcoded NY drive, so a project tagged into a new
+  region usually has its folder where the app put it);
+- `GET /pms-mcp/health?probe=regions` asks Graph for every region's drives,
+  uncached: the check to run BEFORE the first project is tagged into a new
+  region.
+
+First seen 17 Sep 2026 on Tivoly (SIPX251008.00), the first project tagged
+BT: its SAOP folder was there all along, but the SharePoint call failed
+first and hid it.
 
 Slice A (Sep 6) cut the seam: tools that need search, thumbnails or library
 semantics refuse `azure_files` regions with one shared note. Slice B (Sep 14)
