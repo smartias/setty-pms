@@ -205,9 +205,9 @@ check((shipped.match(/\.\.\.siteFallbackFields\(/g) || []).length >= 5, "drive-s
 // path does, denying with a fully generic not-found (unlike azurePathProject's
 // notFound, it never echoes the derived folder/project name — the caller here
 // holds only an opaque itemId, so echoing it back would leak new information).
-has("function sharePointItemVisible(meta: any): Promise<{ ok: true } | { ok: false; res: any }>", "the SharePoint item gate exists");
+has("async function sharePointItemVisible(drive: string, meta: any): Promise<{ ok: true } | { ok: false; res: any }>", "the SharePoint item gate exists");
 has('return path.endsWith("/root:") ? String(meta?.name || "") : "";', "the project folder is read from the item's own Graph ancestry");
-has("const gate = await sharePointItemVisible(meta);\n        if (!gate.ok) return gate.res;", "read_document's SharePoint branch runs the gate before fetching content");
+has("const gate = await sharePointItemVisible(drive, meta);\n        if (!gate.ok) return gate.res;", "read_document's SharePoint branch runs the gate before fetching content");
 has("?$select=id,name,size,file,webUrl,parentReference`", "the meta fetch asks Graph for parentReference so the gate has ancestry to read");
 has('error: "Item not found."', "the gate's denial is a fixed, fully generic message (no derived folder/project name)");
 // Codex review on this PR: the Proposals/Contract/Contract Library libraries
@@ -215,7 +215,18 @@ has('error: "Item not found."', "the gate's denial is a fixed, fully generic mes
 // projectNumberOfFolder can never resolve one — the gate must not deny every
 // read from them (list_project_documents's own folderMatch mode for these
 // libraries has never gated them either, for the same reason).
-has("if (!num) return { ok: true };", "an item whose top folder carries no project number is let through, not denied");
+has("if (!num) return (await sharePointDriveIsKnownLibrary(drive)) ? { ok: true } : spItemNotFound();",
+  "an item whose top folder carries no project number is let through only when its drive is a known library");
+// Follow-up P1 (#290): letting every unnumbered item through unconditionally
+// was itself too broad — the caller supplies `drive` directly, so it let
+// through anything on any drive the app-wide Graph credential can reach, not
+// just an unattributable Proposals/Contract folder. sharePointDriveIsKnownLibrary
+// restricts the carve-out to drives Graph actually lists as a document
+// library on some configured region's site.
+has("async function sharePointDriveIsKnownLibrary(drive: string): Promise<boolean> {", "the drive-is-a-real-library check exists");
+has("const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];\n  for (const [team] of entries) {",
+  "it checks every configured region's site (default included), not just one");
+has("if ((await siteDrives(team)).some((d) => d.id === drive)) return true;", "a match is a real drive Graph lists on that region's site");
 function sharePointItemTopFolderCopy(meta) {
   const path = meta?.parentReference?.path || "";
   const i = path.indexOf("/root:/");

@@ -225,15 +225,23 @@ test("index.ts wiring: tools, routes, gates and caps", () => {
     "use download_document; ",
     // Follow-up on #289: a Dynamics-named top folder (Proposals/Contract/
     // Contract Library) has no resolvable project number, so the item is let
-    // through, not denied — denying it broke download_document/upload_document
-    // on those libraries entirely (the same regression #288 fixed in
-    // read_document's parallel gate, sharePointItemVisible).
-    "if (projectNum && !(await projectRefVisible(projectNum))) {",
+    // through, not denied outright — denying it broke download_document/
+    // upload_document on those libraries entirely (the same regression #288
+    // fixed in read_document's parallel gate, sharePointItemVisible).
+    "if (projectNum) {\n    if (!(await projectRefVisible(projectNum))) return notFound;\n  } else if (!(await sharePointDriveIsKnownLibrary(drive))) {\n    return notFound;\n  }",
+    // Follow-up P1 (#290): the caller supplies `drive` directly, so letting
+    // every unnumbered item through unconditionally would bypass gating for
+    // ANY drive the app-wide Graph credential can reach, not just an
+    // unattributable Proposals/Contract folder. Only a drive Graph actually
+    // lists as a document library on some configured region's site counts.
+    "async function sharePointDriveIsKnownLibrary(drive: string): Promise<boolean> {",
   ]) {
     assert.ok(src.includes(anchor), `index.ts lost anchor: ${JSON.stringify(anchor)}`);
   }
   assert.ok(!src.includes("if (!projectNum || !(await projectRefVisible(projectNum))) {"),
     "fileMetaById must not have regressed back to denying every name-based-library item");
+  assert.ok(!/if \(!num\) return \{ ok: true \};/.test(src),
+    "sharePointItemVisible must not have regressed to letting every unnumbered item through unconditionally");
   // The routes sit after the MCP handler and before Deno.serve, like the others.
   const iGet = src.indexOf('app.get("/pms-mcp/file/:token"');
   assert.ok(iGet > src.indexOf('app.all("/pms-mcp/mcp"') && iGet < src.indexOf("Deno.serve(app.fetch)"));
