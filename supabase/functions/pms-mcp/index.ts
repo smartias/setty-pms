@@ -944,7 +944,14 @@ function sharePointItemTopFolder(meta: any): string {
   const path: string = meta?.parentReference?.path || "";
   const i = path.indexOf("/root:/");
   if (i >= 0) return path.slice(i + 7).split("/")[0] || "";
-  return path.endsWith("/root:") ? String(meta?.name || "") : "";
+  // An item directly at the drive root has no parent segment to name it: a
+  // FOLDER there names itself (the project folder itself), but a FILE there
+  // has no project ancestry at all. Treating a root FILE's own name as its
+  // "top folder" would let a filename that merely resembles a project number
+  // (e.g. "SAPQ256918.06 report.pdf" sitting at the root of an arbitrary
+  // Graph-reachable drive) gate on projectRefVisible alone, skipping the
+  // sharePointDriveIsKnownLibrary check entirely (Codex review on #294, P1).
+  return path.endsWith("/root:") && meta?.folder ? String(meta?.name || "") : "";
 }
 async function sharePointItemVisible(drive: string, meta: any): Promise<{ ok: true } | { ok: false; res: any }> {
   const num = projectNumberOfFolder(sharePointItemTopFolder(meta));
