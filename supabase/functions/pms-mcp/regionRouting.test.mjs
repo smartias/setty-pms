@@ -196,6 +196,21 @@ const effSeg = shipped.slice(shipped.indexOf("const _siteRefusal"), shipped.inde
 check(effSeg.includes("300000"), "the refusal is remembered on the 300s clock");
 check((shipped.match(/\.\.\.siteFallbackFields\(/g) || []).length >= 5, "drive-served results say the drive is a fallback and why");
 
+// P1 follow-up on #271 (2026-09-19): the az: branch of read_document gates on
+// azurePathProject, but its SharePoint (driveId|itemId) branch fetched Graph
+// content with no visibility check at all — a retained or guessed itemId from
+// a hidden/other-team project could be read in full. sharePointItemVisible
+// derives the item's project from parentReference.path (the top folder under
+// the drive root) and gates it through projectRefVisible exactly like the az:
+// path does, denying with a fully generic not-found (unlike azurePathProject's
+// notFound, it never echoes the derived folder/project name — the caller here
+// holds only an opaque itemId, so echoing it back would leak new information).
+has("function sharePointItemVisible(meta: any): Promise<{ ok: true } | { ok: false; res: any }>", "the SharePoint item gate exists");
+has('return path.endsWith("/root:") ? String(meta?.name || "") : "";', "the project folder is read from the item's own Graph ancestry");
+has("const gate = await sharePointItemVisible(meta);\n        if (!gate.ok) return gate.res;", "read_document's SharePoint branch runs the gate before fetching content");
+has("?$select=id,name,size,file,webUrl,parentReference`", "the meta fetch asks Graph for parentReference so the gate has ancestry to read");
+has('error: "Item not found."', "the gate's denial is a fixed, fully generic message (no derived folder/project name)");
+
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
   : `\nall ${total} assertions pass`);
