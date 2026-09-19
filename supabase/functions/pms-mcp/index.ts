@@ -917,6 +917,26 @@ async function azurePathProject(team: string, relPath: string): Promise<{ ok: tr
 // files are already returned, ungated, by folderMatch), so an item whose top
 // folder carries no project number is let through unchanged — no worse than
 // before this gate existed. Only a numbered top folder is gated.
+//
+// That carve-out must not become a blanket bypass, though (Codex review on
+// #290, P1): the caller supplies `drive` directly, and the app-wide Graph
+// credential can reach drives that have nothing to do with PMS projects at
+// all — an unnumbered top folder there is not "a Proposals/Contract folder
+// we can't attribute", it is unrelated content. sharePointDriveIsKnownLibrary
+// closes that: an unnumbered item is let through ONLY when its drive is one
+// Graph actually lists as a document library on some configured region's
+// SharePoint site (default region included) — i.e. a real project library,
+// same as every drive list_project_documents itself ever searches — never an
+// arbitrary drive the credential merely happens to reach.
+async function sharePointDriveIsKnownLibrary(drive: string): Promise<boolean> {
+  const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];
+  for (const [team] of entries) {
+    try {
+      if ((await siteDrives(team)).some((d) => d.id === drive)) return true;
+    } catch { /* an inaccessible region's site is not a match, not a fatal error */ }
+  }
+  return false;
+}
 function spItemNotFound() {
   return { ok: false as const, res: asText({ error: "Item not found.", nextStep: "Pass an itemId exactly as list_project_documents returned it." }) };
 }
@@ -926,9 +946,9 @@ function sharePointItemTopFolder(meta: any): string {
   if (i >= 0) return path.slice(i + 7).split("/")[0] || "";
   return path.endsWith("/root:") ? String(meta?.name || "") : "";
 }
-async function sharePointItemVisible(meta: any): Promise<{ ok: true } | { ok: false; res: any }> {
+async function sharePointItemVisible(drive: string, meta: any): Promise<{ ok: true } | { ok: false; res: any }> {
   const num = projectNumberOfFolder(sharePointItemTopFolder(meta));
-  if (!num) return { ok: true };
+  if (!num) return (await sharePointDriveIsKnownLibrary(drive)) ? { ok: true } : spItemNotFound();
   if (!(await projectRefVisible(num))) return spItemNotFound();
   return { ok: true };
 }
@@ -3933,7 +3953,7 @@ mcp.tool("read_document", {
         const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
         const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
         const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl,parentReference`);
-        const gate = await sharePointItemVisible(meta);
+        const gate = await sharePointItemVisible(drive, meta);
         if (!gate.ok) return gate.res;
         name = meta.name || "";
         const size = meta.size ?? 0;
@@ -4116,6 +4136,22 @@ function sharePointProjectFolderName(meta: { name?: string; folder?: unknown; pa
 // a drive the Graph app can reach — so this resolves the item's ancestry to
 // a PMS project and applies the same HIDE/team gate before returning
 // anything, exactly as the az: branch already does via azurePathProject.
+// The Proposals/Contract/Contract Library libraries are Dynamics-based and
+// name their top-level folders by project/client NAME, not number, so
+// sharePointProjectFolderName/projectNumberOfFolder can never resolve a
+// project for an item in them — there is nothing to gate against, and
+// list_project_documents's own folderMatch mode for these libraries has
+// never gated visibility either (no code anywhere links a name-based folder
+// back to a pms_projects row). An item with no resolvable project number is
+// therefore let through, not denied outright — but only once
+// sharePointDriveIsKnownLibrary (near sharePointItemVisible, the top of this
+// file) confirms its drive is a real document library on a registered
+// region's site: the caller supplies `drive` directly, so without that check
+// this carve-out would let through anything on any drive the app-wide Graph
+// credential can reach, not just an unattributable Proposals/Contract
+// folder (Codex review on #290, P1). read_document's parallel SharePoint
+// gate (sharePointItemVisible) makes the same two-part call for the same
+// reason.
 async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta } | { ok: false; res: any }> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
@@ -4133,8 +4169,11 @@ async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta 
   const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
   const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference`);
   const projectNum = projectNumberOfFolder(sharePointProjectFolderName(meta));
-  if (!projectNum || !(await projectRefVisible(projectNum))) {
-    return { ok: false, res: asText({ error: "No document matching that itemId.", nextStep: "Pass an itemId exactly as list_project_documents / find_document printed it." }) };
+  const notFound = { ok: false as const, res: asText({ error: "No document matching that itemId.", nextStep: "Pass an itemId exactly as list_project_documents / find_document printed it." }) };
+  if (projectNum) {
+    if (!(await projectRefVisible(projectNum))) return notFound;
+  } else if (!(await sharePointDriveIsKnownLibrary(drive))) {
+    return notFound;
   }
   return { ok: true, meta: {
     itemId: drive + "|" + realId, name: meta.name || "", size: meta.size ?? 0, modified: meta.lastModifiedDateTime ?? null,
