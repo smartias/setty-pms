@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-18-pms-v156-realtime-refresh-banner";
+    window.__appVersion = "2026-09-19-pms-v157-updated-by-attribution";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -1522,6 +1522,7 @@ async function saveProjectV2(project, expectedVersion) {
     project: blob,
     version: (expectedVersion ?? 1) + 1,
     updated_at: new Date().toISOString(),
+    updated_by: settyAuth.email() || null,
   });
   if (!result || result.length === 0) {
     // No row matched — either it doesn't exist yet, or version mismatch.
@@ -1531,6 +1532,7 @@ async function saveProjectV2(project, expectedVersion) {
       // First-time save — INSERT
       await sbFetchV2("POST", "/rest/v1/pms_projects", {
         id: project.id, project: blob, version: 1, updated_at: new Date().toISOString(),
+        updated_by: settyAuth.email() || null,
       });
       return 1;
     }
@@ -18657,7 +18659,7 @@ function subscribePmsProjectUpdates(projectId) {
       if (!row) return;
       if (baselineVersion === null) { baselineVersion = row.version; return; }
       if (row.version <= baselineVersion) return;
-      showProjectUpdateBanner(row.version);
+      showProjectUpdateBanner(row.version, row.updated_by);
     })
     .subscribe();
   return () => { try { settyRealtime.removeChannel(channel); } catch (_) {} };
@@ -18667,7 +18669,12 @@ function subscribePmsProjectUpdates(projectId) {
 // both banners feel like the same feature. Refresh reloads the page —
 // Phase 1 does not attempt to merge fresh server state into in-progress
 // local edits, it only shortens how long a stale view can go unnoticed.
-function showProjectUpdateBanner(version) {
+// updatedBy (Phase 2: pms_projects.updated_by, stamped in saveProjectV2)
+// is untrusted text going into innerHTML below, so it is escaped.
+function pmsEscBannerText(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function showProjectUpdateBanner(version, updatedBy) {
   if (document.getElementById("__projectUpdateBanner")) return;
   const banner = document.createElement("div");
   banner.id = "__projectUpdateBanner";
@@ -18676,8 +18683,9 @@ function showProjectUpdateBanner(version) {
     "padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;" +
     "display:flex;justify-content:space-between;align-items:center;gap:12px;" +
     "box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+  const who = updatedBy ? pmsEscBannerText(updatedBy) + " updated this project elsewhere" : "This project was updated elsewhere";
   banner.innerHTML =
-    '<span>\uD83D\uDD04 This project was updated elsewhere (v' + version + '). Refresh to see the latest changes.</span>' +
+    '<span>\uD83D\uDD04 ' + who + ' (v' + version + '). Refresh to see the latest changes.</span>' +
     '<button id="__projectRefreshBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;' +
     'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Refresh</button>' +
     '<button id="__projectDismissBtn" style="background:transparent;color:white;border:1px solid white;border-radius:6px;' +
