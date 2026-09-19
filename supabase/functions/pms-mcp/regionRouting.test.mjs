@@ -206,8 +206,17 @@ check((shipped.match(/\.\.\.siteFallbackFields\(/g) || []).length >= 5, "drive-s
 // notFound, it never echoes the derived folder/project name — the caller here
 // holds only an opaque itemId, so echoing it back would leak new information).
 has("async function sharePointItemVisible(drive: string, meta: any): Promise<{ ok: true } | { ok: false; res: any }>", "the SharePoint item gate exists");
-has('return path.endsWith("/root:") ? String(meta?.name || "") : "";', "the project folder is read from the item's own Graph ancestry");
 has("const gate = await sharePointItemVisible(drive, meta);\n        if (!gate.ok) return gate.res;", "read_document's SharePoint branch runs the gate before fetching content");
+// P1 follow-up on #294 (2026-09-19, Codex): the unification's first cut of
+// sharePointItemTopFolder returned a root item's own name regardless of
+// whether it was a file or a folder. A root FILE has no project ancestry at
+// all (unlike a root FOLDER, which names itself), so treating its filename
+// as a "top folder" let a file merely NAMED like a project number bypass
+// sharePointDriveIsKnownLibrary and gate on projectRefVisible alone — on
+// any drive the app-wide Graph credential can reach, not just a real
+// project library. Only a root item that IS a folder may name itself.
+has('return path.endsWith("/root:") && meta?.folder ? String(meta?.name || "") : "";',
+  "a root-level FILE is never treated as its own top folder");
 has("?$select=id,name,size,file,webUrl,parentReference`", "the meta fetch asks Graph for parentReference so the gate has ancestry to read");
 has('error: "Item not found."', "the gate's denial is a fixed, fully generic message (no derived folder/project name)");
 // Codex review on this PR: the Proposals/Contract/Contract Library libraries
@@ -231,12 +240,14 @@ function sharePointItemTopFolderCopy(meta) {
   const path = meta?.parentReference?.path || "";
   const i = path.indexOf("/root:/");
   if (i >= 0) return path.slice(i + 7).split("/")[0] || "";
-  return path.endsWith("/root:") ? String(meta?.name || "") : "";
+  return path.endsWith("/root:") && meta?.folder ? String(meta?.name || "") : "";
 }
 check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:/SAPX256015.00 Tabler/Outgoing" } }) === "SAPX256015.00 Tabler",
   "the top folder is read off parentReference.path for a nested item");
-check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:" }, name: "SAPX256015.00 Tabler" }) === "SAPX256015.00 Tabler",
-  "an item sitting directly at the drive root falls back to its own name");
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:" }, name: "SAPX256015.00 Tabler", folder: {} }) === "SAPX256015.00 Tabler",
+  "a FOLDER sitting directly at the drive root falls back to its own name");
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:" }, name: "SAPX256015.00 report.pdf" }) === "",
+  "a FILE sitting directly at the drive root has no top folder — it must NOT resolve to its own filename (Codex review on #294, P1: this let a root file merely named like a project number skip sharePointDriveIsKnownLibrary)");
 check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:/2026 — NYS Museum Plan" } }) === "2026 — NYS Museum Plan",
   "a Dynamics-named top folder is read the same way, even though it carries no project number");
 

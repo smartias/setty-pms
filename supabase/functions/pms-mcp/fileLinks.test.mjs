@@ -143,42 +143,11 @@ test("upload-session chunks are 320 KiB multiples and cover the file exactly onc
   assert.deepEqual(chunkRanges(10, 4), [{ start: 0, end: 3 }, { start: 4, end: 7 }, { start: 8, end: 9 }]);
 });
 
-// sharePointProjectFolderName (index.ts) isn't exported — index.ts boots a
-// server at import, same reason every other pms-mcp test copies pure logic
-// instead of importing it. Copied here to cover the #289 follow-up: a
-// Dynamics-named top folder (Proposals/Contract/Contract Library) must still
-// read out a name — fileMetaById relies on it resolving to "" only for the
-// item that truly has none (a file sitting at the drive root).
-function sharePointProjectFolderNameCopy(meta) {
-  const path = meta.parentReference?.path || "";
-  const marker = "root:";
-  const idx = path.indexOf(marker);
-  const afterRoot = idx >= 0 ? path.slice(idx + marker.length) : "";
-  const first = afterRoot.split("/").filter(Boolean)[0];
-  if (first) { try { return decodeURIComponent(first); } catch { return first; } }
-  return meta.folder ? (meta.name || "") : "";
-}
-test("sharePointProjectFolderName reads a Dynamics-named top folder same as a numbered one", () => {
-  assert.equal(
-    sharePointProjectFolderNameCopy({ parentReference: { path: "/drives/b!x/root:/SAPX256015.00 Tabler/Outgoing" } }),
-    "SAPX256015.00 Tabler",
-  );
-  assert.equal(
-    sharePointProjectFolderNameCopy({ parentReference: { path: "/drives/b!x/root:/2026 — NYS Museum Plan/Proposal.docx" } }),
-    "2026 — NYS Museum Plan",
-    "a Proposals/Contract folder is read the same way, even though it carries no project number",
-  );
-  assert.equal(
-    sharePointProjectFolderNameCopy({ parentReference: { path: "/drives/b!x/root:" }, folder: true, name: "SAPX256015.00 Tabler" }),
-    "SAPX256015.00 Tabler",
-    "a folder sitting directly at the drive root names itself",
-  );
-  assert.equal(
-    sharePointProjectFolderNameCopy({ parentReference: { path: "/drives/b!x/root:" }, name: "orphan.docx" }),
-    "",
-    "a FILE sitting directly at the drive root has no project ancestry at all",
-  );
-});
+// sharePointProjectFolderName used to be copied and tested here, but issue
+// #289 deleted it: fileMetaById now shares sharePointItemVisible with
+// read_document instead of keeping its own near-identical implementation.
+// The equivalent logic (sharePointItemTopFolder) is covered in
+// regionRouting.test.mjs, including the Dynamics-named-folder case.
 
 // ── Drift anchors: the wiring in index.ts ────────────────────────────────────
 test("index.ts wiring: tools, routes, gates and caps", () => {
@@ -223,23 +192,16 @@ test("index.ts wiring: tools, routes, gates and caps", () => {
     'console.log("[upload_document]", t.by,',
     // read_document points at the new path instead of pretending text is the file.
     "use download_document; ",
-    // Follow-up on #289: a Dynamics-named top folder (Proposals/Contract/
-    // Contract Library) has no resolvable project number, so the item is let
-    // through, not denied outright — denying it broke download_document/
-    // upload_document on those libraries entirely (the same regression #288
-    // fixed in read_document's parallel gate, sharePointItemVisible).
-    "if (projectNum) {\n    if (!(await projectRefVisible(projectNum))) return notFound;\n  } else if (!(await sharePointDriveIsKnownLibrary(drive))) {\n    return notFound;\n  }",
-    // Follow-up P1 (#290): the caller supplies `drive` directly, so letting
-    // every unnumbered item through unconditionally would bypass gating for
-    // ANY drive the app-wide Graph credential can reach, not just an
-    // unattributable Proposals/Contract folder. Only a drive Graph actually
-    // lists as a document library on some configured region's site counts.
-    "async function sharePointDriveIsKnownLibrary(drive: string): Promise<boolean> {",
+    // Issue #289: fileMetaById used to keep its own near-identical copy of
+    // read_document's SharePoint visibility gate (including its own copy of
+    // the #290 drive-known-library hardening). Unified onto one shared gate
+    // so the two can't drift again — fileMetaById just calls it now.
+    "const gate = await sharePointItemVisible(drive, meta);\n  if (!gate.ok) return gate;",
   ]) {
     assert.ok(src.includes(anchor), `index.ts lost anchor: ${JSON.stringify(anchor)}`);
   }
-  assert.ok(!src.includes("if (!projectNum || !(await projectRefVisible(projectNum))) {"),
-    "fileMetaById must not have regressed back to denying every name-based-library item");
+  assert.ok(!src.includes("function sharePointProjectFolderName("),
+    "fileMetaById must not have regrown its own duplicate copy of the SharePoint visibility gate");
   assert.ok(!/if \(!num\) return \{ ok: true \};/.test(src),
     "sharePointItemVisible must not have regressed to letting every unnumbered item through unconditionally");
   // The routes sit after the MCP handler and before Deno.serve, like the others.
