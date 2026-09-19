@@ -887,6 +887,17 @@ async function azurePathProject(team: string, relPath: string): Promise<{ ok: tr
 // unlike the az: case, revealing it here would hand an unauthorized caller
 // who holds nothing but an opaque itemId new information about a hidden
 // project.
+// The Proposals/Contract/Contract Library libraries are Dynamics-based and
+// name their top-level folders by project/client NAME, not number (Codex
+// review on this PR) — projectNumberOfFolder can never resolve one, so there
+// is no project to gate against. list_project_documents's own folderMatch
+// mode for these libraries (a few hundred lines below) has never gated
+// visibility either, for the same reason: nothing here links a name-based
+// folder back to a pms_projects row. Denying every read from these libraries
+// would be a functional regression with no real security gain (the same
+// files are already returned, ungated, by folderMatch), so an item whose top
+// folder carries no project number is let through unchanged — no worse than
+// before this gate existed. Only a numbered top folder is gated.
 function spItemNotFound() {
   return { ok: false as const, res: asText({ error: "Item not found.", nextStep: "Pass an itemId exactly as list_project_documents returned it." }) };
 }
@@ -898,7 +909,7 @@ function sharePointItemTopFolder(meta: any): string {
 }
 async function sharePointItemVisible(meta: any): Promise<{ ok: true } | { ok: false; res: any }> {
   const num = projectNumberOfFolder(sharePointItemTopFolder(meta));
-  if (!num) return spItemNotFound();
+  if (!num) return { ok: true };
   if (!(await projectRefVisible(num))) return spItemNotFound();
   return { ok: true };
 }

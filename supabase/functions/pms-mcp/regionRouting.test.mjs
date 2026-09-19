@@ -210,6 +210,24 @@ has('return path.endsWith("/root:") ? String(meta?.name || "") : "";', "the proj
 has("const gate = await sharePointItemVisible(meta);\n        if (!gate.ok) return gate.res;", "read_document's SharePoint branch runs the gate before fetching content");
 has("?$select=id,name,size,file,webUrl,parentReference`", "the meta fetch asks Graph for parentReference so the gate has ancestry to read");
 has('error: "Item not found."', "the gate's denial is a fixed, fully generic message (no derived folder/project name)");
+// Codex review on this PR: the Proposals/Contract/Contract Library libraries
+// name their top folders by project/client NAME (Dynamics), not number, so
+// projectNumberOfFolder can never resolve one — the gate must not deny every
+// read from them (list_project_documents's own folderMatch mode for these
+// libraries has never gated them either, for the same reason).
+has("if (!num) return { ok: true };", "an item whose top folder carries no project number is let through, not denied");
+function sharePointItemTopFolderCopy(meta) {
+  const path = meta?.parentReference?.path || "";
+  const i = path.indexOf("/root:/");
+  if (i >= 0) return path.slice(i + 7).split("/")[0] || "";
+  return path.endsWith("/root:") ? String(meta?.name || "") : "";
+}
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:/SAPX256015.00 Tabler/Outgoing" } }) === "SAPX256015.00 Tabler",
+  "the top folder is read off parentReference.path for a nested item");
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:" }, name: "SAPX256015.00 Tabler" }) === "SAPX256015.00 Tabler",
+  "an item sitting directly at the drive root falls back to its own name");
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:/2026 — NYS Museum Plan" } }) === "2026 — NYS Museum Plan",
+  "a Dynamics-named top folder is read the same way, even though it carries no project number");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`
