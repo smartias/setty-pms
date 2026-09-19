@@ -896,6 +896,43 @@ async function azurePathProject(team: string, relPath: string): Promise<{ ok: tr
   return { ok: true, projectNumber: String(p.projectNumber) };
 }
 
+// A SharePoint composite id (driveId|itemId) carries no project of its own —
+// unlike an az: id, whose relPath the caller supplies — so read_document must
+// derive one from the item's Graph ancestry before it may be used. The
+// top-level folder under the drive root is the project folder, named
+// "<projectNumber> - <name>" by convention (see projectFolder() above), and
+// gates through projectRefVisible exactly like azurePathProject does. Denies
+// with a fully generic not-found — no derived name in the message — because,
+// unlike the az: case, revealing it here would hand an unauthorized caller
+// who holds nothing but an opaque itemId new information about a hidden
+// project.
+// The Proposals/Contract/Contract Library libraries are Dynamics-based and
+// name their top-level folders by project/client NAME, not number (Codex
+// review on this PR) — projectNumberOfFolder can never resolve one, so there
+// is no project to gate against. list_project_documents's own folderMatch
+// mode for these libraries (a few hundred lines below) has never gated
+// visibility either, for the same reason: nothing here links a name-based
+// folder back to a pms_projects row. Denying every read from these libraries
+// would be a functional regression with no real security gain (the same
+// files are already returned, ungated, by folderMatch), so an item whose top
+// folder carries no project number is let through unchanged — no worse than
+// before this gate existed. Only a numbered top folder is gated.
+function spItemNotFound() {
+  return { ok: false as const, res: asText({ error: "Item not found.", nextStep: "Pass an itemId exactly as list_project_documents returned it." }) };
+}
+function sharePointItemTopFolder(meta: any): string {
+  const path: string = meta?.parentReference?.path || "";
+  const i = path.indexOf("/root:/");
+  if (i >= 0) return path.slice(i + 7).split("/")[0] || "";
+  return path.endsWith("/root:") ? String(meta?.name || "") : "";
+}
+async function sharePointItemVisible(meta: any): Promise<{ ok: true } | { ok: false; res: any }> {
+  const num = projectNumberOfFolder(sharePointItemTopFolder(meta));
+  if (!num) return { ok: true };
+  if (!(await projectRefVisible(num))) return spItemNotFound();
+  return { ok: true };
+}
+
 // A region row may carry the site as a plain URL (what an admin pastes into
 // the console's Regions tab) instead of a Graph composite id. Detect the URL
 // form and resolve it once through Graph; ids pass through untouched.
@@ -3895,7 +3932,9 @@ mcp.tool("read_document", {
         // legacy form that only ever came from the default region's library.
         const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
         const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
-        const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl`);
+        const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl,parentReference`);
+        const gate = await sharePointItemVisible(meta);
+        if (!gate.ok) return gate.res;
         name = meta.name || "";
         const size = meta.size ?? 0;
         base = { itemId, name, size, webUrl: meta.webUrl };
