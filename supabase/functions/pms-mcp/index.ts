@@ -4116,6 +4116,16 @@ function sharePointProjectFolderName(meta: { name?: string; folder?: unknown; pa
 // a drive the Graph app can reach — so this resolves the item's ancestry to
 // a PMS project and applies the same HIDE/team gate before returning
 // anything, exactly as the az: branch already does via azurePathProject.
+// The Proposals/Contract/Contract Library libraries are Dynamics-based and
+// name their top-level folders by project/client NAME, not number, so
+// sharePointProjectFolderName/projectNumberOfFolder can never resolve a
+// project for an item in them — there is nothing to gate against, and
+// list_project_documents's own folderMatch mode for these libraries has
+// never gated visibility either (no code anywhere links a name-based folder
+// back to a pms_projects row). An item with no resolvable project number is
+// therefore let through unchanged, not denied — read_document's parallel
+// SharePoint gate (sharePointItemVisible, near the top of this file) makes
+// the same call for the same reason.
 async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta } | { ok: false; res: any }> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
@@ -4133,7 +4143,7 @@ async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta 
   const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
   const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference`);
   const projectNum = projectNumberOfFolder(sharePointProjectFolderName(meta));
-  if (!projectNum || !(await projectRefVisible(projectNum))) {
+  if (projectNum && !(await projectRefVisible(projectNum))) {
     return { ok: false, res: asText({ error: "No document matching that itemId.", nextStep: "Pass an itemId exactly as list_project_documents / find_document printed it." }) };
   }
   return { ok: true, meta: {
