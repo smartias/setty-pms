@@ -4049,9 +4049,34 @@ type FileMeta = {
   webUrl?: string | null; sharePath?: string; region?: string;
   isFolder?: boolean; drive?: string; realId?: string; parentId?: string | null; parentPath?: string | null;
 };
+// A SharePoint item's project folder — the drive-root ancestor named
+// "<projectNumber> - <name>" (the same convention projectNumberOfFolder,
+// imported from azureFiles.ts, already parses for drive shares). Graph's
+// parentReference.path looks like ".../root:/<Top>/<Rest...>"; the item's
+// own top-level ancestor is its first segment. An item sitting directly at
+// the drive root (no segments after root:) has no parent to name it, so a
+// FOLDER there names itself — that's the project folder itself, e.g. the
+// itemId list_project_documents hands back for the folder — while a FILE
+// there has no project ancestry at all. Returns "" when nothing resolves;
+// callers must fail closed on that, never assume safety.
+function sharePointProjectFolderName(meta: { name?: string; folder?: unknown; parentReference?: { path?: string } }): string {
+  const path = meta.parentReference?.path || "";
+  const marker = "root:";
+  const idx = path.indexOf(marker);
+  const afterRoot = idx >= 0 ? path.slice(idx + marker.length) : "";
+  const first = afterRoot.split("/").filter(Boolean)[0];
+  if (first) { try { return decodeURIComponent(first); } catch { return first; } }
+  return meta.folder ? (meta.name || "") : "";
+}
 // Name/size/link for one id from whichever storage holds it, gated as
 // read_document gates it. The not-found shape for a hidden project is the
-// gate's own, so a crafted az: id learns nothing.
+// gate's own, so a crafted id learns nothing. A driveId|itemId is otherwise
+// fetched with the app-wide Graph credential with no project context at
+// all — anyone who retains or guesses one could read (or, via
+// upload_document, overwrite) a hidden project's files, or anything else on
+// a drive the Graph app can reach — so this resolves the item's ancestry to
+// a PMS project and applies the same HIDE/team gate before returning
+// anything, exactly as the az: branch already does via azurePathProject.
 async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta } | { ok: false; res: any }> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
@@ -4068,6 +4093,10 @@ async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta 
   const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
   const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
   const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference`);
+  const projectNum = projectNumberOfFolder(sharePointProjectFolderName(meta));
+  if (!projectNum || !(await projectRefVisible(projectNum))) {
+    return { ok: false, res: asText({ error: "No document matching that itemId.", nextStep: "Pass an itemId exactly as list_project_documents / find_document printed it." }) };
+  }
   return { ok: true, meta: {
     itemId: drive + "|" + realId, name: meta.name || "", size: meta.size ?? 0, modified: meta.lastModifiedDateTime ?? null,
     storage: "sharepoint", webUrl: meta.webUrl ?? null, isFolder: !!meta.folder, drive, realId,
@@ -4075,7 +4104,11 @@ async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta 
   } };
 }
 // The bytes as a streaming Response (no buffering, no cache, no size cap):
-// the download route pipes it straight to the client.
+// the download route pipes it straight to the client. Re-runs fileMetaById's
+// gate rather than duplicating it, so a download link redeemed well after
+// minting is re-checked against whatever visibility holds NOW, as the
+// minting caller (restored via callerStore by the route that calls this) —
+// not just whatever held when download_document minted the link.
 async function openFileById(itemId: string): Promise<Response> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
@@ -4086,11 +4119,10 @@ async function openFileById(itemId: string): Promise<Response> {
     if (!az.ok) throw new Error(az.error);
     return getFile(az.ctx.share, dec.relPath, az.ctx.sas);
   }
-  const bar = itemId.indexOf("|");
-  const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
-  const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
+  const got = await fileMetaById(itemId);
+  if (!got.ok) throw new Error("No document matching that itemId.");
   const res = await fetch(
-    `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(realId)}/content`,
+    `https://graph.microsoft.com/v1.0/drives/${got.meta.drive}/items/${encodeURIComponent(got.meta.realId!)}/content`,
     { headers: { Authorization: "Bearer " + (await graphToken()) } },
   );
   if (!res.ok) throw new Error(`Graph content ${res.status}`);
