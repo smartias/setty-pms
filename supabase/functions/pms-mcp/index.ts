@@ -4108,50 +4108,17 @@ type FileMeta = {
   webUrl?: string | null; sharePath?: string; region?: string;
   isFolder?: boolean; drive?: string; realId?: string; parentId?: string | null; parentPath?: string | null;
 };
-// A SharePoint item's project folder — the drive-root ancestor named
-// "<projectNumber> - <name>" (the same convention projectNumberOfFolder,
-// imported from azureFiles.ts, already parses for drive shares). Graph's
-// parentReference.path looks like ".../root:/<Top>/<Rest...>"; the item's
-// own top-level ancestor is its first segment. An item sitting directly at
-// the drive root (no segments after root:) has no parent to name it, so a
-// FOLDER there names itself — that's the project folder itself, e.g. the
-// itemId list_project_documents hands back for the folder — while a FILE
-// there has no project ancestry at all. Returns "" when nothing resolves;
-// callers must fail closed on that, never assume safety.
-function sharePointProjectFolderName(meta: { name?: string; folder?: unknown; parentReference?: { path?: string } }): string {
-  const path = meta.parentReference?.path || "";
-  const marker = "root:";
-  const idx = path.indexOf(marker);
-  const afterRoot = idx >= 0 ? path.slice(idx + marker.length) : "";
-  const first = afterRoot.split("/").filter(Boolean)[0];
-  if (first) { try { return decodeURIComponent(first); } catch { return first; } }
-  return meta.folder ? (meta.name || "") : "";
-}
 // Name/size/link for one id from whichever storage holds it, gated as
-// read_document gates it. The not-found shape for a hidden project is the
-// gate's own, so a crafted id learns nothing. A driveId|itemId is otherwise
-// fetched with the app-wide Graph credential with no project context at
-// all — anyone who retains or guesses one could read (or, via
-// upload_document, overwrite) a hidden project's files, or anything else on
-// a drive the Graph app can reach — so this resolves the item's ancestry to
-// a PMS project and applies the same HIDE/team gate before returning
-// anything, exactly as the az: branch already does via azurePathProject.
-// The Proposals/Contract/Contract Library libraries are Dynamics-based and
-// name their top-level folders by project/client NAME, not number, so
-// sharePointProjectFolderName/projectNumberOfFolder can never resolve a
-// project for an item in them — there is nothing to gate against, and
-// list_project_documents's own folderMatch mode for these libraries has
-// never gated visibility either (no code anywhere links a name-based folder
-// back to a pms_projects row). An item with no resolvable project number is
-// therefore let through, not denied outright — but only once
-// sharePointDriveIsKnownLibrary (near sharePointItemVisible, the top of this
-// file) confirms its drive is a real document library on a registered
-// region's site: the caller supplies `drive` directly, so without that check
-// this carve-out would let through anything on any drive the app-wide Graph
-// credential can reach, not just an unattributable Proposals/Contract
-// folder (Codex review on #290, P1). read_document's parallel SharePoint
-// gate (sharePointItemVisible) makes the same two-part call for the same
-// reason.
+// read_document gates it (sharePointItemVisible, near the top of this file —
+// issue #289 unified what used to be a second, near-identical
+// implementation here, including its own copy of the drive-known-library
+// hardening from #290). A driveId|itemId is otherwise fetched with the
+// app-wide Graph credential with no project context at all — anyone who
+// retains or guesses one could read (or, via upload_document, overwrite) a
+// hidden project's files, or anything else on a drive the Graph app can
+// reach — so this resolves the item's ancestry to a PMS project and applies
+// the same HIDE/team gate before returning anything, exactly as the az:
+// branch already does via azurePathProject.
 async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta } | { ok: false; res: any }> {
   if (isAzId(itemId)) {
     const dec = decodeAzId(itemId);
@@ -4168,13 +4135,8 @@ async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta 
   const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
   const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
   const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference`);
-  const projectNum = projectNumberOfFolder(sharePointProjectFolderName(meta));
-  const notFound = { ok: false as const, res: asText({ error: "No document matching that itemId.", nextStep: "Pass an itemId exactly as list_project_documents / find_document printed it." }) };
-  if (projectNum) {
-    if (!(await projectRefVisible(projectNum))) return notFound;
-  } else if (!(await sharePointDriveIsKnownLibrary(drive))) {
-    return notFound;
-  }
+  const gate = await sharePointItemVisible(drive, meta);
+  if (!gate.ok) return gate;
   return { ok: true, meta: {
     itemId: drive + "|" + realId, name: meta.name || "", size: meta.size ?? 0, modified: meta.lastModifiedDateTime ?? null,
     storage: "sharepoint", webUrl: meta.webUrl ?? null, isFolder: !!meta.folder, drive, realId,
