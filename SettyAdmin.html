@@ -927,12 +927,20 @@ function confidentialProjectSet() {
     .filter(o => o.subject_kind === "everyone" && o.capability === "*" && o.allowed === false && o.project_number)
     .map(o => o.project_number));
 }
-async function toggleConfidential(id, checked) {
+async function toggleConfidential(id, checkbox) {
+  const checked = checkbox.checked;
   const p = (state.teamProjects || []).find(x => x.id === id);
   const pn = p && p.projectNumber;
-  if (!pn) { toast("This project has no number yet — give it one before marking it confidential.", "error"); return; }
+  if (!pn) { checkbox.checked = !checked; toast("This project has no number yet — give it one before marking it confidential.", "error"); return; }
   const existing = (state.permOverrides || []).find(o =>
     o.project_number === pn && o.subject_kind === "everyone" && o.capability === "*" && o.allowed === false);
+  // Unchecking takes effect immediately (visible firm-wide through the
+  // Claude connector the moment the row is gone), same as dropOverride() —
+  // so it earns the same confirm, and a cancel puts the checkbox back.
+  if (!checked && existing && !confirm(pn + " will become visible to everyone with projects.view, not just admins and its staffed team. Continue?")) {
+    checkbox.checked = true;
+    return;
+  }
   try {
     if (checked) {
       if (existing) return;
@@ -949,7 +957,7 @@ async function toggleConfidential(id, checked) {
       toast(pn + " no longer confidential", "success");
     }
     renderTeamProjRows();
-  } catch (e) { toast(e.message, "error"); state.permOverrides = null; render(); }
+  } catch (e) { checkbox.checked = !checked; toast(e.message, "error"); state.permOverrides = null; render(); }
 }
 // Rows for the Teams card. With the whole portfolio tagged (22 Aug) a flat
 // list is unusable, so: no filter → one COLLAPSED group per team with counts
@@ -970,7 +978,7 @@ function renderTeamProjRows() {
       <input type="checkbox" aria-label="Confidential — ${esc(p.projectNumber || p.name)}"
         ${p.projectNumber && confidential.has(p.projectNumber) ? "checked" : ""}
         ${p.projectNumber ? "" : "disabled title=\"Needs a project number first\""}
-        onchange="toggleConfidential(${p.id}, this.checked)"> 🔒</label>`;
+        onchange="toggleConfidential(${p.id}, this)"> 🔒</label>`;
   const rowsTable = (rows) => `<table><thead><tr><th>Project #</th><th>Name</th><th>Team</th><th>Confidential</th></tr></thead>
        <tbody>${rows.map(p => `
          <tr><td>${esc(p.projectNumber || "—")}${p.archived === true ? ' <span class="pill info">archived</span>' : ""}

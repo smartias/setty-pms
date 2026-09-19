@@ -217,12 +217,21 @@ if (migration) {
   for (const [anchor, label] of [
     ["create or replace function public.pms_has_cap_for(", "the migration replaces pms_has_cap_for in place (same signature)"],
     ["select allowed, subject_kind into v_over, v_kind", "the winning override row's subject_kind is captured, not just its verdict"],
-    ["if v_over = false and v_kind = 'everyone' and exists (", "the staffing exception applies only to an 'everyone' DENY, never a person/role rule"],
+    ["v_staffed := v_over = false and v_kind = 'everyone' and exists (", "the staffing exception applies only to an 'everyone' DENY, never a person/role rule"],
     ["lower(tm ->> 'email') = v_email", "staffing is matched by email against the project's own teamMembers roster"],
+    // Codex P1s on the first version of this migration:
+    ["lower(tm ->> 'name') = (", "…or by the caller's own staff-directory name, mirroring isMine() (a legacy/manual roster row can have no email at all)"],
+    ["from pms_meta m, jsonb_array_elements(coalesce(m.data->'staff', '[]'::jsonb)) s", "the name fallback resolves against the SAME staff directory SettyPMS.html reads (pms_meta.data->'staff'), not a separate table"],
+    ["if not v_staffed then\n        return v_over;\n      end if;",
+      "a staffed caller falls through to their ORDINARY role/global verdict, never a blanket grant — the exception is visibility, not extra capabilities"],
     ["create index if not exists pms_projects_project_number_idx", "the projectNumber lookup the exception needs is indexed"],
   ]) {
     check(migration.includes(anchor), label + " — missing from the migration");
   }
+  // The old, too-broad shape must not come back: it granted whatever
+  // capability was asked, not just visibility, to a staffed caller.
+  check(!migration.includes("return true;\n      end if;\n      return v_over;"),
+    "the staffing exception must not unconditionally return true for the checked capability (privilege escalation)");
 }
 
 console.log(failures ? `\n${failures} assertions FAILED` : "\nall assertions pass (caps enforcement)");

@@ -13,7 +13,7 @@
 -- capability sees every project, UNLESS it is marked "confidential" — in
 -- which case only admins, anyone explicitly allowed back in via a
 -- person/role-level pms_project_permissions row (unchanged mechanism), and
--- anyone STAFFED on the project (present by email in the project's own
+-- anyone STAFFED on the project (present in the project's own
 -- project->'teamMembers' roster) can see it.
 --
 -- No new column: "confidential" is defined as the project already carrying
@@ -29,6 +29,25 @@
 -- exactly as before. The staffing exception applies ONLY when the winning
 -- row is the 'everyone' tier and it denies — i.e. only to the confidential
 -- case, never to an ordinary allow.
+--
+-- Three Codex P1s on the first version of this migration, all fixed here:
+--   1. A staffed caller's exception must resolve ONLY projects.view, not
+--      whatever capability happened to be asked — the original `return
+--      true` handed a staffed engineer fees.view or projects.edit on a
+--      confidential project even when their ROLE denies it everywhere else,
+--      a real privilege escalation. Fixed by falling through to the normal
+--      global-override-then-role-matrix path for every OTHER capability,
+--      exactly as if the confidential row did not exist for them — a
+--      staffed person gets their own ordinary role verdict, nothing more.
+--   2. teamMembers rows are matched by email OR by the caller's own
+--      staff-directory name (mirroring SettyPMS.html's isMine(), which does
+--      the same OR), because a manually-typed or legacy roster row can
+--      carry a name with no email at all. The staff directory itself is
+--      pms_meta.data->'staff' (id='app_meta') — the same roster
+--      SettyPMS.html's "pick from directory" UI reads, not a separate
+--      table.
+--   3. (UI-side, SettyAdmin.html, same PR) unchecking Confidential now
+--      confirms before deleting the row, matching dropOverride().
 
 -- Supports the new project->>'projectNumber' lookup pms_has_cap_for gains
 -- below. STABLE SECURITY DEFINER functions run per call, uncached, so an
@@ -48,6 +67,7 @@ declare
   v_role  text;
   v_over  boolean;
   v_kind  text;
+  v_staffed boolean;
 begin
   if v_email = '' then return false; end if;
   select role into v_role from pms_user_roles where lower(email) = v_email limit 1;
@@ -68,17 +88,28 @@ begin
     if found then
       -- Confidential exception: an 'everyone' DENY is the only tier this
       -- applies to (a person/role rule is a deliberate, specific decision
-      -- and still wins outright, same as before). Staffed = the caller's
-      -- email appears anywhere in this project's own teamMembers roster.
-      if v_over = false and v_kind = 'everyone' and exists (
+      -- and still wins outright, same as before, by never reaching here —
+      -- it would already have been the winning row above).
+      v_staffed := v_over = false and v_kind = 'everyone' and exists (
         select 1
         from pms_projects pr, jsonb_array_elements(coalesce(pr.project->'teamMembers', '[]'::jsonb)) tm
         where pr.project ->> 'projectNumber' = p_project
-          and lower(tm ->> 'email') = v_email
-      ) then
-        return true;
+          and ( lower(tm ->> 'email') = v_email
+             or lower(tm ->> 'name') = (
+                  select lower(s ->> 'name')
+                  from pms_meta m, jsonb_array_elements(coalesce(m.data->'staff', '[]'::jsonb)) s
+                  where m.id = 'app_meta' and lower(s ->> 'email') = v_email
+                  limit 1
+                ) )
+      );
+      if not v_staffed then
+        return v_over;
       end if;
-      return v_over;
+      -- Staffed on a confidential project: fall through to the SAME path a
+      -- project with no override at all would take, so this capability
+      -- resolves to the caller's ordinary global-override/role-matrix
+      -- verdict — visible, but no capability grant beyond what their role
+      -- already gives them anywhere else.
     end if;
   end if;
 
