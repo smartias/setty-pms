@@ -177,6 +177,21 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v28 (19 Sep 2026) — Users & Roles gains a plain-language "How project
+// visibility works" card at the top (role, team/office, per-project
+// override, and the HIDE behavior — a project someone can't see through
+// Claude answers as not-found, never confirming it exists), asked for after
+// two Codex P1s on PRs #288/#290 closed a real gap in the SharePoint side of
+// that same policy. States plainly, for the first time on this tab, that
+// team/per-project scoping — and the not-found behavior — govern the Claude
+// connector's reads ONLY: a third Codex P1, on this card's own first draft,
+// caught it claiming that guarantee for the PMS web app too, which is false
+// (SettyPMS.html loads every project for any signed-in non-admin; only
+// writes are role-gated there today). The card is explicit that a
+// confidential job is not actually hidden from anyone signed in until the
+// web app enforces the same scope. The Regions tab cross-links to it: the
+// same Team code that routes a project's storage there is what a person's
+// Team field (below) is compared against for visibility.
 // v27 (17 Sep 2026, later) — Regions: a NEW region defaults to "Network
 // drive is the record" (every office but NY works from its drive; SharePoint
 // as record is the NY exception), the Storage options say which office is
@@ -581,6 +596,38 @@ async function renderRoles() {
     ? ' <span class="pill warn" title="This role lacks fees.view, so the Claude connector redacts fee and billing fields for them (Phase B). Grant fees.view in the matrix below to lift it.">💰 fees hidden</span>'
     : "";
   v.innerHTML = `
+    <div class="card">
+      <div class="sechead">🧭 How project visibility works, in plain terms</div>
+      <div style="font-size:13px;line-height:1.65">
+        <p style="margin:0 0 8px">Everyone signed in can use the PMS and the Claude connector, but <b>what each person can
+          see and do</b> comes from three separate settings below, in this order:</p>
+        <ol style="margin:0 0 10px 20px;padding:0">
+          <li style="margin-bottom:4px"><b>Role</b> — what KINDS of data and actions someone has (can they see fee/billing
+            numbers, edit a project, approve a QA finding…). Anyone signed in without a row here gets the
+            <code>staff</code> baseline.</li>
+          <li style="margin-bottom:4px"><b>Team</b> — WHICH OFFICE's projects someone sees, in the Claude connector today.
+            Set a team on a person and they see <i>only</i> that office's projects, full stop; leave it blank and they see
+            <i>every</i> office — that is the correct, deliberate setting for firm-wide roles (accounting, operations,
+            principals), not a gap to fill in. The Team code is the same one set per office on the
+            <a href="#" onclick="setTab('regions');return false">Regions tab</a>.</li>
+          <li><b>Per-project override</b> — the exception list. Add one person to one job outside their office without
+            touching their team, or lock a sensitive project down to a short list of people regardless of team or role.
+            The most specific rule always wins.</li>
+        </ol>
+        <p style="margin:0 0 8px">Through the <b>Claude connector</b>, a project someone can't see never shows up as "access
+          denied" — it behaves exactly as if it doesn't exist. That's deliberate: it means a hidden or confidential
+          project's existence is never confirmed to someone who shouldn't know about it. <b>Admins see and can do
+          everything, always</b> — none of this applies to them.</p>
+        <p style="margin:0;color:var(--muted)"><b>Where this is enforced today — read this before relying on Team or a
+          per-project override to hide anything:</b> Team and per-project rules, and the not-found behavior above, scope
+          only the <b>Claude connector's</b> reads. The <b>PMS web app itself does not yet filter by them at all</b> — it
+          requires sign-in, and already enforces Role-based <i>edit</i> permissions, but every signed-in non-admin can
+          still browse to <i>every</i> project in the web app today, including ones Team or a per-project override would
+          hide from Claude. A confidential job is not actually hidden from anyone signed in until the web app enforces
+          the same scope — for now, keep it off the PMS by other means (not filing it, or a stricter web-app change) if
+          that matters.</p>
+      </div>
+    </div>
     <div class="card">
       <div class="row">
         <label class="sr-only" for="newEmail">Email address</label>
@@ -1128,7 +1175,7 @@ async function renderRegions() {
       <div class="stat"><b>${state.regions.reduce((n, r) => n + r.shares.length, 0)}</b><span>drive shares</span></div>
       <button class="btn btn-primary" onclick="state.regionEdit=regionBlank();render()">＋ Add region</button>
       <button class="btn" onclick="state.regions=null;state.regionEdit=null;render()">↻ Refresh</button>
-      <span style="color:var(--muted);font-size:12px">The Claude connector picks up changes within ~5 minutes. Projects route by their PMS <b>team code</b> (the project's Team field: NY, DC, …); a team without an enabled row falls back to NY.</span>
+      <span style="color:var(--muted);font-size:12px">The Claude connector picks up changes within ~5 minutes. Projects route by their PMS <b>team code</b> (the project's Team field: NY, DC, …); a team without an enabled row falls back to NY. This is the same Team code that controls who can <i>see</i> a project — set on people and projects on the <a href="#" onclick="setTab('roles');return false">Users &amp; Roles tab</a>.</span>
     </div>
     ${form}
     <div class="card">
