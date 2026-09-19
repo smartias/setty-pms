@@ -28,6 +28,12 @@ import {
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
   projectNumberOfFolder, projectNameFromFolders, caKindFolders, isDisciplineFolder, folderMentionsNumber,
 } from "./azureFiles.ts";
+// Raw-bytes path (1.19.0): signed single-file links behind download_document /
+// upload_document and the /file/<token> routes. Pure; see fileLinks.ts.
+import {
+  type PutTokenPayload, mintFileToken, verifyFileToken, clampTtlMinutes,
+  mimeFor, contentDisposition, isWritableName, isOutgoingPath, chunkRanges, UPLOAD_CHUNK_BYTES,
+} from "./fileLinks.ts";
 // A Graph 403/404 while resolving a REGION's site is a configuration fact
 // (Sites.Selected grant missing, or the row names the wrong site), not a
 // project problem; regionAccess.ts turns it into the fix. Pure; see its tests.
@@ -651,6 +657,19 @@ async function regionMap(): Promise<Map<string, RegionSite>> {
   _regions = { at: Date.now(), map };
   return map;
 }
+// Adoption nudge (Sara, 2026-09-15). The office drive is a name-only,
+// read-only window for Claude: no full-text search, no emails, no photos, no
+// filing, nothing written back. Everything the connector does well needs the
+// record in SharePoint, and people will only move when they feel that at the
+// moment it costs them. So a result that came off a drive, or a project with
+// nothing filed, carries this reminder for the person. It is written to be
+// relayed, and paced by the model (once per conversation), not repeated on
+// every call. One string, so every tool says the same thing.
+const SHAREPOINT_NUDGE =
+  "Pass this on to the person once per conversation: the office drive is a limited, read-only view for Claude — " +
+  "files are found by name only, nothing can be filed or written back, and the record it sees is only what was " +
+  "saved there. Saving the drawings, specs, meeting notes, narratives and comment logs to the project's " +
+  "SharePoint folder makes them searchable, readable in full and editable here.";
 // The honest refusal for capabilities Azure Files storage cannot provide.
 // One place, so every tool says the same true thing.
 const AZURE_LIMITED_NOTE =
@@ -1104,7 +1123,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-17-region-site-access";
+const BUILD = "2026-09-19-file-links-with-region-access";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.19.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -2344,6 +2363,9 @@ mcp.tool("project_briefing", {
       ...(related ? { relatedProjects: related } : {}),
       construction,
       meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
+      // A briefing with no minutes or no emails to draw on is the moment the
+      // gap is felt: say where the record should live.
+      ...(!docs.items.length || !mail.length ? { reminder: SHAREPOINT_NUDGE } : {}),
       reviewComments: mail.filter((m: any) => m.reviewComments.length),
       recentEmails: mail.slice(0, 10).map((m: any) =>
         ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),
@@ -2464,6 +2486,10 @@ mcp.tool("search_emails", {
     }
     return asText({
       count: rows.length,
+      ...(!rows.length && projectNumber ? {
+        note: "No filed emails matched. This log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
+        reminder: SHAREPOINT_NUDGE,
+      } : {}),
       emails: rows.map((r: any) => ({
         recordId: r.record_id, project: r.project_id, date: r.email_date, direction: r.direction,
         from: r.from_name || r.from_address, to: r.to_addresses, subject: r.subject, preview: r.preview,
@@ -2511,6 +2537,10 @@ mcp.tool("summarize_project_emails", {
     );
     return asText({
       project: projectNumber, returned: rows.length,
+      ...(!rows.length ? {
+        note: "No emails are filed for this project. The log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
+        reminder: SHAREPOINT_NUDGE,
+      } : {}),
       emails: rows.map((r: any) => ({
         date: r.email_date, direction: r.direction, from: r.from_name || r.from_address, to: r.to_addresses,
         subject: r.subject, hasAttachments: r.has_attachments, attachments: r.attachment_names, body: emailBody(r),
@@ -3674,7 +3704,7 @@ mcp.tool("list_project_documents", {
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
-        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, await azureResolveSubfolder(az.ctx, dec.relPath, relIn))) }); }
+        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, await azureResolveSubfolder(az.ctx, dec.relPath, relIn))), reminder: SHAREPOINT_NUDGE }); }
         catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
       }
       const team = await teamForProject(projectNumber);
@@ -3685,7 +3715,7 @@ mcp.tool("list_project_documents", {
       // fallback) and says so via `sharepoint`.
       if (region.kind !== "sharepoint") {
         const num = String(projectNumber || "").toLowerCase().trim();
-        if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE });
+        if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE });
         const t = String(team || "").toUpperCase().trim();
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
@@ -3698,12 +3728,13 @@ mcp.tool("list_project_documents", {
             error: allFailed ? problems.join(" | ") : `No folder starting with "${projectNumber}" at the root of region ${t}'s drive share${labels.length === 1 ? "" : "s"} (${labels.join(", ")}).`,
             ...(problems.length && !allFailed ? { problems } : {}),
             nextStep: allFailed ? "Fix the share credentials in Admin → Regions / Edge Function secrets." : "Confirm the number with search_projects; the project folder must sit at a registered share's root, named by number.",
-            note: AZURE_LIMITED_NOTE, ...siteFallbackFields(region) });
+            note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE, ...siteFallbackFields(region) });
         }
         const [first, ...others] = hits;
         try {
           return asText({ project: projectNumber, projectFolder: first.folder,
             ...(await azureListing(first.ctx, await azureResolveSubfolder(first.ctx, first.folder, relIn))),
+            reminder: SHAREPOINT_NUDGE,
             ...(others.length ? { alsoOn: others.map(azureFolderPointer), alsoOnNote: "This project also has a folder on the region's other drive(s); pass one of these folderIds to browse it." } : {}),
             ...(problems.length ? { problems } : {}), ...siteFallbackFields(region) });
         } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: t, share: first.ctx.label }); }
@@ -3795,6 +3826,7 @@ mcp.tool("list_project_documents", {
         availableLibraries: drives.map((d) => d.name), librariesWithProject: found.map((f) => f.name),
         count: items.length, items,
         ...(annex ? { driveAnnex: annex } : {}),
+        ...(annex && (annex as any).available ? { reminder: SHAREPOINT_NUDGE } : {}),
         ...(annex && (annex as any).available && !items.length
           ? { note: "Nothing for this project in SharePoint yet, but its legacy folder exists on the office drive — browse a folderId from driveAnnex.folders." } : {}),
         ...(partialLibs.length ? { truncated: true, coverageWarning: `Listing stopped at ${MAX_FOLDER_PAGES * 200} entries in ${partialLibs.join(", ")}. Treat it as a PARTIAL listing — open a subfolder to narrow it.` } : {}),
@@ -3820,7 +3852,9 @@ mcp.tool("read_document", {
     "'Dr. Checks' / DrChecks is the same thing under the agencies' review-system name, so 'Dr. Checks " +
     "comments' means AGENCY review comments. These are often Excel comment logs / registers or DrChecks " +
     "exports — read them in full and note the specific comments and their responses. Large files and other " +
-    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl.",
+    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl. This is a TEXT extraction: to get the " +
+    "actual file (edit an .xlsx and keep its formulas/dropdowns/formatting, forward a PDF), use download_document; " +
+    "to write an edited file back into the project record, upload_document.",
   inputSchema: z.object({
     itemId: z.string().describe("Item id from list_project_documents: a SharePoint 'driveId|itemId' composite, or an 'az:TEAM.SHARE:path' id for a file on one of the region's network-drive shares"),
     find: z.string().optional().describe("PDF only: jump to the page(s) whose text contains this keyword/phrase (case-insensitive), e.g. a spec section number '15230' or a term like 'DIRECT-BURIED'. The best way to reach a specific section of a large manual."),
@@ -3846,11 +3880,11 @@ mcp.tool("read_document", {
         const az = await azureCtxForTeam(dec.team, dec.label);
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         name = dec.relPath.split("/").pop() || "";
-        base = { itemId, name, storage: "azure_files", region: dec.team, share: az.ctx.label, sharePath: sharePathOf(az.ctx.share, dec.relPath) };
+        base = { itemId, name, storage: "azure_files", region: dec.team, share: az.ctx.label, sharePath: sharePathOf(az.ctx.share, dec.relPath), reminder: SHAREPOINT_NUDGE };
         try {
           const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
           base.size = props.size; base.modified = props.modified;
-          if (props.size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open it from the mapped drive at sharePath." });
+          if (props.size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open it from the mapped drive at sharePath, or download_document for the bytes." });
           pdfCacheKey = itemId;
           pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
           if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
@@ -3865,7 +3899,7 @@ mcp.tool("read_document", {
         name = meta.name || "";
         const size = meta.size ?? 0;
         base = { itemId, name, size, webUrl: meta.webUrl };
-        if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl." });
+        if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl, or download_document for the bytes." });
         pdfCacheKey = drive + "|" + realId;
         pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
         if (!pdfBytes) {
@@ -3973,6 +4007,311 @@ mcp.tool("read_document", {
     } catch (e) {
       return asText({ error: String((e as any)?.message ?? e) });
     }
+  },
+});
+
+// ─── RAW FILE ACCESS: download_document / upload_document (1.19.0) ──────────
+// read_document turns every file into text, which is right for reading and
+// wrong for editing: an .xlsx comment log comes back as rows, and its
+// formulas, data-validation dropdowns, hidden sheets and formatting never
+// reach the model. To edit a workbook and hand back the SAME working file the
+// model needs the original bytes in and the edited bytes out, and the only
+// channel wide enough for that is a URL its sandbox (or the person's browser)
+// can fetch. So:
+//   download_document mints a signed, short-lived GET link the connector
+//     itself serves (/pms-mcp/file/<token>) and streams the bytes unchanged,
+//     from SharePoint or a drive share, gated exactly as read_document is —
+//     the token carries the minting caller and the gate re-runs as them.
+//   upload_document mints a signed PUT link (or takes small files inline as
+//     base64) and writes the bytes to SharePoint: a NEW VERSION of the file it
+//     came from (version history keeps the old one) or a new file beside it.
+// Write posture matches file_qa_report: signed-in callers only, SharePoint
+// only (drive SAS tokens are read-only by policy, ROADMAP-drives.md), never
+// under Outgoing, office/text formats only, size-capped, every write logged
+// with the person behind it. Links are bearer-less by design — the token is
+// the credential — so they expire in minutes and name one file and one verb.
+// FILE_LINK_SECRET is optional: absent, the key is derived from the service
+// key, which already lives only in this function's env.
+const FILE_LINK_SECRET = Deno.env.get("FILE_LINK_SECRET") || `pms-mcp:file-link:v1:${SERVICE_KEY}`;
+const FILE_LINK_BASE = (Deno.env.get("FILE_LINK_BASE") || `${SUPABASE_URL}/functions/v1/pms-mcp/file`).replace(/\/+$/, "");
+const DOWNLOAD_INLINE_MAX_BYTES = 1_000_000;  // base64 inline is a courtesy for small files; the link is the real path
+const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;   // upload-session ceiling (Graph allows far more; the Edge worker's memory does not)
+const UPLOAD_SIMPLE_MAX_BYTES = 3_500_000;   // Graph simple PUT (4MB hard cap); above this an upload session
+const FILE_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "content-type, content-length",
+  "Access-Control-Allow-Methods": "GET, HEAD, PUT, OPTIONS",
+  "Access-Control-Expose-Headers": "content-disposition, content-length, content-type",
+};
+
+type FileMeta = {
+  itemId: string; name: string; size: number; storage: "sharepoint" | "azure_files"; modified?: string | null;
+  webUrl?: string | null; sharePath?: string; region?: string;
+  isFolder?: boolean; drive?: string; realId?: string; parentId?: string | null; parentPath?: string | null;
+};
+// A SharePoint item's project folder — the drive-root ancestor named
+// "<projectNumber> - <name>" (the same convention projectNumberOfFolder,
+// imported from azureFiles.ts, already parses for drive shares). Graph's
+// parentReference.path looks like ".../root:/<Top>/<Rest...>"; the item's
+// own top-level ancestor is its first segment. An item sitting directly at
+// the drive root (no segments after root:) has no parent to name it, so a
+// FOLDER there names itself — that's the project folder itself, e.g. the
+// itemId list_project_documents hands back for the folder — while a FILE
+// there has no project ancestry at all. Returns "" when nothing resolves;
+// callers must fail closed on that, never assume safety.
+function sharePointProjectFolderName(meta: { name?: string; folder?: unknown; parentReference?: { path?: string } }): string {
+  const path = meta.parentReference?.path || "";
+  const marker = "root:";
+  const idx = path.indexOf(marker);
+  const afterRoot = idx >= 0 ? path.slice(idx + marker.length) : "";
+  const first = afterRoot.split("/").filter(Boolean)[0];
+  if (first) { try { return decodeURIComponent(first); } catch { return first; } }
+  return meta.folder ? (meta.name || "") : "";
+}
+// Name/size/link for one id from whichever storage holds it, gated as
+// read_document gates it. The not-found shape for a hidden project is the
+// gate's own, so a crafted id learns nothing. A driveId|itemId is otherwise
+// fetched with the app-wide Graph credential with no project context at
+// all — anyone who retains or guesses one could read (or, via
+// upload_document, overwrite) a hidden project's files, or anything else on
+// a drive the Graph app can reach — so this resolves the item's ancestry to
+// a PMS project and applies the same HIDE/team gate before returning
+// anything, exactly as the az: branch already does via azurePathProject.
+async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta } | { ok: false; res: any }> {
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!dec || !dec.relPath.includes("/")) return { ok: false, res: asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM.SHARE:project-folder/path/to/file)." }) };
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) return gate;
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) return { ok: false, res: asText({ error: az.error, nextStep: az.nextStep }) };
+    const name = dec.relPath.split("/").pop() || "";
+    const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
+    return { ok: true, meta: { itemId, name, size: props.size, modified: props.modified, storage: "azure_files", region: dec.team, sharePath: sharePathOf(az.ctx.share, dec.relPath) } };
+  }
+  const bar = itemId.indexOf("|");
+  const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
+  const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
+  const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference`);
+  const projectNum = projectNumberOfFolder(sharePointProjectFolderName(meta));
+  if (!projectNum || !(await projectRefVisible(projectNum))) {
+    return { ok: false, res: asText({ error: "No document matching that itemId.", nextStep: "Pass an itemId exactly as list_project_documents / find_document printed it." }) };
+  }
+  return { ok: true, meta: {
+    itemId: drive + "|" + realId, name: meta.name || "", size: meta.size ?? 0, modified: meta.lastModifiedDateTime ?? null,
+    storage: "sharepoint", webUrl: meta.webUrl ?? null, isFolder: !!meta.folder, drive, realId,
+    parentId: meta.parentReference?.id ?? null, parentPath: meta.parentReference?.path ?? null,
+  } };
+}
+// The bytes as a streaming Response (no buffering, no cache, no size cap):
+// the download route pipes it straight to the client. Re-runs fileMetaById's
+// gate rather than duplicating it, so a download link redeemed well after
+// minting is re-checked against whatever visibility holds NOW, as the
+// minting caller (restored via callerStore by the route that calls this) —
+// not just whatever held when download_document minted the link.
+async function openFileById(itemId: string): Promise<Response> {
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) throw new Error(az.error);
+    return getFile(az.ctx.share, dec.relPath, az.ctx.sas);
+  }
+  const got = await fileMetaById(itemId);
+  if (!got.ok) throw new Error("No document matching that itemId.");
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${got.meta.drive}/items/${encodeURIComponent(got.meta.realId!)}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } },
+  );
+  if (!res.ok) throw new Error(`Graph content ${res.status}`);
+  return res;
+}
+// The identity a link was minted under, restored when the link is used so
+// every visibility decision is made as that person (or the service lane).
+const callerFromToken = (by: string | null): Caller =>
+  by ? { kind: "user", email: by, name: null, oid: null } : SERVICE_CALLER;
+const fileLinkExpiry = (ttlMinutes: unknown) => {
+  const ttl = clampTtlMinutes(ttlMinutes);
+  const exp = Math.floor(Date.now() / 1000) + ttl * 60;
+  return { ttl, exp, expiresAt: new Date(exp * 1000).toISOString() };
+};
+
+mcp.tool("download_document", {
+  description:
+    "Get the ORIGINAL FILE BYTES of one document (not a text extraction) by its itemId from list_project_documents / " +
+    "find_document — a SharePoint item or a drive-share file (ids starting 'az:'). Use it when the file itself is " +
+    "the deliverable: editing an .xlsx (formulas, dropdowns, other sheets and formatting survive only in the real " +
+    "file), forwarding a PDF, re-issuing a .docx. Returns a signed download link the connector serves itself, valid " +
+    "for ttlMinutes (default 30): fetch it with a plain GET from your sandbox (curl -L -o …) or hand it to the person " +
+    "to open in a browser. No sign-in is needed at the link, so treat the link like the file. inline:true also " +
+    "returns contentBase64 for files up to 1MB (expensive through the conversation — prefer the link). " +
+    "read_document is still the way to READ a document; upload_document writes an edited file back.",
+  inputSchema: z.object({
+    itemId: z.string().describe("Item id exactly as list_project_documents / find_document printed it: 'driveId|itemId' (SharePoint) or 'az:TEAM.SHARE:path' (drive share)."),
+    inline: z.boolean().optional().describe("Also return the bytes as contentBase64 when the file is 1MB or smaller. Default false."),
+    ttlMinutes: z.number().optional().describe("How long the link stays valid: 5–240 minutes, default 30."),
+  }),
+  handler: async ({ itemId, inline, ttlMinutes }) => {
+    try {
+      const got = await fileMetaById(itemId);
+      if (!got.ok) return got.res;
+      const m = got.meta;
+      if (m.isFolder) return asText({ error: `"${m.name}" is a folder, not a file.`, nextStep: "list_project_documents with folderId lists its files; download one by its itemId." });
+      const { ttl, exp, expiresAt } = fileLinkExpiry(ttlMinutes);
+      const token = await mintFileToken({ k: "get", id: m.itemId, n: m.name, by: currentCaller().email, exp }, FILE_LINK_SECRET);
+      const out: Record<string, unknown> = {
+        itemId: m.itemId, name: m.name, size: m.size, mimeType: mimeFor(m.name), storage: m.storage,
+        ...(m.webUrl ? { webUrl: m.webUrl } : {}), ...(m.sharePath ? { sharePath: m.sharePath } : {}), ...(m.modified ? { modified: m.modified } : {}),
+        downloadUrl: `${FILE_LINK_BASE}/${token}`, expiresAt, ttlMinutes: ttl,
+        how: `GET the URL with no headers — e.g. curl -L -o "${m.name}" "<downloadUrl>" — and you have the original bytes unchanged (formulas, dropdowns, formatting, every sheet). The person can also open the link in a browser to save the file. Anyone holding the link can fetch this ONE file until it expires, so keep it out of shared channels; mint a fresh one if it expires.`,
+        writeBack: m.storage === "sharepoint"
+          ? "After editing, upload_document with this itemId writes it back: overwrite:true for a new version of this file, or name:'…' for a new file beside it."
+          : "Drives are read-only to Claude, so upload_document cannot write here. Hand the edited file to the person.",
+      };
+      if (inline) {
+        if (m.size > DOWNLOAD_INLINE_MAX_BYTES) {
+          out.inlineNote = `Not inlined: ${(m.size / 1e6).toFixed(1)}MB is over the ${(DOWNLOAD_INLINE_MAX_BYTES / 1e6).toFixed(0)}MB inline cap. Use downloadUrl.`;
+        } else {
+          const bytes = new Uint8Array(await (await openFileById(m.itemId)).arrayBuffer());
+          out.contentBase64 = b64FromBuffer(bytes);
+          out.inlineBytes = bytes.byteLength;
+        }
+      }
+      return asText(out);
+    } catch (e) {
+      return asText({ error: String((e as any)?.message ?? e) });
+    }
+  },
+});
+
+// One SharePoint write, two Graph paths: simple PUT under 4MB, an upload
+// session above it. `existingItemId` replaces that file's content (SharePoint
+// keeps the prior version); a new name in `parentId` FAILS on a name clash
+// rather than replacing, so the only way to overwrite anything is to name it
+// by id with overwrite:true.
+async function writeSharePointFile(drive: string, parentId: string, name: string, bytes: Uint8Array, existingItemId: string | null): Promise<any> {
+  if (bytes.byteLength <= UPLOAD_SIMPLE_MAX_BYTES) {
+    const path = existingItemId
+      ? `/drives/${drive}/items/${encodeURIComponent(existingItemId)}/content`
+      : `/drives/${drive}/items/${encodeURIComponent(parentId)}:/${encodeURIComponent(name)}:/content?@microsoft.graph.conflictBehavior=fail`;
+    return graphSend("PUT", path, bytes as unknown as BodyInit, "application/octet-stream");
+  }
+  const sessPath = existingItemId
+    ? `/drives/${drive}/items/${encodeURIComponent(existingItemId)}/createUploadSession`
+    : `/drives/${drive}/items/${encodeURIComponent(parentId)}:/${encodeURIComponent(name)}:/createUploadSession`;
+  const sess = await graphSend("POST", sessPath,
+    JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": existingItemId ? "replace" : "fail", name } }), "application/json");
+  const uploadUrl = String(sess?.uploadUrl || "");
+  if (!uploadUrl) throw new Error("Graph returned no uploadUrl for the upload session.");
+  let last: any = null;
+  for (const r of chunkRanges(bytes.byteLength, UPLOAD_CHUNK_BYTES)) {
+    const part = bytes.subarray(r.start, r.end + 1);
+    // The session URL is pre-authenticated: no bearer, or Graph rejects the chunk.
+    const res = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Range": `bytes ${r.start}-${r.end}/${bytes.byteLength}` }, body: part as unknown as BodyInit });
+    if (!res.ok) {
+      const txt = (await res.text()).slice(0, 300);
+      try { await fetch(uploadUrl, { method: "DELETE" }); } catch { /* best-effort cancel */ }
+      throw new Error(`Graph upload session ${res.status} at bytes ${r.start}-${r.end}: ${txt}`);
+    }
+    last = (res.status === 200 || res.status === 201) ? await res.json() : null;
+  }
+  if (!last?.id) throw new Error("Upload session ended without a driveItem — the file may not have been committed.");
+  return last;
+}
+function uploadResult(item: any, drive: string, name: string, bytes: number, existing: string | null, by: string, folder: string | null) {
+  return {
+    ok: true, itemId: `${drive}|${item.id}`, name: item.name ?? name, webUrl: item.webUrl ?? null, bytes,
+    ...(folder ? { folder } : {}), writtenBy: by, mode: existing ? "replaced" : "created",
+    note: existing
+      ? "Replaced in place as a new SharePoint version; the previous content is in the file's version history if it needs restoring."
+      : "Saved as a new file. read_document / download_document accept the returned itemId.",
+  };
+}
+
+mcp.tool("upload_document", {
+  description:
+    "WRITE a file into the project's SharePoint record — how an edited workbook or document is handed back as a " +
+    "real file, not text. Target: the itemId of an EXISTING FILE (overwrite:true replaces its content as a new " +
+    "SharePoint version, the previous version staying in version history; or name:'…' saves a new file in the same " +
+    "folder), or the itemId of a FOLDER from list_project_documents plus name. Bytes: contentBase64 inline for " +
+    "small files (≤3.5MB), or omit it and the tool returns a signed uploadUrl — PUT the raw bytes to it within the " +
+    "TTL (curl -T file.xlsx \"<uploadUrl>\") and the connector writes them. Pairs with download_document: download → " +
+    "edit in the sandbox → upload. Limits: signed-in callers only; SharePoint only (drives are read-only to Claude); " +
+    "never under an Outgoing folder; office and text formats only (xlsx/xlsm/docx/pptx/pdf/csv/txt/md/json/xml/html); " +
+    "50MB max. A name already in the folder is refused unless you target that file's itemId with overwrite:true. " +
+    "Every write is logged with the caller. Confirm with the person before overwriting.",
+  inputSchema: z.object({
+    itemId: z.string().describe("SharePoint 'driveId|itemId' of the file to replace or save beside, or of the folder to save into."),
+    name: z.string().optional().describe("File name with extension for a NEW file. Required when the target is a folder, or when overwrite is not true."),
+    overwrite: z.boolean().optional().describe("true = replace the content of the file named by itemId (new SharePoint version). Ignored for a folder target."),
+    contentBase64: z.string().optional().describe("The file bytes as base64, for files up to ~3.5MB. Omit to receive an uploadUrl for a PUT instead."),
+    ttlMinutes: z.number().optional().describe("How long the uploadUrl stays valid: 5–240 minutes, default 30."),
+  }),
+  handler: async ({ itemId, name, overwrite, contentBase64, ttlMinutes }) => {
+    const c = currentCaller();
+    if (c.kind !== "user" || !c.email) {
+      return asText({ error: "Writing a file needs a signed-in Setty user behind it — the shared-secret lane cannot upload.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
+    }
+    if (isAzId(itemId)) {
+      return asText({ error: "Drives are read-only to Claude (the share tokens are read-only by policy), so this file cannot be written back.", nextStep: "Hand the edited file to the person to save on the drive, or save it under the project's SharePoint record if it has one.", reminder: SHAREPOINT_NUDGE });
+    }
+    let target: FileMeta;
+    try {
+      const got = await fileMetaById(itemId);
+      if (!got.ok) return got.res;
+      target = got.meta;
+    } catch (e) {
+      return asText({ error: `Target not found: ${String((e as any)?.message ?? e).slice(0, 200)}`, nextStep: "Pass an itemId exactly as list_project_documents printed it." });
+    }
+    let parentId: string, finalName: string, folderPath: string, existing: string | null = null;
+    if (target.isFolder) {
+      if (!name?.trim()) return asText({ error: `"${target.name}" is a folder — pass name:'file.xlsx' to save a new file into it.` });
+      parentId = target.realId!; finalName = name.trim(); folderPath = `${target.parentPath || ""}/${target.name}`;
+    } else {
+      if (!target.parentId) return asText({ error: "Could not resolve the file's folder from SharePoint." });
+      parentId = target.parentId; folderPath = target.parentPath || "";
+      if (overwrite) { existing = target.realId!; finalName = target.name; }
+      else if (name?.trim()) {
+        finalName = name.trim();
+        if (finalName.toLowerCase() === target.name.toLowerCase()) return asText({ error: `"${finalName}" is the file itself. Pass overwrite:true to replace it as a new version, or a different name for a copy beside it.` });
+      } else {
+        return asText({ error: `"${target.name}" is an existing file. Say what to do: overwrite:true (a new version of this file) or name:'…' (a new file in the same folder).` });
+      }
+    }
+    if (!isWritableName(finalName)) {
+      return asText({ error: `"${finalName}" is not a writable name: office/text formats only (xlsx, xlsm, docx, pptx, pdf, csv, txt, md, json, xml, html), no path characters.` });
+    }
+    if (isOutgoingPath(folderPath)) {
+      return asText({ error: "Outgoing holds issued sets and is never written by the connector.", nextStep: "Issued drawings go through the transmittal tool. Save working files elsewhere in the project folder." });
+    }
+    const rel = folderPath.includes("root:") ? folderPath.slice(folderPath.indexOf("root:") + 5) : folderPath;
+    const drive = target.drive!;
+    if (contentBase64 !== undefined) {
+      let bytes: Uint8Array;
+      try { bytes = Uint8Array.from(atob(contentBase64.replace(/\s/g, "")), (ch) => ch.charCodeAt(0)); }
+      catch { return asText({ error: "contentBase64 is not valid base64." }); }
+      if (!bytes.byteLength) return asText({ error: "contentBase64 decoded to zero bytes." });
+      if (bytes.byteLength > UPLOAD_SIMPLE_MAX_BYTES) {
+        return asText({ error: `${(bytes.byteLength / 1e6).toFixed(1)}MB is over the ${(UPLOAD_SIMPLE_MAX_BYTES / 1e6).toFixed(1)}MB inline cap — omit contentBase64 and PUT the file to the returned uploadUrl instead.` });
+      }
+      try {
+        const item = await writeSharePointFile(drive, parentId, finalName, bytes, existing);
+        console.log("[upload_document]", c.email, existing ? "replaced" : "created", finalName, bytes.byteLength, "bytes in", rel || "/");
+        return asText(uploadResult(item, drive, finalName, bytes.byteLength, existing, c.email, rel || "/"));
+      } catch (e) {
+        return asText({ error: `Write failed: ${String((e as any)?.message ?? e).slice(0, 400)}` });
+      }
+    }
+    const { ttl, exp, expiresAt } = fileLinkExpiry(ttlMinutes);
+    const payload: PutTokenPayload = { k: "put", drive, parent: parentId, name: finalName, item: existing, by: c.email, exp, max: UPLOAD_MAX_BYTES };
+    const token = await mintFileToken(payload, FILE_LINK_SECRET);
+    return asText({
+      uploadUrl: `${FILE_LINK_BASE}/${token}`, method: "PUT", expiresAt, ttlMinutes: ttl, maxBytes: UPLOAD_MAX_BYTES,
+      target: { folder: rel || "/", name: finalName, mode: existing ? "new version of the existing file" : "new file" },
+      how: `PUT the raw file bytes to uploadUrl, body only — e.g. curl -sS -T "${finalName}" "<uploadUrl>". The response is JSON with the saved item's itemId and webUrl. The link writes this ONE target and then expires; nothing is written until the PUT arrives.`,
+    });
   },
 });
 
@@ -4592,6 +4931,7 @@ mcp.tool("find_document", {
       statusCounts: counts,
       statusNote,
       ...(tree.truncated ? { coverageWarning: `The folder walk hit its cap after ${tree.files.length} files, so results may be incomplete.` } : {}),
+      ...(onDrive ? { reminder: SHAREPOINT_NUDGE } : {}),
     });
   },
 });
@@ -4983,7 +5323,7 @@ mcp.tool("prepare_transmittal", {
       const st = await storageFor(project);
       if (st.kind !== "sharepoint") {
         return asText(st.siteError ? regionAccessResult(st.siteError)
-          : { error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site." });
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site.", reminder: SHAREPOINT_NUDGE });
       }
     }
 
@@ -8207,7 +8547,7 @@ mcp.tool("file_qa_report", {
       const st = await storageFor(project);
       if (st.kind !== "sharepoint") {
         return asText(st.siteError ? regionAccessResult(st.siteError)
-          : { error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint." });
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint.", reminder: SHAREPOINT_NUDGE });
       }
     }
     const day = (date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) ? date.trim() : new Date().toISOString().slice(0, 10);
@@ -9132,6 +9472,53 @@ async function regionsProbe(): Promise<Array<Record<string, unknown>>> {
   }
   return out;
 }
+
+// ── Raw file links (download_document / upload_document, 1.19.0) ─────────────
+// Bearer-less by design: the token is the credential (signed, minutes-lived,
+// one file, one verb — see fileLinks.ts). GET re-runs the visibility gate AS
+// THE MINTING CALLER and streams the bytes; PUT writes them to the SharePoint
+// target the token pins. Neither route reads the Authorization header, and a
+// token for one verb is refused by the other.
+app.options("/pms-mcp/file/:token", (c) => c.body(null, 204, FILE_CORS));
+app.get("/pms-mcp/file/:token", async (c) => {
+  const t = await verifyFileToken(c.req.param("token"), FILE_LINK_SECRET);
+  if (!t || t.k !== "get") return c.json({ error: "This download link is invalid or has expired. Ask for a fresh one with download_document." }, 403, FILE_CORS);
+  try {
+    const upstream = await callerStore.run(callerFromToken(t.by), () => openFileById(t.id));
+    const headers = new Headers(FILE_CORS);
+    headers.set("Content-Type", mimeFor(t.n));
+    headers.set("Content-Disposition", contentDisposition(t.n));
+    headers.set("Cache-Control", "private, no-store");
+    const len = upstream.headers.get("content-length");
+    if (len) headers.set("Content-Length", len);
+    return new Response(upstream.body, { status: 200, headers });
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    console.warn("[file get] failed:", t.by ?? "service", t.n, msg.slice(0, 200));
+    return c.json({ error: `Could not fetch the file: ${msg.slice(0, 300)}` }, 502, FILE_CORS);
+  }
+});
+app.put("/pms-mcp/file/:token", async (c) => {
+  const t = await verifyFileToken(c.req.param("token"), FILE_LINK_SECRET);
+  if (!t || t.k !== "put") return c.json({ error: "This upload link is invalid or has expired. Ask for a fresh one with upload_document." }, 403, FILE_CORS);
+  const overCap = (n: number) => c.json({ error: `File is ${(n / 1e6).toFixed(1)}MB — over the ${Math.round(t.max / 1048576)}MB cap.` }, 413, FILE_CORS);
+  const declared = Number(c.req.header("content-length") || 0);
+  if (declared > t.max) return overCap(declared);
+  let bytes: Uint8Array;
+  try { bytes = new Uint8Array(await c.req.arrayBuffer()); }
+  catch { return c.json({ error: "Could not read the request body." }, 400, FILE_CORS); }
+  if (!bytes.byteLength) return c.json({ error: "Empty body — PUT the file bytes." }, 400, FILE_CORS);
+  if (bytes.byteLength > t.max) return overCap(bytes.byteLength);
+  try {
+    const item = await writeSharePointFile(t.drive, t.parent, t.name, bytes, t.item);
+    console.log("[upload_document]", t.by, t.item ? "replaced" : "created", t.name, bytes.byteLength, "bytes via PUT link");
+    return c.json(uploadResult(item, t.drive, t.name, bytes.byteLength, t.item, t.by, null), 200, FILE_CORS);
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    console.warn("[file put] failed:", t.by, t.name, msg.slice(0, 200));
+    return c.json({ error: `Write failed: ${msg.slice(0, 400)}` }, 502, FILE_CORS);
+  }
+});
 
 // ── Drive discovery (Admin console → connector) ─────────────────────────────
 // Project folders on a region's drives that have no PMS record. The console

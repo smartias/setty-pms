@@ -193,6 +193,10 @@
 // v25 (15 Sep 2026) — the legacy single-share columns on pms_regions
 // (azure_share_url, azure_sas_env) are gone; the Regions tab reads and saves
 // drives through pms_region_shares only.
+// v25 (15 Sep 2026, later) — "What works where" and the Claude/MCP tab list
+// the raw file tools of connector 1.19.0: download_document (a signed link to
+// the original bytes, both storages) and upload_document (write an edited
+// file back to SharePoint as a new version or a new file). 45 tools.
 // v24 (15 Sep 2026, later) — "What works where" and the Claude/MCP tab brought
 // current with connector 1.17.1: drawing tools work on drives (1.16.0), the
 // transmittal tool's register-only mode, drive discovery, 43 tools, and the
@@ -1159,7 +1163,7 @@ async function renderRegions() {
 // The same matrix as the team explainer "Where Project Files Live". "PMS
 // only" = the tool reads the PMS record and never touches SharePoint or a
 // drive, so the region's storage makes no difference. Keep this in step with
-// the tool list in pms-mcp/index.ts (43 tools as of v1.17.1). Drive rows
+// the tool list in pms-mcp/index.ts (45 tools as of v1.19.0). Drive rows
 // reflect 1.16.0+: the drawing index is built off the drive's Outgoing folder,
 // so the drawing tools work on both storages once search_drawings has run.
 const CAP_ROWS = [
@@ -1188,6 +1192,8 @@ const CAP_ROWS = [
   ["Project files"],
   ["list_project_documents", "Browse a project's folders and subfolders", "yes", "yes"],
   ["read_document", "Read a PDF, Word, Excel, CSV or text file; large PDFs page by page with keyword jump", "yes", "yes"],
+  ["download_document", "A signed, short-lived link to the ORIGINAL file bytes (edit an xlsx with its formulas and dropdowns intact, forward a PDF)", "yes", "yes", "Both storages, same visibility gate as read_document. The link needs no sign-in, so treat it like the file; it expires in 30 minutes by default (1.19.0)."],
+  ["upload_document", "Write an edited file back into the project record: a new version of the file it came from, or a new file beside it", "yes", "no", "SharePoint only, never under Outgoing, office/text formats, 50MB. Drives are read-only to Claude: hand the edited file to the person."],
   ["find_document", "Find a document by describing it in plain language", "yes", "yes", "On a drive it ranks file and folder names from a bounded walk of the project folder (no full-text index); results carry the UNC path."],
   ["Drawings"],
   ["extract_sheet_index", "The drawing sheet index and the current full set", "yes", "yes", "On a drive it is composed from the drawing index (each sheet at its newest indexed revision) when there is no register entry."],
@@ -2076,7 +2082,7 @@ function renderGuide() {
              own Edge Function.</p>
           <div class="src">Edge Functions pms-user-emails · unsubscribe</div></div>
         <div class="appcard"><h4>🤖 Claude / MCP server</h4>
-          <p>Connector that lets the team's enterprise Claude accounts search and read PMS data — 43 tools. Read-first: the write tools are scoped (<code>save_knowledge</code>, the QA findings ledger, <code>save_ca_review</code> / <code>backload_ca_item</code>, <code>file_qa_report</code>, <code>ensure_qaqc_folders</code>) and none of them can edit a project record, the register, or email. Full runbook on the Claude/MCP tab.</p>
+          <p>Connector that lets the team's enterprise Claude accounts search and read PMS data — 45 tools. Read-first: the write tools are scoped (<code>save_knowledge</code>, the QA findings ledger, <code>save_ca_review</code> / <code>backload_ca_item</code>, <code>file_qa_report</code>, <code>ensure_qaqc_folders</code>, <code>upload_document</code> for edited files in SharePoint, never under Outgoing) and none of them can edit a project record, the register, or email. Full runbook on the Claude/MCP tab.</p>
           <div class="src">Edge Function pms-mcp</div></div>
       </div>
     </div>
@@ -2440,7 +2446,7 @@ function renderMcp() {
         <tr><td>Emails</td><td><code>search_emails</code> · <code>read_email</code> · <code>summarize_project_emails</code></td></tr>
         <tr><td>Notes &amp; CA</td><td><code>search_notes</code> · <code>read_note</code> · <code>search_rfis_submittals</code> · <code>read_rfi_submittal</code> · <code>save_ca_review</code> · <code>backload_ca_item</code></td></tr>
         <tr><td>Field</td><td><code>search_field_photos</code> · <code>view_photos</code></td></tr>
-        <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code> · <code>find_document</code></td></tr>
+        <tr><td>Documents</td><td><code>list_project_documents</code> · <code>read_document</code> · <code>find_document</code> · <code>download_document</code> · <code>upload_document</code></td></tr>
         <tr><td>Drawings</td><td><code>get_current_set</code> · <code>extract_sheet_index</code> · <code>search_drawings</code> · <code>view_drawing</code> · <code>read_drawing_schedule</code> · <code>find_equipment</code> · <code>trace_references</code> · <code>prepare_transmittal</code></td></tr>
         <tr><td>QA</td><td><code>get_qa_checklist</code> · <code>record_qa_findings</code> · <code>list_qa_findings</code> · <code>update_qa_finding</code> · <code>file_qa_report</code> · <code>ensure_qaqc_folders</code></td></tr>
         <tr><td>Knowledge</td><td><code>search_agency_preferences</code> · <code>search_knowledge</code> · <code>save_knowledge</code></td></tr>

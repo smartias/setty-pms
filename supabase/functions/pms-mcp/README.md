@@ -484,8 +484,9 @@ is the provider, in `azureFiles.ts`:
   and `trace_references` then work unchanged. `extract_sheet_index` (default
   mode) and `get_current_set` have no register on a drive, so they compose the
   set from the drawing index instead (`basis` says so; `coverage` rides along).
-  Still SharePoint-only: `prepare_transmittal` and `file_qa_report` (writes),
-  field photos. `find_document` works on a drive since 1.17.2: `projectTree()`
+  Still SharePoint-only: `prepare_transmittal`, `file_qa_report` and
+  `upload_document` (writes), field photos. `download_document` (1.19.0)
+  serves a drive file's bytes through the same gate as `read_document`. `find_document` works on a drive since 1.17.2: `projectTree()`
   has a drive branch (breadth-first walk of the project folder on each share,
   same caps and the same `pms_mcp_tree_cache` row as the SharePoint walk), so
   the ranking, phase filter and register-based supersession status all apply;
@@ -497,6 +498,23 @@ is the provider, in `azureFiles.ts`:
   registered project's folder (longest project-number prefix), on that
   project's own team, and `projectRefVisible` for the caller; otherwise the
   HIDE not-found shape. The share root is never listed for a caller.
+
+**Adoption reminder (1.19.1).** The drive is a name-only, read-only window,
+and people move to SharePoint when they feel that at the moment it costs them.
+So one string, `SHAREPOINT_NUDGE`, rides as `reminder` on every result that
+came off a drive (`list_project_documents` listings and drive refusals, a
+SharePoint project's drive annex, `read_document` on an `az:` id,
+`find_document` on a drive project), on the SharePoint-only writes when they
+are refused on a drive (`prepare_transmittal`, `file_qa_report`,
+`upload_document`), and on the moments the record is simply empty
+(`search_emails` / `summarize_project_emails` with nothing filed, a
+`project_briefing` with no minutes or no emails). It tells the model to pass
+on, once per conversation, that the drive is limited and that saving the
+drawings, specs, meeting notes, narratives and comment logs to the project's
+SharePoint folder makes them searchable, readable in full and editable. The
+empty-email results additionally say where the email log comes from (the
+Outlook add-in). Successful SharePoint paths never carry it.
+`sharePointNudge.test.mjs` pins the text and the sites.
 
 Gotchas: the storage account must allow traffic from outside the tenant
 (Supabase's egress is not on the corporate network), the SAS needs `r` and
@@ -563,7 +581,62 @@ on its own.
   A project already in the PMS keeps its PMS name; discovery never writes to
   `pms_projects` rows that exist.
 
+## Raw file access (`download_document` / `upload_document`, 1.19.0)
+
+Every tool result is text on the way into the model, so `read_document` on an
+.xlsx hands back rows and loses the formulas, data-validation dropdowns, other
+sheets and formatting. That is fine for reading and useless for "edit this
+comment log and give me back the working workbook". The fix is not a bigger
+text extraction; it is a channel for the bytes.
+
+- **`download_document`** takes the same `itemId` as `read_document` (SharePoint
+  composite or `az:` drive id) and returns a **signed, short-lived download
+  link** the connector serves itself: `GET /pms-mcp/file/<token>` streams the
+  original bytes with the right `Content-Type` and `Content-Disposition`. The
+  model's sandbox fetches it with a plain GET (`curl -L -o`), or the person opens
+  it in a browser. `inline:true` also returns `contentBase64` for files up to
+  1 MB, which is expensive through the conversation and only there for tiny
+  files. Works on both storages, gated exactly as `read_document`.
+- **`upload_document`** writes an edited file back into **SharePoint**: target an
+  existing file's `itemId` with `overwrite:true` (a new SharePoint **version**;
+  the previous one stays in version history) or `name:'…'` (a new file in the
+  same folder), or a folder's `itemId` plus `name`. Bytes go inline as base64
+  (≤ 3.5 MB) or, better, by **signed upload link**: the tool returns a
+  `PUT /pms-mcp/file/<token>` URL and the sandbox PUTs the file to it
+  (`curl -T`). Under 4 MB is a Graph simple PUT; above it an upload session in
+  320 KiB-multiple chunks, 50 MB cap.
+
+The token is the credential (`fileLinks.ts`): HMAC-SHA256 over a base64url
+payload naming **one file, one verb, an expiry (5–240 min, default 30) and the
+minting caller**. The routes take no bearer, which is the point (the sandbox
+has no sign-in), so a GET re-runs the visibility gate **as the minting caller**
+before streaming, a PUT token can only ever write the target it was minted for,
+and a token for one verb is refused by the other. Links should be treated like
+the file: whoever holds one can fetch that file until it expires.
+
+Write posture is `file_qa_report`'s: signed-in callers only (the shared-secret
+lane cannot upload), SharePoint only (drive SAS tokens are read-only by policy,
+see ROADMAP-drives.md), **never under an Outgoing folder** in any office's
+spelling (`Outgoing`, `99-<number>_OUTGOING`, emoji-prefixed), office and text
+formats only (xlsx/xlsm/docx/pptx/pdf/csv/txt/md/json/xml/html), and a new
+name that already exists in the folder is refused (`conflictBehavior=fail`) so
+the only way to replace anything is by id with `overwrite:true`. Every write is
+logged with the person. The intended loop is download → edit in the sandbox →
+upload, with the person confirming before an overwrite.
+
+Configuration: `FILE_LINK_SECRET` (optional; without it the signing key is
+derived from the service key) and `FILE_LINK_BASE` (optional; defaults to this
+function's `/pms-mcp/file` URL on the Supabase gateway, which is reachable with
+no headers because the function is deployed `--no-verify-jwt`). Tests:
+`fileLinks.test.mjs` exercises the token and the guards for real under Node and
+pins the wiring in `index.ts`.
+
 ## Deploying
+
+One-command version: `deploy.ps1` in this folder pulls main, reads the BUILD
+constant, deploys, and polls `/health` until that build answers (see the header
+of the script). A pending deploy, when there is one, is described in
+`DEPLOY-NEXT.md` beside it. The manual steps follow.
 
 Needs a Supabase personal access token, generated at **supabase.com → Account → Access Tokens**. It is account-wide, so revoke it when you are done.
 
@@ -609,7 +682,7 @@ Notes, each learned the hard way (14 Sep 2026):
 
 No secrets live in this source. Everything sensitive is read from Edge Function secrets at runtime:
 
-`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MCP_SHARED_SECRET`, `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`, `GRAPH_SITE_ID`, `GRAPH_DOC_LIBRARY`
+`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MCP_SHARED_SECRET`, `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`, `GRAPH_SITE_ID`, `GRAPH_DOC_LIBRARY`, the `AZURE_SAS_*` share tokens named by `pms_region_shares.sas_env`, and optionally `FILE_LINK_SECRET` / `FILE_LINK_BASE` for the raw file links (1.19.0)
 
 The tenant and client IDs appearing as literals in the code are public identifiers used as defaults, and are overridable by the environment.
 
