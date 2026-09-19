@@ -151,7 +151,7 @@ check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refus
 has("async function azurePathProject(team: string, relPath: string)", "share paths earn their own visibility verdict");
 check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 6,
   "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, drawing item meta, and the raw-file meta + byte openers behind download_document (1.19.0)");
-has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so overrides and team scoping apply");
+has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so per-project overrides (confidential included) apply");
 has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
 has('error: "The share root is not browsable."', "the share root is never listed for a caller");
 // DC layout (1.15.1): a year folder may precede the project folder (the gate

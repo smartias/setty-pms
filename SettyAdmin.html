@@ -177,6 +177,24 @@
 // (caller_email lands per call since Phase A). Also corrects the tab's stale
 // "any authorized caller sees all PMS data" claims and the Phase-5 rollout
 // banners that predated slice 5 landing.
+// v29 (19 Sep 2026, later) — Team-based project visibility (Phase C,
+// 22 Aug) is DROPPED: too much cross-office staffing (SME India works every
+// office's projects; admin/accounting work everywhere) made office-based
+// restriction more friction than protection. Replaced with Confidential
+// projects — everyone sees every project by default, and a new 🔒
+// Confidential checkbox on the Teams card (now "Teams & Confidential")
+// hides a specific project from the Claude connector for everyone except
+// admins and whoever is staffed on it (the project's own Team tab roster in
+// the PMS, matched by email — a SQL-side exception in the same migration
+// that drops the team gate, so nothing here re-implements it). A
+// per-project override still adds someone else back in, or locks a project
+// down some other custom way; it's the same {everyone,*,deny} row the
+// checkbox now creates, documented on that card as the shortcut for it. The
+// v28 "How project visibility works" card, the Teams card's copy, the Team
+// field's tooltip, and the System Guide's Identity & scoping / org-wide
+// availability rows are all updated to match — the last two RETRACT the
+// Phase C team-scoping claim rather than silently drop it, per this file's
+// own convention for a reversed decision.
 // v28 (19 Sep 2026) — Users & Roles gains a plain-language "How project
 // visibility works" card at the top (role, team/office, per-project
 // override, and the HIDE behavior — a project someone can't see through
@@ -600,32 +618,30 @@ async function renderRoles() {
       <div class="sechead">🧭 How project visibility works, in plain terms</div>
       <div style="font-size:13px;line-height:1.65">
         <p style="margin:0 0 8px">Everyone signed in can use the PMS and the Claude connector, but <b>what each person can
-          see and do</b> comes from three separate settings below, in this order:</p>
+          see and do</b> comes from two separate settings:</p>
         <ol style="margin:0 0 10px 20px;padding:0">
           <li style="margin-bottom:4px"><b>Role</b> — what KINDS of data and actions someone has (can they see fee/billing
             numbers, edit a project, approve a QA finding…). Anyone signed in without a row here gets the
             <code>staff</code> baseline.</li>
-          <li style="margin-bottom:4px"><b>Team</b> — WHICH OFFICE's projects someone sees, in the Claude connector today.
-            Set a team on a person and they see <i>only</i> that office's projects, full stop; leave it blank and they see
-            <i>every</i> office — that is the correct, deliberate setting for firm-wide roles (accounting, operations,
-            principals), not a gap to fill in. The Team code is the same one set per office on the
-            <a href="#" onclick="setTab('regions');return false">Regions tab</a>.</li>
-          <li><b>Per-project override</b> — the exception list. Add one person to one job outside their office without
-            touching their team, or lock a sensitive project down to a short list of people regardless of team or role.
-            The most specific rule always wins.</li>
+          <li><b>Confidential</b> — the exception, not the rule (changed 19 Sep 2026, after too much cross-office staffing
+            — SME India works projects for every office, admin and accounting work everywhere — made office-based
+            restriction more friction than protection). <b>By default anyone with a role sees every project, in every
+            office.</b> Check <b>🔒 Confidential</b> on a project (Teams card, below) to hide it from everyone except
+            admins and whoever is staffed on that job (its own Team tab roster in the PMS) — a per-project override
+            (further below) can name specific other people back in too.</li>
         </ol>
         <p style="margin:0 0 8px">Through the <b>Claude connector</b>, a project someone can't see never shows up as "access
-          denied" — it behaves exactly as if it doesn't exist. That's deliberate: it means a hidden or confidential
-          project's existence is never confirmed to someone who shouldn't know about it. <b>Admins see and can do
-          everything, always</b> — none of this applies to them.</p>
-        <p style="margin:0;color:var(--muted)"><b>Where this is enforced today — read this before relying on Team or a
-          per-project override to hide anything:</b> Team and per-project rules, and the not-found behavior above, scope
-          only the <b>Claude connector's</b> reads. The <b>PMS web app itself does not yet filter by them at all</b> — it
-          requires sign-in, and already enforces Role-based <i>edit</i> permissions, but every signed-in non-admin can
-          still browse to <i>every</i> project in the web app today, including ones Team or a per-project override would
-          hide from Claude. A confidential job is not actually hidden from anyone signed in until the web app enforces
-          the same scope — for now, keep it off the PMS by other means (not filing it, or a stricter web-app change) if
-          that matters.</p>
+          denied" — it behaves exactly as if it doesn't exist. That's deliberate: it means a confidential project's
+          existence is never confirmed to someone who shouldn't know about it. <b>Admins see and can do everything,
+          always</b> — none of this applies to them. The <b>Team</b> field (further below, and on the
+          <a href="#" onclick="setTab('regions');return false">Regions tab</a>) is office-tracking and SharePoint/drive
+          storage routing only now — it no longer restricts who sees what.</p>
+        <p style="margin:0;color:var(--muted)"><b>Where this is enforced today:</b> the Confidential flag and per-project
+          rules scope only the <b>Claude connector's</b> reads. The <b>PMS web app itself does not yet filter by them at
+          all</b> — it requires sign-in and already enforces Role-based <i>edit</i> permissions, but every signed-in
+          non-admin can still browse to <i>every</i> project in the web app today, confidential ones included. A
+          confidential job is not actually hidden from anyone signed in until the web app enforces the same scope — for
+          now, keep it off the PMS by other means if that matters.</p>
       </div>
     </div>
     <div class="card">
@@ -646,7 +662,7 @@ async function renderRoles() {
         Roles feed the <b>permission matrix</b> below; signed-in people without a row here get the <b>staff</b> baseline.
         The Phase 4 RLS flip is live (7/24) — all PMS data is signed-in-only — and Phase 5 write enforcement is complete
         (all five capability slices attach per-table <code>pms_has_cap()</code> policy terms; slice 5 landed 5 Aug).
-        Since 22 Aug the matrix also scopes what the <b>Claude connector</b> returns (fees redaction, project visibility, teams).
+        Since 22 Aug the matrix also scopes what the <b>Claude connector</b> returns (fees redaction, and per-project visibility — 🔒 Confidential included).
         <b>Adding someone onboards them:</b> a <b>welcome email</b> goes out (via <code>pms-user-emails</code> + Resend)
         and <b>SharePoint access</b> to the NYCProjects libraries (Projects / Proposals / Contracts) is granted via a
         Graph sharing invitation — silently if this browser has a Microsoft session from the PMS, otherwise click
@@ -664,7 +680,7 @@ async function renderRoles() {
               <span class="pill ${ROLE_COLOR[x.role] || "info"}">${esc(roleLabel(x.role))}</span>${feesHiddenPill(x.role)}</td>
             <td><input list="teamOpts" value="${esc(x.team || "")}" placeholder="—" style="width:90px"
                   aria-label="Team for ${esc(x.email)}"
-                  title="Blank = sees EVERY office (the right setting for accounting, operations, principals). Set a team and the Claude connector shows them ONLY that team's tagged projects — per-project overrides below are the cross-team grants."
+                  title="Office tracking only — no longer restricts what this person can see (changed 19 Sep 2026). Set it to record which office they're based in; mark a project 🔒 Confidential on the Teams card below if it needs to be hidden from most people."
                   onchange="setUserTeam('${esc(x.email)}', this.value)"></td>
             <td title="${esc(x.updated_at || "")}">${rel(x.updated_at)}</td>
             <td style="white-space:nowrap">
@@ -674,22 +690,22 @@ async function renderRoles() {
         '<tr><td colspan="6" class="empty">No users yet.</td></tr>'}</tbody></table>
     </div>
     <div class="card">
-      <div class="sechead">Teams — which projects belong to which team</div>
+      <div class="sechead">Teams &amp; Confidential — office tags and per-project lockdown</div>
       <div style="color:var(--muted);font-size:12px;margin-bottom:8px">
-        Teams scope the <b>Claude connector</b> (Phase C, 22 Aug): a person <b>with</b> a team sees only projects tagged with that
-        same team; a person with <b>no</b> team sees <b>every office</b> (the whole portfolio, tagged or not). So firm-wide roles —
-        accounting, operations, principals — should simply <b>stay team-less</b>: blank is not "unassigned", it is the all-offices
-        setting. For someone who <i>does</i> belong to one office but works the odd job elsewhere, keep their team set and add a
-        per-project override below (person · projects.view · allow) for each outside job — that override beats the team rule in
-        either direction, so it is also how you lock one job down. Tagging projects alone scopes nobody: scoping starts when a
-        <i>person</i> gets a team. New projects inherit their creator's team automatically.
-        The PMS web app itself is not team-filtered yet; this governs MCP reads.</div>
+        <b>Team no longer restricts who sees a project</b> (changed 19 Sep 2026 — see the card above). It still records which
+        <b>office</b> a project belongs to and routes its SharePoint/drive storage (<a href="#" onclick="setTab('regions');return false">Regions tab</a>);
+        tag it however matches reality. New projects inherit their creator's team automatically.<br>
+        <b>🔒 Confidential</b> is the actual visibility control: check it and the project disappears from the Claude connector for
+        everyone except admins and whoever is staffed on that job (its Team tab roster in the PMS, matched by email) — use a
+        per-project override below to name specific other people back in too. The PMS web app itself is not filtered by either
+        setting yet; this governs Claude/MCP reads only.</div>
       <div class="row">
         <label class="sr-only" for="teamProjQ">Find project</label>
         <input id="teamProjQ" placeholder="Filter by number or name (e.g. RFK, SIPX262012)" style="flex:1;min-width:240px"
           oninput="renderTeamProjRows()">
         <span style="font-size:12px;color:var(--muted)">${state.teamProjects.filter(p => p.team).length} tagged ·
-          ${knownTeams.length ? "teams: " + knownTeams.map(esc).join(", ") : "no teams yet"}</span>
+          ${knownTeams.length ? "teams: " + knownTeams.map(esc).join(", ") : "no teams yet"} ·
+          ${confidentialProjectSet().size} confidential</span>
       </div>
       <div id="teamProjRows" style="margin-top:8px"></div>
     </div>
@@ -699,7 +715,7 @@ async function renderRoles() {
         ⚠ Phase 5 write enforcement is <b>complete</b> (slice 5, <code>projects.edit</code>, live 5 Aug): every capability slice is
         attached to database write policies via <code>pms_has_cap()</code>. Since 22 Aug the same matrix also scopes the
         <b>Claude connector's reads</b>: roles without <code>fees.view</code> get fee/billing fields redacted, and per-project
-        <code>projects.view</code> rules plus teams (above) decide which projects exist for a caller at all.</div>
+        <code>projects.view</code> rules (per-project overrides, including 🔒 Confidential above) decide which projects exist for a caller at all.</div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th scope="col" style="min-width:170px">Capability</th>
           ${ROLES.map(r => `<th scope="col" title="${r}">${esc(roleLabel(r))}${r === "admin" ? " 🔒" : ""}</th>`).join("")}</tr></thead>
@@ -740,8 +756,9 @@ async function renderRoles() {
       </div>
       <div style="color:var(--muted);font-size:12px;margin:8px 0 4px">
         Most specific rule wins: person-on-project → role-on-project → everyone-on-project → global person exception → the matrix.
-        Example: lock a confidential job down with <i>everyone · ★ all · deny</i>, then allow its team back in person by person.
-        Admins bypass overrides.</div>
+        The 🔒 Confidential checkbox on the Teams card above IS <i>everyone · ★ all · deny</i> — use it instead of adding that row
+        by hand; a confidential project's own staffed people already see it automatically, so use this table only to add someone
+        <i>else</i> back in (person or role, allow) or to lock a project down in some other custom way. Admins bypass overrides.</div>
       <table><thead><tr><th>Project</th><th>Applies to</th><th>Capability</th><th>Rule</th><th>Note</th><th>Updated</th><th></th></tr></thead>
       <tbody>${state.permOverrides.map(o => `
         <tr><td>${o.project_number ? esc(o.project_number) : '<span class="pill info">🌐 global</span>'}</td>
@@ -885,7 +902,7 @@ async function setUserTeam(email, team) {
       { team, updated_at: new Date().toISOString() });
     const row = (state.roles || []).find(x => x.email === email);
     if (row) row.team = team;
-    toast(email + " → team " + (team || "none (sees the untagged portfolio)"), "success");
+    toast(email + " → team " + (team || "none (office-tracking only)"), "success");
   } catch (e) { toast(e.message, "error"); state.roles = null; render(); }
 }
 async function setProjectTeam(id, team) {
@@ -898,6 +915,50 @@ async function setProjectTeam(id, team) {
     renderTeamProjRows();
   } catch (e) { toast(e.message, "error"); }
 }
+// A project is "Confidential" when it carries the SAME override row the
+// per-project overrides card below has always used to lock a job down —
+// {subject_kind:'everyone', capability:'*', allowed:false} — so this
+// checkbox is a friendlier front end for that mechanism, not a new one.
+// pms_has_cap_for (see the confidential-projects migration) grants an
+// exception back to anyone staffed on the project (its Team tab roster),
+// on top of whatever person/role overrides already grant.
+function confidentialProjectSet() {
+  return new Set((state.permOverrides || [])
+    .filter(o => o.subject_kind === "everyone" && o.capability === "*" && o.allowed === false && o.project_number)
+    .map(o => o.project_number));
+}
+async function toggleConfidential(id, checkbox) {
+  const checked = checkbox.checked;
+  const p = (state.teamProjects || []).find(x => x.id === id);
+  const pn = p && p.projectNumber;
+  if (!pn) { checkbox.checked = !checked; toast("This project has no number yet — give it one before marking it confidential.", "error"); return; }
+  const existing = (state.permOverrides || []).find(o =>
+    o.project_number === pn && o.subject_kind === "everyone" && o.capability === "*" && o.allowed === false);
+  // Unchecking takes effect immediately (visible firm-wide through the
+  // Claude connector the moment the row is gone), same as dropOverride() —
+  // so it earns the same confirm, and a cancel puts the checkbox back.
+  if (!checked && existing && !confirm(pn + " will become visible to everyone with projects.view, not just admins and its staffed team. Continue?")) {
+    checkbox.checked = true;
+    return;
+  }
+  try {
+    if (checked) {
+      if (existing) return;
+      const [row] = (await sb("POST", "/rest/v1/pms_project_permissions", {
+        project_number: pn, subject_kind: "everyone", subject: null,
+        capability: "*", allowed: false, note: "Confidential", added_by: settyAuth.email(),
+      })) || [];
+      if (row) (state.permOverrides || (state.permOverrides = [])).push(row);
+      toast((pn) + " marked 🔒 confidential", "success");
+    } else {
+      if (!existing) return;
+      await sb("DELETE", "/rest/v1/pms_project_permissions?id=eq." + existing.id);
+      state.permOverrides = (state.permOverrides || []).filter(o => o.id !== existing.id);
+      toast(pn + " no longer confidential", "success");
+    }
+    renderTeamProjRows();
+  } catch (e) { checkbox.checked = !checked; toast(e.message, "error"); state.permOverrides = null; render(); }
+}
 // Rows for the Teams card. With the whole portfolio tagged (22 Aug) a flat
 // list is unusable, so: no filter → one COLLAPSED group per team with counts
 // (untagged, if any, opens first — it is the group needing attention); with a
@@ -909,13 +970,20 @@ function renderTeamProjRows() {
   if (!box) return;
   const q = ($("teamProjQ") ? $("teamProjQ").value : "").trim().toLowerCase();
   const all = (state.teamProjects || []).filter(p => p.projectNumber || p.name);
+  const confidential = confidentialProjectSet();
   const teamInput = (p) => `<input list="teamOpts" value="${esc(p.team || "")}" placeholder="—" style="width:90px"
       aria-label="Team for ${esc(p.projectNumber || p.name)}"
       onchange="setProjectTeam(${p.id}, this.value)">`;
-  const rowsTable = (rows) => `<table><thead><tr><th>Project #</th><th>Name</th><th>Team</th></tr></thead>
+  const confInput = (p) => `<label style="display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
+      <input type="checkbox" aria-label="Confidential — ${esc(p.projectNumber || p.name)}"
+        ${p.projectNumber && confidential.has(p.projectNumber) ? "checked" : ""}
+        ${p.projectNumber ? "" : "disabled title=\"Needs a project number first\""}
+        onchange="toggleConfidential(${p.id}, this)"> 🔒</label>`;
+  const rowsTable = (rows) => `<table><thead><tr><th>Project #</th><th>Name</th><th>Team</th><th>Confidential</th></tr></thead>
        <tbody>${rows.map(p => `
-         <tr><td>${esc(p.projectNumber || "—")}${p.archived === true ? ' <span class="pill info">archived</span>' : ""}</td>
-             <td>${esc(p.name || "")}</td><td>${teamInput(p)}</td></tr>`).join("")}</tbody></table>`;
+         <tr><td>${esc(p.projectNumber || "—")}${p.archived === true ? ' <span class="pill info">archived</span>' : ""}
+               ${p.projectNumber && confidential.has(p.projectNumber) ? ' <span class="pill warn" title="Hidden from the Claude connector except for admins and staffed people">🔒</span>' : ""}</td>
+             <td>${esc(p.name || "")}</td><td>${teamInput(p)}</td><td>${confInput(p)}</td></tr>`).join("")}</tbody></table>`;
   if (q) {
     const CAP = 40;
     const list = all.filter(p => (String(p.projectNumber || "") + " " + String(p.name || "")).toLowerCase().includes(q));
@@ -939,7 +1007,7 @@ function renderTeamProjRows() {
     const open = openNow.size ? openNow.has(k) : k === "(untagged)";
     return `<details data-team="${esc(k)}" ${open ? "open" : ""}>
       <summary style="cursor:pointer;font-weight:600;padding:5px 0">${k === "(untagged)"
-        ? `⚠ untagged · ${rows.length} — invisible to every teamed user; tag or leave deliberately`
+        ? `untagged · ${rows.length} — fine to leave as-is; tag it if you want the office on record`
         : `${esc(k)} · ${rows.length} project${rows.length === 1 ? "" : "s"}`}</summary>
       ${rowsTable(rows)}</details>`;
   }).join("");
@@ -2456,20 +2524,24 @@ function renderMcp() {
             <code>MCP.Access</code> consents <b>user-side</b> with no admin grant (the blank "Granted for Setty" status on the API permissions
             page is cosmetic). <b>Invariant: the manifest must keep <code>api.requestedAccessTokenVersion = 2</code></b> (set 5 Aug 2026;
             the default <code>null</code> means v1 tokens, which the server rejects; full story in the Authentication card below).</td></tr>
-        <tr><td>Identity &amp; scoping (Phases A–C, 22 Aug 2026)</td><td><b>Live.</b> The verified Microsoft sign-in now carries
-            the caller's identity into every request (PR #180): telemetry records who asked what. The Phase 5 matrix scopes
-            connector <b>reads</b> (PR #181): roles without <code>fees.view</code> get fee/billing fields replaced by a
-            <code>[redacted]</code> marker, and per-project <code>projects.view</code> rules hide projects entirely (a hidden
-            project answers as not-found, never confirming it exists). Teams are first-class (PR #182):
-            tag people and projects in Users &amp; Roles and a teamed caller sees only their team's projects — the multi-team
-            pilot needs no deploy, just the two tags. Admins and the shared-secret lane bypass scoping.</td></tr>
+        <tr><td>Identity &amp; scoping (Phases A–C, 22 Aug 2026)</td><td><b>Live, Phase C team scoping RETRACTED 19 Sep 2026.</b>
+            The verified Microsoft sign-in now carries the caller's identity into every request (PR #180): telemetry records who
+            asked what. The Phase 5 matrix scopes connector <b>reads</b> (PR #181): roles without <code>fees.view</code> get
+            fee/billing fields replaced by a <code>[redacted]</code> marker, and per-project <code>projects.view</code> rules hide
+            projects entirely (a hidden project answers as not-found, never confirming it exists) — <b>still live, unchanged</b>.
+            Phase C (PR #182) made a teamed caller see only their team's tagged projects; that restriction was dropped 19 Sep
+            2026 (too much cross-office staffing — SME India works every office's projects, admin/accounting work everywhere) in
+            favor of <b>Confidential projects</b>: everyone sees every project by default, and the Users &amp; Roles Teams card's
+            🔒 checkbox hides a specific one from everyone except admins and its own staffed people. Admins and the shared-secret
+            lane bypass all of it.</td></tr>
         <tr><td>Local Python bridge (per-device)</td><td><b>Deprecated — being retired.</b> Pilot-era install; see the warning under the admin steps below. Note the server still accepts the pilot shared secret, so any surviving install keeps working until <code>MCP_SHARED_SECRET</code> is rotated — rotation is what actually decommissions it.</td></tr>
       </tbody></table>
-      <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector cannot change project data (its one write tool saves reviewed knowledge entries, nothing else), and since 22 Aug its
-        reads are <b>scoped per caller</b>: fee and billing fields are redacted for roles without <code>fees.view</code>, per-project
-        <code>projects.view</code> rules hide projects outright, and teamed users see only their team's tagged projects. So enabling
-        it org-wide gives each person at most the view their PMS role allows — in the fee columns, slightly <i>less</i> than the web
-        app shows today. It does not expose the billing feed, admin console, or any write path.</p>
+      <p style="font-size:12.5px;margin-top:10px"><b>On org-wide availability:</b> the connector cannot change project data (its one write tool saves reviewed knowledge entries, nothing else), and its
+        reads are <b>scoped per caller</b>: fee and billing fields are redacted for roles without <code>fees.view</code>, and
+        per-project <code>projects.view</code> rules hide a project outright (as of 19 Sep 2026, that means a project explicitly
+        marked 🔒 Confidential — everyone sees every project, in every office, by default; Team no longer restricts anything). So
+        enabling it org-wide gives each person at most the view their PMS role allows — in the fee columns, slightly <i>less</i>
+        than the web app shows today. It does not expose the billing feed, admin console, or any write path.</p>
     </div>
 
     <div class="card doc">
