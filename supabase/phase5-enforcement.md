@@ -51,6 +51,13 @@ Migration `phase5_enforce_emails_file`; rollback row
 - Left OPEN (deliberately): `pms_filing_log` (audit trail — every writer must
   always be able to log), `pms_email_watchlist` (personal triage, not filing),
   `pms_sweep_progress` (mechanism state).
+  - `pms_filing_log` stays capability-free, but since migration
+    `20260920000000_filing_log_author_binding` it is no longer
+    self-reported: `user_email` is stamped from the writer's JWT on insert,
+    every column except `files` is frozen after insert, and INSERT/UPDATE
+    require a JWT that carries an email. Rollback row
+    `filing-log-author-binding-rollback-2026-09-20`; verify with
+    `filing-log-author-verify.sql`.
 
 Verified: all roles + staff baseline = allowed; qaqc = denied (intended);
 no-email JWT = denied.
