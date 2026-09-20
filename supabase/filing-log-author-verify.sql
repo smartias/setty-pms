@@ -10,6 +10,9 @@
 begin;
 
 create temp table verify_results (n int, label text, expect text, got text) on commit drop;
+-- The DO block below switches to the `authenticated` role; the temp table
+-- belongs to postgres, so that role needs an explicit grant to record results.
+grant insert, select on verify_results to authenticated;
 
 do $verify$
 declare
