@@ -11,6 +11,9 @@ import { z } from "zod";
 import pako from "pako";
 import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
 import { AsyncLocalStorage } from "node:async_hooks";
+// Meeting-minutes extraction (issue #291) calls Claude the same way
+// proposal-draft does — see MEETING_EXTRACTION_MODEL below.
+import Anthropic from "npm:@anthropic-ai/sdk@0.39.0";
 // The transmittal-register fold lives in one module so the MCP connector and the
 // "Current Set" panel in SettyPMS.html (which mirrors it in currentSetFold.js)
 // cannot answer "what is the current set?" differently. See currentSet.ts.
@@ -220,8 +223,11 @@ async function sbRpc(fn: string, body: Record<string, unknown>): Promise<any> {
   return res.json();
 }
 
-// The one write helper, used ONLY by save_knowledge. return=representation so
-// the caller gets the row id to hand back to the user.
+// A general write helper. Originally used ONLY by save_knowledge; the
+// meeting-minutes sweep (issue #291) is the second caller, writing
+// pms_meetings/pms_meeting_items as the service role — both callers stage
+// suggestion rows a human reviews, never something that publishes itself.
+// return=representation so the caller gets the row (id, etc.) back.
 async function sbInsert(table: string, row: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: "POST",
@@ -2146,6 +2152,317 @@ async function meetingRecords(
   };
 }
 
+// ── Meeting minutes → structured items (issue #291) ─────────────────────────
+// meetingRecords() above already ranks candidate minutes across BOTH the
+// Project Management and Emails SharePoint folders — that IS "trigger on
+// new file in Emails / Project Management folders" from the issue, so the
+// sweep below reuses it rather than re-walking Graph. OneNote capture (the
+// issue's other trigger source) is deliberately NOT built here: there is no
+// existing code anywhere in this repo that reads OneNote PAGE CONTENT back
+// from Graph (only writes — see SettyPMS.html's OneNote push helpers), so
+// polling it would be new infrastructure with no precedent to build against
+// and no way to test live in this change. Tracked as a follow-up.
+
+const MEETING_EXTRACTION_MODEL = "claude-opus-5";
+const MEETING_DOC_MAX_CHARS = 40000; // ~10k tokens; long minutes sets are rare and page 1 of a 40-page one is not useful past this
+
+function buildMeetingExtractionSystemPrompt(): string {
+  return `You are extracting structured items from ONE construction/design project's meeting minutes for Setty & Associates, an MEP/FP consulting engineering firm (Setty may be the prime consultant or a subconsultant on this job).
+
+Read the minutes text and extract every DECISION, ACTION ITEM, and OPEN QUESTION it records. Respond with ONLY this JSON object, no commentary, no code fences:
+
+{
+  "schemaVersion": 1,
+  "kind": "meeting-minutes-extraction",
+  "meetingDate": "YYYY-MM-DD" or null,
+  "attendees": ["name (organization)", ...],
+  "items": [
+    {
+      "type": "decision" | "action_item" | "open_question",
+      "itemNumber": "3.2" or null,
+      "text": "self-contained statement of the item, 1-2 sentences",
+      "owner": "person or firm responsible" or null,
+      "dueDate": "YYYY-MM-DD" or null,
+      "refs": [ { "kind": "rfi" | "submittal" | "sheet", "label": "RFI 12" } ]
+    }
+  ]
+}
+
+Rules:
+- itemNumber is the number PRINTED in the minutes next to this item (e.g. "3.2", "Item 14"), exactly as written — null if the minutes do not number items. Do not invent one.
+- "action_item" = something a specific party must DO. "decision" = something resolved/agreed. "open_question" = something unresolved that needs an answer.
+- owner is the person's name as printed, or the responsible firm/party if no person is named (e.g. "Architect", "SCA", "Setty"). Never guess a name that is not in the text.
+- text must stand alone: someone with no other context should understand what it means without reading the rest of the minutes.
+- refs: only when the minutes explicitly tie this item to an RFI number, submittal number, or drawing sheet number.
+- Skip attendance lists, agenda headers and pure boilerplate, but do not skip a real item just because the minutes are terse — sparse minutes are still worth extracting from.
+- If the document is not actually meeting minutes (an agenda, a sign-in sheet, something unrelated), return "items": [] and "meetingDate": null.`;
+}
+
+// Tolerant of a fenced code block, same as proposal-draft's parseDraft.
+function parseMeetingExtraction(raw: string): { meetingDate: string | null; attendees: string[]; items: any[] } {
+  const stripped = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("no JSON object in extraction output");
+  const d = JSON.parse(stripped.slice(start, end + 1));
+  if (d?.kind !== "meeting-minutes-extraction" || d?.schemaVersion !== 1) {
+    throw new Error("extraction output is not meeting-minutes-extraction schemaVersion 1");
+  }
+  const items = (Array.isArray(d.items) ? d.items : []).filter((it: any) =>
+    it && ["decision", "action_item", "open_question"].includes(it.type) &&
+    typeof it.text === "string" && it.text.trim());
+  return {
+    meetingDate: typeof d.meetingDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d.meetingDate) ? d.meetingDate : null,
+    attendees: (Array.isArray(d.attendees) ? d.attendees : []).filter((a: any) => typeof a === "string" && a.trim()),
+    items,
+  };
+}
+
+async function callMeetingExtraction(
+  projectNumber: string, docName: string, docDateGuess: string | null, text: string,
+): Promise<{ meetingDate: string | null; attendees: string[]; items: any[] }> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
+  const anthropic = new Anthropic({ apiKey });
+  const userContent =
+    `Project: ${projectNumber}\nDocument: ${docName}` +
+    (docDateGuess ? ` (filename suggests ${docDateGuess})` : "") +
+    `\n\nMinutes text:\n${text.slice(0, MEETING_DOC_MAX_CHARS)}`;
+  const response: any = await (anthropic as any).beta.messages.create({
+    model: MEETING_EXTRACTION_MODEL,
+    max_tokens: 8000,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    system: buildMeetingExtractionSystemPrompt(),
+    messages: [{ role: "user", content: userContent }],
+  });
+  if (response.stop_reason === "refusal") throw new Error("model declined to extract this document");
+  if (response.stop_reason === "max_tokens") throw new Error("extraction output truncated (max_tokens)");
+  const raw = (response.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+  return parseMeetingExtraction(raw);
+}
+
+// SharePoint-only, full-document (no page windowing/caching): read_document's
+// extraction is deliberately interactive (page-bounded, cached across calls
+// for a chat session); this is a one-shot batch read for an LLM call, so it
+// is its own small function rather than a refactor of a heavily-used tool.
+async function extractMeetingDocText(
+  drive: string, itemId: string, name: string, size: number,
+): Promise<{ text: string; error?: string }> {
+  if (size > MAX_DOC_BYTES) return { text: "", error: "file too large to extract inline" };
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (!["pdf", "docx", "txt", "md"].includes(ext)) return { text: "", error: `no text extractor for .${ext}` };
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(itemId)}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } },
+  );
+  if (!res.ok) return { text: "", error: `Graph content ${res.status}` };
+  let text = "";
+  if (ext === "pdf") {
+    try {
+      const { getDocumentProxy } = await import("unpdf");
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const pdf: any = await getDocumentProxy(bytes);
+      const total: number = pdf.numPages;
+      const MAX_PAGES = 40; // long minutes sets are rare; a 40-page PDF is already well past MEETING_DOC_MAX_CHARS
+      const parts: string[] = [];
+      for (let i = 1; i <= Math.min(total, MAX_PAGES); i++) {
+        const pg = await pdf.getPage(i);
+        const tc = await pg.getTextContent();
+        parts.push((tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim());
+      }
+      text = parts.join("\n");
+    } catch (e) {
+      return { text: "", error: "PDF text extraction failed: " + String((e as any)?.message ?? e) };
+    }
+  } else if (ext === "docx") {
+    try {
+      const { unzipSync, strFromU8 } = await import("npm:fflate@0.8.2");
+      const zip = unzipSync(new Uint8Array(await res.arrayBuffer()));
+      const docXml = zip["word/document.xml"];
+      if (!docXml) return { text: "", error: "DOCX had no readable document.xml" };
+      text = strFromU8(docXml)
+        .replace(/<w:tab[^>]*\/?>/g, "\t").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+        .replace(/\n{3,}/g, "\n\n").trim();
+    } catch (e) {
+      return { text: "", error: "DOCX text extraction failed: " + String((e as any)?.message ?? e) };
+    }
+  } else {
+    text = await res.text();
+  }
+  return { text: text.length > MEETING_DOC_MAX_CHARS ? text.slice(0, MEETING_DOC_MAX_CHARS) : text };
+}
+
+// ── Carry-forward matching ───────────────────────────────────────────────────
+// Architect/agency minutes renumber and carry old business forward (issue
+// #291), so item_number alone cannot anchor the match. Text-overlap is the
+// primary signal (same word-Jaccard-over-containment shape as
+// knowledgeOverlap for save_knowledge, tuned looser: minutes text gets
+// reworded meeting to meeting more than a lesson summary does); a matching
+// printed number lowers the bar further rather than replacing the text
+// check outright, so a renumbered collision ("item 3.2" reused for an
+// unrelated new topic) cannot false-match on the number alone.
+const MEETING_ITEM_NUMBER_MATCH_THRESHOLD = 0.35;
+const MEETING_ITEM_TEXT_MATCH_THRESHOLD = 0.6;
+function meetingItemWords(s: string): Set<string> {
+  return new Set(
+    String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2),
+  );
+}
+function meetingItemOverlap(a: string, b: string): number {
+  const A = meetingItemWords(a), B = meetingItemWords(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.min(A.size, B.size);
+}
+type OpenMeetingItem = {
+  id: string; itemNumber: string | null; text: string; itemType: string;
+  firstSeenMeetingId: string; carryCount: number;
+};
+// Picks the best still-open PRIOR item this newly-extracted item carries
+// forward from, or null for a genuinely new item. Only matches within the
+// same item_type (a decision does not carry forward into an action item).
+function carryForwardMatch(
+  extracted: { itemNumber: string | null; text: string; itemType: string },
+  open: OpenMeetingItem[],
+): OpenMeetingItem | null {
+  let best: { row: OpenMeetingItem; score: number; numberMatch: boolean } | null = null;
+  for (const row of open) {
+    if (row.itemType !== extracted.itemType) continue;
+    const numberMatch = !!extracted.itemNumber && !!row.itemNumber && extracted.itemNumber === row.itemNumber;
+    const score = meetingItemOverlap(extracted.text, row.text);
+    const threshold = numberMatch ? MEETING_ITEM_NUMBER_MATCH_THRESHOLD : MEETING_ITEM_TEXT_MATCH_THRESHOLD;
+    if (score < threshold) continue;
+    const better = !best || (numberMatch && !best.numberMatch) || (numberMatch === best.numberMatch && score > best.score);
+    if (better) best = { row, score, numberMatch };
+  }
+  return best?.row ?? null;
+}
+
+// Same staff-directory lookup the digest uses to route action items to a
+// person (pms-user-emails/index.ts buildProjectDigest): pms_meta.data.staff,
+// name -> email. A resolved owner is how owner_is_setty is decided — an
+// external attendee's name never resolves, by construction.
+async function staffNameToEmail(): Promise<Map<string, string>> {
+  const meta = await getAppMeta();
+  const map = new Map<string, string>();
+  for (const s of staffOf(meta)) {
+    if (s?.name && s?.email) map.set(String(s.name).toLowerCase().trim(), String(s.email).toLowerCase().trim());
+  }
+  return map;
+}
+
+async function extractOneMeetingDoc(
+  projectNumber: string, doc: { itemId: string; name: string; folder: string; date: string },
+): Promise<void> {
+  const bar = doc.itemId.indexOf("|");
+  if (bar < 0) throw new Error("malformed itemId");
+  const drive = doc.itemId.slice(0, bar);
+  const realId = doc.itemId.slice(bar + 1);
+  const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,webUrl`);
+  const size = meta.size ?? 0;
+  const { text, error } = await extractMeetingDocText(drive, realId, doc.name, size);
+  if (error) throw new Error(error);
+  if (!text.trim()) throw new Error("no extractable text");
+
+  // Both harvested folders are named per PM_FOLDER_RE/EMAIL_FOLDER_RE above
+  // (see the [pm, mail] loop in meetingRecords); doc.folder starts with the
+  // matched folder's own name, so the same regexes classify the source here.
+  const source = EMAIL_FOLDER_RE.test(doc.folder.split("/")[0]) ? "sharepoint-email-folder" : "sharepoint-pm-folder";
+
+  const open = (await sbGetAll(
+    "pms_meeting_items?project_number=eq." + encodeURIComponent(projectNumber) +
+    "&select=id,item_number,text,item_type,first_seen_meeting_id,carry_count" +
+    "&status=in.(suggested,confirmed)&superseded_by=is.null",
+  )).map((r: any): OpenMeetingItem => ({
+    id: r.id, itemNumber: r.item_number, text: r.text, itemType: r.item_type,
+    firstSeenMeetingId: r.first_seen_meeting_id, carryCount: r.carry_count,
+  }));
+
+  const extraction = await callMeetingExtraction(projectNumber, doc.name, doc.date || null, text);
+
+  const meeting = await sbInsert("pms_meetings", {
+    project_number: projectNumber,
+    meeting_date: extraction.meetingDate ?? doc.date ?? null,
+    source, source_ref: doc.itemId, source_name: doc.name, source_url: meta.webUrl ?? null,
+    attendees: extraction.attendees, raw_text_chars: text.length, status: "processed",
+  });
+  if (!extraction.items.length) return;
+
+  const nameToEmail = await staffNameToEmail();
+  const openPool = [...open];
+  for (const it of extraction.items) {
+    const match = carryForwardMatch({ itemNumber: it.itemNumber ?? null, text: it.text, itemType: it.type }, openPool);
+    if (match) {
+      const idx = openPool.findIndex((o) => o.id === match.id);
+      if (idx >= 0) openPool.splice(idx, 1); // one prior item can be claimed by at most one new item per batch
+    }
+    const ownerName = (it.owner || "").trim() || null;
+    const ownerEmail = ownerName ? nameToEmail.get(ownerName.toLowerCase()) ?? null : null;
+    await sbInsert("pms_meeting_items", {
+      meeting_id: meeting.id, project_number: projectNumber,
+      item_type: it.type, item_number: it.itemNumber ?? null, text: it.text,
+      owner_name: ownerName, owner_email: ownerEmail, owner_is_setty: !!ownerEmail,
+      due_date: it.dueDate ?? null, status: "suggested",
+      links: Array.isArray(it.refs) ? it.refs
+        .filter((r: any) => r && typeof r.label === "string")
+        .map((r: any) => ({
+          linkType: "reference", targetSystem: "pms",
+          targetType: ["rfi", "submittal", "sheet"].includes(r.kind) ? r.kind : "sheet",
+          targetId: null, targetLabel: r.label, targetUrl: null,
+        })) : [],
+      carried_from_item_id: match?.id ?? null,
+      first_seen_meeting_id: match?.firstSeenMeetingId ?? meeting.id,
+      carry_count: match ? match.carryCount + 1 : 1,
+    });
+  }
+}
+
+// One project's slice of a sweep: rank candidates via meetingRecords (already
+// shared with project_briefing), skip anything already in pms_meetings
+// (source_ref is the dedup key), extract up to maxDocs new ones. A failing
+// document is recorded as a 'failed' meeting row so it is not retried every
+// sweep forever — see the note it carries.
+async function meetingMinutesSweepProject(
+  projectNumber: string, maxDocs: number,
+): Promise<{ processed: number; skipped: number; errors: string[] }> {
+  const candidates = await meetingRecords(projectNumber, 50);
+  const scored = candidates.items
+    .filter((d: any) => d.score > 0 && ["pdf", "docx", "txt", "md"].includes(d.ext))
+    .sort((a: any, b: any) => b.score - a.score || String(b.date).localeCompare(String(a.date)));
+  if (!scored.length) return { processed: 0, skipped: 0, errors: [] };
+
+  const existingRows = await sbGetAll(
+    "pms_meetings?project_number=eq." + encodeURIComponent(projectNumber) + "&select=source_ref",
+  );
+  const existing = new Set(existingRows.map((r: any) => r.source_ref));
+  const fresh = scored.filter((d: any) => !existing.has(d.itemId)).slice(0, maxDocs);
+  if (!fresh.length) return { processed: 0, skipped: scored.length, errors: [] };
+
+  let processed = 0;
+  const errors: string[] = [];
+  for (const doc of fresh) {
+    try {
+      await extractOneMeetingDoc(projectNumber, doc);
+      processed++;
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e).slice(0, 500);
+      errors.push(`${doc.name}: ${msg}`);
+      try {
+        await sbInsert("pms_meetings", {
+          project_number: projectNumber,
+          meeting_date: doc.date || null,
+          source: EMAIL_FOLDER_RE.test(doc.folder.split("/")[0]) ? "sharepoint-email-folder" : "sharepoint-pm-folder",
+          source_ref: doc.itemId, source_name: doc.name, status: "failed", error: msg,
+        });
+      } catch { /* best-effort failure record — the error is still in the response either way */ }
+    }
+  }
+  return { processed, skipped: scored.length - fresh.length, errors };
+}
+
 // The project's recent filed correspondence, with each message's review-comment
 // attachments called out. Deliberately NOT filtered to has_attachments: the
 // briefing reports these as "recent emails", and silently dropping every message
@@ -2321,7 +2638,7 @@ mcp.tool("project_briefing", {
     // Knowledge (K3): approved lessons ride along so a teammate opening the
     // project gets what the firm already learned without knowing to ask.
     // Approved-only — suggested rows are a review queue, not knowledge.
-    const [docs, mail, lessons, activityRows] = await Promise.all([
+    const [docs, mail, lessons, activityRows, meetingItemRows] = await Promise.all([
       meetingRecords(p.projectNumber, docCap)
         .catch((e) => ({
           items: [] as any[], truncated: false,
@@ -2356,9 +2673,51 @@ mcp.tool("project_briefing", {
         "&created_at=gte." + encodeURIComponent(new Date(Date.now() - ACTIVITY_WINDOW_HOURS * 3600_000).toISOString()) +
         "&caller_email=not.is.null&order=created_at.desc&limit=" + ACTIVITY_FETCH_LIMIT,
       ).catch(() => [] as any[]),
+      // Meeting minutes (issue #291): current (not-yet-superseded) open items,
+      // confirmed ones are real open business, suggested ones are still
+      // awaiting a PM's review — both are worth a teammate knowing about.
+      (p.projectNumber
+        ? sbGet(
+            "pms_meeting_items?project_number=eq." + encodeURIComponent(p.projectNumber) +
+            "&select=id,item_type,item_number,text,owner_name,owner_is_setty,due_date,status,first_seen_meeting_id,carry_count" +
+            "&status=in.(suggested,confirmed)&superseded_by=is.null" +
+            "&order=due_date.asc.nullslast&limit=30",
+          )
+        : Promise.resolve([])
+      ).catch(() => [] as any[]),
     ]);
     const teamActivity = summarizeTeamActivity(
       activityRows, currentCaller().email, [p.projectNumber, p.name]);
+
+    // Aging: first_seen_meeting_id/carry_count are set once at extraction
+    // time (see carryForwardMatch) and never recomputed here — this is just
+    // resolving the one meeting_date the aging line needs to display.
+    let meetingItems: any = null;
+    if (meetingItemRows.length) {
+      const meetingIds = [...new Set(meetingItemRows.map((r: any) => r.first_seen_meeting_id).filter(Boolean))];
+      const meetingDates = meetingIds.length
+        ? await sbGet("pms_meetings?id=in.(" + meetingIds.join(",") + ")&select=id,meeting_date").catch(() => [] as any[])
+        : [];
+      const dateById = new Map(meetingDates.map((m: any) => [m.id, m.meeting_date]));
+      const items = meetingItemRows.map((r: any) => ({
+        id: r.id, type: r.item_type, itemNumber: r.item_number, text: r.text,
+        owner: r.owner_name, ownerIsSetty: r.owner_is_setty, dueDate: r.due_date, status: r.status,
+        ...(r.carry_count > 1 ? {
+          openSince: dateById.get(r.first_seen_meeting_id) ?? null,
+          meetingsCarried: r.carry_count,
+        } : {}),
+      }));
+      const suggestedCount = items.filter((i: any) => i.status === "suggested").length;
+      meetingItems = {
+        note: `Decisions, action items and open questions extracted from filed meeting minutes. ` +
+          (suggestedCount
+            ? `${suggestedCount} of these are still awaiting PM review (status "suggested") — treat them as ` +
+              "likely-but-unconfirmed, and mention they need review if relevant to the answer. "
+            : "") +
+          "An item carried across several meetings (`meetingsCarried` > 1) has been open since `openSince` — that aging is worth surfacing.",
+        items,
+      };
+    }
 
     // Scope posture: who Setty is on this job, and which directory firms own
     // the neighboring disciplines. Directory + prime/client names are matched
@@ -2429,6 +2788,11 @@ mcp.tool("project_briefing", {
         "`teamActivity` shows teammates whose Claude sessions touched this project recently. Tell the " +
         "user who — if someone is on the same question right now, suggest talking to them directly.");
     }
+    if (meetingItems) {
+      guidance.push(
+        "`meetingItems` is the structured record of what the minutes said was outstanding — lean on it " +
+        "for \"what's still open\" instead of re-deriving that from raw minutes text.");
+    }
     guidance.push(SCOPE_POSTURE_GUIDANCE);
 
     const related = await relatedProjectsOf(p);
@@ -2470,6 +2834,7 @@ mcp.tool("project_briefing", {
           people: teamActivity,
         },
       } : {}),
+      ...(meetingItems ? { meetingItems } : {}),
       readNext,
       guidance,
     });
@@ -9772,6 +10137,79 @@ app.post("/pms-mcp/admin/discover-projects", async (c) => {
   } catch (e) {
     return c.json({ error: String((e as any)?.message ?? e) }, 500, DISCOVERY_CORS);
   }
+});
+
+// ── Meeting-minutes sweep (issue #291) ───────────────────────────────────────
+// Cron-triggered like pms-user-emails' /digest (x-pms-cron guard), but the
+// secret is a plain env var compared directly rather than a
+// pms_integration_secrets row — this file already has that exact pattern for
+// its own machine caller (SHARED_SECRET above), and one Deno.env.get() is
+// simpler than a DB round trip for something checked on every sweep tick.
+// Also callable by an admin JWT with a projectNumber body, for "scan this
+// project now" from the console and for manual testing.
+const MEETING_SWEEP_SECRET = Deno.env.get("MEETING_SWEEP_CRON_SECRET");
+const MEETING_SWEEP_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-pms-cron",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+// Bounds per invocation, not per portfolio: a cron-scheduled sweep rotates
+// through every active project over several runs (least-recently-swept
+// first, via pms_meeting_sweep_state) rather than trying the whole firm in
+// one HTTP request. Both numbers are conservative on purpose — tune upward
+// once real timings are known post-deploy.
+const MEETING_SWEEP_MAX_PROJECTS = 20;
+const MEETING_SWEEP_MAX_DOCS_PER_PROJECT = 2;
+
+app.options("/pms-mcp/admin/meeting-minutes-sweep", (c) => c.body(null, 204, MEETING_SWEEP_CORS));
+app.post("/pms-mcp/admin/meeting-minutes-sweep", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!MEETING_SWEEP_SECRET && cronGiven === MEETING_SWEEP_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, MEETING_SWEEP_CORS);
+    }
+  }
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* empty body is fine — cron always sends one */ }
+  const onlyProject = String(body?.projectNumber || "").trim();
+
+  const active = (await getProjectsUnfiltered()).filter((p: any) => p.projectNumber && !p.archived);
+  let targets: any[];
+  if (onlyProject) {
+    targets = active.filter((p: any) => String(p.projectNumber).toLowerCase() === onlyProject.toLowerCase());
+    if (!targets.length) return c.json({ error: `No active project matching "${onlyProject}"` }, 404, MEETING_SWEEP_CORS);
+  } else {
+    const stateRows = await sbGetAll("pms_meeting_sweep_state?select=project_number,last_swept_at");
+    const lastSwept = new Map<string, string>(stateRows.map((r: any) => [r.project_number, r.last_swept_at]));
+    targets = [...active]
+      .sort((a, b) => (lastSwept.get(a.projectNumber) || "").localeCompare(lastSwept.get(b.projectNumber) || ""))
+      .slice(0, MEETING_SWEEP_MAX_PROJECTS);
+  }
+
+  const results: any[] = [];
+  for (const p of targets) {
+    try {
+      const r = await meetingMinutesSweepProject(p.projectNumber, MEETING_SWEEP_MAX_DOCS_PER_PROJECT);
+      if (r.processed || r.errors.length) results.push({ projectNumber: p.projectNumber, ...r });
+    } catch (e) {
+      results.push({ projectNumber: p.projectNumber, processed: 0, skipped: 0, errors: [String((e as any)?.message ?? e).slice(0, 500)] });
+    }
+    if (!onlyProject) {
+      try {
+        await sbUpsert("pms_meeting_sweep_state", "project_number", [
+          { project_number: p.projectNumber, last_swept_at: new Date().toISOString() },
+        ]);
+      } catch { /* rotation state is best-effort; worst case this project is revisited sooner than its turn */ }
+    }
+  }
+  return c.json({
+    scanned: targets.length,
+    more: !onlyProject && active.length > MEETING_SWEEP_MAX_PROJECTS,
+    results,
+  }, 200, MEETING_SWEEP_CORS);
 });
 
 Deno.serve(app.fetch);
