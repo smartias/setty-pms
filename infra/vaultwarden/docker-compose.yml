@@ -1,0 +1,24 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    restart: unless-stopped
+    volumes:
+      - ./vw-data:/data
+    environment:
+      DOMAIN: "${DOMAIN}"
+      SIGNUPS_ALLOWED: "${SIGNUPS_ALLOWED:-false}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN}"
+
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CADDY_HOST: "${CADDY_HOST}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy-data:/data
+    depends_on:
+      - vaultwarden

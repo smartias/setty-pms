@@ -1,10 +1,19 @@
 # Handoff: self-hosted password manager (Vaultwarden) for NY team shared secrets
 
 **Read this first if picking up on the Setty Claude account.** Written
-2026-09-24 from a session on the other account. Nothing has been deployed
-yet — this is planning/guidance only, not started. Same reason as
+2026-09-24, updated same day on the Setty account. Same reason as
 `HANDOFF-STATUS-2026-09-20.md`: committed to the repo so any computer or
 Claude account can see it.
+
+**Update 2026-09-24 (Setty account):** the deployment files now exist at
+`infra/vaultwarden/` in this repo (`docker-compose.yml`, `Caddyfile`,
+`.env.example`, `README.md`). **Nothing has been deployed on real
+hardware yet** — Sara has not said which NAS/server it runs on
+("no preference" when asked, i.e. not yet decided/known), so no domain is
+pointed anywhere and no containers are running. The files are
+platform-generic (plain `docker compose` over SSH), with short notes for
+Synology/QNAP/Unraid in the README, so they should work once a target
+machine is picked.
 
 ## What this is about
 
@@ -67,18 +76,22 @@ added "to the code," and whether user passwords are managed in Supabase.
 
 ## Not decided / open questions for Sara
 
-- Which server/NAS this actually runs on (blocks step 1–3 above).
+- Which server/NAS this actually runs on — still unknown, blocks actual
+  deployment (everything past "copy the files onto the box").
 - Who owns the ongoing patching/backup responsibility.
 - Exact domain/subdomain to use.
-- Whether this belongs in its own repo (e.g. `smartias/vaultwarden-infra`)
-  for the docker-compose + Caddyfile, since it isn't `setty-pms` application
-  code and doesn't deploy via Vercel.
+- ~~Whether this belongs in its own repo~~ — resolved: it's in
+  `infra/vaultwarden/` in this repo. The Claude account working this
+  couldn't create a new GitHub repo (the connected GitHub App has no
+  repo-creation permission); ask a human to create
+  `smartias/vaultwarden-infra` and move this folder there later if a
+  separate repo still matters, otherwise it can stay here.
 
 ## Checklist
 
 - [ ] Confirm NAS/server platform with Sara
 - [ ] Domain/subdomain + DNS pointed at the server
-- [ ] docker-compose + Caddyfile written (where? new repo, per above)
+- [x] docker-compose + Caddyfile written — `infra/vaultwarden/` in this repo
 - [ ] Vaultwarden deployed, admin panel reachable over HTTPS
 - [ ] NY team invited, `SIGNUPS_ALLOWED` flipped back off
 - [ ] Organization + per-product collections created (Setty PMS, Sheetsa, …)
