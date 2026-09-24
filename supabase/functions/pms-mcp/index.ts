@@ -1228,9 +1228,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-24-project-number-suffix-match";
+const BUILD = "2026-09-24-drive-field-photos";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.19.2",
+  name: "setty-pms", version: "1.20.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -7181,6 +7181,75 @@ mcp.tool("search_drawings", {
   },
 });
 
+// A drive-only (or drive-fallback) region — DC, BT — has no Supabase index
+// at all for field photos: the Field Photos app only ever uploads to
+// SharePoint, so its sessions never reach pms_field_photo_sessions, and
+// nothing else writes that table either. So when a caller asks about a
+// SPECIFIC project on such a region, walk the standard 05-<num>_PHOTOS ("aka"
+// Photos) → 01-Pictures location directly and synthesize a row per dated
+// subfolder holding at least one image — confirmed live on SIPX258014.00
+// (DC), which has 7 such folders and 26+ real photos in the newest one
+// alone, all otherwise invisible to this tool. No phase/system/tags/notes:
+// that metadata only ever exists in the app's SharePoint sidecar, never on
+// the drive. Bounded to ONE project (never a bare browse) because there is
+// no cheap central index to page through here the way the Supabase query is.
+const DRIVE_PHOTO_SESSION_RE = /^(\d{4}-\d{2}-\d{2})[\s_-]*(.*)$/;
+// Session folders are named by hand ("2026-01-06 Sam's Photos", "2026-08-27_Varun") — a
+// leading date the app would otherwise have captured as `photo_date`, then a free-text
+// label (usually who took them). No date prefix at all is not an error, just an unlabeled
+// session — the whole name becomes the label.
+function parseDriveSessionFolderName(name: string): { date: string | null; label: string | null } {
+  const m = DRIVE_PHOTO_SESSION_RE.exec(String(name || ""));
+  return { date: m ? m[1] : null, label: (m ? m[2] : name).trim() || null };
+}
+async function driveFieldPhotoRows(projectQuery: string): Promise<any[]> {
+  const pid = await resolveProjectId(projectQuery);
+  if (!pid) return [];
+  const proj = await getProjectById(pid);
+  const num = String(proj?.projectNumber || "").trim();
+  if (!num) return [];
+  const team = String(proj?.team || (await teamForProject(num)) || "").toUpperCase().trim();
+  if (!team) return [];
+  const region = await effectiveRegionForTeam(team);
+  if (region.kind === "sharepoint") return [];
+
+  let hits: Array<{ ctx: AzureCtx; folder: string }>;
+  try { ({ hits } = await azureProjectHits(team, num.toLowerCase())); } catch { return []; }
+
+  const rows: any[] = [];
+  for (const h of hits) {
+    let photosRel: string;
+    try { photosRel = await azureResolveSubfolder(h.ctx, h.folder, "Photos"); } catch { continue; }
+    let picturesRel = photosRel;
+    try {
+      const photosDir = await azureDirEntries(h.ctx, photosRel);
+      const picturesName = resolveChildFolder(photosDir.entries, "Pictures");
+      if (picturesName) picturesRel = joinRel(photosRel, picturesName);
+    } catch { continue; }
+    let sessionDirs: AzEntry[];
+    try { sessionDirs = (await azureDirEntries(h.ctx, picturesRel)).entries.filter((e) => e.type === "folder"); }
+    catch { continue; }
+    for (const sub of sessionDirs) {
+      let photoCount = 0;
+      try {
+        const inner = await azureDirEntries(h.ctx, joinRel(picturesRel, sub.name));
+        photoCount = inner.entries.filter((e) => e.type === "file" && isPhotoName(e.name)).length;
+      } catch { continue; }
+      if (!photoCount) continue; // an empty scaffold folder is not a session
+      const { date, label } = parseDriveSessionFolderName(sub.name);
+      rows.push({
+        project_number: num, project_name: proj?.name || "",
+        photo_date: date, phase: null, system: null,
+        location: label, address: null,
+        photographer: null, notes: null, tags: [],
+        photo_count: photoCount, source: "drive",
+        folder_id: encodeAzId(h.ctx.team, joinRel(picturesRel, sub.name), h.ctx.label),
+      });
+    }
+  }
+  return rows;
+}
+
 mcp.tool("search_field_photos", {
   description:
     "Search field-photo upload sessions from the Field Photos mobile app (and Site Report photo " +
@@ -7188,13 +7257,17 @@ mcp.tool("search_field_photos", {
     "(Existing Conditions, Demo/Abatement, Rough-In, Construction Progress, Commissioning, " +
     "Substantial Completion, Punch List, Final/Completed), system (Mechanical/HVAC, Electrical, " +
     "Plumbing, Fire Protection, ...), location/floor, site address, tags, notes, photographer, and " +
-    "photo count. Every result carries the SharePoint folder URL so the photos can be opened " +
-    "directly. Answers questions like 'do we have existing-conditions photos of the roof at X?'. " +
-    "NOTE: the index starts 2026-07-15; older sessions get indexed automatically as people browse " +
-    "the Field Photos gallery, so absence here does not prove no photos exist — offer the " +
-    "project's SharePoint Photos folder (via list_project_documents) as a fallback.",
+    "photo count. A SharePoint result carries `folderUrl` so the photos can be opened directly, or " +
+    "passed to view_photos. Answers questions like 'do we have existing-conditions photos of the roof " +
+    "at X?'. NOTE: the index starts 2026-07-15; older sessions get indexed automatically as people " +
+    "browse the Field Photos gallery, so absence here does not prove no photos exist — offer the " +
+    "project's SharePoint Photos folder (via list_project_documents) as a fallback. " +
+    "For a region whose files live on the office network drive (DC, BT — no Sites.Selected grant, or " +
+    "declared azure_files), passing `project` ALSO walks that project's drive Photos folder directly and " +
+    "returns a row per dated subfolder with photos in it (`source: \"drive\"`, no phase/system/tags — " +
+    "that metadata is never on the drive); those carry `folderId` for view_photos instead of `folderUrl`.",
   inputSchema: z.object({
-    project: z.string().optional().describe("Project number, id, or part of the project name"),
+    project: z.string().optional().describe("Project number, id, or part of the project name. Required to see a drive region's photos (there is no bare-browse index for those)."),
     query: z.string().optional().describe("Free text across phase, system, location, address, tags, notes, and photographer"),
     phase: z.string().optional().describe("Phase filter (substring match), e.g. 'Punch List' or 'Existing'"),
     dateFrom: z.string().optional().describe("Only sessions with photos taken on/after this date (YYYY-MM-DD)"),
@@ -7206,8 +7279,10 @@ mcp.tool("search_field_photos", {
       "location,address,photographer,notes,tags,photo_count,folder_url,source,created_by,uploaded_at" +
       "&order=photo_date.desc.nullslast",
     );
+    let driveRows: any[] = [];
+    if (project) { try { driveRows = await driveFieldPhotoRows(project); } catch { /* SharePoint results still stand */ } }
     const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
-    let out = rows;
+    let out = [...rows, ...driveRows];
     if (project) {
       const pq = project.toLowerCase().trim();
       // A session's project_number may have been captured without the default
@@ -7237,7 +7312,7 @@ mcp.tool("search_field_photos", {
         date: r.photo_date, phase: r.phase, system: r.system, location: r.location,
         address: r.address, photographer: r.photographer, notes: r.notes || undefined,
         tags: (r.tags || []).length ? r.tags : undefined, photos: r.photo_count,
-        source: r.source, folderUrl: r.folder_url,
+        source: r.source, ...(r.source === "drive" ? { folderId: r.folder_id } : { folderUrl: r.folder_url }),
       })),
     });
   },
@@ -7276,45 +7351,102 @@ function b64FromBuffer(buf: ArrayBuffer | Uint8Array): string {
 const isPhotoName = (name: string) =>
   PHOTO_EXT.has((String(name).split(".").pop() || "").toLowerCase());
 
+// Azure Files has no server-side thumbnail API (SharePoint's Graph
+// `/thumbnails` endpoint is what the branch below uses instead), so a drive
+// photo is downloaded whole and downscaled in-process before being sent —
+// same imagescript dependency view_drawing already pins for encoding
+// rendered PDF pages (README → Gotchas). Returns null on anything
+// imagescript cannot decode (e.g. HEIC) rather than guessing a fallback.
+const VIEW_PHOTOS_DRIVE_TARGET_EDGE = 900;
+async function downscaleForView(bytes: Uint8Array): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const { Image } = await import("imagescript") as any;
+    const img = await Image.decode(bytes);
+    if (Math.max(img.width, img.height) > VIEW_PHOTOS_DRIVE_TARGET_EDGE) {
+      if (img.width >= img.height) img.resize(VIEW_PHOTOS_DRIVE_TARGET_EDGE, Image.RESIZE_AUTO);
+      else img.resize(Image.RESIZE_AUTO, VIEW_PHOTOS_DRIVE_TARGET_EDGE);
+    }
+    return { data: b64FromBuffer(await img.encodeJPEG(80)), mimeType: "image/jpeg" };
+  } catch { return null; }
+}
+
+type PhotoFile =
+  | { source: "sharepoint"; drive: string; id: string; name: string }
+  | { source: "drive"; ctx: AzureCtx; rel: string; name: string };
+
 mcp.tool("view_photos", {
   description:
     "LOOK AT field photos and image files — returns the actual images (SharePoint web-resolution " +
-    "thumbnails) so you can see and describe what they show: equipment, nameplates, conditions, " +
-    "installations. Use it to answer 'which photo shows X', 'what does the nameplate say', 'describe " +
-    "the existing switchgear' — anything that needs eyes on the picture rather than the folder link. " +
-    "Two ways in: pass `folderUrl` from a search_field_photos result to page through that session's " +
-    "photos (a text block lists each returned photo's number and filename — cite photos by FILENAME), " +
-    "or pass `itemId` of a single image file from list_project_documents. Up to " + VIEW_PHOTOS_MAX + " " +
-    "images per call, oldest-name first; use `offset` from the result to keep paging. Thumbnails are " +
-    "for reading content, not for reproducing in deliverables — the folder link still serves the " +
-    "full-resolution originals.",
+    "thumbnails, or a downscaled copy for network-drive photos) so you can see and describe what they " +
+    "show: equipment, nameplates, conditions, installations. Use it to answer 'which photo shows X', " +
+    "'what does the nameplate say', 'describe the existing switchgear' — anything that needs eyes on " +
+    "the picture rather than the folder link. Three ways in: pass `folderUrl` from a search_field_photos " +
+    "SharePoint result (source not \"drive\") to page through that session's photos; pass `folderId` " +
+    "from a search_field_photos DRIVE result (source: \"drive\" — DC/BT network-drive sessions with no " +
+    "phase/system metadata) to page through that folder instead; or pass `itemId` of a single image " +
+    "file from list_project_documents (a SharePoint 'driveId|itemId' composite, or an 'az:' drive file " +
+    "id — both come back from that tool already). A text block lists each returned photo's number and " +
+    "filename — cite photos by FILENAME. Up to " + VIEW_PHOTOS_MAX + " images per call, oldest-name " +
+    "first; use `offset` from the result to keep paging. Images are for reading content, not for " +
+    "reproducing in deliverables — the folder link / sharePath still serves the full-resolution originals.",
   inputSchema: z.object({
-    folderUrl: z.string().optional().describe("A SharePoint folder URL, e.g. `folderUrl` from search_field_photos — pages through the image files inside."),
-    itemId: z.string().optional().describe("A 'driveId|itemId' composite of ONE image file, from list_project_documents."),
+    folderUrl: z.string().optional().describe("A SharePoint folder URL, e.g. `folderUrl` from a search_field_photos SharePoint result — pages through the image files inside."),
+    folderId: z.string().optional().describe("An 'az:TEAM.SHARE:path' drive folder id, e.g. `folderId` from a search_field_photos drive result — pages through the image files inside."),
+    itemId: z.string().optional().describe("A single image file's id from list_project_documents: a SharePoint 'driveId|itemId' composite, or an 'az:' drive file id."),
     offset: z.number().optional().describe("Skip this many images (folder mode) — pass the previous result's nextOffset to continue."),
     count: z.number().optional().describe("Images to return this call (default 4, max " + VIEW_PHOTOS_MAX + ")"),
   }),
-  handler: async ({ folderUrl, itemId, offset, count }) => {
+  handler: async ({ folderUrl, folderId, itemId, offset, count }) => {
     const cap = Math.min(Math.max(count ?? 4, 1), VIEW_PHOTOS_MAX);
     const start = Math.max(offset ?? 0, 0);
 
-    // Resolve to a list of (driveId, itemId, name) image files.
-    let files: Array<{ drive: string; id: string; name: string }> = [];
+    let files: PhotoFile[] = [];
     let folderNote = "";
     if (itemId?.trim()) {
-      const bar = itemId.indexOf("|");
-      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
-      const drive = itemId.slice(0, bar), realId = itemId.slice(bar + 1);
-      let meta: any;
-      try {
-        meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,file,webUrl`);
-      } catch (e) {
-        return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
+      const raw = itemId.trim();
+      if (isAzId(raw)) {
+        const dec = decodeAzId(raw);
+        if (!dec || !dec.relPath.includes("/")) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it." });
+        const gate = await azurePathProject(dec.team, dec.relPath);
+        if (!gate.ok) return gate.res;
+        const az = await azureCtxForTeam(dec.team, dec.label);
+        if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
+        const name = dec.relPath.split("/").pop() || "";
+        if (!isPhotoName(name)) return asText({ error: `"${name}" is not an image file.`, nextStep: "view_photos reads photos and images; use read_document for documents." });
+        files = [{ source: "drive", ctx: az.ctx, rel: dec.relPath, name }];
+      } else {
+        const bar = raw.indexOf("|");
+        if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it, or an 'az:' drive file id." });
+        const drive = raw.slice(0, bar), realId = raw.slice(bar + 1);
+        let meta: any;
+        try {
+          meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,file,webUrl`);
+        } catch (e) {
+          return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
+        }
+        if (!isPhotoName(meta.name || "")) {
+          return asText({ error: `"${meta.name}" is not an image file.`, nextStep: "view_photos reads photos and images; use read_document for documents.", webUrl: meta.webUrl ?? null });
+        }
+        files = [{ source: "sharepoint", drive, id: meta.id, name: meta.name }];
       }
-      if (!isPhotoName(meta.name || "")) {
-        return asText({ error: `"${meta.name}" is not an image file.`, nextStep: "view_photos reads photos and images; use read_document for documents.", webUrl: meta.webUrl ?? null });
+    } else if (folderId?.trim()) {
+      const dec = decodeAzId(folderId.trim());
+      if (!dec) return asText({ error: "Malformed drive folder id.", nextStep: "Pass a folderId exactly as search_field_photos returned it." });
+      const gate = await azurePathProject(dec.team, dec.relPath);
+      if (!gate.ok) return gate.res;
+      const az = await azureCtxForTeam(dec.team, dec.label);
+      if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
+      let listing: { entries: AzEntry[]; truncated: boolean };
+      try { listing = await azureDirEntries(az.ctx, dec.relPath); }
+      catch (e) { return asText({ error: String((e as any)?.message ?? e) }); }
+      files = listing.entries.filter((e) => e.type === "file" && isPhotoName(e.name))
+        .map((e) => ({ source: "drive" as const, ctx: az.ctx, rel: joinRel(dec.relPath, e.name), name: e.name }))
+        // Stable name order so offset paging never skips or repeats.
+        .sort((a, b) => a.name.localeCompare(b.name));
+      folderNote = dec.relPath.split("/").pop() || "";
+      if (!files.length) {
+        return asText({ folder: folderNote, totalImages: 0, error: "No image files in that folder." });
       }
-      files = [{ drive, id: meta.id, name: meta.name }];
     } else if (folderUrl?.trim()) {
       const token = graphShareToken(folderUrl.trim());
       if (!token) return asText({ error: "That folder URL could not be encoded for the SharePoint API." });
@@ -7331,7 +7463,7 @@ mcp.tool("view_photos", {
       if (!folder?.folder || !drive) return asText({ error: "That URL is not a folder the connector can list." });
       const listing = await listChildren(`/drives/${drive}/items/${folder.id}/children?$select=id,name,file&$top=200`);
       files = listing.value.filter((it: any) => it.file && isPhotoName(it.name))
-        .map((it: any) => ({ drive, id: it.id, name: it.name }))
+        .map((it: any) => ({ source: "sharepoint" as const, drive, id: it.id, name: it.name }))
         // Stable name order so offset paging never skips or repeats.
         .sort((a, b) => a.name.localeCompare(b.name));
       folderNote = folder.name || "";
@@ -7340,8 +7472,8 @@ mcp.tool("view_photos", {
       }
     } else {
       return asText({
-        error: "Pass folderUrl (from search_field_photos) or itemId (an image file from list_project_documents).",
-        nextStep: "search_field_photos finds the photo session and returns its folderUrl.",
+        error: "Pass folderUrl or folderId (from search_field_photos) or itemId (an image file from list_project_documents).",
+        nextStep: "search_field_photos finds the photo session and returns its folderUrl (SharePoint) or folderId (drive).",
       });
     }
 
@@ -7352,15 +7484,23 @@ mcp.tool("view_photos", {
     for (let i = 0; i < page.length; i++) {
       const f = page[i];
       try {
-        // Graph renders the thumbnail server-side (HEIC included) and hands a
-        // short-lived pre-authorized URL; 'large' is ~800px — plenty to read a
-        // nameplate, a fraction of the original's bytes.
-        const th = await graphGet(`/drives/${f.drive}/items/${f.id}/thumbnails?$select=large`);
-        const url = th?.value?.[0]?.large?.url;
-        if (!url) { failed.push({ file: f.name, reason: "no thumbnail available" }); continue; }
-        const res = await fetch(url);
-        if (!res.ok) { failed.push({ file: f.name, reason: `thumbnail fetch ${res.status}` }); continue; }
-        images.push({ type: "image", data: b64FromBuffer(await res.arrayBuffer()), mimeType: "image/jpeg" });
+        if (f.source === "sharepoint") {
+          // Graph renders the thumbnail server-side (HEIC included) and hands a
+          // short-lived pre-authorized URL; 'large' is ~800px — plenty to read a
+          // nameplate, a fraction of the original's bytes.
+          const th = await graphGet(`/drives/${f.drive}/items/${f.id}/thumbnails?$select=large`);
+          const url = th?.value?.[0]?.large?.url;
+          if (!url) { failed.push({ file: f.name, reason: "no thumbnail available" }); continue; }
+          const res = await fetch(url);
+          if (!res.ok) { failed.push({ file: f.name, reason: `thumbnail fetch ${res.status}` }); continue; }
+          images.push({ type: "image", data: b64FromBuffer(await res.arrayBuffer()), mimeType: "image/jpeg" });
+        } else {
+          const res = await getFile(f.ctx.share, f.rel, f.ctx.sas);
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          const down = await downscaleForView(bytes);
+          if (!down) { failed.push({ file: f.name, reason: "could not decode this image for preview (unsupported format) — open the original from the drive" }); continue; }
+          images.push({ type: "image", data: down.data, mimeType: down.mimeType });
+        }
         shown.push({ n: start + i + 1, file: f.name });
       } catch (e) {
         failed.push({ file: f.name, reason: String((e as any)?.message ?? e).slice(0, 120) });
@@ -7375,7 +7515,8 @@ mcp.tool("view_photos", {
       ...(failed.length ? { failed } : {}),
       nextOffset: consumed < files.length ? consumed : null,
       note: "Images below are in `showing` order — refer to photos by FILENAME so a teammate can find " +
-        "the original. These are web-resolution thumbnails for viewing; the session's folderUrl holds full resolution." +
+        "the original. These are downscaled/thumbnail copies for viewing; the session's folderUrl or " +
+        "sharePath holds full resolution." +
         (consumed < files.length ? ` ${files.length - consumed} more image(s) — call again with offset:${consumed}.` : ""),
     };
     return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, ...images] };
