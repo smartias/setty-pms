@@ -1,22 +1,28 @@
-# Pending deploy: connector 1.19.1 (raw file links + SharePoint reminder)
+# Pending deploy: connector 1.19.2 (project-number suffix matching)
 
-Written 15 Sep 2026 for Sara to run from the computer that has the Supabase CLI.
-Delete this file once `/health` shows the build below.
+Written 2026-09-24 for whoever has the Supabase CLI next. This replaces the
+stale version of this file, which described the 15-Sep PR #271 deploy — that
+one has clearly already shipped (the BUILD constant on `main` moved well past
+`2026-09-15-sharepoint-nudge` since then). Delete this file once `/health`
+shows the build below.
 
 ## What is waiting
 
-PR #271 (`claude/charming-clarke-0nzfqc`), two connector changes in one deploy:
+PR #303, merged to `main` (`2db06c2`): `list_project_documents` (and every
+tool that resolves a project's SharePoint folder by number) and
+`search_field_photos` both missed real folders/sessions when a SharePoint
+folder name or a stored `project_number` dropped the default `.00` phase
+suffix that PMS's canonical project number always carries — confirmed live
+on SAPX266021.00, whose actual folder is named `SAPX266021 - St. Nicholas of
+Tolentine Feasibility Study` (no `.00`) and whose 5 field-photo sessions were
+logged as `project_number: "SAPX266021"` (also no `.00`). Full story in
+`HANDOFF-STATUS-2026-09-24.md` at the repo root.
 
-- **1.19.0** `download_document` / `upload_document`: a signed link to a file's
-  original bytes (edit an xlsx with formulas and dropdowns intact) and a write
-  back to SharePoint as a new version or a new file. README → "Raw file access".
-- **1.19.1** SharePoint adoption reminder on drive-sourced results.
-
-Expected `/health` build after the deploy: **`2026-09-15-sharepoint-nudge`**.
+Expected `/health` build after the deploy: **`2026-09-24-project-number-suffix-match`**.
 
 ## The short version
 
-1. Merge PR #271.
+1. `main` already has PR #303 merged — nothing to merge first.
 2. In PowerShell, from the repo root:
    ```powershell
    $env:SUPABASE_ACCESS_TOKEN = "sbp_..."     # supabase.com → Account → Access Tokens
@@ -42,17 +48,10 @@ Known traps (all in README → Deploying): run from the repo root, never from
 `supabase\`; no `--import-map` flag; `--no-verify-jwt` is required; "Docker is
 not running" is harmless; the first health call after a deploy can be slow.
 
-## Optional, any time after
-
-- Edge Functions → Secrets → `FILE_LINK_SECRET` = any long random string.
-  Without it the link key derives from the service key, which is fine.
-  Redeploy after adding it.
-
 ## Smoke test, in a new Claude conversation
 
-- `download_document` on the CCB comment log's itemId → a link; opening it in a
-  browser downloads the xlsx intact.
-- `upload_document` a small test file into a scratch folder → appears in
-  SharePoint. A Graph 403 means the app registration lacks write consent (the
-  same IT ask as `file_qa_report`).
-- `list_project_documents` on a DC project → the response carries `reminder`.
+- `list_project_documents` on `SAPX266021.00` → the SharePoint folder is
+  found (`count` > 0, `Photos` among the items), not "Nothing for this
+  project in SharePoint yet."
+- `search_field_photos` with `project: "SAPX266021.00"` → 5 sessions from
+  2026-07-07 come back, not `count: 0`.
