@@ -1032,6 +1032,25 @@ async function docDriveId(team?: string | null): Promise<string> {
   _docDrive.set(region.siteId, id);
   return id;
 }
+// Project numbers are canonically phase-qualified ("SAPX266021.00"), but a
+// SharePoint folder named by hand — or a project_number value captured
+// before that convention was consistently applied — often drops a bare
+// ".00" (the default phase). A plain startsWith()/includes() then never
+// matches, so the folder (or the field-photo session in it) reads as
+// missing even though it is right there. Only ".00" is ever treated as
+// droppable, and only when nothing else number-like follows the base in
+// `value`, so a search for "SAPX266021.00" never matches a real
+// "SAPX266021.01" folder or session.
+function numberPrefixMatches(value: string, numPrefix: string): boolean {
+  const name = String(value || "").toLowerCase();
+  const num = String(numPrefix || "").toLowerCase().trim();
+  if (!num) return false;
+  if (name.startsWith(num)) return true;
+  if (!num.endsWith(".00")) return false;
+  const base = num.slice(0, -3);
+  if (!base || !name.startsWith(base)) return false;
+  return !/^[.\d]/.test(name.slice(base.length));
+}
 async function projectFolder(projectNumber: string): Promise<any | null> {
   const drive = await docDriveId(await teamForProject(projectNumber));
   const num = projectNumber.toLowerCase().trim();
@@ -1039,7 +1058,7 @@ async function projectFolder(projectNumber: string): Promise<any | null> {
   while (url) {
     const page = await graphGet(url);
     for (const it of (page.value || [])) {
-      if (it.folder && String(it.name).toLowerCase().startsWith(num)) return it;
+      if (it.folder && numberPrefixMatches(it.name, num)) return it;
     }
     const next = page["@odata.nextLink"];
     url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
@@ -1120,7 +1139,7 @@ async function findProjectFolderInDrive(driveId: string, numPrefix: string): Pro
   while (url) {
     const page = await graphGet(url);
     for (const it of (page.value || [])) {
-      if (it.folder && String(it.name).toLowerCase().startsWith(numPrefix)) {
+      if (it.folder && numberPrefixMatches(it.name, numPrefix)) {
         _projFolder.set(key, { item: it, at: Date.now() });
         return it;
       }
@@ -1209,9 +1228,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-19-confidential-projects";
+const BUILD = "2026-09-24-project-number-suffix-match";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.19.1",
+  name: "setty-pms", version: "1.19.2",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -7191,7 +7210,14 @@ mcp.tool("search_field_photos", {
     let out = rows;
     if (project) {
       const pq = project.toLowerCase().trim();
-      out = out.filter((r: any) => has(r.project_number, pq) || has(r.project_name, pq));
+      // A session's project_number may have been captured without the default
+      // ".00" phase suffix (older uploads, or hand-typed before the PMS made
+      // it consistent) even though the query is the PMS's fully-qualified
+      // number — same mismatch numberPrefixMatches guards against for
+      // SharePoint folder names, so reuse it here rather than a raw substring
+      // check (which would also pull in an unrelated "SAPX266021.01").
+      out = out.filter((r: any) =>
+        has(r.project_number, pq) || has(r.project_name, pq) || numberPrefixMatches(r.project_number, pq));
     }
     if (phase) { const ph = phase.toLowerCase().trim(); out = out.filter((r: any) => has(r.phase, ph)); }
     if (dateFrom) out = out.filter((r: any) => r.photo_date && r.photo_date >= dateFrom);
