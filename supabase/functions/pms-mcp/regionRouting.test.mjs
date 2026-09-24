@@ -149,8 +149,8 @@ check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refus
 // project it names (folder → project → team → projectRefVisible) before any
 // share call, and the share root is never listed for a caller.
 has("async function azurePathProject(team: string, relPath: string)", "share paths earn their own visibility verdict");
-check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 6,
-  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, drawing item meta, and the raw-file meta + byte openers behind download_document (1.19.0)");
+check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 8,
+  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, drawing item meta, the raw-file meta + byte openers behind download_document (1.19.0), and view_photos' itemId + folderId branches (1.20.0)");
 has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so per-project overrides (confidential included) apply");
 has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
 has('error: "The share root is not browsable."', "the share root is never listed for a caller");
@@ -186,8 +186,8 @@ has("const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION]
 // kind; the refusal is remembered 300 s; other failures keep the declared kind.
 has("async function effectiveRegionForTeam(team: string | null | undefined): Promise<EffectiveRegion> {", "the effective-storage resolver exists");
 has("return effectiveRegionForTeam(await teamForProject(projectNumber));", "storageFor resolves the EFFECTIVE kind");
-check((shipped.match(/const region = await effectiveRegionForTeam\(team\);/g) || []).length === 4,
-  "list_project_documents, projectTree, subtreeFiles and drawingScopeWalk gate on the effective kind");
+check((shipped.match(/const region = await effectiveRegionForTeam\(team\);/g) || []).length === 5,
+  "list_project_documents, projectTree, subtreeFiles, drawingScopeWalk, and driveFieldPhotoRows (1.20.0) gate on the effective kind");
 check(!/const region = await siteForTeam\(team\);\n\s*if \(region\.kind !== "sharepoint"(\)| &&)/.test(shipped), "no storage-kind gate still reads the DECLARED kind (only the resolver itself does)");
 has('if (region.kind !== "sharepoint" || !region.shares.length) return region;', "a region without drive shares never falls back (its SharePoint error stands)");
 has("if (!(e instanceof RegionAccessError)) return region;", "a network/token failure keeps the declared kind");
