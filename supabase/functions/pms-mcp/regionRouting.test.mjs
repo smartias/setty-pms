@@ -110,7 +110,7 @@ has("return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subf
 has("const bytes = await fetchDrawingPdfById(String(chosen.item_id));", "view_drawing opens indexed sheets by id (az or Graph)");
 has("const bytes = await fetchDrawingPdfById(fileId);", "read_drawing_schedule opens by id (az or Graph)");
 has("async function indexDerivedSet(numPrefix: string)", "drive projects compose the current set from the drawing index");
-has('if ((await storageFor(project)).kind !== "sharepoint") {', "gates run on the RESOLVED project (after HIDE)");
+has("const st = await storageFor(project);", "gates run on the RESOLVED project (after HIDE)", 5);
 has("sasEnv: s.sas_env ? String(s.sas_env) : null }))",
   "SAS config is an env-var NAME — the token itself never comes from the database");
 // Region shares (1.15.0): a region carries N drives from pms_region_shares;
@@ -149,9 +149,9 @@ check(!shipped.includes("Ask Sara Arias."), "the slice-A 'not enabled yet' refus
 // project it names (folder → project → team → projectRefVisible) before any
 // share call, and the share root is never listed for a caller.
 has("async function azurePathProject(team: string, relPath: string)", "share paths earn their own visibility verdict");
-check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 4,
-  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, drawing item meta");
-has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so overrides and team scoping apply");
+check((shipped.match(/const gate = await azurePathProject\(dec\.team, dec\.relPath\);/g) || []).length === 8,
+  "every az: entry point runs the gate: list_project_documents, read_document, the PDF loader, drawing item meta, the raw-file meta + byte openers behind download_document (1.19.0), and view_photos' itemId + folderId branches (1.20.0)");
+has("if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;", "the gate is projectRefVisible, so per-project overrides (confidential included) apply");
 has('if (String(p.team || "").toUpperCase().trim() !== team) return notFound;', "a project is only served from its own team's share");
 has('error: "The share root is not browsable."', "the share root is never listed for a caller");
 // DC layout (1.15.1): a year folder may precede the project folder (the gate
@@ -164,6 +164,92 @@ has("await azureResolveSubfolder(az.ctx, dec.relPath, relIn)", "az folderId list
 has("await azureResolveSubfolder(first.ctx, first.folder, relIn)", "azure-only default listings resolve subfolder names on the drive");
 const azSeg = shipped.slice(shipped.indexOf("async function azureCtxForTeam"), shipped.indexOf("async function azureProjectFolder"));
 check(azSeg.includes("300000"), "the share-root folder index refreshes on the 300s clock");
+// Region site access (1.19.1, 2026-09-17): the connector's Sites.Selected
+// grant is per site, so a region row naming an ungranted site made every
+// SharePoint tool fail with a bare "Graph 403: accessDenied" (Tivoly, the
+// first BT project). Both drive lookups go through one wrapper that rethrows
+// it as the configuration fact it is; list_project_documents still returns
+// the drive annex; /health?probe=regions checks every region's site.
+has('} from "./regionAccess.ts";', "the region-access module is imported");
+has("async function regionDrives(team: string | null | undefined, region: RegionSite)", "one wrapper resolves a region's drives");
+has("throw regionAccessError(team, region.siteId, e) ?? e;", "a site-access failure is rethrown with the fix; anything else passes through");
+check((shipped.match(/const list = await regionDrives\(team, region\);/g) || []).length === 2, "docDriveId and siteDrives both go through the wrapper");
+has("if (!(e instanceof RegionAccessError)) throw e;", "list_project_documents catches only region-access failures");
+has("recordSays = siteMismatchHint(team, region.siteId, p?.projectFolderUrl);", "…compares the record's own folder URL with the region's site");
+has("const driveAnnex = num && region.shares.length ? await azureAnnexFor(team, num) : null;", "…and still hands over the drive annex");
+has('if (c.req.query("probe") === "regions")', "the health probe for region sites exists");
+has("const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];", "the probe covers the default region and every mapped one");
+// Drive fallback: a SharePoint region whose site refuses the connector, and
+// which has drive shares, is served from its drives like an azure_files
+// region (browse, read, drawing index, sheet index, current set) instead of
+// dying on the first Graph call. Every storage-kind gate reads the EFFECTIVE
+// kind; the refusal is remembered 300 s; other failures keep the declared kind.
+has("async function effectiveRegionForTeam(team: string | null | undefined): Promise<EffectiveRegion> {", "the effective-storage resolver exists");
+has("return effectiveRegionForTeam(await teamForProject(projectNumber));", "storageFor resolves the EFFECTIVE kind");
+check((shipped.match(/const region = await effectiveRegionForTeam\(team\);/g) || []).length === 5,
+  "list_project_documents, projectTree, subtreeFiles, drawingScopeWalk, and driveFieldPhotoRows (1.20.0) gate on the effective kind");
+check(!/const region = await siteForTeam\(team\);\n\s*if \(region\.kind !== "sharepoint"(\)| &&)/.test(shipped), "no storage-kind gate still reads the DECLARED kind (only the resolver itself does)");
+has('if (region.kind !== "sharepoint" || !region.shares.length) return region;', "a region without drive shares never falls back (its SharePoint error stands)");
+has("if (!(e instanceof RegionAccessError)) return region;", "a network/token failure keeps the declared kind");
+has("return { ...region, kind: \"azure_files\", siteError: e };", "a refused site flips the region to its drives and carries the reason");
+const effSeg = shipped.slice(shipped.indexOf("const _siteRefusal"), shipped.indexOf("function siteFallbackFields"));
+check(effSeg.includes("300000"), "the refusal is remembered on the 300s clock");
+check((shipped.match(/\.\.\.siteFallbackFields\(/g) || []).length >= 5, "drive-served results say the drive is a fallback and why");
+
+// P1 follow-up on #271 (2026-09-19): the az: branch of read_document gates on
+// azurePathProject, but its SharePoint (driveId|itemId) branch fetched Graph
+// content with no visibility check at all — a retained or guessed itemId from
+// a hidden/other-team project could be read in full. sharePointItemVisible
+// derives the item's project from parentReference.path (the top folder under
+// the drive root) and gates it through projectRefVisible exactly like the az:
+// path does, denying with a fully generic not-found (unlike azurePathProject's
+// notFound, it never echoes the derived folder/project name — the caller here
+// holds only an opaque itemId, so echoing it back would leak new information).
+has("async function sharePointItemVisible(drive: string, meta: any): Promise<{ ok: true } | { ok: false; res: any }>", "the SharePoint item gate exists");
+has("const gate = await sharePointItemVisible(drive, meta);\n        if (!gate.ok) return gate.res;", "read_document's SharePoint branch runs the gate before fetching content");
+// P1 follow-up on #294 (2026-09-19, Codex): the unification's first cut of
+// sharePointItemTopFolder returned a root item's own name regardless of
+// whether it was a file or a folder. A root FILE has no project ancestry at
+// all (unlike a root FOLDER, which names itself), so treating its filename
+// as a "top folder" let a file merely NAMED like a project number bypass
+// sharePointDriveIsKnownLibrary and gate on projectRefVisible alone — on
+// any drive the app-wide Graph credential can reach, not just a real
+// project library. Only a root item that IS a folder may name itself.
+has('return path.endsWith("/root:") && meta?.folder ? String(meta?.name || "") : "";',
+  "a root-level FILE is never treated as its own top folder");
+has("?$select=id,name,size,file,webUrl,parentReference`", "the meta fetch asks Graph for parentReference so the gate has ancestry to read");
+has('error: "Item not found."', "the gate's denial is a fixed, fully generic message (no derived folder/project name)");
+// Codex review on this PR: the Proposals/Contract/Contract Library libraries
+// name their top folders by project/client NAME (Dynamics), not number, so
+// projectNumberOfFolder can never resolve one — the gate must not deny every
+// read from them (list_project_documents's own folderMatch mode for these
+// libraries has never gated them either, for the same reason).
+has("if (!num) return (await sharePointDriveIsKnownLibrary(drive)) ? { ok: true } : spItemNotFound();",
+  "an item whose top folder carries no project number is let through only when its drive is a known library");
+// Follow-up P1 (#290): letting every unnumbered item through unconditionally
+// was itself too broad — the caller supplies `drive` directly, so it let
+// through anything on any drive the app-wide Graph credential can reach, not
+// just an unattributable Proposals/Contract folder. sharePointDriveIsKnownLibrary
+// restricts the carve-out to drives Graph actually lists as a document
+// library on some configured region's site.
+has("async function sharePointDriveIsKnownLibrary(drive: string): Promise<boolean> {", "the drive-is-a-real-library check exists");
+has("const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];\n  for (const [team] of entries) {",
+  "it checks every configured region's site (default included), not just one");
+has("if ((await siteDrives(team)).some((d) => d.id === drive)) return true;", "a match is a real drive Graph lists on that region's site");
+function sharePointItemTopFolderCopy(meta) {
+  const path = meta?.parentReference?.path || "";
+  const i = path.indexOf("/root:/");
+  if (i >= 0) return path.slice(i + 7).split("/")[0] || "";
+  return path.endsWith("/root:") && meta?.folder ? String(meta?.name || "") : "";
+}
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:/SAPX256015.00 Tabler/Outgoing" } }) === "SAPX256015.00 Tabler",
+  "the top folder is read off parentReference.path for a nested item");
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:" }, name: "SAPX256015.00 Tabler", folder: {} }) === "SAPX256015.00 Tabler",
+  "a FOLDER sitting directly at the drive root falls back to its own name");
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:" }, name: "SAPX256015.00 report.pdf" }) === "",
+  "a FILE sitting directly at the drive root has no top folder — it must NOT resolve to its own filename (Codex review on #294, P1: this let a root file merely named like a project number skip sharePointDriveIsKnownLibrary)");
+check(sharePointItemTopFolderCopy({ parentReference: { path: "/drives/b!x/root:/2026 — NYS Museum Plan" } }) === "2026 — NYS Museum Plan",
+  "a Dynamics-named top folder is read the same way, even though it carries no project number");
 
 console.log(failures
   ? `\n${failures} of ${total} assertions FAILED`

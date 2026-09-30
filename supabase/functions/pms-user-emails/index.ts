@@ -24,6 +24,13 @@
 // past their due date, ONLY when assigned to the recipient. Milestones are
 // deliberately excluded — they often aren't closed out until Monday midday,
 // so an overdue-milestone list would be noisy and inaccurate.
+// Meeting-minutes items (issue #291, 2026-09-20): confirmed decisions, open
+// questions and externally-owed action items from pms_meeting_items ride
+// along team-wide (dated lookahead / undated "Anytime" only — no personal
+// overdue tray, since there is no resolvable Setty owner to assign that to).
+// A confirmed Setty-owned action item is NOT duplicated here: it already
+// became a project.notes[] action item on confirm and flows through the
+// existing action-item rules above.
 //
 // verify_jwt is OFF (browser CORS preflight can't carry a JWT) — every route
 // enforces its own auth above. No external imports: plain fetch against
@@ -160,6 +167,12 @@ type ProjDigest = { projectName: string; projectNumber: string; items: Item[]; u
 
 const TYPE_LABELS: Record<string, string> = {
   milestone: "📍 Milestone", rfi: "❓ RFI", submittal: "📋 Submittal", action: "✅ Action",
+  // Confirmed meeting-minutes items (issue #291). A Setty-owned action_item
+  // is deliberately NOT one of these types: it is pushed into project.notes[]
+  // on confirm (see the pms_meeting_item_confirm_cascade trigger) and already
+  // flows through the "action" type above — a second entry here would just
+  // double the same item in the recipient's inbox.
+  decision: "📝 Decision", open_question: "❔ Open question", external_action: "☑ Owed to us",
 };
 
 function inLookahead(due: string | undefined, today: Date): boolean {
@@ -184,7 +197,13 @@ const DIGEST_STATUSES = new Set([
   "In Construction Administration",
 ]);
 
-function buildProjectDigest(project: any, today: Date, nameToEmail: Map<string, string>): ProjDigest | null {
+// meetingItems: this project's confirmed, current (not-yet-superseded)
+// pms_meeting_items rows, pre-filtered by the caller to exclude Setty-owned
+// action_items (see TYPE_LABELS comment above) — plain objects straight off
+// PostgREST, not the Item shape, so the mapping below is this function's job.
+function buildProjectDigest(
+  project: any, today: Date, nameToEmail: Map<string, string>, meetingItems: any[] = [],
+): ProjDigest | null {
   if (!project || project.archived || !DIGEST_STATUSES.has(project.status || "")) return null;
   const items: Item[] = [];
   const undatedActions: Item[] = [];
@@ -254,6 +273,21 @@ function buildProjectDigest(project: any, today: Date, nameToEmail: Map<string, 
     else if (inLookahead(due, today)) items.push(item);
     else if (isOverdue(due) && item.ownerEmails?.length) overdue.push(item);
   }
+  // Confirmed meeting-minutes items (issue #291): decisions, open questions,
+  // and action items owed by someone OTHER than Setty. None of these have a
+  // resolvable Setty owner (by construction — a Setty-owned action_item was
+  // filtered out by the caller), so unlike the notes[] loop above there is
+  // no personal "overdue, assigned to you" bucket for them: an overdue,
+  // unowned item has no channel today either (see the RFI/submittal loops,
+  // which only ever reach `overdue` when assignedTo resolves). Aging for
+  // these instead surfaces through project_briefing's `meetingsCarried`.
+  for (const mi of meetingItems) {
+    const type = mi.item_type === "decision" ? "decision" : mi.item_type === "open_question" ? "open_question" : "external_action";
+    const label = (mi.item_number ? `${mi.item_number}: ` : "") + String(mi.text || "").slice(0, 140).trim();
+    const item: Item = { type, label, dueDate: mi.due_date || undefined, owner: mi.owner_name || undefined };
+    if (!mi.due_date) undatedActions.push(item);
+    else if (inLookahead(mi.due_date, today)) items.push(item);
+  }
   items.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
   overdue.sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
   if (items.length + undatedActions.length + overdue.length === 0) return null;
@@ -272,6 +306,7 @@ type FlatItem = { date?: string; type: string; label: string; owner?: string; pr
 
 const TYPE_CHIP: Record<string, string> = {
   milestone: "#1F3864", rfi: "#B45309", submittal: "#047857", action: "#7C3AED",
+  decision: "#0F766E", open_question: "#9333EA", external_action: "#B91C1C",
 };
 
 function itemLine(i: FlatItem, isLast: boolean, dueTag?: string): string {
@@ -385,10 +420,27 @@ async function runDigest(opts: { dryRun: boolean; only: string | null }) {
     if (s?.name && s?.email) nameToEmail.set(s.name.toLowerCase().trim(), s.email.toLowerCase().trim());
   }
 
+  // Confirmed, current meeting-minutes items (issue #291), portfolio-wide in
+  // one query, grouped by project below. Excludes Setty-owned action_items —
+  // those already surfaced via project.notes[] the moment they were
+  // confirmed (pms_meeting_item_confirm_cascade), so the existing notes[]
+  // loop above already covers them; including them here would double them.
+  const meetingItemRows = await svcAll(
+    "/pms_meeting_items?status=eq.confirmed&superseded_by=is.null" +
+    "&or=(item_type.neq.action_item,owner_is_setty.eq.false)" +
+    "&select=project_number,item_type,item_number,text,owner_name,due_date",
+  );
+  const meetingItemsByProject = new Map<string, any[]>();
+  for (const r of meetingItemRows) {
+    const key = String(r.project_number || "");
+    if (!meetingItemsByProject.has(key)) meetingItemsByProject.set(key, []);
+    meetingItemsByProject.get(key)!.push(r);
+  }
+
   // Build each project's digest once; remember which member emails it maps to.
   const perProject: { digest: ProjDigest; memberEmails: Set<string> }[] = [];
   for (const row of projectRows) {
-    const digest = buildProjectDigest(row.project, today, nameToEmail);
+    const digest = buildProjectDigest(row.project, today, nameToEmail, meetingItemsByProject.get(row.project?.projectNumber) || []);
     if (!digest) continue;
     const memberEmails = new Set<string>();
     for (const tm of row.project.teamMembers || []) {

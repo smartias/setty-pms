@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-08-10-intel-v32-graph-issue-tags";
+    window.__appVersion = "2026-09-20-intel-v33-meeting-items";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -241,6 +241,7 @@ const MODULES = [
   { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: true  },
   { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: false },
   { key: "graph",     label: "Expertise Graph",       table: "pms_person_work",           idcol: null,          live: true  },
+  { key: "meetings",  label: "Meeting Items",         table: "pms_meeting_items",         idcol: "id",          live: true  },
   { key: "agents",    label: "Agents",                table: "pms_ii_agent_runs",         idcol: "run_id",      live: false },
 ];
 
@@ -264,9 +265,11 @@ const state = {
   selL: new Set(),           // bulk-selected lesson ids
   selP: new Set(),           // bulk-selected practice ids
   selA: new Set(),           // bulk-selected agency-preference ids
+  selM: new Set(),           // bulk-selected meeting-item ids
   graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "", view: "people" } },
   heat: { rows: [], asof: {}, blocked: {}, loaded: false, loading: false, f: { agency: "", quiet: false } },
   prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", type: "", status: "" } },
+  meetingItems: { rows: [], loaded: false, loading: false, f: { project: "", type: "", status: "pending", q: "" } },
 };
 
 // Embed mode: /SettyIntelligence.html?embed=1&project=SAPX...  renders ONLY the
@@ -324,7 +327,7 @@ async function loadAll() {
 // prove the database wiring end to end.
 async function loadCounts() {
   // "agencies" is live but table-backed — keep its badge on the same count query.
-  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies").map(async m => {
+  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies" || m.key === "meetings").map(async m => {
     try {
       const res = await fetch(SUPABASE_URL + "/rest/v1/" + m.table + "?select=" + (m.idcol || "*") + "&limit=1",
         { headers: { ...SB_HEADERS, "Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0" } });
@@ -362,6 +365,7 @@ function _renderInner() {
   if (state.tab === "practices") return renderPractices();
   if (state.tab === "agencies") return renderAgencyPrefs();
   if (state.tab === "graph") return renderGraph();
+  if (state.tab === "meetings") return renderMeetingItems();
   renderPlaceholder(MODULES.find(m => m.key === state.tab));
 }
 
@@ -1188,51 +1192,53 @@ function renderPracticeCard(p) {
 }
 // ── Bulk review actions (lessons + practices + agency prefs share the same
 //    machinery — kinds "L" / "P" / "A"; prefs use 'active'/'archived' statuses) ─
-function bulkSelSet(kind) { return kind === "L" ? state.selL : kind === "A" ? state.selA : state.selP; }
+function bulkSelSet(kind) { return kind === "L" ? state.selL : kind === "A" ? state.selA : kind === "M" ? state.selM : state.selP; }
 function toggleSel(kind, id, checked) {
   const set = bulkSelSet(kind);
   checked ? set.add(id) : set.delete(id);
   // Update only the bulk bar — re-rendering the list on every click would
   // rebuild the DOM under the user (scroll jump, lost checkbox focus).
-  const bar = $(kind === "L" ? "bulkBarL" : kind === "A" ? "bulkBarA" : "bulkBarP");
+  const bar = $(kind === "L" ? "bulkBarL" : kind === "A" ? "bulkBarA" : kind === "M" ? "bulkBarM" : "bulkBarP");
   if (bar) bar.innerHTML = bulkBar(kind);
 }
 function clearSel(kind) {
   bulkSelSet(kind).clear();
-  kind === "L" ? renderLessonList() : kind === "A" ? renderPrefList() : renderPracticeList();
+  kind === "L" ? renderLessonList() : kind === "A" ? renderPrefList() : kind === "M" ? renderMeetingItemList() : renderPracticeList();
 }
 function bulkBar(kind) {
   const set = bulkSelSet(kind);
   if (!set.size) return "";
-  const approveStatus = kind === "A" ? "active" : "approved";
-  // Lessons carry a real 'rejected' status (K1) so the contributor can see the
-  // outcome; prefs/practices keep 'archived'. Bulk reject writes no note — use
-  // the per-card Reject when the contributor deserves a reason.
-  const rejectStatus = kind === "L" ? "rejected" : "archived";
+  const approveStatus = kind === "A" ? "active" : kind === "M" ? "confirmed" : "approved";
+  // Lessons and meeting items carry a real 'rejected' status so the
+  // contributor can see the outcome; prefs/practices keep 'archived'. Bulk
+  // reject writes no note — use the per-card Reject when a reason matters.
+  const rejectStatus = kind === "L" || kind === "M" ? "rejected" : "archived";
+  const approveLabel = kind === "M" ? "✓ Confirm selected" : "✓ Approve selected";
   return `<div class="status info" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
     <b>${set.size} selected</b>
-    <button class="btn btn-success btn-sm" onclick="bulkStatus('${kind}','${approveStatus}')">✓ Approve selected</button>
+    <button class="btn btn-success btn-sm" onclick="bulkStatus('${kind}','${approveStatus}')">${approveLabel}</button>
     <button class="btn btn-ghost btn-sm" onclick="bulkStatus('${kind}','${rejectStatus}')">✕ Reject selected</button>
     <button class="btn btn-ghost btn-sm" onclick="clearSel('${kind}')">Clear</button>
   </div>`;
 }
 async function bulkStatus(kind, status) {
-  const isL = kind === "L", isA = kind === "A";
+  const isL = kind === "L", isA = kind === "A", isM = kind === "M";
   const set = bulkSelSet(kind);
   if (!set.size) return;
-  if (status === "approved" && !state.user) { openNameModal(() => bulkStatus(kind, status)); return; }
-  const table = isL ? "pms_lessons" : isA ? "pms_agency_preferences" : "pms_best_practices";
-  const idcol = isL ? "lesson_id" : isA ? "pref_id" : "practice_id";
+  if ((status === "approved" || status === "confirmed") && !state.user) { openNameModal(() => bulkStatus(kind, status)); return; }
+  const table = isL ? "pms_lessons" : isA ? "pms_agency_preferences" : isM ? "pms_meeting_items" : "pms_best_practices";
+  const idcol = isL ? "lesson_id" : isA ? "pref_id" : isM ? "id" : "practice_id";
   const payload = { status, updated_at: new Date().toISOString() };
   if (status === "approved" && isL) payload.approved_by = state.user;
   if (isL && (status === "approved" || status === "rejected")) payload.reviewed_at = new Date().toISOString();
   if (status === "active" && isA) payload.date_verified = new Date().toISOString().slice(0,10);
+  if (isM && (status === "confirmed" || status === "rejected")) { payload.reviewed_by = state.user || null; payload.reviewed_at = new Date().toISOString(); }
   try {
     await sb("PATCH", `/rest/v1/${table}?${idcol}=in.(${[...set].join(",")})`, payload);
-    const noun = isL ? "lesson" : isA ? "preference" : "practice";
-    toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" || status === "rejected" ? "rejected" : status === "active" ? "approved — now feed briefs" : "approved"}.`, "success");
+    const noun = isL ? "lesson" : isA ? "preference" : isM ? "item" : "practice";
+    toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" || status === "rejected" ? "rejected" : status === "active" ? "approved — now feed briefs" : status === "confirmed" ? "confirmed" : "approved"}.`, "success");
     set.clear();
-    if (isL) await reloadLessons(); else if (isA) await loadAgencyPrefs(); else await loadPractices();
+    if (isL) await reloadLessons(); else if (isA) await loadAgencyPrefs(); else if (isM) await loadMeetingItems(); else await loadPractices();
   } catch (e) { toast("Bulk update failed: " + e.message, "error"); }
 }
 
@@ -1361,6 +1367,162 @@ async function setPrefStatus(id, status) {
     await loadAgencyPrefs();
   } catch (e) { toast("Update failed: " + e.message, "error"); }
 }
+
+// ── Meeting Items module (issue #291) ────────────────────────────────────────
+// Decisions, action items and open questions extracted from filed meeting
+// minutes (pms_meeting_items) — the review gate the extraction pipeline
+// (supabase/functions/pms-mcp, meeting-minutes-sweep) stages "suggested" rows
+// into. Confirming a Setty-owned action item pushes it into that project's
+// own action-item list, and — if it carries forward from an earlier item —
+// marks that earlier item superseded; both are a database trigger
+// (pms_meeting_item_confirm_cascade), not anything this UI does directly.
+function meetingItemsFiltered() {
+  const f = state.meetingItems.f;
+  return state.meetingItems.rows.filter(m => {
+    if (f.project && (m.project_number || "") !== f.project) return false;
+    if (f.type && (m.item_type || "") !== f.type) return false;
+    // "pending" is the default view: only rows still awaiting a PM decision.
+    if (f.status === "pending") { if ((m.status || "") !== "suggested") return false; }
+    else if (f.status && (m.status || "") !== f.status) return false;
+    if (f.q) {
+      const hay = [m.text, m.owner_name, m.item_number, m.project_number].join(" ").toLowerCase();
+      if (!hay.includes(f.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+async function loadMeetingItems() {
+  state.meetingItems.loading = true;
+  try {
+    // superseded_by is null: only the CURRENT instance of a carried-forward
+    // item — an older, now-superseded copy is history, not something to review.
+    state.meetingItems.rows = (await sb("GET",
+      "/rest/v1/pms_meeting_items?select=*&superseded_by=is.null&order=created_at.desc&limit=500")) || [];
+  } catch (e) { toast("Load failed: " + e.message, "error"); state.meetingItems.rows = []; }
+  state.meetingItems.loaded = true; state.meetingItems.loading = false;
+  state.counts.meetings = state.meetingItems.rows.length;
+  render();
+}
+const MEETING_ITEM_TYPE_LABEL = { decision: "📝 Decision", action_item: "☑ Action item", open_question: "❔ Open question" };
+function renderMeetingItems() {
+  if (!state.meetingItems.loaded && !state.meetingItems.loading) loadMeetingItems();
+  if (state.meetingItems.loading || !state.meetingItems.loaded) { setBusy(true); $("view").innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
+  const all = state.meetingItems.rows;
+  const projects = [...new Set(all.map(m => m.project_number).filter(Boolean))].sort();
+  const opt = (arr, sel) => arr.map(a => `<option value="${esc(a)}" ${a===sel?"selected":""}>${esc(a)}</option>`).join("");
+  const pending = all.filter(m => m.status === "suggested").length;
+  $("view").innerHTML = `
+    ${pending ? `<div class="status info" style="display:block;margin-bottom:14px">🗒️ <b>${pending}</b> item${pending===1?"":"s"} extracted from meeting minutes, awaiting review. Confirming a Setty-owned action item adds it to that project\'s action items automatically.</div>` : ""}
+    <div class="toolbar">
+      <div class="grow"><label for="miQ">Search</label>
+        <input id="miQ" placeholder="text, owner, item #, project…" value="${esc(state.meetingItems.f.q||"")}"
+          oninput="state.meetingItems.f.q=this.value; renderMeetingItemList()"/></div>
+      <div class="field"><label for="miProject">Project</label>
+        <select id="miProject" onchange="state.meetingItems.f.project=this.value; renderMeetingItemList()"><option value="">All</option>${opt(projects, state.meetingItems.f.project)}</select></div>
+      <div class="field"><label for="miType">Type</label>
+        <select id="miType" onchange="state.meetingItems.f.type=this.value; renderMeetingItemList()">
+          <option value="">All</option>
+          <option value="decision" ${state.meetingItems.f.type==="decision"?"selected":""}>Decision</option>
+          <option value="action_item" ${state.meetingItems.f.type==="action_item"?"selected":""}>Action item</option>
+          <option value="open_question" ${state.meetingItems.f.type==="open_question"?"selected":""}>Open question</option>
+        </select></div>
+      <div class="field"><label for="miStatus">Status</label>
+        <select id="miStatus" onchange="state.meetingItems.f.status=this.value; renderMeetingItemList()">
+          <option value="">All</option>
+          <option value="pending" ${state.meetingItems.f.status==="pending"?"selected":""}>Needs review (suggested)</option>
+          <option value="suggested" ${state.meetingItems.f.status==="suggested"?"selected":""}>Suggested</option>
+          <option value="confirmed" ${state.meetingItems.f.status==="confirmed"?"selected":""}>Confirmed</option>
+          <option value="rejected" ${state.meetingItems.f.status==="rejected"?"selected":""}>Rejected</option>
+        </select></div>
+      <button class="btn btn-ghost" style="margin-left:auto" onclick="state.meetingItems.loaded=false; render()">↻ Refresh</button>
+    </div>
+    <div id="miList"></div>`;
+  renderMeetingItemList();
+}
+function renderMeetingItemList() {
+  const el = $("miList"); if (!el) return;
+  const rows = meetingItemsFiltered();
+  if (!rows.length) { el.innerHTML = `<div id="bulkBarM">${bulkBar("M")}</div><div class="empty">${state.meetingItems.rows.length ? "No items match these filters." : "Nothing extracted yet — the meeting-minutes sweep stages items here as it finds filed minutes."}</div>`; return; }
+  el.innerHTML = `<div id="bulkBarM">${bulkBar("M")}</div>` + rows.map(renderMeetingItemCard).join("");
+}
+function renderMeetingItemCard(m) {
+  const statusPill = { suggested: "pill-yellow", confirmed: "pill-green", rejected: "pill-red" }[m.status] || "pill-gray";
+  const proj = state.projects.find(p => p.id === m.project_number);
+  const projLabel = m.project_number ? esc(m.project_number) + (proj ? " · " + esc(proj.name) : "") : "";
+  const pills = [
+    `<span class="pill pill-blue">${esc(MEETING_ITEM_TYPE_LABEL[m.item_type] || m.item_type)}</span>`,
+    m.owner_name ? `<span class="pill pill-gray">${esc(m.owner_name)}${m.owner_is_setty ? " (Setty)" : ""}</span>` : "",
+    m.due_date ? `<span class="pill pill-gray">due ${esc(m.due_date)}</span>` : "",
+    m.carry_count > 1 ? `<span class="pill pill-purple" title="Carried forward across meetings">🔁 ${m.carry_count} meetings</span>` : "",
+    `<span class="pill ${statusPill}">${esc(m.status)}</span>`,
+  ].filter(Boolean).join(" ");
+  // A wrong auto-match must never go live silently (see the migration's
+  // confirm-cascade comment): this checkbox is how a reviewer overrides the
+  // suggested carry-forward link before confirming.
+  const carryNote = m.status === "suggested" && m.carried_from_item_id
+    ? `<div class="lesson-sub"><label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;text-transform:none;letter-spacing:normal;font-size:12px;color:var(--dim)"><input type="checkbox" id="miNewNotCarry_${esc(m.id)}"/> This is a new item, not a continuation of an earlier one — confirming will not mark the earlier item resolved.</label></div>`
+    : "";
+  const actions = [
+    m.status !== "confirmed" ? `<button class="btn btn-success btn-sm" data-id="${esc(m.id)}" onclick="confirmMeetingItem(this.dataset.id)">✓ Confirm</button>` : "",
+    m.status !== "rejected" && m.status !== "confirmed" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(m.id)}" onclick="openMeetingItemRejectModal(this.dataset.id)">✕ Reject</button>` : "",
+  ].filter(Boolean).join(" ");
+  const selbox = m.status === "suggested"
+    ? `<input type="checkbox" class="selbox" aria-label="Select: ${esc((m.text||"").slice(0,80))}" ${state.selM.has(m.id)?"checked":""} data-id="${esc(m.id)}" onchange="toggleSel('M',this.dataset.id,this.checked)" title="Select for bulk confirm/reject"/>`
+    : "";
+  return `<div class="lesson ${m.status === "suggested" ? "draft" : esc(m.status||"")}">
+    <div class="lesson-top">${selbox}<div style="flex:1">
+      <div class="lesson-summary">${m.item_number ? `<span style="color:var(--muted)">${esc(m.item_number)}</span> ` : ""}${esc(m.text)}</div>
+      <div class="lesson-meta">${pills}</div>
+    </div>
+    <div class="lesson-actions">${actions}</div></div>
+    ${projLabel ? `<div class="lesson-sub"><b>Project:</b> ${projLabel}</div>` : ""}
+    ${carryNote}
+    ${m.review_note ? `<div class="lesson-sub"><b>Review note:</b> ${esc(m.review_note)}</div>` : ""}
+  </div>`;
+}
+async function confirmMeetingItem(id) {
+  if (!state.user) { openNameModal(() => confirmMeetingItem(id)); return; }
+  const m = state.meetingItems.rows.find(x => x.id === id);
+  const notCarry = $("miNewNotCarry_" + id);
+  const payload = { status: "confirmed", reviewed_by: state.user, reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  if (m && m.carried_from_item_id && notCarry && notCarry.checked) payload.carried_from_item_id = null;
+  try {
+    await sb("PATCH", "/rest/v1/pms_meeting_items?id=eq." + encodeURIComponent(id), payload);
+    toast("Confirmed." + (m && m.item_type === "action_item" && m.owner_is_setty ? " Added to the project\'s action items." : ""), "success");
+    await loadMeetingItems();
+  } catch (e) { toast("Confirm failed: " + e.message, "error"); }
+}
+// Reject keeps the row and an optional reason, same "teach, don't vanish"
+// pattern as lesson rejection — review_note is visible on the card.
+function openMeetingItemRejectModal(id) {
+  const m = state.meetingItems.rows.find(x => x.id === id);
+  $("modalMount").innerHTML = `
+    <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:520px" role="dialog" aria-modal="true" aria-labelledby="miRejectModalTitle">
+        <h3 id="miRejectModalTitle">Reject this item</h3>
+        <p style="font-size:13px;color:var(--dim);line-height:1.6">${esc((m && m.text || "").slice(0, 200))}</p>
+        <div class="fieldset">
+          <label for="miRejectNote">Why? (optional)</label>
+          <textarea id="miRejectNote" rows="3" placeholder="e.g. misread from the minutes / duplicate of another item / not actually an action"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-danger" id="miRejectBtn">✕ Reject</button>
+        </div>
+      </div>
+    </div>`;
+  $("miRejectBtn").onclick = () => { const note = $("miRejectNote").value.trim(); closeModal(); rejectMeetingItem(id, note); };
+  focusModal();
+}
+async function rejectMeetingItem(id, note) {
+  try {
+    await sb("PATCH", "/rest/v1/pms_meeting_items?id=eq." + encodeURIComponent(id),
+      { status: "rejected", review_note: note || null, reviewed_at: new Date().toISOString(), reviewed_by: state.user || null, updated_at: new Date().toISOString() });
+    toast("Rejected.", "success");
+    await loadMeetingItems();
+  } catch (e) { toast("Reject failed: " + e.message, "error"); }
+}
+
 
 // ── Expertise Graph — who has done what, mined from authored work ────────────
 // Rows come from pms_person_work: every RFI answer, submittal review response,

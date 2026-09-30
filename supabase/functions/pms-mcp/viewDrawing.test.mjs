@@ -233,8 +233,9 @@ for (const anchor of [
   "bytes = await img.encodeJPEG(80); mimeType = \"image/jpeg\";",
   // The exactness re-check behind the loose SQL pattern.
   "normSheetToken(r.sheet_no) === sheetNorm",
-  // Azure-region gate runs in sheet mode.
-  'storageFor(project)).kind !== "sharepoint"',
+  // Azure-region gate runs in sheet mode (on the EFFECTIVE storage kind since
+  // 1.19.1: a refused SharePoint site with drive shares reads as azure_files).
+  "const st = await storageFor(project);\n    const onDrive = st.kind !== \"sharepoint\";",
   // b64FromBuffer accepts the encoder's Uint8Array directly.
   "function b64FromBuffer(buf: ArrayBuffer | Uint8Array): string",
   // Review-speed caches (2026-09-14): the download cache fronts fetchDrawingPdf

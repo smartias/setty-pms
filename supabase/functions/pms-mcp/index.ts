@@ -11,6 +11,9 @@ import { z } from "zod";
 import pako from "pako";
 import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
 import { AsyncLocalStorage } from "node:async_hooks";
+// Meeting-minutes extraction (issue #291) calls Claude the same way
+// proposal-draft does — see MEETING_EXTRACTION_MODEL below.
+import Anthropic from "npm:@anthropic-ai/sdk@0.39.0";
 // The transmittal-register fold lives in one module so the MCP connector and the
 // "Current Set" panel in SettyPMS.html (which mirrors it in currentSetFold.js)
 // cannot answer "what is the current set?" differently. See currentSet.ts.
@@ -28,6 +31,18 @@ import {
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
   projectNumberOfFolder, projectNameFromFolders, caKindFolders, isDisciplineFolder, folderMentionsNumber,
 } from "./azureFiles.ts";
+// Raw-bytes path (1.19.0): signed single-file links behind download_document /
+// upload_document and the /file/<token> routes. Pure; see fileLinks.ts.
+import {
+  type PutTokenPayload, mintFileToken, verifyFileToken, clampTtlMinutes,
+  mimeFor, contentDisposition, isWritableName, isOutgoingPath, chunkRanges, UPLOAD_CHUNK_BYTES,
+} from "./fileLinks.ts";
+// A Graph 403/404 while resolving a REGION's site is a configuration fact
+// (Sites.Selected grant missing, or the row names the wrong site), not a
+// project problem; regionAccess.ts turns it into the fix. Pure; see its tests.
+import {
+  RegionAccessError, regionAccessError, regionAccessResult, siteMismatchHint, graphStatusOf, graphErrorCodeOf,
+} from "./regionAccess.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -68,6 +83,15 @@ const currentCaller = (): Caller => callerStore.getStore() ?? UNKNOWN_CALLER;
 //   everywhere; hiding must never confirm existence.
 //   REDACT — fee/billing FIELDS are replaced with a marker for callers without
 //   fees.view, so the model says why instead of hallucinating around a gap.
+//
+// 19 Sep 2026: dropped team-based project visibility (too much cross-office
+// staffing to restrict by office) in favor of "Confidential" projects — an
+// 'everyone'+deny row, same shape the per-project override table already
+// supported, marked from a checkbox on the Admin Console's Teams card. A
+// confidential project's SQL-computed verdict (pms_has_cap_for) is visible
+// to admins, anyone explicitly allowed back in, and anyone the project's own
+// teamMembers roster names as staffed on it — resolved entirely in SQL, per
+// the precedence note above; nothing added here re-implements it.
 type ResolvedCaps = {
   email: string | null; role: string; team: string | null; isAdmin: boolean;
   caps: Record<string, boolean>;
@@ -115,26 +139,29 @@ function capFor(res: ResolvedCaps, cap: string, projectNumber?: string | null): 
   return res.caps?.[cap] === true;
 }
 
-// Phase C team scoping (Sara 2026-08-22). Whether a project EXISTS for the
-// caller. Order matters:
+// Whether a project EXISTS for the caller. Order matters:
 //   1. admin sees everything;
-//   2. an explicit per-project projects.view override wins in EITHER direction
-//      — it is the cross-team collaboration escape hatch (a DMV engineer
-//      granted onto one NY job) and the per-project lock, and it must beat the
-//      team rule to be either;
-//   3. a caller WITH a team sees only projects tagged with that exact team,
-//      NOT the untagged pool, so a new team's user is not drowned in 147
-//      legacy projects;
-//   4. a caller with NO team is today's world: the firm-level verdict over
-//      everything, tagged or not — team-less means HQ/legacy staff, and
-//      hiding new-team work from them was not part of the decision. To scope
-//      someone, put them on a team; tagging projects alone scopes nobody.
-function projectVisible(caps: ResolvedCaps, projectNumber?: string | null, team?: string | null): boolean {
+//   2. an explicit per-project projects.view verdict wins in EITHER direction.
+//      This single lookup already carries the whole confidential-project
+//      story: pms_has_cap_for (SQL, the only place this precedence is
+//      computed) resolves a person/role-level row over an 'everyone' row,
+//      and an 'everyone' DENY — the shape a "Confidential" project carries —
+//      is itself overridden back to visible when the caller is staffed on
+//      the project (present in its own teamMembers roster). None of that
+//      logic is reachable from here; `o` is just the precomputed answer.
+//   3. no per-project row at all: the firm-level verdict, full stop.
+// Team-based scoping (Phase C, 22 Aug 2026: a caller with a team saw only
+// that team's projects) was DROPPED 19 Sep 2026 — cross-office staffing
+// turned out to be the norm (SME India works every office's projects;
+// admin/accounting work everywhere), so restricting by office did more harm
+// than good. A project's own `team` no longer factors into visibility at
+// all (it still routes SharePoint/drive storage, untouched — see
+// teamForProject/siteForTeam).
+function projectVisible(caps: ResolvedCaps, projectNumber?: string | null): boolean {
   if (caps.isAdmin) return true;
   const pn = (projectNumber ?? "").trim();
   const o = pn ? caps.projects?.[pn]?.["projects.view"] : undefined;
   if (typeof o === "boolean") return o;
-  if (caps.team && (team ?? null) !== caps.team) return false;
   return caps.caps?.["projects.view"] === true;
 }
 
@@ -164,17 +191,18 @@ function redactFees(v: any): any {
 }
 
 // Is the project this ref names visible to the caller? Fast path: firm-level
-// view allowed and no per-project view denial exists — true without any lookup,
-// which is every request today (overrides table is near-empty). Slow path only
-// when a denial could apply: resolveProjectId is itself visibility-filtered, so
-// a hidden project resolves to null exactly like a ref that never existed.
+// view allowed and no per-project view denial exists for this caller — true
+// without any lookup. Slow path whenever a denial COULD apply (a confidential
+// project the caller isn't staffed on or explicitly allowed into, or any
+// other per-project deny): resolveProjectId is itself visibility-filtered
+// (via the same precomputed caps.projects map), so a hidden project resolves
+// to null exactly like a ref that never existed — never confirming which
+// case it was.
 async function projectRefVisible(ref: string): Promise<boolean> {
   const caps = await resolveCaps();
   if (caps.isAdmin) return true;
-  // Fast path only for team-less callers: a teamed caller could be denied any
-  // project, so every ref must resolve (resolveProjectId is team-filtered).
   const anyViewDeny = Object.values(caps.projects ?? {}).some((p) => p["projects.view"] === false);
-  if (!caps.team && capFor(caps, "projects.view") && !anyViewDeny) return true;
+  if (capFor(caps, "projects.view") && !anyViewDeny) return true;
   return !!(await resolveProjectId(ref));
 }
 
@@ -195,8 +223,11 @@ async function sbRpc(fn: string, body: Record<string, unknown>): Promise<any> {
   return res.json();
 }
 
-// The one write helper, used ONLY by save_knowledge. return=representation so
-// the caller gets the row id to hand back to the user.
+// A general write helper. Originally used ONLY by save_knowledge; the
+// meeting-minutes sweep (issue #291) is the second caller, writing
+// pms_meetings/pms_meeting_items as the service role — both callers stage
+// suggestion rows a human reviews, never something that publishes itself.
+// return=representation so the caller gets the row (id, etc.) back.
 async function sbInsert(table: string, row: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: "POST",
@@ -247,7 +278,7 @@ async function getProjects(): Promise<any[]> {
   const all = await getProjectsUnfiltered();
   const caps = await resolveCaps();
   if (caps.isAdmin) return all;
-  return all.filter((p) => projectVisible(caps, p?.projectNumber, p?.team));
+  return all.filter((p) => projectVisible(caps, p?.projectNumber));
 }
 
 let _projCache: { at: number; data: any[] } | null = null;
@@ -278,7 +309,9 @@ async function getProjectsUnfiltered(): Promise<any[]> {
     // these, relatedGroup can never be resolved into actual sibling projects.
     "relatedGroup:project->>relatedGroup,relatedRole:project->>relatedRole," +
     // team is a REAL COLUMN (not a blob key — app blob saves would drop an
-    // unknown key); it drives Phase C visibility scoping.
+    // unknown key). No longer a visibility gate (dropped 19 Sep 2026 — see
+    // projectVisible); still routes SharePoint/drive storage and is shown as
+    // office context on a project.
     "team," +
     // changeOrders ride along for the link graph (incomingLinks scans them);
     // they are small next to rfis/submittals and nothing like emails[].
@@ -399,7 +432,7 @@ async function getProjectById(pid: string): Promise<any | null> {
   // A project the caller cannot view does not exist for them — same shape as a
   // genuine miss, so hiding never confirms existence.
   const caps = await resolveCaps();
-  if (!caps.isAdmin && !projectVisible(caps, p?.projectNumber, rows?.[0]?.team ?? null)) return null;
+  if (!caps.isAdmin && !projectVisible(caps, p?.projectNumber)) return null;
   // Surface the team on the record (the column is outside the blob on purpose;
   // see getProjectsUnfiltered).
   p.team = rows?.[0]?.team ?? null;
@@ -411,7 +444,7 @@ async function resolveProjectId(identifier: string): Promise<string | null> {
   const rows = await sbGetAll("pms_projects?select=pid:project->>id,pn:project->>projectNumber,nm:project->>name,team&order=id.asc");
   const caps = await resolveCaps();
   const visible = caps.isAdmin ? (rows || [])
-    : (rows || []).filter((r: any) => projectVisible(caps, r?.pn, r?.team));
+    : (rows || []).filter((r: any) => projectVisible(caps, r?.pn));
   const hit = visible.find((r: any) =>
     [r.pid, r.pn, r.nm].filter(Boolean).some((f: string) => String(f).toLowerCase() === id));
   return hit?.pid ?? null;
@@ -645,6 +678,19 @@ async function regionMap(): Promise<Map<string, RegionSite>> {
   _regions = { at: Date.now(), map };
   return map;
 }
+// Adoption nudge (Sara, 2026-09-15). The office drive is a name-only,
+// read-only window for Claude: no full-text search, no emails, no photos, no
+// filing, nothing written back. Everything the connector does well needs the
+// record in SharePoint, and people will only move when they feel that at the
+// moment it costs them. So a result that came off a drive, or a project with
+// nothing filed, carries this reminder for the person. It is written to be
+// relayed, and paced by the model (once per conversation), not repeated on
+// every call. One string, so every tool says the same thing.
+const SHAREPOINT_NUDGE =
+  "Pass this on to the person once per conversation: the office drive is a limited, read-only view for Claude — " +
+  "files are found by name only, nothing can be filed or written back, and the record it sees is only what was " +
+  "saved there. Saving the drawings, specs, meeting notes, narratives and comment logs to the project's " +
+  "SharePoint folder makes them searchable, readable in full and editable here.";
 // The honest refusal for capabilities Azure Files storage cannot provide.
 // One place, so every tool says the same true thing.
 const AZURE_LIMITED_NOTE =
@@ -652,8 +698,8 @@ const AZURE_LIMITED_NOTE =
   "drive). Browsing, reading, and the drawing tools (indexing, search, sheet index, view, schedules, " +
   "equipment) work there. Finding documents by description, field photos, transmittal staging and " +
   "filing need the project record in the region's SharePoint site.";
-async function storageFor(projectNumber: string | null | undefined): Promise<RegionSite> {
-  return siteForTeam(await teamForProject(projectNumber));
+async function storageFor(projectNumber: string | null | undefined): Promise<EffectiveRegion> {
+  return effectiveRegionForTeam(await teamForProject(projectNumber));
 }
 async function siteForTeam(team: string | null | undefined): Promise<RegionSite> {
   if (!team) return DEFAULT_REGION;
@@ -848,9 +894,10 @@ async function azureAnnexFor(team: string | null, num: string): Promise<Record<s
 // an `az:` id is a PATH anyone can type, so it earns its own verdict here:
 // the first segment must be a registered project's folder (longest project
 // number prefixing the name), that project must belong to the id's team (the
-// share is that team's), and the caller must be allowed to see it — exactly
-// projectRefVisible, so overrides and team scoping apply unchanged. Any miss
-// returns the wrapper's not-found shape, never "exists but hidden". The
+// share is that team's — storage routing, unrelated to caller visibility),
+// and the caller must be allowed to see it — exactly projectRefVisible, so
+// confidential-project and per-project-override rules apply unchanged. Any
+// miss returns the wrapper's not-found shape, never "exists but hidden". The
 // share root is never listed for a caller; it is only walked internally to
 // find a folder by number.
 async function azurePathProject(team: string, relPath: string): Promise<{ ok: true; projectNumber: string } | { ok: false; res: any }> {
@@ -869,6 +916,70 @@ async function azurePathProject(team: string, relPath: string): Promise<{ ok: tr
   if (String(p.team || "").toUpperCase().trim() !== team) return notFound;
   if (!(await projectRefVisible(String(p.projectNumber)))) return notFound;
   return { ok: true, projectNumber: String(p.projectNumber) };
+}
+
+// A SharePoint composite id (driveId|itemId) carries no project of its own —
+// unlike an az: id, whose relPath the caller supplies — so read_document must
+// derive one from the item's Graph ancestry before it may be used. The
+// top-level folder under the drive root is the project folder, named
+// "<projectNumber> - <name>" by convention (see projectFolder() above), and
+// gates through projectRefVisible exactly like azurePathProject does. Denies
+// with a fully generic not-found — no derived name in the message — because,
+// unlike the az: case, revealing it here would hand an unauthorized caller
+// who holds nothing but an opaque itemId new information about a hidden
+// project.
+// The Proposals/Contract/Contract Library libraries are Dynamics-based and
+// name their top-level folders by project/client NAME, not number (Codex
+// review on this PR) — projectNumberOfFolder can never resolve one, so there
+// is no project to gate against. list_project_documents's own folderMatch
+// mode for these libraries (a few hundred lines below) has never gated
+// visibility either, for the same reason: nothing here links a name-based
+// folder back to a pms_projects row. Denying every read from these libraries
+// would be a functional regression with no real security gain (the same
+// files are already returned, ungated, by folderMatch), so an item whose top
+// folder carries no project number is let through unchanged — no worse than
+// before this gate existed. Only a numbered top folder is gated.
+//
+// That carve-out must not become a blanket bypass, though (Codex review on
+// #290, P1): the caller supplies `drive` directly, and the app-wide Graph
+// credential can reach drives that have nothing to do with PMS projects at
+// all — an unnumbered top folder there is not "a Proposals/Contract folder
+// we can't attribute", it is unrelated content. sharePointDriveIsKnownLibrary
+// closes that: an unnumbered item is let through ONLY when its drive is one
+// Graph actually lists as a document library on some configured region's
+// SharePoint site (default region included) — i.e. a real project library,
+// same as every drive list_project_documents itself ever searches — never an
+// arbitrary drive the credential merely happens to reach.
+async function sharePointDriveIsKnownLibrary(drive: string): Promise<boolean> {
+  const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];
+  for (const [team] of entries) {
+    try {
+      if ((await siteDrives(team)).some((d) => d.id === drive)) return true;
+    } catch { /* an inaccessible region's site is not a match, not a fatal error */ }
+  }
+  return false;
+}
+function spItemNotFound() {
+  return { ok: false as const, res: asText({ error: "Item not found.", nextStep: "Pass an itemId exactly as list_project_documents returned it." }) };
+}
+function sharePointItemTopFolder(meta: any): string {
+  const path: string = meta?.parentReference?.path || "";
+  const i = path.indexOf("/root:/");
+  if (i >= 0) return path.slice(i + 7).split("/")[0] || "";
+  // An item directly at the drive root has no parent segment to name it: a
+  // FOLDER there names itself (the project folder itself), but a FILE there
+  // has no project ancestry at all. Treating a root FILE's own name as its
+  // "top folder" would let a filename that merely resembles a project number
+  // (e.g. "SAPQ256918.06 report.pdf" sitting at the root of an arbitrary
+  // Graph-reachable drive) gate on projectRefVisible alone, skipping the
+  // sharePointDriveIsKnownLibrary check entirely (Codex review on #294, P1).
+  return path.endsWith("/root:") && meta?.folder ? String(meta?.name || "") : "";
+}
+async function sharePointItemVisible(drive: string, meta: any): Promise<{ ok: true } | { ok: false; res: any }> {
+  const num = projectNumberOfFolder(sharePointItemTopFolder(meta));
+  if (!num) return (await sharePointDriveIsKnownLibrary(drive)) ? { ok: true } : spItemNotFound();
+  if (!(await projectRefVisible(num))) return spItemNotFound();
+  return { ok: true };
 }
 
 // A region row may carry the site as a plain URL (what an admin pastes into
@@ -893,19 +1004,52 @@ async function resolveSiteId(ref: string): Promise<string> {
   _siteIdByRef.set(ref, id);
   return id;
 }
+// The drives of a region's site, resolved through Graph. This is the FIRST
+// Graph call every SharePoint tool makes for a project, so it is where a
+// region whose site the connector cannot read fails; the failure is
+// rethrown as a RegionAccessError naming the site and the fix (Sites.Selected
+// is granted per site) instead of a bare "Graph 403: accessDenied" that
+// reads like a broken project. Anything that is not a site-access problem
+// passes through unchanged.
+async function regionDrives(team: string | null | undefined, region: RegionSite): Promise<Array<{ id: string; name: string }>> {
+  try {
+    const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
+    return (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
+  } catch (e) {
+    throw regionAccessError(team, region.siteId, e) ?? e;
+  }
+}
 
 const _docDrive = new Map<string, string>();
 async function docDriveId(team?: string | null): Promise<string> {
   const region = await siteForTeam(team);
   const hit = _docDrive.get(region.siteId);
   if (hit) return hit;
-  const drives = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
-  const list = drives.value || [];
+  const list = await regionDrives(team, region);
   const match = list.find((d: any) => d.name === region.docLibrary) || list[0];
   if (!match) throw new Error("No document library found on the region's site.");
   const id: string = match.id;
   _docDrive.set(region.siteId, id);
   return id;
+}
+// Project numbers are canonically phase-qualified ("SAPX266021.00"), but a
+// SharePoint folder named by hand — or a project_number value captured
+// before that convention was consistently applied — often drops a bare
+// ".00" (the default phase). A plain startsWith()/includes() then never
+// matches, so the folder (or the field-photo session in it) reads as
+// missing even though it is right there. Only ".00" is ever treated as
+// droppable, and only when nothing else number-like follows the base in
+// `value`, so a search for "SAPX266021.00" never matches a real
+// "SAPX266021.01" folder or session.
+function numberPrefixMatches(value: string, numPrefix: string): boolean {
+  const name = String(value || "").toLowerCase();
+  const num = String(numPrefix || "").toLowerCase().trim();
+  if (!num) return false;
+  if (name.startsWith(num)) return true;
+  if (!num.endsWith(".00")) return false;
+  const base = num.slice(0, -3);
+  if (!base || !name.startsWith(base)) return false;
+  return !/^[.\d]/.test(name.slice(base.length));
 }
 async function projectFolder(projectNumber: string): Promise<any | null> {
   const drive = await docDriveId(await teamForProject(projectNumber));
@@ -914,7 +1058,7 @@ async function projectFolder(projectNumber: string): Promise<any | null> {
   while (url) {
     const page = await graphGet(url);
     for (const it of (page.value || [])) {
-      if (it.folder && String(it.name).toLowerCase().startsWith(num)) return it;
+      if (it.folder && numberPrefixMatches(it.name, num)) return it;
     }
     const next = page["@odata.nextLink"];
     url = next ? next.replace("https://graph.microsoft.com/v1.0", "") : "";
@@ -930,10 +1074,47 @@ async function siteDrives(team?: string | null): Promise<Array<{ id: string; nam
   const region = await siteForTeam(team);
   const hit = _drivesBySite.get(region.siteId);
   if (hit) return hit;
-  const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
-  const list: Array<{ id: string; name: string }> = (d.value || []).map((x: any) => ({ id: x.id, name: x.name }));
+  const list = await regionDrives(team, region);
   _drivesBySite.set(region.siteId, list);
   return list;
+}
+// The storage a project's tools should actually use. A region declares
+// `sharepoint`, but when the connector cannot read that site (no
+// Sites.Selected grant, or the row names a site Graph cannot find) and the
+// region has drive shares registered, the project is served from its drives
+// exactly as an `azure_files` region would be — browse, read, drawing index,
+// sheet index, current set, CA folders — instead of failing on the first
+// Graph call. The refusal is remembered for 300 s so a grant shows up without
+// a redeploy and the probe is not repeated per tool call; a site proven
+// readable this instance (drives cached) is never re-probed. Any other
+// failure (network, token) keeps the declared kind: the SharePoint path then
+// reports it as it always did. `siteError` tells the tool why it is on the
+// drive so its result can say so.
+type EffectiveRegion = RegionSite & { siteError?: RegionAccessError };
+const _siteRefusal = new Map<string, { err: RegionAccessError; at: number }>();
+const SITE_REFUSAL_TTL = 300000;
+async function effectiveRegionForTeam(team: string | null | undefined): Promise<EffectiveRegion> {
+  const region = await siteForTeam(team);
+  if (region.kind !== "sharepoint" || !region.shares.length) return region;
+  if (_drivesBySite.has(region.siteId)) return region;
+  const bad = _siteRefusal.get(region.siteId);
+  if (bad && (Date.now() - bad.at) < SITE_REFUSAL_TTL) return { ...region, kind: "azure_files", siteError: bad.err };
+  try {
+    await siteDrives(team);
+    return region;
+  } catch (e) {
+    if (!(e instanceof RegionAccessError)) return region;
+    _siteRefusal.set(region.siteId, { err: e, at: Date.now() });
+    return { ...region, kind: "azure_files", siteError: e };
+  }
+}
+// What a drive-served result carries when the drive is a FALLBACK: the site
+// refusal and its fix, so "browsed off SAOP" is never mistaken for "this
+// region has no SharePoint".
+function siteFallbackFields(region: EffectiveRegion): Record<string, unknown> {
+  return region.siteError
+    ? { sharepoint: { ...regionAccessResult(region.siteError), note: "Served from the region's network-drive share because its SharePoint site refused the connector. Search, photos, transmittal staging and filing need the site." } }
+    : {};
 }
 // Find a project's root folder (named by NUMBER, e.g. "<number> - ...") within a drive.
 //
@@ -958,7 +1139,7 @@ async function findProjectFolderInDrive(driveId: string, numPrefix: string): Pro
   while (url) {
     const page = await graphGet(url);
     for (const it of (page.value || [])) {
-      if (it.folder && String(it.name).toLowerCase().startsWith(numPrefix)) {
+      if (it.folder && numberPrefixMatches(it.name, numPrefix)) {
         _projFolder.set(key, { item: it, at: Date.now() });
         return it;
       }
@@ -1047,9 +1228,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-17-telemetry-fixes";
+const BUILD = "2026-09-30-telemetry-fixes";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.19.1",
+  name: "setty-pms", version: "1.20.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -2040,6 +2221,317 @@ async function meetingRecords(
   };
 }
 
+// ── Meeting minutes → structured items (issue #291) ─────────────────────────
+// meetingRecords() above already ranks candidate minutes across BOTH the
+// Project Management and Emails SharePoint folders — that IS "trigger on
+// new file in Emails / Project Management folders" from the issue, so the
+// sweep below reuses it rather than re-walking Graph. OneNote capture (the
+// issue's other trigger source) is deliberately NOT built here: there is no
+// existing code anywhere in this repo that reads OneNote PAGE CONTENT back
+// from Graph (only writes — see SettyPMS.html's OneNote push helpers), so
+// polling it would be new infrastructure with no precedent to build against
+// and no way to test live in this change. Tracked as a follow-up.
+
+const MEETING_EXTRACTION_MODEL = "claude-opus-5";
+const MEETING_DOC_MAX_CHARS = 40000; // ~10k tokens; long minutes sets are rare and page 1 of a 40-page one is not useful past this
+
+function buildMeetingExtractionSystemPrompt(): string {
+  return `You are extracting structured items from ONE construction/design project's meeting minutes for Setty & Associates, an MEP/FP consulting engineering firm (Setty may be the prime consultant or a subconsultant on this job).
+
+Read the minutes text and extract every DECISION, ACTION ITEM, and OPEN QUESTION it records. Respond with ONLY this JSON object, no commentary, no code fences:
+
+{
+  "schemaVersion": 1,
+  "kind": "meeting-minutes-extraction",
+  "meetingDate": "YYYY-MM-DD" or null,
+  "attendees": ["name (organization)", ...],
+  "items": [
+    {
+      "type": "decision" | "action_item" | "open_question",
+      "itemNumber": "3.2" or null,
+      "text": "self-contained statement of the item, 1-2 sentences",
+      "owner": "person or firm responsible" or null,
+      "dueDate": "YYYY-MM-DD" or null,
+      "refs": [ { "kind": "rfi" | "submittal" | "sheet", "label": "RFI 12" } ]
+    }
+  ]
+}
+
+Rules:
+- itemNumber is the number PRINTED in the minutes next to this item (e.g. "3.2", "Item 14"), exactly as written — null if the minutes do not number items. Do not invent one.
+- "action_item" = something a specific party must DO. "decision" = something resolved/agreed. "open_question" = something unresolved that needs an answer.
+- owner is the person's name as printed, or the responsible firm/party if no person is named (e.g. "Architect", "SCA", "Setty"). Never guess a name that is not in the text.
+- text must stand alone: someone with no other context should understand what it means without reading the rest of the minutes.
+- refs: only when the minutes explicitly tie this item to an RFI number, submittal number, or drawing sheet number.
+- Skip attendance lists, agenda headers and pure boilerplate, but do not skip a real item just because the minutes are terse — sparse minutes are still worth extracting from.
+- If the document is not actually meeting minutes (an agenda, a sign-in sheet, something unrelated), return "items": [] and "meetingDate": null.`;
+}
+
+// Tolerant of a fenced code block, same as proposal-draft's parseDraft.
+function parseMeetingExtraction(raw: string): { meetingDate: string | null; attendees: string[]; items: any[] } {
+  const stripped = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("no JSON object in extraction output");
+  const d = JSON.parse(stripped.slice(start, end + 1));
+  if (d?.kind !== "meeting-minutes-extraction" || d?.schemaVersion !== 1) {
+    throw new Error("extraction output is not meeting-minutes-extraction schemaVersion 1");
+  }
+  const items = (Array.isArray(d.items) ? d.items : []).filter((it: any) =>
+    it && ["decision", "action_item", "open_question"].includes(it.type) &&
+    typeof it.text === "string" && it.text.trim());
+  return {
+    meetingDate: typeof d.meetingDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d.meetingDate) ? d.meetingDate : null,
+    attendees: (Array.isArray(d.attendees) ? d.attendees : []).filter((a: any) => typeof a === "string" && a.trim()),
+    items,
+  };
+}
+
+async function callMeetingExtraction(
+  projectNumber: string, docName: string, docDateGuess: string | null, text: string,
+): Promise<{ meetingDate: string | null; attendees: string[]; items: any[] }> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
+  const anthropic = new Anthropic({ apiKey });
+  const userContent =
+    `Project: ${projectNumber}\nDocument: ${docName}` +
+    (docDateGuess ? ` (filename suggests ${docDateGuess})` : "") +
+    `\n\nMinutes text:\n${text.slice(0, MEETING_DOC_MAX_CHARS)}`;
+  const response: any = await (anthropic as any).beta.messages.create({
+    model: MEETING_EXTRACTION_MODEL,
+    max_tokens: 8000,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    system: buildMeetingExtractionSystemPrompt(),
+    messages: [{ role: "user", content: userContent }],
+  });
+  if (response.stop_reason === "refusal") throw new Error("model declined to extract this document");
+  if (response.stop_reason === "max_tokens") throw new Error("extraction output truncated (max_tokens)");
+  const raw = (response.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+  return parseMeetingExtraction(raw);
+}
+
+// SharePoint-only, full-document (no page windowing/caching): read_document's
+// extraction is deliberately interactive (page-bounded, cached across calls
+// for a chat session); this is a one-shot batch read for an LLM call, so it
+// is its own small function rather than a refactor of a heavily-used tool.
+async function extractMeetingDocText(
+  drive: string, itemId: string, name: string, size: number,
+): Promise<{ text: string; error?: string }> {
+  if (size > MAX_DOC_BYTES) return { text: "", error: "file too large to extract inline" };
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (!["pdf", "docx", "txt", "md"].includes(ext)) return { text: "", error: `no text extractor for .${ext}` };
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${drive}/items/${encodeURIComponent(itemId)}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } },
+  );
+  if (!res.ok) return { text: "", error: `Graph content ${res.status}` };
+  let text = "";
+  if (ext === "pdf") {
+    try {
+      const { getDocumentProxy } = await import("unpdf");
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const pdf: any = await getDocumentProxy(bytes);
+      const total: number = pdf.numPages;
+      const MAX_PAGES = 40; // long minutes sets are rare; a 40-page PDF is already well past MEETING_DOC_MAX_CHARS
+      const parts: string[] = [];
+      for (let i = 1; i <= Math.min(total, MAX_PAGES); i++) {
+        const pg = await pdf.getPage(i);
+        const tc = await pg.getTextContent();
+        parts.push((tc.items as any[]).map((it) => (it && it.str) || "").join(" ").replace(/ +/g, " ").trim());
+      }
+      text = parts.join("\n");
+    } catch (e) {
+      return { text: "", error: "PDF text extraction failed: " + String((e as any)?.message ?? e) };
+    }
+  } else if (ext === "docx") {
+    try {
+      const { unzipSync, strFromU8 } = await import("npm:fflate@0.8.2");
+      const zip = unzipSync(new Uint8Array(await res.arrayBuffer()));
+      const docXml = zip["word/document.xml"];
+      if (!docXml) return { text: "", error: "DOCX had no readable document.xml" };
+      text = strFromU8(docXml)
+        .replace(/<w:tab[^>]*\/?>/g, "\t").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+        .replace(/\n{3,}/g, "\n\n").trim();
+    } catch (e) {
+      return { text: "", error: "DOCX text extraction failed: " + String((e as any)?.message ?? e) };
+    }
+  } else {
+    text = await res.text();
+  }
+  return { text: text.length > MEETING_DOC_MAX_CHARS ? text.slice(0, MEETING_DOC_MAX_CHARS) : text };
+}
+
+// ── Carry-forward matching ───────────────────────────────────────────────────
+// Architect/agency minutes renumber and carry old business forward (issue
+// #291), so item_number alone cannot anchor the match. Text-overlap is the
+// primary signal (same word-Jaccard-over-containment shape as
+// knowledgeOverlap for save_knowledge, tuned looser: minutes text gets
+// reworded meeting to meeting more than a lesson summary does); a matching
+// printed number lowers the bar further rather than replacing the text
+// check outright, so a renumbered collision ("item 3.2" reused for an
+// unrelated new topic) cannot false-match on the number alone.
+const MEETING_ITEM_NUMBER_MATCH_THRESHOLD = 0.35;
+const MEETING_ITEM_TEXT_MATCH_THRESHOLD = 0.6;
+function meetingItemWords(s: string): Set<string> {
+  return new Set(
+    String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2),
+  );
+}
+function meetingItemOverlap(a: string, b: string): number {
+  const A = meetingItemWords(a), B = meetingItemWords(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / Math.min(A.size, B.size);
+}
+type OpenMeetingItem = {
+  id: string; itemNumber: string | null; text: string; itemType: string;
+  firstSeenMeetingId: string; carryCount: number;
+};
+// Picks the best still-open PRIOR item this newly-extracted item carries
+// forward from, or null for a genuinely new item. Only matches within the
+// same item_type (a decision does not carry forward into an action item).
+function carryForwardMatch(
+  extracted: { itemNumber: string | null; text: string; itemType: string },
+  open: OpenMeetingItem[],
+): OpenMeetingItem | null {
+  let best: { row: OpenMeetingItem; score: number; numberMatch: boolean } | null = null;
+  for (const row of open) {
+    if (row.itemType !== extracted.itemType) continue;
+    const numberMatch = !!extracted.itemNumber && !!row.itemNumber && extracted.itemNumber === row.itemNumber;
+    const score = meetingItemOverlap(extracted.text, row.text);
+    const threshold = numberMatch ? MEETING_ITEM_NUMBER_MATCH_THRESHOLD : MEETING_ITEM_TEXT_MATCH_THRESHOLD;
+    if (score < threshold) continue;
+    const better = !best || (numberMatch && !best.numberMatch) || (numberMatch === best.numberMatch && score > best.score);
+    if (better) best = { row, score, numberMatch };
+  }
+  return best?.row ?? null;
+}
+
+// Same staff-directory lookup the digest uses to route action items to a
+// person (pms-user-emails/index.ts buildProjectDigest): pms_meta.data.staff,
+// name -> email. A resolved owner is how owner_is_setty is decided — an
+// external attendee's name never resolves, by construction.
+async function staffNameToEmail(): Promise<Map<string, string>> {
+  const meta = await getAppMeta();
+  const map = new Map<string, string>();
+  for (const s of staffOf(meta)) {
+    if (s?.name && s?.email) map.set(String(s.name).toLowerCase().trim(), String(s.email).toLowerCase().trim());
+  }
+  return map;
+}
+
+async function extractOneMeetingDoc(
+  projectNumber: string, doc: { itemId: string; name: string; folder: string; date: string },
+): Promise<void> {
+  const bar = doc.itemId.indexOf("|");
+  if (bar < 0) throw new Error("malformed itemId");
+  const drive = doc.itemId.slice(0, bar);
+  const realId = doc.itemId.slice(bar + 1);
+  const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,webUrl`);
+  const size = meta.size ?? 0;
+  const { text, error } = await extractMeetingDocText(drive, realId, doc.name, size);
+  if (error) throw new Error(error);
+  if (!text.trim()) throw new Error("no extractable text");
+
+  // Both harvested folders are named per PM_FOLDER_RE/EMAIL_FOLDER_RE above
+  // (see the [pm, mail] loop in meetingRecords); doc.folder starts with the
+  // matched folder's own name, so the same regexes classify the source here.
+  const source = EMAIL_FOLDER_RE.test(doc.folder.split("/")[0]) ? "sharepoint-email-folder" : "sharepoint-pm-folder";
+
+  const open = (await sbGetAll(
+    "pms_meeting_items?project_number=eq." + encodeURIComponent(projectNumber) +
+    "&select=id,item_number,text,item_type,first_seen_meeting_id,carry_count" +
+    "&status=in.(suggested,confirmed)&superseded_by=is.null",
+  )).map((r: any): OpenMeetingItem => ({
+    id: r.id, itemNumber: r.item_number, text: r.text, itemType: r.item_type,
+    firstSeenMeetingId: r.first_seen_meeting_id, carryCount: r.carry_count,
+  }));
+
+  const extraction = await callMeetingExtraction(projectNumber, doc.name, doc.date || null, text);
+
+  const meeting = await sbInsert("pms_meetings", {
+    project_number: projectNumber,
+    meeting_date: extraction.meetingDate ?? doc.date ?? null,
+    source, source_ref: doc.itemId, source_name: doc.name, source_url: meta.webUrl ?? null,
+    attendees: extraction.attendees, raw_text_chars: text.length, status: "processed",
+  });
+  if (!extraction.items.length) return;
+
+  const nameToEmail = await staffNameToEmail();
+  const openPool = [...open];
+  for (const it of extraction.items) {
+    const match = carryForwardMatch({ itemNumber: it.itemNumber ?? null, text: it.text, itemType: it.type }, openPool);
+    if (match) {
+      const idx = openPool.findIndex((o) => o.id === match.id);
+      if (idx >= 0) openPool.splice(idx, 1); // one prior item can be claimed by at most one new item per batch
+    }
+    const ownerName = (it.owner || "").trim() || null;
+    const ownerEmail = ownerName ? nameToEmail.get(ownerName.toLowerCase()) ?? null : null;
+    await sbInsert("pms_meeting_items", {
+      meeting_id: meeting.id, project_number: projectNumber,
+      item_type: it.type, item_number: it.itemNumber ?? null, text: it.text,
+      owner_name: ownerName, owner_email: ownerEmail, owner_is_setty: !!ownerEmail,
+      due_date: it.dueDate ?? null, status: "suggested",
+      links: Array.isArray(it.refs) ? it.refs
+        .filter((r: any) => r && typeof r.label === "string")
+        .map((r: any) => ({
+          linkType: "reference", targetSystem: "pms",
+          targetType: ["rfi", "submittal", "sheet"].includes(r.kind) ? r.kind : "sheet",
+          targetId: null, targetLabel: r.label, targetUrl: null,
+        })) : [],
+      carried_from_item_id: match?.id ?? null,
+      first_seen_meeting_id: match?.firstSeenMeetingId ?? meeting.id,
+      carry_count: match ? match.carryCount + 1 : 1,
+    });
+  }
+}
+
+// One project's slice of a sweep: rank candidates via meetingRecords (already
+// shared with project_briefing), skip anything already in pms_meetings
+// (source_ref is the dedup key), extract up to maxDocs new ones. A failing
+// document is recorded as a 'failed' meeting row so it is not retried every
+// sweep forever — see the note it carries.
+async function meetingMinutesSweepProject(
+  projectNumber: string, maxDocs: number,
+): Promise<{ processed: number; skipped: number; errors: string[] }> {
+  const candidates = await meetingRecords(projectNumber, 50);
+  const scored = candidates.items
+    .filter((d: any) => d.score > 0 && ["pdf", "docx", "txt", "md"].includes(d.ext))
+    .sort((a: any, b: any) => b.score - a.score || String(b.date).localeCompare(String(a.date)));
+  if (!scored.length) return { processed: 0, skipped: 0, errors: [] };
+
+  const existingRows = await sbGetAll(
+    "pms_meetings?project_number=eq." + encodeURIComponent(projectNumber) + "&select=source_ref",
+  );
+  const existing = new Set(existingRows.map((r: any) => r.source_ref));
+  const fresh = scored.filter((d: any) => !existing.has(d.itemId)).slice(0, maxDocs);
+  if (!fresh.length) return { processed: 0, skipped: scored.length, errors: [] };
+
+  let processed = 0;
+  const errors: string[] = [];
+  for (const doc of fresh) {
+    try {
+      await extractOneMeetingDoc(projectNumber, doc);
+      processed++;
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e).slice(0, 500);
+      errors.push(`${doc.name}: ${msg}`);
+      try {
+        await sbInsert("pms_meetings", {
+          project_number: projectNumber,
+          meeting_date: doc.date || null,
+          source: EMAIL_FOLDER_RE.test(doc.folder.split("/")[0]) ? "sharepoint-email-folder" : "sharepoint-pm-folder",
+          source_ref: doc.itemId, source_name: doc.name, status: "failed", error: msg,
+        });
+      } catch { /* best-effort failure record — the error is still in the response either way */ }
+    }
+  }
+  return { processed, skipped: scored.length - fresh.length, errors };
+}
+
 // The project's recent filed correspondence, with each message's review-comment
 // attachments called out. Deliberately NOT filtered to has_attachments: the
 // briefing reports these as "recent emails", and silently dropping every message
@@ -2217,7 +2709,7 @@ mcp.tool("project_briefing", {
     // Knowledge (K3): approved lessons ride along so a teammate opening the
     // project gets what the firm already learned without knowing to ask.
     // Approved-only — suggested rows are a review queue, not knowledge.
-    const [docs, mail, lessons, activityRows] = await Promise.all([
+    const [docs, mail, lessons, activityRows, meetingItemRows] = await Promise.all([
       meetingRecords(p.projectNumber, docCap)
         .catch((e) => ({
           items: [] as any[], truncated: false,
@@ -2252,9 +2744,51 @@ mcp.tool("project_briefing", {
         "&created_at=gte." + encodeURIComponent(new Date(Date.now() - ACTIVITY_WINDOW_HOURS * 3600_000).toISOString()) +
         "&caller_email=not.is.null&order=created_at.desc&limit=" + ACTIVITY_FETCH_LIMIT,
       ).catch(() => [] as any[]),
+      // Meeting minutes (issue #291): current (not-yet-superseded) open items,
+      // confirmed ones are real open business, suggested ones are still
+      // awaiting a PM's review — both are worth a teammate knowing about.
+      (p.projectNumber
+        ? sbGet(
+            "pms_meeting_items?project_number=eq." + encodeURIComponent(p.projectNumber) +
+            "&select=id,item_type,item_number,text,owner_name,owner_is_setty,due_date,status,first_seen_meeting_id,carry_count" +
+            "&status=in.(suggested,confirmed)&superseded_by=is.null" +
+            "&order=due_date.asc.nullslast&limit=30",
+          )
+        : Promise.resolve([])
+      ).catch(() => [] as any[]),
     ]);
     const teamActivity = summarizeTeamActivity(
       activityRows, currentCaller().email, [p.projectNumber, p.name]);
+
+    // Aging: first_seen_meeting_id/carry_count are set once at extraction
+    // time (see carryForwardMatch) and never recomputed here — this is just
+    // resolving the one meeting_date the aging line needs to display.
+    let meetingItems: any = null;
+    if (meetingItemRows.length) {
+      const meetingIds = [...new Set(meetingItemRows.map((r: any) => r.first_seen_meeting_id).filter(Boolean))];
+      const meetingDates = meetingIds.length
+        ? await sbGet("pms_meetings?id=in.(" + meetingIds.join(",") + ")&select=id,meeting_date").catch(() => [] as any[])
+        : [];
+      const dateById = new Map(meetingDates.map((m: any) => [m.id, m.meeting_date]));
+      const items = meetingItemRows.map((r: any) => ({
+        id: r.id, type: r.item_type, itemNumber: r.item_number, text: r.text,
+        owner: r.owner_name, ownerIsSetty: r.owner_is_setty, dueDate: r.due_date, status: r.status,
+        ...(r.carry_count > 1 ? {
+          openSince: dateById.get(r.first_seen_meeting_id) ?? null,
+          meetingsCarried: r.carry_count,
+        } : {}),
+      }));
+      const suggestedCount = items.filter((i: any) => i.status === "suggested").length;
+      meetingItems = {
+        note: `Decisions, action items and open questions extracted from filed meeting minutes. ` +
+          (suggestedCount
+            ? `${suggestedCount} of these are still awaiting PM review (status "suggested") — treat them as ` +
+              "likely-but-unconfirmed, and mention they need review if relevant to the answer. "
+            : "") +
+          "An item carried across several meetings (`meetingsCarried` > 1) has been open since `openSince` — that aging is worth surfacing.",
+        items,
+      };
+    }
 
     // Scope posture: who Setty is on this job, and which directory firms own
     // the neighboring disciplines. Directory + prime/client names are matched
@@ -2325,6 +2859,11 @@ mcp.tool("project_briefing", {
         "`teamActivity` shows teammates whose Claude sessions touched this project recently. Tell the " +
         "user who — if someone is on the same question right now, suggest talking to them directly.");
     }
+    if (meetingItems) {
+      guidance.push(
+        "`meetingItems` is the structured record of what the minutes said was outstanding — lean on it " +
+        "for \"what's still open\" instead of re-deriving that from raw minutes text.");
+    }
     guidance.push(SCOPE_POSTURE_GUIDANCE);
 
     const related = await relatedProjectsOf(p);
@@ -2339,6 +2878,9 @@ mcp.tool("project_briefing", {
       ...(related ? { relatedProjects: related } : {}),
       construction,
       meetingRecords: { count: docs.items.length, truncated: docs.truncated, note: docs.note, documents: docs.items },
+      // A briefing with no minutes or no emails to draw on is the moment the
+      // gap is felt: say where the record should live.
+      ...(!docs.items.length || !mail.length ? { reminder: SHAREPOINT_NUDGE } : {}),
       reviewComments: mail.filter((m: any) => m.reviewComments.length),
       recentEmails: mail.slice(0, 10).map((m: any) =>
         ({ recordId: m.recordId, date: m.date, direction: m.direction, from: m.from, subject: m.subject, attachments: m.attachments })),
@@ -2363,6 +2905,7 @@ mcp.tool("project_briefing", {
           people: teamActivity,
         },
       } : {}),
+      ...(meetingItems ? { meetingItems } : {}),
       readNext,
       guidance,
     });
@@ -2459,6 +3002,10 @@ mcp.tool("search_emails", {
     }
     return asText({
       count: rows.length,
+      ...(!rows.length && projectNumber ? {
+        note: "No filed emails matched. This log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
+        reminder: SHAREPOINT_NUDGE,
+      } : {}),
       emails: rows.map((r: any) => ({
         recordId: r.record_id, project: r.project_id, date: r.email_date, direction: r.direction,
         from: r.from_name || r.from_address, to: r.to_addresses, subject: r.subject, preview: r.preview,
@@ -2506,6 +3053,10 @@ mcp.tool("summarize_project_emails", {
     );
     return asText({
       project: projectNumber, returned: rows.length,
+      ...(!rows.length ? {
+        note: "No emails are filed for this project. The log only holds emails filed with the Setty PMS Outlook add-in; emails left in a mailbox or saved to the office drive never reach it.",
+        reminder: SHAREPOINT_NUDGE,
+      } : {}),
       emails: rows.map((r: any) => ({
         date: r.email_date, direction: r.direction, from: r.from_name || r.from_address, to: r.to_addresses,
         subject: r.subject, hasAttachments: r.has_attachments, attachments: r.attachment_names, body: emailBody(r),
@@ -3142,7 +3693,8 @@ mcp.tool("get_current_set", {
     }
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    const onDrive = (await storageFor(project)).kind !== "sharepoint";
+    const st = await storageFor(project);
+    const onDrive = st.kind !== "sharepoint";
     const disc = (discipline ?? "").toLowerCase().trim();
 
     let rows: any[] = [];
@@ -3302,6 +3854,7 @@ mcp.tool("get_current_set", {
           ...(discNote ? { disciplineNote: discNote } : {}),
           fullSetHint: "Sheets are listed at their most recent INDEXED revision across all sets; extract_sheet_index gives the same view grouped by discipline.",
           nextStep: "Issuing sets through the transmittal tool (register-only mode for drive projects) would make this authoritative instead of inferred.",
+          ...siteFallbackFields(st),
         });
       } catch (e) {
         return asText({ project, inferred: true, current: null, error: `No transmittal record, and the drawing index could not be read: ${String((e as any)?.message ?? e)}` });
@@ -3667,16 +4220,18 @@ mcp.tool("list_project_documents", {
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
-        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, await azureResolveSubfolder(az.ctx, dec.relPath, relIn))) }); }
+        try { return asText({ project: gate.projectNumber, ...(await azureListing(az.ctx, await azureResolveSubfolder(az.ctx, dec.relPath, relIn))), reminder: SHAREPOINT_NUDGE }); }
         catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: dec.team }); }
       }
       const team = await teamForProject(projectNumber);
-      const region = await siteForTeam(team);
+      const region = await effectiveRegionForTeam(team);
       // An azure_files region: the share IS the project record. Find the
-      // project folder at the share root by number and list it.
+      // project folder at the share root by number and list it. A SharePoint
+      // region whose site refused the connector lands here too (drive
+      // fallback) and says so via `sharepoint`.
       if (region.kind !== "sharepoint") {
         const num = String(projectNumber || "").toLowerCase().trim();
-        if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE });
+        if (!num) return asText({ error: "This region's files live on a network-drive share: provide projectNumber, or a folderId from a prior listing.", note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE });
         const t = String(team || "").toUpperCase().trim();
         const relIn = cleanRelPath(subfolder || "");
         if (relIn === null) return asText({ error: "subfolder contains a path segment that is not allowed." });
@@ -3689,17 +4244,36 @@ mcp.tool("list_project_documents", {
             error: allFailed ? problems.join(" | ") : `No folder starting with "${projectNumber}" at the root of region ${t}'s drive share${labels.length === 1 ? "" : "s"} (${labels.join(", ")}).`,
             ...(problems.length && !allFailed ? { problems } : {}),
             nextStep: allFailed ? "Fix the share credentials in Admin → Regions / Edge Function secrets." : "Confirm the number with search_projects; the project folder must sit at a registered share's root, named by number.",
-            note: AZURE_LIMITED_NOTE });
+            note: AZURE_LIMITED_NOTE, reminder: SHAREPOINT_NUDGE, ...siteFallbackFields(region) });
         }
         const [first, ...others] = hits;
         try {
           return asText({ project: projectNumber, projectFolder: first.folder,
             ...(await azureListing(first.ctx, await azureResolveSubfolder(first.ctx, first.folder, relIn))),
+            reminder: SHAREPOINT_NUDGE,
             ...(others.length ? { alsoOn: others.map(azureFolderPointer), alsoOnNote: "This project also has a folder on the region's other drive(s); pass one of these folderIds to browse it." } : {}),
-            ...(problems.length ? { problems } : {}) });
+            ...(problems.length ? { problems } : {}), ...siteFallbackFields(region) });
         } catch (e) { return asText({ error: String((e as any)?.message ?? e), storage: "azure_files", region: t, share: first.ctx.label }); }
       }
-      const drives = await siteDrives(team);
+      let drives: Array<{ id: string; name: string }>;
+      try {
+        drives = await siteDrives(team);
+      } catch (e) {
+        // The region's site refused (or does not exist). Say what that
+        // means and who fixes it, and still hand over what IS reachable:
+        // the drive annex, and the folder URL the PMS record itself carries
+        // (on a different site, it is the row that is wrong, not the grant).
+        if (!(e instanceof RegionAccessError)) throw e;
+        const num = String(projectNumber || "").toLowerCase().trim();
+        let recordSays: string | null = null;
+        try {
+          const pid = num ? await resolveProjectId(num) : null;
+          const p = pid ? await getProjectById(pid) : null;
+          recordSays = siteMismatchHint(team, region.siteId, p?.projectFolderUrl);
+        } catch { /* the hint is a courtesy; the error above is the answer */ }
+        const driveAnnex = num && region.shares.length ? await azureAnnexFor(team, num) : null;
+        return asText({ project: projectNumber ?? null, ...regionAccessResult(e, { recordSays, driveAnnex }) });
+      }
       const rel = subfolder && subfolder.trim() ? subfolder.trim().replace(/^\/+|\/+$/g, "").split("/").map(encodeURIComponent).join("/") : "";
       // Mode 3: open a specific folder by composite id.
       if (folderId && String(folderId).trim()) {
@@ -3768,6 +4342,7 @@ mcp.tool("list_project_documents", {
         availableLibraries: drives.map((d) => d.name), librariesWithProject: found.map((f) => f.name),
         count: items.length, items,
         ...(annex ? { driveAnnex: annex } : {}),
+        ...(annex && (annex as any).available ? { reminder: SHAREPOINT_NUDGE } : {}),
         ...(annex && (annex as any).available && !items.length
           ? { note: "Nothing for this project in SharePoint yet, but its legacy folder exists on the office drive — browse a folderId from driveAnnex.folders." } : {}),
         ...(partialLibs.length ? { truncated: true, coverageWarning: `Listing stopped at ${MAX_FOLDER_PAGES * 200} entries in ${partialLibs.join(", ")}. Treat it as a PARTIAL listing — open a subfolder to narrow it.` } : {}),
@@ -3793,7 +4368,9 @@ mcp.tool("read_document", {
     "'Dr. Checks' / DrChecks is the same thing under the agencies' review-system name, so 'Dr. Checks " +
     "comments' means AGENCY review comments. These are often Excel comment logs / registers or DrChecks " +
     "exports — read them in full and note the specific comments and their responses. Large files and other " +
-    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl.",
+    "binaries (drawings, images, .doc/.ppt) return metadata + a webUrl. This is a TEXT extraction: to get the " +
+    "actual file (edit an .xlsx and keep its formulas/dropdowns/formatting, forward a PDF), use download_document; " +
+    "to write an edited file back into the project record, upload_document.",
   inputSchema: z.object({
     itemId: z.string().describe("Item id from list_project_documents: a SharePoint 'driveId|itemId' composite, or an 'az:TEAM.SHARE:path' id for a file on one of the region's network-drive shares"),
     find: z.string().optional().describe("PDF only: jump to the page(s) whose text contains this keyword/phrase (case-insensitive), e.g. a spec section number '15230' or a term like 'DIRECT-BURIED'. The best way to reach a specific section of a large manual."),
@@ -3819,11 +4396,11 @@ mcp.tool("read_document", {
         const az = await azureCtxForTeam(dec.team, dec.label);
         if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
         name = dec.relPath.split("/").pop() || "";
-        base = { itemId, name, storage: "azure_files", region: dec.team, share: az.ctx.label, sharePath: sharePathOf(az.ctx.share, dec.relPath) };
+        base = { itemId, name, storage: "azure_files", region: dec.team, share: az.ctx.label, sharePath: sharePathOf(az.ctx.share, dec.relPath), reminder: SHAREPOINT_NUDGE };
         try {
           const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
           base.size = props.size; base.modified = props.modified;
-          if (props.size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open it from the mapped drive at sharePath." });
+          if (props.size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open it from the mapped drive at sharePath, or download_document for the bytes." });
           pdfCacheKey = itemId;
           pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
           if (!pdfBytes) res = await getFile(az.ctx.share, dec.relPath, az.ctx.sas);
@@ -3834,11 +4411,13 @@ mcp.tool("read_document", {
         // legacy form that only ever came from the default region's library.
         const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
         const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
-        const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl`);
+        const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,webUrl,parentReference`);
+        const gate = await sharePointItemVisible(drive, meta);
+        if (!gate.ok) return gate.res;
         name = meta.name || "";
         const size = meta.size ?? 0;
         base = { itemId, name, size, webUrl: meta.webUrl };
-        if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl." });
+        if (size > MAX_DOC_BYTES) return asText({ ...base, note: "File too large to extract inline — open via webUrl, or download_document for the bytes." });
         pdfCacheKey = drive + "|" + realId;
         pdfBytes = extOf(name) === "pdf" ? pdfCacheGet(pdfCacheKey) : null;
         if (!pdfBytes) {
@@ -3949,6 +4528,292 @@ mcp.tool("read_document", {
   },
 });
 
+// ─── RAW FILE ACCESS: download_document / upload_document (1.19.0) ──────────
+// read_document turns every file into text, which is right for reading and
+// wrong for editing: an .xlsx comment log comes back as rows, and its
+// formulas, data-validation dropdowns, hidden sheets and formatting never
+// reach the model. To edit a workbook and hand back the SAME working file the
+// model needs the original bytes in and the edited bytes out, and the only
+// channel wide enough for that is a URL its sandbox (or the person's browser)
+// can fetch. So:
+//   download_document mints a signed, short-lived GET link the connector
+//     itself serves (/pms-mcp/file/<token>) and streams the bytes unchanged,
+//     from SharePoint or a drive share, gated exactly as read_document is —
+//     the token carries the minting caller and the gate re-runs as them.
+//   upload_document mints a signed PUT link (or takes small files inline as
+//     base64) and writes the bytes to SharePoint: a NEW VERSION of the file it
+//     came from (version history keeps the old one) or a new file beside it.
+// Write posture matches file_qa_report: signed-in callers only, SharePoint
+// only (drive SAS tokens are read-only by policy, ROADMAP-drives.md), never
+// under Outgoing, office/text formats only, size-capped, every write logged
+// with the person behind it. Links are bearer-less by design — the token is
+// the credential — so they expire in minutes and name one file and one verb.
+// FILE_LINK_SECRET is optional: absent, the key is derived from the service
+// key, which already lives only in this function's env.
+const FILE_LINK_SECRET = Deno.env.get("FILE_LINK_SECRET") || `pms-mcp:file-link:v1:${SERVICE_KEY}`;
+const FILE_LINK_BASE = (Deno.env.get("FILE_LINK_BASE") || `${SUPABASE_URL}/functions/v1/pms-mcp/file`).replace(/\/+$/, "");
+const DOWNLOAD_INLINE_MAX_BYTES = 1_000_000;  // base64 inline is a courtesy for small files; the link is the real path
+const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;   // upload-session ceiling (Graph allows far more; the Edge worker's memory does not)
+const UPLOAD_SIMPLE_MAX_BYTES = 3_500_000;   // Graph simple PUT (4MB hard cap); above this an upload session
+const FILE_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "content-type, content-length",
+  "Access-Control-Allow-Methods": "GET, HEAD, PUT, OPTIONS",
+  "Access-Control-Expose-Headers": "content-disposition, content-length, content-type",
+};
+
+type FileMeta = {
+  itemId: string; name: string; size: number; storage: "sharepoint" | "azure_files"; modified?: string | null;
+  webUrl?: string | null; sharePath?: string; region?: string;
+  isFolder?: boolean; drive?: string; realId?: string; parentId?: string | null; parentPath?: string | null;
+};
+// Name/size/link for one id from whichever storage holds it, gated as
+// read_document gates it (sharePointItemVisible, near the top of this file —
+// issue #289 unified what used to be a second, near-identical
+// implementation here, including its own copy of the drive-known-library
+// hardening from #290). A driveId|itemId is otherwise fetched with the
+// app-wide Graph credential with no project context at all — anyone who
+// retains or guesses one could read (or, via upload_document, overwrite) a
+// hidden project's files, or anything else on a drive the Graph app can
+// reach — so this resolves the item's ancestry to a PMS project and applies
+// the same HIDE/team gate before returning anything, exactly as the az:
+// branch already does via azurePathProject.
+async function fileMetaById(itemId: string): Promise<{ ok: true; meta: FileMeta } | { ok: false; res: any }> {
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!dec || !dec.relPath.includes("/")) return { ok: false, res: asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it (az:TEAM.SHARE:project-folder/path/to/file)." }) };
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) return gate;
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) return { ok: false, res: asText({ error: az.error, nextStep: az.nextStep }) };
+    const name = dec.relPath.split("/").pop() || "";
+    const props = await fileProps(az.ctx.share, dec.relPath, az.ctx.sas);
+    return { ok: true, meta: { itemId, name, size: props.size, modified: props.modified, storage: "azure_files", region: dec.team, sharePath: sharePathOf(az.ctx.share, dec.relPath) } };
+  }
+  const bar = itemId.indexOf("|");
+  const drive = bar > 0 ? itemId.slice(0, bar) : await docDriveId();
+  const realId = bar > 0 ? itemId.slice(bar + 1) : itemId;
+  const meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference`);
+  const gate = await sharePointItemVisible(drive, meta);
+  if (!gate.ok) return gate;
+  return { ok: true, meta: {
+    itemId: drive + "|" + realId, name: meta.name || "", size: meta.size ?? 0, modified: meta.lastModifiedDateTime ?? null,
+    storage: "sharepoint", webUrl: meta.webUrl ?? null, isFolder: !!meta.folder, drive, realId,
+    parentId: meta.parentReference?.id ?? null, parentPath: meta.parentReference?.path ?? null,
+  } };
+}
+// The bytes as a streaming Response (no buffering, no cache, no size cap):
+// the download route pipes it straight to the client. Re-runs fileMetaById's
+// gate rather than duplicating it, so a download link redeemed well after
+// minting is re-checked against whatever visibility holds NOW, as the
+// minting caller (restored via callerStore by the route that calls this) —
+// not just whatever held when download_document minted the link.
+async function openFileById(itemId: string): Promise<Response> {
+  if (isAzId(itemId)) {
+    const dec = decodeAzId(itemId);
+    if (!dec || !dec.relPath.includes("/")) throw new Error("malformed drive file id");
+    const gate = await azurePathProject(dec.team, dec.relPath);
+    if (!gate.ok) throw new Error(`No project matching "${dec.relPath.split("/")[0]}".`);
+    const az = await azureCtxForTeam(dec.team, dec.label);
+    if (!az.ok) throw new Error(az.error);
+    return getFile(az.ctx.share, dec.relPath, az.ctx.sas);
+  }
+  const got = await fileMetaById(itemId);
+  if (!got.ok) throw new Error("No document matching that itemId.");
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/drives/${got.meta.drive}/items/${encodeURIComponent(got.meta.realId!)}/content`,
+    { headers: { Authorization: "Bearer " + (await graphToken()) } },
+  );
+  if (!res.ok) throw new Error(`Graph content ${res.status}`);
+  return res;
+}
+// The identity a link was minted under, restored when the link is used so
+// every visibility decision is made as that person (or the service lane).
+const callerFromToken = (by: string | null): Caller =>
+  by ? { kind: "user", email: by, name: null, oid: null } : SERVICE_CALLER;
+const fileLinkExpiry = (ttlMinutes: unknown) => {
+  const ttl = clampTtlMinutes(ttlMinutes);
+  const exp = Math.floor(Date.now() / 1000) + ttl * 60;
+  return { ttl, exp, expiresAt: new Date(exp * 1000).toISOString() };
+};
+
+mcp.tool("download_document", {
+  description:
+    "Get the ORIGINAL FILE BYTES of one document (not a text extraction) by its itemId from list_project_documents / " +
+    "find_document — a SharePoint item or a drive-share file (ids starting 'az:'). Use it when the file itself is " +
+    "the deliverable: editing an .xlsx (formulas, dropdowns, other sheets and formatting survive only in the real " +
+    "file), forwarding a PDF, re-issuing a .docx. Returns a signed download link the connector serves itself, valid " +
+    "for ttlMinutes (default 30): fetch it with a plain GET from your sandbox (curl -L -o …) or hand it to the person " +
+    "to open in a browser. No sign-in is needed at the link, so treat the link like the file. inline:true also " +
+    "returns contentBase64 for files up to 1MB (expensive through the conversation — prefer the link). " +
+    "read_document is still the way to READ a document; upload_document writes an edited file back.",
+  inputSchema: z.object({
+    itemId: z.string().describe("Item id exactly as list_project_documents / find_document printed it: 'driveId|itemId' (SharePoint) or 'az:TEAM.SHARE:path' (drive share)."),
+    inline: z.boolean().optional().describe("Also return the bytes as contentBase64 when the file is 1MB or smaller. Default false."),
+    ttlMinutes: z.number().optional().describe("How long the link stays valid: 5–240 minutes, default 30."),
+  }),
+  handler: async ({ itemId, inline, ttlMinutes }) => {
+    try {
+      const got = await fileMetaById(itemId);
+      if (!got.ok) return got.res;
+      const m = got.meta;
+      if (m.isFolder) return asText({ error: `"${m.name}" is a folder, not a file.`, nextStep: "list_project_documents with folderId lists its files; download one by its itemId." });
+      const { ttl, exp, expiresAt } = fileLinkExpiry(ttlMinutes);
+      const token = await mintFileToken({ k: "get", id: m.itemId, n: m.name, by: currentCaller().email, exp }, FILE_LINK_SECRET);
+      const out: Record<string, unknown> = {
+        itemId: m.itemId, name: m.name, size: m.size, mimeType: mimeFor(m.name), storage: m.storage,
+        ...(m.webUrl ? { webUrl: m.webUrl } : {}), ...(m.sharePath ? { sharePath: m.sharePath } : {}), ...(m.modified ? { modified: m.modified } : {}),
+        downloadUrl: `${FILE_LINK_BASE}/${token}`, expiresAt, ttlMinutes: ttl,
+        how: `GET the URL with no headers — e.g. curl -L -o "${m.name}" "<downloadUrl>" — and you have the original bytes unchanged (formulas, dropdowns, formatting, every sheet). The person can also open the link in a browser to save the file. Anyone holding the link can fetch this ONE file until it expires, so keep it out of shared channels; mint a fresh one if it expires.`,
+        writeBack: m.storage === "sharepoint"
+          ? "After editing, upload_document with this itemId writes it back: overwrite:true for a new version of this file, or name:'…' for a new file beside it."
+          : "Drives are read-only to Claude, so upload_document cannot write here. Hand the edited file to the person.",
+      };
+      if (inline) {
+        if (m.size > DOWNLOAD_INLINE_MAX_BYTES) {
+          out.inlineNote = `Not inlined: ${(m.size / 1e6).toFixed(1)}MB is over the ${(DOWNLOAD_INLINE_MAX_BYTES / 1e6).toFixed(0)}MB inline cap. Use downloadUrl.`;
+        } else {
+          const bytes = new Uint8Array(await (await openFileById(m.itemId)).arrayBuffer());
+          out.contentBase64 = b64FromBuffer(bytes);
+          out.inlineBytes = bytes.byteLength;
+        }
+      }
+      return asText(out);
+    } catch (e) {
+      return asText({ error: String((e as any)?.message ?? e) });
+    }
+  },
+});
+
+// One SharePoint write, two Graph paths: simple PUT under 4MB, an upload
+// session above it. `existingItemId` replaces that file's content (SharePoint
+// keeps the prior version); a new name in `parentId` FAILS on a name clash
+// rather than replacing, so the only way to overwrite anything is to name it
+// by id with overwrite:true.
+async function writeSharePointFile(drive: string, parentId: string, name: string, bytes: Uint8Array, existingItemId: string | null): Promise<any> {
+  if (bytes.byteLength <= UPLOAD_SIMPLE_MAX_BYTES) {
+    const path = existingItemId
+      ? `/drives/${drive}/items/${encodeURIComponent(existingItemId)}/content`
+      : `/drives/${drive}/items/${encodeURIComponent(parentId)}:/${encodeURIComponent(name)}:/content?@microsoft.graph.conflictBehavior=fail`;
+    return graphSend("PUT", path, bytes as unknown as BodyInit, "application/octet-stream");
+  }
+  const sessPath = existingItemId
+    ? `/drives/${drive}/items/${encodeURIComponent(existingItemId)}/createUploadSession`
+    : `/drives/${drive}/items/${encodeURIComponent(parentId)}:/${encodeURIComponent(name)}:/createUploadSession`;
+  const sess = await graphSend("POST", sessPath,
+    JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": existingItemId ? "replace" : "fail", name } }), "application/json");
+  const uploadUrl = String(sess?.uploadUrl || "");
+  if (!uploadUrl) throw new Error("Graph returned no uploadUrl for the upload session.");
+  let last: any = null;
+  for (const r of chunkRanges(bytes.byteLength, UPLOAD_CHUNK_BYTES)) {
+    const part = bytes.subarray(r.start, r.end + 1);
+    // The session URL is pre-authenticated: no bearer, or Graph rejects the chunk.
+    const res = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Range": `bytes ${r.start}-${r.end}/${bytes.byteLength}` }, body: part as unknown as BodyInit });
+    if (!res.ok) {
+      const txt = (await res.text()).slice(0, 300);
+      try { await fetch(uploadUrl, { method: "DELETE" }); } catch { /* best-effort cancel */ }
+      throw new Error(`Graph upload session ${res.status} at bytes ${r.start}-${r.end}: ${txt}`);
+    }
+    last = (res.status === 200 || res.status === 201) ? await res.json() : null;
+  }
+  if (!last?.id) throw new Error("Upload session ended without a driveItem — the file may not have been committed.");
+  return last;
+}
+function uploadResult(item: any, drive: string, name: string, bytes: number, existing: string | null, by: string, folder: string | null) {
+  return {
+    ok: true, itemId: `${drive}|${item.id}`, name: item.name ?? name, webUrl: item.webUrl ?? null, bytes,
+    ...(folder ? { folder } : {}), writtenBy: by, mode: existing ? "replaced" : "created",
+    note: existing
+      ? "Replaced in place as a new SharePoint version; the previous content is in the file's version history if it needs restoring."
+      : "Saved as a new file. read_document / download_document accept the returned itemId.",
+  };
+}
+
+mcp.tool("upload_document", {
+  description:
+    "WRITE a file into the project's SharePoint record — how an edited workbook or document is handed back as a " +
+    "real file, not text. Target: the itemId of an EXISTING FILE (overwrite:true replaces its content as a new " +
+    "SharePoint version, the previous version staying in version history; or name:'…' saves a new file in the same " +
+    "folder), or the itemId of a FOLDER from list_project_documents plus name. Bytes: contentBase64 inline for " +
+    "small files (≤3.5MB), or omit it and the tool returns a signed uploadUrl — PUT the raw bytes to it within the " +
+    "TTL (curl -T file.xlsx \"<uploadUrl>\") and the connector writes them. Pairs with download_document: download → " +
+    "edit in the sandbox → upload. Limits: signed-in callers only; SharePoint only (drives are read-only to Claude); " +
+    "never under an Outgoing folder; office and text formats only (xlsx/xlsm/docx/pptx/pdf/csv/txt/md/json/xml/html); " +
+    "50MB max. A name already in the folder is refused unless you target that file's itemId with overwrite:true. " +
+    "Every write is logged with the caller. Confirm with the person before overwriting.",
+  inputSchema: z.object({
+    itemId: z.string().describe("SharePoint 'driveId|itemId' of the file to replace or save beside, or of the folder to save into."),
+    name: z.string().optional().describe("File name with extension for a NEW file. Required when the target is a folder, or when overwrite is not true."),
+    overwrite: z.boolean().optional().describe("true = replace the content of the file named by itemId (new SharePoint version). Ignored for a folder target."),
+    contentBase64: z.string().optional().describe("The file bytes as base64, for files up to ~3.5MB. Omit to receive an uploadUrl for a PUT instead."),
+    ttlMinutes: z.number().optional().describe("How long the uploadUrl stays valid: 5–240 minutes, default 30."),
+  }),
+  handler: async ({ itemId, name, overwrite, contentBase64, ttlMinutes }) => {
+    const c = currentCaller();
+    if (c.kind !== "user" || !c.email) {
+      return asText({ error: "Writing a file needs a signed-in Setty user behind it — the shared-secret lane cannot upload.", nextStep: "Connect the connector with your Microsoft sign-in and try again." });
+    }
+    if (isAzId(itemId)) {
+      return asText({ error: "Drives are read-only to Claude (the share tokens are read-only by policy), so this file cannot be written back.", nextStep: "Hand the edited file to the person to save on the drive, or save it under the project's SharePoint record if it has one.", reminder: SHAREPOINT_NUDGE });
+    }
+    let target: FileMeta;
+    try {
+      const got = await fileMetaById(itemId);
+      if (!got.ok) return got.res;
+      target = got.meta;
+    } catch (e) {
+      return asText({ error: `Target not found: ${String((e as any)?.message ?? e).slice(0, 200)}`, nextStep: "Pass an itemId exactly as list_project_documents printed it." });
+    }
+    let parentId: string, finalName: string, folderPath: string, existing: string | null = null;
+    if (target.isFolder) {
+      if (!name?.trim()) return asText({ error: `"${target.name}" is a folder — pass name:'file.xlsx' to save a new file into it.` });
+      parentId = target.realId!; finalName = name.trim(); folderPath = `${target.parentPath || ""}/${target.name}`;
+    } else {
+      if (!target.parentId) return asText({ error: "Could not resolve the file's folder from SharePoint." });
+      parentId = target.parentId; folderPath = target.parentPath || "";
+      if (overwrite) { existing = target.realId!; finalName = target.name; }
+      else if (name?.trim()) {
+        finalName = name.trim();
+        if (finalName.toLowerCase() === target.name.toLowerCase()) return asText({ error: `"${finalName}" is the file itself. Pass overwrite:true to replace it as a new version, or a different name for a copy beside it.` });
+      } else {
+        return asText({ error: `"${target.name}" is an existing file. Say what to do: overwrite:true (a new version of this file) or name:'…' (a new file in the same folder).` });
+      }
+    }
+    if (!isWritableName(finalName)) {
+      return asText({ error: `"${finalName}" is not a writable name: office/text formats only (xlsx, xlsm, docx, pptx, pdf, csv, txt, md, json, xml, html), no path characters.` });
+    }
+    if (isOutgoingPath(folderPath)) {
+      return asText({ error: "Outgoing holds issued sets and is never written by the connector.", nextStep: "Issued drawings go through the transmittal tool. Save working files elsewhere in the project folder." });
+    }
+    const rel = folderPath.includes("root:") ? folderPath.slice(folderPath.indexOf("root:") + 5) : folderPath;
+    const drive = target.drive!;
+    if (contentBase64 !== undefined) {
+      let bytes: Uint8Array;
+      try { bytes = Uint8Array.from(atob(contentBase64.replace(/\s/g, "")), (ch) => ch.charCodeAt(0)); }
+      catch { return asText({ error: "contentBase64 is not valid base64." }); }
+      if (!bytes.byteLength) return asText({ error: "contentBase64 decoded to zero bytes." });
+      if (bytes.byteLength > UPLOAD_SIMPLE_MAX_BYTES) {
+        return asText({ error: `${(bytes.byteLength / 1e6).toFixed(1)}MB is over the ${(UPLOAD_SIMPLE_MAX_BYTES / 1e6).toFixed(1)}MB inline cap — omit contentBase64 and PUT the file to the returned uploadUrl instead.` });
+      }
+      try {
+        const item = await writeSharePointFile(drive, parentId, finalName, bytes, existing);
+        console.log("[upload_document]", c.email, existing ? "replaced" : "created", finalName, bytes.byteLength, "bytes in", rel || "/");
+        return asText(uploadResult(item, drive, finalName, bytes.byteLength, existing, c.email, rel || "/"));
+      } catch (e) {
+        return asText({ error: `Write failed: ${String((e as any)?.message ?? e).slice(0, 400)}` });
+      }
+    }
+    const { ttl, exp, expiresAt } = fileLinkExpiry(ttlMinutes);
+    const payload: PutTokenPayload = { k: "put", drive, parent: parentId, name: finalName, item: existing, by: c.email, exp, max: UPLOAD_MAX_BYTES };
+    const token = await mintFileToken(payload, FILE_LINK_SECRET);
+    return asText({
+      uploadUrl: `${FILE_LINK_BASE}/${token}`, method: "PUT", expiresAt, ttlMinutes: ttl, maxBytes: UPLOAD_MAX_BYTES,
+      target: { folder: rel || "/", name: finalName, mode: existing ? "new version of the existing file" : "new file" },
+      how: `PUT the raw file bytes to uploadUrl, body only — e.g. curl -sS -T "${finalName}" "<uploadUrl>". The response is JSON with the saved item's itemId and webUrl. The link writes this ONE target and then expires; nothing is written until the PUT arrives.`,
+    });
+  },
+});
+
 // ─── PROJECT FILE INDEX + RANKED RETRIEVAL (roadmap P0.3) ───────────────────
 // The pitch this serves is "here is a faster door", not "change where you save".
 // Someone asks for the current fire protection narrative and gets a link before
@@ -4053,7 +4918,7 @@ async function projectTree(numPrefix: string): Promise<ProjectTree> {
   // same way, so find_document ranks the same TreeFile rows on either storage.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) {
       const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
       const files: TreeFile[] = []; const libraries: string[] = []; let truncated = false;
@@ -4175,7 +5040,7 @@ async function subtreeFiles(numPrefix: string, rel: string): Promise<{
   // holds the project (standard names map to the drive's own names) and walk.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) {
       const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
       const want = cleanRelPath(relClean) ?? "";
@@ -4400,7 +5265,8 @@ mcp.tool("find_document", {
     const project = p?.projectNumber || projectNumber;
     // Drive-based projects (1.17.2) go through the same walk-and-rank path:
     // projectTree has a drive branch, and the rows carry az: ids and UNC paths.
-    const onDrive = (await storageFor(project)).kind !== "sharepoint";
+    const st = await storageFor(project);
+    const onDrive = st.kind !== "sharepoint";
 
     let tree;
     try {
@@ -4564,6 +5430,7 @@ mcp.tool("find_document", {
       statusCounts: counts,
       statusNote,
       ...(tree.truncated ? { coverageWarning: `The folder walk hit its cap after ${tree.files.length} files, so results may be incomplete.` } : {}),
+      ...(onDrive ? { reminder: SHAREPOINT_NUDGE } : {}),
     });
   },
 });
@@ -4951,8 +5818,12 @@ mcp.tool("prepare_transmittal", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site." });
+    {
+      const st = await storageFor(project);
+      if (st.kind !== "sharepoint") {
+        return asText(st.siteError ? regionAccessResult(st.siteError)
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Transmittal staging needs the project's Outgoing folder in its region's SharePoint site.", reminder: SHAREPOINT_NUDGE });
+      }
     }
 
     let rows: any[] = [];
@@ -5115,7 +5986,8 @@ mcp.tool("extract_sheet_index", {
     // Drive-based project (1.16.0): no register to fold, so the default view
     // is composed from the drawing index; a subfolder request reads the PDFs
     // straight off the share below, exactly as it does for SharePoint.
-    if (!subfolder && (await storageFor(project)).kind !== "sharepoint") {
+    const st = await storageFor(project);
+    if (!subfolder && st.kind !== "sharepoint") {
       const numPrefix = String(project).toLowerCase().trim();
       let derived: Awaited<ReturnType<typeof indexDerivedSet>>;
       try { derived = await indexDerivedSet(numPrefix); }
@@ -5127,6 +5999,7 @@ mcp.tool("extract_sheet_index", {
             ? "Nothing indexed carries a parsed sheet number yet (title blocks did not parse, or indexing is still running)."
             : "Nothing is indexed for this project yet. Drive-based projects have no transmittal register, so the sheet index comes from the drawings themselves.",
           nextStep: "Run search_drawings with indexOnly:true to index the Outgoing folder (repeat until coverage.filesPending is 0), then call again; or pass a set folder as subfolder to read it directly.",
+          ...siteFallbackFields(st),
         });
       }
       return asText({
@@ -5134,6 +6007,7 @@ mcp.tool("extract_sheet_index", {
         sheetCount: derived.sheetCount, disciplineCount: derived.disciplines.length, disciplines: derived.disciplines,
         sourceSets: derived.sourceSets, coverage: derived.coverage,
         note: "Each sheet is shown at its most recent INDEXED issuance. To see what a single set contained instead, pass that set folder as subfolder.",
+        ...siteFallbackFields(st),
       });
     }
 
@@ -5939,7 +6813,7 @@ async function drawingScopeWalk(numPrefix: string, subfolder?: string): Promise<
   // Drive-based projects (1.16.0): the scope comes off the region's shares.
   {
     const team = await teamForProject(numPrefix);
-    const region = await siteForTeam(team);
+    const region = await effectiveRegionForTeam(team);
     if (region.kind !== "sharepoint" && team) return azureDrawingScope(String(team).toUpperCase().trim(), numPrefix, subfolder);
   }
   let rel = String(subfolder || "").replace(/^\/+|\/+$/g, "");
@@ -6359,6 +7233,75 @@ mcp.tool("search_drawings", {
   },
 });
 
+// A drive-only (or drive-fallback) region — DC, BT — has no Supabase index
+// at all for field photos: the Field Photos app only ever uploads to
+// SharePoint, so its sessions never reach pms_field_photo_sessions, and
+// nothing else writes that table either. So when a caller asks about a
+// SPECIFIC project on such a region, walk the standard 05-<num>_PHOTOS ("aka"
+// Photos) → 01-Pictures location directly and synthesize a row per dated
+// subfolder holding at least one image — confirmed live on SIPX258014.00
+// (DC), which has 7 such folders and 26+ real photos in the newest one
+// alone, all otherwise invisible to this tool. No phase/system/tags/notes:
+// that metadata only ever exists in the app's SharePoint sidecar, never on
+// the drive. Bounded to ONE project (never a bare browse) because there is
+// no cheap central index to page through here the way the Supabase query is.
+const DRIVE_PHOTO_SESSION_RE = /^(\d{4}-\d{2}-\d{2})[\s_-]*(.*)$/;
+// Session folders are named by hand ("2026-01-06 Sam's Photos", "2026-08-27_Varun") — a
+// leading date the app would otherwise have captured as `photo_date`, then a free-text
+// label (usually who took them). No date prefix at all is not an error, just an unlabeled
+// session — the whole name becomes the label.
+function parseDriveSessionFolderName(name: string): { date: string | null; label: string | null } {
+  const m = DRIVE_PHOTO_SESSION_RE.exec(String(name || ""));
+  return { date: m ? m[1] : null, label: (m ? m[2] : name).trim() || null };
+}
+async function driveFieldPhotoRows(projectQuery: string): Promise<any[]> {
+  const pid = await resolveProjectId(projectQuery);
+  if (!pid) return [];
+  const proj = await getProjectById(pid);
+  const num = String(proj?.projectNumber || "").trim();
+  if (!num) return [];
+  const team = String(proj?.team || (await teamForProject(num)) || "").toUpperCase().trim();
+  if (!team) return [];
+  const region = await effectiveRegionForTeam(team);
+  if (region.kind === "sharepoint") return [];
+
+  let hits: Array<{ ctx: AzureCtx; folder: string }>;
+  try { ({ hits } = await azureProjectHits(team, num.toLowerCase())); } catch { return []; }
+
+  const rows: any[] = [];
+  for (const h of hits) {
+    let photosRel: string;
+    try { photosRel = await azureResolveSubfolder(h.ctx, h.folder, "Photos"); } catch { continue; }
+    let picturesRel = photosRel;
+    try {
+      const photosDir = await azureDirEntries(h.ctx, photosRel);
+      const picturesName = resolveChildFolder(photosDir.entries, "Pictures");
+      if (picturesName) picturesRel = joinRel(photosRel, picturesName);
+    } catch { continue; }
+    let sessionDirs: AzEntry[];
+    try { sessionDirs = (await azureDirEntries(h.ctx, picturesRel)).entries.filter((e) => e.type === "folder"); }
+    catch { continue; }
+    for (const sub of sessionDirs) {
+      let photoCount = 0;
+      try {
+        const inner = await azureDirEntries(h.ctx, joinRel(picturesRel, sub.name));
+        photoCount = inner.entries.filter((e) => e.type === "file" && isPhotoName(e.name)).length;
+      } catch { continue; }
+      if (!photoCount) continue; // an empty scaffold folder is not a session
+      const { date, label } = parseDriveSessionFolderName(sub.name);
+      rows.push({
+        project_number: num, project_name: proj?.name || "",
+        photo_date: date, phase: null, system: null,
+        location: label, address: null,
+        photographer: null, notes: null, tags: [],
+        photo_count: photoCount, source: "drive",
+        folder_id: encodeAzId(h.ctx.team, joinRel(picturesRel, sub.name), h.ctx.label),
+      });
+    }
+  }
+  return rows;
+}
+
 mcp.tool("search_field_photos", {
   description:
     "Search field-photo upload sessions from the Field Photos mobile app (and Site Report photo " +
@@ -6366,13 +7309,17 @@ mcp.tool("search_field_photos", {
     "(Existing Conditions, Demo/Abatement, Rough-In, Construction Progress, Commissioning, " +
     "Substantial Completion, Punch List, Final/Completed), system (Mechanical/HVAC, Electrical, " +
     "Plumbing, Fire Protection, ...), location/floor, site address, tags, notes, photographer, and " +
-    "photo count. Every result carries the SharePoint folder URL so the photos can be opened " +
-    "directly. Answers questions like 'do we have existing-conditions photos of the roof at X?'. " +
-    "NOTE: the index starts 2026-07-15; older sessions get indexed automatically as people browse " +
-    "the Field Photos gallery, so absence here does not prove no photos exist — offer the " +
-    "project's SharePoint Photos folder (via list_project_documents) as a fallback.",
+    "photo count. A SharePoint result carries `folderUrl` so the photos can be opened directly, or " +
+    "passed to view_photos. Answers questions like 'do we have existing-conditions photos of the roof " +
+    "at X?'. NOTE: the index starts 2026-07-15; older sessions get indexed automatically as people " +
+    "browse the Field Photos gallery, so absence here does not prove no photos exist — offer the " +
+    "project's SharePoint Photos folder (via list_project_documents) as a fallback. " +
+    "For a region whose files live on the office network drive (DC, BT — no Sites.Selected grant, or " +
+    "declared azure_files), passing `project` ALSO walks that project's drive Photos folder directly and " +
+    "returns a row per dated subfolder with photos in it (`source: \"drive\"`, no phase/system/tags — " +
+    "that metadata is never on the drive); those carry `folderId` for view_photos instead of `folderUrl`.",
   inputSchema: z.object({
-    project: z.string().optional().describe("Project number, id, or part of the project name"),
+    project: z.string().optional().describe("Project number, id, or part of the project name. Required to see a drive region's photos (there is no bare-browse index for those)."),
     query: z.string().optional().describe("Free text across phase, system, location, address, tags, notes, and photographer"),
     phase: z.string().optional().describe("Phase filter (substring match), e.g. 'Punch List' or 'Existing'"),
     dateFrom: z.string().optional().describe("Only sessions with photos taken on/after this date (YYYY-MM-DD)"),
@@ -6384,11 +7331,20 @@ mcp.tool("search_field_photos", {
       "location,address,photographer,notes,tags,photo_count,folder_url,source,created_by,uploaded_at" +
       "&order=photo_date.desc.nullslast",
     );
+    let driveRows: any[] = [];
+    if (project) { try { driveRows = await driveFieldPhotoRows(project); } catch { /* SharePoint results still stand */ } }
     const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
-    let out = rows;
+    let out = [...rows, ...driveRows];
     if (project) {
       const pq = project.toLowerCase().trim();
-      out = out.filter((r: any) => has(r.project_number, pq) || has(r.project_name, pq));
+      // A session's project_number may have been captured without the default
+      // ".00" phase suffix (older uploads, or hand-typed before the PMS made
+      // it consistent) even though the query is the PMS's fully-qualified
+      // number — same mismatch numberPrefixMatches guards against for
+      // SharePoint folder names, so reuse it here rather than a raw substring
+      // check (which would also pull in an unrelated "SAPX266021.01").
+      out = out.filter((r: any) =>
+        has(r.project_number, pq) || has(r.project_name, pq) || numberPrefixMatches(r.project_number, pq));
     }
     if (phase) { const ph = phase.toLowerCase().trim(); out = out.filter((r: any) => has(r.phase, ph)); }
     if (dateFrom) out = out.filter((r: any) => r.photo_date && r.photo_date >= dateFrom);
@@ -6408,7 +7364,7 @@ mcp.tool("search_field_photos", {
         date: r.photo_date, phase: r.phase, system: r.system, location: r.location,
         address: r.address, photographer: r.photographer, notes: r.notes || undefined,
         tags: (r.tags || []).length ? r.tags : undefined, photos: r.photo_count,
-        source: r.source, folderUrl: r.folder_url,
+        source: r.source, ...(r.source === "drive" ? { folderId: r.folder_id } : { folderUrl: r.folder_url }),
       })),
     });
   },
@@ -6447,45 +7403,102 @@ function b64FromBuffer(buf: ArrayBuffer | Uint8Array): string {
 const isPhotoName = (name: string) =>
   PHOTO_EXT.has((String(name).split(".").pop() || "").toLowerCase());
 
+// Azure Files has no server-side thumbnail API (SharePoint's Graph
+// `/thumbnails` endpoint is what the branch below uses instead), so a drive
+// photo is downloaded whole and downscaled in-process before being sent —
+// same imagescript dependency view_drawing already pins for encoding
+// rendered PDF pages (README → Gotchas). Returns null on anything
+// imagescript cannot decode (e.g. HEIC) rather than guessing a fallback.
+const VIEW_PHOTOS_DRIVE_TARGET_EDGE = 900;
+async function downscaleForView(bytes: Uint8Array): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const { Image } = await import("imagescript") as any;
+    const img = await Image.decode(bytes);
+    if (Math.max(img.width, img.height) > VIEW_PHOTOS_DRIVE_TARGET_EDGE) {
+      if (img.width >= img.height) img.resize(VIEW_PHOTOS_DRIVE_TARGET_EDGE, Image.RESIZE_AUTO);
+      else img.resize(Image.RESIZE_AUTO, VIEW_PHOTOS_DRIVE_TARGET_EDGE);
+    }
+    return { data: b64FromBuffer(await img.encodeJPEG(80)), mimeType: "image/jpeg" };
+  } catch { return null; }
+}
+
+type PhotoFile =
+  | { source: "sharepoint"; drive: string; id: string; name: string }
+  | { source: "drive"; ctx: AzureCtx; rel: string; name: string };
+
 mcp.tool("view_photos", {
   description:
     "LOOK AT field photos and image files — returns the actual images (SharePoint web-resolution " +
-    "thumbnails) so you can see and describe what they show: equipment, nameplates, conditions, " +
-    "installations. Use it to answer 'which photo shows X', 'what does the nameplate say', 'describe " +
-    "the existing switchgear' — anything that needs eyes on the picture rather than the folder link. " +
-    "Two ways in: pass `folderUrl` from a search_field_photos result to page through that session's " +
-    "photos (a text block lists each returned photo's number and filename — cite photos by FILENAME), " +
-    "or pass `itemId` of a single image file from list_project_documents. Up to " + VIEW_PHOTOS_MAX + " " +
-    "images per call, oldest-name first; use `offset` from the result to keep paging. Thumbnails are " +
-    "for reading content, not for reproducing in deliverables — the folder link still serves the " +
-    "full-resolution originals.",
+    "thumbnails, or a downscaled copy for network-drive photos) so you can see and describe what they " +
+    "show: equipment, nameplates, conditions, installations. Use it to answer 'which photo shows X', " +
+    "'what does the nameplate say', 'describe the existing switchgear' — anything that needs eyes on " +
+    "the picture rather than the folder link. Three ways in: pass `folderUrl` from a search_field_photos " +
+    "SharePoint result (source not \"drive\") to page through that session's photos; pass `folderId` " +
+    "from a search_field_photos DRIVE result (source: \"drive\" — DC/BT network-drive sessions with no " +
+    "phase/system metadata) to page through that folder instead; or pass `itemId` of a single image " +
+    "file from list_project_documents (a SharePoint 'driveId|itemId' composite, or an 'az:' drive file " +
+    "id — both come back from that tool already). A text block lists each returned photo's number and " +
+    "filename — cite photos by FILENAME. Up to " + VIEW_PHOTOS_MAX + " images per call, oldest-name " +
+    "first; use `offset` from the result to keep paging. Images are for reading content, not for " +
+    "reproducing in deliverables — the folder link / sharePath still serves the full-resolution originals.",
   inputSchema: z.object({
-    folderUrl: z.string().optional().describe("A SharePoint folder URL, e.g. `folderUrl` from search_field_photos — pages through the image files inside."),
-    itemId: z.string().optional().describe("A 'driveId|itemId' composite of ONE image file, from list_project_documents."),
+    folderUrl: z.string().optional().describe("A SharePoint folder URL, e.g. `folderUrl` from a search_field_photos SharePoint result — pages through the image files inside."),
+    folderId: z.string().optional().describe("An 'az:TEAM.SHARE:path' drive folder id, e.g. `folderId` from a search_field_photos drive result — pages through the image files inside."),
+    itemId: z.string().optional().describe("A single image file's id from list_project_documents: a SharePoint 'driveId|itemId' composite, or an 'az:' drive file id."),
     offset: z.number().optional().describe("Skip this many images (folder mode) — pass the previous result's nextOffset to continue."),
     count: z.number().optional().describe("Images to return this call (default 4, max " + VIEW_PHOTOS_MAX + ")"),
   }),
-  handler: async ({ folderUrl, itemId, offset, count }) => {
+  handler: async ({ folderUrl, folderId, itemId, offset, count }) => {
     const cap = Math.min(Math.max(count ?? 4, 1), VIEW_PHOTOS_MAX);
     const start = Math.max(offset ?? 0, 0);
 
-    // Resolve to a list of (driveId, itemId, name) image files.
-    let files: Array<{ drive: string; id: string; name: string }> = [];
+    let files: PhotoFile[] = [];
     let folderNote = "";
     if (itemId?.trim()) {
-      const bar = itemId.indexOf("|");
-      if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it." });
-      const drive = itemId.slice(0, bar), realId = itemId.slice(bar + 1);
-      let meta: any;
-      try {
-        meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,file,webUrl`);
-      } catch (e) {
-        return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
+      const raw = itemId.trim();
+      if (isAzId(raw)) {
+        const dec = decodeAzId(raw);
+        if (!dec || !dec.relPath.includes("/")) return asText({ error: "Malformed drive file id.", nextStep: "Pass an itemId exactly as list_project_documents returned it." });
+        const gate = await azurePathProject(dec.team, dec.relPath);
+        if (!gate.ok) return gate.res;
+        const az = await azureCtxForTeam(dec.team, dec.label);
+        if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
+        const name = dec.relPath.split("/").pop() || "";
+        if (!isPhotoName(name)) return asText({ error: `"${name}" is not an image file.`, nextStep: "view_photos reads photos and images; use read_document for documents." });
+        files = [{ source: "drive", ctx: az.ctx, rel: dec.relPath, name }];
+      } else {
+        const bar = raw.indexOf("|");
+        if (bar <= 0) return asText({ error: "itemId must be the 'driveId|itemId' composite exactly as list_project_documents prints it, or an 'az:' drive file id." });
+        const drive = raw.slice(0, bar), realId = raw.slice(bar + 1);
+        let meta: any;
+        try {
+          meta = await graphGet(`/drives/${drive}/items/${encodeURIComponent(realId)}?$select=id,name,file,webUrl`);
+        } catch (e) {
+          return asText({ error: `Could not read that item: ${String((e as any)?.message ?? e)}` });
+        }
+        if (!isPhotoName(meta.name || "")) {
+          return asText({ error: `"${meta.name}" is not an image file.`, nextStep: "view_photos reads photos and images; use read_document for documents.", webUrl: meta.webUrl ?? null });
+        }
+        files = [{ source: "sharepoint", drive, id: meta.id, name: meta.name }];
       }
-      if (!isPhotoName(meta.name || "")) {
-        return asText({ error: `"${meta.name}" is not an image file.`, nextStep: "view_photos reads photos and images; use read_document for documents.", webUrl: meta.webUrl ?? null });
+    } else if (folderId?.trim()) {
+      const dec = decodeAzId(folderId.trim());
+      if (!dec) return asText({ error: "Malformed drive folder id.", nextStep: "Pass a folderId exactly as search_field_photos returned it." });
+      const gate = await azurePathProject(dec.team, dec.relPath);
+      if (!gate.ok) return gate.res;
+      const az = await azureCtxForTeam(dec.team, dec.label);
+      if (!az.ok) return asText({ error: az.error, nextStep: az.nextStep });
+      let listing: { entries: AzEntry[]; truncated: boolean };
+      try { listing = await azureDirEntries(az.ctx, dec.relPath); }
+      catch (e) { return asText({ error: String((e as any)?.message ?? e) }); }
+      files = listing.entries.filter((e) => e.type === "file" && isPhotoName(e.name))
+        .map((e) => ({ source: "drive" as const, ctx: az.ctx, rel: joinRel(dec.relPath, e.name), name: e.name }))
+        // Stable name order so offset paging never skips or repeats.
+        .sort((a, b) => a.name.localeCompare(b.name));
+      folderNote = dec.relPath.split("/").pop() || "";
+      if (!files.length) {
+        return asText({ folder: folderNote, totalImages: 0, error: "No image files in that folder." });
       }
-      files = [{ drive, id: meta.id, name: meta.name }];
     } else if (folderUrl?.trim()) {
       const token = graphShareToken(folderUrl.trim());
       if (!token) return asText({ error: "That folder URL could not be encoded for the SharePoint API." });
@@ -6502,7 +7515,7 @@ mcp.tool("view_photos", {
       if (!folder?.folder || !drive) return asText({ error: "That URL is not a folder the connector can list." });
       const listing = await listChildren(`/drives/${drive}/items/${folder.id}/children?$select=id,name,file&$top=200`);
       files = listing.value.filter((it: any) => it.file && isPhotoName(it.name))
-        .map((it: any) => ({ drive, id: it.id, name: it.name }))
+        .map((it: any) => ({ source: "sharepoint" as const, drive, id: it.id, name: it.name }))
         // Stable name order so offset paging never skips or repeats.
         .sort((a, b) => a.name.localeCompare(b.name));
       folderNote = folder.name || "";
@@ -6511,8 +7524,8 @@ mcp.tool("view_photos", {
       }
     } else {
       return asText({
-        error: "Pass folderUrl (from search_field_photos) or itemId (an image file from list_project_documents).",
-        nextStep: "search_field_photos finds the photo session and returns its folderUrl.",
+        error: "Pass folderUrl or folderId (from search_field_photos) or itemId (an image file from list_project_documents).",
+        nextStep: "search_field_photos finds the photo session and returns its folderUrl (SharePoint) or folderId (drive).",
       });
     }
 
@@ -6523,15 +7536,23 @@ mcp.tool("view_photos", {
     for (let i = 0; i < page.length; i++) {
       const f = page[i];
       try {
-        // Graph renders the thumbnail server-side (HEIC included) and hands a
-        // short-lived pre-authorized URL; 'large' is ~800px — plenty to read a
-        // nameplate, a fraction of the original's bytes.
-        const th = await graphGet(`/drives/${f.drive}/items/${f.id}/thumbnails?$select=large`);
-        const url = th?.value?.[0]?.large?.url;
-        if (!url) { failed.push({ file: f.name, reason: "no thumbnail available" }); continue; }
-        const res = await fetch(url);
-        if (!res.ok) { failed.push({ file: f.name, reason: `thumbnail fetch ${res.status}` }); continue; }
-        images.push({ type: "image", data: b64FromBuffer(await res.arrayBuffer()), mimeType: "image/jpeg" });
+        if (f.source === "sharepoint") {
+          // Graph renders the thumbnail server-side (HEIC included) and hands a
+          // short-lived pre-authorized URL; 'large' is ~800px — plenty to read a
+          // nameplate, a fraction of the original's bytes.
+          const th = await graphGet(`/drives/${f.drive}/items/${f.id}/thumbnails?$select=large`);
+          const url = th?.value?.[0]?.large?.url;
+          if (!url) { failed.push({ file: f.name, reason: "no thumbnail available" }); continue; }
+          const res = await fetch(url);
+          if (!res.ok) { failed.push({ file: f.name, reason: `thumbnail fetch ${res.status}` }); continue; }
+          images.push({ type: "image", data: b64FromBuffer(await res.arrayBuffer()), mimeType: "image/jpeg" });
+        } else {
+          const res = await getFile(f.ctx.share, f.rel, f.ctx.sas);
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          const down = await downscaleForView(bytes);
+          if (!down) { failed.push({ file: f.name, reason: "could not decode this image for preview (unsupported format) — open the original from the drive" }); continue; }
+          images.push({ type: "image", data: down.data, mimeType: down.mimeType });
+        }
         shown.push({ n: start + i + 1, file: f.name });
       } catch (e) {
         failed.push({ file: f.name, reason: String((e as any)?.message ?? e).slice(0, 120) });
@@ -6546,7 +7567,8 @@ mcp.tool("view_photos", {
       ...(failed.length ? { failed } : {}),
       nextOffset: consumed < files.length ? consumed : null,
       note: "Images below are in `showing` order — refer to photos by FILENAME so a teammate can find " +
-        "the original. These are web-resolution thumbnails for viewing; the session's folderUrl holds full resolution." +
+        "the original. These are downscaled/thumbnail copies for viewing; the session's folderUrl or " +
+        "sharePath holds full resolution." +
         (consumed < files.length ? ` ${files.length - consumed} more image(s) — call again with offset:${consumed}.` : ""),
     };
     return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }, ...images] };
@@ -8168,8 +9190,12 @@ mcp.tool("file_qa_report", {
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
-    if ((await storageFor(project)).kind !== "sharepoint") {
-      return asText({ error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint." });
+    {
+      const st = await storageFor(project);
+      if (st.kind !== "sharepoint") {
+        return asText(st.siteError ? regionAccessResult(st.siteError)
+          : { error: AZURE_LIMITED_NOTE, nextStep: "Filing needs the project record in SharePoint.", reminder: SHAREPOINT_NUDGE });
+      }
     }
     const day = (date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) ? date.trim() : new Date().toISOString().slice(0, 10);
     const clean = (s: string) => s.replace(/[\\/:*?"<>|#%]/g, "-").replace(/\s+/g, " ").trim();
@@ -8261,7 +9287,8 @@ mcp.tool("ensure_qaqc_folders", {
     for (const p of page) {
       const num = String(p.projectNumber).toLowerCase().trim();
       try {
-        if ((await storageFor(p.projectNumber)).kind !== "sharepoint") { notProvisioned.push(p.projectNumber + " (non-SharePoint region)"); continue; }
+        const st = await storageFor(p.projectNumber);
+        if (st.kind !== "sharepoint") { notProvisioned.push(p.projectNumber + (st.siteError ? " (region's SharePoint site refused the connector)" : " (non-SharePoint region)")); continue; }
         const drive = await docDriveId(await teamForProject(String(p.projectNumber)));
         const root = await findProjectFolderInDrive(drive, num);
         if (!root) { notProvisioned.push(p.projectNumber); continue; }
@@ -9066,7 +10093,78 @@ app.get("/pms-mcp/health", async (c) => {
   // ?probe=render exercises the PDFium path end to end (two renders of an
   // embedded PDF) so "does view_drawing work on this build?" is one GET.
   if (c.req.query("probe") === "render") return c.json({ ok: true, build: BUILD, render: await renderProbe() });
+  // ?probe=regions asks Graph, uncached, for the drives of every region's
+  // site: the one GET that says whether the connector's Sites.Selected grant
+  // covers a site before the first project is tagged into that region.
+  if (c.req.query("probe") === "regions") return c.json({ ok: true, build: BUILD, regions: await regionsProbe() });
   return c.json({ ok: true, build: BUILD });
+});
+async function regionsProbe(): Promise<Array<Record<string, unknown>>> {
+  const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];
+  const out: Array<Record<string, unknown>> = [];
+  for (const [team, region] of entries) {
+    const row: Record<string, unknown> = {
+      team: team ?? "(default)", storage: region.kind, site: region.siteId, docLibrary: region.docLibrary,
+      driveShares: region.shares.map((s) => s.label),
+    };
+    try {
+      const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
+      const names: string[] = (d.value || []).map((x: any) => String(x.name));
+      out.push({ ...row, ok: true, libraries: names.length, docLibraryFound: names.includes(region.docLibrary) });
+    } catch (e) {
+      const ra = regionAccessError(team, region.siteId, e);
+      out.push({ ...row, ok: false, graphStatus: graphStatusOf(e), graphCode: graphErrorCodeOf(e),
+        error: ra ? ra.message : String((e as any)?.message ?? e).slice(0, 300), ...(ra ? { nextStep: ra.nextStep } : {}) });
+    }
+  }
+  return out;
+}
+
+// ── Raw file links (download_document / upload_document, 1.19.0) ─────────────
+// Bearer-less by design: the token is the credential (signed, minutes-lived,
+// one file, one verb — see fileLinks.ts). GET re-runs the visibility gate AS
+// THE MINTING CALLER and streams the bytes; PUT writes them to the SharePoint
+// target the token pins. Neither route reads the Authorization header, and a
+// token for one verb is refused by the other.
+app.options("/pms-mcp/file/:token", (c) => c.body(null, 204, FILE_CORS));
+app.get("/pms-mcp/file/:token", async (c) => {
+  const t = await verifyFileToken(c.req.param("token"), FILE_LINK_SECRET);
+  if (!t || t.k !== "get") return c.json({ error: "This download link is invalid or has expired. Ask for a fresh one with download_document." }, 403, FILE_CORS);
+  try {
+    const upstream = await callerStore.run(callerFromToken(t.by), () => openFileById(t.id));
+    const headers = new Headers(FILE_CORS);
+    headers.set("Content-Type", mimeFor(t.n));
+    headers.set("Content-Disposition", contentDisposition(t.n));
+    headers.set("Cache-Control", "private, no-store");
+    const len = upstream.headers.get("content-length");
+    if (len) headers.set("Content-Length", len);
+    return new Response(upstream.body, { status: 200, headers });
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    console.warn("[file get] failed:", t.by ?? "service", t.n, msg.slice(0, 200));
+    return c.json({ error: `Could not fetch the file: ${msg.slice(0, 300)}` }, 502, FILE_CORS);
+  }
+});
+app.put("/pms-mcp/file/:token", async (c) => {
+  const t = await verifyFileToken(c.req.param("token"), FILE_LINK_SECRET);
+  if (!t || t.k !== "put") return c.json({ error: "This upload link is invalid or has expired. Ask for a fresh one with upload_document." }, 403, FILE_CORS);
+  const overCap = (n: number) => c.json({ error: `File is ${(n / 1e6).toFixed(1)}MB — over the ${Math.round(t.max / 1048576)}MB cap.` }, 413, FILE_CORS);
+  const declared = Number(c.req.header("content-length") || 0);
+  if (declared > t.max) return overCap(declared);
+  let bytes: Uint8Array;
+  try { bytes = new Uint8Array(await c.req.arrayBuffer()); }
+  catch { return c.json({ error: "Could not read the request body." }, 400, FILE_CORS); }
+  if (!bytes.byteLength) return c.json({ error: "Empty body — PUT the file bytes." }, 400, FILE_CORS);
+  if (bytes.byteLength > t.max) return overCap(bytes.byteLength);
+  try {
+    const item = await writeSharePointFile(t.drive, t.parent, t.name, bytes, t.item);
+    console.log("[upload_document]", t.by, t.item ? "replaced" : "created", t.name, bytes.byteLength, "bytes via PUT link");
+    return c.json(uploadResult(item, t.drive, t.name, bytes.byteLength, t.item, t.by, null), 200, FILE_CORS);
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    console.warn("[file put] failed:", t.by, t.name, msg.slice(0, 200));
+    return c.json({ error: `Write failed: ${msg.slice(0, 400)}` }, 502, FILE_CORS);
+  }
 });
 
 // ── Drive discovery (Admin console → connector) ─────────────────────────────
@@ -9206,7 +10304,30 @@ async function discoverDriveProjects(team: string, label: string, fromYear: stri
     if (prev) seenAgain++; else fresh++;
     rows.push(row);
   }
-  for (let i = 0; i < rows.length; i += 200) await sbUpsert("pms_project_candidates", "project_number", rows.slice(i, i + 200));
+  // PostgREST builds one INSERT's column list from the whole POST body, so
+  // every object in a batch must share the same key set. This loop's two
+  // rows.push() call sites above shape rows very differently — closing a
+  // candidate as "created" carries status/last_seen but not the
+  // pms_match_*/year/siblings columns a fresh or re-seen candidate carries,
+  // and name_from_folder itself is only added to SOME of those (only when
+  // it was just resolved or is still genuinely unknown) — so a single POST
+  // covering a large scan's rows got rejected outright the moment two
+  // shapes landed in the same 200-row chunk (reported against a 10TB+ W:
+  // drive scan, 2026-09-18). Group by exact key set first, then chunk each
+  // group, so a POST body never mixes shapes. This only changes how rows
+  // are split into requests, never what gets written in any of them — in
+  // particular it does NOT null-fill status onto candidate rows that omit
+  // it, which would silently revert a human-dismissed candidate back to
+  // "new" on every re-scan.
+  const shapeGroups = new Map<string, Record<string, unknown>[]>();
+  for (const row of rows) {
+    const shape = Object.keys(row).sort().join(",");
+    if (!shapeGroups.has(shape)) shapeGroups.set(shape, []);
+    shapeGroups.get(shape)!.push(row);
+  }
+  for (const group of shapeGroups.values()) {
+    for (let i = 0; i < group.length; i += 200) await sbUpsert("pms_project_candidates", "project_number", group.slice(i, i + 200));
+  }
   return {
     team, label, fromYear, directories: dirs.length, directoriesScanned: dirsScanned, foldersFound: hits.size,
     newCandidates: fresh, seenAgain, closedAsCreated: created, namesPending, listings,
@@ -9235,6 +10356,79 @@ app.post("/pms-mcp/admin/discover-projects", async (c) => {
   } catch (e) {
     return c.json({ error: String((e as any)?.message ?? e) }, 500, DISCOVERY_CORS);
   }
+});
+
+// ── Meeting-minutes sweep (issue #291) ───────────────────────────────────────
+// Cron-triggered like pms-user-emails' /digest (x-pms-cron guard), but the
+// secret is a plain env var compared directly rather than a
+// pms_integration_secrets row — this file already has that exact pattern for
+// its own machine caller (SHARED_SECRET above), and one Deno.env.get() is
+// simpler than a DB round trip for something checked on every sweep tick.
+// Also callable by an admin JWT with a projectNumber body, for "scan this
+// project now" from the console and for manual testing.
+const MEETING_SWEEP_SECRET = Deno.env.get("MEETING_SWEEP_CRON_SECRET");
+const MEETING_SWEEP_CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-pms-cron",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+// Bounds per invocation, not per portfolio: a cron-scheduled sweep rotates
+// through every active project over several runs (least-recently-swept
+// first, via pms_meeting_sweep_state) rather than trying the whole firm in
+// one HTTP request. Both numbers are conservative on purpose — tune upward
+// once real timings are known post-deploy.
+const MEETING_SWEEP_MAX_PROJECTS = 20;
+const MEETING_SWEEP_MAX_DOCS_PER_PROJECT = 2;
+
+app.options("/pms-mcp/admin/meeting-minutes-sweep", (c) => c.body(null, 204, MEETING_SWEEP_CORS));
+app.post("/pms-mcp/admin/meeting-minutes-sweep", async (c) => {
+  const cronGiven = c.req.header("x-pms-cron") || "";
+  const isCron = !!MEETING_SWEEP_SECRET && cronGiven === MEETING_SWEEP_SECRET;
+  if (!isCron) {
+    const auth = c.req.header("Authorization") || "";
+    const jwt = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!(await isAdminSupabaseJwt(jwt))) {
+      return c.json({ error: "Admins only (Supabase session required), or a valid x-pms-cron secret." }, 403, MEETING_SWEEP_CORS);
+    }
+  }
+  let body: any = {};
+  try { body = await c.req.json(); } catch { /* empty body is fine — cron always sends one */ }
+  const onlyProject = String(body?.projectNumber || "").trim();
+
+  const active = (await getProjectsUnfiltered()).filter((p: any) => p.projectNumber && !p.archived);
+  let targets: any[];
+  if (onlyProject) {
+    targets = active.filter((p: any) => String(p.projectNumber).toLowerCase() === onlyProject.toLowerCase());
+    if (!targets.length) return c.json({ error: `No active project matching "${onlyProject}"` }, 404, MEETING_SWEEP_CORS);
+  } else {
+    const stateRows = await sbGetAll("pms_meeting_sweep_state?select=project_number,last_swept_at");
+    const lastSwept = new Map<string, string>(stateRows.map((r: any) => [r.project_number, r.last_swept_at]));
+    targets = [...active]
+      .sort((a, b) => (lastSwept.get(a.projectNumber) || "").localeCompare(lastSwept.get(b.projectNumber) || ""))
+      .slice(0, MEETING_SWEEP_MAX_PROJECTS);
+  }
+
+  const results: any[] = [];
+  for (const p of targets) {
+    try {
+      const r = await meetingMinutesSweepProject(p.projectNumber, MEETING_SWEEP_MAX_DOCS_PER_PROJECT);
+      if (r.processed || r.errors.length) results.push({ projectNumber: p.projectNumber, ...r });
+    } catch (e) {
+      results.push({ projectNumber: p.projectNumber, processed: 0, skipped: 0, errors: [String((e as any)?.message ?? e).slice(0, 500)] });
+    }
+    if (!onlyProject) {
+      try {
+        await sbUpsert("pms_meeting_sweep_state", "project_number", [
+          { project_number: p.projectNumber, last_swept_at: new Date().toISOString() },
+        ]);
+      } catch { /* rotation state is best-effort; worst case this project is revisited sooner than its turn */ }
+    }
+  }
+  return c.json({
+    scanned: targets.length,
+    more: !onlyProject && active.length > MEETING_SWEEP_MAX_PROJECTS,
+    results,
+  }, 200, MEETING_SWEEP_CORS);
 });
 
 Deno.serve(app.fetch);

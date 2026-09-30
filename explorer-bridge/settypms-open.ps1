@@ -2,22 +2,32 @@
 #
 # Invoked by settypms: links from the PMS web app (registered by
 # SettyPMS-Explorer-Setup.cmd in this folder, current user only).
-# Two verbs:
+# Three verbs:
 #   settypms:open?folder=SAPX256024.00%20-%20K292%20Roof
 #     opens File Explorer at <your synced project root>\<that folder>.
 #   settypms:cowork?folder=...
 #     opens a Claude Code session IN that folder (a terminal window whose
 #     working directory is the project folder), so Claude can read and
 #     write the actual project documents, not just chat about them.
+#   settypms:ndrive?path=N:%5CSAP%5C2026%5CSAPX266002.00
+#     opens File Explorer directly at that N: drive path (NY only). Unlike
+#     `open`, this needs no per-device root — N: is the same fixed drive
+#     letter for everyone in the office — so it is validated against the
+#     known N:\SAP\<year>\... shape instead (see below) rather than joined
+#     under a configured folder.
 #
 # The root is remembered in %LOCALAPPDATA%\SettyPMS\explorer-root.txt.
 # First run (or if the saved root disappears) shows a folder picker.
 #
-# Safety: only ever launches explorer.exe or claude at a single folder
-# name under the saved root. Path separators are stripped from the name
-# and ".." is rejected, so a link cannot escape the root. No text from
-# the link is ever placed on a command line — the folder is passed only
-# as a working directory / quoted path — so a link cannot run anything.
+# Safety: `open`/`cowork` only ever launch explorer.exe or claude at a
+# single folder name under the saved root — path separators are stripped
+# from the name and ".." is rejected, so a link cannot escape the root.
+# `ndrive` has no root to escape (it is already an absolute path), so it is
+# instead validated to START WITH N:\SAP\<4 digits>\ and contain no "..";
+# anything else is refused rather than passed to explorer.exe. No text from
+# any link is ever placed on a command line — a path is passed only as a
+# quoted Start-Process argument or working directory — so a link cannot run
+# anything.
 
 param([string]$Uri)
 $ErrorActionPreference = 'Stop'
@@ -27,6 +37,24 @@ $cfg = Join-Path $dir 'explorer-root.txt'
 
 $verb = 'open'
 if ($Uri -match '^settypms:/{0,2}([a-z]+)') { $verb = $Matches[1] }
+
+if ($verb -eq 'ndrive') {
+  # No configured root: the path arrives whole and absolute, so it is
+  # validated instead of joined. Must start with N:\SAP\<4 digits>\ and
+  # carry no "..", or it is refused outright.
+  if ($Uri -notmatch 'path=([^&]+)') { exit }
+  $path = [uri]::UnescapeDataString($Matches[1])
+  if ($path -notmatch '^N:\\SAP\\\d{4}\\' -or $path -match '\.\.') { exit }
+  if (Test-Path $path) {
+    Start-Process explorer.exe -ArgumentList ('"' + $path + '"')
+  } else {
+    Add-Type -AssemblyName System.Windows.Forms
+    [void][System.Windows.Forms.MessageBox]::Show(
+      "Could not open`n`n$path`n`nThe N: drive may not be mapped on this computer, or the folder may not exist.",
+      'Setty PMS - N Drive')
+  }
+  exit
+}
 
 if ($Uri -notmatch 'folder=([^&]+)') { exit }
 $name = [uri]::UnescapeDataString($Matches[1])

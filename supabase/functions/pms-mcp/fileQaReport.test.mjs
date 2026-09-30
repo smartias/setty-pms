@@ -33,9 +33,11 @@ for (const anchor of [
   assert.ok(src.includes(anchor), `index.ts lost anchor: ${anchor}`);
 }
 // The write surface stays scoped: graphSend appears only as its definition,
-// ensureChildFolder's folder-create, and file_qa_report's upload. The QAQC
+// ensureChildFolder's folder-create, file_qa_report's upload, and the two
+// paths of writeSharePointFile (simple PUT, createUploadSession) behind
+// upload_document (1.19.0; fileLinks.test.mjs pins its guards). The QAQC
 // backfill writes only through ensureChildFolder with one fixed name.
-assert.equal(src.split("graphSend(").length - 1, 3, "graphSend call sites changed - audit the write surface");
+assert.equal(src.split("graphSend(").length - 1, 5, "graphSend call sites changed - audit the write surface");
 for (const anchor of [
   'mcp.tool("ensure_qaqc_folders"',
   'const QAQC_FOLDER_NAME = "09 \u2705 QAQC";'.replace('\u2705', String.fromCodePoint(0x2705)),

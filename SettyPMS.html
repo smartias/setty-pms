@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-17-pms-v155-phase-deliverables-prompt";
+    window.__appVersion = "2026-09-19-pms-v159-ndrive-review-fixes";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -57,6 +57,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <!-- pako: zlib in JS — used to compress email HTML bodies before storing in Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <!-- Realtime "project updated elsewhere" banner (Broadcast) — see
+       supabase/migrations/20260918210000_pms_projects_broadcast_changes.sql.
+       Guarded everywhere it is used: if this fails to load, the app runs
+       exactly as before, the banner feature just silently no-ops. -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <script src="setty-auth.js"></script>
 <!-- Browser .docx pipeline: zip + Word section drops + {{TOKEN}} fill.
      Loaded as a module and hung on window because the app's own code is
@@ -944,6 +949,31 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const settyAuthReady = settyAuth.init().catch(() => null);
 settyAuth.mountPill();
 
+// Realtime client for the "project updated elsewhere" banner (Broadcast).
+// Named settyRealtime, not supabase — the supabase-js UMD bundle itself
+// declares a global `var supabase`, and redeclaring that identifier with
+// const throws a SyntaxError at parse time.
+// Guarded: if the CDN script failed to load (network hiccup, blocked),
+// window.supabase is undefined and the whole app must keep working — this
+// feature just silently no-ops rather than breaking anything else.
+let settyRealtime = null;
+try {
+  if (window.supabase) settyRealtime = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+} catch (_) { settyRealtime = null; }
+// Keeps the Realtime channel authorized as the signed-in user (the RLS
+// policy on realtime.messages is scoped to the authenticated role, same
+// population as pms_projects_select) rather than the anon key. Re-run on
+// every auth change so a sign-in after initial load still picks it up.
+function pmsSyncRealtimeAuth() {
+  if (!settyRealtime) return;
+  try {
+    const jwt = settyAuth.token && settyAuth.token();
+    if (jwt) settyRealtime.realtime.setAuth(jwt);
+  } catch (_) { /* banner just won't authorize until a session exists */ }
+}
+settyAuthReady.then(pmsSyncRealtimeAuth);
+if (settyAuth.onChange) settyAuth.onChange(pmsSyncRealtimeAuth);
+
 // ── Phase 5 capability check ─────────────────────────────────────────────────
 // Wraps settyAuth.can() (role×capability matrix + per-project overrides,
 // managed in the Admin Console). Permissive when signed out (pre-flip) and
@@ -1492,6 +1522,7 @@ async function saveProjectV2(project, expectedVersion) {
     project: blob,
     version: (expectedVersion ?? 1) + 1,
     updated_at: new Date().toISOString(),
+    updated_by: settyAuth.email() || null,
   });
   if (!result || result.length === 0) {
     // No row matched — either it doesn't exist yet, or version mismatch.
@@ -1501,6 +1532,7 @@ async function saveProjectV2(project, expectedVersion) {
       // First-time save — INSERT
       await sbFetchV2("POST", "/rest/v1/pms_projects", {
         id: project.id, project: blob, version: 1, updated_at: new Date().toISOString(),
+        updated_by: settyAuth.email() || null,
       });
       return 1;
     }
@@ -5202,10 +5234,65 @@ const LINK_TYPE_ICONS = {
   "Other":         "🔗",
 };
 
+// Explorer bridge support level, self-reported by the "Setup has been run"
+// checkbox in My Projects → My Settings: the web app has no way to inspect
+// the locally-installed settypms-open.ps1, so this is the only signal it
+// gets. Bumped whenever the script gains a verb a UI feature depends on —
+// "2" added the `ndrive` verb (explorer-bridge/settypms-open.ps1). Someone
+// who ticked the box before that ships is stuck at level 1: their existing
+// folder-open/cowork buttons (verbs that predate this scheme) keep working,
+// but a feature gated on level 2 falls back to its non-one-click form
+// instead of firing a settypms:ndrive link the old script silently ignores
+// (it only recognizes `folder=`, so it exits with no visible failure).
+const EXPLORER_HANDLER_VERSION = 2;
+function explorerHandlerLevel() {
+  return parseInt(localStorage.getItem("pmsExplorerHandler") || "0", 10) || 0;
+}
+function explorerHandlerInstalled() {
+  return explorerHandlerLevel() >= 1;
+}
+function explorerHandlerSupportsNDrive() {
+  return explorerHandlerLevel() >= EXPLORER_HANDLER_VERSION;
+}
+
 // Strip path-illegal characters and collapse whitespace so a user-typed
 // label maps cleanly to a SharePoint filename.
 function sanitizeShortcutName(s) {
   return (s || "").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim().slice(0, 70);
+}
+
+// A manual "Network Folder" External Link already pointing at the N: drive
+// overrides the derived path below. This is the escape hatch for task-order
+// / sub-project numbers whose files intentionally live under a DIFFERENT
+// (usually the parent's) project number on the N: drive — the formula below
+// has no way to know that, but a human who typed this link in by hand did.
+// Verified against the ~40 pre-existing manual links during the N: Drive
+// automation rollout: a handful were exactly this case and were deliberately
+// left in place rather than deleted as "redundant".
+function nDriveOverrideLink(project) {
+  return (project.externalLinks || []).find(l =>
+    l && l.type === "Network Folder" && /^N:\\/i.test((l.url || "").trim())
+  ) || null;
+}
+
+// The N: drive UNC path a NY project's legacy files live under, computed
+// from its own project number — the same convention that was previously
+// only ever typed by hand into a "Network Folder" External Link (verified
+// against ~40 existing ones, and against the region's registered N: share
+// on the Admin Console's Regions tab), and the SAME year-extraction rule
+// the connector already uses server-side for this exact drive
+// (azureFiles.ts yearOfProjectNumber): the year is "20" + the two digits
+// right after the 4-letter entity code. Returns "" for a non-NY project or
+// a number that doesn't match the pattern (e.g. no number yet), unless an
+// override link (above) applies, which wins regardless of team/number shape.
+function nDriveFolderPath(project) {
+  const override = nDriveOverrideLink(project);
+  if (override) return override.url.trim();
+  if ((project.team || "").trim().toUpperCase() !== "NY") return "";
+  const num = (project.projectNumber || "").trim();
+  const m = /^[A-Z]{4}(\d{2})\d{4}/i.exec(num);
+  if (!m) return "";
+  return "N:\\SAP\\20" + m[1] + "\\" + num;
 }
 
 // Sibling projects in the same Related Projects group (shared relatedGroup
@@ -5228,7 +5315,16 @@ function relatedSiblingProjects(project, allProjects) {
 // projects that previously installed an older shortcut set see the
 // "Refresh Shortcuts" button reappear — otherwise their stale fingerprint
 // would still match and they'd never pick up the new entries.
-const SHORTCUT_INSTALL_VERSION = "v4";
+// v5: the N: drive shortcut for NY projects is now always-installed
+// (computed from the project number — see nDriveFolderPath), replacing the
+// ~40 manually-typed "Network Folder" External Links this same change
+// removes. Bumped so every NY project's Refresh button resurfaces once.
+// v6: the fingerprint below now also hashes the derived N: drive path
+// directly (Codex review on PR #297) — previously a renumbered NY project
+// changed nDriveFolderPath() without changing the fingerprint at all, so
+// Refresh Shortcuts never resurfaced and the installed N Drive.url kept
+// pointing at the old number.
+const SHORTCUT_INSTALL_VERSION = "v6";
 function projectShortcutFingerprint(project, allProjects) {
   const noteUrl = project.teamsOneNoteUrl || project.oneNoteUrl || "";
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
@@ -5252,13 +5348,20 @@ function projectShortcutFingerprint(project, allProjects) {
     .map(p => p.id + ":" + (p.name || "") + ":" + p.projectFolderUrl)
     .sort()
     .join("|");
+  // The N: drive path is derived from the project number (or a manual
+  // override link, already covered by `ext` above) — not tracked by any of
+  // the fields above on its own, so a renumbered NY project would never
+  // resurface Refresh Shortcuts and would keep an installed N Drive.url
+  // pointing at its old number. Include the derived path directly.
+  const nDrivePath = nDriveFolderPath(project);
   return SHORTCUT_INSTALL_VERSION + "::" + noteUrl + "::" + teamsFolderUrl + "::" + channelEmail
-    + "::" + proposalFolder + "::" + contractFolder + "::" + ext
+    + "::" + proposalFolder + "::" + contractFolder + "::" + ext + "::" + nDrivePath
     + (related ? "::rel:" + related : "");
 }
 
 // Install all project shortcuts (OneNote notebook + PMS deep link + tools +
-// every external link) into each of the project's SharePoint folder roots.
+// the N: drive folder (NY) + every external link) into each of the
+// project's SharePoint folder roots.
 // If a separate proposal folder is configured (project.proposalFolderUrl
 // distinct from projectFolderUrl), shortcuts are duplicated into it too —
 // proposal stage users get the same launchpad as project execution users.
@@ -5295,6 +5398,12 @@ async function installProjectShortcuts(project, allProjects) {
     label: "Field Photos",
     icon: 52,
   });
+
+  // N: drive (NY only — see nDriveFolderPath). Computed fresh every install,
+  // so it can never drift from the project's own number the way a
+  // manually-typed External Link could (and repeatedly did).
+  const nDrivePath = nDriveFolderPath(project);
+  if (nDrivePath) shortcuts.push({ name: "🗂 N Drive.url", url: nDrivePath, label: "N Drive", icon: 3 });
 
   const teamsFolderUrl = project.teamsChannelFolderUrl || "";
   if (teamsFolderUrl) {
@@ -18609,6 +18718,60 @@ function archiveBlockers(project) {
   return parts.length === 1 ? parts[0] : parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
 }
 
+// Realtime "this project was updated elsewhere" banner (Broadcast).
+// Subscribes to the per-project topic a database trigger broadcasts to on
+// every pms_projects UPDATE (see the migration referenced above). The
+// first event after subscribing just establishes the baseline version —
+// it is the state as of mount, not a change to flag. Informational only:
+// it does not merge remote changes in, it just prompts a refresh so a
+// second editor finds out sooner than at save-conflict time.
+function subscribePmsProjectUpdates(projectId) {
+  if (!settyRealtime) return () => {};
+  pmsSyncRealtimeAuth();
+  let baselineVersion = null;
+  const channel = settyRealtime
+    .channel("pms_projects:" + projectId, { config: { private: true } })
+    .on("broadcast", { event: "UPDATE" }, (payload) => {
+      const row = payload.payload && payload.payload.record;
+      if (!row) return;
+      if (baselineVersion === null) { baselineVersion = row.version; return; }
+      if (row.version <= baselineVersion) return;
+      showProjectUpdateBanner(row.version, row.updated_by);
+    })
+    .subscribe();
+  return () => { try { settyRealtime.removeChannel(channel); } catch (_) {} };
+}
+
+// Mirrors _showUpdateBanner's styling (top of file, app-version banner) so
+// both banners feel like the same feature. Refresh reloads the page —
+// Phase 1 does not attempt to merge fresh server state into in-progress
+// local edits, it only shortens how long a stale view can go unnoticed.
+// updatedBy (Phase 2: pms_projects.updated_by, stamped in saveProjectV2)
+// is untrusted text going into innerHTML below, so it is escaped.
+function pmsEscBannerText(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function showProjectUpdateBanner(version, updatedBy) {
+  if (document.getElementById("__projectUpdateBanner")) return;
+  const banner = document.createElement("div");
+  banner.id = "__projectUpdateBanner";
+  banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+    "background:linear-gradient(90deg,#1F3864,#3B82F6);color:white;" +
+    "padding:10px 16px;font-family:Segoe UI,Arial,sans-serif;font-size:13px;font-weight:600;" +
+    "display:flex;justify-content:space-between;align-items:center;gap:12px;" +
+    "box-shadow:0 2px 12px rgba(0,0,0,0.4);";
+  const who = updatedBy ? pmsEscBannerText(updatedBy) + " updated this project elsewhere" : "This project was updated elsewhere";
+  banner.innerHTML =
+    '<span>\uD83D\uDD04 ' + who + ' (v' + version + '). Refresh to see the latest changes.</span>' +
+    '<button id="__projectRefreshBtn" style="background:white;color:#1F3864;border:none;border-radius:6px;' +
+    'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Refresh</button>' +
+    '<button id="__projectDismissBtn" style="background:transparent;color:white;border:1px solid white;border-radius:6px;' +
+    'padding:6px 14px;font-weight:700;font-size:12px;cursor:pointer">Dismiss</button>';
+  document.body.appendChild(banner);
+  document.getElementById("__projectRefreshBtn").onclick = () => { window.location.reload(); };
+  document.getElementById("__projectDismissBtn").onclick = () => { banner.remove(); };
+}
+
 function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, clients, staff, onAddClient, onUpdateClient, onAddStaff, projects, onNavigateToProject }) {
   const [tab, setTab] = useState(() => {
     // An item deep link (#project:<id>:rfi:<number>) lands on the right tab;
@@ -18632,6 +18795,15 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
   const [relLinkMsg, setRelLinkMsg] = useState("");
   // Pending "Lost" pick from the status dropdown, awaiting the reason modal.
   const [lostConfirm, setLostConfirm] = useState(false);
+
+  // Realtime "this project was updated elsewhere" banner — see
+  // subscribePmsProjectUpdates above. React already remounts ProjectDetail
+  // on project switch (its key includes project.id), so this subscribes on
+  // mount and unsubscribes on unmount/switch with no extra id-tracking.
+  useEffect(() => {
+    if (!project || !project.id) return;
+    return subscribePmsProjectUpdates(project.id);
+  }, [project.id]);
 
   function updateField(field, val) {
     onUpdate({ ...project, [field]: val });
@@ -18731,7 +18903,15 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
     return (parts[parts.length - 1] || "").trim();
   })();
   // One-click mode is per device (set up in My Projects → My Settings).
-  const explorerOneClick = !!explorerFolderName && localStorage.getItem("pmsExplorerHandler") === "1";
+  const explorerOneClick = !!explorerFolderName && explorerHandlerInstalled();
+  // N: drive (NY only): unlike the SharePoint sync folder above, this path
+  // needs no per-device root — N: is the same fixed drive letter for
+  // everyone in the office — so the copy-path button just works, no setup.
+  const nDrivePath = nDriveFolderPath(project);
+  // One-click N: Drive needs the newer handler (settypms:ndrive) — see
+  // explorerHandlerSupportsNDrive. Someone still on the older handler gets
+  // the copy-path fallback instead of a link their script can't parse.
+  const nDriveOneClick = explorerHandlerSupportsNDrive();
 
   const pct = projectOverallPct(project);
   const statusColor = STATUS_COLORS[project.status] || STATUS_COLORS["Not Started"];
@@ -19182,6 +19362,39 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
             style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
               color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
             📂 Explorer Path
+          </button>
+          )}
+          {/* N: drive (NY only). No per-device root needed — N: is the same
+              fixed drive letter for everyone — so the one-click link needs
+              only the same local handler as the SharePoint button above
+              (settypms:ndrive, added alongside settypms:open) and the copy
+              fallback needs no setup prompt at all. Gated on the NEWER
+              handler level (nDriveOneClick / explorerHandlerSupportsNDrive):
+              someone who set up the bridge before the ndrive verb existed
+              still has the OLD script, which silently no-ops on this link
+              (it only recognizes `folder=`) — they get the copy button
+              below instead, until they redo setup and re-tick the box. */}
+          {nDrivePath && nDriveOneClick && (
+            <a href={"settypms:ndrive?path=" + encodeURIComponent(nDrivePath)}
+              title="Open this project's N: drive folder in File Explorer"
+              style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+                color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap",
+                textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+              🗂 Open N: Drive
+            </a>
+          )}
+          {nDrivePath && !nDriveOneClick && (
+          <button
+            title="Copy this project's N: drive path for File Explorer. One-click mode (My Projects → My Settings) also opens it directly."
+            onClick={e => {
+              navigator.clipboard.writeText(nDrivePath).then(() => {
+                const btn = e.target.closest ? e.target.closest("button") : null;
+                if (btn) { const orig = btn.textContent; btn.textContent = "✓ Copied — Win+E, paste"; setTimeout(() => btn.textContent = orig, 2500); }
+              }).catch(() => alert("Could not copy — the path is:\n" + nDrivePath));
+            }}
+            style={{ background: "none", border: `1px solid ${P.border}`, borderRadius: 6,
+              color: P.textDim, cursor: "pointer", fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}>
+            🗂 N: Drive Path
           </button>
           )}
           {project.status === "On Hold" && (
@@ -21462,7 +21675,7 @@ function AskClaudeMenu({ project }) {
     const parts = safeDecodeFolderUrl(spUrl).replace(/\/+$/, "").split("/");
     return (parts[parts.length - 1] || "").trim();
   })();
-  const coworkReady = !!coworkFolderName && localStorage.getItem("pmsExplorerHandler") === "1";
+  const coworkReady = !!coworkFolderName && explorerHandlerInstalled();
 
   const narrativeUrl = () => promptUrl([
     "Generate the design narrative / Basis of Design for " + label + " for the current phase.",
@@ -30649,7 +30862,7 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
   const [showSettings, setShowSettings] = React.useState(false);
   // Explorer one-click handler flag — per DEVICE (localStorage, not
   // pms_user_prefs): the settypms: protocol is registered per machine.
-  const [explorerHandler, setExplorerHandler] = React.useState(() => localStorage.getItem("pmsExplorerHandler") === "1");
+  const [explorerHandler, setExplorerHandler] = React.useState(() => explorerHandlerInstalled());
   const [, setPrefsTick] = React.useState(0);
   const [prefsMsg, setPrefsMsg] = React.useState("");
   const prefRow = (window.__pmsPrefs && window.__pmsPrefs.row) || {};
@@ -30836,12 +31049,24 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
                   <input type="checkbox" checked={explorerHandler} onChange={e => {
                     const on = e.target.checked;
                     setExplorerHandler(on);
-                    if (on) localStorage.setItem("pmsExplorerHandler", "1");
+                    // Ticking it now always records the CURRENT handler level
+                    // (EXPLORER_HANDLER_VERSION) — this assumes whoever is
+                    // checking it just ran today's setup file, which is what
+                    // the label below asks of anyone who set up before N:
+                    // Drive one-click existed.
+                    if (on) localStorage.setItem("pmsExplorerHandler", String(EXPLORER_HANDLER_VERSION));
                     else localStorage.removeItem("pmsExplorerHandler");
+                    setPrefsTick(t => t + 1);
                   }} />
                   Setup has been run on this computer — make 📂 one-click
                 </label>
               </div>
+              {explorerHandler && !explorerHandlerSupportsNDrive() && (
+                <div style={{ color: P.amber || "#fbbf24", fontSize: 11.5, marginTop: 6 }}>
+                  ⚠ This computer's setup predates one-click N: Drive — re-download the setup file above, run it, then
+                  un-tick and re-tick the box to pick up the N: Drive button on NY projects (the 📂 button above keeps working either way).
+                </div>
+              )}
             </div>
             {prefsMsg && <div style={{ fontSize: 12, color: prefsMsg.startsWith("✓") ? P.green : P.red }}>{prefsMsg}</div>}
           </div>
