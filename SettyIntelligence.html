@@ -10,7 +10,7 @@
   <script>
     // Version marker + self-update banner — same pattern as SiteReport.html /
     // SettyFieldPhotos.html so the tab prompts a reload when a new build ships.
-    window.__appVersion = "2026-09-20-intel-v33-meeting-items";
+    window.__appVersion = "2026-09-30-intel-v34-promote-standard";
     async function _checkForUpdate() {
       try {
         const res = await fetch(location.pathname + "?_v=" + Date.now(),
@@ -1833,6 +1833,7 @@ function renderLessonCard(l) {
     // Agency know-how belongs in the curated agency-preferences table, where
     // briefs and the connector's search_agency_preferences read it.
     l.agency && l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="promoteLessonToPref(this.dataset.id)" title="Move into Agency Preferences (goes live on briefs); this lesson is archived pointing at it">→ Agency pref</button>` : "",
+    l.discipline && l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="promoteLessonToStandard(this.dataset.id)" title="Move into Engineering Standards (served by the connector's search_engineering_standards); this lesson is archived pointing at it">→ Standard</button>` : "",
     l.status !== "rejected" && l.status !== "archived" ? `<button class="btn btn-ghost btn-sm" data-id="${esc(l.lesson_id)}" onclick="openRejectModal(this.dataset.id)">✕ Reject</button>` : "",
     `<button class="btn btn-danger btn-sm" data-id="${esc(l.lesson_id)}" onclick="deleteLesson(this.dataset.id)" title="Delete permanently" aria-label="Delete lesson">🗑</button>`,
   ].filter(Boolean).join(" ");
@@ -2203,6 +2204,39 @@ async function reallyPromoteLesson(id) {
       { status: "archived", review_note: "Promoted to Agency Preferences (" + l.agency + ")", reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     state.prefs.loaded = false;   // the Agency Preferences tab reloads on next visit
     toast("Promoted to Agency Preferences — live on briefs for " + l.agency + ".", "success");
+    await reloadLessons();
+  } catch (e) { toast("Promote failed: " + e.message, "error"); }
+}
+
+// Discipline-shaped lessons can graduate into pms_engineering_standards, the
+// firm design-basis table the connector's search_engineering_standards reads.
+// Same contract as the agency promote: goes ACTIVE at once, lesson archived
+// (not deleted) with a note pointing at where it went.
+function promoteLessonToStandard(id) {
+  const l = state.lessons.find(x => x.lesson_id === id);
+  if (!l || !l.discipline) { toast("Only lessons with a discipline can move to Engineering Standards.", "error"); return; }
+  if (!state.user) { openNameModal(() => promoteLessonToStandard(id)); return; }
+  openConfirmModal(
+    `Move this into Engineering Standards (${l.discipline})? It goes ACTIVE in the connector immediately and shapes design guidance on every project. The lesson is archived pointing at it.`,
+    "Promote", () => reallyPromoteToStandard(id));
+}
+async function reallyPromoteToStandard(id) {
+  const l = state.lessons.find(x => x.lesson_id === id);
+  if (!l) return;
+  try {
+    await sb("POST", "/rest/v1/pms_engineering_standards", {
+      discipline: l.discipline,
+      system: l.system || null,
+      standard_text: l.lesson_summary,
+      basis: l.reusable_prompt || null,
+      source_reference: [l.source_reference, "promoted from lesson " + l.lesson_id + (state.user ? " by " + state.user : "")].filter(Boolean).join(" · "),
+      status: "active",
+      date_verified: new Date().toISOString().slice(0, 10),
+    });
+    await sb("PATCH", "/rest/v1/pms_lessons?lesson_id=eq." + encodeURIComponent(id),
+      { status: "archived", review_note: "Promoted to Engineering Standards (" + l.discipline + ")", reviewed_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    state.counts.standards = (state.counts.standards || 0) + 1;
+    toast("Promoted to Engineering Standards.", "success");
     await reloadLessons();
   } catch (e) { toast("Promote failed: " + e.message, "error"); }
 }
