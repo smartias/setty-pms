@@ -26,7 +26,7 @@ import {
 // region's network-drive annex. Pure + injectable-fetch; see azureFiles.ts.
 import {
   type AzureShare, type AzEntry, parseShareUrl, normalizeSas, cleanRelPath, joinRel,
-  encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf,
+  encodeAzId, decodeAzId, isAzId, listDirectory, fileProps, getFile, sharePathOf, relFromSharePath,
   findProjectFolderName, projectForFolderName, extOf, shareLabelClean,
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
   projectNumberOfFolder, projectNameFromFolders, caKindFolders, isDisciplineFolder, folderMentionsNumber,
@@ -833,9 +833,31 @@ async function azureProjectFolder(ctx: AzureCtx, num: string): Promise<string | 
         for (const y of sub) { rel = await lookIn(joinRel(entities[0], y)); if (rel) break; }
       } catch { /* ignore */ }
     }
+    // Last of all: a folder an admin linked to this record in drive discovery
+    // (a folder whose name carries a typo, or a record renumbered since).
+    if (!rel) rel = await azureLinkedFolder(ctx, num);
   }
   _azProjPath.set(key, { at: Date.now(), rel });
   return rel;
+}
+// The drive folder that pms_project_candidates records as belonging to the
+// PMS record with this number, on this share. The link is written by the
+// Admin console's "Link to…" and by bulk registration; the stored drive_path
+// is checked to still list before it is trusted.
+async function azureLinkedFolder(ctx: AzureCtx, num: string): Promise<string | null> {
+  try {
+    const recs = await sbGet("pms_projects?select=id&project->>projectNumber=eq." + encodeURIComponent(num) + "&limit=1");
+    const pid = Array.isArray(recs) && recs[0]?.id;
+    if (!pid) return null;
+    const links = await sbGet("pms_project_candidates?select=drive_path&status=eq.created&created_project_id=eq." + encodeURIComponent(pid) +
+      "&team=eq." + encodeURIComponent(ctx.team) + "&share_label=eq." + encodeURIComponent(ctx.label) + "&order=last_seen.desc&limit=3");
+    for (const l of Array.isArray(links) ? links : []) {
+      const rel = relFromSharePath(ctx.share, l?.drive_path);
+      if (!rel) continue;
+      try { await azureDirEntries(ctx, rel); return rel; } catch { /* moved or renamed since the scan */ }
+    }
+  } catch { /* the by-number search already answered; this is a bonus */ }
+  return null;
 }
 // Resolve a caller's subfolder path ("Outgoing", "Outgoing/2026-09-01 DD")
 // segment by segment against what is really on the drive, so the standard
@@ -1228,7 +1250,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-30-comment-responses";
+const BUILD = "2026-09-30-onboarding-linked-folders";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.21.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10271,15 +10293,19 @@ app.use("/pms-mcp/mcp", async (c, next) => {
 app.get("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.delete("/pms-mcp/mcp", (c) => c.text("Method Not Allowed", 405, { Allow: "POST" }));
 app.all("/pms-mcp/mcp", (c) => httpHandler(c.req.raw));
+// A plain GET (no preflight): the Admin console's new-region checklist reads
+// ?probe=regions from the browser.
+const HEALTH_CORS = { "Access-Control-Allow-Origin": "*" };
 app.get("/pms-mcp/health", async (c) => {
   // ?probe=render exercises the PDFium path end to end (two renders of an
   // embedded PDF) so "does view_drawing work on this build?" is one GET.
-  if (c.req.query("probe") === "render") return c.json({ ok: true, build: BUILD, render: await renderProbe() });
+  if (c.req.query("probe") === "render") return c.json({ ok: true, build: BUILD, render: await renderProbe() }, 200, HEALTH_CORS);
   // ?probe=regions asks Graph, uncached, for the drives of every region's
   // site: the one GET that says whether the connector's Sites.Selected grant
-  // covers a site before the first project is tagged into that region.
-  if (c.req.query("probe") === "regions") return c.json({ ok: true, build: BUILD, regions: await regionsProbe() });
-  return c.json({ ok: true, build: BUILD });
+  // covers a site before the first project is tagged into that region. Each
+  // drive share also gets one root listing with its SAS (row.drives).
+  if (c.req.query("probe") === "regions") return c.json({ ok: true, build: BUILD, regions: await regionsProbe() }, 200, HEALTH_CORS);
+  return c.json({ ok: true, build: BUILD }, 200, HEALTH_CORS);
 });
 async function regionsProbe(): Promise<Array<Record<string, unknown>>> {
   const entries: Array<[string | null, RegionSite]> = [[null, DEFAULT_REGION], ...(await regionMap()).entries()];
@@ -10289,6 +10315,20 @@ async function regionsProbe(): Promise<Array<Record<string, unknown>>> {
       team: team ?? "(default)", storage: region.kind, site: region.siteId, docLibrary: region.docLibrary,
       driveShares: region.shares.map((s) => s.label),
     };
+    // Each drive share: is its SAS secret set, and does one root listing
+    // work with it? (The Admin console's new-region checklist reads this.)
+    if (team && region.shares.length) {
+      const drives: Array<Record<string, unknown>> = [];
+      for (const ref of region.shares) {
+        const az = await azureCtxForTeam(team, ref.label);
+        if (!az.ok) { drives.push({ label: ref.label, ok: false, error: az.error, nextStep: az.nextStep }); continue; }
+        try {
+          const r = await listDirectory(az.ctx.share, "", az.ctx.sas);
+          drives.push({ label: ref.label, ok: true, rootEntries: r.entries.length });
+        } catch (e) { drives.push({ label: ref.label, ok: false, error: String((e as any)?.message ?? e).slice(0, 300) }); }
+      }
+      row.drives = drives;
+    }
     try {
       const d = await graphGet(`/sites/${await resolveSiteId(region.siteId)}/drives?$select=id,name`);
       const names: string[] = (d.value || []).map((x: any) => String(x.name));

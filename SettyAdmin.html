@@ -103,6 +103,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.23.0/lib/msal-browser.min.js"></script>
 <script src="setty-auth.js"></script>
+<script type="module">import * as Onboarding from "./onboarding.js"; window.Onboarding = Onboarding;</script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
 // Setty Admin Console v13 (v2 added System Guide + Claude/MCP runbook tabs;
@@ -346,6 +347,8 @@ const state = { tab: "signins", roster: null, staffCount: null, roles: null, bac
                 teamProjects: null, mcpAudit: null,
                 regions: null, regionEdit: null,
                 cands: null, candFilter: "new", candTeam: "", candEdit: {}, discoScan: {},
+                bulkStaff: null, bulkProj: null, discoProjects: null, nearCache: null, linkChoice: null, renum: null, renumForm: null,
+                regionOnb: null, regionProbe: null,
                 lib: null, libEditKey: null, libNew: false, libClients: null, libClientQ: "", libClientSel: null,
                 myRole: undefined };   // undefined = not checked · "pending" · "none" · or a ROLES value
 
@@ -671,6 +674,7 @@ async function renderRoles() {
         that Graph write scope isn't consented. Careful removing admins: with no admins left, everyone is locked out
         (recovery = re-insert a row via the Supabase SQL editor).</div>
     </div>
+    ${bulkStaffCard()}
     <div class="card">
       ${teamDatalist}
       <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Team</th><th>Updated</th><th></th></tr></thead>
@@ -1246,6 +1250,7 @@ async function renderRegions() {
       <span style="color:var(--muted);font-size:12px">The Claude connector picks up changes within ~5 minutes. Projects route by their PMS <b>team code</b> (the project's Team field: NY, DC, …); a team without an enabled row falls back to NY. This is the same Team code that controls who can <i>see</i> a project — set on people and projects on the <a href="#" onclick="setTab('roles');return false">Users &amp; Roles tab</a>.</span>
     </div>
     ${form}
+    ${regionOnbCard()}
     <div class="card">
       <table><thead><tr><th>Team</th><th>Region</th><th>Storage</th><th>Site</th><th>Library</th><th>Enabled</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="7" class="empty">No regions yet.</td></tr>'}</tbody></table>
@@ -1450,7 +1455,7 @@ async function loadCandidates() {
 }
 async function renderDiscovery() {
   const v = $("view");
-  if (!state.regions || !state.cands) {
+  if (!state.regions || !state.cands || !state.discoProjects) {
     v.innerHTML = '<div class="empty">Loading…</div>';
     try {
       const [regions, shares] = await Promise.all([
@@ -1458,7 +1463,7 @@ async function renderDiscovery() {
         sb("GET", "/rest/v1/pms_region_shares?select=" + SHARE_FIELDS + "&order=team,sort_order,label"),
       ]);
       state.regions = (regions || []).map((r) => ({ ...r, shares: (shares || []).filter((s) => s.team === r.team) }));
-      await loadCandidates();
+      await Promise.all([loadCandidates(), loadDiscoProjects()]);
     } catch (e) { v.innerHTML = `<div class="empty">Could not load: ${esc(e.message)}</div>`; return; }
   }
   const thisYear = new Date().getFullYear();
@@ -1498,7 +1503,7 @@ async function renderDiscovery() {
           <select onchange="candEdit('${esc(c.project_number)}','status',this.value)">${CAND_STATUSES.map((o) => `<option ${o === status ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>
           <button class="btn btn-primary" onclick="createFromCandidate('${esc(c.project_number)}',this)">Create project</button>
           <button class="btn" onclick="setCandidateStatus('${esc(c.project_number)}','dismissed',this)" title="Not a project to track (test folder, duplicate, out of scope). Stays listed under Dismissed.">Dismiss</button>
-        </div>`
+        </div>` + linkRow(c)
       : c.status === "dismissed" ? `<button class="btn" onclick="setCandidateStatus('${esc(c.project_number)}','new',this)">Undo dismiss</button>`
       : `<span style="font-size:12px;color:var(--muted)">${c.note ? esc(c.note) + " · " : ""}record ${esc(c.created_project_id || "")}${c.reviewed_by ? " · by " + esc(c.reviewed_by) : ""}</span>`;
     return `<tr>
@@ -1520,6 +1525,9 @@ async function renderDiscovery() {
       <div style="overflow-x:auto"><table><thead><tr><th>Region</th><th>Drive</th><th>From year</th><th></th><th>Last scan</th></tr></thead>
       <tbody>${shareRows.join("") || '<tr><td colspan="5" class="empty">No drive shares are registered — add them on the Regions tab.</td></tr>'}</tbody></table></div>
     </div>
+    ${bulkProjCard()}
+    ${renumberPanel()}
+    <datalist id="discoProjNums">${(state.discoProjects || []).map((p) => `<option value="${esc(p.num)} ${esc(p.name || "")}"></option>`).join("")}</datalist>
     <div class="card">
       <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
         <b>Candidates</b>
@@ -1637,6 +1645,377 @@ async function createFromCandidate(num, btn) {
     toast((dup && dup.length ? "Already in the PMS — linked " : "Created ") + num + " · " + name + " (" + c.team + ")", "success");
     state.cands = null; render();
   });
+}
+
+// ── Bulk onboarding (staff, project lists, number fixes, new regions) ──────
+// The parsing lives in onboarding.js (window.Onboarding, tested); the writes
+// are the admin RPCs in 20260930140000_bulk_onboarding_and_renumber.sql.
+// Every flow previews first (p_apply false) and writes on a second click.
+const onb = () => {
+  if (!window.Onboarding) throw new Error("onboarding.js has not loaded yet; reload the page");
+  return window.Onboarding;
+};
+const RESULT_PILL = { create: "ok", changed: "ok", already_registered: "info", unchanged: "info", no_folder: "bad", invalid: "bad",
+  duplicate: "warn", likely_existing: "warn", bad_status: "bad", needs_name: "warn" };
+const summaryText = (sum) => Object.entries(sum || {}).map(([k, n]) => n + " " + k.replace(/_/g, " ")).join(" · ") || "nothing to do";
+
+// ── staff ───────────────────────────────────────────────────────────────────
+function bulkStaffState() {
+  if (!state.bulkStaff) state.bulkStaff = { text: "", emailCol: "", team: "", digest: true, roleMap: {}, parsed: null, preview: null, applied: null, welcomed: {} };
+  return state.bulkStaff;
+}
+function bulkStaffParse() {
+  const b = bulkStaffState();
+  const knownTeams = (state.regions || []).map((r) => r.team).concat((state.roles || []).map((x) => x.team)).filter(Boolean);
+  b.parsed = onb().staffRowsFrom(b.text, { columns: b.emailCol ? { email: b.emailCol } : null, roleMap: b.roleMap, defaultTeam: b.team, knownTeams });
+  return b.parsed;
+}
+async function bulkStaffRun(apply, btn) {
+  const b = bulkStaffState();
+  try {
+    const p = bulkStaffParse();
+    if (!p.rows.length) { toast("No rows with an email address. Paste the sheet including its header row, or give the email column letter.", "error"); return; }
+    const rows = p.rows.filter((r) => r.role).map((r) => ({ email: r.email, name: r.name, role: r.role, team: r.team, title: r.title, disciplines: r.disciplines }));
+    if (!rows.length) { b.preview = null; render(); toast("Pick a PMS role for each sheet category first.", "error"); return; }
+    await withBtn(btn, apply ? "adding…" : "checking…", apply ? "done" : "checked", async () => {
+      const res = await sb("POST", "/rest/v1/rpc/pms_admin_bulk_onboard_staff", { p_rows: rows, p_apply: !!apply, p_digest: !!b.digest });
+      if (apply) { b.applied = res; b.preview = null; state.roles = null; } else { b.preview = res; b.applied = null; }
+      toast((apply ? "Saved: " : "Preview: ") + summaryText(res.summary), "success");
+      render();
+    });
+  } catch (e) { toast(e.message, "error"); }
+}
+async function bulkStaffWelcome(btn) {
+  const b = bulkStaffState();
+  const todo = ((b.applied && b.applied.rows) || []).filter((r) => (r.actions || []).includes("role_added") && !b.welcomed[r.email]);
+  if (!todo.length) { toast("Nobody new to welcome.", "success"); return; }
+  if (!confirm("Send the PMS welcome email to " + todo.length + " new people?")) return;
+  btn.disabled = true;
+  let ok = 0, bad = 0;
+  for (const r of todo) {
+    btn.textContent = "sending " + (ok + bad + 1) + "/" + todo.length + "…";
+    try {
+      const res = await fetch(SUPABASE_URL + "/functions/v1/pms-user-emails/welcome", {
+        method: "POST", headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": "Bearer " + settyAuth.token() },
+        body: JSON.stringify({ email: r.email, role: r.role, display_name: r.name || null, added_by: settyAuth.email() }),
+      });
+      if (res.ok) { ok++; b.welcomed[r.email] = true; } else bad++;
+    } catch (_) { bad++; }
+  }
+  toast("Welcome emails: " + ok + " sent" + (bad ? ", " + bad + " failed (use ✉ Welcome on their rows)" : ""), bad ? "error" : "success");
+  render();
+}
+function bulkStaffCard() {
+  const b = bulkStaffState();
+  const p = b.parsed;
+  const res = b.applied || b.preview;
+  const unmapped = p && p.unmapped.length ? `
+      <div style="margin-top:8px;padding:8px;border:1px solid var(--accent);border-radius:6px">
+        <b>Pick a PMS role for these sheet categories</b> <span style="color:var(--muted);font-size:12px">(admin is never guessed)</span>
+        ${p.unmapped.map((u) => `<div class="row" style="gap:8px;margin-top:4px;align-items:center"><span style="min-width:220px">"${esc(u.word || "(blank)")}" × ${u.n}</span>
+          <select onchange="bulkStaffState().roleMap[${esc(JSON.stringify(u.word))}]=this.value">
+            <option value="">choose…</option>${ROLES.map((r) => `<option value="${r}">${roleLabel(r)}</option>`).join("")}</select></div>`).join("")}
+      </div>` : "";
+  const mapped = p && p.rows.length ? (() => {
+    const seen = new Map();
+    for (const r of p.rows) if (r.role) { const k = (r.category || "(blank)") + " → " + roleLabel(r.role); seen.set(k, (seen.get(k) || 0) + 1); }
+    return `<div style="font-size:12px;color:var(--dim);margin-top:6px">${p.rows.length} people read · columns: ${Object.entries(p.columns).map(([k, i]) => k + " " + String.fromCharCode(65 + i)).join(", ")}<br>
+      Role mapping: ${[...seen.entries()].map(([k, n]) => esc(k) + " (" + n + ")").join(" · ")}</div>`;
+  })() : "";
+  const newCount = b.applied ? (b.applied.rows || []).filter((r) => (r.actions || []).includes("role_added")).length : 0;
+  const table = res ? `
+      <div style="margin-top:10px"><b>${b.applied ? "Saved" : "Preview (nothing written yet)"}:</b> ${esc(summaryText(res.summary))}</div>
+      <div style="overflow-x:auto;max-height:420px;overflow-y:auto;margin-top:6px"><table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Team</th><th>Result</th><th>Details</th></tr></thead>
+      <tbody>${(res.rows || []).map((r) => `<tr><td>${esc(r.email)}</td><td>${esc(r.name || "")}</td><td>${esc(r.role ? roleLabel(r.role) : "")}</td><td>${esc(r.team || "")}</td>
+        <td><span class="pill ${RESULT_PILL[r.result] || "info"}">${esc(r.result)}</span></td>
+        <td style="font-size:12px">${esc([...(r.actions || []).map((a) => a.replace(/_/g, " ")), ...(r.notes || [])].join(" · "))}</td></tr>`).join("")}</tbody></table></div>
+      ${b.preview ? `<button class="btn btn-primary" style="margin-top:8px" onclick="bulkStaffRun(true,this)">Add them (${esc(summaryText(res.summary))})</button>` : ""}
+      ${b.applied && newCount ? `<button class="btn" style="margin-top:8px" onclick="bulkStaffWelcome(this)">✉ Send welcome emails to the ${newCount} new people</button>` : ""}` : "";
+  return `
+    <div class="card">
+      <details ${b.text ? "open" : ""}><summary style="cursor:pointer"><b>📋 Bulk add staff from a spreadsheet</b> <span style="color:var(--muted);font-size:12px">(an office's employee list, with roles)</span></summary>
+      <div style="color:var(--muted);font-size:12px;margin:8px 0;line-height:1.5">
+        Copy the rows from Excel (header row included) and paste them here. The console finds the email, name, role/category,
+        title, office and department columns by their headers; give the email column's letter if it has an odd header.
+        <b>Nothing is written until you click Add.</b> People who already have a row keep their role and team (the preview
+        lists any difference so you can change it by hand); new people get a role, and everyone gets a staff directory entry
+        in the PMS (an existing entry with no email is matched by name and completed, not duplicated).
+        SharePoint access and welcome emails are not sent in bulk automatically: send welcomes with the button after saving,
+        and use 📁 SP access per person for NY. Ask anyone with the PMS open to refresh afterward, since the staff directory saves as one list.</div>
+      <textarea rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="First Name&#9;Last Name&#9;Title&#9;Department&#9;Office&#9;Role …&#9;Email" oninput="bulkStaffState().text=this.value">${esc(b.text)}</textarea>
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px">
+        <label style="font-size:12px">Email column <input value="${esc(b.emailCol)}" placeholder="auto" style="width:50px" oninput="bulkStaffState().emailCol=this.value.toUpperCase()"></label>
+        <label style="font-size:12px">Office if the sheet has none <input list="teamOpts" value="${esc(b.team)}" placeholder="—" style="width:70px" oninput="bulkStaffState().team=this.value.toUpperCase()"></label>
+        <label style="font-size:12px"><input type="checkbox" ${b.digest ? "checked" : ""} onchange="bulkStaffState().digest=this.checked"> 📬 weekly digest for new people</label>
+        <button class="btn btn-primary" onclick="bulkStaffRun(false,this)">Preview</button>
+        ${b.text ? `<button class="btn" onclick="state.bulkStaff=null;render()">Clear</button>` : ""}
+      </div>
+      ${unmapped}${mapped}${table}
+      </details>
+    </div>`;
+}
+
+// ── project lists ───────────────────────────────────────────────────────────
+function bulkProjState() {
+  if (!state.bulkProj) state.bulkProj = { text: "", statusMap: {}, rows: null, unmapped: [], preview: null, applied: null };
+  return state.bulkProj;
+}
+async function loadDiscoProjects() {
+  if (state.discoProjects) return state.discoProjects;
+  const rows = await sb("GET", "/rest/v1/pms_projects?select=id,team,num:project->>projectNumber,name:project->>name,status:project->>status,archived:project->archived&order=id.asc&limit=2000");
+  // Pipeline jobs have no number yet: they are never a match for a folder.
+  state.discoProjects = (rows || []).filter((p) => String(p.num || "").trim()).map((p) => ({ ...p, num: String(p.num).trim() }));
+  state.nearCache = new Map();
+  return state.discoProjects;
+}
+function bulkProjParse() {
+  const b = bulkProjState();
+  const p = onb().projectRowsFrom(b.text, { statusMap: b.statusMap });
+  b.rows = p.rows; b.unmapped = p.unmapped; b.columns = p.columns;
+}
+async function bulkProjRun(apply, btn, keepRows) {
+  const b = bulkProjState();
+  try {
+    if (!keepRows || !b.rows) bulkProjParse();
+    if (!b.rows.length) { toast("No project numbers found in what you pasted.", "error"); return; }
+    for (const r of b.rows) if (!r.status && b.statusMap[(r.rawStatus || "").toLowerCase()]) r.status = b.statusMap[r.rawStatus.toLowerCase()];
+    const send = b.rows.filter((r) => r.valid && r.status).map((r) => ({ number: r.number, status: r.status, name: r.name || null }));
+    if (!send.length) { toast("Map the sheet's statuses first (or fix the numbers).", "error"); render(); return; }
+    await loadDiscoProjects();
+    await withBtn(btn, apply ? "registering…" : "checking…", apply ? "done" : "checked", async () => {
+      const res = await sb("POST", "/rest/v1/rpc/pms_admin_bulk_register_projects", { p_rows: send, p_apply: !!apply });
+      if (apply) { b.applied = res; b.preview = null; state.cands = null; state.discoProjects = null; } else { b.preview = res; b.applied = null; }
+      toast((apply ? "Registered: " : "Preview: ") + summaryText(res.summary), "success");
+      render();
+    });
+  } catch (e) { toast(e.message, "error"); }
+}
+function bulkProjUse(from, to) {
+  const b = bulkProjState();
+  for (const r of b.rows || []) if (r.number === from) { r.number = to; r.valid = onb().looksLikeProjectNumber(to); r.fixedFrom = from; }
+  bulkProjRun(false, null, true);
+}
+function bulkProjCard() {
+  const b = bulkProjState();
+  const res = b.applied || b.preview;
+  const invalid = (b.rows || []).filter((r) => !r.valid);
+  const unmapped = b.unmapped && b.unmapped.length ? `
+      <div style="margin-top:8px;padding:8px;border:1px solid var(--accent);border-radius:6px"><b>Which PMS status is each of these?</b>
+        ${b.unmapped.map((u) => `<div class="row" style="gap:8px;margin-top:4px;align-items:center"><span style="min-width:200px">"${esc(u.word || "(blank)")}" × ${u.n}</span>
+          <select onchange="bulkProjState().statusMap[${esc(JSON.stringify(u.word))}]=this.value">
+            <option value="">choose…</option>${CAND_STATUSES.map((s) => `<option>${esc(s)}</option>`).join("")}</select></div>`).join("")}
+      </div>` : "";
+  const candNums = (state.cands || []).map((c) => c.project_number);
+  const suggest = (num) => {
+    const near = onb().nearestNumbers(num, candNums, { maxDist: 2, limit: 3 });
+    return near.length ? " · did you mean " + near.map((n) =>
+      `<button class="btn" style="padding:1px 6px;font-size:11px" onclick="bulkProjUse('${esc(num)}','${esc(n.number)}')" title="${n.sibling ? "Same base number, different task order" : n.dist + " character(s) different"}">${esc(n.number)}</button>`).join(" ") + "?" : "";
+  };
+  const fixed = new Map((b.rows || []).filter((r) => r.fixedFrom).map((r) => [r.number, r.fixedFrom]));
+  const table = res ? `
+      <div style="margin-top:10px"><b>${b.applied ? "Registered" : "Preview (nothing written yet)"}:</b> ${esc(summaryText(res.summary))}</div>
+      <div style="overflow-x:auto;max-height:420px;overflow-y:auto;margin-top:6px"><table><thead><tr><th>Number</th><th>Result</th><th>Details</th></tr></thead>
+      <tbody>${(res.rows || []).map((r) => `<tr><td><b>${esc(r.number)}</b>${fixed.has(r.number) ? `<div style="font-size:11px;color:var(--muted)">sheet said ${esc(fixed.get(r.number))}</div>` : ""}</td>
+        <td><span class="pill ${RESULT_PILL[r.result] || "info"}">${esc(r.result.replace(/_/g, " "))}</span></td>
+        <td style="font-size:12px">${esc(r.note || "")}${r.result === "no_folder" ? suggest(r.number) : ""}</td></tr>`).join("")}</tbody></table></div>
+      ${b.preview && (res.summary || {}).create ? `<button class="btn btn-primary" style="margin-top:8px" onclick="bulkProjRun(true,this,true)">Create ${res.summary.create} project record(s)</button>` : ""}` : "";
+  return `
+    <div class="card">
+      <details ${b.text ? "open" : ""}><summary style="cursor:pointer"><b>📋 Register projects from a list</b> <span style="color:var(--muted);font-size:12px">(only the jobs on it, in bulk)</span></summary>
+      <div style="color:var(--muted);font-size:12px;margin:8px 0;line-height:1.5">
+        Paste the list of jobs to register (project number, status, and optionally a name column) straight from Excel. Only numbers on
+        the list are touched. A number with a scanned folder and no PMS record is created with the folder's name (or the sheet's name
+        column), the sheet's status and the region of the drive it was found on. A number already in the PMS is left as it is, and its
+        drive folder is marked as belonging to it. <b>No folder</b> means no scan found it: scan that drive first, or pick one of the
+        close numbers offered if the sheet has a typo. Run the drive scans above before this.</div>
+      <textarea rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="Project Number&#9;Project Name&#9;Status" oninput="bulkProjState().text=this.value">${esc(b.text)}</textarea>
+      <div class="row" style="gap:10px;align-items:center;margin-top:6px">
+        <button class="btn btn-primary" onclick="bulkProjRun(false,this)">Preview</button>
+        ${b.text ? `<button class="btn" onclick="state.bulkProj=null;render()">Clear</button>` : ""}
+        ${b.rows ? `<span style="font-size:12px;color:var(--dim)">${b.rows.length} row(s) read${invalid.length ? " · ⚠ not a project number: " + esc(invalid.map((r) => r.number).slice(0, 8).join(", ")) : ""}</span>` : ""}
+      </div>
+      ${unmapped}${table}
+      </details>
+    </div>`;
+}
+
+// ── link a folder to any record, or fix a record's number ───────────────────
+function nearRecords(num) {
+  if (!state.discoProjects) return [];
+  if (!state.nearCache) state.nearCache = new Map();
+  if (!state.nearCache.has(num)) {
+    const pool = state.discoProjects.map((p) => ({ number: p.num, p }));
+    state.nearCache.set(num, onb().nearestNumbers(num, pool, { maxDist: 2, limit: 3 }).map((n) => ({ ...n, p: n.item.p })));
+  }
+  return state.nearCache.get(num);
+}
+function linkRow(c) {
+  if (!state.discoProjects || !window.Onboarding) return "";
+  const near = nearRecords(c.project_number);
+  const chips = near.map((n) => `<button class="btn" style="padding:2px 8px;font-size:11.5px" onclick="linkChoose('${esc(c.project_number)}','${esc(n.p.id)}')"
+      title="${n.sibling ? "Same base number, a different task order: usually a different job" : n.dist + " character(s) different from the folder"}">${esc(n.number)} · ${esc((n.p.name || "").slice(0, 40))}${n.sibling ? " (sibling)" : ""}</button>`).join(" ");
+  const choice = state.linkChoice && state.linkChoice.num === c.project_number ? (() => {
+    const p = state.discoProjects.find((x) => x.id === state.linkChoice.pid);
+    if (!p) return "";
+    const same = p.num.toUpperCase() === c.project_number.toUpperCase();
+    return `<div style="margin-top:6px;padding:8px;border:1px solid var(--accent);border-radius:6px;font-size:12.5px">
+      ${same ? `Link this folder to <b>${esc(p.num)}</b> · ${esc(p.name || "")}?` : `The folder says <b>${esc(c.project_number)}</b>, the PMS record says <b>${esc(p.num)}</b> (${esc(p.name || "")}). Which number is right?`}
+      <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="linkApply('${esc(c.project_number)}','${esc(p.id)}',this)">${same ? "Link" : "The record is right: link the folder, keep " + esc(p.num)}</button>
+        ${same ? "" : `<button class="btn" onclick="renumberPreview('${esc(p.id)}','${esc(c.project_number)}',this)">The folder is right: change the record to ${esc(c.project_number)}</button>`}
+        <button class="btn" onclick="state.linkChoice=null;render()">Cancel</button>
+      </div></div>`;
+  })() : "";
+  return `
+    <div class="row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+      <input list="discoProjNums" id="lk_${esc(c.project_number)}" placeholder="Link to an existing PMS record…" style="width:210px">
+      <button class="btn" onclick="linkChooseTyped('${esc(c.project_number)}')">Link…</button>
+      ${chips ? `<span style="font-size:11.5px;color:var(--muted)">close numbers in the PMS:</span> ${chips}` : ""}
+    </div>${choice}`;
+}
+function linkChooseTyped(num) {
+  const v = String(($("lk_" + num) || {}).value || "").trim().toUpperCase();
+  const p = (state.discoProjects || []).find((x) => x.num.toUpperCase() === v.split(" ")[0]);
+  if (!p) { toast("No PMS record with number " + (v || "(blank)"), "error"); return; }
+  linkChoose(num, p.id);
+}
+function linkChoose(num, pid) { state.linkChoice = { num, pid }; render(); }
+async function linkApply(num, pid, btn) {
+  const p = (state.discoProjects || []).find((x) => x.id === pid);
+  await withBtn(btn, "linking…", "linked", async () => {
+    await sb("PATCH", "/rest/v1/pms_project_candidates?project_number=eq." + encodeURIComponent(num),
+      { status: "created", created_project_id: pid,
+        note: "Linked by hand to " + (p ? p.num : pid) + (p && p.num.toUpperCase() !== num.toUpperCase() ? " (the folder's number differs)" : ""),
+        reviewed_at: new Date().toISOString(), reviewed_by: settyAuth.email() });
+    toast("Linked folder " + num + " to " + (p ? p.num + " · " + (p.name || "") : pid), "success");
+    state.linkChoice = null; state.cands = null; render();
+  });
+}
+async function renumberPreview(pid, newNum, btn) {
+  try {
+    await withBtn(btn, "checking…", "checked", async () => {
+      const res = await sb("POST", "/rest/v1/rpc/pms_admin_renumber_project", { p_project_id: pid, p_new_number: newNum, p_apply: false });
+      state.renum = res; render();
+      const el = $("renumPanel"); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  } catch (e) { toast(e.message, "error"); }
+}
+async function renumberApply(btn) {
+  const r = state.renum;
+  if (!r) return;
+  if (!confirm("Change " + r.old_number + " to " + r.new_number + " on the record and " + (r.touched || []).length + " related table(s)? Anyone with this project open in the PMS must refresh afterward.")) return;
+  try {
+    await withBtn(btn, "renumbering…", "done", async () => {
+      const res = await sb("POST", "/rest/v1/rpc/pms_admin_renumber_project", { p_project_id: r.project_id, p_new_number: r.new_number, p_apply: true });
+      toast("Renumbered " + res.old_number + " → " + res.new_number + (res.warnings && res.warnings.length ? " · see the note about the folder" : ""), "success");
+      state.renum = { ...res, done: true }; state.linkChoice = null; state.cands = null; state.discoProjects = null; render();
+    });
+  } catch (e) { toast(e.message, "error"); }
+}
+function renumberPanel() {
+  const r = state.renum;
+  const fix = state.renumForm || { from: "", to: "" };
+  const form = `
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <b>✏️ Fix a record's project number</b>
+        <input list="discoProjNums" value="${esc(fix.from)}" placeholder="current number (with the typo)" style="width:200px" oninput="state.renumForm={...(state.renumForm||{}),from:this.value.split(' ')[0].toUpperCase()}">
+        →
+        <input value="${esc(fix.to)}" placeholder="correct number" style="width:160px" oninput="state.renumForm={...(state.renumForm||{}),to:this.value.toUpperCase()}">
+        <button class="btn" onclick="renumberFromForm(this)">Preview</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">Changes the number on the PMS record and on everything filed under it (RFIs, submittals, meetings,
+        lessons, QA, permissions, the drawing index, SETTYfy and Newforma maps). Emails and the filing log follow the record already.
+        The preview lists every table before anything changes. It does not rename folders.</div>`;
+  const body = !r ? "" : `
+      <div id="renumPanel" style="margin-top:10px;padding:10px;border:1px solid ${r.done ? "var(--ok,#2a7)" : "var(--accent)"};border-radius:8px;font-size:12.5px">
+        <b>${r.done ? "Done:" : "Preview:"}</b> ${esc(r.name || "")} <b>${esc(r.old_number)}</b> → <b>${esc(r.new_number)}</b>
+        <div style="margin-top:4px">${(r.touched || []).length ? "Also " + (r.done ? "changed" : "changes") + ": " + r.touched.map((t) => esc(t.table.replace(/^pms_/, "")) + " (" + t.rows + ")").join(" · ") : "Nothing else is filed under the old number."}</div>
+        ${(r.warnings || []).map((w) => `<div style="margin-top:4px;color:var(--warn,#b70)">⚠ ${esc(w)}</div>`).join("")}
+        <div class="row" style="gap:6px;margin-top:8px">
+          ${r.done ? "" : `<button class="btn btn-primary" onclick="renumberApply(this)">Change the number</button>`}
+          <button class="btn" onclick="state.renum=null;render()">${r.done ? "Close" : "Cancel"}</button>
+        </div>
+      </div>`;
+  return `<div class="card">${form}${body}</div>`;
+}
+async function renumberFromForm(btn) {
+  const f = state.renumForm || {};
+  await loadDiscoProjects();
+  const p = state.discoProjects.find((x) => x.num.toUpperCase() === String(f.from || "").toUpperCase());
+  if (!p) { toast("No PMS record with number " + (f.from || "(blank)"), "error"); return; }
+  renumberPreview(p.id, f.to, btn);
+}
+
+// ── new-region checklist ────────────────────────────────────────────────────
+async function regionOnbLoad(team) {
+  state.regionOnb = { team, loading: true };
+  render();
+  try {
+    const [cands, projects, people] = await Promise.all([
+      sb("GET", "/rest/v1/pms_project_candidates?select=status&team=eq." + encodeURIComponent(team) + "&limit=5000"),
+      sb("GET", "/rest/v1/pms_projects?select=id&team=eq." + encodeURIComponent(team) + "&limit=5000"),
+      sb("GET", "/rest/v1/pms_user_roles?select=email&team=eq." + encodeURIComponent(team)),
+    ]);
+    const counts = { new: 0, created: 0, dismissed: 0 };
+    for (const c of cands || []) counts[c.status] = (counts[c.status] || 0) + 1;
+    state.regionOnb = { ...state.regionOnb, loading: false, cands: counts, candTotal: (cands || []).length, projects: (projects || []).length, people: (people || []).length };
+  } catch (e) { state.regionOnb = { team, loading: false, error: e.message }; }
+  render();
+}
+async function regionOnbProbe(btn) {
+  await withBtn(btn, "checking…", "checked", async () => {
+    const res = await fetch(SUPABASE_URL + "/functions/v1/pms-mcp/health?probe=regions");
+    const j = await res.json();
+    state.regionProbe = { at: new Date().toISOString(), build: j.build, regions: j.regions || [] };
+    render();
+  });
+}
+function regionOnbCard() {
+  const o = state.regionOnb;
+  const r = o && state.regions.find((x) => x.team === o.team);
+  const pick = `<select onchange="this.value?regionOnbLoad(this.value):(state.regionOnb=null,render())">
+      <option value="">Pick the region…</option>${state.regions.map((x) => `<option value="${esc(x.team)}" ${o && o.team === x.team ? "selected" : ""}>${esc(x.team)} · ${esc(x.region_name)}</option>`).join("")}</select>`;
+  const head = `<div class="row" style="gap:10px;align-items:center;flex-wrap:wrap"><b>🧭 Onboard a new region</b> ${pick}
+      <button class="btn" onclick="state.regionEdit=regionBlank();render()">＋ Add the region first</button></div>`;
+  if (!o) return `<div class="card">${head}<div style="color:var(--muted);font-size:12px;margin-top:6px">A step-by-step check for bringing an office onto the PMS:
+      region and drives, the drive credential, the scan, project registration, and its people. Add the region (button) if it is not listed yet, then pick it.</div></div>`;
+  if (o.loading) return `<div class="card">${head}<div class="empty">Checking ${esc(o.team)}…</div></div>`;
+  if (o.error || !r) return `<div class="card">${head}<div class="empty">${esc(o.error || "Region not found")}</div></div>`;
+  const shares = (r.shares || []).filter((s) => s.enabled !== false);
+  const probeRow = state.regionProbe && state.regionProbe.regions.find((x) => x.team === r.team);
+  const drives = probeRow && probeRow.drives || null;
+  const probeOld = probeRow && !probeRow.drives && shares.length;
+  const drivesOk = drives && shares.length && shares.every((s) => (drives.find((d) => d.label === s.label) || {}).ok);
+  const nyLike = r.storage_kind === "sharepoint";
+  const step = (done, title, detail, action) => `
+      <tr><td style="width:28px;font-size:16px">${done === true ? "✅" : done === "warn" ? "⚠️" : "⬜"}</td><td><b>${title}</b><div style="font-size:12px;color:var(--dim);line-height:1.5">${detail}</div></td><td style="white-space:nowrap">${action || ""}</td></tr>`;
+  const rows = [
+    step(r.enabled ? true : "warn", "1 · Region saved and enabled",
+      `${esc(r.team)} · ${esc(r.region_name)} · storage: ${nyLike ? "SharePoint is the record" : "network drive is the record"}. Every office but NY should be <i>network drive is the record</i>.`,
+      `<button class="btn" onclick="editRegion(${state.regions.indexOf(r)})">Edit</button>`),
+    step(shares.length ? true : (nyLike ? true : "warn"), "2 · Drive shares listed",
+      shares.length ? shares.map((s) => `<code>${esc(s.label)}:</code> ${esc(s.share_url)} (secret <code>${esc(s.sas_env || sasNameFor(r.team, s.label))}</code>)`).join("<br>") : "No drive shares. Add each drive the office's project folders live on (Edit → ＋ Add drive share).",
+      ""),
+    step(!shares.length ? true : drives ? (drivesOk ? true : "warn") : false, "3 · Drive credential works",
+      !shares.length ? "No drives to check." : probeOld ? "The connector (build " + esc(state.regionProbe.build || "?") + ") does not check drive credentials yet: it needs the 2026-09-30-onboarding-linked-folders deploy." : !drives ? "In the Supabase dashboard → Edge Functions → Secrets, add one read + list SAS per share, named as in step 2 (the value is the token's query string, one line). Then check." :
+        drives.map((d) => `<code>${esc(d.label)}:</code> ${d.ok ? "✓ lists (" + d.rootEntries + " entries at the root)" : "✗ " + esc(d.error || "") + (d.nextStep ? " · " + esc(d.nextStep) : "")}`).join("<br>") +
+        (state.regionProbe && state.regionProbe.build ? `<br><span style="color:var(--muted)">connector build ${esc(state.regionProbe.build)}</span>` : ""),
+      shares.length ? `<button class="btn" onclick="regionOnbProbe(this)">Check drives</button>` : ""),
+    step(!shares.length ? true : o.candTotal ? true : false, "4 · Drives scanned",
+      o.candTotal ? `${o.candTotal} project folder(s) found without a record at scan time: ${o.cands.new || 0} to review, ${o.cands.created || 0} registered or linked, ${o.cands.dismissed || 0} dismissed.` : "Scan each drive on the Drive discovery tab (set From year to the oldest active year).",
+      `<button class="btn" onclick="state.candTeam='${esc(r.team)}';setTab('discovery')">Drive discovery</button>`),
+    step(o.projects ? true : false, "5 · Projects registered",
+      `${o.projects} PMS record(s) on team ${esc(r.team)}. Paste the office's active job list into <b>Register projects from a list</b> on Drive discovery; fix typos with <b>Link…</b> or <b>Fix a record's project number</b>.` + (nyLike ? " For a SharePoint region, create only jobs that live on the drive alone." : ""),
+      `<button class="btn" onclick="state.candTeam='${esc(r.team)}';setTab('discovery')">Register</button>`),
+    step(o.people ? true : false, "6 · People set up",
+      `${o.people} people have team ${esc(r.team)}. Paste the office's staff list into <b>Bulk add staff</b> on Users &amp; Roles with office ${esc(r.team)}, then send the welcome emails. Everyone with a role sees every project unless it is marked Confidential.`,
+      `<button class="btn" onclick="bulkStaffState().team='${esc(r.team)}';setTab('roles')">Users &amp; Roles</button>`),
+    step(false, "7 · Check it in Claude",
+      "In a fresh Claude conversation connected to the PMS, run <code>list_project_documents</code> on one of the new numbers (it should return the drive folder tree), then <code>search_drawings</code> on one with an Outgoing folder. Then roll out the Outlook add-in to the office.", ""),
+  ].join("");
+  return `<div class="card">${head}
+      <table style="margin-top:8px"><tbody>${rows}</tbody></table>
+      <button class="btn" style="margin-top:6px" onclick="regionOnbLoad('${esc(r.team)}')">↻ Re-check</button></div>`;
 }
 
 async function renderIntegration() {
