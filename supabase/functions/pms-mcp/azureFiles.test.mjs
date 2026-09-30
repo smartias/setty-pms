@@ -9,7 +9,7 @@
 
 import {
   parseShareUrl, cleanRelPath, joinRel, encodeAzId, decodeAzId, isAzId, normalizeSas, azureUrl,
-  sharePathOf, parseListXml, describeAzureError, listDirectory, fileProps, getFile,
+  sharePathOf, relFromSharePath, parseListXml, describeAzureError, listDirectory, fileProps, getFile,
   findProjectFolderName, projectForFolderName, extOf, AzureFilesError, AZ_API_VERSION, shareLabelClean,
   YEAR_SEG_RE, ENTITY_SEG_RE, isGroupingSegment, entityPrefixScore, yearOfProjectNumber, standardFolderName, resolveChildFolder,
 } from "./azureFiles.ts";
@@ -76,6 +76,16 @@ eq(azureUrl({ account: "a", share: "s", prefix: "", base: "https://a.file.core.w
   "https://a.file.core.windows.net/s?sig=x", "root of a prefix-less share");
 eq(sharePathOf(NY, "SAPX256015.00 Tabler/Outgoing"), "\\\\filestoragesetty.file.core.windows.net\\newyorkstorage\\SAP\\SAPX256015.00 Tabler\\Outgoing",
   "display path is the UNC form people recognise, never a credentialed URL");
+
+// relFromSharePath: the drive_path drive discovery stored, back to a share path.
+eq(relFromSharePath(NY, "\\\\filestoragesetty.file.core.windows.net\\newyorkstorage\\SAP\\2020\\SAPQ20690.03"), "2020/SAPQ20690.03",
+  "a stored drive path under the prefix comes back relative to it");
+eq(relFromSharePath(NY, "\\\\FileStorageSetty.file.core.windows.net\\NewYorkStorage\\sap\\2020\\X\\"), "2020/X", "case and a trailing slash do not matter");
+eq(relFromSharePath(NY, sharePathOf(NY, "")), "", "the prefix itself is the root");
+check(relFromSharePath(NY, "\\\\filestoragesetty.file.core.windows.net\\saoperation\\2025\\X") === null, "another share is not this one");
+check(relFromSharePath(NY, "\\\\filestoragesetty.file.core.windows.net\\newyorkstorage\\SAG\\2024\\X") === null, "outside the prefix is not this share path");
+check(relFromSharePath(NY, "\\\\filestoragesetty.file.core.windows.net\\newyorkstorage\\SAP\\..\\SAG") === null, "traversal is refused");
+check(relFromSharePath(NY, "") === null && relFromSharePath(NY, undefined) === null, "empty is null");
 
 // ── 6. Listing XML ──────────────────────────────────────────────────────────
 const XML = `<?xml version="1.0" encoding="utf-8"?>

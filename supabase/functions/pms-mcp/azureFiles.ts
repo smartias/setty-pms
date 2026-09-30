@@ -142,6 +142,18 @@ export function sharePathOf(share: AzureShare, relPath: string): string {
   return `\\\\${share.account}.file.core.windows.net\\${share.share}` + (full ? "\\" + full.replace(/\//g, "\\") : "");
 }
 
+// The inverse of sharePathOf: a stored share path (drive discovery keeps one
+// per folder in pms_project_candidates.drive_path) back to a path relative to
+// the share prefix. Null when the path is on another share or outside the
+// prefix. Case-insensitive, as the share is.
+export function relFromSharePath(share: AzureShare, drivePath: string): string | null {
+  const root = sharePathOf(share, "").toLowerCase();
+  const p = String(drivePath || "").replace(/\//g, "\\").replace(/\\+$/, "");
+  if (p.toLowerCase() === root) return "";
+  if (!p.toLowerCase().startsWith(root + "\\")) return null;
+  return cleanRelPath(p.slice(root.length + 1).replace(/\\/g, "/"));
+}
+
 function xmlUnescape(s: string): string {
   return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'")
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&amp;/g, "&");
