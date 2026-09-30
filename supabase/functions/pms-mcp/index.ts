@@ -9726,6 +9726,60 @@ mcp.tool("search_agency_preferences", {
   },
 });
 
+// search_engineering_standards — same shape as search_agency_preferences, over
+// pms_engineering_standards (firm design-basis positions by discipline/system).
+function filterEngineeringStandards(
+  rows: any[],
+  f: { query?: string; discipline?: string; system?: string; includeArchived?: boolean },
+): any[] {
+  const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
+  let out = f.includeArchived ? rows : rows.filter((r: any) => r.status !== "archived");
+  if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
+  if (f.system) { const s = f.system.toLowerCase().trim(); out = out.filter((r: any) => has(r.system, s)); }
+  if (f.query) {
+    const q = f.query.toLowerCase().trim();
+    out = out.filter((r: any) =>
+      [r.standard_text, r.discipline, r.system, r.basis, r.source_reference]
+        .some((v: unknown) => has(v, q)));
+  }
+  return out;
+}
+
+mcp.tool("search_engineering_standards", {
+  description:
+    "Setty's KNOWLEDGE LAYER of ENGINEERING STANDARDS: the firm's own design-basis positions, keyed by " +
+    "discipline and system, each with its basis and code/spec source. Use for 'what is our standard for X?', " +
+    "when drafting RFI or submittal responses, design narratives or proposals, or to sanity-check a design " +
+    "choice against firm practice. This is firm know-how rather than project data, and it does not replace " +
+    "the governing code or the agency's own requirements: check search_agency_preferences for agency " +
+    "questions and cite the source reference. Defaults to active entries; archived ones are superseded and " +
+    "returned only on request.",
+  inputSchema: z.object({
+    query: z.string().optional().describe("Free text across the standard, discipline, system, basis, and source"),
+    discipline: z.string().optional().describe("Discipline filter (substring), e.g. 'Mechanical', 'Electrical'"),
+    system: z.string().optional().describe("System filter (substring), e.g. 'Chilled water', 'Emergency power'"),
+    includeArchived: z.boolean().optional().describe("Include superseded/archived entries (default false)"),
+  }),
+  handler: async ({ query, discipline, system, includeArchived }) => {
+    const rows = await sbGetAll(
+      "pms_engineering_standards?select=standard_id,discipline,system,standard_text,basis," +
+      "source_reference,date_verified,status,updated_at&order=discipline.asc,system.asc",
+    );
+    const out = filterEngineeringStandards(rows, { query, discipline, system, includeArchived });
+    const CAP = 200;
+    return asText({
+      count: out.length,
+      truncated: out.length > CAP,
+      standards: out.slice(0, CAP).map((r: any) => ({
+        discipline: r.discipline || undefined, system: r.system || undefined,
+        standard: r.standard_text, basis: r.basis || undefined,
+        source: r.source_reference || undefined,
+        verified: r.date_verified || undefined, status: r.status,
+      })),
+    });
+  },
+});
+
 // ── K3: search_knowledge — the read half of the knowledge loop ───────────────
 // Serves ONLY approved pms_lessons rows (archived on request): 'suggested' is
 // a queue, not knowledge, and serving it would make save_knowledge a self-
