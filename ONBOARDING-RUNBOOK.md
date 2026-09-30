@@ -157,9 +157,9 @@ files the email to that project's log.
 ## Deploy checklist for this change
 
 1. Merge the PR (Vercel deploys the console from `main`).
-2. Apply the migration `20260930140000_bulk_onboarding_and_renumber.sql`
-   (Supabase connector `apply_migration`, or the SQL editor). Until then the
-   Preview buttons fail with "function … does not exist".
+2. ~~Apply the migration `20260930140000_bulk_onboarding_and_renumber.sql`.~~
+   Applied 2026-09-30 (live version `20260930174830`). Grants checked: the
+   three RPCs are executable by signed-in users only and refuse non-admins.
 3. Deploy the connector (`supabase/functions/pms-mcp/deploy.ps1`). `/health`
    should show build `2026-09-30-onboarding-linked-folders`. This ships
    the linked-folder lookup and the drive check in `?probe=regions`.
