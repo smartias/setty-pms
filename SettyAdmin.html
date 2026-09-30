@@ -346,7 +346,7 @@ const state = { tab: "signins", roster: null, staffCount: null, roles: null, bac
                 permCatalog: null, permMatrix: null, permOverrides: null,
                 teamProjects: null, mcpAudit: null,
                 regions: null, regionEdit: null,
-                cands: null, candFilter: "new", candTeam: "", candEdit: {}, discoScan: {},
+                cands: null, candFilter: "new", candTeam: "", candSearch: "", candEdit: {}, discoScan: {},
                 bulkStaff: null, bulkProj: null, discoProjects: null, nearCache: null, linkChoice: null, renum: null, renumForm: null,
                 regionOnb: null, regionProbe: null,
                 lib: null, libEditKey: null, libNew: false, libClients: null, libClientQ: "", libClientSel: null,
@@ -1481,7 +1481,13 @@ async function renderDiscovery() {
     </tr>`;
   }));
   const teams = [...new Set(state.cands.map((c) => c.team))].sort();
-  const cands = state.cands.filter((c) => (state.candFilter === "all" || c.status === state.candFilter) && (!state.candTeam || c.team === state.candTeam));
+  // Search: every word must appear somewhere in the number, folder, drive path,
+  // suggested name, or the PMS record it likely matches (so "bush terminal" or
+  // "226904" both find it).
+  const terms = String(state.candSearch || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const candText = (c) => [c.project_number, c.folder_name, c.name_from_folder, c.drive_path, c.pms_match_number, c.pms_match_name, c.team, c.note].join(" ").toLowerCase();
+  const cands = state.cands.filter((c) => (state.candFilter === "all" || c.status === state.candFilter) && (!state.candTeam || c.team === state.candTeam)
+    && (!terms.length || terms.every((w) => candText(c).includes(w))));
   const counts = { new: 0, dismissed: 0, created: 0 };
   for (const c of state.cands) counts[c.status] = (counts[c.status] || 0) + 1;
   const candRows = cands.map((c) => {
@@ -1542,10 +1548,12 @@ async function renderDiscovery() {
           <option value="">Every region</option>
           ${teams.map((t) => `<option value="${esc(t)}" ${state.candTeam === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
         </select>
+        <input id="candSearch" type="search" value="${esc(state.candSearch || "")}" placeholder="Search number, folder name, path…" style="min-width:240px;flex:1;max-width:360px" oninput="state.candSearch=this.value;render()">
         <button class="btn" onclick="state.cands=null;render()">↻ Refresh</button>
+        <span style="font-size:12px;color:var(--muted)">${cands.length} shown${terms.length ? ` for "${esc(state.candSearch.trim())}" <a href="#" onclick="state.candSearch='';render();return false">clear</a>` : ""}</span>
       </div>
       <div style="overflow-x:auto"><table><thead><tr><th>Number</th><th>Folder on the drive</th><th>Status</th><th>Review</th></tr></thead>
-      <tbody>${candRows || '<tr><td colspan="4" class="empty">Nothing here. Scan a drive above.</td></tr>'}</tbody></table></div>
+      <tbody>${candRows || `<tr><td colspan="4" class="empty">${terms.length ? "No candidates match this search under the current filters. Try the All filter or Every region." : "Nothing here. Scan a drive above."}</td></tr>`}</tbody></table></div>
     </div>`;
 }
 function candEdit(num, field, value) { state.candEdit[num] = { ...(state.candEdit[num] || {}), [field]: value }; }
