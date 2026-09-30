@@ -1228,9 +1228,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-30-telemetry-fixes";
+const BUILD = "2026-09-30-comment-responses";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.20.1",
+  name: "setty-pms", version: "1.21.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -8551,7 +8551,10 @@ mcp.tool("record_qa_findings", {
     return asText({
       project, reviewId: review.id, recorded: recorded.length, findingIds: recorded,
       ...(failed.length ? { failed } : {}),
-      note: "Rows are status 'open'. update_qa_finding moves them; the next back-check pass reads them with list_qa_findings.",
+      note: (kind === "comment-log"
+        ? "Comment rows are status 'open' with no response yet. Next: draft the responses (review-comment-responses skill, save_comment_responses) so the register can go back; list_qa_findings needsResponse:true lists what is still unanswered. "
+        : "Rows are status 'open'. ")
+        + "update_qa_finding moves them; the next back-check pass reads them with list_qa_findings.",
     });
   },
 });
@@ -8562,36 +8565,63 @@ mcp.tool("list_qa_findings", {
     "architect) with their live status. This is what a back-check pass works from: every 'open' or " +
     "'ready_to_backcheck' row on a project should be re-verified against the newest revision of its cited " +
     "sheets when a new set lands. Default: open + ready_to_backcheck rows; status:'all' for the full history " +
-    "(closed/dismissed rows keep their note and who moved them).",
+    "(closed/dismissed rows keep their note and who moved them). External rows also carry the RESPONSE side of the " +
+    "register: ai_response (Claude's draft from save_comment_responses) and response/response_disposition (what a " +
+    "signed-in person accepted in the QA Reviews tab); needsResponse:true lists the external comments nobody has " +
+    "answered yet. The result also names comment registers that arrived by email but were never ingested " +
+    "(commentLogsNotIngested), so a log sitting in the inbox is not silently missing from the ledger.",
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR name."),
     status: z.string().optional().describe("open (default: open + ready_to_backcheck), or one of open/ready_to_backcheck/closed/dismissed, or 'all'."),
     source: z.enum(QA_FINDING_SOURCES).optional().describe("Only rows from one source."),
+    needsResponse: z.boolean().optional().describe("Only EXTERNAL comment rows (drchecks/owner/architect/agency/other) with no accepted human response yet: the work list for drafting the comments-and-responses register."),
     limit: z.number().optional().describe("Max rows (default 50, max 200)."),
   }),
-  handler: async ({ projectNumber, status, source, limit }) => {
+  handler: async ({ projectNumber, status, source, needsResponse, limit }) => {
     const pid = await resolveProjectId(projectNumber);
     if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
     const p = await getProjectById(pid);
     const project = p?.projectNumber || projectNumber;
     const lim = Math.min(Math.max(limit ?? 50, 1), 200);
-    let path = "pms_qa_findings?select=id,review_id,item_id,source,severity,title,sheets,evidence,action,status,status_note,status_by,status_at,external_ref,created_by,created_at" +
+    let path = "pms_qa_findings?select=id,review_id,item_id,source,severity,title,sheets,evidence,action,status,status_note,status_by,status_at,external_ref,created_by,created_at," +
+      "ai_response,response,response_disposition,response_by,response_at" +
       "&project=eq." + encodeURIComponent(project) + "&order=created_at.desc&limit=" + lim;
     const st = (status ?? "open").trim().toLowerCase();
     if (st === "open") path += "&status=in.(open,ready_to_backcheck)";
     else if (st !== "all") path += "&status=eq." + encodeURIComponent(st);
     if (source) path += "&source=eq." + source;
+    if (needsResponse) path += "&source=in.(" + [...QA_RESPONSE_EXTERNAL_SOURCES].join(",") + ")&response=is.null";
     let rows: any[];
     try { rows = await sbGetAll(path); } catch (e) {
       return asText({ project, error: `Could not read the ledger: ${String((e as any)?.message ?? e)}` });
     }
+    // Comment registers that arrived by email but were never ingested. This is
+    // the on-demand half of the comment-log watcher; the scheduled half is
+    // blocked (routine-fired sessions get no connectors, proven 2026-09-08), so
+    // every ledger read does the detection instead. Cheap: one query on the
+    // emails table, no Graph. The filed Emails folder holds the same
+    // attachments, so the inbox is the earliest place a log can be seen.
+    let notIngested: ReturnType<typeof commentLogsNotIngested> = [];
+    try {
+      const [mails, revs] = await Promise.all([
+        sbGet("pms_project_emails?select=record_id,subject,from_name,from_address,direction,email_date,attachment_names" +
+          "&project_id=eq." + encodeURIComponent(pid) + "&has_attachments=is.true&order=email_date.desc&limit=400"),
+        sbGetAll("pms_qa_reviews?select=source_doc&project=eq." + encodeURIComponent(project) + "&source_doc=not.is.null"),
+      ]);
+      notIngested = commentLogsNotIngested(Array.isArray(mails) ? mails : [], (revs || []).map((r: any) => r.source_doc)).slice(0, 15);
+    } catch { /* advisory: the ledger read above is the answer, detection must never sink it */ }
     // Working order: severity worst-first, external reviewer comments before
     // internal findings at the same severity, then newest.
     rows.sort((a, b) => qaFindingRank(a) - qaFindingRank(b) || String(b.created_at).localeCompare(String(a.created_at)));
     const counts = rows.reduce((m: Record<string, number>, r) => ((m[r.status] = (m[r.status] || 0) + 1), m), {});
+    const unanswered = rows.filter((r) => QA_RESPONSE_EXTERNAL_SOURCES.has(String(r.source)) && !r.response).length;
     return asText({
-      project, count: rows.length, byStatus: counts, findings: rows,
-      note: "Ordered worst-first (life-safety > agency > cost > rfi-bait > polish), external reviewer comments before internal findings at the same severity. 'ready_to_backcheck' external rows await a HUMAN close. Back-check: verify each open row against the newest revision of its cited sheets (search_drawings history / read_drawing_schedule / view_drawing), then update_qa_finding with the evidence.",
+      project, count: rows.length, byStatus: counts, ...(unanswered ? { externalAwaitingResponse: unanswered } : {}), findings: rows,
+      ...(notIngested.length ? {
+        commentLogsNotIngested: notIngested,
+        commentLogsNote: "These attachments look like review comment registers and no comment-log review names them as sourceDoc. Read each (read_email recordId, or find_document docType 'Comment Log' for the filed copy) and ingest with record_qa_findings kind:'comment-log', sourceDoc = the attachment name; a false positive (a Setty-issued responses register, a forwarded duplicate) needs no action.",
+      } : {}),
+      note: "Ordered worst-first (life-safety > agency > cost > rfi-bait > polish), external reviewer comments before internal findings at the same severity. 'ready_to_backcheck' external rows await a HUMAN close. Back-check: verify each open row against the newest revision of its cited sheets (search_drawings history / read_drawing_schedule / view_drawing), then update_qa_finding with the evidence. Responses: external rows without `response` are unanswered; draft with save_comment_responses (review-comment-responses skill), a person accepts in the QA Reviews tab.",
     });
   },
 });
@@ -8642,6 +8672,158 @@ mcp.tool("update_qa_finding", {
     } catch (e) {
       return asText({ error: `Update failed: ${String((e as any)?.message ?? e)}` });
     }
+  },
+});
+
+// ─── REVIEW COMMENT RESPONSES ───────────────────────────────────────────────
+// P1.4, the drafting half. Comment logs already ingest into the ledger one row
+// per comment (record_qa_findings kind:'comment-log'); this is the write path
+// for the RESPONSE to each comment, the "Setty response" column the reviewer
+// expects back in a comments-and-responses register. Same posture as
+// save_ca_review: Claude drafts, a person accepts. The draft lands in the row's
+// `ai_response` (jsonb) and NEVER in the `response` columns, which only the
+// pms_qa_finding_set_response RPC writes, with the signed-in human's identity,
+// from the QA Reviews tab. Responses are for EXTERNAL rows only: an internal
+// finding has nobody to answer. (Migration 20260916000000_qa_comment_responses.)
+const QA_RESPONSE_DISPOSITIONS = ["comply", "partial", "clarify", "no-change", "already-addressed", "not-in-scope", "defer"] as const;
+const QA_RESPONSE_EXTERNAL_SOURCES = new Set(["drchecks", "owner", "architect", "agency", "other"]);
+const QA_RESPONSES_MAX_PER_CALL = 50;
+
+// Attachments that look like a review comment register. Narrower than
+// REVIEW_ATTACHMENT_RE on purpose: 'minutes', 'review' and 'markup' are too
+// broad for a "never ingested" alert (a Bluebeam markup is not a log with
+// numbered comments), and only extensions read_document can extract count.
+const COMMENT_LOG_ATTACHMENT_RE = /comments?\b|dr\.?\s*checks|drchecks|comment\s*(log|register)/i;
+const COMMENT_LOG_EXT = new Set(["pdf", "xlsx", "xls", "xlsm", "docx", "csv"]);
+
+// Identity of a comment log for the ingested/not-ingested diff: case-folded,
+// extension dropped, separators folded to one space. "2026-06-12_SUCF
+// Comments.PDF" and "2026-06-12 SUCF Comments.pdf" are the same log.
+function commentLogKey(name: unknown): string {
+  return String(name ?? "").toLowerCase().replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[\s_.\-]+/g, " ").trim();
+}
+
+// Diff filed email attachments against the ledger: which comment registers
+// arrived by email that no record_qa_findings kind:'comment-log' call has
+// ingested (matched on the review row's source_doc). Pure, so the test pins it.
+// Newest first, one entry per distinct log. A Setty-sent register whose name
+// says "response" is our own answer going out, not a log to ingest.
+type CommentLogHit = { attachment: string; recordId: string | null; subject: string | null; from: string | null; direction: string | null; date: string | null };
+function commentLogsNotIngested(
+  emails: Array<{ record_id?: string; subject?: string; from_name?: string; from_address?: string; direction?: string; email_date?: string; attachment_names?: unknown }>,
+  ingestedSourceDocs: unknown[],
+): CommentLogHit[] {
+  const ingested = new Set(ingestedSourceDocs.map(commentLogKey).filter(Boolean));
+  const seen = new Set<string>();
+  const out: CommentLogHit[] = [];
+  const sorted = [...emails].sort((a, b) => String(b.email_date ?? "").localeCompare(String(a.email_date ?? "")));
+  for (const e of sorted) {
+    const names: string[] = Array.isArray(e.attachment_names) ? e.attachment_names.map(String)
+      : (typeof e.attachment_names === "string" && e.attachment_names ? [e.attachment_names] : []);
+    for (const n of names) {
+      const ext = (n.split(".").pop() || "").toLowerCase();
+      if (!COMMENT_LOG_EXT.has(ext) || !COMMENT_LOG_ATTACHMENT_RE.test(n)) continue;
+      if (e.direction === "outgoing" && /respon/i.test(n)) continue;
+      const key = commentLogKey(n);
+      if (!key || ingested.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        attachment: n, recordId: e.record_id ?? null, subject: e.subject ?? null,
+        from: e.from_name || e.from_address || null, direction: e.direction ?? null,
+        date: e.email_date ? String(e.email_date).slice(0, 10) : null,
+      });
+    }
+  }
+  return out;
+}
+
+mcp.tool("save_comment_responses", {
+  description:
+    "Write Claude's DRAFT RESPONSES to external reviewer comments onto their QA ledger rows: the 'Setty response' " +
+    "column of a comments-and-responses register (DrChecks / owner / architect / agency comment logs ingested with " +
+    "record_qa_findings kind:'comment-log'). This is the persist step of the review-comment-responses skill. Each " +
+    "response carries a DISPOSITION (comply / partial / clarify / no-change / already-addressed / not-in-scope / defer), " +
+    "the response text in Setty's voice, the evidence it rests on (sheet + revision, schedule value, spec paragraph), " +
+    "and what a person must verify before it goes back. It writes ONLY the row's ai_response block: the human response " +
+    "(what actually goes back to the reviewer) is set from the QA Reviews tab by a signed-in person and is never " +
+    "touched here. Saving a response does NOT move the row's status; update_qa_finding does that (a 'comply' whose " +
+    "fix is on the newest revision goes to ready_to_backcheck with the evidence; external rows are never closed by a " +
+    "machine pass). Internal findings (source qa/ripple/submittal/rfi) are refused: there is nobody to respond to. " +
+    "Signed-in callers only; every draft is stamped.",
+  inputSchema: z.object({
+    projectNumber: z.string().describe("Project number OR name."),
+    respondingSet: z.string().optional().describe("The set / bulletin / resubmission the responses accompany, e.g. '2026-09-22_100% CD Resubmission'. Shown on every draft."),
+    responses: z.array(z.object({
+      findingId: z.number().describe("The ledger row id (from list_qa_findings) of the external comment being answered."),
+      disposition: z.enum(QA_RESPONSE_DISPOSITIONS).describe(
+        "comply (revised as requested) / partial (revised in part: say which part and why not the rest) / clarify (no change: " +
+        "the drawings already answer it, cite where) / no-change (not incorporated: state the code or design basis) / " +
+        "already-addressed (was on the sheets at the commented revision, cite it) / not-in-scope (outside Setty's contract: " +
+        "name who owns it) / defer (needs an owner decision or a later phase: say what and when)."),
+      responseText: z.string().describe("The response as it would appear in the register: 2 to 4 sentences, Setty's voice, sheets and revisions named, no hedging. A draft, never sent by this tool."),
+      evidence: z.string().optional().describe("What supports it: sheet + revision text, schedule row, spec paragraph, prior correspondence."),
+      sheets: z.array(z.string()).optional().describe("Sheets the response cites, with revisions: ['M601 Rev 12']."),
+      needsVerify: z.string().optional().describe("What a person must confirm before this goes back: a field condition, a post-bid cost consequence, a sub's confirmation on a prime job. Rendered as a warning on the row."),
+      docLinks: z.array(z.object({
+        label: z.string().describe("Sheet number ('M601'), spec section ('23 21 13') or set name."),
+        url: z.string().describe("SharePoint webUrl (https only; anything else is dropped)."),
+        kind: z.enum(["set", "sheet", "spec"]).optional(),
+      })).optional().describe("Clickable references for the QA Reviews tab, one per sheet or spec cited in the response."),
+    })).min(1).max(QA_RESPONSES_MAX_PER_CALL),
+  }),
+  handler: async ({ projectNumber, respondingSet, responses }) => {
+    const who = qaLedgerCaller();
+    if (!who.ok) return who.response;
+    const pid = await resolveProjectId(projectNumber);
+    if (!pid) return asText({ error: `No project matching "${projectNumber}".`, nextStep: "Confirm with search_projects." });
+    const p = await getProjectById(pid);
+    const project = p?.projectNumber || projectNumber;
+    const ids = [...new Set(responses.map((r) => Math.round(r.findingId)))];
+    let rows: any[];
+    try {
+      rows = await sbGetAll("pms_qa_findings?select=id,project,source,status,title,external_ref,response&id=in.(" + ids.join(",") + ")");
+    } catch (e) {
+      return asText({ error: `Could not read the ledger: ${String((e as any)?.message ?? e)}` });
+    }
+    const byId = new Map<number, any>(rows.map((r) => [Number(r.id), r]));
+    const now = new Date().toISOString();
+    const drafts: any[] = [];
+    const failed: Array<{ findingId: number; reason: string }> = [];
+    for (const r of responses) {
+      const id = Math.round(r.findingId);
+      const row = byId.get(id);
+      if (!row) { failed.push({ findingId: id, reason: "no ledger finding with this id" }); continue; }
+      if (String(row.project) !== String(project)) { failed.push({ findingId: id, reason: `belongs to project ${row.project}, not ${project}` }); continue; }
+      if (!QA_RESPONSE_EXTERNAL_SOURCES.has(String(row.source))) {
+        failed.push({ findingId: id, reason: `source '${row.source}' is an internal finding; responses are for reviewer comments only` });
+        continue;
+      }
+      const text = r.responseText.trim();
+      if (!text) { failed.push({ findingId: id, reason: "empty responseText" }); continue; }
+      // Only https links are stored: the QA tab renders them as anchors, and
+      // dropping anything else here means the UI never has to trust a scheme.
+      const links = (r.docLinks ?? []).filter((l) => /^https:\/\//i.test(l.url));
+      const block = {
+        by: who.email, at: now, respondingSet: respondingSet ?? null,
+        disposition: r.disposition, responseText: text,
+        evidence: r.evidence ?? null, sheets: r.sheets ?? null, needsVerify: r.needsVerify ?? null,
+        ...(links.length ? { docLinks: links } : {}),
+      };
+      try {
+        await sbPatch("pms_qa_findings?id=eq." + id, { ai_response: block });
+        drafts.push({
+          findingId: id, externalRef: row.external_ref ?? null, disposition: r.disposition, title: row.title,
+          ...(row.response ? { humanResponseExists: true } : {}),
+        });
+      } catch (e) {
+        failed.push({ findingId: id, reason: String((e as any)?.message ?? e).slice(0, 150) });
+      }
+    }
+    return asText({
+      project, savedBy: who.email, respondingSet: respondingSet ?? null, saved: drafts.length, drafts,
+      ...(failed.length ? { failed } : {}),
+      note: "Drafts only: each row's ai_response shows in the QA Reviews tab as a suggestion the engineer accepts or edits (that click writes the human response with their name). Nothing was returned to the reviewer and no status moved. A row marked humanResponseExists already carries a person's response; the draft sits beside it and does not replace it. For 'comply' rows whose fix is on the newest revision, update_qa_finding to ready_to_backcheck with the evidence.",
+    });
   },
 });
 
