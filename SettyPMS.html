@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-30-pms-v160-comment-responses";
+    window.__appVersion = "2026-09-30-pms-v161-contact-search-rank";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -29901,6 +29901,30 @@ function AddContactModal({ companyName, clients, onUpdateClient, onSelect, onClo
   );
 }
 
+// Rank directory contacts for a typeahead query: names starting with the query
+// first ("E" -> Eric Fang before Steve Jones), then any word in the name
+// (first OR last name), then email prefix, then a plain substring match.
+// A bare "contains" filter + slice(0, 8) buried first-name matches for short queries.
+function rankContacts(contacts, query, limit) {
+  const q = (query || "").trim().toLowerCase();
+  if (!q) return limit ? contacts.slice(0, limit) : contacts;
+  const scored = [];
+  contacts.forEach((ct, i) => {
+    const name = (ct.name || "").toLowerCase();
+    const email = (ct.email || "").toLowerCase();
+    const title = (ct.title || "").toLowerCase();
+    let score = -1;
+    if (name.startsWith(q)) score = 0;
+    else if (name.split(/[\s,.\-]+/).some(w => w.startsWith(q))) score = 1;
+    else if (email.startsWith(q)) score = 2;
+    else if (name.includes(q) || email.includes(q) || title.includes(q)) score = 3;
+    if (score >= 0) scored.push({ ct, score, i });
+  });
+  scored.sort((a, b) => a.score - b.score || a.i - b.i);
+  const out = scored.map(x => x.ct);
+  return limit ? out.slice(0, limit) : out;
+}
+
 function POCSection({ pocList, onChange, clients, companyName, onUpdateClient }) {
   const [showModal, setShowModal] = React.useState(false);
   const [query, setQuery] = React.useState("");
@@ -29909,10 +29933,7 @@ function POCSection({ pocList, onChange, clients, companyName, onUpdateClient })
     (clients || []).find(c => c.name && companyName && c.name.toLowerCase() === companyName.toLowerCase()),
   [clients, companyName]);
   const dirContacts = company ? (company.contacts || []) : [];
-  const filtered = React.useMemo(() => {
-    const q = query.toLowerCase();
-    return dirContacts.filter(ct => !q || ct.name.toLowerCase().includes(q) || (ct.email || "").toLowerCase().includes(q)).slice(0, 8);
-  }, [dirContacts, query]);
+  const filtered = React.useMemo(() => rankContacts(dirContacts, query, 8), [dirContacts, query]);
   function addFromDir(ct) {
     if ((pocList || []).some(p => p.name === ct.name)) return;
     onChange([...(pocList || []), { id: ct.id || uid(), name: ct.name, title: ct.title || "", email: ct.email || "", phone: ct.phone || "" }]);
@@ -30001,10 +30022,7 @@ function ContactTypeahead({ value, onChange, clients, companyName, onUpdateClien
 
   const contacts = company ? (company.contacts || []) : [];
 
-  const filtered = React.useMemo(() => {
-    const q = (value || "").toLowerCase();
-    return contacts.filter(ct => !q || ct.name.toLowerCase().includes(q) || (ct.title || "").toLowerCase().includes(q) || (ct.email || "").toLowerCase().includes(q));
-  }, [contacts, value]);
+  const filtered = React.useMemo(() => rankContacts(contacts, value), [contacts, value]);
 
   function selectContact(ct) {
     onChange(ct.name);
