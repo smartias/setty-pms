@@ -12,6 +12,7 @@ let total = 0, failures = 0;
 const check = (ok, label) => { total++; if (!ok) { failures++; console.error("✗ " + label); } };
 
 // ── copies from index.ts ────────────────────────────────────────────────────
+const TELEMETRY_SERVICE_LABEL = "(shared-secret)";
 const ACTIVITY_MAX_PEOPLE = 5;
 const ACTIVITY_STOPWORDS = new Set([
   "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at", "with", "about",
@@ -37,7 +38,7 @@ function summarizeTeamActivity(rows, selfEmail, refs) {
   for (const r of rows) {
     const email = String(r.caller_email || "").toLowerCase();
     const ref = String(r.project_number || "").toLowerCase().trim();
-    if (!email || email === self || !ref || !refSet.has(ref)) continue;
+    if (!email || email === TELEMETRY_SERVICE_LABEL || email === self || !ref || !refSet.has(ref)) continue;
     const e = byPerson.get(email) ?? { calls: 0, lastActive: "", tools: new Set(), queries: [] };
     e.calls++;
     if (String(r.created_at || "") > e.lastActive) e.lastActive = String(r.created_at || "");
@@ -67,6 +68,7 @@ const ROWS = [
   row("anthony@setty.com", "SAPQ226916.00", "get_project", null, 12),      // different project
   row("me@setty.com", "SAPX196006.00", "project_briefing", "catch me up", 12), // the caller
   row(null, "SAPX196006.00", "search_notes", "orphan", 7),                  // no identity
+  row("(shared-secret)", "SAPX196006.00", "get_project", "bridge poll", 13), // service lane: a script, not a teammate
 ];
 const REFS = ["SAPX196006.00", "Tabler Quad"];   // number AND name both match
 
@@ -86,6 +88,7 @@ check(!flat.includes("what is the status of the fire protection submittal"),
 check(out[0].topics.includes("fire") && out[0].topics.includes("protection"),
   "distilled topic words do appear");
 check(!flat.includes("me@setty.com"), "the caller never appears in their own briefing");
+check(!flat.includes("(shared-secret)"), "the shared-secret lane is never listed as a teammate");
 check(!flat.includes("catch me up"), "the caller's own queries never leak either");
 check(out[1].topics.every((t) => !"hydraulic calc comments".split(" ").every(() => false)) &&
       !flat.includes("SAPQ226916.00"),
@@ -113,7 +116,7 @@ const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const has = (needle, label) => check(shipped.includes(needle), `${label} has DRIFTED from this test's copy`);
 has("const ACTIVITY_MAX_PEOPLE = 5;", "people cap");
 has('if (w.length < 3 || ACTIVITY_STOPWORDS.has(w) || /^\\d+$/.test(w)) continue;', "topic word filter");
-has("if (!email || email === self || !ref || !refSet.has(ref)) continue;", "self/ref exclusion");
+has("if (!email || email === TELEMETRY_SERVICE_LABEL || email === self || !ref || !refSet.has(ref)) continue;", "self/service/ref exclusion");
 has("...(e.queries.length ? { topics: activityTopics(e.queries) } : {}),", "topics-not-queries projection");
 has("summarizeTeamActivity(\n      activityRows, currentCaller().email, [p.projectNumber, p.name]);", "briefing wiring excludes the caller");
 has("&caller_email=not.is.null&order=created_at.desc&limit=", "telemetry fetch shape");

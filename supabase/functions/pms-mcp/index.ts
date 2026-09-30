@@ -1228,9 +1228,9 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-09-24-drive-field-photos";
+const BUILD = "2026-09-30-telemetry-fixes";
 const mcp = new McpServer({
-  name: "setty-pms", version: "1.20.0",
+  name: "setty-pms", version: "1.20.1",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
 });
 const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
@@ -1248,10 +1248,20 @@ const asText = (data: unknown) => ({ content: [{ type: "text" as const, text: JS
 //
 // Two rules this must never break:
 //   1. Telemetry cannot fail a tool call. Every path swallows its own errors.
-//   2. Telemetry cannot slow a tool call noticeably. The insert is raced against
-//      a short timeout, so a struggling database costs the caller nothing.
+//   2. Telemetry cannot slow a tool call at all. The insert is NOT awaited on
+//      the response path: it is handed to EdgeRuntime.waitUntil so the runtime
+//      keeps the isolate alive until it settles, and raced against a short
+//      timeout so a struggling database cannot hold the isolate open either.
+//      (Until 2026-09-17 the wrapper awaited the race in `finally`, which put
+//      up to TELEMETRY_TIMEOUT_MS of database latency on every tool answer and
+//      recorded latency_ms BEFORE that wait, so the table could never show it.)
 const TELEMETRY_TIMEOUT_MS = 1500;
 const TELEMETRY_QUERY_MAX = 200;
+// caller_email for the shared-secret lane. A label, not null: a null is what
+// let a stray pilot bridge look like nobody for a week. Everything that reads
+// the table (Admin card, K5 team activity) must treat this value as "not a
+// person".
+const TELEMETRY_SERVICE_LABEL = "(shared-secret)";
 
 const firstString = (...vals: unknown[]): string | null => {
   for (const v of vals) {
@@ -1275,9 +1285,23 @@ const firstString = (...vals: unknown[]): string | null => {
 //
 // So both are optional in the schema and one is required at runtime. Delete the
 // alias only once the connected clients have all cycled, which telemetry can
-// confirm rather than guess: no rows with identifier in use means it is safe.
+// confirm rather than guess: `pms_mcp_telemetry.project_arg` records WHICH
+// parameter name each call used (project_number itself folds them together,
+// which is why the column was added), so
+//   select count(*) from pms_mcp_telemetry where project_arg = 'identifier'
+//     and created_at > now() - interval '30 days'
+// returning 0 is the signal that the alias can go.
 const projectRef = (projectNumber?: string, identifier?: string): string | null =>
   firstString(projectNumber, identifier);
+
+// Which of the accepted project parameter names a call actually used, for the
+// alias-retirement check above. null when the tool takes no project.
+function projectArgName(args: any): "projectNumber" | "identifier" | "project" | null {
+  if (firstString(args?.projectNumber)) return "projectNumber";
+  if (firstString(args?.identifier)) return "identifier";
+  if (firstString(args?.project)) return "project";
+  return null;
+}
 
 // The parameter is called projectNumber because 15 tools already call it that,
 // but it accepts a NAME just as well, and for a large part of the portfolio the
@@ -1293,7 +1317,11 @@ const MISSING_PROJECT_REF = {
     "search_projects finds either.",
 };
 
-async function logTelemetry(row: Record<string, unknown>): Promise<void> {
+// Fire-and-forget: returns synchronously, the insert runs in the background.
+// EdgeRuntime.waitUntil (Supabase edge runtime) keeps the isolate alive until
+// the promise settles; where it is absent (tests, other runtimes) the insert
+// simply rides on whatever lifetime the isolate has left, same as before.
+function logTelemetry(row: Record<string, unknown>): void {
   try {
     const insert = fetch(`${SUPABASE_URL}/rest/v1/pms_mcp_telemetry`, {
       method: "POST",
@@ -1305,10 +1333,12 @@ async function logTelemetry(row: Record<string, unknown>): Promise<void> {
       },
       body: JSON.stringify(row),
     });
-    await Promise.race([
+    const settled = Promise.race([
       insert.then((r) => { if (!r.ok) return r.text().then((t) => console.warn("[telemetry]", r.status, t.slice(0, 200))); }),
       new Promise((resolve) => setTimeout(resolve, TELEMETRY_TIMEOUT_MS)),
-    ]);
+    ]).catch((e) => console.warn("[telemetry] insert failed:", String((e as any)?.message ?? e)));
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt && typeof rt.waitUntil === "function") rt.waitUntil(settled);
   } catch (e) {
     console.warn("[telemetry] insert failed:", String((e as any)?.message ?? e));
   }
@@ -1317,19 +1347,32 @@ async function logTelemetry(row: Record<string, unknown>): Promise<void> {
 // Classify what the caller actually got. Handlers all return asText(payload),
 // so the payload is the honest signal: a tool that answers "no folder for this
 // project" has NOT served the user, however successful the HTTP call was.
-function classifyResult(payload: any): { outcome: "hit" | "empty" | "error"; resultCount: number | null; detail: string | null } {
+//
+// Outcomes: hit (served), empty (answered with nothing), error (the tool said
+// so, or threw), hidden (a project-scoped call the caller's PMS role may not
+// view; the wrapper answers not-found WITHOUT running the tool). hidden is its
+// own bucket because it used to be logged as `error`, which put access
+// denials, typos and real failures in one count on the Admin card.
+type TelemetryOutcome = "hit" | "empty" | "error" | "hidden";
+// Top-level array keys a tool's payload may carry as its primary result. Most
+// tools also send `count`, which wins when present; the list is the fallback,
+// and it is wide on purpose so a new tool that names its array plainly is
+// classified without anyone remembering to register it here.
+const RESULT_ARRAY_KEYS = [
+  "results", "items", "emails", "notes", "projects", "documents", "files", "sheets",
+  "findings", "entries", "matches", "milestones", "contacts", "companies", "photos",
+] as const;
+function classifyResult(payload: any): { outcome: TelemetryOutcome; resultCount: number | null; detail: string | null } {
   if (!payload || typeof payload !== "object") return { outcome: "hit", resultCount: null, detail: null };
   if (payload.error) {
     return { outcome: "error", resultCount: null, detail: String(payload.error).slice(0, 300) };
   }
-  const count =
-    typeof payload.count === "number" ? payload.count :
-    Array.isArray(payload.results) ? payload.results.length :
-    Array.isArray(payload.items) ? payload.items.length :
-    Array.isArray(payload.emails) ? payload.emails.length :
-    Array.isArray(payload.notes) ? payload.notes.length :
-    Array.isArray(payload.projects) ? payload.projects.length :
-    null;
+  let count: number | null = typeof payload.count === "number" ? payload.count : null;
+  if (count === null) {
+    for (const k of RESULT_ARRAY_KEYS) {
+      if (Array.isArray(payload[k])) { count = payload[k].length; break; }
+    }
+  }
   if (count === 0) {
     return { outcome: "empty", resultCount: 0, detail: payload.reason ? String(payload.reason).slice(0, 300) : null };
   }
@@ -1349,7 +1392,8 @@ const _rawTool = mcp.tool.bind(mcp);
         // later — is covered by construction, same reasoning as the telemetry.
         // HIDE first: a project-scoped call against a project the caller cannot
         // view returns the same not-found shape a nonsense ref would, without
-        // running the tool at all.
+        // running the tool at all. The CALLER cannot tell the two apart (by
+        // design); the telemetry row can, and does: outcome `hidden`.
         const ref = firstString(args?.projectNumber, args?.identifier, args?.project);
         let res;
         if (ref && !(await projectRefVisible(ref))) {
@@ -1357,12 +1401,13 @@ const _rawTool = mcp.tool.bind(mcp);
             error: `No project matching "${ref}".`,
             nextStep: "search_projects finds projects by number or name.",
           });
+          cls = { outcome: "hidden", resultCount: null, detail: `caps: projects.view denied for "${ref}"`.slice(0, 300) };
         } else {
           res = await inner(args);
+          try {
+            cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
+          } catch { /* not JSON: treat as a hit, the tool answered something */ }
         }
-        try {
-          cls = classifyResult(JSON.parse(res?.content?.[0]?.text ?? "null"));
-        } catch { /* not JSON: treat as a hit, the tool answered something */ }
         // REDACT second: fee/billing fields for callers without fees.view.
         // Known limit: when the ref is a project NAME, a per-project fees
         // override cannot match (overrides key on number), so the firm-level
@@ -1393,7 +1438,10 @@ const _rawTool = mcp.tool.bind(mcp);
         cls = { outcome: "error", resultCount: null, detail: String((e as any)?.message ?? e).slice(0, 300) };
         throw e;
       } finally {
-        await logTelemetry({
+        // Not awaited: see logTelemetry. Everything the row needs is read
+        // synchronously here (currentCaller() is AsyncLocalStorage-backed and
+        // must be read inside the request's context, which this still is).
+        logTelemetry({
           tool: name,
           // Tools disagree on the parameter name: most take projectNumber,
           // get_project and project_briefing take identifier. Reading only one
@@ -1401,16 +1449,18 @@ const _rawTool = mcp.tool.bind(mcp);
           // "empty results by project" report for exactly the tools a PM uses
           // most. Take whichever is present.
           project_number: firstString(args?.projectNumber, args?.identifier, args?.project),
+          // ...and record WHICH one, so the deprecated `identifier` alias can be
+          // retired on evidence (see projectRef). Column added 2026-09-17.
+          project_arg: projectArgName(args),
           outcome: cls.outcome,
           result_count: cls.resultCount,
           latency_ms: Date.now() - t0,
           build: BUILD,
-          // Requires the caller_email column to exist BEFORE this deploys:
-          // PostgREST 400s inserts with unknown columns, and logTelemetry
-          // swallows that, which would silently kill ALL telemetry.
-          // The shared-secret lane is labeled, not null: a null here is what
-          // let a stray pilot bridge look like nobody for a week.
-          caller_email: currentCaller().kind === "service" ? "(shared-secret)" : currentCaller().email,
+          // Every column here must exist BEFORE this deploys (project_arg and
+          // the `hidden` outcome ship in migration 20260917120000): PostgREST
+          // 400s inserts with unknown columns or a failed CHECK, and
+          // logTelemetry swallows that, which would silently kill ALL telemetry.
+          caller_email: currentCaller().kind === "service" ? TELEMETRY_SERVICE_LABEL : currentCaller().email,
           query: args?.query ? String(args.query).slice(0, TELEMETRY_QUERY_MAX) : null,
           detail: cls.detail,
         });
@@ -2549,7 +2599,9 @@ function summarizeTeamActivity(rows: any[], selfEmail: string | null, refs: stri
   for (const r of rows) {
     const email = String(r.caller_email || "").toLowerCase();
     const ref = String(r.project_number || "").toLowerCase().trim();
-    if (!email || email === self || !ref || !refSet.has(ref)) continue;
+    // The shared-secret lane is labeled, not null, so it passes the query's
+    // not.is.null filter; it is a script, not a teammate.
+    if (!email || email === TELEMETRY_SERVICE_LABEL || email === self || !ref || !refSet.has(ref)) continue;
     const e = byPerson.get(email) ?? { calls: 0, lastActive: "", tools: new Set<string>(), queries: [] };
     e.calls++;
     if (String(r.created_at || "") > e.lastActive) e.lastActive = String(r.created_at || "");
