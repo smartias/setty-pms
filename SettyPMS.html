@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-15-pms-v151-region-filter";
+    window.__appVersion = "2026-09-16-pms-v152-comment-responses";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -13592,6 +13592,36 @@ const QA_EXTERNAL_SRC = { drchecks: "Dr.Checks", owner: "Owner", architect: "Arc
 // Cost/scope flags mirrored from the submittal-rfi-review skill (source 'submittal'/'rfi').
 // They are INTERNAL findings (a deviation we caught), not external comments.
 const QA_CA_SRC = { submittal: "Submittal review", rfi: "RFI review" };
+// Response side of a comment register (P1.4). Claude's draft lives in
+// ai_response (save_comment_responses); the accepted human response lives in
+// response / response_disposition, written only by the
+// pms_qa_finding_set_response RPC with the signed-in person's identity.
+const QA_DISPOSITION_LABEL = { "comply": "Comply", "partial": "Partial", "clarify": "Clarify", "no-change": "No change", "already-addressed": "Already addressed", "not-in-scope": "Not in scope", "defer": "Defer" };
+// Same detector the connector's list_qa_findings runs: attachments in this
+// project's filed emails that look like a comment register and that no
+// comment-log review names as source_doc. Keep in step with index.ts
+// (COMMENT_LOG_ATTACHMENT_RE / commentLogKey / commentLogsNotIngested).
+const QA_COMMENT_LOG_RE = /comments?\b|dr\.?\s*checks|drchecks|comment\s*(log|register)/i;
+const QA_COMMENT_LOG_EXT = { pdf: 1, xlsx: 1, xls: 1, xlsm: 1, docx: 1, csv: 1 };
+const qaCommentLogKey = (n) => String(n || "").toLowerCase().replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[\s_.\-]+/g, " ").trim();
+function qaCommentLogsNotIngested(emails, sourceDocs) {
+  const ingested = {}; (sourceDocs || []).forEach(d => { const k = qaCommentLogKey(d); if (k) ingested[k] = 1; });
+  const seen = {}; const out = [];
+  const sorted = [...(emails || [])].sort((a, b) => String(b.email_date || "").localeCompare(String(a.email_date || "")));
+  sorted.forEach(e => {
+    const names = Array.isArray(e.attachment_names) ? e.attachment_names.map(String) : (typeof e.attachment_names === "string" && e.attachment_names ? [e.attachment_names] : []);
+    names.forEach(n => {
+      const ext = (n.split(".").pop() || "").toLowerCase();
+      if (!QA_COMMENT_LOG_EXT[ext] || !QA_COMMENT_LOG_RE.test(n)) return;
+      if (e.direction === "outgoing" && /respon/i.test(n)) return;
+      const k = qaCommentLogKey(n);
+      if (!k || ingested[k] || seen[k]) return;
+      seen[k] = 1;
+      out.push({ attachment: n, recordId: e.record_id || null, subject: e.subject || null, from: e.from_name || e.from_address || null, date: e.email_date ? String(e.email_date).slice(0, 10) : null });
+    });
+  });
+  return out;
+}
 const QA_SEV_COLOR = { "life-safety": "#e5534b", "agency": "#d4a72c", "cost": "#e8a03c", "rfi-bait": "#58a6ff", "polish": "#8b949e" };
 const qaFindingRank = (f) => (QA_SEV_RANK[f.severity] !== undefined ? QA_SEV_RANK[f.severity] : 5) * 2 + (QA_EXTERNAL_SRC[f.source] ? 0 : 1);
 
@@ -13617,22 +13647,28 @@ function ProjectQAReviewsView({ project, onChange }) {
   const [busyId, setBusyId] = React.useState(null);
   const [issuedSets, setIssuedSets] = React.useState([]); // [{set, at}] newest first, from the register
   const [selSet, setSelSet] = React.useState("");          // "" = current composed set
+  const [pendingLogs, setPendingLogs] = React.useState([]); // comment registers in the emails that were never ingested
 
   React.useEffect(() => {
     let dead = false;
     (async () => {
       if (!projNum) { setReviews([]); return; }
       try {
-        const [rv, fd, mi, reg] = await Promise.all([
+        const [rv, fd, mi, reg, em] = await Promise.all([
           sbFetch("GET", "/rest/v1/pms_qa_reviews?project=eq." + encodeURIComponent(projNum) + "&select=*&order=run_at.desc"),
           sbFetch("GET", "/rest/v1/pms_qa_findings?project=eq." + encodeURIComponent(projNum) + "&select=*&order=created_at.desc"),
           sbFetch("GET", "/rest/v1/pms_qa_checklist?automation=eq.manual&enabled=is.true&select=item_id,text&order=sort"),
           project.id ? sbFetch("GET", "/rest/v1/" + FILING_LOG_TABLE_PMS + "?select=set:files->>milestoneName,at:created_at&project_id=eq." + encodeURIComponent(project.id) + "&operation=eq.transmittal-generated&order=created_at.desc&limit=40").catch(() => []) : Promise.resolve([]),
+          // Advisory: a comment register sitting in the inbox that nobody
+          // ingested. The scheduled watcher is blocked (no connectors in
+          // routine-fired sessions), so the tab does the detection on open.
+          project.id ? sbFetch("GET", "/rest/v1/pms_project_emails?select=record_id,subject,from_name,from_address,direction,email_date,attachment_names&project_id=eq." + encodeURIComponent(project.id) + "&has_attachments=is.true&order=email_date.desc&limit=400").catch(() => []) : Promise.resolve([]),
         ]);
         if (dead) return;
         setReviews(rv || []); setFindings(fd || []); setManualItems(mi || []); setError("");
         const seen = {};
         setIssuedSets((reg || []).filter(r => r.set && !seen[r.set] && (seen[r.set] = 1)));
+        setPendingLogs(qaCommentLogsNotIngested(em || [], (rv || []).map(r => r.source_doc).filter(Boolean)));
       } catch (e) {
         if (!dead) { setError(String(e.message || e)); setReviews([]); }
       }
@@ -13665,7 +13701,28 @@ function ProjectQAReviewsView({ project, onChange }) {
     setBusyId(null);
   }
 
+  // The human response to an external comment. Accepting Claude's draft,
+  // editing it, or writing one from scratch all land here: the RPC stamps
+  // the signed-in person and refuses internal rows. The draft (ai_response)
+  // is left as written so the tab can still show what was suggested.
+  async function setResponse(f, seedText, disposition, edit) {
+    let text = seedText || "";
+    if (edit || !text) {
+      const t = window.prompt(text ? "Edit the response that goes back to the reviewer:" : "Response to this comment (what goes back to the reviewer):", text);
+      if (t === null) return;
+      text = t;
+    }
+    if (!text.trim()) { window.alert("A response is required - the register records what went back."); return; }
+    setBusyId(f.id);
+    try {
+      await sheetRefRpc("pms_qa_finding_set_response", { p_id: f.id, p_disposition: disposition || null, p_response: text.trim() });
+      setFindings(fs => fs.map(x => x.id === f.id ? { ...x, response: text.trim(), response_disposition: disposition || null, response_by: getChecklistUserName() || "you", response_at: new Date().toISOString() } : x));
+    } catch (e) { window.alert("Could not save the response: " + String(e.message || e)); }
+    setBusyId(null);
+  }
+
   const openRows = findings.filter(f => f.status === "open" || f.status === "ready_to_backcheck").sort((a, b) => qaFindingRank(a) - qaFindingRank(b));
+  const awaitingResponse = openRows.filter(f => QA_EXTERNAL_SRC[f.source] && !f.response).length;
   const resolvedRows = findings.filter(f => f.status === "closed" || f.status === "dismissed");
   const countsByReview = {};
   findings.forEach(f => {
@@ -13699,6 +13756,17 @@ function ProjectQAReviewsView({ project, onChange }) {
     "Use the Setty PMS connector: back-check this project's open ledger findings first (list_qa_findings), then run the full checklist review (get_qa_checklist with the phase derived from the set) and record new findings with record_qa_findings for my sign-off here. When the report is done, file it with file_qa_report into a new dated folder under Design Reports and Narratives and give me the folder link.",
   ].join("\n"));
 
+  const responsesUrl = "https://claude.ai/new?q=" + encodeURIComponent([
+    "Draft responses to the open external reviewer comments for " + label + ".",
+    "",
+    "Use the Setty PMS connector and the review-comment-responses skill: list_qa_findings with needsResponse:true is the work list; verify each comment against the newest revision of the sheets it cites (search_drawings history, read_drawing_schedule, view_drawing), choose a disposition and draft the response in Setty's voice with the sheets and revisions cited, save the drafts with save_comment_responses so they appear here in QA Reviews for my sign-off, then build the Comments & Responses register and file it with file_qa_report. Drafts only - nothing goes back to the reviewer.",
+  ].join("\n"));
+  const ingestUrl = "https://claude.ai/new?q=" + encodeURIComponent([
+    "Ingest the review comment log" + (pendingLogs.length === 1 ? "" : "s") + " for " + label + " into the QA ledger: " + pendingLogs.slice(0, 6).map(l => '"' + l.attachment + '"').join(", ") + (pendingLogs.length > 6 ? " and " + (pendingLogs.length - 6) + " more" : "") + ".",
+    "",
+    "Use the Setty PMS connector and the qa-coordination-review skill: find each file (read_email on the filed message, or find_document docType 'Comment Log' for the SharePoint copy), read every comment, and record them with record_qa_findings kind:'comment-log' with sourceDoc set to the file name, one row per comment with externalRef = the comment number and source naming the commenter. Apply the prime/sub scope rule. Then tell me what was ingested and what could not be read.",
+  ].join("\n"));
+
   function FindingRow({ f }) {
     const external = !!QA_EXTERNAL_SRC[f.source];
     const sevColor = QA_SEV_COLOR[f.severity];
@@ -13710,6 +13778,7 @@ function ProjectQAReviewsView({ project, onChange }) {
     const rev = reviewById[f.review_id];
     const autoNote = !!(f.status_note && /^auto[- ]backcheck/i.test(f.status_note));
     const forRef = /^for reference\b/i.test(String(f.title || ""));
+    const ai = f.ai_response && typeof f.ai_response === "object" ? f.ai_response : null;
     const provenance = external
       ? (QA_EXTERNAL_SRC[f.source] || "Reviewer") + " comment" + (f.external_ref ? " #" + f.external_ref : "")
         + (rev && rev.source_doc ? " - from " + rev.source_doc : rev && rev.set_name ? " - " + rev.set_name : "")
@@ -13724,6 +13793,8 @@ function ProjectQAReviewsView({ project, onChange }) {
           <QAChip text={String(f.status).replace(/_/g, " ")} color={f.status === "open" ? "#e5534b" : f.status === "ready_to_backcheck" ? "#d4a72c" : "#3fb950"} />
           {f.status === "ready_to_backcheck" && autoNote && <QAChip text="auto-backchecked" color="#3fb950" />}
           {forRef && <QAChip text="for reference" color="#8b949e" />}
+          {external && isOpen && !f.response && <QAChip text={ai ? "draft response" : "awaiting response"} color={ai ? P.accentLight : "#8957e5"} />}
+          {external && f.response && <QAChip text="responded" color="#3fb950" />}
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 10, color: P.textMuted }}>{String(f.created_at || "").slice(0, 10)}</span>
         </div>
@@ -13743,8 +13814,37 @@ function ProjectQAReviewsView({ project, onChange }) {
             {(f.status === "dismissed" ? "Dismissed" : f.status === "closed" ? "Closed" : "Note")} by {f.status_by || "?"}{f.status_at ? " on " + String(f.status_at).slice(0, 10) : ""}: {f.status_note}
           </div>
         ))}
+        {external && f.response && (
+          <div style={{ fontSize: 11.5, border: "1px solid " + P.green, borderRadius: 6, padding: "6px 8px", marginBottom: 4, background: P.bg }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: P.green, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 2 }}>
+              Response{f.response_disposition ? " · " + (QA_DISPOSITION_LABEL[f.response_disposition] || f.response_disposition) : ""} · by {f.response_by || "?"}{f.response_at ? " on " + String(f.response_at).slice(0, 10) : ""}
+            </div>
+            <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{f.response}</div>
+          </div>
+        )}
+        {external && ai && (!f.response || ex) && (
+          <div style={{ fontSize: 11.5, border: "1px solid " + P.accent, borderRadius: 6, padding: "6px 8px", marginBottom: 4, background: P.bg }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 3 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: P.accentLight, textTransform: "uppercase", letterSpacing: ".05em" }}>🤖 Draft response</span>
+              {ai.disposition && <QAChip text={QA_DISPOSITION_LABEL[ai.disposition] || ai.disposition} color={P.accentLight} />}
+              <span style={{ fontSize: 10, color: P.textMuted }}>{ai.at ? String(ai.at).slice(0, 10) : ""}{ai.respondingSet ? " · with " + ai.respondingSet : ""}{f.response ? " · superseded by the response above" : ""}</span>
+            </div>
+            <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{ai.responseText}</div>
+            {ai.needsVerify && <div style={{ color: P.yellow, marginTop: 4 }}>Verify before it goes back: {ai.needsVerify}</div>}
+            {ex && ai.evidence && <div style={{ color: P.textDim, marginTop: 4, whiteSpace: "pre-wrap" }}>Evidence: {ai.evidence}</div>}
+            {Array.isArray(ai.docLinks) && ai.docLinks.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                {ai.docLinks.filter(l => l && /^https:\/\//i.test(String(l.url || ""))).map((l, i) => <a key={i} href={l.url} target="_blank" rel="noreferrer" style={{ fontSize: 10.5, color: P.accentLight }}>{l.label || l.url}</a>)}
+              </div>
+            )}
+          </div>
+        )}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {(f.evidence || f.action) && <Btn variant="ghost" small onClick={() => setExpanded(x => ({ ...x, [f.id]: !ex }))}>{ex ? "Less" : "Evidence"}</Btn>}
+          {(f.evidence || f.action || (ai && ai.evidence)) && <Btn variant="ghost" small onClick={() => setExpanded(x => ({ ...x, [f.id]: !ex }))}>{ex ? "Less" : "Evidence"}</Btn>}
+          {external && ai && !f.response && <Btn variant="primary" small disabled={busyId === f.id} title="Accepts Claude's draft as the response, under your name" onClick={() => setResponse(f, ai.responseText, ai.disposition, false)}>Accept response</Btn>}
+          {external && ai && !f.response && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => setResponse(f, ai.responseText, ai.disposition, true)}>Edit &amp; accept</Btn>}
+          {external && !ai && !f.response && <Btn variant="ghost" small disabled={busyId === f.id} title="Record the response that goes back to the reviewer" onClick={() => setResponse(f, "", null, true)}>Write response</Btn>}
+          {external && f.response && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => setResponse(f, f.response, f.response_disposition, true)}>Edit response</Btn>}
           {isOpen && <Btn variant="primary" small disabled={busyId === f.id} title={f.status === "ready_to_backcheck" ? "Confirms the backcheck evidence on the row - no note needed" : undefined} onClick={() => moveStatus(f, "closed")}>{f.status === "ready_to_backcheck" ? "Confirm & close" : "Resolved - close"}</Btn>}
           {f.status === "open" && <Btn variant="ghost" small disabled={busyId === f.id} title="The fix appears on the drawings (or a response came in) - marks the row ready for a person to backcheck and close" onClick={() => moveStatus(f, "ready_to_backcheck")}>Ready to backcheck</Btn>}
           {isOpen && <Btn variant="ghost" small disabled={busyId === f.id} onClick={() => moveStatus(f, "dismissed")}>Dismiss</Btn>}
@@ -13762,7 +13862,8 @@ function ProjectQAReviewsView({ project, onChange }) {
           <div style={{ fontSize: 12, color: P.textDim, lineHeight: 1.5, maxWidth: 640 }}>
             The findings ledger: coordination-review findings and external reviewer comments (Dr.Checks / owner / architect),
             each traced to the review run or comment log it came from. External comments close only by a person; auto-backchecked
-            rows show the machine evidence and close with one confirming click. Reports and narratives file to Design Reports and Narratives/&lt;date&gt;_&lt;title&gt;.
+            rows show the machine evidence and close with one confirming click. Reviewer comments also carry the response that goes back:
+            Claude drafts it, you accept or edit it here. Reports, narratives and comment-response registers file to Design Reports and Narratives/&lt;date&gt;_&lt;title&gt;.
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -13795,8 +13896,41 @@ function ProjectQAReviewsView({ project, onChange }) {
           title="Opens your Claude seat with the coordination review prefilled - backchecks open findings, runs the checklist against the current set, and records new findings here for your sign-off">
           {"🤖"} Run Coordination Review
         </a>
+        {awaitingResponse > 0 && (
+          <a href={responsesUrl} target="_blank" rel="noreferrer"
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
+              border: "1px solid #8957e5", borderRadius: 6, fontSize: 12, fontWeight: 600,
+              color: "#b592f0", textDecoration: "none", whiteSpace: "nowrap" }}
+            title="Opens your Claude seat with the response drafting prefilled - verifies each open reviewer comment against the newest drawings, drafts a disposition and response per comment for your sign-off here, and builds the Comments & Responses register">
+            {"🤖"} Draft comment responses ({awaitingResponse})
+          </a>
+        )}
         </div>
       </div>
+
+      {pendingLogs.length > 0 && (
+        <div style={{ border: "1px solid #8957e5", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 260 }}>
+              <b>Not yet in the ledger:</b> {pendingLogs.length} attachment{pendingLogs.length === 1 ? "" : "s"} in this project&apos;s emails look{pendingLogs.length === 1 ? "s" : ""} like a review comment register, and no comment-log ingest names {pendingLogs.length === 1 ? "it" : "them"}.
+              <ul style={{ margin: "6px 0 0 16px", padding: 0, color: P.textDim }}>
+                {pendingLogs.slice(0, 6).map(l => (
+                  <li key={l.attachment}>{l.attachment}<span style={{ color: P.textMuted }}>{l.date ? " · " + l.date : ""}{l.from ? " · " + l.from : ""}</span></li>
+                ))}
+              </ul>
+              {pendingLogs.length > 6 && <div style={{ color: P.textMuted, marginTop: 2 }}>+{pendingLogs.length - 6} more</div>}
+              <div style={{ color: P.textMuted, marginTop: 4, fontSize: 11 }}>A Setty-issued responses register or a forwarded duplicate can be ignored; a reviewer&apos;s log should be ingested so its comments are tracked and answered here.</div>
+            </div>
+            <a href={ingestUrl} target="_blank" rel="noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
+                border: "1px solid #8957e5", borderRadius: 6, fontSize: 12, fontWeight: 600,
+                color: "#b592f0", textDecoration: "none", whiteSpace: "nowrap" }}
+              title="Opens your Claude seat with the ingest prefilled - reads each log and records one ledger row per comment for your sign-off here">
+              {"🤖"} Ingest with Claude
+            </a>
+          </div>
+        </div>
+      )}
 
       {(() => {
         // A set issued AFTER the last recorded review, with findings still

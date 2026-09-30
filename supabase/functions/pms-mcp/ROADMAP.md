@@ -14,6 +14,94 @@ checklist. Honor the cross-cutting conventions on every item.
 
 ---
 
+## Open items (consolidated 2026-09-16)
+
+Everything not yet shipped, in one place. The history sections below stay as
+written; when an item here ships, move it to Delivered and delete it here.
+Dates in parentheses are when the item was last confirmed open.
+
+### Blocked on one shared problem: no unattended Claude session can reach the connector
+
+Routine-fired (scheduled) sessions get no claude.ai connectors and cannot push
+(proven 2026-09-08). Solve it once and all four of these unblock together. No
+new Graph scopes are involved; the read paths already exist.
+
+- **Automatic back-check trigger.** New set or bulletin in Outgoing fires a
+  back-check pass over the project's open ledger rows. Banner shipped; the
+  trigger did not. (QA schedule item 2, 2026-09-08)
+- **Comment-log watcher, the unattended half.** Detection now runs on every
+  `list_qa_findings` call and every open of the QA Reviews tab
+  (`commentLogsNotIngested`, 2026-09-16), with an "Ingest with Claude" seat
+  link. What remains is the version that fires with nobody looking, and the
+  ingest itself still needs a Claude session. (QA schedule item 6a)
+- **Zero-click CA backfill** from Procore / Forma notification emails via
+  `backload_ca_item`. (Submittal/RFI arc follow-up, 2026-09-09)
+- **P3.11 proactive and scheduled hooks** in general: "comments landed",
+  "milestone overdue", "set issued".
+
+### Lives in the add-in repo (`smartias/setty-pms-addin`), not built
+
+- **"File as review comments"** Outlook action for explicit, immediate ingest
+  into the QA ledger at save time. Dedupe key `source_doc`. (QA item 6b)
+- **"Backload CA item"** Outlook action for the same zero-click backfill as
+  above, but user-triggered so it needs no scheduled session.
+
+### Needs Sara
+
+- **Sync skills to the firm's claude.ai skill library**: `qa-coordination-review`,
+  `design-narrative`, `submittal-rfi-review` and `review-comment-responses`
+  (added 2026-09-16), so the QA-tab and modal seat-link sessions load them for
+  every user, not only the author's seat. (QA schedule item 5)
+- **`file_qa_report` Graph write scope** is unverified until the first live use.
+  A 403 means an IT consent ask; see the Guard Azure permission changes rule
+  before touching scopes.
+
+### Crawler and index coverage
+
+- **Follow the Client Uploads NYSharesite shortcut.** A/S/C backgrounds live
+  behind it and the crawler does not follow it, which is why the backgrounds
+  inventory + clash screening skill (shipped 2026-09-07) has never been
+  piloted. `search_drawings` already follows the deliverables shortcut
+  (2026-08-24); extend the same treatment.
+- **Index incoming backgrounds.** `search_drawings` scopes Outgoing only.
+- **Background staleness check** comparing background dates to our issue dates,
+  as an auto-tier QA item.
+- **P3.10 OCR fallback.** Scanned and image-only PDFs return no text. Came up
+  again for cut sheets the render cannot resolve (2026-09-09). Currently a
+  human-verify item in the submittal review.
+
+### Roadmap items never started
+
+- **P1.5 `build_open_items_log`.** Standing milestone deliverable, still manual.
+  The `open-items-log` skill exists; there is no connector tool that assembles
+  it from ledger + minutes + action items.
+- **P2.7 `get_related_projects` + cross-phase briefing.** Phase links are still
+  `.url` shortcuts. `project_briefing` is the natural home.
+- **P2.8 `search_precedents`.** Firm-wide "how did we handle X" across raw
+  project files. `search_knowledge` covers only what has been saved as
+  knowledge; this is the version that does not depend on someone having saved
+  it.
+- **Code-requirements layer per jurisdiction/agency** so the drawing code
+  review can cite the requirement it checked against. Checklist rows shipped
+  (qa-400..404); the knowledge-base layer is an idea. (QA schedule item 7)
+
+### App-side follow-ups
+
+- **Mirror the AI Review buttons** ("Send to Claude for review", "Backload from
+  PDF/email") into the standalone RFISubmittalSync app. (2026-09-09)
+- **Upload-files flow** for filing QA reports needs the transmittal tool's
+  delegated Graph plumbing. (2026-09-08)
+
+### Housekeeping
+
+- **Retire `pms_data`, the fossil singleton.** Not startable yet: as of
+  2026-09-16 `SettyPMS.html` still reads and writes it in the legacy loader and
+  migration path, and `SettyAdmin.html` reads `staff` from it. Step 1 of the
+  plan in Deferred housekeeping (confirm no callers remain) fails today; those
+  readers have to be repointed first. Owner unassigned.
+
+---
+
 ## Reality check (verified 2026-08-01, before any code)
 
 Four findings from the live DB and the committed source. They change the
@@ -246,6 +334,9 @@ Design decisions worth keeping:
 
 ## P1: Auto-outputs that seed the folder
 
+Status of every unshipped item in P1 through P3 is tracked in **Open items** at
+the top of this file; the sections below are the original specs.
+
 People come for the output and stay for the folder.
 
 ### P1.6 `create_transmittal` (moved up)
@@ -277,6 +368,10 @@ Effort: S (down from L: the tool already does the hard part, and the
 parseFilename fix has landed)
 
 ### P1.4 `get_review_comments` + `draft_comment_responses`
+
+**Shipped 2026-09-16** as the comment-log ingest (`record_qa_findings
+kind:'comment-log'`, 2026-09-07) plus `save_comment_responses` and the
+review-comment-responses skill; see Delivered. Original spec follows.
 
 The connector already recognizes `*COMMENTS*` files as high-value review
 feedback. Turn recognition into output: a structured comment log plus
@@ -737,6 +832,39 @@ items logged only outside the PMS); full vertical slice.
   notifications (same blocker as the QA comment-log watcher — routine-fired
   sessions get no claude.ai connectors); OCR for scanned image-only cut sheets
   the render can't resolve (currently listed as a human-verify item).
+
+### Review comment responses (2026-09-16): P1.4, the drafting half
+
+The reviewer's numbered list goes back with a Setty response beside every
+number. Comment logs already ingested one ledger row per comment; this adds the
+response side, same posture as the submittal review (Claude drafts, a person
+accepts, nothing is sent).
+
+- **Skill**: `.claude/skills/review-comment-responses/SKILL.md`: work list from
+  `list_qa_findings needsResponse:true`, verify each comment against the newest
+  revision of its cited sheets, disposition vocabulary (comply / partial /
+  clarify / no-change / already-addressed / not-in-scope / defer) with the
+  prime-vs-sub and post-bid rules, response voice, then the Comments &
+  Responses register (xlsx) filed with `file_qa_report`.
+- **Connector**: `save_comment_responses` (1.19.0) writes each row's
+  `ai_response` block only; external rows only; https-only links; status
+  untouched. `list_qa_findings` returns the response columns, takes
+  `needsResponse`, and reports `commentLogsNotIngested` from the filed emails'
+  attachment names, the on-demand half of the comment-log watcher.
+- **DB**: `20260916000000_qa_comment_responses.sql`: `ai_response`,
+  `response`, `response_disposition`, `response_by`, `response_at` on
+  `pms_qa_findings`, plus `pms_qa_finding_set_response` (authenticated,
+  JWT-stamped, refuses internal rows and empty responses).
+- **App** (SettyPMS v152): QA Reviews rows show the draft with Accept / Edit &
+  accept, or Write response when there is no draft; accepted responses show
+  with the person's name; a "Draft comment responses (N)" seat link appears
+  when external rows are unanswered; a "Not yet in the ledger" banner lists
+  comment registers found in the emails with an "Ingest with Claude" link.
+- Test: `commentResponses.test.mjs` pins the detector and the write contract.
+- Follow-ups: the register goes back in the reviewer's own format where one
+  exists (DrChecks answers are typed into DrChecks by the engineer); a
+  scheduled, unattended detection still needs a session that can reach the
+  connector.
 
 ### The Global Directory (2026-08-06, not previously on this roadmap)
 

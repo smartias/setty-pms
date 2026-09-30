@@ -340,6 +340,38 @@ against the newest revisions. The Tabler pilot's 11 findings are seeded as revie
 node supabase/functions/pms-mcp/qaFindingsLedger.test.mjs
 ```
 
+## Review comment responses (`save_comment_responses`, 1.19.0)
+
+The drafting half of roadmap item P1.4. A comment log ingests one ledger row per
+comment; this adds the RESPONSE side of the register (migration
+`20260916000000_qa_comment_responses.sql`): `ai_response` (jsonb) holds Claude's
+draft, written by `save_comment_responses` from the review-comment-responses
+skill: a disposition (`comply / partial / clarify / no-change / already-addressed
+/ not-in-scope / defer`), the response text, the evidence it rests on, a
+`needsVerify` note, and https-only `docLinks`. `response` /
+`response_disposition` / `response_by` / `response_at` hold what a signed-in
+person accepted; they are written ONLY by the `pms_qa_finding_set_response`
+RPC from the QA Reviews tab (Accept / Edit & accept / Write response), which
+stamps the caller from the JWT and refuses internal rows. The tool refuses
+internal rows too (`source` qa / ripple / submittal / rfi: nobody to answer),
+refuses the service lane, and never moves status; a `comply` whose fix is on
+the newest revision goes to `ready_to_backcheck` through `update_qa_finding`,
+and external rows are still closed only by a person.
+
+`list_qa_findings` now returns the response columns, takes `needsResponse:true`
+(external rows with no accepted response, the drafting work list), and reports
+`commentLogsNotIngested`: attachments in the project's filed emails
+(`pms_project_emails.attachment_names`) that look like a comment register and
+that no `kind:'comment-log'` review names as `source_doc`. That is the
+on-demand half of the comment-log watcher; the scheduled half stays blocked
+(routine-fired sessions get no connectors), so detection runs on every ledger
+read and on every open of the QA Reviews tab instead, with an "Ingest with
+Claude" seat link. Detector and key-folding are pure and pinned by the test.
+
+```bash
+node supabase/functions/pms-mcp/commentResponses.test.mjs
+```
+
 ## Submittal / RFI review (`save_ca_review` / `backload_ca_item`)
 
 The write side of the submittal-rfi-review skill and the CA-item modal's "Send to
