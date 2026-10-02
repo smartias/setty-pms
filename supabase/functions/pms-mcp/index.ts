@@ -3410,9 +3410,17 @@ async function transmittalRows(pid: string): Promise<any[]> {
 // Rank the inference fallback on the date in the NAME, never on Graph's
 // lastModifiedDateTime — a bulk migration flattened those firm-wide, so the
 // modified stamp says when the file moved, not when the set was issued.
-function setFolderDate(name: string): string | null {
-  const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(name || ""));
+// The PMS itself creates milestone folders as "yyyy_mm_dd Name" (SettyPMS.html
+// createMilestoneSpFolder), so underscore and dot separators must read as dates
+// too, not only hyphens. Always returns ISO "yyyy-mm-dd".
+const NAME_DATE_RE = /(\d{4})[-_.](\d{2})[-_.](\d{2})/;
+function isoDateIn(text: string, anchored = false): string | null {
+  const t = String(text || "");
+  const m = (anchored ? /^\s*(\d{4})[-_.](\d{2})[-_.](\d{2})/ : NAME_DATE_RE).exec(t);
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+function setFolderDate(name: string): string | null {
+  return isoDateIn(name, true);
 }
 
 // sheetsOf() moved to currentSet.ts (imported above).
@@ -5245,8 +5253,8 @@ function scoreDocument(file: any, q: ReturnType<typeof parseQuery>, nowMs: numbe
   // Recency as a tiebreak, not a ranking axis. Bulk migrations flattened
   // lastModifiedDateTime firm-wide, so it is weak evidence: worth a nudge
   // between otherwise-equal files, never worth outranking a name match.
-  const dateInPath = /(\d{4})-(\d{2})-(\d{2})/.exec(file.folderPath || "");
-  const stamp = dateInPath ? Date.parse(dateInPath[0]) : Date.parse(file.modified || "");
+  const dateInPath = isoDateIn(file.folderPath || "");
+  const stamp = dateInPath ? Date.parse(dateInPath) : Date.parse(file.modified || "");
   if (!isNaN(stamp)) {
     const years = (nowMs - stamp) / (365.25 * 24 * 3600 * 1000);
     s += Math.max(-3, 3 - years);
@@ -7267,14 +7275,14 @@ mcp.tool("search_drawings", {
 // that metadata only ever exists in the app's SharePoint sidecar, never on
 // the drive. Bounded to ONE project (never a bare browse) because there is
 // no cheap central index to page through here the way the Supabase query is.
-const DRIVE_PHOTO_SESSION_RE = /^(\d{4}-\d{2}-\d{2})[\s_-]*(.*)$/;
+const DRIVE_PHOTO_SESSION_RE = /^(\d{4}[-_.]\d{2}[-_.]\d{2})[\s_-]*(.*)$/;
 // Session folders are named by hand ("2026-01-06 Sam's Photos", "2026-08-27_Varun") — a
 // leading date the app would otherwise have captured as `photo_date`, then a free-text
 // label (usually who took them). No date prefix at all is not an error, just an unlabeled
 // session — the whole name becomes the label.
 function parseDriveSessionFolderName(name: string): { date: string | null; label: string | null } {
   const m = DRIVE_PHOTO_SESSION_RE.exec(String(name || ""));
-  return { date: m ? m[1] : null, label: (m ? m[2] : name).trim() || null };
+  return { date: m ? m[1].replace(/[_.]/g, "-") : null, label: (m ? m[2] : name).trim() || null };
 }
 async function driveFieldPhotoRows(projectQuery: string): Promise<any[]> {
   const pid = await resolveProjectId(projectQuery);

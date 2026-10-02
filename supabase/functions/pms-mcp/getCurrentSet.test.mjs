@@ -23,7 +23,7 @@
 import { registerIssueDate, registerIssueDateSource, sheetsOf } from "./currentSet.ts";
 
 function setFolderDate(name) {
-  const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(String(name || ""));
+  const m = /^\s*(\d{4})[-_.](\d{2})[-_.](\d{2})/.exec(String(name || ""));
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 }
 function sheetDisciplines(sheet) {
@@ -217,7 +217,7 @@ check(registerFilter([]).length === 0, "an empty register stays empty");
 import { readFileSync } from "node:fs";
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const line = (src, re) => (src.match(re) || [""])[0].trim();
-const shippedDateRe = line(shipped, /^\s*const m = \/\^\\s\*\(\\d\{4\}\).*$/m);
+const shippedDateRe = line(shipped, /^\s*const m = \(anchored \? \/\^\\s\*\(\\d\{4\}\).*$/m);
 check(shippedDateRe !== "", "found setFolderDate's regex in index.ts");
 check(
   shipped.includes("for (const m of base.matchAll(/[-_]([A-Z]{1,3})(?=[-_.\\s]|$)/g)) out.add(m[1].toLowerCase());"),

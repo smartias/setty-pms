@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-10-02-pms-v163-light-theme-contrast";
+    window.__appVersion = "2026-10-02-pms-v164-photo-phase-colors";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -18430,7 +18430,7 @@ function PhotosView({ project }) {
         const groupItems  = expanded[folder.id];
         const isOpen      = groupItems !== undefined;
         const phase       = (folder.name.split(" - ")[1] || "").trim();
-        const phaseColor  = PHASE_COLORS[phase] || P.accent;
+        const phaseColor  = PHASE_COLORS[phase.replace(/\s*\/\s*/g, " / ")] || P.accent;
         const photoCount  = groupItems && groupItems !== "loading"
           ? groupItems.items?.length
           : Math.max(0, (folder.folder?.childCount ?? 1) - 1);
