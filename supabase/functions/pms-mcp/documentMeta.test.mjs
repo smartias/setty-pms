@@ -167,6 +167,68 @@ test("two projects sharing a name never auto-link", () => {
   assert.equal(linkLibraryFolder("Library Renovation", dup), null);
 });
 
+// ── Regressions found on the first real sync (Homeport II, SAPX206004.00) ────
+// Every fixture below is a real folder or file name from that project.
+test("email files get area Emails, whatever their subject says", () => {
+  assert.equal(deriveArea("Emails/2023_11_17 Homeport II Fuel and Sanitary Answers 11-1", "Project Document Library"), "Emails");
+  assert.equal(deriveArea("Emails/2024_03_22 Fw- MEP Coordination", "Project Document Library"), "Emails");
+  assert.equal(deriveArea("Emails/2026_05_11 RE- Design review of the submittal", "Project Document Library"), "Emails",
+    "a subject saying design, submittal or outgoing must not change the area");
+  assert.equal(deriveArea("03 Emails/2026_05_11 x", "Project Document Library"), "Emails", "numbered top folder");
+  assert.equal(deriveArea("05 ⚡ Electrical Design", "Project Document Library"), "Design");
+  assert.equal(deriveArea("RFIs/E/RFI-001/IN/2026-07-30 RE- Homeport II Bi-Weekly OAC Check-in", "Project Document Library"), "RFIs");
+  assert.equal(deriveArea("Submittals/M/SUB-144/IN/2026-05-19 NYCEDC HomePort II", "Project Document Library"), "Submittals");
+  assert.equal(deriveArea("", "Project Document Library"), "Other");
+});
+
+test("RFI and submittal records nested under a discipline letter are found", () => {
+  assert.deepEqual(parseRecordFolder("RFIs/E/RFI-001/IN/2026-07-30 RE- Homeport II Bi-Weekly OAC Check-in"),
+    { kind: "RFI", number: "RFI-001", discipline: "E" });
+  assert.deepEqual(parseRecordFolder("Submittals/M/SUB-144/IN/2026-05-19 NYCEDC HomePort II - Submittal Update"),
+    { kind: "Submittal", number: "SUB-144", discipline: "M" });
+  assert.deepEqual(parseRecordFolder("Submittals/FP/SUB-098/OUT"), { kind: "Submittal", number: "SUB-098", discipline: "FP" });
+  assert.equal(parseRecordFolder("Submittals/M"), null, "a discipline folder alone is not a record");
+  assert.equal(parseRecordFolder("Submittals/M/Misc/loose"), null);
+  const r = deriveDocumentRow(file({ name: "cut sheet.pdf", folderPath: "Submittals/M/SUB-144/IN/2026-05-19 NYCEDC" }), ctx());
+  assert.equal(r.record_kind, "Submittal");
+  assert.equal(r.record_number, "SUB-144");
+  assert.equal(r.discipline, "M");
+  assert.equal(r.derived_from.discipline, "record folder");
+  assert.equal(r.area, "Submittals");
+});
+
+test("whole-discipline drawing PDFs in a drawings set folder are drawings", () => {
+  const d = (name, folderPath, ext = "pdf") => deriveDocType(file({ name, folderPath, ext }));
+  assert.equal(d("2025-02-07_Homeport_Marina_Electrical.pdf", "Outgoing/2025-02-18 Drawings Docusigned")?.value, "Drawing");
+  assert.equal(d("SAPX206004.00_E-Homeport marina.pdf", "Outgoing/2025-04-08 Updated Sheets with bubbles")?.value, "Drawing");
+  assert.equal(d("2025-12-19_Hompeport_Marina_Fueling.pdf", "Outgoing/2025-12-19 TAA comment responses")?.value, "Comment Log");
+  assert.equal(d("Schedule.xlsx", "Outgoing/2025-02-18 Drawings Docusigned", "xlsx"), null, "a spreadsheet is not a drawing");
+  const r = deriveDocumentRow(file({ name: "2025-02-07_Homeport_Marina_Electrical.pdf",
+    folderPath: "Outgoing/2025-02-18 Drawings Docusigned" }), ctx());
+  assert.equal(r.doc_type, "Drawing");
+  assert.equal(r.discipline, "E");
+  assert.equal(r.set_date, "2025-02-18");
+});
+
+test("a leading code that is not a discipline is not a sheet number", () => {
+  const r = deriveDocumentRow(file({ name: "K-515-61-5 - Setty Responses.pdf",
+    folderPath: "Outgoing/2025-11-26_SignedSealed BFP Plan and Form" }), ctx());
+  assert.equal(r.sheet_no, null);
+  assert.notEqual(r.doc_type, "Drawing");
+  const ok = deriveDocumentRow(file({ name: "E211 - GROUND FLOOR PLAN.pdf", folderPath: "Outgoing/2026-04-17_Bulletin #13" }), ctx());
+  assert.equal(ok.sheet_no, "E211");
+  assert.equal(ok.doc_type, "Drawing");
+});
+
+test("an email's discipline comes from the attachment filename, never the subject line", () => {
+  const folder = "Emails/2023_11_17 Homeport II Fuel and Sanitary Answers 11-1";
+  const mail = deriveDocumentRow(file({ name: "email.html", ext: "html", folderPath: folder }), ctx());
+  assert.equal(mail.discipline, null, "the subject says sanitary but the email is not a plumbing document");
+  const att = deriveDocumentRow(file({ name: "2023-12-01_Electrical - Homeport II Upland.pdf", folderPath: "Emails/2023_12_29 x" }), ctx());
+  assert.equal(att.discipline, "E");
+  assert.equal(att.derived_from.discipline, "filename");
+});
+
 // ── parity with index.ts (find_document's scoring vocabulary) ───────────────
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const block = (src, startRe) => {
