@@ -691,9 +691,18 @@ the bottom of `index.ts`; the schema is migration `20261002120000_pms_documents.
   function secret, or a PMS admin Supabase JWT. Schedule it every 15 minutes with
   pg_cron + pg_net once the secret exists; about 209 projects plus the library
   folders complete a cycle in roughly a day at that rate.
-- Nothing reads the table yet. `find_document` still walks the live tree until it
-  is switched over (next step), at which point the vocabulary copies in
-  `documentMeta.ts` and `index.ts` collapse into one.
+- **`find_document` reads it.** When a project has a sync that completed within 3
+  days and holds files, candidates come from `pms_documents_v` (hard SQL filters
+  on `docType`, `discipline`; a token prefilter; stored phase) and the existing
+  `scoreDocument` ranks them. Otherwise, or on any read error, it uses the live
+  folder walk exactly as before, and says which in `source`. Results also carry
+  stored `docType`/`discipline`, and Proposals/Contract files linked to the project
+  appear. Supersession status is still computed live from the register, so it is
+  never stale. Set the function secret `FIND_DOCUMENT_USE_TABLE=0` to force the
+  live walk without a redeploy. Query building and freshness live in
+  `documentSearch.ts`.
+- The vocabulary copies in `documentMeta.ts` and `index.ts` still need to collapse
+  into one definition (a parity test guards them until then).
 
 ## Deploying
 

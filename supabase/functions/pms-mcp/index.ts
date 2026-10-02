@@ -45,7 +45,14 @@ import {
 } from "./regionAccess.ts";
 
 // pms_documents: per-file attributes derived for the nightly sync. Pure; see documentMeta.ts.
-import { type DocFile, deriveDocumentRow, isIndexable, linkLibraryFolder, normaliseFolderUrl } from "./documentMeta.ts";
+import {
+  type DocFile, deriveDocumentRow, isIndexable, linkLibraryFolder, normaliseFolderUrl,
+  normaliseDiscipline, normaliseDocType, DOC_TYPES,
+} from "./documentMeta.ts";
+// find_document's read side of pms_documents (query building, freshness, row shaping). Pure; see its tests.
+import {
+  type SyncState, DOCS_TABLE_MAX_ROWS, tableIsFresh, buildDocumentsQuery, rowToFile,
+} from "./documentSearch.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -1253,7 +1260,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-02-documents-sync";
+const BUILD = "2026-10-02-find-document-index";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.21.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -5276,6 +5283,38 @@ function scoreDocument(file: any, q: ReturnType<typeof parseQuery>, nowMs: numbe
   return s;
 }
 
+// Reads candidates for find_document from pms_documents. Returns null (caller
+// falls back to the live walk) unless the project has a sync that completed
+// recently AND the index holds files for it. Candidates are narrowed in SQL by
+// the hard filters and a token prefilter; the existing scorer still ranks them.
+const FIND_DOCUMENT_USE_TABLE = Deno.env.get("FIND_DOCUMENT_USE_TABLE") !== "0";
+async function documentsFromTable(
+  prefix: string, tokens: string[], docType: string | null, discipline: string | null,
+): Promise<{ files: any[]; rows: Map<string, any>; libraries: string[]; truncated: boolean; fileCount: number; indexedAt: string } | null> {
+  const stateRows = await sbGet(
+    "pms_documents_sync?select=last_completed_at,complete,file_count&scope=eq." + encodeURIComponent(prefix) + "&limit=1");
+  const state: SyncState = Array.isArray(stateRows) ? stateRows[0] : null;
+  if (!tableIsFresh(state, Date.now()) || !(Number(state?.file_count) > 0)) return null;
+
+  const rows: any[] = [];
+  let truncated = state?.complete === false;
+  for (let offset = 0; offset < DOCS_TABLE_MAX_ROWS; offset += 1000) {
+    const page = await sbGet(buildDocumentsQuery({ projectPrefix: prefix, tokens, docType, discipline, offset, limit: 1000 }));
+    if (!Array.isArray(page)) break;
+    rows.push(...page);
+    if (page.length < 1000) break;
+    if (offset + 1000 >= DOCS_TABLE_MAX_ROWS) truncated = true;
+  }
+  const byId = new Map<string, any>();
+  const files = rows.map((r) => { byId.set(String(r.item_id), r); return rowToFile(r); });
+  return {
+    files, rows: byId, truncated,
+    libraries: [...new Set(rows.map((r) => String(r.library)))],
+    fileCount: Number(state?.file_count) || rows.length,
+    indexedAt: String(state?.last_completed_at),
+  };
+}
+
 mcp.tool("find_document", {
   description:
     "Find a project document by describing it in plain language, e.g. 'current phase 3 fire protection " +
@@ -5293,8 +5332,8 @@ mcp.tool("find_document", {
   inputSchema: z.object({
     projectNumber: z.string().describe("Project number OR project name. Pipeline projects (proposals and pursuits) have no number until the job is won, so use the name for those."),
     query: z.string().describe("Plain-language description of the document, e.g. 'fire protection narrative'"),
-    discipline: z.string().optional().describe("Restrict to a discipline: M, E, P, FP, FA or T"),
-    docType: z.string().optional().describe("Restrict to a type: Narrative, Calc, Spec, Comment Log, Transmittal, Minutes or Report"),
+    discipline: z.string().optional().describe("Restrict to a discipline: a code (M, E, P, FP, FA, T, EN, A, S, C, G, L) or a name such as Mechanical. A hard filter when the project is indexed."),
+    docType: z.string().optional().describe("Restrict to a type: Narrative, Calc, Spec, Comment Log, Transmittal, Minutes, Report, Drawing, Email, Email Attachment, RFI, Submittal, Proposal or Contract. A hard filter when the project is indexed."),
     phase: z.string().optional().describe("Restrict to a design phase: SD, DD, CD, Bid, CA, Programming or Validation. Accepts '100% CD' or 'Construction Documents' too. Derived from the set folder, so files in folders that name no phase are excluded when this is used."),
     limit: z.number().optional().describe("Max results (default 10, max 30)"),
   }),
@@ -5311,9 +5350,47 @@ mcp.tool("find_document", {
     const st = await storageFor(project);
     const onDrive = st.kind !== "sharepoint";
 
+    // Filters are validated BEFORE any source is read, because they are now hard
+    // filters: an unrecognised word must be an error, not a silently empty result.
+    let wantDisc: string | null = null;
+    if (discipline) {
+      wantDisc = normaliseDiscipline(discipline);
+      if (!wantDisc) {
+        return asText({
+          project, query,
+          error: `"${discipline}" is not a discipline I recognise.`,
+          nextStep: "Use a code (M, E, P, FP, FA, T, EN, A, S, C, G, L) or a name such as Mechanical or Fire Protection.",
+        });
+      }
+    }
+    let wantDocType: string | null = null;
+    if (docType) {
+      wantDocType = normaliseDocType(docType);
+      if (!wantDocType) {
+        return asText({
+          project, query,
+          error: `"${docType}" is not a document type I recognise.`,
+          nextStep: `Use one of: ${DOC_TYPES.join(", ")}.`,
+        });
+      }
+    }
+
+    // Source: the pms_documents index when it has a fresh, non-empty sync for this
+    // project; otherwise the live folder walk, exactly as before. Any failure
+    // reading the table (migration not applied, network) falls through to the
+    // walk, so the index can make an answer faster or fuller but never wrong.
+    const q = parseQuery(query, wantDisc ?? undefined, wantDocType ?? undefined);
+    let table: Awaited<ReturnType<typeof documentsFromTable>> = null;
+    if (FIND_DOCUMENT_USE_TABLE) {
+      try { table = await documentsFromTable(String(project).toLowerCase().trim(), q.tokens, wantDocType, wantDisc); }
+      catch (e) { console.warn("[find_document] table read failed, using live walk:", String((e as any)?.message ?? e)); }
+    }
+
     let tree;
     try {
-      tree = await projectTree(String(project).toLowerCase().trim());
+      tree = table
+        ? { files: table.files as any[], libraries: table.libraries, truncated: table.truncated }
+        : await projectTree(String(project).toLowerCase().trim());
     } catch (e) {
       return asText({
         project, query,
@@ -5333,7 +5410,6 @@ mcp.tool("find_document", {
       });
     }
 
-    const q = parseQuery(query, discipline, docType);
     const now = Date.now();
     const scored = tree.files
       .map((f: any) => ({ f, s: scoreDocument(f, q, now) }))
@@ -5371,11 +5447,19 @@ mcp.tool("find_document", {
         nextStep: "Use SD, DD, CD, Bid, CA, Programming or Validation. '100% CD' and 'Construction Documents' also work.",
       });
     }
+    // On the table path the phase was derived once at sync time and stored; on the
+    // live path it is read off the folder name per call, as before.
+    const rowOf = (f: any) => table?.rows.get(f.itemId) ?? null;
+    const phaseOf = (f: any): { phase: string; basis: string } | null => {
+      const row = rowOf(f);
+      if (row) return row.design_phase ? { phase: row.design_phase, basis: "derived when the file was indexed (set folder name)" } : null;
+      return derivePhase(f.folderPath);
+    };
     let phaseFiltered = scored;
     let droppedNoPhase = 0;
     if (wantPhase) {
       phaseFiltered = scored.filter((r) => {
-        const d = derivePhase(r.f.folderPath);
+        const d = phaseOf(r.f);
         if (!d) { droppedNoPhase++; return false; }
         return d.phase === wantPhase;
       });
@@ -5394,12 +5478,15 @@ mcp.tool("find_document", {
     const counts = { current: 0, superseded: 0, ambiguous: 0, unknown: 0 };
     const results = phaseFiltered.slice(0, lim).map((r) => {
       const verdict = idx ? fileSupersessionStatus(r.f.name, r.f.folderPath, idx) : null;
-      const ph = derivePhase(r.f.folderPath);
+      const ph = phaseOf(r.f);
+      const row = rowOf(r.f);
       const base = {
         name: r.f.name,
         library: r.f.library,
         folderPath: r.f.folderPath,
-        area: folderArea(r.f.folderPath),
+        area: row?.area || folderArea(r.f.folderPath),
+        ...(row?.doc_type ? { docType: row.doc_type } : {}),
+        ...(row?.discipline ? { discipline: row.discipline } : {}),
         ...(ph ? { phase: ph.phase, phaseBasis: ph.basis } : {}),
         webUrl: r.f.webUrl,
         itemId: r.f.itemId,
@@ -5455,7 +5542,10 @@ mcp.tool("find_document", {
         docType: q.wantType, discipline: q.wantDisc,
         recencyPreferred: q.wantsCurrent,
       },
-      searched: { files: tree.files.length, libraries: tree.libraries },
+      searched: { files: table ? table.fileCount : tree.files.length, libraries: tree.libraries },
+      source: table
+        ? { kind: "pms_documents", indexedAt: table.indexedAt, note: "Answered from the derived file index (refreshed about daily). A file added since indexedAt will not appear; list_project_documents reads live." }
+        : { kind: "live-walk", note: "Read from the live folder walk. discipline and docType were used as ranking hints here, not hard filters." },
       count: phaseFiltered.length,
       returned: Math.min(phaseFiltered.length, lim),
       ...(wantPhase ? {
@@ -5472,7 +5562,9 @@ mcp.tool("find_document", {
       results,
       statusCounts: counts,
       statusNote,
-      ...(tree.truncated ? { coverageWarning: `The folder walk hit its cap after ${tree.files.length} files, so results may be incomplete.` } : {}),
+      ...(tree.truncated ? { coverageWarning: table
+        ? "The index for this project is incomplete (its last folder walk or this query hit a cap), so results may be missing files."
+        : `The folder walk hit its cap after ${tree.files.length} files, so results may be incomplete.` } : {}),
       ...(onDrive ? { reminder: SHAREPOINT_NUDGE } : {}),
     });
   },
