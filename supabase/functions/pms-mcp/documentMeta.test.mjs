@@ -299,6 +299,58 @@ test("project-root shortcuts and temp files are not documents", () => {
   assert.equal(isIndexable({ name: "Narrative.docx", ext: "docx" }), true);
 });
 
+// ── Drive projects (Baltimore, DC), first synced on Tivoly EcoVillage (SIPX251008.00) ──
+// Folders are named "NN-<project number>_NAME". Every path below is a real one from that project.
+test("drive-style folder names read as areas, with the project number dropped", () => {
+  const lib = "SAOP:";
+  assert.equal(deriveArea("01-SIPX251008.00_INCOMING/2026-04-20_Houses Backgrounds", lib), "Incoming");
+  assert.equal(deriveArea("02-SIPX251008.00_PM/01-SOW-Contracts-COs", lib), "Project Management");
+  assert.equal(deriveArea("26-SIPX251008.00_E/02-SUPPORT", lib), "Design");
+  assert.equal(deriveArea("22-SIPX251008.00_P/06-CUTSHEET", lib), "Design");
+  assert.equal(deriveArea("23-SIPX251008.00_M/03-MARKUPS", lib), "Design");
+  assert.equal(deriveArea("21-SIPX251008.00_FP/05-CALCULATIONS", lib), "Design");
+  assert.equal(deriveArea("80-SIPX251008.00_REVIT", lib), "Models");
+  assert.equal(deriveArea("90-SIPX251008.00_XREF", lib), "Models");
+  assert.equal(deriveArea("99-SIPX262004.00_OUTGOING/2026-03-01 CD Set", lib), "Outgoing");
+  assert.equal(deriveArea("70-SIPX262004.00_CA/8. RFIs/E/RFI-001", lib), "RFIs");
+  assert.equal(deriveArea("70-SIPX262004.00_CA/9. Submittals/M/SUB-004", lib), "Submittals");
+  assert.equal(deriveArea("70-SIPX262004.00_CA/Meeting Notes", lib), "CA");
+});
+
+test("a discipline folder on a drive sets the discipline", () => {
+  const drive = (name, folderPath) => deriveDocumentRow(file({ library: "SAOP:", name, ext: "pdf", folderPath }), ctx());
+  assert.equal(drive("Cutsheet.pdf", "26-SIPX251008.00_E/02-SUPPORT").discipline, "E");
+  assert.equal(drive("Cutsheet.pdf", "22-SIPX251008.00_P/06-CUTSHEET").discipline, "P");
+  assert.equal(drive("Markup.pdf", "23-SIPX251008.00_M/03-MARKUPS").discipline, "M");
+  const fp = drive("Calcs.pdf", "21-SIPX251008.00_FP/05-CALCULATIONS");
+  assert.equal(fp.discipline, "FP");
+  assert.equal(fp.derived_from.discipline, "folder code");
+  assert.equal(fp.doc_type, "Calc");
+  assert.equal(drive("Rendering.pdf", "01-SIPX251008.00_INCOMING/2025-08-06_Renderings, Site Plan, CAD Files").discipline, null);
+});
+
+test("an Outgoing set on a drive still reads as a dated set", () => {
+  const r = deriveDocumentRow(file({ library: "SAOP:", name: "M-101.pdf", folderPath: "99-SIPX262004.00_OUTGOING/2026-03-01 CD Set" }), ctx());
+  assert.equal(r.set_name, "2026-03-01 CD Set");
+  assert.equal(r.set_date, "2026-03-01");
+  assert.equal(r.design_phase, "CD");
+  assert.equal(r.area, "Outgoing");
+});
+
+test("drive CA folders: RFI and submittal items sit under a discipline folder", () => {
+  assert.deepEqual(parseRecordFolder("70-SIPX262004.00_CA/8. RFIs/E/RFI-001/Response"), { kind: "RFI", number: "RFI-001", discipline: "E" });
+  assert.deepEqual(parseRecordFolder("70-SIPX262004.00_CA/9. Submittals/M/260513-001-0 VAV boxes/IN"),
+    { kind: "Submittal", number: "260513-001-0", discipline: "M" });
+  assert.deepEqual(parseRecordFolder("70-SIPX262004.00_CA/8. RFIs/004_Duct sizes"), { kind: "RFI", number: "004" });
+  assert.equal(parseRecordFolder("70-SIPX262004.00_CA/9. Submittals/M"), null);
+});
+
+test("the SharePoint reading is unchanged by the drive prefix rule", () => {
+  assert.equal(deriveArea("01 📋 Project Management/Meetings", "Project Document Library"), "Project Management");
+  assert.equal(deriveArea("Emails/2026_05_11 Design review", "Project Document Library"), "Emails");
+  assert.equal(deriveArea("Misc/loose", "Project Document Library"), "Other");
+});
+
 // ── parity with index.ts (find_document's scoring vocabulary) ───────────────
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const block = (src, startRe) => {
@@ -332,4 +384,9 @@ test("PHASE_PATTERNS match index.ts", () => {
 test("the sync endpoint can run libraries only, for testing them in isolation", () => {
   assert.ok(shipped.includes("body?.librariesOnly === true"));
   assert.ok(shipped.includes("librariesOnly ? [] : projects.map"));
+});
+
+test("the sync's bigger caps reach the drive walk, which has its own listing cap", () => {
+  assert.ok(shipped.includes("maxListings = AZ_WALK_MAX_LISTINGS, maxFiles = TREE_MAX_FILES"));
+  assert.ok(shipped.includes("azureWalkFiles(h.ctx, h.folder, h.folder, opts?.maxRequests ?? AZ_WALK_MAX_LISTINGS, maxFiles)"));
 });
