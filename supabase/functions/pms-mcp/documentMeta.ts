@@ -149,17 +149,23 @@ const segs = (folderPath: string) => String(folderPath || "").split("/").map((s)
 const stripPrefix = (s: string) => s.replace(/^[\d.\s\-_]*[^A-Za-z0-9]*\s*/u, "").trim();
 
 export function deriveArea(folderPath: string, library: string): string {
-  const p = norm(folderPath);
   if (/^proposal/i.test(library)) return "Proposals";
   if (/contract/i.test(library)) return "Contracts";
-  if (p.includes("outgoing")) return "Outgoing";
-  if (/(^| )emails?( |$)/.test(p)) return "Emails";
-  if (p.includes("project management")) return "Project Management";
-  if (/(^| )rfis?( |$)/.test(p)) return "RFIs";
-  if (p.includes("submittal")) return "Submittals";
-  if (p.includes("site field report")) return "Site Reports";
-  if (p.includes("qaqc") || p.includes("qa qc")) return "QAQC";
-  if (p.includes("design")) return "Design";
+  // Compared per path SEGMENT. norm() keeps "/" between segments, so a boundary
+  // test like "(^| )emails( |$)" on the whole path never matched "Emails/2026...":
+  // on the first real sync 196 email files came out as "Other" and 26 as "Design"
+  // (their subject said so).
+  const parts = segs(folderPath).map((x) => norm(stripPrefix(x)));
+  const top = parts[0] || "";
+  if (/^emails?$/.test(top)) return "Emails";
+  const any = (re: RegExp) => parts.some((x) => re.test(x));
+  if (any(/outgoing/)) return "Outgoing";
+  if (any(/project management/)) return "Project Management";
+  if (any(/^rfis?$/)) return "RFIs";
+  if (any(/submittal/)) return "Submittals";
+  if (any(/site field report/)) return "Site Reports";
+  if (any(/qaqc|qa qc/)) return "QAQC";
+  if (any(/design/)) return "Design";
   return "Other";
 }
 
@@ -171,16 +177,34 @@ export function deriveSet(folderPath: string): { setName: string; setDate: strin
   return { setName: parts[i + 1], setDate: isoDateIn(parts[i + 1], true) };
 }
 
-// RFIs/<number title>/ and Submittals/<number description>/ folders. The number
-// is the first token of the folder name; null when it does not start with one.
-export function parseRecordFolder(folderPath: string): { kind: "RFI" | "Submittal"; number: string } | null {
+// Record folders come in two shapes in the field:
+//   RFIs/<number title>/            Submittals/<number description>/   (made by the PMS)
+//   RFIs/E/RFI-001/IN/<email>/…     Submittals/M/SUB-144/OUT/…         (discipline letter, then the record)
+// The number is the record token ("RFI-001", "SUB-144") or, in the first shape,
+// the first token of the folder name. A single discipline-code folder between the
+// kind folder and the record names the discipline. Null when no number is found.
+export function parseRecordFolder(
+  folderPath: string,
+): { kind: "RFI" | "Submittal"; number: string; discipline?: string } | null {
   const parts = segs(folderPath);
   for (let i = 0; i < parts.length - 1; i++) {
     const head = stripPrefix(parts[i]).toLowerCase();
     const kind = /^rfis?$/.test(head) ? "RFI" : /^submittals?$/.test(head) ? "Submittal" : null;
     if (!kind) continue;
-    const m = /^#?\s*([A-Za-z]{0,3}[-\s]?\d+(?:[.\-]\d+)*)/.exec(parts[i + 1]);
-    return m ? { kind, number: m[1].replace(/\s+/g, "") } : null;
+    let discipline: string | undefined;
+    for (let j = i + 1; j < Math.min(parts.length, i + 4); j++) {
+      const seg = parts[j];
+      const token = /^(?:RFI|SUB(?:MITTAL)?)[-_\s#]*\d+(?:[.\-]\d+)*/i.exec(seg);
+      if (token) return { kind, number: token[0].replace(/\s+/g, ""), ...(discipline ? { discipline } : {}) };
+      if (j === i + 1) {
+        const lead = /^#?\s*([A-Za-z]{0,3}[-\s]?\d+(?:[.\-]\d+)*)/.exec(seg);
+        if (lead) return { kind, number: lead[1].replace(/\s+/g, "") };
+        const code = normaliseDiscipline(seg);
+        if (code && seg.length <= 2) { discipline = code; continue; }
+      }
+      if (j > i + 1 && !discipline) break;
+    }
+    return null;
   }
   return null;
 }
@@ -246,21 +270,31 @@ export function deriveDocType(
   for (const [type, words] of Object.entries(DOC_TYPE_WORDS)) {
     if (words.some((w) => name.includes(w))) return { value: type, basis: "filename" };
   }
+  // Whole-discipline PDFs ("2025-02-07_Homeport_Marina_Electrical.pdf" in
+  // "Drawings Docusigned") carry no sheet number but are drawings: the set folder
+  // or the name says so.
+  if (DRAWING_EXT.has(file.ext.toLowerCase()) && /(^| )(drawings?|sheets?)( |$)/.test(`${name} ${path}`)) {
+    return { value: "Drawing", basis: "drawing set folder or name" };
+  }
   for (const [type, words] of Object.entries(DOC_TYPE_WORDS)) {
     if (words.some((w) => path.includes(w))) return { value: type, basis: "folder" };
   }
   return null;
 }
+const DRAWING_EXT = new Set(["pdf", "dwg", "dxf", "rvt"]);
 
 export function deriveDiscipline(
   file: Pick<DocFile, "name" | "folderPath">,
   fromRegister?: string | null,
   sheetLead?: string | null,
+  recordDiscipline?: string | null,
 ): { value: string; basis: string } | null {
   const reg = normaliseDiscipline(fromRegister || "");
   if (reg) return { value: reg, basis: "register" };
   const lead = normaliseDiscipline(sheetLead || "");
   if (lead) return { value: lead, basis: "sheet number" };
+  const rec = normaliseDiscipline(recordDiscipline || "");
+  if (rec) return { value: rec, basis: "record folder" };
   const name = norm(file.name);
   const path = norm(file.folderPath);
   for (const [code, words] of Object.entries(DISCIPLINE_WORDS)) {
@@ -311,7 +345,10 @@ export function deriveDocumentRow(file: DocFile, ctx: RowContext): DocumentRow {
   const set = deriveSet(file.folderPath);
   const record = parseRecordFolder(file.folderPath);
   const email = isEmailFolderPath(file.folderPath);
-  const lead = leadingSheetNo(file.name);
+  // A leading code only counts as a sheet when it is a real discipline code:
+  // "K-515-61-5 - Setty Responses.pdf" is a response document, not sheet K515.
+  const leadRaw = leadingSheetNo(file.name);
+  const lead = leadRaw && DISCIPLINE_CODES.includes(leadRaw.discipline) ? leadRaw : null;
   const v = ctx.verdict && ctx.verdict.status !== "ambiguous" ? ctx.verdict : null;
 
   const sheetNo = v?.sheetNo || (set && lead ? lead.sheetNo : null);
@@ -329,7 +366,9 @@ export function deriveDocumentRow(file: DocFile, ctx: RowContext): DocumentRow {
 
   const type = deriveDocType(file, { sheetNo, record, email });
   if (type) from.doc_type = type.basis;
-  const disc = deriveDiscipline(file, v?.discipline, lead?.discipline);
+  // An email's folder name is its subject line, so only the attachment's own
+  // filename may suggest a discipline, never the subject.
+  const disc = deriveDiscipline(email ? { name: file.name, folderPath: "" } : file, v?.discipline, lead?.discipline, record?.discipline);
   if (disc) from.discipline = disc.basis;
   if (set?.setDate) from.set_date = "folder";
 
