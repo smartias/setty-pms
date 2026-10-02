@@ -9755,7 +9755,9 @@ function filterEngineeringStandards(
   f: { query?: string; discipline?: string; system?: string; includeArchived?: boolean },
 ): any[] {
   const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
-  let out = f.includeArchived ? rows : rows.filter((r: any) => r.status !== "archived");
+  // 'suggested' is a review queue, never served (same rule as search_knowledge).
+  let out = rows.filter((r: any) => r.status !== "suggested");
+  if (!f.includeArchived) out = out.filter((r: any) => r.status !== "archived");
   if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
   if (f.system) { const s = f.system.toLowerCase().trim(); out = out.filter((r: any) => has(r.system, s)); }
   if (f.query) {
