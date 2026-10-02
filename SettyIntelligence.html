@@ -239,7 +239,7 @@ const MODULES = [
   { key: "lessons",   label: "Project Knowledge",     table: "pms_lessons",               idcol: "lesson_id",   live: true  },
   { key: "practices", label: "Best Practices",        table: "pms_best_practices",        idcol: "practice_id", live: false },
   { key: "agencies",  label: "Agency Preferences",    table: "pms_agency_preferences",    idcol: "pref_id",     live: true  },
-  { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: false },
+  { key: "standards", label: "Engineering Standards", table: "pms_engineering_standards", idcol: "standard_id", live: true  },
   { key: "graph",     label: "Expertise Graph",       table: "pms_person_work",           idcol: null,          live: true  },
   { key: "meetings",  label: "Meeting Items",         table: "pms_meeting_items",         idcol: "id",          live: true  },
   { key: "agents",    label: "Agents",                table: "pms_ii_agent_runs",         idcol: "run_id",      live: false },
@@ -266,9 +266,11 @@ const state = {
   selP: new Set(),           // bulk-selected practice ids
   selA: new Set(),           // bulk-selected agency-preference ids
   selM: new Set(),           // bulk-selected meeting-item ids
+  selS: new Set(),           // bulk-selected engineering-standard ids
   graph: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", agency: "", kind: "", view: "people" } },
   heat: { rows: [], asof: {}, blocked: {}, loaded: false, loading: false, f: { agency: "", quiet: false } },
   prefs: { rows: [], loaded: false, loading: false, f: { q: "", agency: "", type: "", status: "" } },
+  stds: { rows: [], loaded: false, loading: false, f: { q: "", discipline: "", basis: "", status: "" } },
   meetingItems: { rows: [], loaded: false, loading: false, f: { project: "", type: "", status: "pending", q: "" } },
 };
 
@@ -327,7 +329,7 @@ async function loadAll() {
 // prove the database wiring end to end.
 async function loadCounts() {
   // "agencies" is live but table-backed — keep its badge on the same count query.
-  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies" || m.key === "meetings").map(async m => {
+  await Promise.all(MODULES.filter(m => !m.live || m.key === "agencies" || m.key === "meetings" || m.key === "standards").map(async m => {
     try {
       const res = await fetch(SUPABASE_URL + "/rest/v1/" + m.table + "?select=" + (m.idcol || "*") + "&limit=1",
         { headers: { ...SB_HEADERS, "Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0" } });
@@ -364,6 +366,7 @@ function _renderInner() {
   if (state.tab === "lessons") return renderLessons();
   if (state.tab === "practices") return renderPractices();
   if (state.tab === "agencies") return renderAgencyPrefs();
+  if (state.tab === "standards") return renderStandards();
   if (state.tab === "graph") return renderGraph();
   if (state.tab === "meetings") return renderMeetingItems();
   renderPlaceholder(MODULES.find(m => m.key === state.tab));
@@ -376,7 +379,10 @@ function renderTabs() {
     // review" is the call to action; the total is just inventory.
     const pending = m.key === "lessons"
       ? state.lessons.filter(l => l.status === "draft" || l.status === "suggested").length : 0;
-    const badge = pending
+    const stdPending = m.key === "standards" ? (state.stds.rows || []).filter(r => r.status === "suggested").length : 0;
+    const badge = stdPending
+      ? `<span class="badge" style="background:var(--yellow);color:#1a1a1a" title="${stdPending} of ${count} awaiting review">${stdPending} to review</span>`
+      : pending
       ? `<span class="badge" style="background:var(--yellow);color:#1a1a1a" title="${pending} of ${count} awaiting review">${pending} to review</span>`
       : count === "" ? "" : `<span class="badge">${count}</span>`;
     return `<button class="tab ${state.tab === m.key ? "active" : ""}"${state.tab === m.key ? ' aria-current="page"' : ""} onclick="setTab('${m.key}')">${esc(m.label)} ${badge}</button>`;
@@ -1192,27 +1198,27 @@ function renderPracticeCard(p) {
 }
 // ── Bulk review actions (lessons + practices + agency prefs share the same
 //    machinery — kinds "L" / "P" / "A"; prefs use 'active'/'archived' statuses) ─
-function bulkSelSet(kind) { return kind === "L" ? state.selL : kind === "A" ? state.selA : kind === "M" ? state.selM : state.selP; }
+function bulkSelSet(kind) { return kind === "L" ? state.selL : kind === "A" ? state.selA : kind === "M" ? state.selM : kind === "S" ? state.selS : state.selP; }
 function toggleSel(kind, id, checked) {
   const set = bulkSelSet(kind);
   checked ? set.add(id) : set.delete(id);
   // Update only the bulk bar — re-rendering the list on every click would
   // rebuild the DOM under the user (scroll jump, lost checkbox focus).
-  const bar = $(kind === "L" ? "bulkBarL" : kind === "A" ? "bulkBarA" : kind === "M" ? "bulkBarM" : "bulkBarP");
+  const bar = $(kind === "L" ? "bulkBarL" : kind === "A" ? "bulkBarA" : kind === "M" ? "bulkBarM" : kind === "S" ? "bulkBarS" : "bulkBarP");
   if (bar) bar.innerHTML = bulkBar(kind);
 }
 function clearSel(kind) {
   bulkSelSet(kind).clear();
-  kind === "L" ? renderLessonList() : kind === "A" ? renderPrefList() : kind === "M" ? renderMeetingItemList() : renderPracticeList();
+  kind === "L" ? renderLessonList() : kind === "A" ? renderPrefList() : kind === "M" ? renderMeetingItemList() : kind === "S" ? renderStandardsList() : renderPracticeList();
 }
 function bulkBar(kind) {
   const set = bulkSelSet(kind);
   if (!set.size) return "";
-  const approveStatus = kind === "A" ? "active" : kind === "M" ? "confirmed" : "approved";
+  const approveStatus = kind === "A" || kind === "S" ? "active" : kind === "M" ? "confirmed" : "approved";
   // Lessons and meeting items carry a real 'rejected' status so the
   // contributor can see the outcome; prefs/practices keep 'archived'. Bulk
   // reject writes no note — use the per-card Reject when a reason matters.
-  const rejectStatus = kind === "L" || kind === "M" ? "rejected" : "archived";
+  const rejectStatus = kind === "L" || kind === "M" ? "rejected" : kind === "S" ? "superseded" : "archived";
   const approveLabel = kind === "M" ? "✓ Confirm selected" : "✓ Approve selected";
   return `<div class="status info" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
     <b>${set.size} selected</b>
@@ -1222,23 +1228,23 @@ function bulkBar(kind) {
   </div>`;
 }
 async function bulkStatus(kind, status) {
-  const isL = kind === "L", isA = kind === "A", isM = kind === "M";
+  const isL = kind === "L", isA = kind === "A", isM = kind === "M", isS = kind === "S";
   const set = bulkSelSet(kind);
   if (!set.size) return;
   if ((status === "approved" || status === "confirmed") && !state.user) { openNameModal(() => bulkStatus(kind, status)); return; }
-  const table = isL ? "pms_lessons" : isA ? "pms_agency_preferences" : isM ? "pms_meeting_items" : "pms_best_practices";
-  const idcol = isL ? "lesson_id" : isA ? "pref_id" : isM ? "id" : "practice_id";
+  const table = isL ? "pms_lessons" : isA ? "pms_agency_preferences" : isM ? "pms_meeting_items" : isS ? "pms_engineering_standards" : "pms_best_practices";
+  const idcol = isL ? "lesson_id" : isA ? "pref_id" : isM ? "id" : isS ? "standard_id" : "practice_id";
   const payload = { status, updated_at: new Date().toISOString() };
   if (status === "approved" && isL) payload.approved_by = state.user;
   if (isL && (status === "approved" || status === "rejected")) payload.reviewed_at = new Date().toISOString();
-  if (status === "active" && isA) payload.date_verified = new Date().toISOString().slice(0,10);
+  if (status === "active" && (isA || isS)) payload.date_verified = new Date().toISOString().slice(0,10);
   if (isM && (status === "confirmed" || status === "rejected")) { payload.reviewed_by = state.user || null; payload.reviewed_at = new Date().toISOString(); }
   try {
     await sb("PATCH", `/rest/v1/${table}?${idcol}=in.(${[...set].join(",")})`, payload);
-    const noun = isL ? "lesson" : isA ? "preference" : isM ? "item" : "practice";
-    toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" || status === "rejected" ? "rejected" : status === "active" ? "approved — now feed briefs" : status === "confirmed" ? "confirmed" : "approved"}.`, "success");
+    const noun = isL ? "lesson" : isA ? "preference" : isM ? "item" : isS ? "standard" : "practice";
+    toast(`${set.size} ${noun}${set.size === 1 ? "" : "s"} ${status === "archived" || status === "rejected" || status === "superseded" ? (isS ? "superseded — off the connector's active list" : "rejected") : status === "active" ? "approved — now feed briefs" : status === "confirmed" ? "confirmed" : "approved"}.`, "success");
     set.clear();
-    if (isL) await reloadLessons(); else if (isA) await loadAgencyPrefs(); else if (isM) await loadMeetingItems(); else await loadPractices();
+    if (isL) await reloadLessons(); else if (isA) await loadAgencyPrefs(); else if (isM) await loadMeetingItems(); else if (isS) await loadStandards(); else await loadPractices();
   } catch (e) { toast("Bulk update failed: " + e.message, "error"); }
 }
 
@@ -1366,6 +1372,160 @@ async function setPrefStatus(id, status) {
     toast("Preference " + (status === "active" ? "approved — now feeds briefs." : "rejected."), "success");
     await loadAgencyPrefs();
   } catch (e) { toast("Update failed: " + e.message, "error"); }
+}
+
+// ── Engineering Standards module (firm design-basis positions) ───────────────
+// Rows live in pms_engineering_standards and are served by the connector's
+// search_engineering_standards tool. Mined rows arrive as status='suggested';
+// Approve = 'active' (stamps date_verified), Reject = 'superseded'. Review
+// queue only — no "new standard" form: standards are mined from QC docs and
+// recurring RFI patterns, and a reviewer can tighten the wording before approving.
+const STD_BASIS = { code: "Code", spec: "Spec", firm: "Firm practice" };
+async function loadStandards() {
+  state.stds.loading = true;
+  try { state.stds.rows = (await sb("GET", "/rest/v1/pms_engineering_standards?select=*&order=discipline,system,date_added.desc")) || []; }
+  catch (e) { toast("Load failed: " + e.message, "error"); state.stds.rows = []; }
+  state.stds.loaded = true; state.stds.loading = false;
+  state.counts.standards = state.stds.rows.length;
+  render();
+}
+function standardsFiltered() {
+  const f = state.stds.f;
+  return state.stds.rows.filter(r => {
+    if (f.discipline && (r.discipline || "") !== f.discipline) return false;
+    if (f.basis && (r.basis || "") !== f.basis) return false;
+    if (f.status && (r.status || "") !== f.status) return false;
+    if (f.q) {
+      const hay = [r.standard_text, r.system, r.discipline, r.source_reference].join(" ").toLowerCase();
+      if (!hay.includes(f.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+function renderStandards() {
+  if (!state.stds.loaded && !state.stds.loading) loadStandards();
+  if (state.stds.loading || !state.stds.loaded) { setBusy(true); $("view").innerHTML = '<div class="empty" role="status">Loading…</div>'; return; }
+  const all = state.stds.rows;
+  const disciplines = [...new Set(all.map(r => r.discipline).filter(Boolean))].sort();
+  const opt = (arr, sel) => arr.map(a => '<option value="' + esc(a) + '" ' + (a === sel ? "selected" : "") + '>' + esc(a) + '</option>').join("");
+  const f = state.stds.f;
+  const pending = all.filter(r => r.status === "suggested").length;
+  const active = all.filter(r => r.status === "active").length;
+  $("view").innerHTML =
+    (pending ? '<div class="status info" style="display:block;margin-bottom:14px">📐 <b>' + pending + '</b> mined standard' + (pending === 1 ? "" : "s") + ' awaiting review. Only <b>active</b> standards (' + active + ' today) are meant to be relied on. <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="state.stds.f.status=\'suggested\'; render()">Show review queue</button></div>' : "") +
+    '<div class="toolbar">' +
+      '<div class="grow"><label for="sdQ">Search</label>' +
+        '<input id="sdQ" placeholder="standard, system, code reference…" value="' + esc(f.q || "") + '" oninput="state.stds.f.q=this.value; renderStandardsList()"/></div>' +
+      '<div class="field"><label for="sdDisc">Discipline</label>' +
+        '<select id="sdDisc" onchange="state.stds.f.discipline=this.value; renderStandardsList()"><option value="">All</option>' + opt(disciplines, f.discipline) + '</select></div>' +
+      '<div class="field"><label for="sdBasis">Basis</label>' +
+        '<select id="sdBasis" onchange="state.stds.f.basis=this.value; renderStandardsList()"><option value="">All</option>' +
+          Object.keys(STD_BASIS).map(k => '<option value="' + k + '" ' + (f.basis === k ? "selected" : "") + '>' + STD_BASIS[k] + '</option>').join("") + '</select></div>' +
+      '<div class="field"><label for="sdStatus">Status</label>' +
+        '<select id="sdStatus" onchange="state.stds.f.status=this.value; renderStandardsList()">' +
+          '<option value="">All</option>' +
+          '<option value="suggested" ' + (f.status === "suggested" ? "selected" : "") + '>Suggested</option>' +
+          '<option value="active" ' + (f.status === "active" ? "selected" : "") + '>Active</option>' +
+          '<option value="superseded" ' + (f.status === "superseded" ? "selected" : "") + '>Superseded</option>' +
+        '</select></div>' +
+      '<button class="btn btn-ghost" style="margin-left:auto" onclick="state.stds.loaded=false; render()">↻ Refresh</button>' +
+    '</div><div id="sdList"></div>';
+  renderStandardsList();
+}
+function renderStandardsList() {
+  const el = $("sdList"); if (!el) return;
+  const rows = standardsFiltered();
+  if (!rows.length) { el.innerHTML = '<div id="bulkBarS">' + bulkBar("S") + '</div><div class="empty">' + (state.stds.rows.length ? "No standards match these filters." : "No engineering standards yet.") + '</div>'; return; }
+  const byDisc = {};
+  rows.forEach(r => (byDisc[r.discipline || "General"] = byDisc[r.discipline || "General"] || []).push(r));
+  el.innerHTML = '<div id="bulkBarS">' + bulkBar("S") + '</div>' + Object.keys(byDisc).sort().map(d => {
+    const suggested = byDisc[d].filter(r => r.status === "suggested");
+    const allSel = suggested.length && suggested.every(r => state.selS.has(r.standard_id));
+    const selBtn = suggested.length
+      ? ' <button class="btn btn-ghost btn-sm" style="margin-left:8px;font-weight:400;text-transform:none;letter-spacing:normal" data-disc="' + esc(d) + '" onclick="toggleStdDisciplineSel(this.dataset.disc)" title="Select/deselect every suggested standard under ' + esc(d) + ' for bulk approve/reject">' + (allSel ? "☑" : "☐") + ' all suggested (' + suggested.length + ')</button>'
+      : "";
+    return '<h2 style="margin:18px 0 8px">📐 ' + esc(d) + ' <span style="color:var(--muted);font-size:12px;font-weight:400">' + byDisc[d].length + '</span>' + selBtn + '</h2>' + byDisc[d].map(renderStandardCard).join("");
+  }).join("");
+}
+function toggleStdDisciplineSel(disc) {
+  const suggested = standardsFiltered().filter(r => (r.discipline || "General") === disc && r.status === "suggested");
+  const allSel = suggested.length && suggested.every(r => state.selS.has(r.standard_id));
+  suggested.forEach(r => allSel ? state.selS.delete(r.standard_id) : state.selS.add(r.standard_id));
+  renderStandardsList();
+}
+function renderStandardCard(r) {
+  const statusPill = { suggested: "pill-yellow", active: "pill-green", superseded: "pill-red" }[r.status] || "pill-gray";
+  const statusLabel = { suggested: "suggested", active: "active", superseded: "superseded" }[r.status] || r.status;
+  const basisPill = { code: "pill-blue", spec: "pill-purple", firm: "pill-gray" }[r.basis] || "pill-gray";
+  const id = esc(r.standard_id);
+  const actions = [
+    r.status !== "active" ? '<button class="btn btn-success btn-sm" data-id="' + id + '" onclick="setStdStatus(this.dataset.id,\'active\')">✓ ' + (r.status === "superseded" ? "Restore" : "Approve") + '</button>' : "",
+    r.status !== "superseded" ? '<button class="btn btn-ghost btn-sm" data-id="' + id + '" onclick="setStdStatus(this.dataset.id,\'superseded\')">' + (r.status === "active" ? "Supersede" : "✕ Reject") + '</button>' : "",
+    '<button class="btn btn-ghost btn-sm" data-id="' + id + '" onclick="openStandardForm(this.dataset.id)">✎ Edit</button>',
+  ].filter(Boolean).join(" ");
+  const selbox = r.status === "suggested"
+    ? '<input type="checkbox" class="selbox" aria-label="Select: ' + esc((r.standard_text || "").slice(0, 80)) + '" ' + (state.selS.has(r.standard_id) ? "checked" : "") + ' data-id="' + id + '" onchange="toggleSel(\'S\',this.dataset.id,this.checked)" title="Select for bulk approve/reject"/>'
+    : "";
+  return '<div class="lesson ' + (r.status === "suggested" ? "draft" : esc(r.status === "superseded" ? "archived" : "approved")) + '">' +
+    '<div class="lesson-top">' + selbox + '<div style="flex:1">' +
+      (r.system ? '<div style="font-size:12px;font-weight:600;color:var(--dim);margin-bottom:3px">' + esc(r.system) + '</div>' : "") +
+      '<div class="lesson-summary">' + esc(r.standard_text) + '</div>' +
+      '<div class="lesson-meta">' +
+        '<span class="pill ' + basisPill + '" title="What the position rests on">' + esc(STD_BASIS[r.basis] || r.basis || "Firm practice") + '</span>' +
+        '<span class="pill ' + statusPill + '">' + esc(statusLabel) + '</span>' +
+        (r.date_verified ? '<span class="pill pill-gray">verified ' + esc(r.date_verified) + '</span>' : "") +
+      '</div></div><div class="lesson-actions">' + actions + '</div></div>' +
+    (r.source_reference ? '<div class="lesson-sub" style="white-space:pre-wrap"><b>Source:</b> ' + esc(r.source_reference) + '</div>' : "") +
+  '</div>';
+}
+async function setStdStatus(id, status) {
+  try {
+    await sb("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id),
+      { status, updated_at: new Date().toISOString(), ...(status === "active" ? { date_verified: new Date().toISOString().slice(0, 10) } : {}) });
+    toast("Standard " + (status === "active" ? "approved." : "superseded."), "success");
+    await loadStandards();
+  } catch (e) { toast("Update failed: " + e.message, "error"); }
+}
+// Edit-only (no create): tighten wording, fix the source, or re-key a mined row.
+function openStandardForm(id) {
+  const r = state.stds.rows.find(x => x.standard_id === id); if (!r) return;
+  const discs = [...new Set([...DISCIPLINES, r.discipline].filter(Boolean))];
+  $("modalMount").innerHTML =
+    '<div class="modal-overlay" onclick="if(event.target===this)closeModal()">' +
+      '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="stdModalTitle">' +
+        '<h3 id="stdModalTitle">Edit engineering standard</h3>' +
+        '<div class="fieldset full"><label for="sf_text">Standard *</label>' +
+          '<textarea id="sf_text" rows="5">' + esc(r.standard_text || "") + '</textarea></div>' +
+        '<div class="form-grid">' +
+          '<div><label for="sf_disc">Discipline</label><select id="sf_disc"><option value=""></option>' +
+            discs.map(d => '<option value="' + esc(d) + '" ' + (d === r.discipline ? "selected" : "") + '>' + esc(d) + '</option>').join("") + '</select></div>' +
+          '<div><label for="sf_basis">Basis</label><select id="sf_basis">' +
+            Object.keys(STD_BASIS).map(k => '<option value="' + k + '" ' + ((r.basis || "firm") === k ? "selected" : "") + '>' + STD_BASIS[k] + '</option>').join("") + '</select></div>' +
+          '<div class="full"><label for="sf_system">System</label><input id="sf_system" value="' + esc(r.system || "") + '" placeholder="e.g. Chilled water, Emergency power"/></div>' +
+          '<div class="full"><label for="sf_source">Source reference</label><input id="sf_source" value="' + esc(r.source_reference || "") + '" placeholder="e.g. NEC 110.26; ASHRAE 62.1 Table 5-1"/></div>' +
+        '</div>' +
+        '<div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button>' +
+          '<button class="btn btn-primary" data-id="' + esc(id) + '" onclick="saveStandard(this.dataset.id)">Save changes</button></div>' +
+      '</div></div>';
+  focusModal();
+}
+async function saveStandard(id) {
+  const text = $("sf_text").value.trim();
+  if (!text) { toast("The standard text can't be empty.", "error"); return; }
+  const payload = {
+    standard_text: text,
+    discipline: $("sf_disc").value || null,
+    system: $("sf_system").value.trim() || null,
+    basis: $("sf_basis").value,
+    source_reference: $("sf_source").value.trim() || null,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    await sb("PATCH", "/rest/v1/pms_engineering_standards?standard_id=eq." + encodeURIComponent(id), payload);
+    closeModal();
+    toast("Standard saved.", "success");
+    await loadStandards();
+  } catch (e) { toast("Save failed: " + e.message, "error"); }
 }
 
 // ── Meeting Items module (issue #291) ────────────────────────────────────────
