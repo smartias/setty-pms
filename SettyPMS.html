@@ -9,7 +9,7 @@
   <meta http-equiv="Expires" content="0"/>
   <title>Setty PMS</title>
   <script>
-    window.__appVersion = "2026-09-30-pms-v161-contact-search-rank";
+    window.__appVersion = "2026-10-02-pms-v162-light-dark-theme";
 
     // Auto-update check — see SettyFieldPhotos.html for full explanation.
     // Critical for iOS Safari home-screen icons + browsers with aggressive cache.
@@ -74,13 +74,53 @@
   window.CurrentSetFold = CurrentSetFold;
   window.SheetRefs = SheetRefs;
 </script>
+  <script>
+    // Theme preference: "system" (default, follows the OS), "light" or "dark".
+    // Applied before first paint so a light-mode load never flashes dark.
+    (function(){try{var t=localStorage.getItem("pms-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}})();
+  </script>
   <style>
+    :root{
+      color-scheme:dark;
+      --bg:#0f1117;--card:#1a1d2e;--cardHover:#1e2238;--border:#2a2d45;
+      --accent:#3b82f6;--accentLight:#60a5fa;--accentDim:#1e3a5f;
+      --green:#10b981;--greenDim:#064e3b;--yellow:#f59e0b;--yellowDim:#451a03;
+      --red:#ef4444;--redDim:#450a0a;--purple:#8b5cf6;--purpleDim:#2e1065;
+      --text:#e2e8f0;--textMuted:#94a3b8;--textDim:#8b98ab;
+      --page:#0d0f1a;--scrollTrack:#151929;--scrollThumb:#2d3452;
+      --pickerFilter:invert(0.7) sepia(1) saturate(2) hue-rotate(190deg);
+      --c-052e16:#052e16;--c-0f2a17:#0f2a17;--c-0f3b21:#0f3b21;--c-123226:#123226;--c-151828:#151828;--c-181c2e:#181c2e;--c-1a0505:#1a0505;--c-1a0a00:#1a0a00;--c-1a1400:#1a1400;--c-1a1f35:#1a1f35;--c-1a2040:#1a2040;--c-1a2233:#1a2233;--c-1a2500:#1a2500;--c-1a2535:#1a2535;--c-1a2a3a:#1a2a3a;--c-1a3a2a:#1a3a2a;--c-1a3a3a:#1a3a3a;--c-1d4ed8:#1d4ed8;--c-1e3a5f:#1e3a5f;--c-22d3ee:#22d3ee;--c-2563eb:#2563eb;--c-2a1a00:#2a1a00;--c-2a1a3a:#2a1a3a;--c-2a1a3b:#2a1a3b;--c-2a1a3f:#2a1a3f;--c-2a1f08:#2a1f08;--c-33270a:#33270a;--c-34d399:#34d399;--c-3a0000:#3a0000;--c-3a1a1a:#3a1a1a;--c-3a2410:#3a2410;--c-3a2a1a:#3a2a1a;--c-3a2e10:#3a2e10;--c-3b0a0a:#3b0a0a;--c-3b1a1a:#3b1a1a;--c-3b2a1a:#3b2a1a;--c-3b82f6:#3b82f6;--c-3fb950:#3fb950;--c-451a03:#451a03;--c-4ade80:#4ade80;--c-4da6ff:#4da6ff;--c-500724:#500724;--c-58a6ff:#58a6ff;--c-5eead4:#5eead4;--c-60a5fa:#60a5fa;--c-60b4ff:#60b4ff;--c-6bd4ff:#6bd4ff;--c-7c3aed:#7c3aed;--c-7dd3fc:#7dd3fc;--c-86d9a8:#86d9a8;--c-86efac:#86efac;--c-8957e5:#8957e5;--c-8a2be2:#8a2be2;--c-8b5cf6:#8b5cf6;--c-90caf9:#90caf9;--c-93c5fd:#93c5fd;--c-a78bfa:#a78bfa;--c-b592f0:#b592f0;--c-bbdefb:#bbdefb;--c-c084fc:#c084fc;--c-c4b5fd:#c4b5fd;--c-d4a72c:#d4a72c;--c-db2777:#db2777;--c-dc2626:#dc2626;--c-e5534b:#e5534b;--c-e8a03c:#e8a03c;--c-eab308:#eab308;--c-ef4444:#ef4444;--c-f472b6:#f472b6;--c-f59e0b:#f59e0b;--c-f87171:#f87171;--c-facc15:#facc15;--c-fbbf24:#fbbf24;--c-fcd34d:#fcd34d;--c-fda4af:#fda4af;--c-ff3a7a:#ff3a7a;--c-ff6b9d:#ff6b9d;--c-ff7518:#ff7518;--c-ffb3c6:#ffb3c6;--c-ffd700:#ffd700;
+    }
+    @media (prefers-color-scheme: light){
+      :root:not([data-theme="dark"]){
+        color-scheme:light;
+        --bg:#f3f5f9;--card:#ffffff;--cardHover:#eef2f8;--border:#d3dae6;
+        --accent:#2563eb;--accentLight:#1d4ed8;--accentDim:#dbeafe;
+        --green:#059669;--greenDim:#d1fae5;--yellow:#b45309;--yellowDim:#fef3c7;
+        --red:#dc2626;--redDim:#fee2e2;--purple:#7c3aed;--purpleDim:#ede9fe;
+        --text:#1e293b;--textMuted:#475569;--textDim:#64748b;
+        --page:#e9edf4;--scrollTrack:#e2e8f0;--scrollThumb:#b6c0d1;
+        --pickerFilter:none;
+      --c-052e16:#d6fae5;--c-0f2a17:#daf6e2;--c-0f3b21:#daf6e6;--c-123226:#daf6eb;--c-151828:#dadff6;--c-181c2e:#dadff6;--c-1a0505:#f8d9d9;--c-1a0a00:#fde3d3;--c-1a1400:#fdf3d3;--c-1a1f35:#dadff6;--c-1a2040:#dadff6;--c-1a2233:#dae3f6;--c-1a2500:#f0fdd3;--c-1a2535:#dae6f6;--c-1a2a3a:#dae8f6;--c-1a3a2a:#daf6e8;--c-1a3a3a:#daf6f6;--c-1d4ed8:#123187;--c-1e3a5f:#dae6f6;--c-22d3ee:#0b7d8e;--c-2563eb:#0d358c;--c-2a1a00:#fdedd3;--c-2a1a3a:#e8daf6;--c-2a1a3b:#e8daf6;--c-2a1a3f:#e6daf6;--c-2a1f08:#f8eed8;--c-33270a:#f7eed9;--c-34d399:#1b7e5a;--c-3a0000:#fdd3d3;--c-3a1a1a:#f6dada;--c-3a2410:#f6e7da;--c-3a2a1a:#f6e8da;--c-3a2e10:#f6eeda;--c-3b0a0a:#f8d8d8;--c-3b1a1a:#f6dada;--c-3b2a1a:#f6e8da;--c-3b82f6:#083c91;--c-3fb950:#1b7e29;--c-451a03:#fde2d3;--c-4ade80:#18813e;--c-4da6ff:#084c91;--c-500724:#fbd5e4;--c-58a6ff:#084891;--c-5eead4:#128775;--c-60a5fa:#084591;--c-60b4ff:#085091;--c-6bd4ff:#086991;--c-7c3aed:#3c0d8c;--c-7dd3fc:#086591;--c-86d9a8:#1b7e44;--c-86efac:#12873c;--c-8957e5:#3c1584;--c-8a2be2:#4f1287;--c-8b5cf6:#320891;--c-90caf9:#085491;--c-93c5fd:#084991;--c-a78bfa:#2a0891;--c-b592f0:#3e1386;--c-bbdefb:#095b9f;--c-c084fc:#4c0891;--c-c4b5fd:#2808a0;--c-d4a72c:#7f641a;--c-db2777:#831646;--c-dc2626:#841515;--c-e5534b:#861913;--c-e8a03c:#895610;--c-eab308:#917008;--c-ef4444:#8d0c0c;--c-f472b6:#8e0b50;--c-f59e0b:#915e08;--c-f87171:#910808;--c-facc15:#917608;--c-fbbf24:#916b08;--c-fcd34d:#917108;--c-fda4af:#a0081b;--c-ff3a7a:#910834;--c-ff6b9d:#910836;--c-ff7518:#913f08;--c-ffb3c6:#a0082e;--c-ffd700:#917c08;
+      }
+    }
+    :root[data-theme="light"]{
+      color-scheme:light;
+      --bg:#f3f5f9;--card:#ffffff;--cardHover:#eef2f8;--border:#d3dae6;
+      --accent:#2563eb;--accentLight:#1d4ed8;--accentDim:#dbeafe;
+      --green:#059669;--greenDim:#d1fae5;--yellow:#b45309;--yellowDim:#fef3c7;
+      --red:#dc2626;--redDim:#fee2e2;--purple:#7c3aed;--purpleDim:#ede9fe;
+      --text:#1e293b;--textMuted:#475569;--textDim:#64748b;
+      --page:#e9edf4;--scrollTrack:#e2e8f0;--scrollThumb:#b6c0d1;
+      --pickerFilter:none;
+      --c-052e16:#d6fae5;--c-0f2a17:#daf6e2;--c-0f3b21:#daf6e6;--c-123226:#daf6eb;--c-151828:#dadff6;--c-181c2e:#dadff6;--c-1a0505:#f8d9d9;--c-1a0a00:#fde3d3;--c-1a1400:#fdf3d3;--c-1a1f35:#dadff6;--c-1a2040:#dadff6;--c-1a2233:#dae3f6;--c-1a2500:#f0fdd3;--c-1a2535:#dae6f6;--c-1a2a3a:#dae8f6;--c-1a3a2a:#daf6e8;--c-1a3a3a:#daf6f6;--c-1d4ed8:#123187;--c-1e3a5f:#dae6f6;--c-22d3ee:#0b7d8e;--c-2563eb:#0d358c;--c-2a1a00:#fdedd3;--c-2a1a3a:#e8daf6;--c-2a1a3b:#e8daf6;--c-2a1a3f:#e6daf6;--c-2a1f08:#f8eed8;--c-33270a:#f7eed9;--c-34d399:#1b7e5a;--c-3a0000:#fdd3d3;--c-3a1a1a:#f6dada;--c-3a2410:#f6e7da;--c-3a2a1a:#f6e8da;--c-3a2e10:#f6eeda;--c-3b0a0a:#f8d8d8;--c-3b1a1a:#f6dada;--c-3b2a1a:#f6e8da;--c-3b82f6:#083c91;--c-3fb950:#1b7e29;--c-451a03:#fde2d3;--c-4ade80:#18813e;--c-4da6ff:#084c91;--c-500724:#fbd5e4;--c-58a6ff:#084891;--c-5eead4:#128775;--c-60a5fa:#084591;--c-60b4ff:#085091;--c-6bd4ff:#086991;--c-7c3aed:#3c0d8c;--c-7dd3fc:#086591;--c-86d9a8:#1b7e44;--c-86efac:#12873c;--c-8957e5:#3c1584;--c-8a2be2:#4f1287;--c-8b5cf6:#320891;--c-90caf9:#085491;--c-93c5fd:#084991;--c-a78bfa:#2a0891;--c-b592f0:#3e1386;--c-bbdefb:#095b9f;--c-c084fc:#4c0891;--c-c4b5fd:#2808a0;--c-d4a72c:#7f641a;--c-db2777:#831646;--c-dc2626:#841515;--c-e5534b:#861913;--c-e8a03c:#895610;--c-eab308:#917008;--c-ef4444:#8d0c0c;--c-f472b6:#8e0b50;--c-f59e0b:#915e08;--c-f87171:#910808;--c-facc15:#917608;--c-fbbf24:#916b08;--c-fcd34d:#917108;--c-fda4af:#a0081b;--c-ff3a7a:#910834;--c-ff6b9d:#910836;--c-ff7518:#913f08;--c-ffb3c6:#a0082e;--c-ffd700:#917c08;
+    }
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    body{background:#0d0f1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    body{background:var(--page);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
     #root{min-height:100vh}
     ::-webkit-scrollbar{width:6px;height:6px}
-    ::-webkit-scrollbar-track{background:#151929}
-    ::-webkit-scrollbar-thumb{background:#2d3452;border-radius:3px}
+    ::-webkit-scrollbar-track{background:var(--scrollTrack)}
+    ::-webkit-scrollbar-thumb{background:var(--scrollThumb);border-radius:3px}
     input[type=number]::-webkit-inner-spin-button,
     input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
     input[type=number]{-moz-appearance:textfield}
@@ -2311,22 +2351,27 @@ async function createNoteCalendarEvent(note, project) {
 
 // ─── PALETTE & STYLES ────────────────────────────────────────────────────────
 
+// Values are CSS variables (defined in <head>, swapped by light/dark theme),
+// so every P.* reference follows the theme. Don't parse or hex-concat these:
+// use pAlpha() for translucent variants.
 const P = {
-  bg: "#0f1117", card: "#1a1d2e", cardHover: "#1e2238", border: "#2a2d45",
-  accent: "#3b82f6", accentLight: "#60a5fa", accentDim: "#1e3a5f",
-  green: "#10b981", greenDim: "#064e3b", yellow: "#f59e0b", yellowDim: "#451a03",
-  red: "#ef4444", redDim: "#450a0a", purple: "#8b5cf6", purpleDim: "#2e1065",
-  text: "#e2e8f0", textMuted: "#94a3b8", textDim: "#8b98ab",
+  bg: "var(--bg)", card: "var(--card)", cardHover: "var(--cardHover)", border: "var(--border)",
+  accent: "var(--accent)", accentLight: "var(--accentLight)", accentDim: "var(--accentDim)",
+  green: "var(--green)", greenDim: "var(--greenDim)", yellow: "var(--yellow)", yellowDim: "var(--yellowDim)",
+  red: "var(--red)", redDim: "var(--redDim)", purple: "var(--purple)", purpleDim: "var(--purpleDim)",
+  text: "var(--text)", textMuted: "var(--textMuted)", textDim: "var(--textDim)",
 };
+// Translucent variant of a palette color (replaces the old `P.x + "26"` hex-alpha trick).
+function pAlpha(color, pct) { return `color-mix(in srgb, ${color} ${pct}%, transparent)`; }
 
 const STATUS_COLORS = {
   "Not Started": { bg: P.border, text: P.textMuted },
   "In Progress": { bg: P.accentDim, text: P.accentLight },
-  "In for Review": { bg: "#1e3a5f", text: "#7dd3fc" },
+  "In for Review": { bg: "var(--c-1e3a5f)", text: "var(--c-7dd3fc)" },
   "On Hold": { bg: P.yellowDim, text: P.yellow },
-  "Top Priority": { bg: "#500724", text: "#fda4af" },
-  "In Construction Administration": { bg: P.greenDim, text: "#34d399" },
-  "Completed": { bg: "#052e16", text: "#86efac" },
+  "Top Priority": { bg: "var(--c-500724)", text: "var(--c-fda4af)" },
+  "In Construction Administration": { bg: P.greenDim, text: "var(--c-34d399)" },
+  "Completed": { bg: "var(--c-052e16)", text: "var(--c-86efac)" },
   "Cancelled": { bg: "#27272a", text: "#a1a1aa" },
   "Lost": { bg: "#1c1917", text: "#a8a29e" },
 };
@@ -2334,16 +2379,16 @@ const STATUS_COLORS = {
 const MILESTONE_STATUS_COLORS = {
   "Not Started": { bg: P.border, text: P.textMuted },
   "In Progress": { bg: P.accentDim, text: P.accentLight },
-  "Completed": { bg: P.greenDim, text: "#34d399" },
+  "Completed": { bg: P.greenDim, text: "var(--c-34d399)" },
 };
 
 const CONTRACT_COLORS = {
-  "Waiting for NTP/Contract": { bg: "#1e3a5f", text: "#7dd3fc" },
-  "Internal Review or Action Required": { bg: "#500724", text: "#fda4af" },
+  "Waiting for NTP/Contract": { bg: "var(--c-1e3a5f)", text: "var(--c-7dd3fc)" },
+  "Internal Review or Action Required": { bg: "var(--c-500724)", text: "var(--c-fda4af)" },
   "Comments sent to Client": { bg: P.yellowDim, text: P.yellow },
-  "Signed Contract out to Client": { bg: P.purpleDim, text: "#c4b5fd" },
-  "CARF": { bg: "#451a03", text: "#fcd34d" },
-  "Fully Executed": { bg: P.greenDim, text: "#34d399" },
+  "Signed Contract out to Client": { bg: P.purpleDim, text: "var(--c-c4b5fd)" },
+  "CARF": { bg: "var(--c-451a03)", text: "var(--c-fcd34d)" },
+  "Fully Executed": { bg: P.greenDim, text: "var(--c-34d399)" },
 };
 
 const CSS = `
@@ -2354,8 +2399,7 @@ const CSS = `
   ::-webkit-scrollbar-track{background:${P.bg};}
   ::-webkit-scrollbar-thumb{background:${P.border};border-radius:3px;}
   input,select,textarea{font-family:'DM Sans',sans-serif;background:${P.bg};border:1px solid ${P.border};color:${P.text};border-radius:6px;padding:6px 10px;font-size:13px;transition:border-color .15s;}
-  input[type=date]{color-scheme:dark;}
-  input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.7) sepia(1) saturate(2) hue-rotate(190deg);cursor:pointer;opacity:0.8;}
+  input[type=date]::-webkit-calendar-picker-indicator{filter:var(--pickerFilter);cursor:pointer;opacity:0.8;}
   input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1;}
   input:focus,select:focus,textarea:focus{border-color:${P.accent};}
   input::placeholder,textarea::placeholder{color:${P.textDim};}
@@ -2684,8 +2728,8 @@ function Btn({ onClick, children, variant = "primary", small, disabled, title, s
   const styles = {
     primary: { background: "#2563eb", color: "#fff" },
     ghost: { background: "transparent", color: P.textMuted, border: `1px solid ${P.border}` },
-    danger: { background: P.redDim, color: "#f87171", border: `1px solid ${P.red}` },
-    success: { background: P.greenDim, color: "#34d399", border: `1px solid ${P.green}` },
+    danger: { background: P.redDim, color: "var(--c-f87171)", border: `1px solid ${P.red}` },
+    success: { background: P.greenDim, color: "var(--c-34d399)", border: `1px solid ${P.green}` },
     warning: { background: P.yellowDim, color: P.yellow },
     purple: { background: P.purpleDim, color: P.purple },
   };
@@ -3760,9 +3804,9 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
   const medium = flags.filter(f => f.severity === "medium");
   const info   = flags.filter(f => f.severity === "info");
   const sevStyle = {
-    high:   { bg: "#FEE2E2", border: "#DC2626", text: "#7F1D1D", icon: "🚨" },
+    high:   { bg: "#FEE2E2", border: "var(--c-dc2626)", text: "#7F1D1D", icon: "🚨" },
     medium: { bg: "#FEF3C7", border: "#D97706", text: "#78350F", icon: "⚠" },
-    info:   { bg: "#DBEAFE", border: "#2563EB", text: "#1E3A8A", icon: "ℹ" },
+    info:   { bg: "#DBEAFE", border: "var(--c-2563eb)", text: "#1E3A8A", icon: "ℹ" },
   };
   const h2 = `style="color:${NAVY};border-bottom:2px solid ${NAVY};padding-bottom:4px;margin-top:18px;"`;
   const td = `style="padding:4px 16px 4px 0;vertical-align:top;"`;
@@ -3980,7 +4024,7 @@ function buildContractAnalysisHtml(extraction, record = null, recordType = null)
         // Single line per insurance line so OneNote doesn't squish a 3-column
         // table into illegible narrow cells.
         for (const row of ic) {
-          const statusColor = row.status === "above" ? "#DC2626" : row.status === "within" ? "#15803D" : "#6B7280";
+          const statusColor = row.status === "above" ? "var(--c-dc2626)" : row.status === "within" ? "#15803D" : "#6B7280";
           const statusTag   = row.status === "above" ? " (ABOVE)" : row.status === "within" ? " (within)" : "";
           const reqDisplay  = row.status === "unknown" ? "not specified" : row.requiredText;
           html += `<div style="padding:2px 0;color:#0F172A;line-height:1.5;">`;
@@ -8785,7 +8829,7 @@ function updateMilestone(id, field, val, skipPrompt = false, options = {}) {
                             <span style={{
                               fontSize: 10, fontWeight: 700, minWidth: 14, height: 14, lineHeight: "14px",
                               textAlign: "center", borderRadius: 7, padding: "0 3px",
-                              background: P.accentLight + "26", color: P.accentLight,
+                              background: pAlpha(P.accentLight, 15), color: P.accentLight,
                             }}>{linkCount}</span>
                           ) : null}
                         </Btn>
@@ -9555,7 +9599,7 @@ function FinancialsView({ project, onChange, clients, onUpdateClient }) {
       const paid = inv.amountPaid || 0;
       const balance = inv.amount - paid;
       const statusLabel = paid >= inv.amount ? "✓ Paid" : paid > 0 ? "Partial" : "Unpaid";
-      const statusColor = paid >= inv.amount ? "#16a34a" : paid > 0 ? "#ca8a04" : "#dc2626";
+      const statusColor = paid >= inv.amount ? "#16a34a" : paid > 0 ? "#ca8a04" : "var(--c-dc2626)";
       return `<tr>
         <td style="padding:8px 12px;font-weight:600;font-family:monospace;">${inv.number}</td>
         <td style="padding:8px 12px;">${inv.date ? fmtDate(inv.date) : "—"}</td>
@@ -10175,12 +10219,12 @@ const LINK_TYPES = [
   { value: "references",      label: "References",      group: "Context",            color: "#64748b", prompt: "What is this item pointing to for context?" },
   { value: "documents",       label: "Documents",       group: "Context",            color: "#10b981", prompt: "What condition, observation, or discussion does this capture?" },
   // Action / Decision
-  { value: "responds-to",     label: "Responds To",     group: "Action / Decision",  color: "#3b82f6", prompt: "What are you replying or responding to?" },
+  { value: "responds-to",     label: "Responds To",     group: "Action / Decision",  color: "var(--c-3b82f6)", prompt: "What are you replying or responding to?" },
   { value: "resolves",        label: "Resolves",        group: "Action / Decision",  color: "#06b6d4", prompt: "Which open issue does this close out?" },
-  { value: "supersedes",      label: "Supersedes",      group: "Action / Decision",  color: "#ef4444", prompt: "What prior item no longer controls?" },
+  { value: "supersedes",      label: "Supersedes",      group: "Action / Decision",  color: "var(--c-ef4444)", prompt: "What prior item no longer controls?" },
   // Impact / Origin
   { value: "originates-from", label: "Originates From", group: "Impact / Origin",    color: "#d97706", prompt: "What triggered or caused this item?" },
-  { value: "affects",         label: "Affects",         group: "Impact / Origin",    color: "#8b5cf6", prompt: "What does this impact — cost, schedule, or scope?" },
+  { value: "affects",         label: "Affects",         group: "Impact / Origin",    color: "var(--c-8b5cf6)", prompt: "What does this impact — cost, schedule, or scope?" },
 ];
 
 const PMS_TARGET_TYPES = [
@@ -10378,7 +10422,7 @@ function SpBrowsePicker({ project, onPick }) {
         <span onClick={() => { setStack(null); setItems(null); }} title="Close browser" style={{ cursor: "pointer" }}>✕</span>
       </div>
       {busy && <div style={{ fontSize: 11, color: P.textDim }}>Loading…</div>}
-      {err && <div role="alert" style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
+      {err && <div role="alert" style={{ fontSize: 11, color: "var(--c-f87171)" }}>{err}</div>}
       {!busy && !err && items && items.length === 0 && (
         <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Empty folder.</div>
       )}
@@ -10454,7 +10498,7 @@ function OneNotePagePicker({ project, onPick }) {
         <span style={{ flex: 1 }} />
         <span onClick={() => setOpen(false)} title="Close browser" style={{ cursor: "pointer" }}>✕</span>
       </div>
-      {err && <div role="alert" style={{ fontSize: 11, color: "#f87171" }}>{err}</div>}
+      {err && <div role="alert" style={{ fontSize: 11, color: "var(--c-f87171)" }}>{err}</div>}
       {!sections && !err && <div style={{ fontSize: 11, color: P.textDim }}>Loading…</div>}
       {sections && sections.length === 0 && !err && (
         <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic" }}>Notebook has no sections yet.</div>
@@ -10514,7 +10558,7 @@ function EmailLogPicker({ project, onPick }) {
       <input value={q} onChange={e => { setRows(null); setQ(e.target.value); }}
         placeholder="Search filed emails (subject, sender)…"
         style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px", borderRadius: 5, border: "1px solid " + P.border, background: P.card, color: P.text, fontSize: 12 }} />
-      {err && <div role="alert" style={{ fontSize: 11, color: "#f87171", marginTop: 6 }}>{err}</div>}
+      {err && <div role="alert" style={{ fontSize: 11, color: "var(--c-f87171)", marginTop: 6 }}>{err}</div>}
       {rows === null && !err && <div style={{ fontSize: 11, color: P.textDim, marginTop: 6 }}>Loading…</div>}
       {Array.isArray(rows) && rows.length === 0 && !err && (
         <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginTop: 6 }}>
@@ -10706,25 +10750,25 @@ const RFI_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protectio
 const SUBMITTAL_DISCIPLINES = ["Mechanical", "Electrical", "Plumbing", "Fire Protection", "Technology", "Architectural", "Structural", "Civil", "Other"];
 
 const RFI_STATUS_COLORS = {
-  "Open":                  { bg: "#1e3a5f", text: "#60a5fa" },
-  "Pending Sub Response":  { bg: "#3b2a1a", text: "#f59e0b" },
-  "Responded":             { bg: "#1a3a2a", text: "#34d399" },
+  "Open":                  { bg: "var(--c-1e3a5f)", text: "var(--c-60a5fa)" },
+  "Pending Sub Response":  { bg: "var(--c-3b2a1a)", text: "var(--c-f59e0b)" },
+  "Responded":             { bg: "var(--c-1a3a2a)", text: "var(--c-34d399)" },
   "Closed":                { bg: "#1a1a2e", text: "#6b7280" },
   "Void":                  { bg: "#1a1a1a", text: "#4b5563" },
 };
 const SUBMITTAL_STATUS_COLORS = {
-  "Received":              { bg: "#1e3a5f", text: "#60a5fa" },
-  "Under Review":          { bg: "#2a1a3b", text: "#a78bfa" },
-  "Pending Sub Review":    { bg: "#3b2a1a", text: "#f59e0b" },
-  "Returned":              { bg: "#1a3a2a", text: "#34d399" },
-  "Resubmittal Required":  { bg: "#3b1a1a", text: "#f87171" },
+  "Received":              { bg: "var(--c-1e3a5f)", text: "var(--c-60a5fa)" },
+  "Under Review":          { bg: "var(--c-2a1a3b)", text: "var(--c-a78bfa)" },
+  "Pending Sub Review":    { bg: "var(--c-3b2a1a)", text: "var(--c-f59e0b)" },
+  "Returned":              { bg: "var(--c-1a3a2a)", text: "var(--c-34d399)" },
+  "Resubmittal Required":  { bg: "var(--c-3b1a1a)", text: "var(--c-f87171)" },
   "Void":                  { bg: "#1a1a1a", text: "#4b5563" },
 };
 const STAMP_COLORS = {
-  "Approved":              { bg: "#1a3a2a", text: "#34d399" },
-  "Approved as Noted":     { bg: "#1e3a5f", text: "#60a5fa" },
-  "Revise and Resubmit":   { bg: "#3b1a1a", text: "#f87171" },
-  "Rejected":              { bg: "#3b0a0a", text: "#ef4444" },
+  "Approved":              { bg: "var(--c-1a3a2a)", text: "var(--c-34d399)" },
+  "Approved as Noted":     { bg: "var(--c-1e3a5f)", text: "var(--c-60a5fa)" },
+  "Revise and Resubmit":   { bg: "var(--c-3b1a1a)", text: "var(--c-f87171)" },
+  "Rejected":              { bg: "var(--c-3b0a0a)", text: "var(--c-ef4444)" },
   "—":                     { bg: "#1a1a1a", text: "#6b7280" },
 };
 
@@ -11021,7 +11065,7 @@ function RFIDetailModal({ item, project, staff, clients, onSave, onClose, type }
   // or with Claude's suggested response below it.
   function questionEmailBlock() {
     if (!isRFI || !form.description) return "";
-    return "<div style='margin:14px 0;border-left:4px solid #d4a72c;background:#FFFBEB;padding:10px 14px;border-radius:0 6px 6px 0'>"
+    return "<div style='margin:14px 0;border-left:4px solid var(--c-d4a72c);background:#FFFBEB;padding:10px 14px;border-radius:0 6px 6px 0'>"
       + "<div style='font-size:11px;font-weight:700;color:#92600A;letter-spacing:1px;margin-bottom:4px'>CONTRACTOR'S QUESTION</div>"
       + "<div style='font-size:13px'>" + caNl(form.description) + "</div></div>";
   }
@@ -12088,7 +12132,7 @@ Setty
     setEmailingId(co.id);
     setCoMsg(co.id, "sending", "");
     const statusLabel = co.approved ? "✓ Approved" : co.sentToClient ? "Sent to Client — Pending Approval" : "Pending";
-    const statusColor = co.approved ? "#16a34a" : co.sentToClient ? "#2563eb" : "#ca8a04";
+    const statusColor = co.approved ? "#16a34a" : co.sentToClient ? "var(--c-2563eb)" : "#ca8a04";
 
     const bodyHtml = `
 <div style="font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:#1a1a1a;max-width:700px;">
@@ -12989,16 +13033,16 @@ const COMPANY_TYPE_OPTIONS = DIRECTORY_TYPES.filter(t =>
 
 function directoryTypeColor(type) {
   switch (type) {
-    case "Owner/Agency":          return { bg: "#3a2e10",   text: "#fbbf24" };
+    case "Owner/Agency":          return { bg: "var(--c-3a2e10)",   text: "var(--c-fbbf24)" };
     case "Prime":                 return { bg: P.accentDim, text: P.accentLight };
     case "Client":                return { bg: P.purpleDim, text: P.purple };
     case "SUB (to Setty)":        return { bg: P.redDim,    text: P.red };
-    case "Sub (to other)":        return { bg: "#1a3a3a",   text: "#5eead4" };
+    case "Sub (to other)":        return { bg: "var(--c-1a3a3a)",   text: "var(--c-5eead4)" };
     case "Trade Contractor":      return { bg: P.yellowDim, text: P.yellow };
-    case "Vendor":                return { bg: "#3a2a1a",   text: "#fcd34d" };
-    case "Owner Rep":             return { bg: "#2a1a3f",   text: "#a78bfa" };
+    case "Vendor":                return { bg: "var(--c-3a2a1a)",   text: "var(--c-fcd34d)" };
+    case "Owner Rep":             return { bg: "var(--c-2a1a3f)",   text: "var(--c-a78bfa)" };
     case "Construction Manager":  return { bg: P.greenDim,  text: P.green };
-    case "General Contractor":    return { bg: "#1e3a5f",   text: "#7dd3fc" };
+    case "General Contractor":    return { bg: "var(--c-1e3a5f)",   text: "var(--c-7dd3fc)" };
     default:                      return { bg: P.border,    text: P.textMuted };
   }
 }
@@ -13843,7 +13887,7 @@ function qaCommentLogsNotIngested(emails, sourceDocs) {
   });
   return out;
 }
-const QA_SEV_COLOR = { "life-safety": "#e5534b", "agency": "#d4a72c", "cost": "#e8a03c", "rfi-bait": "#58a6ff", "polish": "#8b949e" };
+const QA_SEV_COLOR = { "life-safety": "var(--c-e5534b)", "agency": "var(--c-d4a72c)", "cost": "var(--c-e8a03c)", "rfi-bait": "var(--c-58a6ff)", "polish": "#8b949e" };
 const qaFindingRank = (f) => (QA_SEV_RANK[f.severity] !== undefined ? QA_SEV_RANK[f.severity] : 5) * 2 + (QA_EXTERNAL_SRC[f.source] ? 0 : 1);
 
 function QAChip({ text, color, solid }) {
@@ -14006,16 +14050,16 @@ function ProjectQAReviewsView({ project, onChange }) {
       : (f.source === "ripple" ? "Ripple check" : (QA_CA_SRC[f.source] || "Coordination review")) + (QA_CA_SRC[f.source] ? "" : (f.review_id ? " #" + f.review_id : ""))
         + (rev && (rev.source_doc || rev.set_name) ? " - " + (rev.source_doc || rev.set_name) : "");
     return (
-      <div style={{ border: "1px solid " + (external && isOpen ? "#8957e5" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
+      <div style={{ border: "1px solid " + (external && isOpen ? "var(--c-8957e5)" : P.border), borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: P.card }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
           {f.severity && <QAChip text={f.severity} color={sevColor} solid={f.severity === "life-safety"} />}
-          <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : (QA_CA_SRC[f.source] ? QA_CA_SRC[f.source] + (f.external_ref ? " " + f.external_ref : "") : "internal QA"))} color={external ? "#8957e5" : undefined} />
+          <QAChip text={external ? (QA_EXTERNAL_SRC[f.source] + (f.external_ref ? " #" + f.external_ref : "")) : (f.source === "ripple" ? "ripple" : (QA_CA_SRC[f.source] ? QA_CA_SRC[f.source] + (f.external_ref ? " " + f.external_ref : "") : "internal QA"))} color={external ? "var(--c-8957e5)" : undefined} />
           {f.item_id && <QAChip text={f.item_id} />}
-          <QAChip text={String(f.status).replace(/_/g, " ")} color={f.status === "open" ? "#e5534b" : f.status === "ready_to_backcheck" ? "#d4a72c" : "#3fb950"} />
-          {f.status === "ready_to_backcheck" && autoNote && <QAChip text="auto-backchecked" color="#3fb950" />}
+          <QAChip text={String(f.status).replace(/_/g, " ")} color={f.status === "open" ? "var(--c-e5534b)" : f.status === "ready_to_backcheck" ? "var(--c-d4a72c)" : "var(--c-3fb950)"} />
+          {f.status === "ready_to_backcheck" && autoNote && <QAChip text="auto-backchecked" color="var(--c-3fb950)" />}
           {forRef && <QAChip text="for reference" color="#8b949e" />}
-          {external && isOpen && !f.response && <QAChip text={ai ? "draft response" : "awaiting response"} color={ai ? P.accentLight : "#8957e5"} />}
-          {external && f.response && <QAChip text="responded" color="#3fb950" />}
+          {external && isOpen && !f.response && <QAChip text={ai ? "draft response" : "awaiting response"} color={ai ? P.accentLight : "var(--c-8957e5)"} />}
+          {external && f.response && <QAChip text="responded" color="var(--c-3fb950)" />}
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 10, color: P.textMuted }}>{String(f.created_at || "").slice(0, 10)}</span>
         </div>
@@ -14027,7 +14071,7 @@ function ProjectQAReviewsView({ project, onChange }) {
         {ex && f.evidence && <div style={{ fontSize: 11.5, color: P.textDim, background: P.bg, borderRadius: 6, padding: "6px 8px", marginBottom: 4, whiteSpace: "pre-wrap" }}>{f.evidence}</div>}
         {ex && f.action && <div style={{ fontSize: 11.5, color: P.textDim, marginBottom: 4 }}>Suggested: {f.action}</div>}
         {f.status_note && (f.status === "ready_to_backcheck" ? (
-          <div style={{ fontSize: 11, color: autoNote ? "#3fb950" : P.textMuted, marginBottom: 4 }}>
+          <div style={{ fontSize: 11, color: autoNote ? "var(--c-3fb950)" : P.textMuted, marginBottom: 4 }}>
             {autoNote ? f.status_note : "Backcheck note: " + f.status_note}
           </div>
         ) : (
@@ -14120,8 +14164,8 @@ function ProjectQAReviewsView({ project, onChange }) {
         {awaitingResponse > 0 && (
           <a href={responsesUrl} target="_blank" rel="noreferrer"
             style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
-              border: "1px solid #8957e5", borderRadius: 6, fontSize: 12, fontWeight: 600,
-              color: "#b592f0", textDecoration: "none", whiteSpace: "nowrap" }}
+              border: "1px solid var(--c-8957e5)", borderRadius: 6, fontSize: 12, fontWeight: 600,
+              color: "var(--c-b592f0)", textDecoration: "none", whiteSpace: "nowrap" }}
             title="Opens your Claude seat with the response drafting prefilled - verifies each open reviewer comment against the newest drawings, drafts a disposition and response per comment for your sign-off here, and builds the Comments & Responses register">
             {"🤖"} Draft comment responses ({awaitingResponse})
           </a>
@@ -14130,7 +14174,7 @@ function ProjectQAReviewsView({ project, onChange }) {
       </div>
 
       {pendingLogs.length > 0 && (
-        <div style={{ border: "1px solid #8957e5", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
+        <div style={{ border: "1px solid var(--c-8957e5)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
           <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 260 }}>
               <b>Not yet in the ledger:</b> {pendingLogs.length} attachment{pendingLogs.length === 1 ? "" : "s"} in this project&apos;s emails look{pendingLogs.length === 1 ? "s" : ""} like a review comment register, and no comment-log ingest names {pendingLogs.length === 1 ? "it" : "them"}.
@@ -14144,8 +14188,8 @@ function ProjectQAReviewsView({ project, onChange }) {
             </div>
             <a href={ingestUrl} target="_blank" rel="noreferrer"
               style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px",
-                border: "1px solid #8957e5", borderRadius: 6, fontSize: 12, fontWeight: 600,
-                color: "#b592f0", textDecoration: "none", whiteSpace: "nowrap" }}
+                border: "1px solid var(--c-8957e5)", borderRadius: 6, fontSize: 12, fontWeight: 600,
+                color: "var(--c-b592f0)", textDecoration: "none", whiteSpace: "nowrap" }}
               title="Opens your Claude seat with the ingest prefilled - reads each log and records one ledger row per comment for your sign-off here">
               {"🤖"} Ingest with Claude
             </a>
@@ -14163,14 +14207,14 @@ function ProjectQAReviewsView({ project, onChange }) {
         if (!latestRun || !newestIssue || !openCount) return null;
         if (String(newestIssue.at) <= String(latestRun.run_at)) return null;
         return (
-          <div style={{ border: "1px solid #d4a72c", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
+          <div style={{ border: "1px solid var(--c-d4a72c)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: P.text, background: P.card }}>
             <b>Back-check due:</b> "{newestIssue.set}" was issued after the last review, and {openCount} finding{openCount === 1 ? "" : "s"} {openCount === 1 ? "is" : "are"} still open.
             Run the coordination review - it back-checks the open findings against the newest revisions first.
           </div>
         );
       })()}
 
-      {error && <div style={{ color: "#e5534b", fontSize: 12, marginBottom: 10 }}>Could not load the ledger: {error}</div>}
+      {error && <div style={{ color: "var(--c-e5534b)", fontSize: 12, marginBottom: 10 }}>Could not load the ledger: {error}</div>}
       {reviews === null && <div style={{ color: P.textDim, fontSize: 12 }}>Loading the ledger&hellip;</div>}
 
       {reviews !== null && reviews.length === 0 && !error && (
@@ -14528,10 +14572,10 @@ const ROLE_SUGGESTIONS = [
   "Designer", "Drafter", "QA/QC",
 ].concat(OVERHEAD_ROLES);
 const DISC_COLORS = {
-  "Mechanical":      { bg: "#1a2a3a", text: "#60b4ff" },
-  "Electrical":      { bg: "#2a1a3a", text: "#c084fc" },
-  "Plumbing":        { bg: "#1a3a2a", text: "#34d399" },
-  "Fire Protection": { bg: "#3a1a1a", text: "#f87171" },
+  "Mechanical":      { bg: "var(--c-1a2a3a)", text: "var(--c-60b4ff)" },
+  "Electrical":      { bg: "var(--c-2a1a3a)", text: "var(--c-c084fc)" },
+  "Plumbing":        { bg: "var(--c-1a3a2a)", text: "var(--c-34d399)" },
+  "Fire Protection": { bg: "var(--c-3a1a1a)", text: "var(--c-f87171)" },
 };
 
 // Get Monday of the week containing a date
@@ -14950,7 +14994,7 @@ function TeamView({ project, onChange, staff, onAddStaff }) {
                     const wkStatus = weekStatus(weekStart);
                     const phases   = weekPhase(weekStart);
                     const phaseLabel = phases.map(p => p.code || p.name.slice(0, 4)).join("/");
-                    const rowBg = wkStatus === "current" ? "#1a2500" : wkStatus === "past" ? P.bg : "transparent";
+                    const rowBg = wkStatus === "current" ? "var(--c-1a2500)" : wkStatus === "past" ? P.bg : "transparent";
                     const rowBorder = wkStatus === "current" ? `1px solid ${P.green}` : "none";
                     let teamTotal = 0;
                     const cellData = staffRows.map(row => {
@@ -15264,7 +15308,7 @@ function TeamWBSView({ projects, onNavigateToProject }) {
               {allWeeks.map(weekStart => {
                 const st = wkStatus(weekStart);
                 const activeProjsThisWeek = weekProjects(weekStart);
-                const rowBg = st === "current" ? "#1a2500" : st === "past" ? P.bg : "transparent";
+                const rowBg = st === "current" ? "var(--c-1a2500)" : st === "past" ? P.bg : "transparent";
                 let teamTotal = 0;
                 const cellHours = visibleCols.map(col => {
                   const hrs = col.entries.reduce((a, entry) => a + entryWeekHours(entry, weekStart), 0);
@@ -15611,8 +15655,8 @@ function TermContractsView({ termContracts, projects, onUpdateTermContracts, onN
                   <span style={{ fontWeight: 700, fontSize: 14 }}>{tc.name || "Unnamed Contract"}</span>
                   {tc.contractNumber && <span style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: P.textDim }}>{tc.contractNumber}</span>}
                   <Badge color={statusColor} text={tc.contractStatus} />
-                  {isExpired && <span style={{ background: "#3a0000", color: P.red, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 6 }}>EXPIRED</span>}
-                  {isExpiringSoon && !isExpired && <span style={{ background: "#2a1a00", color: P.yellow, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 6 }}>EXP IN {daysToExp}d</span>}
+                  {isExpired && <span style={{ background: "var(--c-3a0000)", color: P.red, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 6 }}>EXPIRED</span>}
+                  {isExpiringSoon && !isExpired && <span style={{ background: "var(--c-2a1a00)", color: P.yellow, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 6 }}>EXP IN {daysToExp}d</span>}
                 </div>
                 <div style={{ fontSize: 12, color: P.textMuted, marginTop: 4 }}>
                   {tc.client && <span style={{ marginRight: 16 }}>{tc.client}</span>}
@@ -15819,7 +15863,7 @@ function PendingCOsView({ projects, onNavigateToProject, onUpdateProject }) {
             </thead>
             <tbody>
               {pendingItems.filter(i => i.isWaiting).map(({ co, proj, daysSent, isUrgent }) => (
-                <tr key={co.id} style={{ background: isUrgent ? "#1a0a00" : "transparent" }}>
+                <tr key={co.id} style={{ background: isUrgent ? "var(--c-1a0a00)" : "transparent" }}>
                   <td>
                     <button onClick={() => onNavigateToProject(proj.id)}
                       style={{ background: "none", border: "none", color: P.accentLight, cursor: "pointer", fontSize: 13, padding: 0, fontWeight: 500, textAlign: "left" }}>
@@ -16206,7 +16250,7 @@ function CashFlowView({ projects, onNavigateToProject }) {
                 const label = new Date(m.month + "-15").toLocaleDateString("en-US", { month: "long", year: "numeric" });
                 const breakdown = projectBreakdownForMonth(m.month);
                 return (
-                  <tr key={m.month} style={{ background: isCurrent ? "#1a2500" : "transparent" }}>
+                  <tr key={m.month} style={{ background: isCurrent ? "var(--c-1a2500)" : "transparent" }}>
                     <td style={{ fontWeight: isCurrent ? 700 : 400, color: isCurrent ? P.green : P.text, whiteSpace: "nowrap" }}>
                       {label}{isCurrent && <span style={{ fontSize: 10, color: P.green, marginLeft: 6 }}>← NOW</span>}
                     </td>
@@ -16369,7 +16413,7 @@ function GanttView({ project }) {
   }
 
   // ── Row definitions ──────────────────────────────────────────────────────────
-  const PHASE_COLORS = ["#2563eb","#0d9488","#7c3aed","#d97706","#db2777","#059669","#1d4ed8","#0f766e"];
+  const PHASE_COLORS = ["var(--c-2563eb)","#0d9488","var(--c-7c3aed)","#d97706","var(--c-db2777)","#059669","var(--c-1d4ed8)","#0f766e"];
 
   const phaseRows = phases.map((ph, i) => ({
     type: "phase", id: ph.id,
@@ -16385,7 +16429,7 @@ function GanttView({ project }) {
     type: "milestone", id: m.id,
     label: m.name,
     x: dateToX(m.dueDate),
-    color: m.type === "billable" ? "#3b82f6" : m.type === "change-order" ? "#eab308" : "#8b5cf6",
+    color: m.type === "billable" ? "var(--c-3b82f6)" : m.type === "change-order" ? "var(--c-eab308)" : "var(--c-8b5cf6)",
     done: (m.pctComplete || 0) >= 100,
   }));
 
@@ -16441,13 +16485,13 @@ function GanttView({ project }) {
 
         {/* Fixed label column */}
         <div style={{ minWidth: LABEL_W, maxWidth: LABEL_W, borderRight: `1px solid ${P.border}`, flexShrink: 0 }}>
-          <div style={{ height: HEADER_H, background: "#1a1f35", borderBottom: `1px solid ${P.border}` }} />
+          <div style={{ height: HEADER_H, background: "var(--c-1a1f35)", borderBottom: `1px solid ${P.border}` }} />
           {allRows.map((row, i) => (
             <div key={row.id} style={{
               height: ROW_H, display: "flex", alignItems: "center",
               paddingLeft: row.type === "milestone" ? 20 : 12,
               paddingRight: 8,
-              background: i % 2 === 0 ? P.card : "#151828",
+              background: i % 2 === 0 ? P.card : "var(--c-151828)",
               borderBottom: `1px solid ${P.border}`,
               gap: 5, overflow: "hidden",
             }}>
@@ -16474,7 +16518,7 @@ function GanttView({ project }) {
             {months.map((m, i) => (
               <g key={i}>
                 <rect x={m.x} y={0} width={m.width} height={svgH}
-                  fill={m.even ? "#151828" : "#181c2e"} />
+                  fill={m.even ? "var(--c-151828)" : "var(--c-181c2e)"} />
                 <line x1={m.x} y1={0} x2={m.x} y2={svgH} stroke="#2d3452" strokeWidth={1} />
                 {m.width > 28 && (
                   <text x={m.x + 5} y={HEADER_H - 10} fill="#4b5675" fontSize={10} fontFamily="inherit">{m.label}</text>
@@ -16588,7 +16632,7 @@ function CalendarView({ project, onChange }) {
   }
 
   // Assign a distinct color per phase
-  const PHASE_COLORS = ["#1d4ed8","#0f766e","#7c3aed","#b45309","#be185d","#065f46"];
+  const PHASE_COLORS = ["var(--c-1d4ed8)","#0f766e","var(--c-7c3aed)","#b45309","#be185d","#065f46"];
   const phaseColorMap = {};
   phases.forEach((ph, i) => { phaseColorMap[ph.code] = PHASE_COLORS[i % PHASE_COLORS.length]; });
 
@@ -17187,7 +17231,7 @@ function ProjectionsView({ project }) {
             </thead>
             <tbody>
               {rows.map(r => (
-                <tr key={r.id} style={{ background: r.isOverdue ? "#1a0505" : undefined }}>
+                <tr key={r.id} style={{ background: r.isOverdue ? "var(--c-1a0505)" : undefined }}>
                   <td style={{ fontWeight: 500 }}>{r.name}</td>
                   <td style={{ color: P.textMuted, fontSize: 12 }}>{r.phase}</td>
                   <td style={{ fontFamily: "JetBrains Mono", fontSize: 12, color: r.isOverdue ? P.red : P.textMuted }}>
@@ -17430,12 +17474,12 @@ function parseSearchHits(rawResults, project, emailIndex) {
 }
 
 const SOURCE_META = {
-  sharepoint: { icon: "📁", label: "SharePoint", color: "#60a5fa" },
+  sharepoint: { icon: "📁", label: "SharePoint", color: "var(--c-60a5fa)" },
   email:      { icon: "✉",  label: "Email Log",  color: "#10b981" },
-  onenote:    { icon: "📓", label: "OneNote",    color: "#a78bfa" },
-  photos:     { icon: "📷", label: "Site Photos", color: "#f59e0b" },
-  rfi:        { icon: "📨", label: "RFI",        color: "#f472b6" },
-  submittal:  { icon: "📋", label: "Submittal",  color: "#22d3ee" },
+  onenote:    { icon: "📓", label: "OneNote",    color: "var(--c-a78bfa)" },
+  photos:     { icon: "📷", label: "Site Photos", color: "var(--c-f59e0b)" },
+  rfi:        { icon: "📨", label: "RFI",        color: "var(--c-f472b6)" },
+  submittal:  { icon: "📋", label: "Submittal",  color: "var(--c-22d3ee)" },
 };
 
 // HTML-escape — renderHit injects summary via dangerouslySetInnerHTML, so any
@@ -17543,9 +17587,9 @@ function InvestigationView({ project }) {
     const sm = SOURCE_META[hit.source] || { icon: "📄", label: hit.source, color: P.textDim };
     const ext = (hit.source === "sharepoint" || hit.source === "photos") && hit.title.includes(".")
       ? hit.title.split(".").pop().toUpperCase() : null;
-    const EXT_COLORS = { PDF: "#ef4444", DWG: "#f59e0b", DXF: "#f59e0b",
-      DOCX: "#3b82f6", DOC: "#3b82f6", XLSX: "#10b981", XLS: "#10b981",
-      PPTX: "#a78bfa", JSON: "#64748b", JPG: "#06b6d4", PNG: "#06b6d4", MP4: "#06b6d4" };
+    const EXT_COLORS = { PDF: "var(--c-ef4444)", DWG: "var(--c-f59e0b)", DXF: "var(--c-f59e0b)",
+      DOCX: "var(--c-3b82f6)", DOC: "var(--c-3b82f6)", XLSX: "#10b981", XLS: "#10b981",
+      PPTX: "var(--c-a78bfa)", JSON: "#64748b", JPG: "#06b6d4", PNG: "#06b6d4", MP4: "#06b6d4" };
     const extColor = EXT_COLORS[ext] || P.textDim;
     const pathParts = (hit.path || "").split("/").filter(Boolean);
     const shortPath = pathParts.slice(-3).join(" › ");
@@ -17613,14 +17657,14 @@ function InvestigationView({ project }) {
                 Matched excerpt
               </div>
               <div style={{ fontSize: 13.5, color: P.text, lineHeight: 1.7,
-                background: P.bg + "cc", borderRadius: 6,
+                background: pAlpha(P.bg, 80), borderRadius: 6,
                 borderLeft: "3px solid " + sm.color, padding: "8px 12px" }}
                 dangerouslySetInnerHTML={{ __html: summaryHtml }} />
             </div>
           )}
           {noExcerptReason && (
             <div style={{ fontSize: 11, color: P.textDim, fontStyle: "italic", marginBottom: 4,
-              padding: "6px 10px", background: P.bg + "80", borderRadius: 4 }}>
+              padding: "6px 10px", background: pAlpha(P.bg, 50), borderRadius: 4 }}>
               💡 {noExcerptReason}
             </div>
           )}
@@ -18124,12 +18168,12 @@ function PhotoThumb({ item, meta, folderName, onClick }) {
 function PhotosView({ project }) {
   const PHASE_COLORS = {
     "Existing Conditions":    "#64748b",
-    "Demo / Abatement":       "#dc2626",
+    "Demo / Abatement":       "var(--c-dc2626)",
     "Rough-In":               "#d97706",
-    "Construction Progress":  "#2563eb",
-    "Commissioning":          "#7c3aed",
+    "Construction Progress":  "var(--c-2563eb)",
+    "Commissioning":          "var(--c-7c3aed)",
     "Substantial Completion": "#059669",
-    "Punch List":             "#db2777",
+    "Punch List":             "var(--c-db2777)",
     "Final / Completed":      "#16a34a",
   };
 
@@ -18655,8 +18699,8 @@ const TIMELINE_KINDS = [
   { key: "email",     label: "Emails",       icon: "✉️", color: P.accentLight },
   { key: "note",      label: "Notes",        icon: "📝", color: P.purple },
   { key: "milestone", label: "Milestones",   icon: "🎯", color: P.green },
-  { key: "rfi",       label: "RFIs",         icon: "❓",       color: "#60a5fa" },
-  { key: "submittal", label: "Submittals",   icon: "📋", color: "#34d399" },
+  { key: "rfi",       label: "RFIs",         icon: "❓",       color: "var(--c-60a5fa)" },
+  { key: "submittal", label: "Submittals",   icon: "📋", color: "var(--c-34d399)" },
   { key: "action",    label: "Action Items", icon: "✅",       color: P.yellow },
 ];
 const TL_COLOR = Object.fromEntries(TIMELINE_KINDS.map(k => [k.key, k.color]));
@@ -19098,7 +19142,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
               </span>
             );
             const arrow = <span style={{ color: P.textDim, fontSize: 11 }}>→</span>;
-            const ownerTone  = { bg: "#3a2e10",    text: "#fbbf24",     border: "#b78a1a" };
+            const ownerTone  = { bg: "var(--c-3a2e10)",    text: "var(--c-fbbf24)",     border: "#b78a1a" };
             const primeTone  = { bg: P.purpleDim, text: P.purple,      border: P.purple };
             const clientTone = { bg: P.accentDim, text: P.accentLight, border: P.accent };
             const settyTone  = { bg: P.greenDim,  text: P.green,       border: P.green };
@@ -19533,7 +19577,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
           )}
           {project.status === "On Hold" && (
             <span title="On Hold projects are excluded from dashboards, the Team WBS and weekly digests until the hold is lifted."
-              style={{ background: P.amberDim || "#33270a", color: "#fbbf24", border: "1px solid #fbbf24", borderRadius: 6, fontSize: 11.5, fontWeight: 700, padding: "4px 9px", whiteSpace: "nowrap" }}>
+              style={{ background: P.amberDim || "var(--c-33270a)", color: "var(--c-fbbf24)", border: "1px solid var(--c-fbbf24)", borderRadius: 6, fontSize: 11.5, fontWeight: 700, padding: "4px 9px", whiteSpace: "nowrap" }}>
               ⏸ On Hold — hidden from dashboards &amp; digests
             </span>
           )}
@@ -19642,7 +19686,7 @@ function ProjectDetail({ project, onUpdate, onEagerSave, onBack, termContracts, 
 	                  const isActive = tab === t;
 	                  return (
 	                    <button key={t} onClick={() => setTab(t)}
-	                      style={{ padding: "4px 12px", background: isActive ? P.accentLight + "22" : "transparent", border: `1px solid ${isActive ? P.accentLight : P.border}`, borderRadius: 4, color: isActive ? P.accentLight : P.textMuted, fontWeight: isActive ? 600 : 400, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+	                      style={{ padding: "4px 12px", background: isActive ? pAlpha(P.accentLight, 13) : "transparent", border: `1px solid ${isActive ? P.accentLight : P.border}`, borderRadius: 4, color: isActive ? P.accentLight : P.textMuted, fontWeight: isActive ? 600 : 400, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
 	                      {t}
 	                      {isNotesTab && openNoteActions > 0 && (
 	                        <span title={`${openNoteActions} open action item${openNoteActions !== 1 ? "s" : ""}`} style={{ fontSize: 11 }}>🚩</span>
@@ -20694,7 +20738,7 @@ function EmailsView({ project, onChange }) {
         </div>
       )}
       {!loading && emailLoadError && (
-        <div style={{ color: "#f87171", fontSize: 13, padding: "20px 0", display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ color: "var(--c-f87171)", fontSize: 13, padding: "20px 0", display: "flex", alignItems: "center", gap: 10 }}>
           <span>⚠ Couldn't load the email log — check your connection.</span>
           <Btn small variant="ghost" onClick={() => setLoadRetryTick(t => t + 1)}>Retry</Btn>
         </div>
@@ -20918,14 +20962,14 @@ function EmailsView({ project, onChange }) {
 const NOTE_CATEGORIES = ["Client Meeting", "Internal Meeting", "Site Visit", "Decision", "Client Communication", "Internal", "Issue", "Action Item", "General"];
 const NOTE_CAT_COLORS = {
   "Client Meeting":       { bg: P.accentDim,  text: P.accentLight },
-  "Internal Meeting":     { bg: "#1a2040",    text: "#93c5fd" },
+  "Internal Meeting":     { bg: "var(--c-1a2040)",    text: "var(--c-93c5fd)" },
   "Meeting":              { bg: P.accentDim,  text: P.accentLight }, // legacy fallback
   "Decision":             { bg: P.purpleDim,  text: P.purple },
   "Client Communication": { bg: P.greenDim,   text: P.green },
   "Internal":             { bg: P.border,     text: P.textMuted },
   "Issue":                { bg: P.redDim,     text: P.red },
   "Action Item":          { bg: P.yellowDim,  text: P.yellow },
-  "Site Visit":           { bg: "#1a3020",    text: "#4ade80" },
+  "Site Visit":           { bg: "#1a3020",    text: "var(--c-4ade80)" },
   "General":              { bg: P.border,     text: P.textDim },
 };
 
@@ -21137,7 +21181,7 @@ function CalendarImportPanel({ project, onImport }) {
       <Btn small variant="ghost" onClick={() => { setOpen(true); setImportStatus(""); }}><span aria-hidden="true">&#128197;</span> Import from Calendar</Btn>
       {importStatus && (
         <span style={{ fontSize: 11, fontWeight: 600,
-          color: importStatus.startsWith("✓") ? "#34d399" : "#f87171" }}>
+          color: importStatus.startsWith("✓") ? "var(--c-34d399)" : "var(--c-f87171)" }}>
           {importStatus}
         </span>
       )}
@@ -21153,7 +21197,7 @@ function CalendarImportPanel({ project, onImport }) {
       <div style={{ fontSize: 11, color: P.textDim, marginBottom: 10 }}>
         Searches your personal Outlook calendar and NYC Shared Calendar (2 years back, 1 year forward). Select events to import as Client Meeting, Internal Meeting, Site Visit, or any note type.
         {(project.teamsOneNoteNotebookId || project.oneNoteNotebookId)
-          ? <span style={{ color: "#a78bfa", marginLeft: 4 }}>📓 A OneNote page will be auto-created for every imported note.</span>
+          ? <span style={{ color: "var(--c-a78bfa)", marginLeft: 4 }}>📓 A OneNote page will be auto-created for every imported note.</span>
           : <span style={{ marginLeft: 4 }}>Tip: Enable Teams Notifications on the Overview tab to auto-generate OneNote pages on import.</span>}
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
@@ -21337,7 +21381,7 @@ function NotesView({ project, onChange }) {
           {openActionItems.length > 0 && (
             <span
               title={`${openActionItems.length} open action item${openActionItems.length !== 1 ? "s" : ""}`}
-              style={{ fontSize: 11, fontWeight: 700, color: "#fbbf24", background: "#3a2410", border: "1px solid #7c4a11", borderRadius: 999, padding: "2px 8px" }}>
+              style={{ fontSize: 11, fontWeight: 700, color: "var(--c-fbbf24)", background: "var(--c-3a2410)", border: "1px solid #7c4a11", borderRadius: 999, padding: "2px 8px" }}>
               🚩 {openActionItems.length}
             </span>
           )}
@@ -21391,9 +21435,9 @@ function NotesView({ project, onChange }) {
         )}
         {draft.category === "Site Visit" && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-            <label style={{ fontSize: 12, color: "#4ade80", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
+            <label style={{ fontSize: 12, color: "var(--c-4ade80)", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
             <input type="date" value={draft.visitDate} onChange={e => setDraft({ ...draft, visitDate: e.target.value })}
-              style={{ fontSize: 12, width: 160, borderColor: "#4ade80" }} />
+              style={{ fontSize: 12, width: 160, borderColor: "var(--c-4ade80)" }} />
           </div>
         )}
         <textarea value={draft.body} onChange={e => setDraft({ ...draft, body: e.target.value })}
@@ -21439,10 +21483,10 @@ function NotesView({ project, onChange }) {
                     {note.actionItem && <Badge color={{ bg: P.yellowDim, text: P.yellow }} text="Action Item" />}
                     {note.actionItem && (
                       <Badge color={(note.actionStatus || "open") === "done"
-                        ? { bg: "#123226", text: "#4ade80" }
+                        ? { bg: "var(--c-123226)", text: "var(--c-4ade80)" }
                         : (note.actionStatus === "blocked"
-                            ? { bg: "#3a2410", text: "#fbbf24" }
-                            : { bg: "#2a1f08", text: "#facc15" })}
+                            ? { bg: "var(--c-3a2410)", text: "var(--c-fbbf24)" }
+                            : { bg: "var(--c-2a1f08)", text: "var(--c-facc15)" })}
                         text={(note.actionStatus || "open").toUpperCase()} />
                     )}
                     <span style={{ fontSize: 11, color: P.textDim }}>{note.author}</span>
@@ -21453,8 +21497,8 @@ function NotesView({ project, onChange }) {
                     {note.oneNoteUrl && (
                       <a href={note.oneNoteUrl} target="_blank" rel="noreferrer"
                         title="Open linked OneNote page"
-                        style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#3b1d6e", border: "1px solid #7c3aed",
-                          borderRadius: 5, color: "#c4b5fd", fontSize: 11, fontWeight: 600, padding: "3px 8px", textDecoration: "none" }}>
+                        style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#3b1d6e", border: "1px solid var(--c-7c3aed)",
+                          borderRadius: 5, color: "var(--c-c4b5fd)", fontSize: 11, fontWeight: 600, padding: "3px 8px", textDecoration: "none" }}>
                         📓 OneNote
                       </a>
                     )}
@@ -21469,8 +21513,8 @@ function NotesView({ project, onChange }) {
                   </div>
                 </div>
                 {linkingNoteId === note.id && (
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, padding: "8px 10px", background: P.bg, borderRadius: 6, border: "1px solid #7c3aed" }}>
-                    <span style={{ fontSize: 11, color: "#c4b5fd", whiteSpace: "nowrap" }}>📓 OneNote URL:</span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, padding: "8px 10px", background: P.bg, borderRadius: 6, border: "1px solid var(--c-7c3aed)" }}>
+                    <span style={{ fontSize: 11, color: "var(--c-c4b5fd)", whiteSpace: "nowrap" }}>📓 OneNote URL:</span>
                     <input value={oneNoteLinkDraft} onChange={e => setOneNoteLinkDraft(e.target.value)}
                       placeholder="Paste OneNote page link…"
                       style={{ flex: 1, fontSize: 12 }} autoFocus
@@ -21490,7 +21534,7 @@ function NotesView({ project, onChange }) {
                 {note.category === "Site Visit" && note.visitDate && (
                   <div style={{ marginBottom: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>
+                      <span style={{ fontSize: 12, color: "var(--c-4ade80)", fontWeight: 600 }}>
                         📅 Site Visit: {new Date(note.visitDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "long", day: "numeric", year: "numeric" })}
                       </span>
                       <button
@@ -21498,14 +21542,14 @@ function NotesView({ project, onChange }) {
                         disabled={calStatus[note.id] === "syncing"}
                         style={{
                           fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 6, cursor: calStatus[note.id] === "syncing" ? "default" : "pointer",
-                          border: "1px solid " + (calStatus[note.id] === "synced" || note.calendarEventId ? "#4ade80" : P.accent),
+                          border: "1px solid " + (calStatus[note.id] === "synced" || note.calendarEventId ? "var(--c-4ade80)" : P.accent),
                           background: calStatus[note.id] === "synced" || note.calendarEventId ? "#1a3020" : P.accentDim,
-                          color: calStatus[note.id] === "synced" || note.calendarEventId ? "#4ade80" : P.accentLight,
+                          color: calStatus[note.id] === "synced" || note.calendarEventId ? "var(--c-4ade80)" : P.accentLight,
                         }}>
                         {calStatus[note.id] === "syncing" ? "⏳ Syncing…" : calStatus[note.id] === "synced" || note.calendarEventId ? "✓ 📅 Synced" : "📅 Sync to NY Calendar"}
                       </button>
                       {calMsg[note.id] && (
-                        <span role="status" style={{ fontSize: 11, color: calMsg[note.id].startsWith("✓") ? "#4ade80" : calMsg[note.id].startsWith("⚠") ? P.yellow : P.red }}>
+                        <span role="status" style={{ fontSize: 11, color: calMsg[note.id].startsWith("✓") ? "var(--c-4ade80)" : calMsg[note.id].startsWith("⚠") ? P.yellow : P.red }}>
                           {calMsg[note.id]}
                         </span>
                       )}
@@ -21543,9 +21587,9 @@ function NotesView({ project, onChange }) {
                     )}
                     {editDraft.category === "Site Visit" && (
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                        <label style={{ fontSize: 12, color: "#4ade80", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
+                        <label style={{ fontSize: 12, color: "var(--c-4ade80)", fontWeight: 600, whiteSpace: "nowrap" }}>Visit Date:</label>
                         <input type="date" value={editDraft.visitDate || ""} onChange={e => setEditDraft({ ...editDraft, visitDate: e.target.value })}
-                          style={{ fontSize: 12, width: 160, borderColor: "#4ade80" }} />
+                          style={{ fontSize: 12, width: 160, borderColor: "var(--c-4ade80)" }} />
                       </div>
                     )}
                     <textarea value={editDraft.body} onChange={e => setEditDraft({ ...editDraft, body: e.target.value })}
@@ -21894,7 +21938,7 @@ function ProjectCard({ project, onClick }) {
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <Badge color={contractColor} text={project.contractStatus} />
-        {openActions > 0 && <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text={`🚩 ${openActions} Open Action${openActions !== 1 ? "s" : ""}`} />}
+        {openActions > 0 && <Badge color={{ bg: "var(--c-3a2410)", text: "var(--c-fbbf24)" }} text={`🚩 ${openActions} Open Action${openActions !== 1 ? "s" : ""}`} />}
         {project.projectManager && <span style={{ fontSize: 11, color: P.textMuted }}>PM: {project.projectManager}</span>}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
@@ -22009,7 +22053,7 @@ function InvoicePromptModal({ milestone, project, newPct, invoiceAmount, onLogIn
           + "<div style='font-size:10px;color:#44546A;text-transform:uppercase;margin-bottom:4px'>Client / Prime</div>"
           + "<div style='font-size:13px;font-weight:600;color:#1F3864'>" + (project.prime || project.clientName || "—") + "</div>" + primeNum + "</div></div>"
       // Highlighted amount cleared to invoice
-      + "<div style='background:#FEF3C7;border:1px solid #F59E0B;border-radius:6px;padding:14px 18px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center'>"
+      + "<div style='background:#FEF3C7;border:1px solid var(--c-f59e0b);border-radius:6px;padding:14px 18px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center'>"
         + "<div><div style='font-size:11px;color:#92400E;text-transform:uppercase;letter-spacing:.05em;font-weight:700'>Cleared to Invoice Now</div>"
         + "<div style='font-size:12px;color:#78350F;margin-top:2px'>" + lineDesc + "</div></div>"
         + "<div style='font-size:26px;font-weight:800;color:#B45309;font-family:monospace;white-space:nowrap'>" + fmt(invoiceAmount) + "</div></div>"
@@ -22163,8 +22207,8 @@ function TransmittalChip({ project, milestone }) {
   const href = `https://smartias.github.io/setty-pms/transmittal.html?folder=${encodeURIComponent(url)}&project=${encodeURIComponent(project.name||"")}&number=${encodeURIComponent(project.projectNumber||"")}&client=${encodeURIComponent(project.client||"")}&projectId=${encodeURIComponent(project.id||"")}&milestoneId=${encodeURIComponent(milestone.id||"")}`;
   // Muted style on generated, vivid style on not-yet. Both clickable.
   const style = generated
-    ? { display: "inline-flex", alignItems: "center", gap: 3, background: "#0f2a17", color: "#86d9a8", borderRadius: 5, fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap", border: "1px solid #0f3b21", opacity: 0.85 }
-    : { display: "inline-flex", alignItems: "center", gap: 3, background: "#14532d", color: "#4ade80", borderRadius: 5, fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap", border: "1px solid #166534" };
+    ? { display: "inline-flex", alignItems: "center", gap: 3, background: "var(--c-0f2a17)", color: "var(--c-86d9a8)", borderRadius: 5, fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap", border: "1px solid var(--c-0f3b21)", opacity: 0.85 }
+    : { display: "inline-flex", alignItems: "center", gap: 3, background: "#14532d", color: "var(--c-4ade80)", borderRadius: 5, fontSize: 11, fontWeight: 600, padding: "3px 7px", textDecoration: "none", whiteSpace: "nowrap", border: "1px solid #166534" };
   return (
     <a href={href} target="_blank" rel="noreferrer" title={tooltip} style={style}>
       {issuedAt ? "✓ Issued " + fmtShort(issuedAt) : generated ? "✓ TX" : "📄 TX"}
@@ -23247,7 +23291,7 @@ function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProjec
                       </button>
                     ) : m.type === "submittal" ? (
                       <button onClick={() => setDashSubModal({ item: m._sub, project: m._project })}
-                        style={{ background: "none", border: "none", color: "#a78bfa", cursor: "pointer",
+                        style={{ background: "none", border: "none", color: "var(--c-a78bfa)", cursor: "pointer",
                           fontSize: 13, padding: 0, fontWeight: 600, textAlign: "left", textDecoration: "underline dotted" }}>
                         {m.name}
                       </button>
@@ -23255,9 +23299,9 @@ function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProjec
                   </td>
                   <td>
                     {m.type === "rfi"
-                      ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
+                      ? <Badge color={{ bg: "var(--c-1e3a5f)", text: "var(--c-60a5fa)" }} text="RFI" />
                       : m.type === "submittal"
-                      ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="Submittal" />
+                      ? <Badge color={{ bg: "var(--c-2a1a3b)", text: "var(--c-a78bfa)" }} text="Submittal" />
                       : <Badge color={m.type === "billable" ? { bg: P.accentDim, text: P.accentLight } : { bg: P.purpleDim, text: P.purple }} text={m.type === "billable" ? "Billable" : "Non-Billable"} />}
                   </td>
                   <td>
@@ -23354,7 +23398,7 @@ function Dashboard({ projects, regionFilter, onNavigateToProject, onUpdateProjec
                       const isStale = sessionState === "stale";
                       const isSyncing = sessionState === "syncing";
                       const isError = sessionState === "error";
-                      const bg = isError ? P.redDim : isStale ? "#1a1400" : isSynced ? P.greenDim : P.accentDim;
+                      const bg = isError ? P.redDim : isStale ? "var(--c-1a1400)" : isSynced ? P.greenDim : P.accentDim;
                       const border = isError ? P.red : isStale ? P.yellow : isSynced ? P.green : P.accent;
                       const color = isError ? P.red : isStale ? P.yellow : isSynced ? P.green : P.accentLight;
                       const label = isSyncing ? "⏳" : isError ? "✗ 📅" : isStale ? "⚠ 📅" : isSynced ? "✓ 📅" : "📅";
@@ -27970,7 +28014,7 @@ function ClientDirectoryView({ clients, onUpdateClients, projects, onNavigateToP
               <div key={ct.id} style={{ background: P.bg, border: "1px solid " + P.border, borderRadius: 8, padding: 14, marginBottom: 12, opacity: ct.inactive ? 0.55 : 1 }}>
                 {ct.inactive && (
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                    <span style={{ background: "rgba(217,119,6,.15)", color: "#FBBF24", fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 999 }}>Inactive</span>
+                    <span style={{ background: "rgba(217,119,6,.15)", color: "var(--c-fbbf24)", fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 999 }}>Inactive</span>
                     <span style={{ fontSize: 11, color: P.textDim }}>
                       since {String(ct.inactiveAt || "").slice(0, 10) || "?"} · {ct.inactiveBy || "unknown"} — excluded from newsletters &amp; campaigns
                     </span>
@@ -28596,12 +28640,12 @@ function ExternalLinksField({ project, onChange }) {
   }
 
   const typeColors = {
-    "BIM 360": { bg: "#1a2a3a", text: "#4da6ff" },
-    "Matterport": { bg: "#1a1a2a", text: "#a78bfa" },
-    "Client FTP": { bg: "#1a2a1a", text: "#4ade80" },
-    "Procore": { bg: "#2a1a1a", text: "#f87171" },
-    "Client Portal": { bg: "#1a2220", text: "#34d399" },
-    "Network Folder": { bg: "#1a1e1a", text: "#86efac" },
+    "BIM 360": { bg: "var(--c-1a2a3a)", text: "var(--c-4da6ff)" },
+    "Matterport": { bg: "#1a1a2a", text: "var(--c-a78bfa)" },
+    "Client FTP": { bg: "#1a2a1a", text: "var(--c-4ade80)" },
+    "Procore": { bg: "#2a1a1a", text: "var(--c-f87171)" },
+    "Client Portal": { bg: "#1a2220", text: "var(--c-34d399)" },
+    "Network Folder": { bg: "#1a1e1a", text: "var(--c-86efac)" },
     "Other": { bg: "#1e1e2a", text: "#94a3b8" },
   };
 
@@ -29621,7 +29665,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
   function PermRow({ perm }) {
     const isEdit    = perm.roles.includes("write");
     const roleLabel = isEdit ? "Can Edit" : "Can View";
-    const roleColor = isEdit ? P.green : (P.blue || "#60a5fa");
+    const roleColor = isEdit ? P.green : (P.blue || "var(--c-60a5fa)");
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0",
         borderBottom: `1px solid ${P.border}` }}>
@@ -29639,7 +29683,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
           title={"Email folder link(s) to " + perm.email + " (creates an Outlook draft)"}
           aria-label={"Email folder link to " + perm.email}>📧</button>
         <button onClick={() => removePerson(perm)}
-          style={{ background: "none", border: "none", color: P.red || "#ef4444",
+          style={{ background: "none", border: "none", color: P.red || "var(--c-ef4444)",
             cursor: "pointer", fontSize: 13, padding: "0 4px", flexShrink: 0 }}
           title={"Remove " + perm.email} aria-label={"Remove " + perm.email}>✕</button>
       </div>
@@ -29757,8 +29801,8 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                           style={{ padding: "7px 10px", cursor: "pointer",
                             borderBottom: `1px solid ${P.border}`,
                             borderLeft: isSel ? `3px solid ${P.accent}` : "3px solid transparent",
-                            background: isSel ? P.accent + "22" : "transparent" }}
-                          onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = P.bgCard || "#1a2535"; }}
+                            background: isSel ? pAlpha(P.accent, 13) : "transparent" }}
+                          onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = P.bgCard || "var(--c-1a2535)"; }}
                           onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = "transparent"; }}>
                           <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{c.name}</div>
                           <div style={{ fontSize: 11, color: P.textDim }}>
@@ -29802,7 +29846,7 @@ function PortalSharingModal({ project, clients, driveId, onClose }) {
                 spells out both consequences before the click. */}
             {selected && (
               <div ref={confirmRef} style={{ marginTop: 10, padding: "10px 12px", borderRadius: 6,
-                border: `1px solid ${P.accent}`, background: P.accent + "14",
+                border: `1px solid ${P.accent}`, background: pAlpha(P.accent, 8),
                 display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <div style={{ flex: 1, minWidth: 180 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: P.text }}>{selected.name}</div>
@@ -30615,9 +30659,9 @@ function TimesheetHelper({ staff, projects, onClose }) {
 
   const typeColors = {
     wbs: { bg: P.accentDim, text: P.accentLight, label: "WBS" },
-    milestone: { bg: "#1a2a1a", text: "#4ade80", label: "Milestone" },
-    rfi: { bg: "#1a2233", text: "#60b4ff", label: "RFI" },
-    submittal: { bg: "#2a1a3a", text: "#a78bfa", label: "SUB" },
+    milestone: { bg: "#1a2a1a", text: "var(--c-4ade80)", label: "Milestone" },
+    rfi: { bg: "var(--c-1a2233)", text: "var(--c-60b4ff)", label: "RFI" },
+    submittal: { bg: "var(--c-2a1a3a)", text: "var(--c-a78bfa)", label: "SUB" },
   };
 
   return (
@@ -30961,9 +31005,9 @@ function StaffOpenItemRows({ entries, now, onOpenRfi, onOpenSub, onNavigateToPro
           else onNavigateToProject && onNavigateToProject(project.id);
         }}>
         <td style={{ paddingLeft: firstColPad, fontWeight: 600, fontSize: 13 }}>
-          {itemType === "rfi" ? <Badge color={{ bg: "#1e3a5f", text: "#60a5fa" }} text="RFI" />
-           : itemType === "submittal" ? <Badge color={{ bg: "#2a1a3b", text: "#a78bfa" }} text="SUB" />
-           : itemType === "action-item" ? <Badge color={{ bg: "#3a2410", text: "#fbbf24" }} text="ACT" />
+          {itemType === "rfi" ? <Badge color={{ bg: "var(--c-1e3a5f)", text: "var(--c-60a5fa)" }} text="RFI" />
+           : itemType === "submittal" ? <Badge color={{ bg: "var(--c-2a1a3b)", text: "var(--c-a78bfa)" }} text="SUB" />
+           : itemType === "action-item" ? <Badge color={{ bg: "var(--c-3a2410)", text: "var(--c-fbbf24)" }} text="ACT" />
            : ms.type === "billable" && <span style={{ fontSize: 10, color: P.green, marginRight: 5 }}>$</span>}
           {" "}{ms.name}
         </td>
@@ -31214,7 +31258,7 @@ function MyProjectsView({ projects, staff, onUpdateStaff, onUpdateProject, onNav
                 </label>
               </div>
               {explorerHandler && !explorerHandlerSupportsNDrive() && (
-                <div style={{ color: P.amber || "#fbbf24", fontSize: 11.5, marginTop: 6 }}>
+                <div style={{ color: P.amber || "var(--c-fbbf24)", fontSize: 11.5, marginTop: 6 }}>
                   ⚠ This computer's setup predates one-click N: Drive — re-download the setup file above, run it, then
                   un-tick and re-tick the box to pick up the N: Drive button on NY projects (the 📂 button above keeps working either way).
                 </div>
@@ -31472,7 +31516,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {["Mechanical", "Electrical", "Plumbing", "Fire Protection"].map(d => {
                   const on = (form.disciplines || []).includes(d);
-                  const dc = { "Mechanical": { bg: "#1a2a3a", text: "#60b4ff" }, "Electrical": { bg: "#2a1a3a", text: "#c084fc" }, "Plumbing": { bg: "#1a3a2a", text: "#34d399" }, "Fire Protection": { bg: "#3a1a1a", text: "#f87171" } }[d];
+                  const dc = { "Mechanical": { bg: "var(--c-1a2a3a)", text: "var(--c-60b4ff)" }, "Electrical": { bg: "var(--c-2a1a3a)", text: "var(--c-c084fc)" }, "Plumbing": { bg: "var(--c-1a3a2a)", text: "var(--c-34d399)" }, "Fire Protection": { bg: "var(--c-3a1a1a)", text: "var(--c-f87171)" } }[d];
                   return (
                     <button key={d} onClick={() => toggleDisc(d)}
                       style={{ fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 8, cursor: "pointer",
@@ -31548,7 +31592,7 @@ function StaffDirectoryView({ staff, onUpdateStaff, projects = [], onNavigateToP
 	            const overdue = milEntries.filter(({ ms }) => ms.dueDate && new Date(ms.dueDate) < now);
 	            const upcoming = milEntries.filter(({ ms }) => !ms.dueDate || new Date(ms.dueDate) >= now).slice(0, 10);
             const isExpanded = !!expandedStaff[s.id];
-            const dcMap = { "Mechanical": { bg: "#1a2a3a", text: "#60b4ff" }, "Electrical": { bg: "#2a1a3a", text: "#c084fc" }, "Plumbing": { bg: "#1a3a2a", text: "#34d399" }, "Fire Protection": { bg: "#3a1a1a", text: "#f87171" } };
+            const dcMap = { "Mechanical": { bg: "var(--c-1a2a3a)", text: "var(--c-60b4ff)" }, "Electrical": { bg: "var(--c-2a1a3a)", text: "var(--c-c084fc)" }, "Plumbing": { bg: "var(--c-1a3a2a)", text: "var(--c-34d399)" }, "Fire Protection": { bg: "var(--c-3a1a1a)", text: "var(--c-f87171)" } };
 
             return (
               <div key={s.id} style={{ background: P.card, border: "1px solid " + (isExpanded ? P.accent : P.border), borderRadius: 10, overflow: "hidden", transition: "border-color .15s" }}>
@@ -32441,11 +32485,11 @@ function getPmsSeasonalConfettiOpts() {
   const d = new Date();
   const m = d.getMonth();
   const day = d.getDate();
-  if (m === 11) return { colors: ["#ffffff", "#e3f2fd", "#bbdefb", "#90caf9"], shapes: [confetti.shapeFromText({ text: "❄️", scalar: 2 })], scalar: 1.6 };
-  if (m === 0 && day === 1) return { colors: ["#ffd700", "#c0c0c0", "#ff6b9d", "#6bd4ff"] };
-  if (m === 1 && day === 14) return { colors: ["#ff3a7a", "#ff6b9d", "#ffb3c6", "#ffffff"], shapes: [confetti.shapeFromText({ text: "❤️", scalar: 2 })], scalar: 2 };
+  if (m === 11) return { colors: ["#ffffff", "#e3f2fd", "var(--c-bbdefb)", "var(--c-90caf9)"], shapes: [confetti.shapeFromText({ text: "❄️", scalar: 2 })], scalar: 1.6 };
+  if (m === 0 && day === 1) return { colors: ["var(--c-ffd700)", "#c0c0c0", "var(--c-ff6b9d)", "var(--c-6bd4ff)"] };
+  if (m === 1 && day === 14) return { colors: ["var(--c-ff3a7a)", "var(--c-ff6b9d)", "var(--c-ffb3c6)", "#ffffff"], shapes: [confetti.shapeFromText({ text: "❤️", scalar: 2 })], scalar: 2 };
   if (m === 6 && day === 4) return { colors: ["#bf0a30", "#ffffff", "#002868"], shapes: ["star", "circle"] };
-  if (m === 9 && day === 31) return { colors: ["#ff7518", "#000000", "#8a2be2", "#ffd700"] };
+  if (m === 9 && day === 31) return { colors: ["var(--c-ff7518)", "#000000", "var(--c-8a2be2)", "var(--c-ffd700)"] };
   return null;
 }
 
@@ -32634,6 +32678,36 @@ function pmsCelebrate(message, options = {}) {
     confetti(base);
     if (big) setTimeout(() => confetti({ ...base, particleCount: 80, spread: 110, scalar: 1.0 }), 180);
   });
+}
+
+// Theme preference: "system" follows the OS (default), "light"/"dark" override.
+// The early <head> script applies a saved choice before first paint; this
+// control cycles System → Light → Dark and persists it in localStorage.
+const THEME_MODES = [
+  { key: "system", icon: "🖥", label: "System" },
+  { key: "light", icon: "☀️", label: "Light" },
+  { key: "dark", icon: "🌙", label: "Dark" },
+];
+function readThemePref() {
+  try { const t = localStorage.getItem("pms-theme"); return t === "light" || t === "dark" ? t : "system"; } catch (e) { return "system"; }
+}
+function ThemeToggle() {
+  const [mode, setMode] = useState(readThemePref);
+  const cur = THEME_MODES.find(m => m.key === mode) || THEME_MODES[0];
+  const next = THEME_MODES[(THEME_MODES.indexOf(cur) + 1) % THEME_MODES.length];
+  const choose = (key) => {
+    setMode(key);
+    if (key === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", key);
+    try { if (key === "system") localStorage.removeItem("pms-theme"); else localStorage.setItem("pms-theme", key); } catch (e) {}
+  };
+  return (
+    <button onClick={() => choose(next.key)}
+      title={`Theme: ${cur.label}. Click for ${next.label}.`} aria-label={`Theme: ${cur.label}. Switch to ${next.label}.`}
+      style={{ background: "none", border: `1px solid ${P.border}`, color: P.textMuted, borderRadius: 999, padding: "4px 10px", fontSize: 12, whiteSpace: "nowrap" }}>
+      {cur.icon} {cur.label}
+    </button>
+  );
 }
 
 function App() {
@@ -33734,7 +33808,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
             edit. Renders only once permissions are loaded and deny. */}
         {settyAuth.isSignedIn() && !pmsCanEditProjects() && (
           <span title="Your role can view everything but not change project data. Managed in the Admin Console permission matrix."
-            style={{ background: "#33270a", color: "#fbbf24", border: "1px solid #fbbf24", borderRadius: 999, padding: "3px 12px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>
+            style={{ background: "var(--c-33270a)", color: "var(--c-fbbf24)", border: "1px solid var(--c-fbbf24)", borderRadius: 999, padding: "3px 12px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" }}>
             🔒 Read-only
           </span>
         )}
@@ -33797,6 +33871,7 @@ function renameCompanyAcrossProjects(oldName, newName) {
           </a>
         )}
         <div style={{ flex: 1 }} />
+        <ThemeToggle />
         <SaveBadge status={appStatus} lastSaved={lastSaved} onRetry={manualRetry} errorDetail={saveErrorDetail} />
         <Btn small variant="ghost" onClick={exportCSV}><span aria-hidden="true">⬇</span> CSV</Btn>
         <Btn small onClick={addProject}>+ New Project</Btn>
