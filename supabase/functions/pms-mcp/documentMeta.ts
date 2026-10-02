@@ -248,6 +248,7 @@ export function isIndexable(file: { name: string; ext: string }): boolean {
 }
 
 // ── Doc type and discipline ─────────────────────────────────────────────────
+const EMAIL_FILE_RE = /^email\.(html?|msg|eml)$/i;
 export function deriveDocType(
   file: Pick<DocFile, "name" | "folderPath" | "ext" | "library">,
   hint: { sheetNo?: string | null; record?: { kind: string } | null; email?: boolean } = {},
@@ -255,10 +256,13 @@ export function deriveDocType(
   if (/^proposal/i.test(file.library)) return { value: "Proposal", basis: "library" };
   if (/contract/i.test(file.library)) return { value: "Contract", basis: "library" };
   if (hint.email) {
-    return /^email\.(html?|msg|eml)$/i.test(file.name)
+    return EMAIL_FILE_RE.test(file.name)
       ? { value: "Email", basis: "email folder" }
       : { value: "Email Attachment", basis: "email folder" };
   }
+  // The filed email itself is an Email wherever it sits, including inside an RFI
+  // or submittal folder (RFIs/E/RFI-001/IN/<subject>/email.html).
+  if (EMAIL_FILE_RE.test(file.name)) return { value: "Email", basis: "email file" };
   const name = norm(file.name);
   const path = norm(file.folderPath);
   // A sheet PDF under Outgoing is a drawing even when its title contains a word
@@ -266,7 +270,11 @@ export function deriveDocType(
   if (hint.sheetNo && file.ext.toLowerCase() === "pdf") return { value: "Drawing", basis: "sheet number" };
   // Files inside an RFI or submittal folder belong to that record: "response.pdf"
   // there is the RFI response, not a review-comment log.
-  if (hint.record) return { value: hint.record.kind, basis: "record folder" };
+  // Meeting minutes attached to an RFI email are still minutes.
+  if (hint.record) {
+    if (/(^| )minutes( |$)/.test(name)) return { value: "Minutes", basis: "filename" };
+    return { value: hint.record.kind, basis: "record folder" };
+  }
   for (const [type, words] of Object.entries(DOC_TYPE_WORDS)) {
     if (words.some((w) => name.includes(w))) return { value: type, basis: "filename" };
   }
@@ -372,8 +380,10 @@ export function deriveDocumentRow(file: DocFile, ctx: RowContext): DocumentRow {
   if (disc) from.discipline = disc.basis;
   if (set?.setDate) from.set_date = "folder";
 
+  // Any file whose folder is a filed email's folder links to that email row:
+  // emails are also filed under RFIs/<d>/<record>/IN/<subject>/ and similar.
   let emailRecordId: string | null = null;
-  if (email && ctx.emailFolders) {
+  if (ctx.emailFolders) {
     const key = folderUrlOf(file.webUrl);
     emailRecordId = (key && ctx.emailFolders.get(key)) || null;
     if (emailRecordId) from.email_record_id = "email row";

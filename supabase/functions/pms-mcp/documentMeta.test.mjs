@@ -229,6 +229,34 @@ test("an email's discipline comes from the attachment filename, never the subjec
   assert.equal(att.derived_from.discipline, "filename");
 });
 
+test("a filed email inside an RFI or submittal folder is still an Email, and still links to its email row", () => {
+  const folderUrl = "https://setty.sharepoint.com/sites/NYCProjects/Project Document Library/SAPX206004.00 - Homeport II- Upland/RFIs/E/RFI-001/IN/2026-07-30 RE- Homeport II Bi-Weekly OAC Check-in";
+  const map = new Map([[normaliseFolderUrl(folderUrl), "rec-9"]]);
+  const folderPath = "RFIs/E/RFI-001/IN/2026-07-30 RE- Homeport II Bi-Weekly OAC Check-in";
+  const mail = deriveDocumentRow(file({ name: "email.html", ext: "html", folderPath,
+    webUrl: folderUrl.replace(/ /g, "%20") + "/email.html" }), ctx({ emailFolders: map }));
+  assert.equal(mail.doc_type, "Email");
+  assert.equal(mail.record_kind, "RFI", "it still belongs to the record");
+  assert.equal(mail.record_number, "RFI-001");
+  assert.equal(mail.email_record_id, "rec-9");
+  const minutes = deriveDocumentRow(file({ name: "20260729 - Homeport II - OAC Meeting 060 - Minutes.pdf", folderPath,
+    webUrl: folderUrl.replace(/ /g, "%20") + "/m.pdf" }), ctx({ emailFolders: map }));
+  assert.equal(minutes.doc_type, "Minutes", "minutes attached to an RFI email are minutes");
+  assert.equal(minutes.email_record_id, "rec-9");
+  const cut = deriveDocumentRow(file({ name: "ACS - 233300-002-001 - Fire Dampers.pdf",
+    folderPath: "Submittals/M/SUB-144/IN/2026-05-19 NYCEDC HomePort II" }), ctx());
+  assert.equal(cut.doc_type, "Submittal", "everything else in a record folder keeps the record's type");
+  const resp = deriveDocumentRow(file({ name: "SUB-098_Review.docx", ext: "docx", folderPath: "Submittals/M/SUB-098/OUT" }), ctx());
+  assert.equal(resp.doc_type, "Submittal");
+});
+
+test("files outside any email folder never link to an email row", () => {
+  const map = new Map([["https://x/emails/a", "rec-1"]]);
+  const r = deriveDocumentRow(file({ name: "M501.pdf", folderPath: "Outgoing/2026_02_18 CD Set", webUrl: "https://x/outgoing/M501.pdf" }),
+    ctx({ emailFolders: map }));
+  assert.equal(r.email_record_id, null);
+});
+
 // ── parity with index.ts (find_document's scoring vocabulary) ───────────────
 const shipped = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const block = (src, startRe) => {
@@ -257,4 +285,9 @@ test("PHASE_PATTERNS match index.ts", () => {
   const ours = PHASE_PATTERNS.map((p) => [p.phase, String(p.re)]);
   assert.deepEqual(theirs, ours);
   assert.ok(literal(theirs).length > 10);
+});
+
+test("the sync endpoint can run libraries only, for testing them in isolation", () => {
+  assert.ok(shipped.includes("body?.librariesOnly === true"));
+  assert.ok(shipped.includes("librariesOnly ? [] : projects.map"));
 });
