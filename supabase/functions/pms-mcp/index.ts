@@ -9873,9 +9873,10 @@ function filterEngineeringStandards(
   f: { query?: string; discipline?: string; system?: string; includeArchived?: boolean },
 ): any[] {
   const has = (v: unknown, needle: string) => String(v ?? "").toLowerCase().includes(needle);
-  // 'suggested' is a review queue, never served (same rule as search_knowledge).
-  let out = rows.filter((r: any) => r.status !== "suggested");
-  if (!f.includeArchived) out = out.filter((r: any) => r.status !== "archived");
+  // Only reviewed standards are served: 'suggested' is a review queue, not knowledge.
+  // includeArchived adds superseded entries; suggested rows are never returned.
+  const served = f.includeArchived ? ["active", "superseded"] : ["active"];
+  let out = rows.filter((r: any) => served.includes(r.status));
   if (f.discipline) { const d = f.discipline.toLowerCase().trim(); out = out.filter((r: any) => has(r.discipline, d)); }
   if (f.system) { const s = f.system.toLowerCase().trim(); out = out.filter((r: any) => has(r.system, s)); }
   if (f.query) {
@@ -9894,13 +9895,13 @@ mcp.tool("search_engineering_standards", {
     "when drafting RFI or submittal responses, design narratives or proposals, or to sanity-check a design " +
     "choice against firm practice. This is firm know-how rather than project data, and it does not replace " +
     "the governing code or the agency's own requirements: check search_agency_preferences for agency " +
-    "questions and cite the source reference. Defaults to active entries; archived ones are superseded and " +
-    "returned only on request.",
+    "questions and cite the source reference. Serves only reviewed (active) entries; superseded ones " +
+    "are returned only on request, and unreviewed suggestions never are.",
   inputSchema: z.object({
     query: z.string().optional().describe("Free text across the standard, discipline, system, basis, and source"),
     discipline: z.string().optional().describe("Discipline filter (substring), e.g. 'Mechanical', 'Electrical'"),
     system: z.string().optional().describe("System filter (substring), e.g. 'Chilled water', 'Emergency power'"),
-    includeArchived: z.boolean().optional().describe("Include superseded/archived entries (default false)"),
+    includeArchived: z.boolean().optional().describe("Also include superseded entries (default false)"),
   }),
   handler: async ({ query, discipline, system, includeArchived }) => {
     const rows = await sbGetAll(
