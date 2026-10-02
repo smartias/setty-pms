@@ -1260,7 +1260,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-02-documents-spec-discipline";
+const BUILD = "2026-10-02-documents-drive-folders";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.21.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -4973,7 +4973,9 @@ async function projectTree(
       const { hits } = await azureProjectHits(String(team).toUpperCase().trim(), numPrefix);
       const files: TreeFile[] = []; const libraries: string[] = []; let truncated = false;
       for (const h of hits) {
-        const r = await azureWalkFiles(h.ctx, h.folder, h.folder);
+        // The sync's bigger caps reach the drive walk too (it has its own listing
+        // cap, 120, which cut Tivoly's first sync short).
+        const r = await azureWalkFiles(h.ctx, h.folder, h.folder, opts?.maxRequests ?? AZ_WALK_MAX_LISTINGS, maxFiles);
         if (!r.started) continue;
         libraries.push(h.ctx.label + ":");
         for (const f of r.files) { if (files.length >= maxFiles) { truncated = true; break; } files.push(f); }
@@ -6888,13 +6890,16 @@ async function crossSiteDeliverables(numPrefix: string): Promise<{
 // folder is "99-<number>_OUTGOING", which still contains "outgoing"). The
 // link is the UNC path. Bounded like the SharePoint walks.
 const AZ_WALK_MAX_LISTINGS = 120;
-async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: string): Promise<{ files: TreeFile[]; truncated: boolean; started: boolean }> {
+async function azureWalkFiles(
+  ctx: AzureCtx, projectRel: string, startRel: string,
+  maxListings = AZ_WALK_MAX_LISTINGS, maxFiles = TREE_MAX_FILES,
+): Promise<{ files: TreeFile[]; truncated: boolean; started: boolean }> {
   const files: TreeFile[] = [];
   let listings = 0, truncated = false, started = false;
   const relOf = (full: string) => full.startsWith(projectRel + "/") ? full.slice(projectRel.length + 1) : (full === projectRel ? "" : full);
   const queue: string[] = [startRel];
   while (queue.length) {
-    if (listings >= AZ_WALK_MAX_LISTINGS || files.length >= TREE_MAX_FILES) { truncated = true; break; }
+    if (listings >= maxListings || files.length >= maxFiles) { truncated = true; break; }
     const dir = queue.shift()!;
     let r: { entries: AzEntry[]; truncated: boolean };
     try { r = await azureDirEntries(ctx, dir); listings++; } catch { continue; }
@@ -6903,7 +6908,7 @@ async function azureWalkFiles(ctx: AzureCtx, projectRel: string, startRel: strin
     for (const e of r.entries) {
       const full = joinRel(dir, e.name);
       if (e.type === "folder") queue.push(full);
-      else if (files.length < TREE_MAX_FILES) {
+      else if (files.length < maxFiles) {
         files.push({
           itemId: encodeAzId(ctx.team, full, ctx.label), name: e.name, library: ctx.label + ":",
           folderPath: relOf(dir) || "/", webUrl: sharePathOf(ctx.share, full),

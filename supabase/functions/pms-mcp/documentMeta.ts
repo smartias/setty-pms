@@ -146,7 +146,11 @@ export function isoDateIn(text: string, anchored = false): string | null {
 // ── Path reading ────────────────────────────────────────────────────────────
 const segs = (folderPath: string) => String(folderPath || "").split("/").map((s) => s.trim()).filter(Boolean);
 // Strip the "01 📋 " / "04 " numbering and emoji so areas compare by words.
-const stripPrefix = (s: string) => s.replace(/^[\d.\s\-_]*[^A-Za-z0-9]*\s*/u, "").trim();
+// Drive projects (DC, Baltimore) name folders "NN-<project number>_NAME", e.g.
+// "26-SIPX251008.00_E" or "99-SIPX251008.00_OUTGOING"; the project number is
+// dropped too, so the segment reads as just "E" or "OUTGOING".
+const stripPrefix = (s: string) =>
+  s.replace(/^[\d.\s\-_]*[^A-Za-z0-9]*\s*/u, "").replace(/^[A-Z]{4}\d{6}(?:\.\d{2})?[_\s-]*/i, "").trim();
 
 export function deriveArea(folderPath: string, library: string): string {
   if (/^proposal/i.test(library)) return "Proposals";
@@ -160,12 +164,18 @@ export function deriveArea(folderPath: string, library: string): string {
   if (/^emails?$/.test(top)) return "Emails";
   const any = (re: RegExp) => parts.some((x) => re.test(x));
   if (any(/outgoing/)) return "Outgoing";
-  if (any(/project management/)) return "Project Management";
+  if (any(/project management/) || /^pm$/.test(top)) return "Project Management";
   if (any(/^rfis?$/)) return "RFIs";
   if (any(/submittal/)) return "Submittals";
   if (any(/site field report/)) return "Site Reports";
   if (any(/qaqc|qa qc/)) return "QAQC";
+  // Drive layout: 01-<num>_INCOMING, 70-<num>_CA, 80/90-<num>_REVIT/XREF, and one
+  // folder per discipline (21 FP, 22 P, 23 M, 26 E) holding the design files.
+  if (/^incoming$/.test(top)) return "Incoming";
+  if (/^ca$/.test(top)) return "CA";
+  if (/^(revit|xref)$/.test(top)) return "Models";
   if (any(/design/)) return "Design";
+  if (top.length <= 2 && normaliseDiscipline(stripPrefix(segs(folderPath)[0] || ""))) return "Design";
   return "Other";
 }
 
@@ -196,10 +206,10 @@ export function parseRecordFolder(
       const seg = parts[j];
       const token = /^(?:RFI|SUB(?:MITTAL)?)[-_\s#]*\d+(?:[.\-]\d+)*/i.exec(seg);
       if (token) return { kind, number: token[0].replace(/\s+/g, ""), ...(discipline ? { discipline } : {}) };
-      if (j === i + 1) {
+      if (j === i + 1 || (discipline && j === i + 2)) {
         const lead = /^#?\s*([A-Za-z]{0,3}[-\s]?\d+(?:[.\-]\d+)*)/.exec(seg);
-        if (lead) return { kind, number: lead[1].replace(/\s+/g, "") };
-        const code = normaliseDiscipline(seg);
+        if (lead) return { kind, number: lead[1].replace(/\s+/g, ""), ...(discipline ? { discipline } : {}) };
+        const code = j === i + 1 ? normaliseDiscipline(seg) : null;
         if (code && seg.length <= 2) { discipline = code; continue; }
       }
       if (j > i + 1 && !discipline) break;
