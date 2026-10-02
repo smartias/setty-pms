@@ -1260,7 +1260,7 @@ function summarizeProject(p: any): Record<string, unknown> {
 
 // Bump on every deploy. `version` is what an MCP client shows; BUILD is echoed by
 // /health so "is my change live?" is answerable without diffing the source.
-const BUILD = "2026-10-02-documents-derivation-fixes";
+const BUILD = "2026-10-02-documents-email-typing";
 const mcp = new McpServer({
   name: "setty-pms", version: "1.21.0",
   schemaAdapter: (schema) => z.toJSONSchema(schema as z.ZodType),
@@ -10909,9 +10909,11 @@ async function syncProjectDocuments(p: any): Promise<DocsScopeResult> {
       console.warn("[documents-sync] register read failed for", scope, String((e as any)?.message ?? e));
     }
 
-    // Email folder URL -> email row, only when the tree has an Emails folder.
+    // Email folder URL -> email row.
+    // Always read: filed emails also live under RFI and submittal record folders,
+    // not only under Emails/.
     let emailFolders: Map<string, string> | undefined;
-    if (tree.files.some((f: any) => /(^|\/)[^/]*emails?(\/|$)/i.test(String(f.folderPath || "")))) {
+    {
       try {
         const rows = await sbGetAll(
           "pms_project_emails?select=record_id,sp_folder_url&project_id=eq." + encodeURIComponent(String(p.id)) +
@@ -11058,7 +11060,8 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
   let body: any = {};
   try { body = await c.req.json(); } catch { /* cron sends an empty body */ }
   const onlyProject = String(body?.projectNumber || "").trim();
-  const withLibraries = body?.libraries !== false;
+  const librariesOnly = body?.librariesOnly === true;
+  const withLibraries = librariesOnly || body?.libraries !== false;
   const maxScopes = Math.max(1, Math.min(Number(body?.maxScopes) || DOCS_MAX_SCOPES_PER_RUN, 20));
 
   const projects = (await getProjectsUnfiltered()).filter((p: any) => p.projectNumber);
@@ -11073,7 +11076,7 @@ app.post("/pms-mcp/admin/documents-sync", async (c) => {
   }
 
   type Cand = { scope: string; run: () => Promise<DocsScopeResult> };
-  const cands: Cand[] = projects.map((p: any) => ({
+  const cands: Cand[] = librariesOnly ? [] : projects.map((p: any) => ({
     scope: String(p.projectNumber).toLowerCase().trim(),
     run: () => syncProjectDocuments(p),
   }));

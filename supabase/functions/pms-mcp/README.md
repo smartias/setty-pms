@@ -686,7 +686,8 @@ the bottom of `index.ts`; the schema is migration `20261002120000_pms_documents.
   name, or one unambiguous containing name. Unlinked folders are still indexed.
 - **Rotation:** each call syncs the least recently completed scopes, up to 6 or
   90 s, whichever comes first. Send `{"projectNumber":"..."}` for one project,
-  `{"libraries":false}` to skip the libraries, `{"maxScopes":N}` (max 20).
+  `{"libraries":false}` to skip the libraries, `{"librariesOnly":true}` to run only the
+  Proposals/Contract folders, `{"maxScopes":N}` (max 20).
 - **Auth:** an `x-pms-cron` header equal to the `DOCUMENTS_SYNC_CRON_SECRET`
   function secret, or a PMS admin Supabase JWT. Schedule it every 15 minutes with
   pg_cron + pg_net once the secret exists; about 209 projects plus the library
