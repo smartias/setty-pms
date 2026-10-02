@@ -239,12 +239,16 @@ export function leadingSheetNo(filename: string): { sheetNo: string; discipline:
 // ── Scope rules ─────────────────────────────────────────────────────────────
 const IMAGE_EXT = new Set(["jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "tif", "tiff", "bmp"]);
 const NOISE_NAMES = new Set(["thumbs.db", "desktop.ini", ".ds_store", "_pms-metadata.json"]);
+// Shortcuts and temp files ("Field Photos.url", "N Drive.url") sit at the root of
+// every project folder; they are links to other places, not documents.
+const NOISE_EXT = new Set(["url", "lnk", "ini", "tmp"]);
 // Photos stay session-level (pms_field_photo_sessions), and the sidecar and OS
 // litter are not documents.
 export function isIndexable(file: { name: string; ext: string }): boolean {
   const name = String(file.name || "").toLowerCase();
   if (!name || NOISE_NAMES.has(name) || name.startsWith("~$")) return false;
-  return !IMAGE_EXT.has(String(file.ext || "").toLowerCase());
+  const ext = String(file.ext || "").toLowerCase();
+  return !IMAGE_EXT.has(ext) && !NOISE_EXT.has(ext);
 }
 
 // ── Doc type and discipline ─────────────────────────────────────────────────
@@ -291,11 +295,33 @@ export function deriveDocType(
 }
 const DRAWING_EXT = new Set(["pdf", "dwg", "dxf", "rvt"]);
 
+// CSI MasterFormat divisions that map to one of the firm's disciplines. Only
+// consulted for specifications: a bare six-digit prefix on any other file can
+// just as well be a YYMMDD date ("260310 HPCM Refrigeration WO01.pdf").
+const SPEC_DIVISION_DISCIPLINE: Record<string, string> = { "21": "FP", "22": "P", "23": "M", "26": "E", "27": "T", "28": "FA" };
+export function disciplineFromSpecSection(filename: string): string | null {
+  const m = /^\s*(?:section\s+)?(\d{2})[\s.]?(\d{2})[\s.]?(\d{2})(?!\d)/i.exec(String(filename || ""));
+  return m ? SPEC_DIVISION_DISCIPLINE[m[1]] ?? null : null;
+}
+// A folder segment that IS a discipline code ("Specs/M", "Drawings/FP"). Names
+// like "E and FA" hold two disciplines, so they say nothing on their own.
+function disciplineFromFolderCode(folderPath: string): string | null {
+  for (const seg of segs(folderPath)) {
+    const t = stripPrefix(seg);
+    if (t.length <= 2) {
+      const code = normaliseDiscipline(t);
+      if (code) return code;
+    }
+  }
+  return null;
+}
+
 export function deriveDiscipline(
   file: Pick<DocFile, "name" | "folderPath">,
   fromRegister?: string | null,
   sheetLead?: string | null,
   recordDiscipline?: string | null,
+  isSpec = false,
 ): { value: string; basis: string } | null {
   const reg = normaliseDiscipline(fromRegister || "");
   if (reg) return { value: reg, basis: "register" };
@@ -303,11 +329,17 @@ export function deriveDiscipline(
   if (lead) return { value: lead, basis: "sheet number" };
   const rec = normaliseDiscipline(recordDiscipline || "");
   if (rec) return { value: rec, basis: "record folder" };
+  if (isSpec) {
+    const sec = disciplineFromSpecSection(file.name);
+    if (sec) return { value: sec, basis: "spec section number" };
+  }
   const name = norm(file.name);
   const path = norm(file.folderPath);
   for (const [code, words] of Object.entries(DISCIPLINE_WORDS)) {
     if (words.some((w) => name.includes(w)) || wholeWord(code).test(name)) return { value: code, basis: "filename" };
   }
+  const folderCode = disciplineFromFolderCode(file.folderPath);
+  if (folderCode) return { value: folderCode, basis: "folder code" };
   for (const [code, words] of Object.entries(DISCIPLINE_WORDS)) {
     if (words.some((w) => path.includes(w))) return { value: code, basis: "folder" };
   }
@@ -376,7 +408,7 @@ export function deriveDocumentRow(file: DocFile, ctx: RowContext): DocumentRow {
   if (type) from.doc_type = type.basis;
   // An email's folder name is its subject line, so only the attachment's own
   // filename may suggest a discipline, never the subject.
-  const disc = deriveDiscipline(email ? { name: file.name, folderPath: "" } : file, v?.discipline, lead?.discipline, record?.discipline);
+  const disc = deriveDiscipline(email ? { name: file.name, folderPath: "" } : file, v?.discipline, lead?.discipline, record?.discipline, type?.value === "Spec");
   if (disc) from.discipline = disc.basis;
   if (set?.setDate) from.set_date = "folder";
 
